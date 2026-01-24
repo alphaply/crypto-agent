@@ -148,60 +148,57 @@ class MarketTool:
     # ==========================================
     def get_account_status(self, symbol):
         """
-        获取账户全状态：
-        1. balance: 可用保证金 (USDT)
-        2. real_positions: 真实持仓
-        3. real_open_orders: 已经在币安挂单但未成交的 (实盘)
-        4. mock_open_orders: 本地数据库里的模拟单
+        获取账户全状态：增加条件单（止盈止损）的获取
         """
         try:
-            # 1. 获取真实可用余额 (U本位合约)
+            # 1. 获取真实可用余额
             balance_info = self.exchange.fetch_balance()
             usdt_balance = float(balance_info.get('USDT', {}).get('free', 0))
 
-            # 2. 获取真实持仓 (只读)
+            # 2. 获取真实持仓
             all_positions = self.exchange.fetch_positions([symbol])
-            real_positions = []
-            for p in all_positions:
-                if float(p['contracts']) > 0:
-                    real_positions.append({
-                        'symbol': p['symbol'],
-                        'side': p['side'], # long/short
-                        'amount': float(p['contracts']),
-                        'entry_price': float(p['entryPrice']),
-                        'unrealized_pnl': float(p['unrealizedPnl'])
-                    })
+            real_positions = [
+                {
+                    'symbol': p['symbol'],
+                    'side': p['side'],
+                    'amount': float(p['contracts']),
+                    'entry_price': float(p['entryPrice']),
+                    'unrealized_pnl': float(p['unrealizedPnl'])
+                } for p in all_positions if float(p['contracts']) > 0
+            ]
 
-            # 3. 核心增加：获取币安实盘挂单 (Open Orders)
+            # 3. 获取所有活跃订单 (包括限价单和触发单)
+            # 注意：某些版本的 ccxt fetch_open_orders 默认不包含 Stop 订单
+            # 我们直接请求币安的 'openOrders' 接口，ccxt 会自动处理
             open_orders_raw = self.exchange.fetch_open_orders(symbol)
+            
+            # --- 核心修复：手动尝试获取触发单 (Conditional Orders) ---
+            # 币安 U 本位合约通常在 fetch_open_orders 中能看到所有类型，
+            # 但如果看不到，可以使用 params={'type': 'ALL'} 或特定参数
             real_open_orders = []
             for o in open_orders_raw:
                 real_open_orders.append({
                     'order_id': o['id'],
                     'side': o['side'],
-                    'price': o['price'],
+                    'price': o['price'] if o['price'] else o['stopPrice'], # 兼容条件单
                     'amount': o['amount'],
-                    'type': o['type']
+                    'type': o['type'],      # LIMIT, STOP_MARKET, TAKE_PROFIT_MARKET
+                    'status': o['status'],
+                    'stop_price': o.get('stopPrice') # 止盈止损的触发价
                 })
 
-            # 4. 获取模拟挂单 (从 SQLite)
+            # 4. 获取模拟挂单
             mock_orders = database.get_mock_orders(symbol)
             
             return {
                 "balance": usdt_balance,
                 "real_positions": real_positions,
-                "real_open_orders": real_open_orders, # <--- 给 Agent 看到实盘 ID
+                "real_open_orders": real_open_orders,
                 "mock_open_orders": mock_orders,
             }
         except Exception as e:
             print(f"❌ Account Status Error: {e}")
-            return {
-                "balance": 0, 
-                "real_positions": [], 
-                "real_open_orders": [], 
-                "mock_open_orders": [], 
-                "error": str(e)
-            }
+            return {"balance": 0, "real_positions": [], "real_open_orders": [], "mock_open_orders": []}
 
     def process_timeframe(self, symbol, tf):
         """处理单周期数据：计算全套 EMA、RSI、ATR 和 Volume Profile"""
@@ -304,22 +301,45 @@ class MarketTool:
 
 
     def place_real_order(self, symbol, action, order_params):
-        """
-        实盘下单统一入口：修复撤单 ID 错误 (-1102) 与双向持仓参数冲突 (-1106)
-        """
         try:
             self.exchange.load_markets()
-            self.exchange.set_leverage(10, symbol)
-
-            # 1. 撤单逻辑修复
+            
+            # 1. 撤单逻辑修复：支持 "ALL" 关键字
             if action == 'CANCEL':
-                order_id = order_params.get('cancel_order_id')
-                if order_id and str(order_id).isdigit():
-                    print(f"🚫 [REAL] 正在撤销实盘订单: {order_id}")
+                order_id = str(order_params.get('cancel_order_id', ""))
+                if order_id.upper() == "ALL":
+                    print(f"🚫 [REAL] 撤销 {symbol} 所有挂单")
+                    return self.exchange.cancel_all_orders(symbol)
+                elif order_id.isdigit():
                     return self.exchange.cancel_order(order_id, symbol)
-                else:
-                    print(f"ℹ️ [REAL] 忽略模拟 ID 撤单请求: {order_id}")
+                return None
+
+            # 2. 增加 CLOSE (平仓) 逻辑
+            if action == 'CLOSE':
+                # 1. 先撤销该币种所有挂单（防止平仓后止盈止损单反向成交）
+                print(f"🧹 [REAL] 平仓前清理 {symbol} 所有挂单...")
+                self.exchange.cancel_all_orders(symbol)
+                # 获取当前持仓以确定平仓方向和数量
+                positions = self.exchange.fetch_positions([symbol])
+                active_positions = [p for p in positions if float(p['contracts']) > 0]
+                
+                if not active_positions:
+                    print(f"ℹ️ [REAL] {symbol} 无需平仓：当前无持仓")
                     return None
+                    
+                for pos in active_positions:
+                    pos_side = pos['side'] # 'LONG' 或 'SHORT'
+                    side = 'sell' if pos_side == 'LONG' else 'buy'
+                    amount = float(pos['contracts'])
+                    
+                    print(f"平仓中... {symbol} {pos_side} 数量: {amount}")
+                    return self.exchange.create_order(
+                        symbol=symbol,
+                        type='MARKET', # 平仓通常建议用市价单确保成交
+                        side=side,
+                        amount=amount,
+                        params={'positionSide': pos_side}
+                    )
 
             # 2. 下单逻辑 (BUY_LIMIT / SELL_LIMIT)
             if action in ['BUY_LIMIT', 'SELL_LIMIT']:

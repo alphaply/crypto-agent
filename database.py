@@ -34,8 +34,10 @@ def init_db():
                 )''')
                 
     # 3. 订单日志表 (Orders Log - 永久存档) <--- 修复：加回这个表给 Dashboard 用
+# 修改 database.py 中的 orders 建表语句
     c.execute('''CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id TEXT,  -- 增加这一行，存储 uuid
                     timestamp TEXT,
                     symbol TEXT,
                     side TEXT,
@@ -43,7 +45,7 @@ def init_db():
                     take_profit REAL,
                     stop_loss REAL,
                     reason TEXT,
-                    status TEXT DEFAULT 'LOGGED'
+                    status TEXT DEFAULT 'OPEN' -- 增加状态：OPEN, CANCELLED, FILLED
                 )''')
                 
     conn.commit()
@@ -80,10 +82,13 @@ def create_mock_order(symbol, side, price, amount, sl, tp):
     return order_id
 
 def cancel_mock_order(order_id):
-    """撤销模拟挂单"""
+    """撤销模拟挂单并同步更新日志状态"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    # 1. 从活跃池删除
     c.execute("DELETE FROM mock_orders WHERE order_id = ?", (order_id,))
+    # 2. 更新日志池状态 (将对应的订单标记为 CANCELLED)
+    c.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", (order_id,))
     conn.commit()
     conn.close()
 
