@@ -42,7 +42,7 @@ class AgentState(TypedDict):
     final_output: dict
 
 market_tool = MarketTool()
-llm = ChatOpenAI(model="qwen3-max", temperature=0.5).with_structured_output(AgentOutput)
+llm = ChatOpenAI(model="qwen3-max-preview", temperature=0.5).with_structured_output(AgentOutput)
 
 # --- Nodes ---
 TRADING_MODE = "REAL"  # "REAL" or "MOCK"
@@ -89,7 +89,7 @@ def start_node(state: AgentState):
         "history_context": recent_summaries,
         "messages": [SystemMessage(content=f"""
         你是专业的加密货币量化交易 Agent。你正在分析 **{symbol}**。
-    
+    做单尽量做短中线的，只做信心分数高的，超过一定时长没有实际挂单会有惩罚，你只能15m盯一次盘。
     【交易模式】: **{TRADING_MODE}** (请严格遵守风控)
     【资金管理】: 
     - 总权益: {balance:.2f} USDT

@@ -1,165 +1,177 @@
-import gradio as gr
+from flask import Flask, render_template_string, request, jsonify
 import pandas as pd
 import sqlite3
-import plotly.graph_objects as go
+import threading
+import schedule
+import time
 from database import DB_NAME
-from market_data import MarketTool
 
-# 实例化工具 (仅用于画图时的 API 请求)
-tool = MarketTool()
+app = Flask(__name__)
 
-# 定义支持的币种列表 (需要和 main_scheduler.py 保持一致)
-TARGET_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
-
-def get_db_data(symbol):
-    """
-    只读取数据库，不请求 API
-    根据 symbol 过滤数据
-    """
+# --- 数据查询逻辑 ---
+def get_db_data(symbol, limit=20):
     conn = sqlite3.connect(DB_NAME)
-    
-    # 1. 获取该币种最新的总结
-    query_summary = "SELECT timestamp, content, strategy_logic FROM summaries WHERE symbol = ? ORDER BY id DESC LIMIT 1"
-    df_summary = pd.read_sql_query(query_summary, conn, params=(symbol,))
-    
-    # 2. 获取该币种的订单记录 (这里读的是历史记录表，或者是你存 log 的 orders 表)
-    # 假设你使用的是之前定义的 orders 表用于记录操作日志
-    query_orders = "SELECT timestamp, side, entry_price, take_profit, stop_loss, reason FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT 20"
-    try:
-        df_orders = pd.read_sql_query(query_orders, conn, params=(symbol,))
-    except:
-        # 兼容性处理：如果表里还没有 symbol 字段 (旧数据)，则不过滤
-        df_orders = pd.read_sql_query("SELECT timestamp, side, entry_price, take_profit, stop_loss, reason FROM orders ORDER BY id DESC LIMIT 20", conn)
-    
-    # 3. (可选) 如果你想看当前的“模拟挂单池” (Mock Orders)，可以加一个查询
-    # query_mock = "SELECT order_id, side, price, amount, status FROM mock_orders WHERE symbol = ? AND status='OPEN'"
-    # df_mock = pd.read_sql_query(query_mock, conn, params=(symbol,))
-
+    df_summary = pd.read_sql_query(
+        "SELECT timestamp, content, strategy_logic FROM summaries WHERE symbol = ? ORDER BY id DESC LIMIT 1", 
+        conn, params=(symbol,)
+    )
+    df_orders = pd.read_sql_query(
+        f"SELECT timestamp, side, entry_price, take_profit, stop_loss, reason FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT {limit}", 
+        conn, params=(symbol,)
+    )
     conn.close()
     return df_summary, df_orders
 
-def draw_kline(symbol):
-    """
-    【耗时操作】仅在用户点击加载 K 线时调用
-    请求 Binance API 并画图
-    """
-    print(f"Drawing chart for {symbol}...")
-    try:
-        # 获取 1H 数据用于画图
-        data_full = tool.get_market_analysis(symbol)
+# --- 移动端优化版 HTML 模板 ---
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Crypto Agent Mobile</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root { --bg-color: #0f111a; --card-bg: #1a1d2e; --accent-color: #3d5afe; }
+        body { background-color: var(--bg-color); color: #cfd8dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         
-        if not data_full or 'analysis' not in data_full or '1h' not in data_full['analysis']:
-            return go.Figure().update_layout(title=f"无数据: {symbol}")
-            
-        analysis_1h = data_full['analysis']['1h']
-        if 'df_raw' not in analysis_1h:
-            return go.Figure().update_layout(title=f"无 K 线数据: {symbol}")
-
-        df = analysis_1h['df_raw']
+        /* 顶部导航美化 */
+        .header-bar { background: linear-gradient(135deg, #1a1d2e 0%, #0f111a 100%); padding: 15px; border-bottom: 1px solid #2d324d; position: sticky; top: 0; z-index: 100; }
+        .brand-title { font-size: 1.2rem; font-weight: 800; color: #fff; margin: 0; display: flex; align-items: center; }
         
-        # 计算 EMA200 (用于画图)
-        df['ema200_line'] = df['close'].ewm(span=200, adjust=False).mean()
-
-        fig = go.Figure(data=[go.Candlestick(x=df['time'],
-                    open=df['open'], high=df['high'],
-                    low=df['low'], close=df['close'], name=f'{symbol} 1H')])
+        /* 卡片美化 */
+        .card { background-color: var(--card-bg); border: none; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); margin-bottom: 15px; overflow: hidden; }
+        .card-header { background-color: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05); padding: 12px 15px; font-weight: 600; color: #90caf9; }
         
-        fig.add_trace(go.Scatter(x=df['time'], y=df['ema200_line'], line=dict(color='orange', width=1), name='EMA 200'))
+        /* 语义化颜色 */
+        .buy { color: #00e676 !important; font-weight: bold; }
+        .sell { color: #ff5252 !important; font-weight: bold; }
         
-        # 标题和布局
-        current_price = df['close'].iloc[-1]
-        fig.update_layout(
-            title=f'{symbol} 1H Analysis | Price: {current_price}',
-            height=600, 
-            template='plotly_dark',
-            xaxis_rangeslider_visible=False
-        )
-        return fig
-    except Exception as e:
-        print(f"Chart Error: {e}")
-        return go.Figure().update_layout(title=f"图表加载失败: {e}")
+        /* 移动端选择器和按钮 */
+        .form-select { background-color: #262a42; border: 1px solid #3f4461; color: white; border-radius: 8px; }
+        .btn-refresh { border-radius: 8px; background: var(--accent-color); border: none; font-weight: 600; }
 
-def refresh_text_data(symbol):
-    """
-    快速刷新：只更新文本和表格，不画图
-    """
-    df_sum, df_ord = get_db_data(symbol)
-    
-    if not df_sum.empty:
-        latest = df_sum.iloc[0]
-        # 顶格写法，确保 Markdown 渲染正确
-        markdown_text = f"""### 🕒 {symbol} 更新: {latest['timestamp']}
+        /* 表格容器：手机端横向滚动 */
+        .table-responsive { border-radius: 8px; overflow: hidden; }
+        .table { margin-bottom: 0; font-size: 0.85rem; }
+        .table th { background-color: #262a42; color: #8088a2; border-none; font-weight: 500; }
+        .table td { border-color: #2d324d; vertical-align: middle; }
 
-**📈 市场分析**:
-{latest['content']}
+        /* 内容文本 */
+        pre { white-space: pre-wrap; font-size: 0.85rem; color: #b0bec5; margin-bottom: 0; }
+        blockquote { border-left: 3px solid var(--accent-color); background: rgba(61, 90, 254, 0.05); padding: 10px; font-size: 0.85rem; border-radius: 0 8px 8px 0; }
+        
+        /* 针对超小屏幕微调 */
+        @media (max-width: 576px) {
+            .container { padding-left: 10px; padding-right: 10px; }
+            .brand-title { font-size: 1.1rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header-bar mb-3">
+        <div class="container d-flex justify-content-between align-items-center">
+            <h1 class="brand-title">🚀 Agent Monitor</h1>
+            <button class="btn btn-sm btn-primary btn-refresh" onclick="location.reload()">刷新</button>
+        </div>
+    </div>
 
-**🧠 Agent 思考**:
-> {latest['strategy_logic']}"""
+    <div class="container">
+        <div class="card p-2 mb-3">
+            <select id="symbolSelect" class="form-select" onchange="window.location.href='?symbol='+this.value">
+                {% for sym in symbols %}
+                <option value="{{sym}}" {% if sym == current_symbol %}selected{% endif %}>{{sym}}</option>
+                {% endfor %}
+            </select>
+        </div>
 
-    else:
-        markdown_text = f"暂无 {symbol} 的分析数据，请等待 Agent 运行..."
-    
-    return markdown_text, df_ord
+        <div class="card">
+            <div class="card-header d-flex justify-content-between">
+                <span>📈 市场分析 ({{current_symbol}})</span>
+                <small class="text-muted" style="font-size: 0.7rem;">
+                    {% if not summary.empty %}{{summary.iloc[0]['timestamp'].split(' ')[1]}}{% endif %}
+                </small>
+            </div>
+            <div class="card-body">
+                {% if not summary.empty %}
+                <pre>{{summary.iloc[0]['content']}}</pre>
+                {% else %}
+                <div class="text-center py-3 text-muted">等待数据抓取...</div>
+                {% endif %}
+            </div>
+        </div>
 
-# --- UI Layout ---
+        <div class="card">
+            <div class="card-header">🧠 Agent 思考过程</div>
+            <div class="card-body">
+                {% if not summary.empty %}
+                <blockquote class="mb-0">
+                    {{summary.iloc[0]['strategy_logic']}}
+                </blockquote>
+                {% endif %}
+            </div>
+        </div>
 
-with gr.Blocks(title="🤖 Crypto Multi-Agent Dashboard", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 🚀 Quant Agent 监控面板 (多币种版)")
-    
-    # 顶部控制栏
-    with gr.Row():
-        symbol_dropdown = gr.Dropdown(
-            choices=TARGET_SYMBOLS, 
-            value="BTC/USDT", 
-            label="选择币种", 
-            interactive=True
-        )
-        refresh_btn = gr.Button("🔄 刷新数据 (DB)", variant="primary")
-        chart_btn = gr.Button("📊 加载/刷新 K线 (API)", variant="secondary")
-    
-    with gr.Tabs():
-        with gr.TabItem("📊 仪表盘"):
-            with gr.Row():
-                # 左侧：Agent 分析 (Markdown)
-                summary_box = gr.Markdown("请点击刷新数据...")
-                
-                # 右侧：K线图 (Plotly)
-                market_chart = gr.Plot(label="Market Chart")
-            
-            gr.Markdown("### 📝 操作日志 (Order Log)")
-            order_table = gr.DataFrame(headers=["Time", "Side", "Entry", "TP", "SL", "Reason"])
+        <div class="card">
+            <div class="card-header">📝 最近操作日志</div>
+            <div class="table-responsive">
+                <table class="table table-dark">
+                    <thead>
+                        <tr>
+                            <th>方向</th>
+                            <th>价格</th>
+                            <th>止盈/损</th>
+                            <th>理由</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for index, row in orders.iterrows() %}
+                        <tr>
+                            <td class="{{row['side'].lower()}}">{{row['side'].upper()}}</td>
+                            <td>{{row['entry_price']}}</td>
+                            <td>
+                                <div class="text-success" style="font-size: 0.7rem;">T:{{row['take_profit']}}</div>
+                                <div class="text-danger" style="font-size: 0.7rem;">S:{{row['stop_loss']}}</div>
+                            </td>
+                            <td style="max-width: 120px; font-size: 0.75rem;">{{row['reason']}}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div class="text-center text-muted mt-4 mb-5" style="font-size: 0.7rem;">
+            © 2026 Crypto Multi-Agent System<br>
+            Powered by Flask & Binance API
+        </div>
+    </div>
 
-        with gr.TabItem("🗄️ 历史数据"):
-            gr.Markdown("暂未连接历史存档表")
+    <script>
+        // 自动刷新逻辑（可选，每60秒刷新一次）
+        // setInterval(() => { location.reload(); }, 60000);
+    </script>
+</body>
+</html>
+"""
 
-    # --- 事件绑定 ---
-    
-    # 1. 点击“刷新数据”：只更新 文本框 和 表格 (速度快)
-    refresh_btn.click(
-        fn=refresh_text_data, 
-        inputs=[symbol_dropdown], 
-        outputs=[summary_box, order_table]
-    )
-    
-    # 2. 点击“加载K线”：只更新 图表 (速度慢，消耗API)
-    chart_btn.click(
-        fn=draw_kline,
-        inputs=[symbol_dropdown],
-        outputs=[market_chart]
-    )
-    
-    # 3. 切换币种时：自动刷新文本数据 (可选，体验更好)
-    symbol_dropdown.change(
-        fn=refresh_text_data,
-        inputs=[symbol_dropdown],
-        outputs=[summary_box, order_table]
-    )
-    
-    # 4. 切换币种时：清空当前K线，防止误导 (可选)
-    # symbol_dropdown.change(lambda: go.Figure(), outputs=[market_chart])
+@app.route('/')
+def index():
+    symbol = request.args.get('symbol', 'BTC/USDT')
+    symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
+    summary, orders = get_db_data(symbol)
+    return render_template_string(HTML_TEMPLATE, summary=summary, orders=orders, symbols=symbols, current_symbol=symbol)
 
-    # 初始化加载文本数据
-    demo.load(refresh_text_data, inputs=[symbol_dropdown], outputs=[summary_box, order_table])
+def run_scheduler():
+    import schedule
+    # 注意：确保 main_scheduler.py 里的 job 函数可以被导入
+    from main_scheduler import job 
+    schedule.every(15).minutes.do(job)
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    # 端口 7860，生产环境建议配合 Nginx
+    app.run(host='0.0.0.0', port=7860, debug=False)

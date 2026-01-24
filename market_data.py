@@ -148,13 +148,18 @@ class MarketTool:
     # ==========================================
     def get_account_status(self, symbol):
         """
-        获取混合账户状态：
-        1. Real Positions (来自币安，只读)
-        2. Mock Orders (来自本地数据库，可写)
+        获取账户全状态：
+        1. balance: 可用保证金 (USDT)
+        2. real_positions: 真实持仓
+        3. real_open_orders: 已经在币安挂单但未成交的 (实盘)
+        4. mock_open_orders: 本地数据库里的模拟单
         """
         try:
-            # 1. 获取真实持仓 (只读)
-            # Fetch all positions first
+            # 1. 获取真实可用余额 (U本位合约)
+            balance_info = self.exchange.fetch_balance()
+            usdt_balance = float(balance_info.get('USDT', {}).get('free', 0))
+
+            # 2. 获取真实持仓 (只读)
             all_positions = self.exchange.fetch_positions([symbol])
             real_positions = []
             for p in all_positions:
@@ -167,18 +172,36 @@ class MarketTool:
                         'unrealized_pnl': float(p['unrealizedPnl'])
                     })
 
-            # 2. 获取模拟挂单 (从 SQLite)
+            # 3. 核心增加：获取币安实盘挂单 (Open Orders)
+            open_orders_raw = self.exchange.fetch_open_orders(symbol)
+            real_open_orders = []
+            for o in open_orders_raw:
+                real_open_orders.append({
+                    'order_id': o['id'],
+                    'side': o['side'],
+                    'price': o['price'],
+                    'amount': o['amount'],
+                    'type': o['type']
+                })
+
+            # 4. 获取模拟挂单 (从 SQLite)
             mock_orders = database.get_mock_orders(symbol)
             
-            # 返回精简后的混合状态
             return {
-                "real_positions": real_positions,  # 你的真实持仓
-                "mock_open_orders": mock_orders,   # 你的模拟挂单
-                # "balance": ... (如果不重要可以不返回，减少 Token 消耗)
+                "balance": usdt_balance,
+                "real_positions": real_positions,
+                "real_open_orders": real_open_orders, # <--- 给 Agent 看到实盘 ID
+                "mock_open_orders": mock_orders,
             }
         except Exception as e:
-            print(f"Account Error: {e}")
-            return {"real_positions": [], "mock_open_orders": [], "error": str(e)}
+            print(f"❌ Account Status Error: {e}")
+            return {
+                "balance": 0, 
+                "real_positions": [], 
+                "real_open_orders": [], 
+                "mock_open_orders": [], 
+                "error": str(e)
+            }
 
     def process_timeframe(self, symbol, tf):
         """处理单周期数据：计算全套 EMA、RSI、ATR 和 Volume Profile"""
@@ -279,68 +302,74 @@ class MarketTool:
 
     # market_data.py 的 MarketTool 类中增加以下方法
 
+
     def place_real_order(self, symbol, action, order_params):
         """
-        实盘下单统一入口
+        实盘下单统一入口：修复撤单 ID 错误 (-1102) 与双向持仓参数冲突 (-1106)
         """
-        # 1. 设置杠杆 (确保是 10x)
         try:
+            self.exchange.load_markets()
             self.exchange.set_leverage(10, symbol)
-        except:
-            pass # 有时杠杆已设置会报错，通常可忽略
 
-        # 2. 撤单逻辑
-        if action == 'CANCEL':
-            order_id = order_params.get('cancel_order_id')
-            if order_id:
-                return self.exchange.cancel_order(order_id, symbol)
+            # 1. 撤单逻辑修复
+            if action == 'CANCEL':
+                order_id = order_params.get('cancel_order_id')
+                if order_id and str(order_id).isdigit():
+                    print(f"🚫 [REAL] 正在撤销实盘订单: {order_id}")
+                    return self.exchange.cancel_order(order_id, symbol)
+                else:
+                    print(f"ℹ️ [REAL] 忽略模拟 ID 撤单请求: {order_id}")
+                    return None
 
-        # 3. 开仓逻辑 (限价单 + 自动止盈止损)
-        if action in ['BUY_LIMIT', 'SELL_LIMIT']:
-            side = 'buy' if 'BUY' in action else 'sell'
-            amount = order_params['amount']
-            price = order_params['entry_price']
-            
-            # 币安 U 本位合约下止盈止损的几种方式：
-            # 这里推荐：先下开仓单，随后紧跟两个条件触发单 (TP 和 SL)
-            
-            # A. 下开仓限价单
-            main_order = self.exchange.create_order(
-                symbol=symbol,
-                type='LIMIT',
-                side=side,
-                amount=amount,
-                price=price,
-                params={'timeInForce': 'GTC'} 
-            )
-            print(f"Main Order Created: {main_order['id']}")
+            # 2. 下单逻辑 (BUY_LIMIT / SELL_LIMIT)
+            if action in ['BUY_LIMIT', 'SELL_LIMIT']:
+                side = 'buy' if 'BUY' in action else 'sell'
+                pos_side = 'LONG' if side == 'buy' else 'SHORT' # 适配双向持仓模式
+                
+                # 精度转换
+                amount = float(self.exchange.amount_to_precision(symbol, order_params['amount']))
+                price = float(self.exchange.price_to_precision(symbol, order_params['entry_price']))
 
-            # B. 挂止损单 (STOP_MARKET)
-            # 如果买入，止损就是“卖出触发”；如果卖出，止损就是“买入触发”
-            reverse_side = 'sell' if side == 'buy' else 'buy'
-            
-            if order_params['stop_loss'] > 0:
-                self.exchange.create_order(
+                # A. 下开仓限价单
+                print(f"🚀 [REAL] 发送 {side} {pos_side} 限价单: {amount} @ {price}")
+                main_order = self.exchange.create_order(
                     symbol=symbol,
-                    type='STOP_MARKET',
-                    side=reverse_side,
+                    type='LIMIT',
+                    side=side,
                     amount=amount,
-                    params={
-                        'stopPrice': order_params['stop_loss'],
-                        'reduceOnly': True # 确保止损单只会减仓
-                    }
+                    price=price,
+                    params={'timeInForce': 'GTC', 'positionSide': pos_side}
                 )
+                print(f"✅ 实盘主订单已创建 ID: {main_order['id']}")
 
-            # C. 挂止盈单 (TAKE_PROFIT_MARKET)
-            if order_params['take_profit'] > 0:
-                self.exchange.create_order(
-                    symbol=symbol,
-                    type='TAKE_PROFIT_MARKET',
-                    side=reverse_side,
-                    amount=amount,
-                    params={
-                        'stopPrice': order_params['take_profit'],
-                        'reduceOnly': True
-                    }
-                )
-            return main_order
+                # B. 止盈止损逻辑 (注意：移除 reduceOnly 以适配双向持仓)
+                reverse_side = 'sell' if side == 'buy' else 'buy'
+                
+                if order_params.get('stop_loss') > 0:
+                    sl_p = float(self.exchange.price_to_precision(symbol, order_params['stop_loss']))
+                    self.exchange.create_order(
+                        symbol=symbol,
+                        type='STOP_MARKET',
+                        side=reverse_side,
+                        amount=amount,
+                        params={'stopPrice': sl_p, 'positionSide': pos_side}
+                    )
+                    print(f"🚩 实盘止损已挂出 @ {sl_p}")
+
+                if order_params.get('take_profit') > 0:
+                    tp_p = float(self.exchange.price_to_precision(symbol, order_params['take_profit']))
+                    self.exchange.create_order(
+                        symbol=symbol,
+                        type='TAKE_PROFIT_MARKET',
+                        side=reverse_side,
+                        amount=amount,
+                        params={'stopPrice': tp_p, 'positionSide': pos_side}
+                    )
+                    print(f"🎯 实盘止盈已挂出 @ {tp_p}")
+
+                return main_order
+
+        except Exception as e:
+            print(f"❌ 实盘执行错误详情: {e}")
+            # 不再 raise，防止一个币报错导致整个循环停止
+            return None

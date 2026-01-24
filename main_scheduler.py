@@ -7,8 +7,8 @@ from datetime import datetime
 TARGET_SYMBOLS = [
     'BTC/USDT',
     'ETH/USDT',
-    # 'SOL/USDT',
-    # 'BNB/USDT'
+    'SOL/USDT',
+    'BNB/USDT'
 ]
 
 def job():
