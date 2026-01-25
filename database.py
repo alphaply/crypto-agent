@@ -36,13 +36,14 @@ def init_db():
                     status TEXT DEFAULT 'OPEN'
                 )''')
 
-    # 3. Orders 日志表 (历史记录)
+# 3. 修改 Orders 表，增加 trade_mode
     c.execute('''CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id TEXT,
                     timestamp TEXT,
                     symbol TEXT,
                     agent_name TEXT, 
+                    trade_mode TEXT,  -- 新增: 'REAL_EXEC' 或 'STRATEGY_IDEA'
                     side TEXT,
                     entry_price REAL,
                     take_profit REAL,
@@ -51,10 +52,8 @@ def init_db():
                     status TEXT DEFAULT 'OPEN'
                 )''')
     try:
-        c.execute("ALTER TABLE orders ADD COLUMN agent_name TEXT")
-    except sqlite3.OperationalError:
-        pass 
-
+        c.execute("ALTER TABLE orders ADD COLUMN trade_mode TEXT")
+    except: pass
     conn.commit()
     conn.close()
 
@@ -100,19 +99,18 @@ def cancel_mock_order(order_id):
 
 # --- 日志与分析功能 ---
 
-def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason):
-    """保存订单日志 (包括 agent_name)"""
+def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY"):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # 确保 agent_name 是字符串
-    agent_str = str(agent_name) if agent_name else "Unknown"
-
+    # 确保 trade_mode 只有两种合法值，方便前端展示
+    valid_mode = "REAL" if trade_mode == "REAL" else "STRATEGY"
+    
     c.execute("""
-        INSERT INTO orders (order_id, timestamp, symbol, agent_name, side, entry_price, take_profit, stop_loss, reason) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (order_id, timestamp, symbol, agent_str, side, entry, tp, sl, reason))
+        INSERT INTO orders (order_id, timestamp, symbol, agent_name, side, entry_price, take_profit, stop_loss, reason, trade_mode) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (str(order_id), timestamp, symbol, str(agent_name), side, entry, tp, sl, reason, valid_mode))
     conn.commit()
     conn.close()
 

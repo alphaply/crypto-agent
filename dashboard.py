@@ -5,7 +5,6 @@ import math
 import json
 import os
 from database import DB_NAME, init_db
-# ✅ 修改 1: 引入 get_next_run_settings 以获取当前状态
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
 
@@ -34,6 +33,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         offset = (page - 1) * per_page
         total_count = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", (symbol,)).fetchone()[0]
         
+        # SELECT * 会自动包含 trade_mode 字段
         cursor = conn.execute(
             "SELECT * FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
             (symbol, per_page, offset)
@@ -75,7 +75,7 @@ def index():
     
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
 
-    # ✅ 修改 2: 获取当前的调度模式 (周末/美盘/亚盘)
+    # 获取当前的调度模式 (周末/美盘/亚盘)
     try:
         current_interval, current_mode_name = get_next_run_settings()
     except:
@@ -95,5 +95,6 @@ def index():
 
 if __name__ == "__main__":
     init_db() 
+    # 启动后台调度器线程
     threading.Thread(target=run_smart_scheduler, daemon=True).start()
     app.run(host='0.0.0.0', port=7860, debug=False)
