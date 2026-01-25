@@ -16,7 +16,6 @@ class MarketTool:
         初始化交易所连接
         :param proxy_port: 本地代理端口 (例如 7890 或 10809), None 为直连
         """
-        # 优先读取环境变量
         api_key = os.getenv('BINANCE_API_KEY')
         secret = os.getenv('BINANCE_SECRET')
         
@@ -31,8 +30,6 @@ class MarketTool:
             }
         }
         
-        # 如果传入了端口，或者想硬编码代理，可以在这里设置
-        # 如果你在 .env 配置了 http_proxy 系统环境变量，ccxt 也会自动识别
         if proxy_port:
             config['proxies'] = {
                 'http': f'http://127.0.0.1:{proxy_port}',
@@ -41,12 +38,11 @@ class MarketTool:
             
         self.exchange = ccxt.binanceusdm(config)
         
-        # 建议：初始化时加载一次市场，触发时间校准 (虽然 lazy load 也会触发，但这样更稳)
         try:
             self.exchange.load_markets()
             print("✅ 交易所连接成功，时间已校准。")
         except Exception as e:
-            print(f"⚠️ 初始化加载市场失败 (可能只有公共接口可用): {e}")
+            print(f"⚠️ 初始化加载市场失败: {e}")
 
     # ==========================================
     # 0. 基础工具
@@ -144,18 +140,13 @@ class MarketTool:
             return {"funding_rate": 0, "open_interest": 0, "24h_quote_vol": 0}
 
     # ==========================================
-    # 1. 核心数据获取 (Agent & Dashboard 调用)
+    # 1. 核心数据获取
     # ==========================================
     def get_account_status(self, symbol):
-        """
-        获取账户全状态：增加条件单（止盈止损）的获取
-        """
         try:
-            # 1. 获取真实可用余额
             balance_info = self.exchange.fetch_balance()
             usdt_balance = float(balance_info.get('USDT', {}).get('free', 0))
 
-            # 2. 获取真实持仓
             all_positions = self.exchange.fetch_positions([symbol])
             real_positions = [
                 {
@@ -167,27 +158,25 @@ class MarketTool:
                 } for p in all_positions if float(p['contracts']) > 0
             ]
 
-            # 3. 获取所有活跃订单 (包括限价单和触发单)
-            # 注意：某些版本的 ccxt fetch_open_orders 默认不包含 Stop 订单
-            # 我们直接请求币安的 'openOrders' 接口，ccxt 会自动处理
             open_orders_raw = self.exchange.fetch_open_orders(symbol)
-            
-            # --- 核心修复：手动尝试获取触发单 (Conditional Orders) ---
-            # 币安 U 本位合约通常在 fetch_open_orders 中能看到所有类型，
-            # 但如果看不到，可以使用 params={'type': 'ALL'} 或特定参数
             real_open_orders = []
             for o in open_orders_raw:
+                order_type = o['info'].get('type')
+                trigger_price = o.get('stopPrice') or o['info'].get('stopPrice')
+                price = o.get('price')
+
                 real_open_orders.append({
                     'order_id': o['id'],
                     'side': o['side'],
-                    'price': o['price'] if o['price'] else o['stopPrice'], # 兼容条件单
+                    'type': o['type'],
+                    'price': price,
+                    'trigger_price': float(trigger_price) if trigger_price else None,
                     'amount': o['amount'],
-                    'type': o['type'],      # LIMIT, STOP_MARKET, TAKE_PROFIT_MARKET
+                    'reduce_only': o['info'].get('reduceOnly', False),
                     'status': o['status'],
-                    'stop_price': o.get('stopPrice') # 止盈止损的触发价
+                    'datetime': o['datetime']
                 })
 
-            # 4. 获取模拟挂单
             mock_orders = database.get_mock_orders(symbol)
             
             return {
@@ -201,9 +190,7 @@ class MarketTool:
             return {"balance": 0, "real_positions": [], "real_open_orders": [], "mock_open_orders": []}
 
     def process_timeframe(self, symbol, tf):
-        """处理单周期数据：计算全套 EMA、RSI、ATR 和 Volume Profile"""
         try:
-            # 1. 获取 K 线 (Limit 1000 保证 EMA200 和 VP360 准确)
             ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=1000)
             if not ohlcv: return None
             
@@ -213,113 +200,88 @@ class MarketTool:
             close = df['close']
             volume = df['volume']
             
-            # --- 2. 基础指标 (全套 EMA) ---
-            # 计算 20, 50, 100, 200 均线，构建"均线排列"逻辑
             ema20 = self._calc_ema(close, 20).iloc[-1]
             ema50 = self._calc_ema(close, 50).iloc[-1]
             ema100 = self._calc_ema(close, 100).iloc[-1]
             ema200 = self._calc_ema(close, 200).iloc[-1]
             
-            # 动量与波动率
             rsi = self._calc_rsi(close, 14).iloc[-1]
             atr = self._calc_atr(df, 14).iloc[-1]
             
-            # --- 3. 成交量分析 (Volume Analysis) ---
-            # 计算成交量均线 (20周期)，判断当前是否放量
             vol_ma20 = volume.rolling(window=20).mean().iloc[-1]
             current_vol = volume.iloc[-1]
             vol_ratio = round(current_vol / vol_ma20, 2) if vol_ma20 > 0 else 0
             
-            # --- 4. Volume Profile (VP) ---
-            # 使用之前定义的精确算法
             vp = self._calculate_vp(df, length=360)
-            
-            # 如果 VP 计算失败，给默认空值
             if not vp:
                 vp = {"poc": 0, "vah": 0, "val": 0, "hvns": [], "lvns": []}
 
-            # --- 5. 组装返回数据 ---
             return {
                 "price": close.iloc[-1],
-                
-                # 动量与风险
                 "rsi": round(rsi, 2),
                 "atr": round(atr, 2),
-                
-                # 均线系统 (Agent 可以据此判断多头/空头排列)
                 "ema": {
-                    "ema_20": round(ema20, 2),   # 短期趋势
-                    "ema_50": round(ema50, 2),   # 中期趋势
-                    "ema_100": round(ema100, 2), # 强支撑/阻力
-                    "ema_200": round(ema200, 2)  # 牛熊分界线
+                    "ema_20": round(ema20, 2),
+                    "ema_50": round(ema50, 2),
+                    "ema_100": round(ema100, 2),
+                    "ema_200": round(ema200, 2)
                 },
-                
-                # 成交量状态
                 "volume_analysis": {
                     "current": round(current_vol, 2),
                     "ma_20": round(vol_ma20, 2),
-                    "ratio": vol_ratio,       # > 1.5 代表显著放量
-                    "status": "High" if vol_ratio > 1.2 else "Low" # 简单状态描述
+                    "ratio": vol_ratio,
+                    "status": "High" if vol_ratio > 1.2 else "Low"
                 },
-                
-                # 筹码分布 (VP)
-                "vp": vp, 
-                
-                # 原始 DataFrame (用于 Dashboard 画图，Agent 不读这个)
+                "vp": vp,
                 "df_raw": df 
             }
-            
         except Exception as e:
             print(f"Process TF Error {tf}: {e}")
             return None
 
     def get_market_analysis(self, symbol):
-        """主入口：获取指定币种的多周期数据 (15m, 1h, 4h, 1d)"""
-        # 这里增加了 1d (日线)，对判断大趋势非常重要
         timeframes = ['15m', '1h', '4h', '1d']
-        
         final_output = {
             "symbol": symbol,
             "timestamp": int(time.time()),
             "analysis": {},
             "sentiment": self._fetch_market_derivatives(symbol)
         }
-        
         print(f"Fetching {symbol} market data...", end=" ", flush=True)
-        
         for tf in timeframes:
-            # print(f"[{tf}]", end=" ", flush=True) # 调试时可开启
             data = self.process_timeframe(symbol, tf)
             if data:
                 final_output["analysis"][tf] = data
-        
         print("Done.")     
         return final_output
-    
-
-    # market_data.py 的 MarketTool 类中增加以下方法
-
 
     def place_real_order(self, symbol, action, order_params):
+        """
+        实盘下单核心逻辑 (最终修正版：OTO下单 + 连带撤单)
+        :param symbol: 交易对 (e.g. 'BTC/USDT:USDT')
+        :param action: 动作类型 ('BUY_LIMIT', 'SELL_LIMIT', 'CLOSE', 'CANCEL')
+        :param order_params: 字典
+        """
         try:
             self.exchange.load_markets()
+            symbol = str(symbol)
             
-            # 1. 撤单逻辑修复：支持 "ALL" 关键字
+            # 1. 撤单逻辑 (安全模式：强制全撤)
             if action == 'CANCEL':
-                order_id = str(order_params.get('cancel_order_id', ""))
-                if order_id.upper() == "ALL":
-                    print(f"🚫 [REAL] 撤销 {symbol} 所有挂单")
+                print(f"🚫 [REAL] 收到撤单指令，正在清理 {symbol} 所有挂单 (防止条件单残留)...")
+                try:
                     return self.exchange.cancel_all_orders(symbol)
-                elif order_id.isdigit():
-                    return self.exchange.cancel_order(order_id, symbol)
-                return None
+                except Exception as e:
+                    print(f"⚠️ [REAL] 撤单提示: {e}")
+                    return None
 
-            # 2. 增加 CLOSE (平仓) 逻辑
+            # 2. 平仓逻辑
             if action == 'CLOSE':
-                # 1. 先撤销该币种所有挂单（防止平仓后止盈止损单反向成交）
                 print(f"🧹 [REAL] 平仓前清理 {symbol} 所有挂单...")
-                self.exchange.cancel_all_orders(symbol)
-                # 获取当前持仓以确定平仓方向和数量
+                try:
+                    self.exchange.cancel_all_orders(symbol)
+                except: pass
+
                 positions = self.exchange.fetch_positions([symbol])
                 active_positions = [p for p in positions if float(p['contracts']) > 0]
                 
@@ -327,69 +289,68 @@ class MarketTool:
                     print(f"ℹ️ [REAL] {symbol} 无需平仓：当前无持仓")
                     return None
                     
+                results = []
                 for pos in active_positions:
-                    pos_side = pos['side'] # 'LONG' 或 'SHORT'
-                    side = 'sell' if pos_side == 'LONG' else 'buy'
+                    pos_side = pos['side']
                     amount = float(pos['contracts'])
+                    side = 'sell' if pos_side == 'LONG' else 'buy'
                     
-                    print(f"平仓中... {symbol} {pos_side} 数量: {amount}")
-                    return self.exchange.create_order(
+                    print(f"📉 [REAL] 执行市价平仓: {symbol} {pos_side} {amount}")
+                    order = self.exchange.create_order(
                         symbol=symbol,
-                        type='MARKET', # 平仓通常建议用市价单确保成交
+                        type='MARKET',
                         side=side,
                         amount=amount,
                         params={'positionSide': pos_side}
                     )
+                    results.append(order)
+                return results
 
-            # 2. 下单逻辑 (BUY_LIMIT / SELL_LIMIT)
+            # 3. 开仓挂单逻辑 (OTO 模式：合并止盈止损)
             if action in ['BUY_LIMIT', 'SELL_LIMIT']:
                 side = 'buy' if 'BUY' in action else 'sell'
-                pos_side = 'LONG' if side == 'buy' else 'SHORT' # 适配双向持仓模式
+                pos_side = 'LONG' if side == 'buy' else 'SHORT'
                 
-                # 精度转换
-                amount = float(self.exchange.amount_to_precision(symbol, order_params['amount']))
-                price = float(self.exchange.price_to_precision(symbol, order_params['entry_price']))
+                # A. 精度处理
+                amount_str = self.exchange.amount_to_precision(symbol, order_params['amount'])
+                price_str = self.exchange.price_to_precision(symbol, order_params['entry_price'])
+                
+                amount = float(amount_str)
+                price = float(price_str)
 
-                # A. 下开仓限价单
-                print(f"🚀 [REAL] 发送 {side} {pos_side} 限价单: {amount} @ {price}")
+                # B. 构建核心参数
+                params = {
+                    'timeInForce': 'GTC',
+                    'positionSide': pos_side,
+                }
+
+                # C. 注入止盈止损 (核心！合并发送)
+                sl_val = order_params.get('stop_loss', 0)
+                tp_val = order_params.get('take_profit', 0)
+
+                if sl_val > 0:
+                    params['stopLossPrice'] = self.exchange.price_to_precision(symbol, sl_val)
+                
+                if tp_val > 0:
+                    params['takeProfitPrice'] = self.exchange.price_to_precision(symbol, tp_val)
+
+                print(f"🚀 [REAL] 发送 OTO 组合单: {symbol} {side} {pos_side}")
+                print(f"   主单: {amount} @ {price}")
+                print(f"   附带止损: {params.get('stopLossPrice', '无')} | 附带止盈: {params.get('takeProfitPrice', '无')}")
+
+                # D. 发送唯一的 Create Order
                 main_order = self.exchange.create_order(
                     symbol=symbol,
                     type='LIMIT',
                     side=side,
                     amount=amount,
                     price=price,
-                    params={'timeInForce': 'GTC', 'positionSide': pos_side}
+                    params=params
                 )
-                print(f"✅ 实盘主订单已创建 ID: {main_order['id']}")
-
-                # B. 止盈止损逻辑 (注意：移除 reduceOnly 以适配双向持仓)
-                reverse_side = 'sell' if side == 'buy' else 'buy'
                 
-                if order_params.get('stop_loss') > 0:
-                    sl_p = float(self.exchange.price_to_precision(symbol, order_params['stop_loss']))
-                    self.exchange.create_order(
-                        symbol=symbol,
-                        type='STOP_MARKET',
-                        side=reverse_side,
-                        amount=amount,
-                        params={'stopPrice': sl_p, 'positionSide': pos_side}
-                    )
-                    print(f"🚩 实盘止损已挂出 @ {sl_p}")
-
-                if order_params.get('take_profit') > 0:
-                    tp_p = float(self.exchange.price_to_precision(symbol, order_params['take_profit']))
-                    self.exchange.create_order(
-                        symbol=symbol,
-                        type='TAKE_PROFIT_MARKET',
-                        side=reverse_side,
-                        amount=amount,
-                        params={'stopPrice': tp_p, 'positionSide': pos_side}
-                    )
-                    print(f"🎯 实盘止盈已挂出 @ {tp_p}")
-
+                print(f"✅ 下单成功! 主单ID: {main_order['id']}")
                 return main_order
 
         except Exception as e:
-            print(f"❌ 实盘执行错误详情: {e}")
-            # 不再 raise，防止一个币报错导致整个循环停止
+            print(f"❌ [REAL] 实盘执行异常: {e}")
             return None

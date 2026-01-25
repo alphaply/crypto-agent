@@ -1,215 +1,297 @@
+import json
+import os
+import time
 from typing import Annotated, List, TypedDict, Union
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, BaseMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
-import json
-import os
+from dotenv import load_dotenv
+from datetime import datetime
+
+# 引入自定义模块
 import database
 from market_data import MarketTool
 
-# 1. 定义输出结构
+# 加载环境变量
+load_dotenv()
+
+# ==========================================
+# 1. 配置加载与工具初始化
+# ==========================================
+
+market_tool = MarketTool()
+
+def get_symbol_config(symbol: str):
+    """
+    从环境变量 SYMBOL_CONFIGS 中解析特定币种的配置
+    如果未找到，返回默认的模拟盘配置
+    """
+    configs_str = os.getenv('SYMBOL_CONFIGS', '[]')
+    try:
+        configs = json.loads(configs_str)
+        for cfg in configs:
+            if cfg['symbol'] == symbol:
+                return cfg
+    except Exception as e:
+        print(f"⚠️ 解析 SYMBOL_CONFIGS 失败: {e}")
+    
+    # 默认兜底配置 (MOCK 模式)
+    return {
+        "symbol": symbol,
+        "api_base": os.getenv('OPENAI_API_BASE'),
+        "api_key": os.getenv('OPENAI_API_KEY'),
+        "model": "gpt-3.5-turbo", # 或其他默认模型
+        "temperature": 0.5,
+        "real_trade": False
+    }
+
+# ==========================================
+# 2. 定义 Pydantic 输出结构
+# ==========================================
+
 class OrderParams(BaseModel):
-    """交易指令"""
-    action: str = Field(description="动作: 'BUY_LIMIT', 'SELL_LIMIT', 'CANCEL', 'CLOSE', 'NO_ACTION'")
-    cancel_order_id: str = Field(description="如果要撤单，填入对应的 order_id，否则留空", default="")
-    entry_price: float = Field(description="入场价格")
-    amount: float = Field(description="开仓数量 (单位: 币的个数)")
+    """交易指令结构"""
+    action: str = Field(
+        description="动作: 'BUY_LIMIT' (做多), 'SELL_LIMIT' (做空), 'CANCEL' (撤单), 'CLOSE' (平仓), 'NO_ACTION' (观望)",
+        pattern="^(BUY_LIMIT|SELL_LIMIT|CANCEL|CLOSE|NO_ACTION)$"
+    )
+    cancel_order_id: str = Field(description="撤单时填入 ID，否则留空", default="")
+    entry_price: float = Field(description="挂单价格")
+    amount: float = Field(description="下单数量 (币的个数)")
     take_profit: float = Field(description="止盈价格", default=0.0)
     stop_loss: float = Field(description="止损价格", default=0.0)
-    reason: str = Field(description="操作理由")
+    reason: str = Field(description="简短的决策理由")
 
 class MarketSummaryParams(BaseModel):
     """行情分析总结"""
-    current_trend: str = Field(description="当前趋势 (Bullish/Bearish/Range)")
-    key_levels: str = Field(description="关键点位")
-    strategy_thought: str = Field(description="思考过程")
+    current_trend: str = Field(description="趋势判断 (Bullish/Bearish/Range/Volatile)")
+    key_levels: str = Field(description="关键支撑与阻力位")
+    strategy_thought: str = Field(description="详细的思维链分析")
 
 class AgentOutput(BaseModel):
     summary: MarketSummaryParams
     orders: List[OrderParams]
 
-# 2. 定义状态
+# ==========================================
+# 3. 定义 State 状态
+# ==========================================
+
 class AgentState(TypedDict):
     symbol: str
     messages: List[BaseMessage]
+    agent_config: dict       # 存储当前币种的 LLM 配置
     market_context: dict
     account_context: dict
     history_context: List[dict]
     final_output: dict
 
-# 初始化工具
-market_tool = MarketTool()
-llm = ChatOpenAI(model="qwen3-max-preview", temperature=0.5).with_structured_output(AgentOutput)
-
-# 全局配置
-TRADING_MODE = os.getenv('TRADING_MODE', 'MOCK')
-LEVERAGE = int(os.getenv('LEVERAGE', 10))
-RISK_PER_TRADE_PCT = float(os.getenv('RISK_PER_TRADE_PCT', 0.05))
-# 从环境变量读取白名单，如果没有则使用默认值
-REAL_TRADE_WHITELIST = os.getenv('REAL_TRADE_WHITELIST', "ETH/USDT,SOL/USDT").split(',')
+# ==========================================
+# 4. Graph 节点逻辑
+# ==========================================
 
 def start_node(state: AgentState):
     symbol = state['symbol']
-    print(f"\n--- [Node] Start: Analyzing {symbol} ({TRADING_MODE} Mode) ---")
     
-    # 获取基础数据
+    # 1. 获取当前币种的配置
+    config = get_symbol_config(symbol)
+    is_real_trade = config.get('real_trade', False)
+    mode_str = "REAL" if is_real_trade else "MOCK"
+    
+    print(f"\n--- [Node] Start: Analyzing {symbol} using {config.get('model')} ({mode_str} Mode) ---")
+
+    # 2. 获取数据
     market_full = market_tool.get_market_analysis(symbol)
     account_data = market_tool.get_account_status(symbol)
-    recent_summaries = database.get_recent_summaries(symbol, limit=3)
+    recent_summaries = database.get_recent_summaries(symbol, limit=10) # 获取最近 10 条
     
-    # 资金管理逻辑
+    # 3. 资金管理 (读取全局杠杆配置，或从 config 读取)
+    leverage = int(os.getenv('LEVERAGE', 10))
+    risk_pct = float(os.getenv('RISK_PER_TRADE_PCT', 0.05))
     balance = account_data.get('balance', 0)
-    trade_size_usdt = balance * RISK_PER_TRADE_PCT * LEVERAGE 
-    if TRADING_MODE == 'MOCK':
-        balance = 10000
-        trade_size_usdt = 1000 
+    
+    # 模拟资金覆盖
+    if not is_real_trade:
+        balance = 10000 
+        
+    trade_size_usdt = balance * risk_pct * leverage
 
-    # 【核心逻辑】根据白名单过滤给 AI 看的订单信息
-    if symbol in REAL_TRADE_WHITELIST:
+    # 4. 订单数据过滤 (根据是否实盘展示不同数据)
+    if is_real_trade:
         raw_orders = account_data.get('real_open_orders', [])
         display_orders = []
         for o in raw_orders:
-            # 格式化输出，让 AI 明白 LIMIT 是入场，STOP/TAKE 是保护
             o_type = o.get('type', 'UNKNOWN')
-            o_side = o.get('side', 'UNKNOWN')
-            o_amt = o.get('amount', 0)
-            # 条件单可能没有 price，只有 stop_price
             o_price = o.get('price') if o.get('price') and o.get('price') > 0 else o.get('stop_price', 0)
-            
             display_orders.append({
-                "order_id": o.get('order_id'),
+                "id": o.get('order_id'),
+                "side": o.get('side'),
                 "type": o_type,
-                "side": o_side,
-                "amount": o_amt,
-                "price_or_trigger": o_price,
-                "label": "ENTRY_ORDER" if o_type == 'LIMIT' else "PROTECTION_ORDER"
+                "price": o_price,
+                "amount": o.get('amount'),
+                "desc": "ENTRY" if o_type == 'LIMIT' else "TP/SL Protection"
             })
-        order_type_label = "实盘活跃订单 (Real Orders - 包含限价与止盈止损)"
+        orders_context_str = f"【实盘活跃订单 (Real Orders)】:\n{json.dumps(display_orders, ensure_ascii=False)}"
     else:
         display_orders = account_data.get('mock_open_orders', [])
-        order_type_label = "模拟挂单 (Mock Orders)"
+        orders_context_str = f"【模拟挂单 (Mock Orders)】:\n{json.dumps(display_orders, ensure_ascii=False)}"
 
-    # 数据清洗
+    # 5. 构建 Prompt
     market_context_llm = {
-        "symbol": symbol,
+        "price": market_full.get("analysis", {}).get("15m", {}).get("price"),
         "sentiment": market_full.get("sentiment"),
-        "analysis": {tf: {k: v for k, v in data.items() if k != "df_raw"} 
-                     for tf, data in market_full.get("analysis", {}).items() if data}
+        "analysis_summary": {tf: data.get("vp", {}) for tf, data in market_full.get("analysis", {}).items() if data}
     }
+    
+    # 历史记录字符串拼接
+    history_text = "\n".join([
+        f"[{s['timestamp']}] Agent: {s.get('agent_name', 'Unknown')}\nLogic: {s['strategy_logic'][:200]}..." 
+        for s in recent_summaries
+    ])
 
-    history_text = "\n".join([f"[{s['timestamp']}] {s['content']}" for s in recent_summaries])
+    system_prompt = f"""
+你是由 {config.get('model')} 驱动的专业加密货币量化交易 Agent。
+当前正在监控: **{symbol}** | 时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+交易模式: **{mode_str} (实盘: {is_real_trade})**
+
+【核心策略：日内波段 (Intraday Swing)】
+1. **不做噪音交易**：你每 15 分钟运行一次。不要被 1m/5m 的微小波动干扰。你的目标是捕捉 1h-4h 级别的趋势。
+2. **高胜率入场**：只有当信心分数极高时才开仓。
+   - 趋势跟随：价格在 EMA 100/200 之上只做多，之下只做空。
+   - 关键位：利用 Volume Profile 的 POC (控制点) 和 VAL/VAH (价值区间边缘) 寻找反转或突破。
+3. **防止过度交易 (查重)**：如果当前已经有同方向的 ENTRY 挂单，**严禁**重复下单，除非价格偏离超过 1% 需要补单。
+4. **风控第一**：所有 BUY_LIMIT/SELL_LIMIT 必须带上 stop_loss。
+
+【资金状态】
+- 可用余额: {balance:.2f} USDT
+- 建议单笔名义价值: {trade_size_usdt:.2f} USDT (请自行换算成 coin amount)
+
+【当前持仓】
+{json.dumps(account_data['real_positions'], ensure_ascii=False)}
+
+{orders_context_str}
+
+【市场概况】
+{json.dumps(market_context_llm, ensure_ascii=False)}
+
+【近期思路回顾】
+{history_text}
+
+请严格按 JSON 格式输出决策。如果没有明确机会，action 选 "NO_ACTION"。
+"""
 
     return {
+        "symbol": symbol,
+        "agent_config": config,
         "market_context": market_full,
         "account_context": account_data,
         "history_context": recent_summaries,
-        "messages": [SystemMessage(content=f"""
-你是专业的加密货币量化交易 Agent。你正在分析 **{symbol}**。
-做单尽量做短中线的，只做信心分数高的。你每 15 分钟检查一次。
-
-【交易模式】: **{TRADING_MODE}**
-【资金管理】: 
-- 权益余额: {balance:.2f} USDT | 杠杆: {LEVERAGE}x
-- 建议单笔下单价值: {trade_size_usdt:.2f} USDT
-- 注意：输出 amount 时请计算币数 (例如: {trade_size_usdt} / EntryPrice)。
-
-【当前持仓 (Positions)】:
-{json.dumps(account_data['real_positions'], ensure_ascii=False)}
-
-【{order_type_label}】: 
-{json.dumps(display_orders, ensure_ascii=False)}
-
-【规则与任务】:
-1. **查重原则**：如果【{order_type_label}】中已有同方向的 LIMIT 订单，除非当前价格大幅偏离你的理想位，否则严禁再次下单！
-2. **保护原则**：所有 LIMIT 入场单必须配为止损 (STOP_MARKET)。
-3. **撤单逻辑**：如果发现旧订单的逻辑已失效，请执行 'CANCEL' 并填入对应的 order_id。
-4. **Volume Profile 提示**：POC 是核心支撑/阻力；VAH/VAL 是区间边界；LVN 区域价格易加速。其他指标你都懂的
-
-【全量市场数据】:
-{json.dumps(market_context_llm, ensure_ascii=False)}
-
-【历史回顾】:
-{history_text}
-        """)]
+        "messages": [SystemMessage(content=system_prompt)]
     }
 
 def agent_node(state: AgentState):
-    print(f"--- [Node] Agent: Thinking {state['symbol']} ---")
-    response = llm.invoke(state['messages'])
-    return {"final_output": response.dict()}
+    config = state['agent_config']
+    symbol = state['symbol']
+    print(f"--- [Node] Agent: {config.get('model')} is thinking for {symbol} ---")
+    
+    # 动态初始化 LLM
+    try:
+        current_llm = ChatOpenAI(
+            model=config.get('model'),
+            api_key=config.get('api_key'),
+            base_url=config.get('api_base'),
+            temperature=config.get('temperature', 0.5)
+        ).with_structured_output(AgentOutput)
+        
+        response = current_llm.invoke(state['messages'])
+        return {"final_output": response.dict()}
+        
+    except Exception as e:
+        print(f"❌ LLM 调用失败 ({symbol}): {e}")
+        # 返回空结果防止 crash
+        return {"final_output": {"summary": {"current_trend": "Error", "key_levels": "", "strategy_thought": str(e)}, "orders": []}}
 
 def execution_node(state: AgentState):
     symbol = state['symbol']
-    print(f"--- [Node] Execution: Processing {symbol} ---")
-    output = state['final_output']
-    summary = output['summary']
-    orders = output['orders']
+    config = state['agent_config']
+    is_real_trade = config.get('real_trade', False)
     
-    # 1. 保存行情分析
-    content = f"Trend: {summary['current_trend']}\nLevels: {summary['key_levels']}"
-    database.save_summary(symbol, content, summary['strategy_thought'])
+    print(f"--- [Node] Execution: Processing {symbol} ---")
+    
+    output = state['final_output']
+    summary = output.get('summary', {})
+    orders = output.get('orders', [])
+    
+    # 1. 保存总结到数据库 (增加 agent_name)
+    # 假设 database.save_summary 已更新为 def save_summary(symbol, agent_name, content, strategy_logic):
+    content = f"Trend: {summary.get('current_trend')}\nLevels: {summary.get('key_levels')}"
+    try:
+        # 如果你的 save_summary 还没改，请修改 database.py 或这里适配
+        database.save_summary(symbol, config.get('model'), content, summary.get('strategy_thought'))
+    except TypeError:
+        # 兼容旧接口
+        database.save_summary(symbol, content, summary.get('strategy_thought'))
 
-    # 2. 遍历执行指令
+    # 2. 执行订单逻辑
     for order in orders:
         action = order['action'].upper()
         if action == 'NO_ACTION': 
             continue
             
-        # --- A. 撤单逻辑 ---
+        # --- A. 撤单 ---
         if action == 'CANCEL':
             cancel_id = order.get('cancel_order_id')
             if cancel_id:
-                reason_text = f"撤销单据: {cancel_id}"
-                database.cancel_mock_order(cancel_id) # 内部会同时更新 orders 日志表状态
-                database.save_order_log(symbol, "CANCEL", 0, 0, 0, reason_text)
-                
-                if TRADING_MODE == 'REAL' and symbol in REAL_TRADE_WHITELIST:
-                    market_tool.place_real_order(symbol, 'CANCEL', order)
+                if cancel_id == "ALL":
+                    # 简化逻辑：如果是 ALL，这里需要额外处理，暂时只处理单 ID
+                    pass 
+                else:
+                    database.cancel_mock_order(cancel_id)
+                    database.save_order_log(cancel_id, symbol, "CANCEL", 0, 0, 0, f"撤单: {cancel_id}")
+                    
+                    if is_real_trade:
+                        market_tool.place_real_order(symbol, 'CANCEL', order)
+
+        # --- B. 平仓 ---
         elif action == 'CLOSE':
-            print(f"🎯 [Action] 尝试平掉 {symbol} 现有持仓")
-            if TRADING_MODE == 'REAL' and symbol in REAL_TRADE_WHITELIST:
+            print(f"🎯 [Action] 平仓指令: {symbol}")
+            if is_real_trade:
                 market_tool.place_real_order(symbol, 'CLOSE', order)
-            # 模拟模式下可以清空模拟数据库相关记录
-            database.save_order_log(symbol, "CLOSE", order['entry_price'], 0, 0, order['reason'])
-        
+            database.save_order_log("CLOSE_CMD", symbol, "CLOSE", order['entry_price'], 0, 0, order['reason'])
 
-        # --- B. 下单逻辑 ---
+        # --- C. 开仓 (LIMIT) ---
         elif action in ['BUY_LIMIT', 'SELL_LIMIT']:
-            # 【重要】实盘查重预防：防止 AI 在已有挂单时疯狂重复下单
-            if TRADING_MODE == 'REAL' and symbol in REAL_TRADE_WHITELIST:
-                existing_real = state['account_context'].get('real_open_orders', [])
-                side_to_check = 'buy' if 'BUY' in action else 'sell'
-                # 检查是否有同方向的 LIMIT 挂单
-                has_existing = any(o for o in existing_real if o['side'].lower() == side_to_check and o['type'] == 'LIMIT')
-                
-                if has_existing:
-                    print(f"⚠️ [Skip] {symbol} 实盘已有 {side_to_check} 挂单，防止重复执行。")
-                    continue
-
-            # 正常执行下单流程
+            # 1. 模拟盘落库
             side = 'buy' if 'BUY' in action else 'sell'
-            
-            # 记录到本地数据库
             new_id = database.create_mock_order(
-                symbol, side, order['entry_price'], order['amount'], 
-                order['stop_loss'], order['take_profit']
+                symbol, side, 
+                order['entry_price'], 
+                order['amount'], 
+                order['stop_loss'], 
+                order['take_profit']
             )
-            database.save_order_log(
-                symbol, side, order['entry_price'], order['take_profit'], 
-                order['stop_loss'], order['reason']
-            )
-            
-            print(f"✅ [Log] Created Order {new_id} for {symbol}")
+            agent_name = config.get('model', 'Unknown')
+            database.save_order_log(new_id, symbol,agent_name, side, order['entry_price'], order['take_profit'], order['stop_loss'], order['reason'])
+            print(f"✅ [Mock DB] 挂单已记录: {symbol} {side} @ {order['entry_price']}")
 
-            # 实盘执行
-            if TRADING_MODE == 'REAL' and symbol in REAL_TRADE_WHITELIST:
-                print(f"🚀 [REAL TRADE] Executing {action} for {symbol}")
-                market_tool.place_real_order(symbol, action, order)
+            # 2. 实盘执行
+            if is_real_trade:
+                # 再次执行双重查重（防止 LLM 幻觉导致忽略查重指令）
+                existing = state['account_context'].get('real_open_orders', [])
+                has_duplicate = any(o for o in existing if o['side'].lower() == side and o['type'] == 'LIMIT')
+                
+                if has_duplicate:
+                    print(f"⚠️ [Risk Control] 实盘已有 {side} 单，拦截重复下单。")
+                else:
+                    print(f"🚀 [REAL TRADE] 发送交易所: {symbol} {action}")
+                    market_tool.place_real_order(symbol, action, order)
 
     return state
 
-# --- Graph 构建 ---
+# ==========================================
+# 5. Graph 编译
+# ==========================================
+
 workflow = StateGraph(AgentState)
 workflow.add_node("start", start_node)
 workflow.add_node("agent", agent_node)
@@ -222,11 +304,16 @@ workflow.add_edge("execution", END)
 
 app = workflow.compile()
 
-def run_agent_for_symbol(symbol):
-    """主程序调用的入口"""
+def run_agent_for_symbol(symbol: str):
+    """主程序入口"""
     initial_state = {
         "symbol": symbol,
-        "messages": []
+        "messages": [],
+        "agent_config": {},  # 初始化为空
+        "market_context": {},
+        "account_context": {},
+        "history_context": [],
+        "final_output": {}
     }
     try:
         app.invoke(initial_state)

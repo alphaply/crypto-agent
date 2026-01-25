@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta http-equiv="refresh" content="30" />
+    <title>{{ current_symbol }} 量化驾驶舱</title>
+    <link
+      href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f3f4f6;
+        --card: #ffffff;
+        --text-main: #111827;
+        --text-sub: #6b7280;
+        --accent: #3b82f6;
+        --border: #e5e7eb;
+        --buy-bg: #ecfdf5;
+        --buy-text: #059669;
+        --sell-bg: #fef2f2;
+        --sell-text: #dc2626;
+        --agent-tag-bg: #e0e7ff;
+        --agent-tag-text: #4338ca;
+      }
+      body {
+        background-color: var(--bg);
+        color: var(--text-main);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        font-size: 14px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* 导航栏 */
+      .navbar {
+        background: var(--card);
+        border-bottom: 1px solid var(--border);
+        padding: 0.75rem 1rem;
+        position: sticky;
+        top: 0;
+        z-index: 1000;
+      }
+      .nav-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+      .nav-title {
+        font-weight: 800;
+        font-size: 1.2rem;
+        color: var(--text-main);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .main-container {
+        padding: 20px;
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+
+      /* === 核心布局：Agent 分析网格 === */
+      .agents-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+        gap: 20px;
+        margin-bottom: 24px;
+      }
+
+      .agent-card {
+        background: var(--card);
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+        transition: transform 0.2s;
+      }
+      .agent-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      }
+
+      .agent-header {
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--border);
+        background: #fafafa;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .agent-name {
+        font-weight: 700;
+        color: #1f2937;
+        font-size: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .agent-time {
+        font-size: 0.75rem;
+        color: var(--text-sub);
+      }
+
+      .agent-body {
+        padding: 20px;
+        flex-grow: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .analysis-text {
+        color: #374151;
+        font-size: 0.9rem;
+        white-space: pre-wrap;
+        line-height: 1.6;
+      }
+
+      .logic-box {
+        background: #f8fafc;
+        border-left: 3px solid var(--accent);
+        padding: 12px;
+        border-radius: 0 6px 6px 0;
+        margin-top: auto;
+      }
+      .logic-title {
+        font-size: 0.7rem;
+        font-weight: 700;
+        color: var(--text-sub);
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }
+      .logic-content {
+        font-size: 0.85rem;
+        color: #4b5563;
+        font-style: italic;
+      }
+
+      /* === 订单表格区域 === */
+      .orders-section {
+        background: var(--card);
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        overflow: hidden;
+      }
+      .section-header {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+        font-weight: 700;
+        font-size: 1rem;
+      }
+
+      .table {
+        margin: 0;
+      }
+      .table th {
+        background: #f9fafb;
+        font-weight: 600;
+        color: var(--text-sub);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--border);
+        border-top: none;
+      }
+      .table td {
+        padding: 14px 20px;
+        vertical-align: middle;
+        border-bottom: 1px solid var(--border);
+        color: #374151;
+      }
+
+      /* 标签与徽章 */
+      .tag {
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.75rem;
+        display: inline-block;
+      }
+      .tag-buy {
+        background: var(--buy-bg);
+        color: var(--buy-text);
+      }
+      .tag-sell {
+        background: var(--sell-bg);
+        color: var(--sell-text);
+      }
+
+      .agent-badge {
+        background: var(--agent-tag-bg);
+        color: var(--agent-tag-text);
+        padding: 2px 8px;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        border: 1px solid rgba(67, 56, 202, 0.1);
+      }
+
+      /* 移动端适配 */
+      @media (max-width: 768px) {
+        .nav-container {
+          flex-direction: column;
+          gap: 10px;
+          align-items: flex-start;
+        }
+        .nav-controls {
+          width: 100%;
+          display: grid;
+          grid-template-columns: 1fr auto;
+        }
+        .agents-grid {
+          grid-template-columns: 1fr;
+        } /* 手机端单列显示卡片 */
+
+        /* 表格转卡片 */
+        .table-responsive thead {
+          display: none;
+        }
+        .table-responsive tbody tr {
+          display: block;
+          border-bottom: 10px solid var(--bg);
+          padding: 16px;
+        }
+        .table-responsive td {
+          display: flex;
+          justify-content: space-between;
+          padding: 6px 0;
+          border: none;
+        }
+        .table-responsive td::before {
+          content: attr(data-label);
+          font-weight: 500;
+          color: var(--text-sub);
+          margin-right: 10px;
+        }
+        .reason-cell {
+          display: block;
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px dashed var(--border);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="navbar">
+      <div class="nav-container">
+        <div class="nav-title">
+          <span>🤖 量化矩阵</span>
+        </div>
+        <div class="nav-controls">
+          <select
+            class="form-select form-select-sm shadow-none"
+            onchange="window.location.href = '?symbol=' + this.value"
+          >
+            {% for sym in symbols %}
+            <option
+              value="{{sym}}"
+              {%
+              if
+              sym=""
+              ="current_symbol"
+              %}selected{%
+              endif
+              %}
+            >
+              {{sym}}
+            </option>
+            {% endfor %}
+          </select>
+          <button
+            class="btn btn-sm btn-outline-secondary"
+            onclick="location.reload()"
+          >
+            刷新
+          </button>
+        </div>
+      </div>
+    </nav>
+
+    <div class="main-container">
+      <div class="agents-grid">
+        {% if agent_summaries %} {% for summary in agent_summaries %}
+        <div class="agent-card">
+          <div class="agent-header">
+            <div class="agent-name">
+              <span style="font-size: 1.2em">🧠</span>
+              {{ summary.agent_name if summary.agent_name else 'Unknown Agent'
+              }}
+            </div>
+            <div class="agent-time">
+              {{ summary.timestamp.split(' ')[1] }} 更新
+            </div>
+          </div>
+          <div class="agent-body">
+            <div class="analysis-text">{{ summary.content }}</div>
+            <div class="logic-box">
+              <div class="logic-title">Strategy Thought</div>
+              <div class="logic-content">{{ summary.strategy_logic }}</div>
+            </div>
+          </div>
+        </div>
+        {% endfor %} {% else %}
+        <div class="text-center py-5 text-muted" style="grid-column: 1/-1">
+          该币种下暂无 Agent 活跃数据...
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="orders-section">
+        <div class="section-header">📜 执行记录 ({{ total_orders }})</div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>时间</th>
+                <th>方向</th>
+                <th>价格</th>
+                <th>风控 (TP/SL)</th>
+                <th width="30%">理由</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for order in orders %}
+              <tr>
+                <td data-label="Agent">
+                  <span class="agent-badge"
+                    >{{ order.agent_name if order.agent_name else 'System'
+                    }}</span
+                  >
+                </td>
+                <td data-label="时间">{{ order.timestamp.split(' ')[1] }}</td>
+                <td data-label="方向">
+                  <span
+                    class="tag {% if order.side == 'buy' or order.side == 'BUY' %}tag-buy{% elif order.side == 'sell' or order.side == 'SELL' %}tag-sell{% else %}bg-light{% endif %}"
+                  >
+                    {{ order.side }}
+                  </span>
+                </td>
+                <td data-label="价格" style="font-weight: 600">
+                  {{ order.entry_price }}
+                </td>
+                <td data-label="风控">
+                  <span style="color: #059669">{{ order.take_profit }}</span> /
+                  <span style="color: #dc2626">{{ order.stop_loss }}</span>
+                </td>
+                <td data-label="理由" class="reason-cell">
+                  <div style="font-size: 0.85rem; line-height: 1.4">
+                    {{ order.reason }}
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div
+          class="pagination-container p-3 d-flex justify-content-between align-items-center bg-light border-top"
+        >
+          <small class="text-muted"
+            >页码 {{ current_page }} / {{ total_pages }}</small
+          >
+          <nav>
+            <ul class="pagination pagination-sm mb-0">
+              <li
+                class="page-item {% if current_page <= 1 %}disabled{% endif %}"
+              >
+                <a
+                  class="page-link"
+                  href="?symbol={{current_symbol}}&page={{current_page-1}}"
+                  >上一页</a
+                >
+              </li>
+              <li
+                class="page-item {% if current_page >= total_pages %}disabled{% endif %}"
+              >
+                <a
+                  class="page-link"
+                  href="?symbol={{current_symbol}}&page={{current_page+1}}"
+                  >下一页</a
+                >
+              </li>
+            </ul>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
