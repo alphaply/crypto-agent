@@ -54,12 +54,20 @@ def get_configured_symbols():
     try:
         configs = json.loads(configs_str)
         symbols = [cfg['symbol'] for cfg in configs if 'symbol' in cfg]
-        if symbols:
-            return symbols
+        
+        # ✅ 新增：去重并保持顺序
+        seen = set()
+        unique_symbols = []
+        for s in symbols:
+            if s not in seen:
+                unique_symbols.append(s)
+                seen.add(s)
+                
+        if unique_symbols:
+            return unique_symbols
     except Exception as e:
         print(f"Dashboard Config Error: {e}")
     
-    # 如果配置为空或出错，返回默认
     return ["BTC/USDT", "ETH/USDT"]
 
 @app.route('/')

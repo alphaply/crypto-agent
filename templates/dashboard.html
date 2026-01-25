@@ -7,7 +7,7 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
     <meta http-equiv="refresh" content="30" />
-    <title>{{ current_symbol }} 量化驾驶舱</title>
+    <title>{{ current_symbol }} 量化坠机仓</title>
     <link
       href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css"
       rel="stylesheet"
@@ -69,7 +69,7 @@
         margin: 0 auto;
       }
 
-      /* === 核心布局：Agent 分析网格 === */
+      /* Agent Grid */
       .agents-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
@@ -148,7 +148,7 @@
         font-style: italic;
       }
 
-      /* === 订单表格区域 === */
+      /* Orders Section */
       .orders-section {
         background: var(--card);
         border-radius: 12px;
@@ -182,7 +182,6 @@
         color: #374151;
       }
 
-      /* 标签与徽章 */
       .tag {
         padding: 4px 8px;
         border-radius: 6px;
@@ -209,7 +208,7 @@
         border: 1px solid rgba(67, 56, 202, 0.1);
       }
 
-      /* 移动端适配 */
+      /* Mobile Responsive */
       @media (max-width: 768px) {
         .nav-container {
           flex-direction: column;
@@ -223,9 +222,8 @@
         }
         .agents-grid {
           grid-template-columns: 1fr;
-        } /* 手机端单列显示卡片 */
+        }
 
-        /* 表格转卡片 */
         .table-responsive thead {
           display: none;
         }
@@ -259,28 +257,22 @@
     <nav class="navbar">
       <div class="nav-container">
         <div class="nav-title">
-          <span>🤖 量化矩阵</span>
+          <span>🤖 Agent反指策略</span>
         </div>
         <div class="nav-controls">
           <select
             class="form-select form-select-sm shadow-none"
             onchange="window.location.href = '?symbol=' + this.value"
           >
-            {% for sym in symbols %}
-            <option
-              value="{{sym}}"
-              {%
-              if
-              sym=""
-              ="current_symbol"
-              %}selected{%
-              endif
-              %}
-            >
-              {{sym}}
-            </option>
-            {% endfor %}
+            {% for sym in symbols %} {# 使用 if-else
+            分开写，绝对不会因为语法符号挤在一起报错 #} {% if sym ==
+            current_symbol %}
+            <option value="{{ sym }}" selected>{{ sym }}</option>
+            {% else %}
+            <option value="{{ sym }}">{{ sym }}</option>
+            {% endif %} {% endfor %}
           </select>
+
           <button
             class="btn btn-sm btn-outline-secondary"
             onclick="location.reload()"
@@ -329,7 +321,7 @@
                 <th>Agent</th>
                 <th>时间</th>
                 <th>方向</th>
-                <th>价格</th>
+                <th>价格/触发价</th>
                 <th>风控 (TP/SL)</th>
                 <th width="30%">理由</th>
               </tr>
@@ -346,13 +338,15 @@
                 <td data-label="时间">{{ order.timestamp.split(' ')[1] }}</td>
                 <td data-label="方向">
                   <span
-                    class="tag {% if order.side == 'buy' or order.side == 'BUY' %}tag-buy{% elif order.side == 'sell' or order.side == 'SELL' %}tag-sell{% else %}bg-light{% endif %}"
+                    class="tag {% if 'buy' in order.side|lower %}tag-buy{% elif 'sell' in order.side|lower %}tag-sell{% else %}bg-light{% endif %}"
                   >
                     {{ order.side }}
                   </span>
                 </td>
                 <td data-label="价格" style="font-weight: 600">
-                  {{ order.entry_price }}
+                  {% if order.trigger_price and order.trigger_price > 0 %} ⚡ {{
+                  order.trigger_price }} {% else %} {{ order.entry_price }} {%
+                  endif %}
                 </td>
                 <td data-label="风控">
                   <span style="color: #059669">{{ order.take_profit }}</span> /

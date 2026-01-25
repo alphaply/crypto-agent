@@ -8,6 +8,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from datetime import datetime
+import time
+
 
 # 引入自定义模块
 import database
@@ -21,30 +23,6 @@ load_dotenv()
 # ==========================================
 
 market_tool = MarketTool()
-
-def get_symbol_config(symbol: str):
-    """
-    从环境变量 SYMBOL_CONFIGS 中解析特定币种的配置
-    如果未找到，返回默认的模拟盘配置
-    """
-    configs_str = os.getenv('SYMBOL_CONFIGS', '[]')
-    try:
-        configs = json.loads(configs_str)
-        for cfg in configs:
-            if cfg['symbol'] == symbol:
-                return cfg
-    except Exception as e:
-        print(f"⚠️ 解析 SYMBOL_CONFIGS 失败: {e}")
-    
-    # 默认兜底配置 (MOCK 模式)
-    return {
-        "symbol": symbol,
-        "api_base": os.getenv('OPENAI_API_BASE'),
-        "api_key": os.getenv('OPENAI_API_KEY'),
-        "model": "gpt-3.5-turbo", # 或其他默认模型
-        "temperature": 0.5,
-        "real_trade": False
-    }
 
 # ==========================================
 # 2. 定义 Pydantic 输出结构
@@ -94,7 +72,7 @@ def start_node(state: AgentState):
     symbol = state['symbol']
     
     # 1. 获取当前币种的配置
-    config = get_symbol_config(symbol)
+    config = state['agent_config']
     is_real_trade = config.get('real_trade', False)
     mode_str = "REAL" if is_real_trade else "MOCK"
     
@@ -145,22 +123,29 @@ def start_node(state: AgentState):
     
     # 历史记录字符串拼接
     history_text = "\n".join([
-        f"[{s['timestamp']}] Agent: {s.get('agent_name', 'Unknown')}\nLogic: {s['strategy_logic'][:200]}..." 
+        f"[{s['timestamp']}] Agent: {s.get('agent_name', 'Unknown')}\nLogic: {s['strategy_logic'][:512]}..." 
         for s in recent_summaries
     ])
+    now = datetime.now()
+    weekdays_zh = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    weekday_str = weekdays_zh[now.weekday()]
+    # 计算时区 (例如 UTC+8)
+    tz_offset = -time.timezone if (time.localtime().tm_isdst == 0) else -time.altzone
+    tz_offset_hours = int(tz_offset / 3600)
+    tz_str = f"UTC{'+' if tz_offset_hours >= 0 else ''}{tz_offset_hours}"
 
+    # 组合成完整的时间字符串，例如: "2026-01-25 11:00:00 (星期日) UTC+8"
+    full_time_str = f"{now.strftime('%Y-%m-%d %H:%M:%S')} ({weekday_str}) {tz_str}"
     system_prompt = f"""
 你是由 {config.get('model')} 驱动的专业加密货币量化交易 Agent。
-当前正在监控: **{symbol}** | 时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+当前正在监控: **{symbol}** | 当前时间: {full_time_str}
 交易模式: **{mode_str} (实盘: {is_real_trade})**
 
 【核心策略：日内波段 (Intraday Swing)】
-1. **不做噪音交易**：你每 15 分钟运行一次。不要被 1m/5m 的微小波动干扰。你的目标是捕捉 1h-4h 级别的趋势。
-2. **高胜率入场**：只有当信心分数极高时才开仓。
-   - 趋势跟随：价格在 EMA 100/200 之上只做多，之下只做空。
-   - 关键位：利用 Volume Profile 的 POC (控制点) 和 VAL/VAH (价值区间边缘) 寻找反转或突破。
-3. **防止过度交易 (查重)**：如果当前已经有同方向的 ENTRY 挂单，**严禁**重复下单，除非价格偏离超过 1% 需要补单。
-4. **风控第一**：所有 BUY_LIMIT/SELL_LIMIT 必须带上 stop_loss。
+1. **不做噪音交易**：你每 15 分钟运行一次。不要被微小波动干扰。你的目标是捕捉 1h-4h 级别的趋势单。
+2. **高胜率入场**：只有当信心分数极高时才开仓。根据指标进行挂单操作。
+3. 交易每次下单只能固定的仓位（轻仓）
+4. **风控第一**：所有 BUY_LIMIT/SELL_LIMIT 必须带上 止盈止损。
 
 【资金状态】
 - 可用余额: {balance:.2f} USDT
@@ -177,7 +162,7 @@ def start_node(state: AgentState):
 【近期思路回顾】
 {history_text}
 
-请严格按 JSON 格式输出决策。如果没有明确机会，action 选 "NO_ACTION"。
+请严格按格式输出决策(中文)。如果没有明确机会，action 选 "NO_ACTION"。
 """
 
     return {
@@ -304,18 +289,30 @@ workflow.add_edge("execution", END)
 
 app = workflow.compile()
 
-def run_agent_for_symbol(symbol: str):
-    """主程序入口"""
+def run_agent_for_config(config: dict):
+    """
+    接收具体的配置对象运行 Agent
+    """
+    symbol = config['symbol']
+    is_real_trade = config.get('real_trade', False)
+    mode_str = "REAL" if is_real_trade else "MOCK"
+    
+    # 打印时带上模型名，方便区分
+    print(f"\n--- [Node] Start: {symbol} using {config.get('model')} ({mode_str}) ---")
+
+    # 1. 初始化 State (直接使用传入的 config)
     initial_state = {
         "symbol": symbol,
         "messages": [],
-        "agent_config": {},  # 初始化为空
+        "agent_config": config,  # <--- 重点：直接使用传入的配置
         "market_context": {},
         "account_context": {},
         "history_context": [],
         "final_output": {}
     }
+
+    # 2. 运行 Graph
     try:
         app.invoke(initial_state)
     except Exception as e:
-        print(f"❌ Graph Error for {symbol}: {e}")
+        print(f"❌ Graph Error for {symbol} ({config.get('model')}): {e}")
