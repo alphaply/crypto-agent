@@ -157,13 +157,124 @@ class MarketTool:
     # ==========================================
     # 1. 核心数据获取
     # ==========================================
-    def get_account_status(self, symbol):
+
+# 在 MarketTool 类中修改这个方法
+    def get_account_status(self, symbol, is_real=False):
+        """
+        根据模式获取账户状态
+        :param symbol: 交易对
+        :param is_real: True=实盘(请求API), False=模拟(请求数据库)
+        """
+        # 初始化基础结构
+        status_data = {
+            "balance": 0,
+            "real_positions": [],     # 实盘持仓
+            "real_open_orders": [],   # 实盘挂单
+            "mock_open_orders": [],   # 模拟挂单
+        }
+
+        # ==========================================
+        # 🔴 实盘模式：只走交易所网络请求
+        # ==========================================
+        if is_real:
+            try:
+                # 1. 获取余额
+                balance_info = self.exchange.fetch_balance()
+                usdt_balance = float(balance_info.get('USDT', {}).get('free', 0))
+                status_data["balance"] = usdt_balance
+
+                # 2. 获取持仓
+                all_positions = self.exchange.fetch_positions([symbol])
+                real_positions = [
+                    {
+                        'symbol': p['symbol'],
+                        'side': p['side'],
+                        'amount': float(p['contracts']),
+                        'entry_price': float(p['entryPrice']),
+                        'unrealized_pnl': float(p['unrealizedPnl'])
+                    } for p in all_positions if float(p['contracts']) > 0
+                ]
+                status_data["real_positions"] = real_positions
+
+                # 3. 获取挂单
+                open_orders_raw = self.exchange.fetch_open_orders(symbol)
+                real_open_orders = []
+                for o in open_orders_raw:
+                    o_type = o.get('type')
+                    trigger_price = o.get('stopPrice')
+                    if trigger_price is None and 'stopPrice' in o['info']:
+                         trigger_price = float(o['info']['stopPrice'])
+
+                    # 格式化显示类型
+                    display_type = o_type
+                    if o_type == 'STOP_MARKET': display_type = "止损单 (SL)"
+                    elif o_type == 'TAKE_PROFIT_MARKET': display_type = "止盈单 (TP)"
+                    elif o_type == 'LIMIT': display_type = "限价入场"
+
+                    real_open_orders.append({
+                        'order_id': o['id'],
+                        'side': o.get('side'),
+                        'type': display_type,
+                        'raw_type': o_type,
+                        'price': o.get('price'),
+                        'trigger_price': trigger_price,
+                        'amount': o['amount'],
+                        'status': o['status'],
+                        'datetime': o['datetime']
+                    })
+                status_data["real_open_orders"] = real_open_orders
+                
+            except Exception as e:
+                print(f"❌ [实盘 API 错误] 获取交易所数据失败: {e}")
+                # 实盘失败就是失败，返回空数据，不混杂模拟数据
+
+        # ==========================================
+        # 🔵 模拟模式：只走本地数据库
+        # ==========================================
+        else:
+            try:
+                # 1. 从数据库获取模拟挂单
+                mock_orders = database.get_mock_orders(symbol)
+                status_data["mock_open_orders"] = mock_orders
+                
+                # 2. 模拟余额 (写死一个数，或者你可以做一个数据库表来存模拟余额)
+                status_data["balance"] = 10000.0 
+                
+                # 3. 模拟持仓 
+                # 注意：目前你的 database.py 只有 mock_orders 表，没有 mock_positions 表
+                # 所以模拟模式下，持仓暂时只能为空，除非你升级数据库逻辑
+                status_data["real_positions"] = [] 
+                
+                # print(f"DEBUG: [模拟] 获取到 {len(mock_orders)} 个挂单") 
+            except Exception as e:
+                print(f"❌ [模拟 DB 错误] 读取数据库失败: {e}")
+
+        return status_data
+
+        # 初始化默认返回结构
+        status_data = {
+            "balance": 0,
+            "real_positions": [],
+            "real_open_orders": [],
+            "mock_open_orders": [], # 默认为空
+        }
+
+        # --- 第一步：获取本地模拟挂单 (这部分不依赖网络，必须成功) ---
         try:
-            # 1. 获取余额 (保持不变)
+            mock_orders = database.get_mock_orders(symbol)
+            status_data["mock_open_orders"] = mock_orders
+            # print(f"DEBUG: Mock Orders found: {len(mock_orders)}") # 调试用
+        except Exception as e:
+            print(f"❌ [DB Error] 获取模拟挂单失败: {e}")
+
+        # --- 第二步：获取交易所实盘数据 (这部分可能因为网络失败) ---
+        try:
+            # 1. 获取余额
             balance_info = self.exchange.fetch_balance()
             usdt_balance = float(balance_info.get('USDT', {}).get('free', 0))
+            status_data["balance"] = usdt_balance
 
-            # 2. 获取持仓 (保持不变)
+            # 2. 获取持仓
             all_positions = self.exchange.fetch_positions([symbol])
             real_positions = [
                 {
@@ -174,60 +285,52 @@ class MarketTool:
                     'unrealized_pnl': float(p['unrealizedPnl'])
                 } for p in all_positions if float(p['contracts']) > 0
             ]
+            status_data["real_positions"] = real_positions
 
-            # 3. 获取挂单 (重点修改：正确解析条件单)
+            # 3. 获取挂单
             open_orders_raw = self.exchange.fetch_open_orders(symbol)
             real_open_orders = []
             
             for o in open_orders_raw:
                 # CCXT 标准化字段
-                o_type = o.get('type') # LIMIT, MARKET, STOP_MARKET, TAKE_PROFIT_MARKET
+                o_type = o.get('type') 
                 o_side = o.get('side')
                 
-                # 尝试获取触发价格 (条件单才有)
-                # CCXT 通常会把触发价放在 'stopPrice'，如果没有则看 info
                 trigger_price = o.get('stopPrice')
                 if trigger_price is None and 'stopPrice' in o['info']:
                      trigger_price = float(o['info']['stopPrice'])
 
-                # 价格：如果是限价单，取 price；如果是市价止损，price 可能是 None 或 0
                 price = o.get('price')
 
-                # 优化显示逻辑
                 display_type = o_type
-                # 如果是自带的条件单，标记一下
-                if o_type == 'STOP_MARKET':
-                    display_type = "止损单 (SL)"
-                elif o_type == 'TAKE_PROFIT_MARKET':
-                    display_type = "止盈单 (TP)"
-                elif o_type == 'LIMIT':
-                    display_type = "限价入场"
+                if o_type == 'STOP_MARKET': display_type = "止损单 (SL)"
+                elif o_type == 'TAKE_PROFIT_MARKET': display_type = "止盈单 (TP)"
+                elif o_type == 'LIMIT': display_type = "限价入场"
 
                 real_open_orders.append({
                     'order_id': o['id'],
                     'side': o_side,
-                    'type': display_type, # 用于前端显示
-                    'raw_type': o_type,   # 用于逻辑判断
+                    'type': display_type,
+                    'raw_type': o_type,
                     'price': price,
-                    'trigger_price': trigger_price, # 这里的价格才是止盈止损的触发价
+                    'trigger_price': trigger_price,
                     'amount': o['amount'],
                     'reduce_only': o['info'].get('reduceOnly', False),
                     'status': o['status'],
                     'datetime': o['datetime']
                 })
-
-            mock_orders = database.get_mock_orders(symbol)
             
-            return {
-                "balance": usdt_balance,
-                "real_positions": real_positions,
-                "real_open_orders": real_open_orders,
-                "mock_open_orders": mock_orders,
-            }
-        except Exception as e:
-            print(f"❌ Account Status Error: {e}")
-            return {"balance": 0, "real_positions": [], "real_open_orders": [], "mock_open_orders": []}
+            status_data["real_open_orders"] = real_open_orders
 
+        except Exception as e:
+            # 如果是 API 报错，我们只打印警告，但不要让整个函数崩掉
+            # 这样模拟盘至少还能拿到 balance=0 和 mock_orders
+            print(f"⚠️ [Exchange API Warning] 获取实盘数据失败 (不影响模拟盘运行): {e}")
+            # 如果是模拟模式，给个默认余额防止 Agent 报错
+            if status_data["balance"] == 0:
+                status_data["balance"] = 10000 
+
+        return status_data
     def process_timeframe(self, symbol, tf):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=1000)
@@ -294,70 +397,133 @@ class MarketTool:
         print("Done.")     
         return final_output
 
+
     def place_real_order(self, symbol, action, order_params):
         """
-        实盘下单核心逻辑 (修正版：OTO 模式，带单止盈止损)
+        实盘下单核心逻辑 (包含智能撤单 & 防僵尸单机制)
         """
         try:
-            self.exchange.load_markets()
+            # 确保连接
+            if not self.exchange.markets:
+                self.exchange.load_markets()
+            
             symbol = str(symbol)
             
-            # --- 1. 撤单逻辑 (保持不变) ---
+            # =======================================================
+            # 🛑 1. 智能撤单逻辑 (Smart Cancel) - 解决痛点！
+            # =======================================================
             if action == 'CANCEL':
-                # ... (保持你原有的撤单代码) ...
-                return self.exchange.cancel_all_orders(symbol)
+                cancel_id = order_params.get('cancel_order_id')
+                print(f"🔄 [REAL] 收到撤单指令: ID {cancel_id}")
+                
+                try:
+                    # 第一步：先尝试撤销指定的主单
+                    if cancel_id and cancel_id != "ALL":
+                        try:
+                            self.exchange.cancel_order(cancel_id, symbol)
+                            print(f"   |-- ✅ 主订单 {cancel_id} 已撤销")
+                        except Exception as e:
+                            # 即使主单撤销失败（比如已经成交或不存在），也要继续检查是否需要清理僵尸单
+                            print(f"   |-- ⚠️ 主订单撤销异常 (可能已成交或已撤): {e}")
 
-            # --- 2. 平仓逻辑 (保持不变) ---
+                    # 第二步：斩草除根逻辑
+                    # 查询当前是否还有持仓
+                    positions = self.exchange.fetch_positions([symbol])
+                    has_position = False
+                    for pos in positions:
+                        if float(pos['contracts']) > 0:
+                            has_position = True
+                            print(f"   |-- ⚠️ 检测到当前仍有持仓 ({pos['side']} {pos['contracts']})，保留其余挂单。")
+                            break
+                    
+                    # 第三步：如果没有持仓，为了安全，撤销该币种所有挂单！
+                    # 这就是解决“止盈止损还在”的终极办法
+                    if not has_position:
+                        print(f"   |-- 🛡️ [安全卫士] 检测到无持仓，正在清理所有残留的止盈止损单...")
+                        try:
+                            self.exchange.cancel_all_orders(symbol)
+                            print(f"   |-- ✅✅ {symbol} 所有挂单已清空 (僵尸单已清除)")
+                        except Exception as e:
+                            print(f"   |-- ❌ 清理僵尸单失败: {e}")
+                            
+                    return {"status": "cancelled", "clean_sweep": not has_position}
+
+                except Exception as e:
+                    print(f"❌ [REAL ERROR] 撤单流程出错: {e}")
+                    return None
+
+            # =======================================================
+            # 2. 平仓逻辑 (保持不变)
+            # =======================================================
             if action == 'CLOSE':
-                # ... (保持你原有的平仓代码) ...
-                # 注意：平仓通常建议先撤销所有挂单，再市价全平
-                pass 
+                print(f"⚠️ [REAL] 执行平仓逻辑: 撤单 + 市价平仓")
+                try:
+                    self.exchange.cancel_all_orders(symbol)
+                    positions = self.exchange.fetch_positions([symbol])
+                    for pos in positions:
+                        amt = float(pos['contracts'])
+                        if amt > 0:
+                            side = pos['side'] 
+                            close_side = 'sell' if side == 'long' else 'buy'
+                            params = {'positionSide': 'LONG' if side == 'long' else 'SHORT'}
+                            self.exchange.create_order(symbol, 'MARKET', close_side, amt, params=params)
+                    return {"status": "closed"}
+                except Exception as e:
+                    print(f"❌ 平仓失败: {e}")
+                    return None
 
-            # --- 3. 开仓挂单逻辑 (重点修改这里) ---
+            # =======================================================
+            # 3. 开仓挂单逻辑 (建议配合"成交后挂止损"使用)
+            # =======================================================
             if action in ['BUY_LIMIT', 'SELL_LIMIT']:
                 side = 'buy' if 'BUY' in action else 'sell'
-                # 必须明确指定 positionSide (双向持仓模式下必须)
                 pos_side = 'LONG' if side == 'buy' else 'SHORT'
                 
-                # A. 价格与数量精度控制 (非常重要，否则报错)
-                amount = float(self.exchange.amount_to_precision(symbol, order_params['amount']))
-                price = float(self.exchange.price_to_precision(symbol, order_params['entry_price']))
+                raw_amount = float(order_params['amount'])
+                raw_price = float(order_params['entry_price'])
+                
+                amount = float(self.exchange.amount_to_precision(symbol, raw_amount))
+                price = float(self.exchange.price_to_precision(symbol, raw_price))
 
-                # B. 构建核心参数 params
                 params = {
                     'timeInForce': 'GTC',
-                    'positionSide': pos_side, # 必须指定是开多还是开空
+                    'positionSide': pos_side, 
                 }
 
-                # C. 注入止盈止损 (OTO - One Triggers Other)
-                # 只有当这里传入了价格，币安才会生成关联的止盈止损单
-                sl_val = order_params.get('stop_loss', 0)
-                tp_val = order_params.get('take_profit', 0)
-
-                # 只有大于0才设置，并且必须转为字符串精度
-                if sl_val > 0:
-                    params['stopLossPrice'] = self.exchange.price_to_precision(symbol, sl_val)
+                print(f"🚀 [REAL] 发送主限价单: {symbol} {side} {amount} @ {price}")
                 
-                if tp_val > 0:
-                    params['takeProfitPrice'] = self.exchange.price_to_precision(symbol, tp_val)
-
-                print(f"🚀 [REAL] 发送 OTO 组合单: {symbol} {side} {pos_side}")
-                print(f"   主单: {amount} @ {price}")
-                print(f"   止损: {params.get('stopLossPrice')} | 止盈: {params.get('takeProfitPrice')}")
-
-                # D. 发送订单
-                main_order = self.exchange.create_order(
-                    symbol=symbol,
-                    type='LIMIT',
-                    side=side,
-                    amount=amount,
-                    price=price,
-                    params=params
-                )
-                
-                print(f"✅ 下单成功! 主单ID: {main_order['id']}")
-                return main_order
+                try:
+                    main_order = self.exchange.create_order(symbol, 'LIMIT', side, amount, price, params=params)
+                    print(f"✅ 主订单成功! ID: {main_order['id']}")
+                    
+                    # 检查是否立即成交
+                    if main_order['status'] == 'FILLED':
+                        print(f"⚡ 订单已成交，立即挂载止盈止损...")
+                        sl_val = float(order_params.get('stop_loss', 0))
+                        tp_val = float(order_params.get('take_profit', 0))
+                        self._place_sl_tp(symbol, side, pos_side, amount, sl_val, tp_val)
+                    else:
+                        print(f"⏳ 订单挂单中。注意：如果稍后你撤销此单，系统会自动清理未触发的止盈止损。")
+                        
+                    return main_order
+                except Exception as e:
+                    print(f"❌ [REAL API ERROR] 下单失败: {e}")
+                    return None
 
         except Exception as e:
-            print(f"❌ [REAL] 实盘执行异常: {e}")
+            print(f"❌ [REAL SYSTEM ERROR] 实盘执行异常: {e}")
             return None
+
+    def _place_sl_tp(self, symbol, side, pos_side, amount, sl_val, tp_val):
+        """辅助函数：发送止盈止损单"""
+        close_side = 'sell' if side == 'buy' else 'buy'
+        if sl_val > 0:
+            try:
+                sl_params = {'positionSide': pos_side, 'stopPrice': sl_val, 'closePosition': True}
+                self.exchange.create_order(symbol, 'STOP_MARKET', close_side, amount, params=sl_params)
+            except Exception as e: print(f"❌ 止损设置失败: {e}")
+        if tp_val > 0:
+            try:
+                tp_params = {'positionSide': pos_side, 'stopPrice': tp_val, 'closePosition': True}
+                self.exchange.create_order(symbol, 'TAKE_PROFIT_MARKET', close_side, amount, params=tp_params)
+            except Exception as e: print(f"❌ 止盈设置失败: {e}")

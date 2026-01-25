@@ -63,6 +63,60 @@
         gap: 8px;
       }
 
+      /* ✅ 新增：状态警示条样式 */
+      .status-bar {
+        background: #fffbeb; /* 浅黄色背景 */
+        border-bottom: 1px solid #fcd34d;
+        color: #92400e;
+        padding: 10px 20px;
+        font-size: 0.85rem;
+      }
+      .status-container {
+        max-width: 1400px;
+        margin: 0 auto;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .status-indicator {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 600;
+        color: #059669; /* 绿色文字 */
+      }
+      .live-dot {
+        width: 8px;
+        height: 8px;
+        background-color: #10b981;
+        border-radius: 50%;
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+        animation: pulse-green 2s infinite;
+      }
+      @keyframes pulse-green {
+        0% {
+          transform: scale(0.95);
+          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+        }
+        70% {
+          transform: scale(1);
+          box-shadow: 0 0 0 4px rgba(16, 185, 129, 0);
+        }
+        100% {
+          transform: scale(0.95);
+          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+        }
+      }
+      .risk-text {
+        color: #b91c1c; /* 红色警示 */
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+
       .main-container {
         padding: 20px;
         max-width: 1400px;
@@ -223,7 +277,6 @@
         .agents-grid {
           grid-template-columns: 1fr;
         }
-
         .table-responsive thead {
           display: none;
         }
@@ -250,6 +303,11 @@
           padding-top: 8px;
           border-top: 1px dashed var(--border);
         }
+        .status-container {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 5px;
+        }
       }
     </style>
   </head>
@@ -264,15 +322,12 @@
             class="form-select form-select-sm shadow-none"
             onchange="window.location.href = '?symbol=' + this.value"
           >
-            {% for sym in symbols %} {# 使用 if-else
-            分开写，绝对不会因为语法符号挤在一起报错 #} {% if sym ==
-            current_symbol %}
+            {% for sym in symbols %} {% if sym == current_symbol %}
             <option value="{{ sym }}" selected>{{ sym }}</option>
             {% else %}
             <option value="{{ sym }}">{{ sym }}</option>
             {% endif %} {% endfor %}
           </select>
-
           <button
             class="btn btn-sm btn-outline-secondary"
             onclick="location.reload()"
@@ -282,6 +337,18 @@
         </div>
       </div>
     </nav>
+
+    <div class="status-bar">
+      <div class="status-container">
+        <div class="status-indicator">
+          <div class="live-dot"></div>
+          运行中 | 模式: {{ scheduler_mode }}
+        </div>
+        <div class="risk-text">
+          ⚠️ 风险提示: AI策略仅供参考，实盘务必严格止损，谨防插针风险。
+        </div>
+      </div>
+    </div>
 
     <div class="main-container">
       <div class="agents-grid">
@@ -314,12 +381,14 @@
 
       <div class="orders-section">
         <div class="section-header">📜 执行记录 ({{ total_orders }})</div>
+
         <div class="table-responsive">
           <table class="table">
             <thead>
               <tr>
+                <th width="10%">ID</th>
                 <th>Agent</th>
-                <th>时间</th>
+                <th width="15%">时间</th>
                 <th>方向</th>
                 <th>价格/触发价</th>
                 <th>风控 (TP/SL)</th>
@@ -329,13 +398,23 @@
             <tbody>
               {% for order in orders %}
               <tr>
+                <td data-label="ID">
+                  <small style="font-family: monospace; color: #6b7280">
+                    {{ order.order_id }}
+                  </small>
+                </td>
+
                 <td data-label="Agent">
                   <span class="agent-badge"
                     >{{ order.agent_name if order.agent_name else 'System'
                     }}</span
                   >
                 </td>
-                <td data-label="时间">{{ order.timestamp.split(' ')[1] }}</td>
+
+                <td data-label="时间" style="font-size: 0.85rem">
+                  {{ order.timestamp }}
+                </td>
+
                 <td data-label="方向">
                   <span
                     class="tag {% if 'buy' in order.side|lower %}tag-buy{% elif 'sell' in order.side|lower %}tag-sell{% else %}bg-light{% endif %}"

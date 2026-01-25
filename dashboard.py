@@ -1,13 +1,12 @@
 from flask import Flask, render_template, request
-import pandas as pd
 import sqlite3
 import threading
-import time
 import math
 import json
 import os
 from database import DB_NAME, init_db
-from main_scheduler import job 
+# ✅ 修改 1: 引入 get_next_run_settings 以获取当前状态
+from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,7 +23,6 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         
         agent_summaries = []
         for agent in agents:
-            safe_agent_name = agent if agent else "Unknown"
             latest_summary = conn.execute(
                 "SELECT * FROM summaries WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 1", 
                 (symbol, agent)
@@ -49,33 +47,26 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         return [], [], 0
 
 def get_configured_symbols():
-    """解析 .env 中的 SYMBOL_CONFIGS 获取币种列表"""
     configs_str = os.getenv('SYMBOL_CONFIGS', '[]')
     try:
         configs = json.loads(configs_str)
         symbols = [cfg['symbol'] for cfg in configs if 'symbol' in cfg]
         
-        # ✅ 新增：去重并保持顺序
         seen = set()
         unique_symbols = []
         for s in symbols:
             if s not in seen:
                 unique_symbols.append(s)
                 seen.add(s)
-                
         if unique_symbols:
             return unique_symbols
     except Exception as e:
         print(f"Dashboard Config Error: {e}")
-    
     return ["BTC/USDT", "ETH/USDT"]
 
 @app.route('/')
 def index():
-    # 1. 动态获取币种列表
     symbols = get_configured_symbols()
-    
-    # 2. 获取当前选中的币种（如果 URL 没传，默认选列表第一个）
     symbol = request.args.get('symbol', symbols[0] if symbols else 'BTC/USDT')
     page = int(request.args.get('page', 1))
     per_page = 10
@@ -83,6 +74,12 @@ def index():
     agent_summaries, orders, total_count = get_dashboard_data(symbol, page, per_page)
     
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
+
+    # ✅ 修改 2: 获取当前的调度模式 (周末/美盘/亚盘)
+    try:
+        current_interval, current_mode_name = get_next_run_settings()
+    except:
+        current_mode_name = "系统初始化中..."
 
     return render_template(
         'dashboard.html', 
@@ -92,20 +89,12 @@ def index():
         current_symbol=symbol,
         current_page=page,
         total_pages=total_pages,
-        total_orders=total_count
+        total_orders=total_count,
+        # ✅ 传入前端
+        scheduler_mode=current_mode_name 
     )
-
-def run_scheduler():
-    import schedule
-    print("--- [系统] 极简定时器已启动 ---")
-    time.sleep(2) 
-    job() 
-    schedule.every(15).minutes.do(job)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
 
 if __name__ == "__main__":
     init_db() 
-    threading.Thread(target=run_scheduler, daemon=True).start()
+    threading.Thread(target=run_smart_scheduler, daemon=True).start()
     app.run(host='0.0.0.0', port=7860, debug=False)
