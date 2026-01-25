@@ -90,7 +90,6 @@ def index():
         current_page=page,
         total_pages=total_pages,
         total_orders=total_count,
-        # ✅ 传入前端
         scheduler_mode=current_mode_name 
     )
 
