@@ -14,28 +14,34 @@
     />
     <style>
       :root {
-        --bg: #f3f4f6;
+        --bg: #f8f9fa; /* 更柔和的灰底 */
         --card: #ffffff;
-        --text-main: #111827;
+        --text-main: #1f2937;
         --text-sub: #6b7280;
-        --accent: #3b82f6;
         --border: #e5e7eb;
-        --buy-bg: #ecfdf5;
-        --buy-text: #059669;
-        --sell-bg: #fef2f2;
-        --sell-text: #dc2626;
-        --agent-tag-bg: #e0e7ff;
-        --agent-tag-text: #4338ca;
 
-        /* ✅ 新增：模式相关颜色 */
-        --real-bg: #fee2e2;
-        --real-text: #991b1b;
-        --real-border: #fecaca;
-        --strat-bg: #dbeafe;
-        --strat-text: #1e40af;
-        --strat-border: #bfdbfe;
-        --real-row-bg: rgba(254, 226, 226, 0.3); /* 实盘行背景微红 */
+        /* 交易方向颜色 */
+        --buy-text: #00b42a;
+        --buy-bg: #e8ffea;
+        --sell-text: #f53f3f;
+        --sell-bg: #ffecec;
+
+        /* ✅ 表格行样式优化 */
+        --real-row-bg: #ffffff;
+        --real-row-hover: #fff5f5;
+        --real-border-color: #ef4444;
+
+        --strat-row-bg: #ffffff;
+        --strat-row-hover: #f0f9ff;
+        --strat-border-color: #3b82f6;
+
+        /* 徽章 Badge 颜色 */
+        --badge-real-bg: #fee2e2;
+        --badge-real-text: #b91c1c;
+        --badge-strat-bg: #dbeafe;
+        --badge-strat-text: #1d4ed8;
       }
+
       body {
         background-color: var(--bg);
         color: var(--text-main);
@@ -46,30 +52,17 @@
         -webkit-font-smoothing: antialiased;
       }
 
-      /* 导航栏 */
+      /* 导航栏优化 */
       .navbar {
         background: var(--card);
         border-bottom: 1px solid var(--border);
-        padding: 0.75rem 1rem;
-        position: sticky;
-        top: 0;
-        z-index: 1000;
-      }
-      .nav-container {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        width: 100%;
-        max-width: 1400px;
-        margin: 0 auto;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+        padding: 10px 0;
       }
       .nav-title {
-        font-weight: 800;
-        font-size: 1.2rem;
-        color: var(--text-main);
-        display: flex;
-        align-items: center;
-        gap: 8px;
+        font-weight: 700;
+        font-size: 1.1rem;
+        letter-spacing: -0.5px;
       }
 
       /* 状态条 */
@@ -77,307 +70,293 @@
         background: #fffbeb;
         border-bottom: 1px solid #fcd34d;
         color: #92400e;
-        padding: 10px 20px;
+        padding: 8px 0;
         font-size: 0.85rem;
-      }
-      .status-container {
-        max-width: 1400px;
-        margin: 0 auto;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-      .status-indicator {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-weight: 600;
-        color: #059669;
       }
       .live-dot {
         width: 8px;
         height: 8px;
         background-color: #10b981;
         border-radius: 50%;
+        display: inline-block;
+        margin-right: 6px;
         box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
         animation: pulse-green 2s infinite;
       }
       @keyframes pulse-green {
         0% {
-          transform: scale(0.95);
           box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
         }
         70% {
-          transform: scale(1);
           box-shadow: 0 0 0 4px rgba(16, 185, 129, 0);
         }
         100% {
-          transform: scale(0.95);
           box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
         }
       }
-      .risk-text {
-        color: #b91c1c;
-        font-weight: 500;
-        display: flex;
-        align-items: center;
-        gap: 5px;
-      }
 
       .main-container {
-        padding: 20px;
+        padding: 24px;
         max-width: 1400px;
         margin: 0 auto;
       }
 
-      /* Agent Grid */
+      /* Agent Cards */
       .agents-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
         gap: 20px;
-        margin-bottom: 24px;
+        margin-bottom: 30px;
       }
       .agent-card {
         background: var(--card);
-        border-radius: 12px;
         border: 1px solid var(--border);
-        overflow: hidden;
+        border-radius: 12px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
         display: flex;
         flex-direction: column;
-        height: 100%;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
-        transition: transform 0.2s;
+        transition:
+          transform 0.2s,
+          box-shadow 0.2s;
       }
       .agent-card:hover {
         transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.06);
       }
       .agent-header {
-        padding: 12px 20px;
+        padding: 12px 16px;
         border-bottom: 1px solid var(--border);
-        background: #fafafa;
+        background: #fcfcfc;
         display: flex;
         justify-content: space-between;
         align-items: center;
-      }
-      .agent-name {
-        font-weight: 700;
-        color: #1f2937;
-        font-size: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .agent-time {
-        font-size: 0.75rem;
-        color: var(--text-sub);
+        border-radius: 12px 12px 0 0;
       }
       .agent-body {
-        padding: 20px;
+        padding: 16px;
         flex-grow: 1;
         display: flex;
         flex-direction: column;
         gap: 12px;
       }
-      .analysis-text {
-        color: #374151;
-        font-size: 0.9rem;
-        white-space: pre-wrap;
-        line-height: 1.6;
-      }
       .logic-box {
         background: #f8fafc;
-        border-left: 3px solid var(--accent);
-        padding: 12px;
-        border-radius: 0 6px 6px 0;
+        border-left: 3px solid #64748b;
+        padding: 10px 14px;
+        border-radius: 4px;
         margin-top: auto;
-      }
-      .logic-title {
-        font-size: 0.7rem;
-        font-weight: 700;
-        color: var(--text-sub);
-        text-transform: uppercase;
-        margin-bottom: 4px;
-      }
-      .logic-content {
         font-size: 0.85rem;
-        color: #4b5563;
-        font-style: italic;
       }
 
-      /* Orders Section */
+      /* Orders Table Styling */
       .orders-section {
         background: var(--card);
         border-radius: 12px;
         border: 1px solid var(--border);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
         overflow: hidden;
       }
       .section-header {
-        padding: 16px 20px;
-        border-bottom: 1px solid var(--border);
+        padding: 16px 24px;
         font-weight: 700;
-        font-size: 1rem;
+        font-size: 1.05rem;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
+
       .table {
-        margin: 0;
+        margin-bottom: 0;
+        width: 100%;
       }
       .table th {
         background: #f9fafb;
-        font-weight: 600;
         color: var(--text-sub);
-        font-size: 0.75rem;
+        font-weight: 600;
         text-transform: uppercase;
-        padding: 12px 20px;
+        font-size: 0.75rem;
+        padding: 12px 24px;
         border-bottom: 1px solid var(--border);
         border-top: none;
       }
       .table td {
-        padding: 14px 20px;
+        padding: 16px 24px;
         vertical-align: middle;
         border-bottom: 1px solid var(--border);
         color: #374151;
+        background: var(--real-row-bg);
+        transition: background 0.15s ease-in-out;
       }
 
-      /* ✅ 实盘高亮行 */
-      .row-real {
-        background-color: var(--real-row-bg) !important;
+      /* 左侧状态条逻辑 */
+      .table tbody tr {
+        position: relative;
       }
 
-      /* 标签样式 */
-      .tag {
-        padding: 4px 8px;
-        border-radius: 6px;
-        font-weight: 600;
-        font-size: 0.75rem;
-        display: inline-block;
+      /* 实盘模式 */
+      .row-real td:first-child {
+        box-shadow: inset 4px 0 0 var(--real-border-color);
       }
+      .row-real:hover td {
+        background-color: var(--real-row-hover) !important;
+      }
+
+      /* 策略模式 */
+      .row-strat td:first-child {
+        box-shadow: inset 4px 0 0 var(--strat-border-color);
+      }
+      .row-strat:hover td {
+        background-color: var(--strat-row-hover) !important;
+      }
+
+      /* 标签与徽章 */
+      .mode-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      .mode-real {
+        background: var(--badge-real-bg);
+        color: var(--badge-real-text);
+      }
+      .mode-strat {
+        background: var(--badge-strat-bg);
+        color: var(--badge-strat-text);
+      }
+
       .tag-buy {
         background: var(--buy-bg);
         color: var(--buy-text);
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: 600;
       }
       .tag-sell {
         background: var(--sell-bg);
         color: var(--sell-text);
-      }
-
-      .agent-badge {
-        background: var(--agent-tag-bg);
-        color: var(--agent-tag-text);
-        padding: 2px 8px;
-        border-radius: 99px;
-        font-size: 0.75rem;
+        padding: 4px 8px;
+        border-radius: 4px;
         font-weight: 600;
-        border: 1px solid rgba(67, 56, 202, 0.1);
       }
 
-      /* ✅ 模式标签样式 */
-      .mode-badge {
-        padding: 3px 8px;
-        border-radius: 6px;
-        font-size: 0.75rem;
-        font-weight: 700;
-        border: 1px solid transparent;
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
+      .tp-sl-box {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 0.85rem;
+        font-family: "SF Mono", Consolas, monospace;
       }
-      .mode-real {
-        background: var(--real-bg);
-        color: var(--real-text);
-        border-color: var(--real-border);
+      .val-tp {
+        color: #00b42a;
       }
-      .mode-strat {
-        background: var(--strat-bg);
-        color: var(--strat-text);
-        border-color: var(--strat-border);
+      .val-sl {
+        color: #f53f3f;
+      }
+      .label-mini {
+        font-size: 0.7em;
+        color: #9ca3af;
+        margin-right: 4px;
       }
 
-      /* Mobile Responsive */
+      /* Mobile 适配 */
       @media (max-width: 768px) {
-        .nav-container {
-          flex-direction: column;
-          gap: 10px;
-          align-items: flex-start;
+        .main-container {
+          padding: 12px;
         }
-        .nav-controls {
-          width: 100%;
-          display: grid;
-          grid-template-columns: 1fr auto;
-        }
-        .agents-grid {
-          grid-template-columns: 1fr;
-        }
-        .table-responsive thead {
+        .table thead {
           display: none;
         }
-        .table-responsive tbody tr {
+        .table tbody tr {
           display: block;
-          border-bottom: 10px solid var(--bg);
-          padding: 16px;
+          border-bottom: 8px solid var(--bg);
         }
-        .table-responsive td {
+        .table td {
           display: flex;
           justify-content: space-between;
-          padding: 6px 0;
-          border: none;
+          padding: 10px 16px;
+          border-bottom: 1px solid #f3f4f6;
         }
-        .table-responsive td::before {
+        .table td:last-child {
+          border-bottom: none;
+        }
+        .table td::before {
           content: attr(data-label);
-          font-weight: 500;
+          font-weight: 600;
           color: var(--text-sub);
-          margin-right: 10px;
+        }
+        .row-real td:first-child,
+        .row-strat td:first-child {
+          box-shadow: none;
+          border-left: 4px solid transparent;
+        }
+        .row-real {
+          border-left: 4px solid var(--real-border-color);
+        }
+        .row-strat {
+          border-left: 4px solid var(--strat-border-color);
         }
         .reason-cell {
           display: block;
-          margin-top: 8px;
-          padding-top: 8px;
-          border-top: 1px dashed var(--border);
-        }
-        .status-container {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 5px;
+          margin-top: 5px;
         }
       }
     </style>
   </head>
   <body>
-    <nav class="navbar">
-      <div class="nav-container">
-        <div class="nav-title">
-          <span>🤖 Agent反指策略</span>
-        </div>
-        <div class="nav-controls">
-          <select
-            class="form-select form-select-sm shadow-none"
-            onchange="window.location.href = '?symbol=' + this.value"
-          >
-            {% for sym in symbols %} {% if sym == current_symbol %}
-            <option value="{{ sym }}" selected>{{ sym }}</option>
-            {% else %}
-            <option value="{{ sym }}">{{ sym }}</option>
-            {% endif %} {% endfor %}
-          </select>
-          <button
-            class="btn btn-sm btn-outline-secondary"
-            onclick="location.reload()"
-          >
-            刷新
-          </button>
+    <nav class="navbar sticky-top">
+      <div class="container-fluid" style="max-width: 1400px">
+        <div class="d-flex justify-content-between align-items-center w-100">
+          <div class="nav-title">
+            <span>📉 量化坠机仓</span>
+          </div>
+          <div class="d-flex gap-2">
+            <select
+              class="form-select form-select-sm shadow-none"
+              style="width: auto; border-color: var(--border)"
+              onchange="window.location.href = '?symbol=' + this.value"
+            >
+              {% for sym in symbols %}
+              <option
+                value="{{ sym }}"
+                {%
+                if
+                sym=""
+                ="current_symbol"
+                %}selected{%
+                endif
+                %}
+              >
+                {{ sym }}
+              </option>
+              {% endfor %}
+            </select>
+            <button
+              class="btn btn-sm btn-outline-secondary"
+              onclick="location.reload()"
+            >
+              ↺
+            </button>
+          </div>
         </div>
       </div>
     </nav>
 
     <div class="status-bar">
-      <div class="status-container">
-        <div class="status-indicator">
-          <div class="live-dot"></div>
-          运行中 | 模式: {{ scheduler_mode }}
-        </div>
-        <div class="risk-text">
-          ⚠️ 风险提示: 实盘模式请严格监控，谨防插针风险。
+      <div class="container-fluid" style="max-width: 1400px">
+        <div class="d-flex justify-content-between flex-wrap gap-2">
+          <div>
+            <span class="live-dot"></span>
+            <strong>运行状态:</strong> 正常 | <strong>当前模式:</strong> {{
+            scheduler_mode }}
+          </div>
+          <div style="color: #b91c1c; font-weight: 500">
+            ⚡ 注意: 实盘模式已接入风控模块 (Limit TP/SL)
+          </div>
         </div>
       </div>
     </div>
@@ -387,74 +366,98 @@
         {% if agent_summaries %} {% for summary in agent_summaries %}
         <div class="agent-card">
           <div class="agent-header">
-            <div class="agent-name">
-              <span style="font-size: 1.2em">🧠</span>
-              {{ summary.agent_name if summary.agent_name else 'Unknown Agent'
-              }}
+            <div
+              style="
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+              "
+            >
+              <span>🤖</span> {{ summary.agent_name or 'Unknown' }}
             </div>
-            <div class="agent-time">
-              {{ summary.timestamp.split(' ')[1] }} 更新
-            </div>
+            <small class="text-muted"
+              >{{ summary.timestamp.split(' ')[1] }}</small
+            >
           </div>
           <div class="agent-body">
-            <div class="analysis-text">{{ summary.content }}</div>
+            <div style="font-size: 0.9rem; line-height: 1.6; color: #334155">
+              {{ summary.content }}
+            </div>
             <div class="logic-box">
-              <div class="logic-title">Strategy Thought</div>
-              <div class="logic-content">{{ summary.strategy_logic }}</div>
+              <div
+                style="
+                  font-size: 0.7rem;
+                  text-transform: uppercase;
+                  color: #64748b;
+                  margin-bottom: 4px;
+                  font-weight: 700;
+                "
+              >
+                Logic & Thought
+              </div>
+              {{ summary.strategy_logic }}
             </div>
           </div>
         </div>
         {% endfor %} {% else %}
-        <div class="text-center py-5 text-muted" style="grid-column: 1/-1">
-          该币种下暂无 Agent 活跃数据...
-        </div>
+        <div class="text-center w-100 py-5 text-muted">暂无 Agent 活跃数据</div>
         {% endif %}
       </div>
 
       <div class="orders-section">
-        <div class="section-header">📜 执行记录 ({{ total_orders }})</div>
+        <div class="section-header">
+          <span>📜 执行记录</span>
+          <span class="badge bg-light text-dark border"
+            >{{ total_orders }}</span
+          >
+        </div>
 
         <div class="table-responsive">
           <table class="table">
             <thead>
               <tr>
-                <th width="10%">ID</th>
+                <th width="8%">ID</th>
                 <th width="8%">模式</th>
                 <th>Agent</th>
-                <th width="15%">时间</th>
-                <th>方向</th>
-                <th>价格/触发价</th>
-                <th>风控 (TP/SL)</th>
-                <th width="30%">理由</th>
+                <th width="12%">时间</th>
+                <th width="8%">方向</th>
+                <th width="12%">价格 / 触发</th>
+                <th width="15%">风控 (TP / SL)</th>
+                <th width="25%">策略理由</th>
               </tr>
             </thead>
             <tbody>
               {% for order in orders %}
               <tr
-                class="{% if order.trade_mode == 'REAL' %}row-real{% endif %}"
+                class="{% if order.trade_mode == 'REAL' %}row-real{% else %}row-strat{% endif %}"
               >
                 <td data-label="ID">
-                  <small style="font-family: monospace; color: #6b7280">
-                    {{ order.order_id }}
-                  </small>
+                  <small style="font-family: monospace; color: var(--text-sub)"
+                    >#{{ order.order_id }}</small
+                  >
                 </td>
 
                 <td data-label="模式">
                   {% if order.trade_mode == 'REAL' %}
-                  <span class="mode-badge mode-real">🔴 实盘</span>
+                  <span class="mode-badge mode-real">实盘</span>
                   {% else %}
-                  <span class="mode-badge mode-strat">🔵 策略</span>
+                  <span class="mode-badge mode-strat">策略</span>
                   {% endif %}
                 </td>
 
                 <td data-label="Agent">
-                  <span class="agent-badge">
+                  <span
+                    style="font-weight: 600; font-size: 0.85rem; color: #4b5563"
+                  >
                     {{ order.agent_name if order.agent_name else 'System' }}
                   </span>
                 </td>
 
-                <td data-label="时间" style="font-size: 0.85rem">
-                  {{ order.timestamp }}
+                <td data-label="时间">
+                  <span style="color: var(--text-sub); font-size: 0.85rem"
+                    >{{ order.timestamp }}</span
+                  >
                 </td>
 
                 <td data-label="方向">
@@ -465,23 +468,41 @@
                   </span>
                 </td>
 
-                <td data-label="价格" style="font-weight: 600">
-                  {% if order.trigger_price and order.trigger_price > 0 %} ⚡ {{
-                  order.trigger_price }} {% else %} {{ order.entry_price }} {%
-                  endif %}
+                <td data-label="价格">
+                  <div style="font-weight: 600">
+                    {% if order.trigger_price and order.trigger_price > 0 %}
+                    <span style="color: #d97706" title="触发价"
+                      >⚡ {{ order.trigger_price }}</span
+                    >
+                    {% else %} {{ order.entry_price }} {% endif %}
+                  </div>
                 </td>
 
                 <td data-label="风控">
-                  {% if order.trade_mode == 'REAL' %}
-                  <span class="text-muted" title="实盘纯限价单">-</span>
-                  {% else %}
-                  <span style="color: #059669">{{ order.take_profit }}</span> /
-                  <span style="color: #dc2626">{{ order.stop_loss }}</span>
-                  {% endif %}
+                  <div class="tp-sl-box">
+                    <div>
+                      <span class="label-mini">TP</span>
+                      {% if order.take_profit and order.take_profit > 0 %}
+                      <span class="val-tp">{{ order.take_profit }}</span>
+                      {% else %}
+                      <span class="text-muted">-</span>
+                      {% endif %}
+                    </div>
+                    <div>
+                      <span class="label-mini">SL</span>
+                      {% if order.stop_loss and order.stop_loss > 0 %}
+                      <span class="val-sl">{{ order.stop_loss }}</span>
+                      {% else %}
+                      <span class="text-muted">-</span>
+                      {% endif %}
+                    </div>
+                  </div>
                 </td>
 
                 <td data-label="理由" class="reason-cell">
-                  <div style="font-size: 0.85rem; line-height: 1.4">
+                  <div
+                    style="font-size: 0.85rem; line-height: 1.4; color: #4b5563"
+                  >
                     {{ order.reason }}
                   </div>
                 </td>
@@ -491,12 +512,7 @@
           </table>
         </div>
 
-        <div
-          class="pagination-container p-3 d-flex justify-content-between align-items-center bg-light border-top"
-        >
-          <small class="text-muted"
-            >页码 {{ current_page }} / {{ total_pages }}</small
-          >
+        <div class="p-3 border-top bg-light d-flex justify-content-end">
           <nav>
             <ul class="pagination pagination-sm mb-0">
               <li
@@ -505,7 +521,12 @@
                 <a
                   class="page-link"
                   href="?symbol={{current_symbol}}&page={{current_page-1}}"
-                  >上一页</a
+                  >Previous</a
+                >
+              </li>
+              <li class="page-item disabled">
+                <span class="page-link"
+                  >{{ current_page }} / {{ total_pages }}</span
                 >
               </li>
               <li
@@ -514,7 +535,7 @@
                 <a
                   class="page-link"
                   href="?symbol={{current_symbol}}&page={{current_page+1}}"
-                  >下一页</a
+                  >Next</a
                 >
               </li>
             </ul>
