@@ -4,12 +4,15 @@ import threading
 import math
 import json
 import os
+from datetime import datetime
+import pytz
 from database import DB_NAME, init_db
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path='.env', override=True)
 app = Flask(__name__)
+TZ_CN = pytz.timezone('Asia/Shanghai')
 
 def get_dashboard_data(symbol, page=1, per_page=10):
     try:
@@ -33,7 +36,6 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         offset = (page - 1) * per_page
         total_count = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", (symbol,)).fetchone()[0]
         
-        # SELECT * 会自动包含 trade_mode 字段
         cursor = conn.execute(
             "SELECT * FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
             (symbol, per_page, offset)
@@ -46,23 +48,61 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         print(f"Error: {e}")
         return [], [], 0
 
-def get_configured_symbols():
+def get_all_configs():
+    """读取所有配置的辅助函数"""
     configs_str = os.getenv('SYMBOL_CONFIGS', '[]')
     try:
+        if configs_str: configs_str = configs_str.strip()
         configs = json.loads(configs_str)
-        symbols = [cfg['symbol'] for cfg in configs if 'symbol' in cfg]
+        return configs
+    except:
+        return []
+
+def get_configured_symbols():
+    configs = get_all_configs()
+    symbols = [cfg['symbol'] for cfg in configs if 'symbol' in cfg]
+    # 去重
+    seen = set()
+    unique = []
+    for s in symbols:
+        if s not in seen:
+            unique.append(s)
+            seen.add(s)
+    if not unique: return ["BTC/USDT", "ETH/USDT"]
+    return unique
+
+def get_symbol_specific_status(symbol):
+    """
+    计算特定币种的当前运行状态和频率
+    """
+    configs = get_all_configs()
+    # 找到当前币种的配置
+    target_config = next((c for c in configs if c.get('symbol') == symbol), None)
+    
+    if not target_config:
+        return "未知", "N/A"
         
-        seen = set()
-        unique_symbols = []
-        for s in symbols:
-            if s not in seen:
-                unique_symbols.append(s)
-                seen.add(s)
-        if unique_symbols:
-            return unique_symbols
-    except Exception as e:
-        print(f"Dashboard Config Error: {e}")
-    return ["BTC/USDT", "ETH/USDT"]
+    mode = target_config.get('mode', 'STRATEGY').upper()
+    
+    # 获取时间判断频率 (复用调度器的逻辑)
+    now = datetime.now(TZ_CN)
+    weekday = now.weekday()
+    hour = now.hour
+    
+    freq_text = "Unknown"
+    
+    # 逻辑：完全复刻 main_scheduler.py 的判断
+    if mode == 'REAL':
+        mode_text = "🔴 实盘模式 (Real)"
+        if weekday == 5: freq_text = "1h (周六休整)"
+        elif weekday == 6 and hour < 20: freq_text = "1h (周日白天)"
+        else: freq_text = "15m (高频执行)"
+    else:
+        mode_text = "🔵 策略模式 (Strategy)"
+        if weekday >= 5: freq_text = "4h (周末长线)"
+        else: freq_text = "1h (工作日标准)"
+        
+    return mode_text, freq_text
 
 @app.route('/')
 def index():
@@ -75,11 +115,8 @@ def index():
     
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
 
-    # 获取当前的调度模式 (周末/美盘/亚盘)
-    try:
-        current_interval, current_mode_name = get_next_run_settings()
-    except:
-        current_mode_name = "系统初始化中..."
+    # 1. 获取特定币种的状态 (新增)
+    symbol_mode, symbol_freq = get_symbol_specific_status(symbol)
 
     return render_template(
         'dashboard.html', 
@@ -90,11 +127,12 @@ def index():
         current_page=page,
         total_pages=total_pages,
         total_orders=total_count,
-        scheduler_mode=current_mode_name 
+        # 传给前端的变量改了
+        symbol_mode=symbol_mode,
+        symbol_freq=symbol_freq
     )
 
 if __name__ == "__main__":
     init_db() 
-    # 启动后台调度器线程
     threading.Thread(target=run_smart_scheduler, daemon=True).start()
     app.run(host='0.0.0.0', port=7860, debug=False)
