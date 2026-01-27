@@ -41,8 +41,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 做单方式：双向持仓 做多做空均可
 
 【资金管理 (RISK MANAGEMENT)】
-1. **严禁梭哈 (No All-In)**: 单笔交易的保证金占用不得超过可用余额的 20% (或者你想要的比例)。
-2. **计算公式**: 请根据 `(余额 * 挂单百分比 * 杠杆) / 价格` 来计算下单数量 `amount`。
+1. **严禁梭哈 (No All-In)**: 单笔交易的保证金占用不得超过可用余额的 50% (或者你想要的比例)。
 
 【权限与指令】
 1. **BUY_LIMIT**: 挂单开多 (价格必须 < 现价)。
@@ -60,6 +59,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 
 【资金与持仓】
 可用余额: {balance:.2f} USDT
+
 现有持仓: 
 {positions_text}
 
@@ -75,23 +75,24 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 {history_text}
 ----------------------------------------
 
-【逻辑校验 (CRITICAL REALITY CHECK)】
-你必须执行以下检查，否则会亏损：
-1. **时效性检查**: 现在的价格 ({current_price}) 是否已经跌破/突破了历史记录中的支撑/阻力位？
-2. **挂单铁律**: 
-   - BUY_LIMIT 价格必须 < {current_price}
-   - SELL_LIMIT 价格必须 > {current_price}
-   - CLOSE 价格务必合理（多单止盈价 > 现价，空单止盈价 < 现价，或者为了快速跑路选一个接近现价的位置）。
 
 【输出要求】
+1. **时效性检查**: 现在的价格 ({current_price}) 是否已经跌破/突破了历史记录中的支撑/阻力位？
+2.
+   - BUY_LIMIT 入场价格必须 <= {current_price}
+   - SELL_LIMIT 入场价格必须 >= {current_price}
+   - CLOSE 价格务必合理（多单止盈价 > 现价，空单止盈价 < 现价，或者为了快速跑路选一个接近现价的位置）。
+
 思路 解读 中文描述
 请输出 JSON，包含 `orders` 列表。
 - `action`: BUY_LIMIT / SELL_LIMIT / CLOSE / CANCEL / NO_ACTION
+- `pos_side`: 如果是 CLOSE，必须填 'LONG' 或 'SHORT'；其他情况留空
 - `entry_price`: 挂单价格 / 平仓价格 (CLOSE 必须填此项)
-- `amount`: 下单数量 (币的个数)
-- `reason`: 简短的执行理由 (例如："回踩 15m HVN 接多")
+- `amount`: 下单数量 (注意单位是币的数量而不是USDT的数量)
+- `reason`: 简短的执行理由
 - `take_profit`: 填 0
 - `stop_loss`: 填 0
+- `cancel_order_id`: 填要撤销的订单 ID (如8389766084576502933)
 """
 
 STRATEGY_PROMPT_TEMPLATE = """
@@ -142,10 +143,6 @@ STRATEGY_PROMPT_TEMPLATE = """
 - `reason`: 详细的策略逻辑，包含 R/R 计算。
 """
 
-# ==========================================
-# 1. 定义 Pydantic 输出结构 (Schema)
-# ==========================================
-
 class OrderParams(BaseModel):
     """交易指令结构"""
     reason: str = Field(description="简短的决策理由")
@@ -153,7 +150,8 @@ class OrderParams(BaseModel):
         description="动作: 'BUY_LIMIT', 'SELL_LIMIT', 'CANCEL', 'CLOSE', 'NO_ACTION'",
         pattern="^(BUY_LIMIT|SELL_LIMIT|CANCEL|CLOSE|NO_ACTION)$"
     )
-    cancel_order_id: str = Field(description="撤单时填入 ID，否则留空", default="")
+    pos_side: str = Field(description="平仓方向: 仅在 CLOSE 时必填，填 'LONG' (平多) 或 'SHORT' (平空)", default="")
+    cancel_order_id: str = Field(description="撤单时填入 对应的ID（如8389766084576502933）", default="")
     entry_price: float = Field(description="挂单价格 (CLOSE 时为平仓价格)")
     amount: float = Field(description="下单数量 (币的个数，非 USDT 金额)", default=0.0)
     take_profit: float = Field(description="止盈价格", default=0.0)
@@ -241,7 +239,7 @@ def format_orders_to_agent_friendly(orders: list) -> str:
         if tp > 0 or sl > 0:
             extras = f" | TP: {tp} | SL: {sl}"
         
-        line = f"[{side}] {order_type} | ID: {oid} | Price: {price} | Amt: {amt}{extras}"
+        line = f"[{side}] {order_type} | ID: '{oid}' | Price: {price} | Amt: {amt}{extras}"
         lines.append(line)
 
     return "\n".join(lines)
@@ -511,7 +509,10 @@ def execution_node(state: AgentState) -> AgentState:
     if not output: return state
 
     summary = output.get('summary', {})
-    orders = output.get('orders', [])
+    raw_orders = output.get('orders', [])
+    
+    # CANCEL(0) > CLOSE(1) > 其他开仓(2) 先平仓 再开仓
+    orders = sorted(raw_orders, key=lambda x: 0 if x['action']=='CANCEL' else (1 if x['action']=='CLOSE' else 2))
     
     # 1. 保存分析日志 (通用)
     content = f"[{trade_mode}] Trend: {summary.get('current_trend')}\nPredict: {summary.get('predict')}"
@@ -520,9 +521,6 @@ def execution_node(state: AgentState) -> AgentState:
     except Exception as db_err:
         print(f"⚠️ [DB Error] Save summary failed: {db_err}")
 
-    # ==========================================
-    # 🛑 辅助函数：防重复挂单检查
-    # ==========================================
     def _is_duplicate_order(new_action, new_price, current_open_orders):
         """
         检查是否有雷同挂单

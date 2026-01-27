@@ -421,12 +421,12 @@ class MarketTool:
                 print(f"⚠️ [REAL] 执行 LIMIT 平仓逻辑...")
                 try:
                     # 先撤销所有挂单，防止平仓后又成交 (可选，视策略需求，这里保留)
-                    self.exchange.cancel_all_orders(symbol)
+                    # self.exchange.cancel_all_orders(symbol)
                     
                     # 获取 Agent 指定的平仓价格和数量
                     raw_limit_price = float(order_params.get('entry_price', 0))
-                    raw_close_amount = float(order_params.get('amount', 0)) # Agent 想要平仓的数量
-                    
+                    raw_close_amount = float(order_params.get('amount', 0))
+                    target_pos_side = order_params.get('pos_side', '').upper()
                     # 如果 Agent 没给价格(或给0)，为了防止报错，我们获取当前最新价作为 Limit 价格
                     if raw_limit_price <= 0:
                         print("   |-- ⚠️ Agent 未指定平仓价，自动获取当前 Ticker 价格...")
@@ -438,6 +438,13 @@ class MarketTool:
                         total_pos_amt = float(pos['contracts']) # 当前总持仓量
                         
                         if total_pos_amt > 0:
+
+                            side = pos['side'] # long / short
+                            current_pos_side_str = 'LONG' if side == 'long' else 'SHORT'
+
+                            if target_pos_side and target_pos_side in ['LONG', 'SHORT']:
+                                if target_pos_side != current_pos_side_str:
+                                    continue
                             # 决定本次平仓数量
                             # 如果 Agent 指定了数量且小于总持仓，则部分平仓；否则全平
                             if raw_close_amount > 0 and raw_close_amount < total_pos_amt:
