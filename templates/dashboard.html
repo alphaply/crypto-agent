@@ -14,22 +14,16 @@
     />
     <style>
       :root {
-        /* --- 浅色主题配色 (Light Mode) --- */
-        --bg-body: #f3f4f6; /* 浅灰背景 */
-        --bg-card: #ffffff; /* 纯白卡片 */
-        --bg-hover: #f9fafb; /* 悬停微白 */
-
-        --text-main: #1f2937; /* 深灰主字 */
-        --text-sub: #6b7280; /* 中灰副字 */
-        --border-color: #e5e7eb; /* 浅边框 */
-
-        /* 状态颜色 */
-        --buy-color: #059669; /* 涨/买 (深绿) */
-        --sell-color: #dc2626; /* 跌/卖 (深红) */
-        --real-mode: #b91c1c; /* 实盘红 */
-        --strat-mode: #1d4ed8; /* 策略蓝 */
-
-        /* 徽章背景 */
+        --bg-body: #f3f4f6;
+        --bg-card: #ffffff;
+        --bg-hover: #f9fafb;
+        --text-main: #1f2937;
+        --text-sub: #6b7280;
+        --border-color: #e5e7eb;
+        --buy-color: #059669;
+        --sell-color: #dc2626;
+        --real-mode: #b91c1c;
+        --strat-mode: #1d4ed8;
         --bg-buy: #d1fae5;
         --bg-sell: #fee2e2;
         --bg-real: #fef2f2;
@@ -44,6 +38,9 @@
           "Helvetica Neue", Arial, sans-serif;
         font-size: 14px;
         -webkit-font-smoothing: antialiased;
+        /* 🚫 核心修复1：禁止Body横向滚动 */
+        overflow-x: hidden;
+        width: 100vw;
       }
 
       /* 导航栏 */
@@ -55,17 +52,19 @@
       }
       .nav-brand {
         font-weight: 700;
-        font-size: 1.25rem;
+        font-size: 1rem;
         color: var(--text-main);
         letter-spacing: -0.5px;
         display: flex;
         align-items: center;
         gap: 8px;
+        /* 防止品牌名太长换行 */
+        white-space: nowrap;
       }
 
       /* 状态栏 */
       .status-bar {
-        background: #fffbeb; /* 浅黄背景，提醒作用 */
+        background: #fffbeb;
         border-bottom: 1px solid #fcd34d;
         padding: 10px 0;
         color: #92400e;
@@ -92,7 +91,6 @@
         }
       }
 
-      /* 下拉框美化 */
       .custom-select {
         background-color: var(--bg-card);
         color: var(--text-main);
@@ -102,24 +100,21 @@
         outline: none;
         font-size: 0.9rem;
         cursor: pointer;
-        transition: border-color 0.2s;
-      }
-      .custom-select:focus {
-        border-color: #3b82f6;
-        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        max-width: 120px; /* 限制下拉框宽度，防止手机顶宽 */
       }
 
-      /* 主容器 */
       .main-container {
         max-width: 1400px;
         margin: 0 auto;
         padding: 24px;
+        /* 防止容器本身溢出 */
+        box-sizing: border-box;
       }
 
       /* Agent 卡片 */
       .agents-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
         gap: 20px;
         margin-bottom: 30px;
       }
@@ -130,19 +125,12 @@
         overflow: hidden;
         display: flex;
         flex-direction: column;
-        transition:
-          transform 0.2s,
-          box-shadow 0.2s;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-      }
-      .agent-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
       }
       .agent-header {
         padding: 14px 20px;
         border-bottom: 1px solid var(--border-color);
-        background: #f9fafb; /* 浅灰表头 */
+        background: #f9fafb;
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -155,7 +143,7 @@
         flex-grow: 1;
       }
       .logic-box {
-        background: #eff6ff; /* 浅蓝背景 */
+        background: #eff6ff;
         border-left: 4px solid #3b82f6;
         padding: 12px;
         border-radius: 4px;
@@ -164,7 +152,7 @@
         margin-top: auto;
       }
 
-      /* 订单表格 */
+      /* 表格卡片 */
       .table-card {
         background: var(--bg-card);
         border: 1px solid var(--border-color);
@@ -188,43 +176,89 @@
       }
       .table th {
         text-align: left;
-        padding: 12px 16px; /* 减小内边距，防止挤压 */
+        padding: 12px 16px;
         color: var(--text-sub);
         font-weight: 600;
         font-size: 0.8rem;
         text-transform: uppercase;
         border-bottom: 1px solid var(--border-color);
         background: #f9fafb;
-        white-space: nowrap; /* 表头不换行 */
+        white-space: nowrap;
       }
       .table td {
-        padding: 14px 16px; /* 减小内边距 */
+        padding: 14px 16px;
         border-bottom: 1px solid var(--border-color);
         color: var(--text-main);
         vertical-align: middle;
       }
-      .table tr:last-child td {
-        border-bottom: none;
+
+      /* 🚫 核心修复2：UUID 样式优化 (解决闪烁) */
+      .uuid-wrapper {
+        position: relative; /* 作为定位基准 */
+        display: inline-block;
+        max-width: 100px;
+        vertical-align: middle;
       }
-      .table tbody tr:hover {
-        background-color: var(--bg-hover);
+      .uuid-text {
+        font-family: "SF Mono", Consolas, monospace;
+        font-size: 0.75rem;
+        color: #6b7280;
+        background: #f3f4f6;
+        padding: 2px 6px;
+        border-radius: 4px;
+        border: 1px solid #e5e7eb;
+        display: block;
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: help; /* 鼠标样式变成问号 */
+      }
+      /* Tooltip 气泡逻辑 */
+      .uuid-tooltip {
+        visibility: hidden;
+        opacity: 0;
+        position: absolute;
+        bottom: 100%; /* 显示在上方 */
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: #1f2937;
+        color: #fff;
+        text-align: center;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        white-space: nowrap;
+        z-index: 100;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        margin-bottom: 6px; /* 稍微留点空隙 */
+        transition: opacity 0.2s;
+        pointer-events: none; /* 防止鼠标碰到气泡导致闪烁 */
+      }
+      /* 小三角 */
+      .uuid-tooltip::after {
+        content: "";
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        margin-left: -5px;
+        border-width: 5px;
+        border-style: solid;
+        border-color: #1f2937 transparent transparent transparent;
+      }
+      .uuid-wrapper:hover .uuid-tooltip {
+        visibility: visible;
+        opacity: 1;
       }
 
-      /* PC端居中对齐特定列 */
-      @media (min-width: 769px) {
-        .col-center {
-          text-align: center !important;
-        }
-      }
-
-      /* 标签与徽章 - 核心修复：强制不换行 */
+      /* 徽章样式 */
       .badge-mode {
         font-size: 0.75rem;
         font-weight: 700;
         padding: 4px 8px;
         border-radius: 6px;
         letter-spacing: 0.5px;
-        white-space: nowrap; /* ✅ 强制不换行，解决竖排问题 */
+        white-space: nowrap;
         display: inline-block;
       }
       .mode-real {
@@ -243,7 +277,7 @@
         border-radius: 6px;
         font-weight: 600;
         font-size: 0.85rem;
-        white-space: nowrap; /* ✅ 强制不换行 */
+        white-space: nowrap;
         display: inline-block;
       }
       .side-buy {
@@ -255,7 +289,6 @@
         background: var(--bg-sell);
       }
 
-      /* 价格高亮 */
       .price-val {
         font-family: "SF Mono", monospace;
         font-size: 1rem;
@@ -278,7 +311,6 @@
         font-weight: 600;
       }
 
-      /* 分页按钮 */
       .pagination {
         display: flex;
         gap: 6px;
@@ -294,11 +326,9 @@
         text-decoration: none;
         border-radius: 6px;
         font-size: 0.9rem;
-        transition: all 0.2s;
       }
       .page-link:hover:not(.disabled) {
         background: #f3f4f6;
-        border-color: #d1d5db;
         color: #000;
       }
       .disabled {
@@ -307,15 +337,29 @@
         background: #f9fafb;
       }
 
-      /* --- 移动端适配 --- */
+      @media (min-width: 769px) {
+        .col-center {
+          text-align: center !important;
+        }
+      }
+
+      /* --- 移动端适配 (核心修复) --- */
       @media (max-width: 768px) {
         .main-container {
           padding: 12px;
         }
 
+        /* Agent卡片 */
+        .agents-grid {
+          grid-template-columns: 1fr; /* 强制单列 */
+        }
+
+        /* 隐藏表头 */
         .table thead {
           display: none;
         }
+
+        /* 将每一行变成一个卡片 */
         .table tr {
           display: block;
           border: 1px solid var(--border-color);
@@ -324,17 +368,25 @@
           background: #fff;
           box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
         }
+
+        /* 单元格变成 Flex 布局 */
         .table td {
           display: flex;
           justify-content: space-between;
-          align-items: center;
+          align-items: center; /* 垂直居中 */
           padding: 12px 16px;
           border-bottom: 1px solid #f3f4f6;
           text-align: right;
+          width: 100%; /* 确保占满 */
+          box-sizing: border-box;
         }
+
+        /* 最后一格去掉底边框 */
         .table td:last-child {
           border-bottom: none;
         }
+
+        /* 添加伪元素显示标题 */
         .table td::before {
           content: attr(data-label);
           color: var(--text-sub);
@@ -342,11 +394,34 @@
           font-size: 0.85rem;
           margin-right: 10px;
           text-align: left;
+          flex-shrink: 0; /* 防止标题被压缩 */
         }
 
-        .nav-brand {
-          font-size: 1.1rem;
+        /* 🚫 修复左右滑动：理由栏特殊处理 */
+        /* 针对理由栏，让它允许换行，并且上下排列而不是左右排列 */
+        .table td[data-label="理由"] {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 6px;
         }
+        .reason-content {
+          min-width: 0 !important; /* 取消PC端的最小宽度 */
+          white-space: normal !important; /* 允许换行 */
+          text-align: left;
+          word-break: break-word; /* 防止长单词撑开 */
+          font-size: 0.85rem;
+          color: #4b5563;
+          background: #f9fafb;
+          padding: 8px;
+          border-radius: 6px;
+          width: 100%;
+        }
+
+        /* UUID 在手机上可以稍微宽一点 */
+        .uuid-wrapper {
+          max-width: 140px;
+        }
+
         .status-bar .d-flex {
           flex-direction: column;
           gap: 6px;
@@ -358,7 +433,7 @@
     <nav class="navbar sticky-top">
       <div class="container-fluid main-container" style="padding: 0 24px">
         <div class="d-flex justify-content-between align-items-center w-100">
-          <div class="nav-brand">💸 自动亏钱Agent</div>
+          <div class="nav-brand">💸自动亏钱Agent</div>
           <div class="d-flex gap-2">
             <select
               class="custom-select"
@@ -389,7 +464,6 @@
             <span class="live-indicator"></span>
             <strong>状态:</strong> 运行中
             <span style="color: #d97706; margin: 0 8px">|</span>
-
             <strong>当前模式:</strong>
             <span style="color: #b45309; font-weight: 700"
               >{{ symbol_mode }}</span
@@ -423,8 +497,7 @@
                 font-family: monospace;
               "
             >
-              {{ summary.timestamp.split(' ')[1] if ' ' in summary.timestamp
-              else summary.timestamp }}
+              {{ summary.timestamp }}
             </span>
           </div>
           <div class="agent-body">
@@ -472,14 +545,14 @@
           <table class="table">
             <thead>
               <tr>
-                <th width="100">时间</th>
+                <th width="140">时间</th>
+                <th width="100">Order ID</th>
                 <th width="80" class="col-center">模式</th>
-                <th width="120">Agent</th>
+                <th width="100">Agent</th>
                 <th width="80" class="col-center">方向</th>
                 <th width="140">价格 / 触发</th>
                 <th width="160">风控 (止盈/止损)</th>
                 <th>理由</th>
-                <th width="60" style="text-align: right">ID</th>
               </tr>
             </thead>
             <tbody>
@@ -490,13 +563,23 @@
                     style="
                       font-family: monospace;
                       color: var(--text-sub);
-                      font-size: 0.9rem;
+                      font-size: 0.85rem;
                       white-space: nowrap;
                     "
                   >
-                    {{ order.timestamp.split(' ')[1] if ' ' in order.timestamp
-                    else order.timestamp }}
+                    {{ order.timestamp }}
                   </span>
+                </td>
+
+                <td data-label="Order ID">
+                  {% if order.order_id %}
+                  <div class="uuid-wrapper">
+                    <span class="uuid-text">{{ order.order_id }}</span>
+                    <div class="uuid-tooltip">{{ order.order_id }}</div>
+                  </div>
+                  {% else %}
+                  <span style="color: #d1d5db">-</span>
+                  {% endif %}
                 </td>
 
                 <td data-label="模式" class="col-center">
@@ -565,20 +648,15 @@
 
                 <td data-label="理由">
                   <div
+                    class="reason-content"
                     style="
+                      min-width: 200px;
                       color: var(--text-sub);
                       font-size: 0.9rem;
-                      min-width: 200px;
                     "
                   >
                     {{ order.reason }}
                   </div>
-                </td>
-
-                <td data-label="ID" style="text-align: right">
-                  <small style="font-family: monospace; color: #9ca3af"
-                    >#{{ order.id }}</small
-                  >
                 </td>
               </tr>
               {% endfor %}

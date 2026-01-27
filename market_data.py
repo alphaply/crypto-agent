@@ -67,60 +67,127 @@ class MarketTool:
         return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
 
     def _calculate_vp(self, df, length=360, rows=100, va_perc=0.70):
-        if len(df) < length: return None
-        subset = df.iloc[-length:].copy().reset_index(drop=True)
-        high_val, low_val = subset['high'].max(), subset['low'].min()
-        price_step = (high_val - low_val) / rows
-        if price_step == 0: return None
-        total_volume = np.zeros(rows)
-        subset['start_slot'] = np.floor((subset['low'] - low_val) / price_step).astype(int).clip(0, rows - 1)
-        subset['end_slot'] = np.floor((subset['high'] - low_val) / price_step).astype(int).clip(0, rows - 1)
+        """
+        计算体积分布 (Volume Profile) - 优化版
+        参考 LuxAlgo 逻辑，采用区间重叠法计算分布
+        """
+        if len(df) < 50: return None
         
-        for row in subset.itertuples():
-            level_low, level_high, level_vol = row.low, row.high, row.volume
-            start_idx, end_idx = row.start_slot, row.end_slot
-            for i in range(start_idx, end_idx + 1):
-                p_level = low_val + i * price_step
-                p_next = p_level + price_step
-                proportion = 0.0
-                if level_low >= p_level and level_high > p_next:
-                    proportion = (p_next - level_low) / (level_high - level_low)
-                elif level_high <= p_next and level_low < p_level:
-                    proportion = (level_high - p_level) / (level_high - level_low)
-                elif level_low >= p_level and level_high <= p_next:
-                    proportion = 1.0
-                else:
-                    proportion = price_step / (level_high - level_low)
-                total_volume[i] += level_vol * proportion
+        # 1. 截取数据
+        subset = df.iloc[-length:].copy().reset_index(drop=True)
+        
+        # 2. 定义价格区间
+        high_val = subset['high'].max()
+        low_val = subset['low'].min()
+        
+        if high_val == low_val: return None
+        
+        price_step = (high_val - low_val) / rows
+        total_volume = np.zeros(rows)
+        
+        # 3. 核心计算：将每根K线的成交量分配到对应的价格桶(Bin)中
+        # 使用 numpy 向量化操作加速或者是优化后的循环
+        # 这里使用优化循环，比 itertuples 快
+        
+        highs = subset['high'].values
+        lows = subset['low'].values
+        vols = subset['volume'].values
+        
+        for i in range(len(subset)):
+            h = highs[i]
+            l = lows[i]
+            v = vols[i]
+            
+            # 如果是十字星(High=Low)，直接归入对应的一个桶
+            if h == l:
+                bin_idx = int((h - low_val) / price_step)
+                bin_idx = min(bin_idx, rows - 1)
+                total_volume[bin_idx] += v
+                continue
+            
+            # 计算该K线覆盖的桶范围
+            start_bin = int((l - low_val) / price_step)
+            end_bin = int((h - low_val) / price_step)
+            
+            # 限制范围防止越界
+            start_bin = max(0, min(start_bin, rows - 1))
+            end_bin = max(0, min(end_bin, rows - 1))
+            
+            # 计算每单位价格的成交量 (假设均匀分布)
+            vol_per_price = v / (h - l)
+            
+            for b in range(start_bin, end_bin + 1):
+                # 当前桶的价格范围
+                bin_low = low_val + b * price_step
+                bin_high = low_val + (b + 1) * price_step
+                
+                # 计算 K线 与 当前桶 的重叠高度
+                # 重叠 = min(K线顶, 桶顶) - max(K线底, 桶底)
+                overlap = max(0, min(h, bin_high) - max(l, bin_low))
+                
+                # 累加成交量
+                total_volume[b] += overlap * vol_per_price
 
+        # 4. 计算 POC (Point of Control)
         poc_idx = np.argmax(total_volume)
         poc_price = low_val + (poc_idx + 0.5) * price_step
-        total_traded = np.sum(total_volume)
-        target = total_traded * va_perc
-        curr, vah_i, val_i = total_volume[poc_idx], poc_idx, poc_idx
-        while curr < target:
-            if vah_i == rows - 1 and val_i == 0: break
-            up = total_volume[vah_i + 1] if vah_i < rows - 1 else 0
-            down = total_volume[val_i - 1] if val_i > 0 else 0
-            if up == 0 and down == 0: break
-            if up >= down:
-                curr += up; vah_i += 1
-            else:
-                curr += down; val_i -= 1
         
-        peak_n = int(rows * 0.09)
-        peaks = []
-        for i in range(rows):
-            s_p, e_p = max(0, i - peak_n), min(rows, i + peak_n + 1)
-            vol = total_volume[i]
-            if vol == np.max(total_volume[s_p:e_p]) and vol > np.max(total_volume) * 0.01:
-                peaks.append(low_val + (i + 0.5) * price_step)
+        # 5. 计算 VAH / VAL (Value Area High / Low)
+        total_traded_vol = np.sum(total_volume)
+        target_vol = total_traded_vol * va_perc
+        
+        current_vol = total_volume[poc_idx]
+        vah_idx = poc_idx
+        val_idx = poc_idx
+        
+        # 从 POC 向两边扩散寻找 70% 成交量区域
+        while current_vol < target_vol:
+            # 如果已经到达边界，停止
+            if vah_idx >= rows - 1 and val_idx <= 0:
+                break
+                
+            up_vol = total_volume[vah_idx + 1] if vah_idx < rows - 1 else 0
+            down_vol = total_volume[val_idx - 1] if val_idx > 0 else 0
+            
+            if up_vol >= down_vol:
+                vah_idx += 1
+                current_vol += up_vol
+            else:
+                val_idx -= 1
+                current_vol += down_vol
+                
+        vah_price = low_val + (vah_idx + 1) * price_step
+        val_price = low_val + val_idx * price_step
+        
+        # 6. 计算 HVN (High Volume Nodes - 筹码峰)
+        # 寻找局部峰值 (Local Maxima)
+        hvns = []
+        # 定义一个简单的窗口来检测峰值，避免噪音
+        window = max(1, int(rows * 0.05)) 
+        
+        for i in range(window, rows - window):
+            is_peak = True
+            current_val = total_volume[i]
+            
+            # 检查左右两侧是否都小于当前值
+            # 左侧
+            if not all(current_val >= total_volume[i-window:i]): is_peak = False
+            # 右侧
+            if not all(current_val >= total_volume[i+1:i+1+window]): is_peak = False
+            
+            # 过滤掉太小的峰 (例如小于最大量的 10%)
+            if is_peak and current_val > np.max(total_volume) * 0.1:
+                hvns.append(low_val + (i + 0.5) * price_step)
+        
+        # 如果找不到局部峰值，把 POC 放进去作为唯一的峰
+        if not hvns:
+            hvns.append(poc_price)
 
         return {
             "poc": poc_price, 
-            "vah": low_val + (vah_i + 1) * price_step, 
-            "val": low_val + val_i * price_step,
-            "hvns": sorted(peaks, reverse=True)
+            "vah": vah_price, 
+            "val": val_price,
+            "hvns": sorted(hvns, reverse=True) # 从高价到低价排序
         }
 
     def _fetch_market_derivatives(self, symbol):
@@ -307,8 +374,10 @@ class MarketTool:
             vol_ma20 = volume.rolling(window=20).mean().iloc[-1]
             current_vol = volume.iloc[-1]
             vol_ratio = round(current_vol / vol_ma20, 2) if vol_ma20 > 0 else 0
+            
+            # 使用新的 VP 算法
             vp = self._calculate_vp(df, length=360)
-            if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": [], "lvns": []}
+            if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": []}
             
             recent_closes = [round(x, 2) for x in df['close'].tail(5).values.tolist()]
             
@@ -347,7 +416,7 @@ class MarketTool:
                     print(f"❌ [REAL ERROR] 撤单失败: {e}")
                     return None
 
-            # --- 2. 平仓逻辑 (修改：使用 LIMIT 单进行平仓) ---
+            # --- 2. 平仓逻辑 (修改：支持部分平仓/减仓) ---
             if action == 'CLOSE':
                 print(f"⚠️ [REAL] 执行 LIMIT 平仓逻辑...")
                 try:

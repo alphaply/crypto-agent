@@ -2,19 +2,20 @@ import json
 import os
 import time
 import math
-import uuid  # ✅ Used for generating mock IDs
+import uuid
 from typing import Annotated, List, TypedDict, Union, Dict, Any, Optional
 from datetime import datetime
 
-# LangChain / LangGraph Imports
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, BaseMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+import pytz
 
-# 自定义模块
-import database
+TZ_CN = pytz.timezone('Asia/Shanghai')
+# 假设 database 和 market_data 模块已存在
+import database 
 from market_data import MarketTool
 
 # 加载环境变量
@@ -22,24 +23,31 @@ load_dotenv()
 market_tool = MarketTool()
 
 # ==========================================
-# 0. Prompt 模板定义 (根据模式区分)
+# Prompt 模板 (更新：接受 orders_text)
 # ==========================================
 
-# A. 实盘执行模式 Prompt (修改：CLOSE 需要填入 entry_price)
+# A. 实盘执行模式 Prompt
 REAL_TRADE_PROMPT_TEMPLATE = """
-你是由 {model} 驱动的 **专业实盘交易执行员 (Execution Trader)**。
-当前监控: **{symbol}** | 模式: 🔴 实盘交易 (REAL EXECUTION) | 杠杆: {leverage}x
+你是由 {model} 驱动的 **高胜率稳健合约交易员**。
+当前时间: {current_time}
+当前监控: {symbol} | 模式: 实盘交易 | 杠杆: {leverage}x
 当前价格: {current_price} | 15m ATR: {atr_15m:.2f}
 
 【角色任务】
 捕捉日内 结构清晰 的波段机会。你的目标是稳定盈利，而非频繁刷单。
 如果市场出现符合策略的高盈亏比机会，你却因为过度犹豫而选择观望，将被视为严重失职。
-**实盘模式下，你不需要设置止盈止损 (TP/SL)，专注于优异的进场位置。**
+**实盘模式下，你不需要设置止盈止损 (TP/SL)，专注于优异的进场位置与出场位置。**
+开单要有明确的信心支撑
+做单方式：双向持仓 做多做空均可
+
+【资金管理 (RISK MANAGEMENT)】
+1. **严禁梭哈 (No All-In)**: 单笔交易的保证金占用不得超过可用余额的 20% (或者你想要的比例)。
+2. **计算公式**: 请根据 `(余额 * 挂单百分比 * 杠杆) / 价格` 来计算下单数量 `amount`。
 
 【权限与指令】
-1. **BUY_LIMIT**: 挂单接多 (价格必须 < 现价)。
-2. **SELL_LIMIT**: 挂单做空 (价格必须 > 现价)。
-3. **CLOSE**: 挂限价单平掉当前持仓 (Limit Close)。**注意：必须在 `entry_price` 中填入平仓价格**，不要留空。
+1. **BUY_LIMIT**: 挂单开多 (价格必须 < 现价)。
+2. **SELL_LIMIT**: 挂单开空 (价格必须 > 现价)。
+3. **CLOSE**: 挂限价单平多或平空 (Limit Close)。**注意：必须在 `entry_price` 中填入平仓价格**，不要留空。CLOSE只支持限价单。
 4. **CANCEL**: 撤销指定的挂单。
 5. **NO_ACTION**: 没有极高把握时，保持空仓。
 
@@ -52,8 +60,11 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 
 【资金与持仓】
 可用余额: {balance:.2f} USDT
-现有持仓: {positions_json}
-活跃挂单: {orders_json}
+现有持仓: 
+{positions_text}
+
+活跃挂单 (Active Orders): 
+{orders_text}
 
 【全量市场数据】
 {formatted_market_data}
@@ -67,7 +78,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 【逻辑校验 (CRITICAL REALITY CHECK)】
 你必须执行以下检查，否则会亏损：
 1. **时效性检查**: 现在的价格 ({current_price}) 是否已经跌破/突破了历史记录中的支撑/阻力位？
-3. **挂单铁律**: 
+2. **挂单铁律**: 
    - BUY_LIMIT 价格必须 < {current_price}
    - SELL_LIMIT 价格必须 > {current_price}
    - CLOSE 价格务必合理（多单止盈价 > 现价，空单止盈价 < 现价，或者为了快速跑路选一个接近现价的位置）。
@@ -85,7 +96,8 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 
 STRATEGY_PROMPT_TEMPLATE = """
 你是由 {model} 驱动的 **资深加密货币策略分析师 (Crypto Strategist)**。
-当前监控: **{symbol}** | 模式: 🔵 策略分析 (STRATEGY IDEA)
+当前时间: {current_time}
+当前监控: {symbol} | 模式: 策略分析 (STRATEGY IDEA)
 当前价格: {current_price} | 15m ATR: {atr_15m:.2f}
 
 【角色任务】
@@ -104,8 +116,11 @@ STRATEGY_PROMPT_TEMPLATE = """
 7. 要保持高胜率以及高回报率
 
 【当前状态】
-现有持仓: {positions_json}
-活跃策略挂单: {orders_json}
+现有持仓: 
+{positions_text}
+
+活跃策略挂单 (Strategy Orders): 
+{orders_text}
 
 【全量市场数据】
 {formatted_market_data}
@@ -120,7 +135,7 @@ STRATEGY_PROMPT_TEMPLATE = """
 思路 解读 中文描述
 请输出 JSON。
 - `action`: BUY_LIMIT / SELL_LIMIT / CANCEL / NO_ACTION
-- `cancel_order_id`: 如果 action 是 CANCEL，请填写要撤销的模拟单 ID。
+- `cancel_order_id`: 如果 action 是 CANCEL，请填写要撤销的单据 ID。
 - `entry_price`: 建议入场价
 - `take_profit`: 建议止盈价 (必填)
 - `stop_loss`: 建议止损价 (必填)
@@ -156,10 +171,6 @@ class AgentOutput(BaseModel):
     summary: MarketSummaryParams
     orders: List[OrderParams]
 
-# ==========================================
-# 2. 定义 Graph 状态 (State)
-# ==========================================
-
 class AgentState(TypedDict):
     symbol: str
     messages: List[BaseMessage]
@@ -170,13 +181,12 @@ class AgentState(TypedDict):
     final_output: Dict[str, Any]
 
 # ==========================================
-# 3. 核心工具函数：数据转 Markdown
+# 2. 格式化工具函数 (Agent Friendly)
 # ==========================================
+
 def format_positions_to_agent_friendly(positions: list) -> str:
     """
     将复杂的持仓 JSON 转换为 Agent 易读的精简文本
-    输入: [{"symbol": "BNB/USDT:USDT", "side": "long", "amount": 0.1, "entry_price": 872.85, "unrealized_pnl": 0.062}]
-    输出: [LONG] BNB/USDT | Amt: 0.1 | Entry: 872.85 | PnL: +0.062 USDT
     """
     if not positions:
         return "无持仓 (No Positions)"
@@ -196,6 +206,46 @@ def format_positions_to_agent_friendly(positions: list) -> str:
         lines.append(line)
         
     return "\n".join(lines)
+
+def format_orders_to_agent_friendly(orders: list) -> str:
+    """
+    将活跃挂单转换为 Agent 易读的精简文本
+    输入样例: [{"id": "84862268134", "side": "buy", "type": "限价入场", "price": 873.5, "amount": 0.01}]
+    输出样例: [BUY] LIMIT | ID: 84862268134 | Price: 873.5 | Amt: 0.01
+    """
+    if not orders:
+        return "无活跃挂单 (No Active Orders)"
+
+    lines = []
+    for o in orders:
+        # 1. 提取方向
+        side = o.get('side', '').upper()
+        
+        # 2. 标准化类型 (处理中文 "限价入场")
+        raw_type = str(o.get('type', 'LIMIT'))
+        if '限价' in raw_type or 'limit' in raw_type.lower():
+            order_type = 'LIMIT'
+        else:
+            order_type = raw_type.upper()
+
+        # 3. 提取核心数据
+        oid = o.get('id', 'N/A')
+        price = float(o.get('price', 0))
+        amt = float(o.get('amount', 0))
+
+        # 4. 可选: 止盈止损 (策略单可能会有)
+        tp = float(o.get('tp', 0) or o.get('take_profit', 0))
+        sl = float(o.get('sl', 0) or o.get('stop_loss', 0))
+        
+        extras = ""
+        if tp > 0 or sl > 0:
+            extras = f" | TP: {tp} | SL: {sl}"
+        
+        line = f"[{side}] {order_type} | ID: {oid} | Price: {price} | Amt: {amt}{extras}"
+        lines.append(line)
+
+    return "\n".join(lines)
+
 def format_market_data_to_markdown(data: dict) -> str:
     """
     将复杂的市场 JSON 数据转换为 LLM 易读的 Markdown 格式
@@ -206,7 +256,7 @@ def format_market_data_to_markdown(data: dict) -> str:
         if abs_p >= 1000: return f"{int(price)}"      
         if abs_p >= 1: return f"{price:.2f}"          
         if abs_p >= 0.01: return f"{price:.4f}"       
-        return f"{price:.8f}".rstrip('0')             
+        return f"{price:.8f}".rstrip('0')              
 
     def fmt_num(num):
         if num > 1_000_000_000: return f"{num/1_000_000_000:.1f}B"
@@ -272,7 +322,9 @@ def format_market_data_to_markdown(data: dict) -> str:
 def start_node(state: AgentState) -> AgentState:
     symbol = state['symbol']
     config = state['agent_config']
-    
+    now = datetime.now(TZ_CN)
+    week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    current_time_str = f"{now.strftime('%Y-%m-%d %H:%M:%S')} ({week_map[now.weekday()]})"
     trade_mode = config.get('mode', 'STRATEGY').upper()
     is_real_exec = (trade_mode == 'REAL')
     
@@ -282,9 +334,8 @@ def start_node(state: AgentState) -> AgentState:
         # 获取全量数据
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode)
         # 获取账户数据 (实盘模式读交易所，策略模式读数据库或模拟余额)
-        # 注意：这里我们统一传入 is_real=is_real_exec
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec)
-        # 获取最近 10 条历史记录
+        # 获取最近历史记录
         recent_summaries = database.get_recent_summaries(symbol, limit=3)
     except Exception as e:
         print(f"❌ [Data Fetch Error]: {e}")
@@ -295,13 +346,13 @@ def start_node(state: AgentState) -> AgentState:
     # 资金计算
     leverage = int(os.getenv('LEVERAGE', 10))
     balance = account_data.get('balance', 0)
-    if balance < 10: balance = 10000 
     
     # 市场数据解析
     analysis_data = market_full.get("analysis", {}).get("15m", {})
     current_price = analysis_data.get("price", 0)
     atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
     
+    # 构建 Market Context
     indicators_summary = {}
     for tf in ['5m', '15m', '1h', '4h', '1d','1w']:
         tf_data = market_full.get("analysis", {}).get(tf)
@@ -335,54 +386,76 @@ def start_node(state: AgentState) -> AgentState:
     history_entries = []
     if recent_summaries:
         for s in recent_summaries:
-            ts = s['timestamp'] if 'timestamp' in s else 'Unknown Time'
-            agent = s['agent_name'] if 'agent_name' in s else 'Unknown Agent'
-            content = s['content'] if 'content' in s else 'No Content'
+            ts = s['timestamp'] if 'timestamp' in s else 'Unknown'
+            agent = s['agent_name'] if 'agent_name' in s else 'Unknown'
             logic = s['strategy_logic'] if 'strategy_logic' in s else 'No Logic'
-            entry = f"⏰ [{ts}] Agent: {agent}\n📢 View: {content}\n🧠 Logic: {logic}"
+            if "LLM Failed" in logic or "json_invalid" in logic:
+                continue 
+                
+            content = s['content'][:200] + "..." if len(s['content']) > 200 else s['content']
+            logic = logic[:300] + "..." if len(logic) > 300 else logic
+            entry = f" [{ts}] {agent}: {content} | Logic: {logic}"
             history_entries.append(entry)
-        formatted_history_text = "\n\n".join(history_entries)
+        formatted_history_text = "\n".join(history_entries)
     else:
         formatted_history_text = "(暂无历史记录)"
 
+    # 格式化持仓文本
+    positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
+
     # 根据模式选择 Prompt
     if is_real_exec:
-        # --- 实盘模式 Prompt ---
+        # --- 实盘模式 ---
         raw_orders = account_data.get('real_open_orders', [])
+        # 构建显示用对象列表（保持原有逻辑，用于 format 函数）
         display_orders = [{
-            "id": o.get('order_id'), "side": o.get('side'), "type": o.get('type'), 
-            "price": o.get('price'), "amount": o.get('amount')
+            "id": o.get('order_id') or o.get('id'), # 兼容不同 key
+            "side": o.get('side'), 
+            "type": o.get('type'), 
+            "price": o.get('price'), 
+            "amount": o.get('amount')
         } for o in raw_orders]
+        
+        # 使用新函数转为 Friendly String
+        orders_friendly_text = format_orders_to_agent_friendly(display_orders)
         
         system_prompt = REAL_TRADE_PROMPT_TEMPLATE.format(
             model=config.get('model'),
             symbol=symbol,
             leverage=leverage,
+            current_time=current_time_str,
             current_price=market_context_llm['current_price'],
             atr_15m=market_context_llm['atr_15m'],
             balance=balance,
-            positions_json = format_positions_to_agent_friendly(account_data.get('real_positions', [])),
-            orders_json=json.dumps(display_orders, ensure_ascii=False),
+            positions_text=positions_text,
+            orders_text=orders_friendly_text, # 传入文本
             formatted_market_data=formatted_market_data,
             history_text=formatted_history_text,
         )
     else:
-        # --- 策略模式 Prompt ---
-        # ✅ 提取 "mock_open_orders" 传给策略 Agent，让其看到自己发过的单
+        # --- 策略模式 ---
         raw_mock_orders = account_data.get('mock_open_orders', [])
         display_mock_orders = [{
-            "id": o.get('order_id'), "side": o.get('side'), "type": "LIMIT",
-            "price": o.get('price'), "amount": o.get('amount'),
-            "tp": o.get('take_profit'), "sl": o.get('stop_loss')
+            "id": o.get('order_id') or o.get('id'), 
+            "side": o.get('side'), 
+            "type": "LIMIT",
+            "price": o.get('price'), 
+            "amount": o.get('amount'),
+            "tp": o.get('take_profit'), 
+            "sl": o.get('stop_loss')
         } for o in raw_mock_orders]
+
+        # 使用新函数转为 Friendly String
+        orders_friendly_text = format_orders_to_agent_friendly(display_mock_orders)
 
         system_prompt = STRATEGY_PROMPT_TEMPLATE.format(
             model=config.get('model'),
             symbol=symbol,
+            current_time=current_time_str,
             current_price=market_context_llm['current_price'],
             atr_15m=market_context_llm['atr_15m'],
-            positions_json = format_positions_to_agent_friendly(account_data.get('real_positions', [])),
-            orders_json=json.dumps(display_mock_orders, ensure_ascii=False), 
+            positions_text=positions_text,
+            orders_text=orders_friendly_text, # 传入文本
             formatted_market_data=formatted_market_data,
             history_text=formatted_history_text,
         )
@@ -546,16 +619,19 @@ def execution_node(state: AgentState) -> AgentState:
                 side = 'BUY' if 'BUY' in action else 'SELL'
                 mock_id = f"ST-{uuid.uuid4().hex[:6]}"
                 
-                print(f"💡 [STRATEGY] Idea: {side} @ {entry_price} | TP: {order.get('take_profit')} | SL: {order.get('stop_loss')}")
+                print(f"💡 [STRATEGY] Idea: {side} @ {entry_price} | ID: {mock_id}")
                 
+                # ✅ 2. 存入挂单池 (一定要传 mock_id !!!)
                 database.create_mock_order(
                     symbol, side, 
                     entry_price, 
                     order['amount'], 
                     order['stop_loss'], 
-                    order['take_profit']
+                    order['take_profit'],
+                    order_id=mock_id  # <--- 关键修改：传入 ID
                 )
 
+                # ✅ 3. 存入日志 (使用同一个 mock_id)
                 database.save_order_log(
                     mock_id, symbol, agent_name, side, 
                     entry_price, 

@@ -72,21 +72,30 @@ def get_mock_orders(symbol=None):
     conn.close()
     return rows
 
-def create_mock_order(symbol, side, price, amount, sl, tp):
-    """创建一个模拟挂单"""
+# database.py
+
+def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, order_id=None):
+    """
+    创建一个模拟挂单
+    ✅ 新增参数: order_id (必须传入，保证和日志一致)
+    """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    order_id = str(uuid.uuid4())[:8]
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    c.execute("""
-        INSERT INTO mock_orders (order_id, timestamp, symbol, side, type, price, amount, stop_loss, take_profit)
-        VALUES (?, ?, ?, ?, 'LIMIT', ?, ?, ?, ?)
-    """, (order_id, timestamp, symbol, side, price, amount, sl, tp))
-    
-    conn.commit()
-    conn.close()
-    return order_id
+    if not order_id:
+        import uuid
+        order_id = f"ST-{uuid.uuid4().hex[:6]}"
+
+    try:
+        c.execute('''
+            INSERT INTO mock_orders (order_id, symbol, side, price, amount, stop_loss, take_profit, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (order_id, symbol, side, price, amount, stop_loss, take_profit, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+    except Exception as e:
+        print(f"❌ DB Error (create_mock_order): {e}")
+    finally:
+        conn.close()
 
 def cancel_mock_order(order_id):
     """撤销模拟挂单"""
