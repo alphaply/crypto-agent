@@ -7,8 +7,9 @@ import time
 import warnings
 import database
 from datetime import datetime
+from logger import setup_logger  # 引入 logger
 
-# 忽略 pandas 的一些警告
+logger = setup_logger("MarketData")
 warnings.filterwarnings("ignore")
 load_dotenv()
 
@@ -42,9 +43,9 @@ class MarketTool:
         
         try:
             self.exchange.load_markets()
-            print("✅ 交易所连接成功，时间已校准。")
+            logger.info("✅ 交易所连接成功，时间已校准。")
         except Exception as e:
-            print(f"⚠️ 初始化加载市场失败: {e}")
+            logger.warning(f"⚠️ 初始化加载市场失败: {e}")
 
     # ==========================================
     # 0. 基础工具 (指标计算)
@@ -215,7 +216,7 @@ class MarketTool:
                 "24h_quote_vol": quote_vol
             }
         except Exception as e:
-            print(f"Derivatives Error: {e}")
+            logger.error(f"Derivatives Error: {e}")
             return {"funding_rate": 0, "open_interest": 0, "24h_quote_vol": 0}
 
     # ==========================================
@@ -307,12 +308,12 @@ class MarketTool:
                     status_data["real_open_orders"] = real_open_orders
                     
                 except Exception as e:
-                    print(f"⚠️ [API Warning] 获取订单失败: {e}")
+                    logger.warning(f"⚠️ [API Warning] 获取订单失败: {e}")
                     status_data["real_open_orders"] = []
                     
 
             except Exception as e:
-                print(f"⚠️ [Exchange API Warning] 获取实盘数据失败: {e}")
+                logger.warning(f"⚠️ [Exchange API Warning] 获取实盘数据失败: {e}")
                 if status_data["balance"] == 0: status_data["balance"] = 10000 
         else:
             try:
@@ -321,7 +322,7 @@ class MarketTool:
                 status_data["balance"] = 10000.0 
                 status_data["real_positions"] = [] 
             except Exception as e:
-                print(f"❌ [模拟 DB 错误] 读取数据库失败: {e}")
+                logger.error(f"❌ [模拟 DB 错误] 读取数据库失败: {e}")
         return status_data
 
     def get_market_analysis(self, symbol, mode='STRATEGY'):
@@ -346,7 +347,7 @@ class MarketTool:
             "sentiment": self._fetch_market_derivatives(symbol)
         }
         
-        print(f"Fetching {symbol} market data ({mode} mode: {timeframes})...", end=" ", flush=True)
+        logger.info(f"Fetching {symbol} market data ({mode} mode: {timeframes})...")
         
         # 并行获取或顺序获取（这里保持原逻辑顺序获取）
         for tf in timeframes:
@@ -354,7 +355,7 @@ class MarketTool:
             if data:
                 final_output["analysis"][tf] = data
         
-        print("Done.")     
+        logger.info("Done.")
         return final_output
 
     def process_timeframe(self, symbol, tf):
@@ -392,7 +393,7 @@ class MarketTool:
                 "df_raw": df 
             }
         except Exception as e:
-            print(f"Process TF Error {tf}: {e}")
+            logger.error(f"Process TF Error {tf}: {e}")
             return None
 
     # ==========================================
@@ -406,19 +407,19 @@ class MarketTool:
             # --- 1. 撤单逻辑 ---
             if action == 'CANCEL':
                 cancel_id = order_params.get('cancel_order_id')
-                print(f"🔄 [REAL] 收到撤单指令: ID {cancel_id}")
+                logger.info(f"🔄 [REAL] 收到撤单指令: ID {cancel_id}")
                 try:
                     if cancel_id and cancel_id != "ALL":
                         self.exchange.cancel_order(cancel_id, symbol)
-                        print(f"   |-- ✅ 主订单 {cancel_id} 已撤销")
+                        logger.info(f"   |-- ✅ 主订单 {cancel_id} 已撤销")
                     return {"status": "cancelled"}
                 except Exception as e:
-                    print(f"❌ [REAL ERROR] 撤单失败: {e}")
+                    logger.error(f"❌ [REAL ERROR] 撤单失败: {e}")
                     return None
 
             # --- 2. 平仓逻辑 (修改：支持部分平仓/减仓) ---
             if action == 'CLOSE':
-                print(f"⚠️ [REAL] 执行 LIMIT 平仓逻辑...")
+                logger.info(f"⚠️ [REAL] 执行 LIMIT 平仓逻辑...")
                 try:
                     # 先撤销所有挂单，防止平仓后又成交 (可选，视策略需求，这里保留)
                     # self.exchange.cancel_all_orders(symbol)
@@ -429,7 +430,7 @@ class MarketTool:
                     target_pos_side = order_params.get('pos_side', '').upper()
                     # 如果 Agent 没给价格(或给0)，为了防止报错，我们获取当前最新价作为 Limit 价格
                     if raw_limit_price <= 0:
-                        print("   |-- ⚠️ Agent 未指定平仓价，自动获取当前 Ticker 价格...")
+                        logger.info("   |-- ⚠️ Agent 未指定平仓价，自动获取当前 Ticker 价格...")
                         ticker = self.exchange.fetch_ticker(symbol)
                         raw_limit_price = float(ticker.get('last', 0))
 
@@ -449,10 +450,10 @@ class MarketTool:
                             # 如果 Agent 指定了数量且小于总持仓，则部分平仓；否则全平
                             if raw_close_amount > 0 and raw_close_amount < total_pos_amt:
                                 final_amount = raw_close_amount
-                                print(f"   |-- 📉 [部分平仓] 目标: {final_amount} / 持仓: {total_pos_amt}")
+                                logger.info(f"   |-- 📉 [部分平仓] 目标: {final_amount} / 持仓: {total_pos_amt}")
                             else:
                                 final_amount = total_pos_amt
-                                print(f"   |-- 📉 [全仓止盈] 目标: All ({total_pos_amt})")
+                                logger.info(f"   |-- 📉 [全仓止盈] 目标: All ({total_pos_amt})")
 
                             side = pos['side'] # long / short
                             # 平多 = 卖出(Sell) | 平空 = 买入(Buy)
@@ -467,12 +468,12 @@ class MarketTool:
                                 'timeInForce': 'GTC' # 挂单直到成交
                             }
                             
-                            print(f"   |-- 🚀 挂出平仓单: {side} -> {close_side} {amount} @ {limit_price}")
+                            logger.info(f"   |-- 🚀 挂出平仓单: {side} -> {close_side} {amount} @ {limit_price}")
                             self.exchange.create_order(symbol, 'LIMIT', close_side, amount, limit_price, params=params)
                             
                     return {"status": "closing_limit_placed"}
                 except Exception as e:
-                    print(f"❌ 平仓挂单失败: {e}")
+                    logger.error(f"❌ 平仓挂单失败: {e}")
                     return None
 
             # --- 3. 开仓挂单逻辑 (仅限价单) ---
@@ -492,23 +493,23 @@ class MarketTool:
                     'positionSide': pos_side, 
                 }
 
-                print(f"🚀 [REAL] 发送主限价单: {symbol} {side} {amount} @ {price}")
+                logger.info(f"🚀 [REAL] 发送主限价单: {symbol} {side} {amount} @ {price}")
                 
                 try:
                     # 1. 下主限价单
                     main_order = self.exchange.create_order(symbol, 'LIMIT', side, amount, price, params=params)
-                    print(f"✅ 主订单成功! ID: {main_order['id']}")
+                    logger.info(f"✅ 主订单成功! ID: {main_order['id']}")
                     
                     # 实盘模式通常不自动挂 TP/SL，因为 Agent 会控制 CLOSE
-                    print(f"ℹ️ [REAL] 纯限价单模式 (无自动 TP/SL)")
+                    logger.info(f"ℹ️ [REAL] 纯限价单模式 (无自动 TP/SL)")
                         
                     return main_order
                 except Exception as e:
-                    print(f"❌ [REAL API ERROR] 下单失败: {e}")
+                    logger.error(f"❌ [REAL API ERROR] 下单失败: {e}")
                     return None
 
         except Exception as e:
-            print(f"❌ [REAL SYSTEM ERROR] 实盘执行异常: {e}")
+            logger.error(f"❌ [REAL SYSTEM ERROR] 实盘执行异常: {e}")
             return None
 
     def _place_sl_tp_market(self, symbol, side, pos_side, amount, sl_val, tp_val):
@@ -530,7 +531,7 @@ class MarketTool:
                 sl_params = base_params.copy()
                 sl_params['stopPrice'] = stop_price
                 self.exchange.create_order(symbol, 'STOP_MARKET', close_side, amount, None, params=sl_params)
-                print(f"   |-- 🛡️ 市价止损已挂: {stop_price}")
+                logger.info(f"   |-- 🛡️ 市价止损已挂: {stop_price}")
             except Exception as e:
                 self._handle_order_error(e, "止损")
 
@@ -541,17 +542,17 @@ class MarketTool:
                 tp_params = base_params.copy()
                 tp_params['stopPrice'] = tp_price
                 self.exchange.create_order(symbol, 'TAKE_PROFIT_MARKET', close_side, amount, None, params=tp_params)
-                print(f"   |-- 💰 市价止盈已挂: {tp_price}")
+                logger.info(f"   |-- 💰 市价止盈已挂: {tp_price}")
             except Exception as e:
                 self._handle_order_error(e, "止盈")
 
     def _handle_order_error(self, e, order_type):
         msg = str(e)
         if '2021' in msg: 
-            print(f"   |-- ⚠️ {order_type} 失败: 触发价过于接近现价。")
+            logger.warning(f"   |-- ⚠️ {order_type} 失败: 触发价过于接近现价。")
         elif '2011' in msg:
-            print(f"   |-- ⚠️ {order_type} 暂时拒绝: 仓位未更新。")
+            logger.warning(f"   |-- ⚠️ {order_type} 暂时拒绝: 仓位未更新。")
         elif '-1106' in msg:
-            print(f"   |-- ❌ {order_type} 参数错误: 请检查 reduceOnly。")
+            logger.error(f"   |-- ❌ {order_type} 参数错误: 请检查 reduceOnly。")
         else:
-            print(f"   |-- ❌ {order_type} 设置失败: {e}")
+            logger.error(f"   |-- ❌ {order_type} 设置失败: {e}")

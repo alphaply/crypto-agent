@@ -9,10 +9,12 @@ import pytz
 from database import DB_NAME, init_db
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
+from logger import setup_logger
 
 load_dotenv(dotenv_path='.env', override=True)
 app = Flask(__name__)
 TZ_CN = pytz.timezone('Asia/Shanghai')
+logger = setup_logger("Dashboard")
 
 def get_dashboard_data(symbol, page=1, per_page=10):
     try:
@@ -45,7 +47,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         conn.close()
         return agent_summaries, orders, total_count
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error: {e}")
         return [], [], 0
 
 def get_all_configs():

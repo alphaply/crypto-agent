@@ -6,12 +6,16 @@ from datetime import datetime, timedelta
 import pytz 
 from dotenv import load_dotenv
 from agent_graph import run_agent_for_config
+from logger import setup_logger
 
 # 加载环境变量 (.env 文件)
 load_dotenv()
 
 # 设置时区
 TZ_CN = pytz.timezone('Asia/Shanghai')
+
+# 初始化logger
+logger = setup_logger("MainScheduler")
 
 # ==========================================
 # 1. 硬编码配置 (保底配置)
@@ -34,7 +38,7 @@ def get_all_configs():
         configs = json.loads(configs_str)
         return configs
     except Exception as e:
-        print(f"❌ 配置解析失败: {e}", flush=True)
+        logger.error(f"❌ 配置解析失败: {e}")
         return []
 
 def process_single_config(config):
@@ -53,16 +57,13 @@ def process_single_config(config):
     # 就直接跳过执行。
     if mode == 'STRATEGY':
         now_min = datetime.now(TZ_CN).minute
-        # 只要当前分钟数 > 5 且 < 55，说明不是整点（例如 15, 30, 45）
         if 5 < now_min < 55:
-            # 可以在这里打印日志，也可以选择静默跳过，以免日志刷屏
-            # print(f"💤 [策略休眠] {symbol} 等待整点运行 (当前: {now_min}分)", flush=True)
             return
 
     try:
         run_agent_for_config(config)
     except Exception as e:
-        print(f"❌ Error {symbol}: {e}", flush=True)
+        logger.error(f"❌ Error {symbol}: {e}")
 
 def get_next_run_settings():
     """
@@ -132,8 +133,8 @@ def wait_until_next_slot(interval_minutes, delay_seconds=20):
     next_run_time = datetime.fromtimestamp(next_run_time_ts).astimezone(TZ_CN)
     sleep_seconds = next_run_time_ts - now_ts
     
-    print(f"\n⏳ [调度器] 状态: 待机中 | 心跳间隔: {interval_minutes}m", flush=True)
-    print(f"   |-- 下次唤醒: {next_run_time.strftime('%H:%M:%S')}", flush=True)
+    logger.info(f"⏳ [调度器] 状态: 待机中 | 心跳间隔: {interval_minutes}m")
+    logger.info(f"   |-- 下次唤醒: {next_run_time.strftime('%H:%M:%S')}")
     
     if sleep_seconds > 0:
         time.sleep(sleep_seconds)
@@ -143,35 +144,35 @@ def job():
     if not configs:
         return
 
-    print(f"\n[{datetime.now(TZ_CN).strftime('%H:%M:%S')}] 🚀 系统唤醒 (检查 {len(configs)} 个配置)...", flush=True)
+    logger.info(f"🚀 系统唤醒 (检查 {len(configs)} 个配置)...")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_single_config, config) for config in configs]
         concurrent.futures.wait(futures)
             
-    print(f"[{datetime.now(TZ_CN).strftime('%H:%M:%S')}] ✅ 本轮执行完毕。", flush=True)
+    logger.info(f"✅ 本轮执行完毕。")
 
 def run_smart_scheduler():
-    print("--- [系统] 智能调度器启动 ---", flush=True)
+    logger.info("--- [系统] 智能调度器启动 ---")
     
     # 打印一次当前配置
     configs = get_all_configs()
     real = [c['symbol'] for c in configs if c.get('mode') == 'REAL']
     strat = [c['symbol'] for c in configs if c.get('mode') != 'REAL']
     
-    print(f"📊 实盘组: {real}")
-    print(f"📊 策略组: {strat}")
+    logger.info(f"📊 实盘组: {real}")
+    logger.info(f"📊 策略组: {strat}")
     
     while True:
         try:
             interval, mode_str = get_next_run_settings()
-            print(f"\n📅 [模式切换] {mode_str}", flush=True)
+            logger.info(f"📅 [模式切换] {mode_str}")
             
             wait_until_next_slot(interval_minutes=interval, delay_seconds=20)
             job()
             
         except Exception as e:
-            print(f"❌ 调度异常: {e}", flush=True)
+            logger.error(f"❌ 调度异常: {e}")
             time.sleep(60)
 
 if __name__ == "__main__":

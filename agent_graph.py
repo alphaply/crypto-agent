@@ -12,8 +12,10 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import pytz
+from logger import setup_logger
 
 TZ_CN = pytz.timezone('Asia/Shanghai')
+logger = setup_logger("AgentGraph")
 # 假设 database 和 market_data 模块已存在
 import database 
 from market_data import MarketTool
@@ -333,7 +335,7 @@ def start_node(state: AgentState) -> AgentState:
     trade_mode = config.get('mode', 'STRATEGY').upper()
     is_real_exec = (trade_mode == 'REAL')
     
-    print(f"\n--- [Node] Start: Analyzing {symbol} | Mode: {trade_mode} ---")
+    logger.info(f"--- [Node] Start: Analyzing {symbol} | Mode: {trade_mode} ---")
 
     try:
         # 获取全量数据
@@ -343,7 +345,7 @@ def start_node(state: AgentState) -> AgentState:
         # 获取最近历史记录
         recent_summaries = database.get_recent_summaries(symbol, limit=3)
     except Exception as e:
-        print(f"❌ [Data Fetch Error]: {e}")
+        logger.error(f"❌ [Data Fetch Error]: {e}")
         market_full = {}
         account_data = {'balance': 0, 'real_open_orders': [], 'mock_open_orders': [], 'real_positions': []}
         recent_summaries = []
@@ -479,7 +481,7 @@ def start_node(state: AgentState) -> AgentState:
 def agent_node(state: AgentState) -> AgentState:
     config = state['agent_config']
     symbol = state['symbol']
-    print(f"--- [Node] Agent: {config.get('model')} is thinking for {symbol} ---")
+    logger.info(f"--- [Node] Agent: {config.get('model')} is thinking for {symbol} ---")
     
     try:
         current_llm = ChatOpenAI(
@@ -493,7 +495,7 @@ def agent_node(state: AgentState) -> AgentState:
         return {**state, "final_output": response.model_dump()}
         
     except Exception as e:
-        print(f"❌ [LLM Error] ({symbol}): {e}")
+        logger.error(f"❌ [LLM Error] ({symbol}): {e}")
         error_output = {
             "summary": {
                 "current_trend": "Error", "key_levels": "N/A", 
@@ -510,7 +512,7 @@ def execution_node(state: AgentState) -> AgentState:
     
     trade_mode = config.get('mode', 'STRATEGY').upper()
     
-    print(f"--- [Node] Execution: {symbol} | Mode: {trade_mode} ---")
+    logger.info(f"--- [Node] Execution: {symbol} | Mode: {trade_mode} ---")
     
     output = state['final_output']
     if not output: return state
@@ -526,7 +528,7 @@ def execution_node(state: AgentState) -> AgentState:
     try:
         database.save_summary(symbol, agent_name, content, summary.get('strategy_thought'))
     except Exception as db_err:
-        print(f"⚠️ [DB Error] Save summary failed: {db_err}")
+        logger.warning(f"⚠️ [DB Error] Save summary failed: {db_err}")
 
     def _is_duplicate_order(new_action, new_price, current_open_orders):
         """
@@ -569,13 +571,13 @@ def execution_node(state: AgentState) -> AgentState:
             if action == 'CANCEL':
                 cancel_id = order.get('cancel_order_id')
                 if cancel_id:
-                    print(f"🔄 [REAL] Cancel: {cancel_id}")
+                    logger.info(f"🔄 [REAL] Cancel: {cancel_id}")
                     market_tool.place_real_order(symbol, 'CANCEL', order)
                     database.save_order_log(cancel_id, symbol, agent_name, "CANCEL", 0, 0, 0, f"撤单: {cancel_id}", trade_mode="REAL")
 
             # 2. 平仓
             elif action == 'CLOSE':
-                print(f"🎯 [REAL] Close Position (Limit)")
+                logger.info(f"🎯 [REAL] Close Position (Limit)")
                 close_res = market_tool.place_real_order(symbol, 'CLOSE', order)
                 if close_res:
                      database.save_order_log("CLOSE_CMD", symbol, agent_name, "CLOSE", order.get('entry_price'), 0, 0, log_reason, trade_mode="REAL")
@@ -587,10 +589,10 @@ def execution_node(state: AgentState) -> AgentState:
                 real_open_orders = state['account_context'].get('real_open_orders', [])
                 
                 if _is_duplicate_order(action, entry_price, real_open_orders):
-                    print(f"🛑 [Filter] 忽略重复实盘挂单: {action} @ {entry_price}")
+                    logger.info(f"🛑 [Filter] 忽略重复实盘挂单: {action} @ {entry_price}")
                     continue # 跳过下单
 
-                print(f"🚀 [REAL] Order: {action} @ {entry_price}")
+                logger.info(f"🚀 [REAL] Order: {action} @ {entry_price}")
                 res = market_tool.place_real_order(symbol, action, order)
                 if res and 'id' in res:
                     database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', 
@@ -605,11 +607,11 @@ def execution_node(state: AgentState) -> AgentState:
                 cancel_id = order.get('cancel_order_id')
                 if cancel_id:
                     try:
-                        print(f"🔄 [STRATEGY] Cancelling Mock Order: {cancel_id}")
+                        logger.info(f"🔄 [STRATEGY] Cancelling Mock Order: {cancel_id}")
                         database.cancel_mock_order(cancel_id)
                         database.save_order_log(cancel_id, symbol, agent_name, "CANCEL", 0, 0, 0, f"[Strategy] Cancel: {cancel_id}", trade_mode="STRATEGY")
                     except Exception as e:
-                        print(f"⚠️ [Mock Cancel Error]: {e}")
+                        logger.warning(f"⚠️ [Mock Cancel Error]: {e}")
 
             # 2. 开仓 - ✅ 增加防重检测
             elif action in ['BUY_LIMIT', 'SELL_LIMIT']:
@@ -618,13 +620,13 @@ def execution_node(state: AgentState) -> AgentState:
                 mock_open_orders = state['account_context'].get('mock_open_orders', [])
 
                 if _is_duplicate_order(action, entry_price, mock_open_orders):
-                    print(f"🛑 [Filter] 忽略重复策略挂单: {action} @ {entry_price}")
+                    logger.info(f"🛑 [Filter] 忽略重复策略挂单: {action} @ {entry_price}")
                     continue # 跳过入库
 
                 side = 'BUY' if 'BUY' in action else 'SELL'
                 mock_id = f"ST-{uuid.uuid4().hex[:6]}"
                 
-                print(f"💡 [STRATEGY] Idea: {side} @ {entry_price} | ID: {mock_id}")
+                logger.info(f"💡 [STRATEGY] Idea: {side} @ {entry_price} | ID: {mock_id}")
                 
                 # ✅ 2. 存入挂单池 (一定要传 mock_id !!!)
                 database.create_mock_order(
@@ -673,9 +675,9 @@ def run_agent_for_config(config: dict):
     
     mode_str = config.get('mode', 'STRATEGY').upper()
     
-    print(f"\n========================================================")
-    print(f"🚀 Launching Agent: {symbol} | Model: {config.get('model')} | Mode: {mode_str}")
-    print(f"========================================================")
+    logger.info(f"========================================================")
+    logger.info(f"🚀 Launching Agent: {symbol} | Model: {config.get('model')} | Mode: {mode_str}")
+    logger.info(f"========================================================")
 
     initial_state: AgentState = {
         "symbol": symbol,
@@ -690,6 +692,6 @@ def run_agent_for_config(config: dict):
     try:
         app.invoke(initial_state)
     except Exception as e:
-        print(f"❌ Critical Graph Error for {symbol}: {e}")
+        logger.error(f"❌ Critical Graph Error for {symbol}: {e}")
         import traceback
         traceback.print_exc()

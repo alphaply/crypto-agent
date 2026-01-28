@@ -6,8 +6,13 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
 from pydantic import BaseModel, Field
+import sys
+sys.path.insert(0, '..')
+from logger import setup_logger
 
 load_dotenv()
+
+logger = setup_logger("TestAgent")
 
 API_KEY = "sk-ba0cff7b29c64502833dcb258d706e1b"
 BASE_URL = "https://api.deepseek.com"
@@ -181,18 +186,18 @@ Predict: BTC若回踩86500-87000区域获得支撑，有望展开中期反弹至
 # ==========================================
 
 def test_llm_connection():
-    print(f"\n🚀 开始测试 LLM 配置 (.env)")
+    logger.info(f"\n🚀 开始测试 LLM 配置 (.env)")
     
     api_key = API_KEY
     base_url = BASE_URL
     model_name = MODEL_NAME
     
-    print(f"   Model: {model_name}")
-    print(f"   Base URL: {base_url}")
-    print(f"   API Key: {api_key[:6]}******" if api_key else "   ❌ API Key 未找到")
+    logger.info(f"   Model: {model_name}")
+    logger.info(f"   Base URL: {base_url}")
+    logger.info(f"   API Key: {api_key[:6]}******" if api_key else "   ❌ API Key 未找到")
 
     if not api_key:
-        print("❌ 终止：请在 .env 中配置 OPENAI_API_KEY")
+        logger.error("❌ 终止：请在 .env 中配置 OPENAI_API_KEY")
         return
 
     # 初始化 LLM
@@ -204,17 +209,17 @@ def test_llm_connection():
             temperature=0
         ).with_structured_output(AgentOutput,method="function_calling")
         
-        print("✅ LLM 客户端初始化成功")
+        logger.info("✅ LLM 客户端初始化成功")
         return llm
     except Exception as e:
-        print(f"❌ LLM 初始化失败: {e}")
+        logger.error(f"❌ LLM 初始化失败: {e}")
         return None
 
 def run_test(llm, test_name, prompt_content):
-    print(f"\n------------------------------------------------")
-    print(f"🧪 测试场景: {test_name}")
-    print(f"------------------------------------------------")
-    print("⏳ 正在发送请求给 LLM (这可能需要几秒钟)...")
+    logger.info(f"\n------------------------------------------------")
+    logger.info(f"🧪 测试场景: {test_name}")
+    logger.info(f"------------------------------------------------")
+    logger.info("⏳ 正在发送请求给 LLM (这可能需要几秒钟)...")
     
     start_t = time.time()
     try:
@@ -222,19 +227,19 @@ def run_test(llm, test_name, prompt_content):
         response = llm.invoke([SystemMessage(content=prompt_content)])
         
         # 打印结果
-        print(f"✅ 响应成功 (耗时 {time.time()-start_t:.2f}s)")
-        print("\n👇 LLM 返回的 JSON 数据:")
-        print(response)
-        print(json.dumps(response.model_dump(), indent=2, ensure_ascii=False))
+        logger.info(f"✅ 响应成功 (耗时 {time.time()-start_t:.2f}s)")
+        logger.info("\n👇 LLM 返回的 JSON 数据:")
+        logger.info(response)
+        logger.info(json.dumps(response.model_dump(), indent=2, ensure_ascii=False))
         
         # 简单的逻辑检查
         if response.orders:
-            print(f"\n💡 生成了 {len(response.orders)} 个订单指令。")
+            logger.info(f"\n💡 生成了 {len(response.orders)} 个订单指令。")
         else:
-            print("\n💡 未生成订单 (NO_ACTION 或 观望)。")
+            logger.info("\n💡 未生成订单 (NO_ACTION 或 观望)。")
             
     except Exception as e:
-        print(f"❌ 调用失败: {e}")
+        logger.error(f"❌ 调用失败: {e}")
         import traceback
         traceback.print_exc()
 

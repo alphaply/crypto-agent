@@ -1,8 +1,10 @@
 import sqlite3
 import uuid
 from datetime import datetime
+from logger import setup_logger
 
 DB_NAME = "trading_data.db"
+logger = setup_logger("Database")
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -93,7 +95,7 @@ def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, order
         ''', (order_id, symbol, side, price, amount, stop_loss, take_profit, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         conn.commit()
     except Exception as e:
-        print(f"❌ DB Error (create_mock_order): {e}")
+        logger.error(f"❌ DB Error (create_mock_order): {e}")
     finally:
         conn.close()
 
@@ -149,4 +151,4 @@ def get_recent_summaries(symbol, limit=10):
 
 if __name__ == "__main__":
     init_db()
-    print("Database initialized.")
+    logger.info("Database initialized.")
