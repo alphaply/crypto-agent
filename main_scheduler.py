@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz 
 from dotenv import load_dotenv
 from agent_graph import run_agent_for_config
-from logger import setup_logger
+from tool.logger import setup_logger
 
 # 加载环境变量 (.env 文件)
 load_dotenv()
@@ -51,7 +51,7 @@ def process_single_config(config):
     if not symbol: return
 
     # ==========================================
-    # 🧠 核心逻辑：策略模式“偷懒”机制
+    # 核心逻辑：策略模式“偷懒”机制
     # ==========================================
     # 如果是 STRATEGY 模式，但当前时间不是整点（容差 ±5分钟）
     # 就直接跳过执行。
@@ -102,12 +102,12 @@ def get_next_run_settings():
                 mode_name = "🔴实盘休整(1h)"
             else:
                 interval_minutes = 15
-                mode_name = "🚀混合双打 (实盘15m / 策略1h)" # <--- 修改了这里
+                mode_name = "🚀混合双打 (实盘15m / 策略1h)" 
                 
         # 3. 工作日：15m 心跳
         else:
             interval_minutes = 15
-            mode_name = "🚀混合双打 (实盘15m / 策略1h)" # <--- 修改了这里
+            mode_name = "🚀混合双打 (实盘15m / 策略1h)" 
 
     # ==========================================
     # 分支 B: 纯策略模式
@@ -122,7 +122,7 @@ def get_next_run_settings():
 
     return interval_minutes, mode_name
 
-def wait_until_next_slot(interval_minutes, delay_seconds=20):
+def wait_until_next_slot(interval_minutes, delay_seconds=10):
     now = datetime.now().astimezone(TZ_CN)
     now_ts = now.timestamp()
     interval_seconds = interval_minutes * 60
@@ -150,7 +150,7 @@ def job():
         futures = [executor.submit(process_single_config, config) for config in configs]
         concurrent.futures.wait(futures)
             
-    logger.info(f"✅ 本轮执行完毕。")
+    logger.info(f"本轮执行完毕。")
 
 def run_smart_scheduler():
     logger.info("--- [系统] 智能调度器启动 ---")
@@ -168,7 +168,7 @@ def run_smart_scheduler():
             interval, mode_str = get_next_run_settings()
             logger.info(f"📅 [模式切换] {mode_str}")
             
-            wait_until_next_slot(interval_minutes=interval, delay_seconds=20)
+            wait_until_next_slot(interval_minutes=interval, delay_seconds=10)
             job()
             
         except Exception as e:

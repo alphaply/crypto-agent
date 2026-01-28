@@ -12,7 +12,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import pytz
-from logger import setup_logger
+from tool.logger import setup_logger
 from tool.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, format_market_data_to_markdown
 
 TZ_CN = pytz.timezone('Asia/Shanghai')

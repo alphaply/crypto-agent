@@ -9,7 +9,7 @@ import pytz
 from database import DB_NAME, init_db
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
-from logger import setup_logger
+from tool.logger import setup_logger
 
 load_dotenv(dotenv_path='.env', override=True)
 app = Flask(__name__)

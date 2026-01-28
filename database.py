@@ -1,7 +1,7 @@
 import sqlite3
 import uuid
 from datetime import datetime
-from logger import setup_logger
+from tool.logger import setup_logger
 
 DB_NAME = "trading_data.db"
 logger = setup_logger("Database")
