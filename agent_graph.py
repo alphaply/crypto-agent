@@ -40,9 +40,6 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 开单要有明确的信心支撑
 做单方式：双向持仓 做多做空均可
 
-【资金管理 (RISK MANAGEMENT)】
-1. **严禁梭哈 (No All-In)**: 单笔交易的保证金占用不得超过可用余额的 50% (或者你想要的比例)。
-
 【权限与指令】
 1. **BUY_LIMIT**: 挂单开多 (价格必须 < 现价)。
 2. **SELL_LIMIT**: 挂单开空 (价格必须 > 现价)。
@@ -75,16 +72,15 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 {history_text}
 ----------------------------------------
 
-
 【输出要求】
 1. **时效性检查**: 现在的价格 ({current_price}) 是否已经跌破/突破了历史记录中的支撑/阻力位？
 2.
    - BUY_LIMIT 入场价格必须 <= {current_price}
    - SELL_LIMIT 入场价格必须 >= {current_price}
    - CLOSE 价格务必合理（多单止盈价 > 现价，空单止盈价 < 现价，或者为了快速跑路选一个接近现价的位置）。
+3. 禁止梭哈，单笔下单金额不得超过 可用余额 的 40%。
 
 思路 解读 中文描述
-请输出 JSON，包含 `orders` 列表。
 - `action`: BUY_LIMIT / SELL_LIMIT / CLOSE / CANCEL / NO_ACTION
 - `pos_side`: 如果是 CLOSE，必须填 'LONG' 或 'SHORT'；其他情况留空
 - `entry_price`: 挂单价格 / 平仓价格 (CLOSE 必须填此项)
@@ -108,7 +104,7 @@ STRATEGY_PROMPT_TEMPLATE = """
 **策略模式下，必须明确给出 止损(SL) 和 止盈(TP) 点位。**
 
 【策略要求】
-1. **盈亏比**: 预期 R/R 必须 > 2.0。
+1. **盈亏比**: 预期 R/R 必须 > 2.0。（越高越好）胜率也是一样的。
 2. **逻辑支撑**: 必须基于结构位 (Structure)、供需区 (Supply/Demand) 或流动性 (Liquidity) 制定计划。
 3. **完整性**: 必须包含入场价、止损价、止盈价。
 4. 你捕捉的是中长线趋势，稳健是你的目标，要稳稳赚钱。
@@ -127,14 +123,13 @@ STRATEGY_PROMPT_TEMPLATE = """
 {formatted_market_data}
 
 【历史思路回溯 (Context)】
-以下是最近 3 次的分析记录，请参考过去的时间线和思路演变：
+以下是最近的分析记录，请参考过去的时间线和思路演变：
 ----------------------------------------
 {history_text}
 ----------------------------------------
 
 【输出要求】
 思路 解读 中文描述
-请输出 JSON。
 - `action`: BUY_LIMIT / SELL_LIMIT / CANCEL / NO_ACTION
 - `cancel_order_id`: 如果 action 是 CANCEL，请填写要撤销的单据 ID。
 - `entry_price`: 建议入场价
@@ -178,10 +173,7 @@ class AgentState(TypedDict):
     history_context: List[Dict[str, Any]]
     final_output: Dict[str, Any]
 
-# ==========================================
 # 2. 格式化工具函数 (Agent Friendly)
-# ==========================================
-
 def format_positions_to_agent_friendly(positions: list) -> str:
     """
     将复杂的持仓 JSON 转换为 Agent 易读的精简文本
@@ -247,6 +239,7 @@ def format_orders_to_agent_friendly(orders: list) -> str:
 def format_market_data_to_markdown(data: dict) -> str:
     """
     将复杂的市场 JSON 数据转换为 LLM 易读的 Markdown 格式
+    (更新：新增 ATR, Vol Status, Recent Closes 列)
     """
     def fmt_price(price):
         if price is None or price == 0: return "0"
@@ -278,8 +271,8 @@ def format_market_data_to_markdown(data: dict) -> str:
     )
 
     table_header = (
-        "| TF | RSI | EMA (20/50/100/200) | POC | VA Range | HVN (Chips Peaks) |\n"
-        "|---|---|---|---|---|---|\n"
+        "| TF | Price | ATR | RSI | Vol Status | Recent Closes (Last 5) | EMA (20/50/100/200) | POC | VA Range | HVN |\n"
+        "|---|---|---|---|---|---|---|---|---|---|\n"
     )
     
     rows = []
@@ -290,7 +283,20 @@ def format_market_data_to_markdown(data: dict) -> str:
         if tf not in indicators: continue
         d = indicators[tf]
         
+        # 1. 基础数据
+        tf_price = fmt_price(d.get('price', 0))
+        atr = fmt_price(d.get('atr', 0))
         rsi = f"{d.get('rsi', 0):.1f}"
+        
+        # 2. 成交量状态
+        vol_stat = d.get('volume_status', 'N/A')
+        
+        raw_closes = d.get('recent_closes', [])
+        # 为了节省 token 和版面，如果价格数字很大，这里只显示最后几位小数可能不够直观，
+        # 建议直接用 fmt_price 格式化，逗号分隔
+        closes_str = ", ".join([fmt_price(x) for x in raw_closes])
+        
+        # 4. EMA
         ema = d.get('ema', {})
         e20 = fmt_price(ema.get('ema_20', 0))
         e50 = fmt_price(ema.get('ema_50', 0))
@@ -298,6 +304,7 @@ def format_market_data_to_markdown(data: dict) -> str:
         e200 = fmt_price(ema.get('ema_200', 0))
         ema_str = f"{e20}/{e50}/{e100}/{e200}"
         
+        # 5. VP 数据
         vp = d.get('vp', {})
         poc = fmt_price(vp.get('poc', 0))
         val = fmt_price(vp.get('val', 0))
@@ -308,11 +315,11 @@ def format_market_data_to_markdown(data: dict) -> str:
         top_hvns = sorted(raw_hvns, reverse=True)[:3]
         hvn_str = ",".join([fmt_price(h) for h in top_hvns])
         
-        row = f"| {tf} | {rsi} | {ema_str} | {poc} | {va_range} | {hvn_str} |"
+        # 组装行
+        row = f"| {tf} | {tf_price} | {atr} | {rsi} | {vol_stat} | {closes_str} | {ema_str} | {poc} | {va_range} | {hvn_str} |"
         rows.append(row)
     
     return header + table_header + "\n".join(rows)
-
 # ==========================================
 # 4. Graph 节点逻辑
 # ==========================================
@@ -480,7 +487,7 @@ def agent_node(state: AgentState) -> AgentState:
             api_key=config.get('api_key'),
             base_url=config.get('api_base'),
             temperature=config.get('temperature', 0.5) 
-        ).with_structured_output(AgentOutput)
+        ).with_structured_output(AgentOutput,method="function_calling")
         
         response = current_llm.invoke(state['messages'])
         return {**state, "final_output": response.model_dump()}
