@@ -14,7 +14,7 @@ load_dotenv()
 
 logger = setup_logger("TestAgent")
 
-API_KEY = "sk-ba0cff7b29c64502833dcb258d706e1b"
+API_KEY = "your_api_key_here"
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"
 
@@ -196,10 +196,6 @@ def test_llm_connection():
     logger.info(f"   Base URL: {base_url}")
     logger.info(f"   API Key: {api_key[:6]}******" if api_key else "   ❌ API Key 未找到")
 
-    if not api_key:
-        logger.error("❌ 终止：请在 .env 中配置 OPENAI_API_KEY")
-        return
-
     # 初始化 LLM
     try:
         llm = ChatOpenAI(
@@ -207,7 +203,7 @@ def test_llm_connection():
             api_key=api_key,
             base_url=base_url,
             temperature=0
-        ).with_structured_output(AgentOutput,method="function_calling")
+        ).with_structured_output(AgentOutput,method="function_calling") # 尝试使用tool use方式
         
         logger.info("✅ LLM 客户端初始化成功")
         return llm

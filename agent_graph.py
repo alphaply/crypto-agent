@@ -13,20 +13,16 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import pytz
 from logger import setup_logger
+from tool.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, format_market_data_to_markdown
 
 TZ_CN = pytz.timezone('Asia/Shanghai')
 logger = setup_logger("AgentGraph")
-# 假设 database 和 market_data 模块已存在
 import database 
 from market_data import MarketTool
 
-# 加载环境变量
 load_dotenv()
 market_tool = MarketTool()
 
-# ==========================================
-# Prompt 模板 (更新：接受 orders_text)
-# ==========================================
 
 # A. 实盘执行模式 Prompt
 REAL_TRADE_PROMPT_TEMPLATE = """
@@ -175,156 +171,7 @@ class AgentState(TypedDict):
     history_context: List[Dict[str, Any]]
     final_output: Dict[str, Any]
 
-# 2. 格式化工具函数 (Agent Friendly)
-def format_positions_to_agent_friendly(positions: list) -> str:
-    """
-    将复杂的持仓 JSON 转换为 Agent 易读的精简文本
-    """
-    if not positions:
-        return "无持仓 (No Positions)"
-    
-    lines = []
-    for p in positions:
-        side = p.get('side', '').upper()
-        # 清理 symbol 名字，比如 BNB/USDT:USDT -> BNB/USDT
-        sym = p.get('symbol', '').split(':')[0]
-        amt = float(p.get('amount', 0))
-        entry = float(p.get('entry_price', 0))
-        pnl = float(p.get('unrealized_pnl', 0))
-        
-        pnl_sign = "+" if pnl >= 0 else ""
-        
-        line = f"[{side}] {sym} | Amt: {amt} | Entry: {entry} | PnL: {pnl_sign}{pnl:.3f}"
-        lines.append(line)
-        
-    return "\n".join(lines)
 
-def format_orders_to_agent_friendly(orders: list) -> str:
-    """
-    将活跃挂单转换为 Agent 易读的精简文本
-    输入样例: [{"id": "84862268134", "side": "buy", "type": "限价入场", "price": 873.5, "amount": 0.01}]
-    输出样例: [BUY] LIMIT | ID: 84862268134 | Price: 873.5 | Amt: 0.01
-    """
-    if not orders:
-        return "无活跃挂单 (No Active Orders)"
-
-    lines = []
-    for o in orders:
-        # 1. 提取方向
-        side = o.get('side', '').upper()
-        
-        # 2. 标准化类型 (处理中文 "限价入场")
-        raw_type = str(o.get('type', 'LIMIT'))
-        if '限价' in raw_type or 'limit' in raw_type.lower():
-            order_type = 'LIMIT'
-        else:
-            order_type = raw_type.upper()
-
-        # 3. 提取核心数据
-        oid = o.get('id', 'N/A')
-        price = float(o.get('price', 0))
-        amt = float(o.get('amount', 0))
-
-        # 4. 可选: 止盈止损 (策略单可能会有)
-        tp = float(o.get('tp', 0) or o.get('take_profit', 0))
-        sl = float(o.get('sl', 0) or o.get('stop_loss', 0))
-        
-        extras = ""
-        if tp > 0 or sl > 0:
-            extras = f" | TP: {tp} | SL: {sl}"
-        
-        line = f"[{side}] {order_type} | ID: '{oid}' | Price: {price} | Amt: {amt}{extras}"
-        lines.append(line)
-
-    return "\n".join(lines)
-
-def format_market_data_to_markdown(data: dict) -> str:
-    """
-    将复杂的市场 JSON 数据转换为 LLM 易读的 Markdown 格式
-    (更新：新增 ATR, Vol Status, Recent Closes 列)
-    """
-    def fmt_price(price):
-        if price is None or price == 0: return "0"
-        abs_p = abs(price)
-        if abs_p >= 1000: return f"{int(price)}"      
-        if abs_p >= 1: return f"{price:.2f}"          
-        if abs_p >= 0.01: return f"{price:.4f}"       
-        return f"{price:.8f}".rstrip('0')              
-
-    def fmt_num(num):
-        if num > 1_000_000_000: return f"{num/1_000_000_000:.1f}B"
-        if num > 1_000_000: return f"{num/1_000_000:.1f}M"
-        if num > 1_000: return f"{num/1_000:.1f}K"
-        return f"{num:.0f}"
-
-    current_price = data.get("current_price", 0)
-    atr_15m = data.get("atr_15m", 0)
-    
-    sent = data.get("sentiment", {})
-    funding = sent.get("funding_rate", 0) * 100 
-    oi = sent.get("open_interest", 0)
-    
-    vol_24h = fmt_num(sent.get("24h_quote_vol", 0))
-    oi_str = fmt_num(oi)
-    
-    header = (
-        f"**Snapshot** | Price: {fmt_price(current_price)} | 15m ATR: {fmt_price(atr_15m)}\n"
-        f"Sentiment: Fund: {funding:.4f}% | OI: {oi_str} | Vol24h: {vol_24h}\n"
-    )
-
-    table_header = (
-        "| TF | Price | ATR | RSI | Vol Status | Recent Closes (Last 5) | EMA (20/50/100/200) | POC | VA Range | HVN |\n"
-        "|---|---|---|---|---|---|---|---|---|---|\n"
-    )
-    
-    rows = []
-    indicators = data.get("technical_indicators", {})
-    all_possible_timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
-    
-    for tf in all_possible_timeframes:
-        if tf not in indicators: continue
-        d = indicators[tf]
-        
-        # 1. 基础数据
-        tf_price = fmt_price(d.get('price', 0))
-        atr = fmt_price(d.get('atr', 0))
-        rsi = f"{d.get('rsi', 0):.1f}"
-        
-        # 2. 成交量状态
-        vol_stat = d.get('volume_status', 'N/A')
-        
-        raw_closes = d.get('recent_closes', [])
-        # 为了节省 token 和版面，如果价格数字很大，这里只显示最后几位小数可能不够直观，
-        # 建议直接用 fmt_price 格式化，逗号分隔
-        closes_str = ", ".join([fmt_price(x) for x in raw_closes])
-        
-        # 4. EMA
-        ema = d.get('ema', {})
-        e20 = fmt_price(ema.get('ema_20', 0))
-        e50 = fmt_price(ema.get('ema_50', 0))
-        e100 = fmt_price(ema.get('ema_100', 0))
-        e200 = fmt_price(ema.get('ema_200', 0))
-        ema_str = f"{e20}/{e50}/{e100}/{e200}"
-        
-        # 5. VP 数据
-        vp = d.get('vp', {})
-        poc = fmt_price(vp.get('poc', 0))
-        val = fmt_price(vp.get('val', 0))
-        vah = fmt_price(vp.get('vah', 0))
-        va_range = f"{val}-{vah}"
-        
-        raw_hvns = vp.get('hvns', [])
-        top_hvns = sorted(raw_hvns, reverse=True)[:3]
-        hvn_str = ",".join([fmt_price(h) for h in top_hvns])
-        
-        # 组装行
-        row = f"| {tf} | {tf_price} | {atr} | {rsi} | {vol_stat} | {closes_str} | {ema_str} | {poc} | {va_range} | {hvn_str} |"
-        rows.append(row)
-    
-    return header + table_header + "\n".join(rows)
-# ==========================================
-# 4. Graph 节点逻辑
-# ==========================================
 
 def start_node(state: AgentState) -> AgentState:
     symbol = state['symbol']
@@ -559,9 +406,7 @@ def execution_node(state: AgentState) -> AgentState:
         
         log_reason = order.get('reason', '')
 
-        # ==========================================
         # 分支 A: 实盘执行 (REAL)
-        # ==========================================
         if trade_mode == 'REAL':
             # 强制清空 TP/SL (实盘暂由人工或另外逻辑控制风控)
             order['take_profit'] = 0
@@ -598,9 +443,7 @@ def execution_node(state: AgentState) -> AgentState:
                     database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', 
                                             entry_price, 0, 0, log_reason, trade_mode="REAL")
 
-        # ==========================================
         # 分支 B: 策略模式 (STRATEGY)
-        # ==========================================
         else:
             # 1. 撤单
             if action == 'CANCEL':
@@ -628,17 +471,15 @@ def execution_node(state: AgentState) -> AgentState:
                 
                 logger.info(f"💡 [STRATEGY] Idea: {side} @ {entry_price} | ID: {mock_id}")
                 
-                # ✅ 2. 存入挂单池 (一定要传 mock_id !!!)
                 database.create_mock_order(
                     symbol, side, 
                     entry_price, 
                     order['amount'], 
                     order['stop_loss'], 
                     order['take_profit'],
-                    order_id=mock_id  # <--- 关键修改：传入 ID
+                    order_id=mock_id 
                 )
 
-                # ✅ 3. 存入日志 (使用同一个 mock_id)
                 database.save_order_log(
                     mock_id, symbol, agent_name, side, 
                     entry_price, 
@@ -650,9 +491,7 @@ def execution_node(state: AgentState) -> AgentState:
 
     return state
 
-# ==========================================
 # 5. Graph 编译与运行
-# ==========================================
 
 workflow = StateGraph(AgentState)
 
