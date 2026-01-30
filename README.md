@@ -1,19 +1,10 @@
-好的，我根据您提供的项目架构、配置说明以及我们之前对话中涉及的功能（如历史记录删除、实盘/策略模式区别、杠杆设置注意事项），为您整理了完善的 `README.md` 和配套的 `FAQ`。
-
-您可以直接复制以下内容。
-
----
-
-### 1. 完善后的 README.md
-
-```markdown
 # 💸 自动亏钱 Agent (Automated Loss-Making Agent)
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Framework](https://img.shields.io/badge/Framework-LangGraph-orange)](https://langchain-ai.github.io/langgraph/)
-[![Frontend](https://img.shields.io/badge/Frontend-Flask-green)](https://flask.palletsprojects.com/)
+[![web](https://img.shields.io/badge/Frontend-Flask-green)](https://flask.palletsprojects.com/)
 
-一个基于 LLM 的加密货币合约交易/策略分析 Agent。本项目旨在探索 AI 在金融交易中的决策能力（虽然目前主要功能似乎是自动亏钱）。
+一个基于 LLM 的加密货币合约交易/策略分析 Agent。本项目旨在探索 AI 在金融交易中的决策能力。
 
 ## 🏗 项目架构
 
@@ -32,14 +23,12 @@
 **使用 uv (推荐):**
 ```bash
 uv sync
-
 ```
 
 **使用 pip:**
 
 ```bash
 pip install -r requirements.txt
-
 ```
 
 ### 2. 配置文件设置
@@ -95,12 +84,10 @@ SYMBOL_CONFIGS='[
 
 ```bash
 python dashboard.py
-
 ```
 
 访问 `http://localhost:7860` 查看实盘/策略运行状态。
 
----
 
 ## ⚙️ 核心机制说明
 
@@ -135,6 +122,6 @@ python dashboard.py
 * 请确保 `.env` 中的值与你 Binance 账户中实际设置的杠杆倍数一致。
 
 
-## 详细说明请查看FAQ文件！！！！
+## 使用前请查看FAQ文件！！！！
 
-请[点击这里]()跳转。
+请[点击这里](https://github.com/alphaply/crypto-agent/blob/master/doc/FAQ.md)跳转。
