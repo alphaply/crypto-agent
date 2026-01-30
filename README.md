@@ -4,7 +4,7 @@
 [![Framework](https://img.shields.io/badge/Framework-LangGraph-orange)](https://langchain-ai.github.io/langgraph/)
 [![web](https://img.shields.io/badge/Frontend-Flask-green)](https://flask.palletsprojects.com/)
 
-一个基于 LLM 的加密货币合约交易/策略分析 Agent。本项目旨在探索 AI 在金融交易中的决策能力。
+如果真的能100%亏钱，那么反指就是100%胜率！
 
 ## 🏗 项目架构
 
@@ -15,6 +15,8 @@
 * **数据持久化**: SQLite (存储订单记录、分析日志)
 
 ## 🚀 快速开始
+
+注意：该项目的大部分代码都是由gemini 3 pro完成，本人只是给gemini老师指指路，有bug欢迎issue与pr！
 
 ### 1. 环境准备
 
