@@ -145,7 +145,7 @@ class OrderParams(BaseModel):
     )
     pos_side: str = Field(description="平仓方向: 仅在 CLOSE 时必填，填 'LONG' (平多) 或 'SHORT' (平空)", default="")
     cancel_order_id: str = Field(description="撤单时填入 对应的ID（如8389766084576502933）", default="")
-    entry_price: float = Field(description="挂单价格 (CLOSE 时为平仓价格)")
+    entry_price: float = Field(description="挂单价格 (CLOSE 时为平仓价格)", default=0.0)
     amount: float = Field(description="下单数量 (币的个数，非 USDT 金额)", default=0.0)
     take_profit: float = Field(description="止盈价格", default=0.0)
     stop_loss: float = Field(description="止损价格", default=0.0)
