@@ -79,7 +79,7 @@ def get_mock_orders(symbol=None):
 def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, order_id=None):
     """
     创建一个模拟挂单
-    ✅ 新增参数: order_id (必须传入，保证和日志一致)
+    新增参数: order_id (必须传入，保证和日志一致)
     """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -108,7 +108,6 @@ def cancel_mock_order(order_id):
     conn.commit()
     conn.close()
 
-# --- 日志与分析功能 ---
 
 def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY"):
     conn = sqlite3.connect(DB_NAME)
@@ -148,6 +147,45 @@ def get_recent_summaries(symbol, limit=10):
     rows = [dict(row) for row in c.fetchall()]
     conn.close()
     return rows
+
+
+
+def get_summary_count(symbol):
+    """获取某币种的分析记录总数"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        count = c.execute("SELECT COUNT(*) FROM summaries WHERE symbol = ?", (symbol,)).fetchone()[0]
+    except:
+        count = 0
+    conn.close()
+    return count
+
+def get_paginated_summaries(symbol, page=1, per_page=10):
+    """分页获取分析历史"""
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    offset = (page - 1) * per_page
+    c = conn.cursor()
+    # 按时间倒序排列
+    c.execute(
+        "SELECT * FROM summaries WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
+        (symbol, per_page, offset)
+    )
+    rows = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return rows
+
+def delete_summaries_by_symbol(symbol):
+    """删除指定币种的所有分析历史"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM summaries WHERE symbol = ?", (symbol,))
+    deleted_count = c.rowcount
+    conn.commit()
+    conn.close()
+    return deleted_count
+
 
 if __name__ == "__main__":
     init_db()

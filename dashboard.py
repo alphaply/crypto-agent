@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request,jsonify
 import sqlite3
 import threading
 import math
@@ -6,7 +6,10 @@ import json
 import os
 from datetime import datetime
 import pytz
-from database import DB_NAME, init_db
+from database import (
+    DB_NAME, init_db, 
+    get_paginated_summaries, get_summary_count, delete_summaries_by_symbol
+)
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
 from tool.logger import setup_logger
@@ -133,6 +136,48 @@ def index():
         symbol_mode=symbol_mode,
         symbol_freq=symbol_freq
     )
+
+
+
+@app.route('/history')
+def history_view():
+    symbol = request.args.get('symbol', 'BTC/USDT')
+    page = int(request.args.get('page', 1))
+    per_page = 10 # 每页显示10条分析
+    
+    summaries = get_paginated_summaries(symbol, page, per_page)
+    total_count = get_summary_count(symbol)
+    total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
+    
+    return render_template(
+        'history.html', # <--- 我们将创建这个新模板
+        summaries=summaries,
+        current_symbol=symbol,
+        current_page=page,
+        total_pages=total_pages
+    )
+
+# 3. 新增路由：删除历史 (API)
+@app.route('/api/clean_history', methods=['POST'])
+def clean_history():
+    data = request.json
+    password = data.get('password')
+    symbol = data.get('symbol')
+    
+    # 验证密码
+    admin_pass = os.getenv('ADMIN_PASSWORD')
+    if not admin_pass:
+        return jsonify({'success': False, 'message': '服务端未配置 ADMIN_PASSWORD'})
+        
+    if password != admin_pass:
+        return jsonify({'success': False, 'message': '密码错误，拒绝操作'})
+        
+    try:
+        count = delete_summaries_by_symbol(symbol)
+        logger.info(f"🗑️ [Dashboard] Cleaned history for {symbol}, count: {count}")
+        return jsonify({'success': True, 'message': f'已删除 {count} 条记录'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
 
 if __name__ == "__main__":
     init_db() 

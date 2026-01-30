@@ -2,699 +2,362 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta http-equiv="refresh" content="30" />
     <title>{{ current_symbol }} - 自动亏钱Agent</title>
-    <link
-      href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css"
-      rel="stylesheet"
-    />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'buy': '#059669',      // 买入绿
+              'sell': '#dc2626',     // 卖出红
+            }
+          }
+        }
+      }
+    </script>
     <style>
-      :root {
-        --bg-body: #f3f4f6;
-        --bg-card: #ffffff;
-        --bg-hover: #f9fafb;
-        --text-main: #1f2937;
-        --text-sub: #6b7280;
-        --border-color: #e5e7eb;
-        --buy-color: #059669;
-        --sell-color: #dc2626;
-        --real-mode: #b91c1c;
-        --strat-mode: #1d4ed8;
-        --bg-buy: #d1fae5;
-        --bg-sell: #fee2e2;
-        --bg-real: #fef2f2;
-        --bg-strat: #eff6ff;
+      /* 少量必要的自定义样式：隐藏滚动条但保留功能 */
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      /* 动画 */
+      @keyframes pulse-custom {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
       }
-
-      body {
-        background-color: var(--bg-body);
-        color: var(--text-main);
-        font-family:
-          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          "Helvetica Neue", Arial, sans-serif;
-        font-size: 14px;
-        -webkit-font-smoothing: antialiased;
-        /* 🚫 核心修复1：禁止Body横向滚动 */
-        overflow-x: hidden;
-        width: 100vw;
-      }
-
-      /* 导航栏 */
-      .navbar {
-        background: var(--bg-card);
-        border-bottom: 1px solid var(--border-color);
-        padding: 12px 0;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-      }
-      .nav-brand {
-        font-weight: 700;
-        font-size: 1rem;
-        color: var(--text-main);
-        letter-spacing: -0.5px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        /* 防止品牌名太长换行 */
-        white-space: nowrap;
-      }
-
-      /* 状态栏 */
-      .status-bar {
-        background: #fffbeb;
-        border-bottom: 1px solid #fcd34d;
-        padding: 10px 0;
-        color: #92400e;
-        font-size: 0.85rem;
-      }
-      .live-indicator {
-        display: inline-block;
-        width: 8px;
-        height: 8px;
-        background-color: #10b981;
-        border-radius: 50%;
-        margin-right: 6px;
-        animation: pulse 2s infinite;
-      }
-      @keyframes pulse {
-        0% {
-          opacity: 1;
-        }
-        50% {
-          opacity: 0.4;
-        }
-        100% {
-          opacity: 1;
-        }
-      }
-
-      .custom-select {
-        background-color: var(--bg-card);
-        color: var(--text-main);
-        border: 1px solid var(--border-color);
-        padding: 6px 12px;
-        border-radius: 6px;
-        outline: none;
-        font-size: 0.9rem;
-        cursor: pointer;
-        max-width: 120px; /* 限制下拉框宽度，防止手机顶宽 */
-      }
-
-      .main-container {
-        max-width: 1400px;
-        margin: 0 auto;
-        padding: 24px;
-        /* 防止容器本身溢出 */
-        box-sizing: border-box;
-      }
-
-      /* Agent 卡片 */
-      .agents-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-        gap: 20px;
-        margin-bottom: 30px;
-      }
-      .agent-card {
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        border-radius: 12px;
-        overflow: hidden;
-        display: flex;
-        flex-direction: column;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-      }
-      .agent-header {
-        padding: 14px 20px;
-        border-bottom: 1px solid var(--border-color);
-        background: #f9fafb;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      .agent-body {
-        padding: 20px;
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-        flex-grow: 1;
-      }
-      .logic-box {
-        background: #eff6ff;
-        border-left: 4px solid #3b82f6;
-        padding: 12px;
-        border-radius: 4px;
-        color: #1e40af;
-        font-size: 0.9rem;
-        margin-top: auto;
-      }
-
-      /* 表格卡片 */
-      .table-card {
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-      }
-      .table-header {
-        padding: 16px 24px;
-        border-bottom: 1px solid var(--border-color);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        background: #fff;
-      }
-
-      .table {
-        width: 100%;
-        margin: 0;
-        border-collapse: collapse;
-      }
-      .table th {
-        text-align: left;
-        padding: 12px 16px;
-        color: var(--text-sub);
-        font-weight: 600;
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        border-bottom: 1px solid var(--border-color);
-        background: #f9fafb;
-        white-space: nowrap;
-      }
-      .table td {
-        padding: 14px 16px;
-        border-bottom: 1px solid var(--border-color);
-        color: var(--text-main);
-        vertical-align: middle;
-      }
-
-      /* 🚫 核心修复2：UUID 样式优化 (解决闪烁) */
-      .uuid-wrapper {
-        position: relative; /* 作为定位基准 */
-        display: inline-block;
-        max-width: 100px;
-        vertical-align: middle;
-      }
-      .uuid-text {
-        font-family: "SF Mono", Consolas, monospace;
-        font-size: 0.75rem;
-        color: #6b7280;
-        background: #f3f4f6;
-        padding: 2px 6px;
-        border-radius: 4px;
-        border: 1px solid #e5e7eb;
+      .animate-pulse-custom { animation: pulse-custom 2s infinite; }
+      
+      /* Tooltip 在手机端点击显示的辅助 */
+      .tooltip-container:active .tooltip-content,
+      .tooltip-container:focus-within .tooltip-content {
         display: block;
-        width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        cursor: help; /* 鼠标样式变成问号 */
-      }
-      /* Tooltip 气泡逻辑 */
-      .uuid-tooltip {
-        visibility: hidden;
-        opacity: 0;
-        position: absolute;
-        bottom: 100%; /* 显示在上方 */
-        left: 50%;
-        transform: translateX(-50%);
-        background-color: #1f2937;
-        color: #fff;
-        text-align: center;
-        padding: 6px 10px;
-        border-radius: 6px;
-        font-size: 12px;
-        white-space: nowrap;
-        z-index: 100;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        margin-bottom: 6px; /* 稍微留点空隙 */
-        transition: opacity 0.2s;
-        pointer-events: none; /* 防止鼠标碰到气泡导致闪烁 */
-      }
-      /* 小三角 */
-      .uuid-tooltip::after {
-        content: "";
-        position: absolute;
-        top: 100%;
-        left: 50%;
-        margin-left: -5px;
-        border-width: 5px;
-        border-style: solid;
-        border-color: #1f2937 transparent transparent transparent;
-      }
-      .uuid-wrapper:hover .uuid-tooltip {
-        visibility: visible;
-        opacity: 1;
       }
 
-      /* 徽章样式 */
-      .badge-mode {
-        font-size: 0.75rem;
-        font-weight: 700;
+      /* 复制成功的浮动提示动画 */
+      @keyframes fade-out-up {
+        0% { opacity: 1; transform: translate(-50%, 0); }
+        100% { opacity: 0; transform: translate(-50%, -20px); }
+      }
+      .copy-feedback {
+        position: fixed;
+        z-index: 9999;
+        background: rgba(17, 24, 39, 0.9);
+        color: white;
         padding: 4px 8px;
-        border-radius: 6px;
-        letter-spacing: 0.5px;
-        white-space: nowrap;
-        display: inline-block;
-      }
-      .mode-real {
-        color: var(--real-mode);
-        background: var(--bg-real);
-        border: 1px solid rgba(185, 28, 28, 0.1);
-      }
-      .mode-strat {
-        color: var(--strat-mode);
-        background: var(--bg-strat);
-        border: 1px solid rgba(29, 78, 216, 0.1);
-      }
-
-      .tag-side {
-        padding: 4px 10px;
-        border-radius: 6px;
-        font-weight: 600;
-        font-size: 0.85rem;
-        white-space: nowrap;
-        display: inline-block;
-      }
-      .side-buy {
-        color: var(--buy-color);
-        background: var(--bg-buy);
-      }
-      .side-sell {
-        color: var(--sell-color);
-        background: var(--bg-sell);
-      }
-
-      .price-val {
-        font-family: "SF Mono", monospace;
-        font-size: 1rem;
-        font-weight: 600;
-        color: #111827;
-        white-space: nowrap;
-      }
-
-      .tp-sl-row {
-        display: flex;
-        gap: 12px;
-        font-size: 0.85rem;
-        margin-top: 4px;
-        white-space: nowrap;
-      }
-      .label-mini {
-        color: #9ca3af;
-        font-size: 0.75rem;
-        margin-right: 2px;
-        font-weight: 600;
-      }
-
-      .pagination {
-        display: flex;
-        gap: 6px;
-        list-style: none;
-        padding: 0;
-        margin: 0;
-      }
-      .page-link {
-        padding: 6px 12px;
-        background: #fff;
-        border: 1px solid var(--border-color);
-        color: var(--text-main);
-        text-decoration: none;
-        border-radius: 6px;
-        font-size: 0.9rem;
-      }
-      .page-link:hover:not(.disabled) {
-        background: #f3f4f6;
-        color: #000;
-      }
-      .disabled {
-        opacity: 0.5;
+        border-radius: 4px;
+        font-size: 12px;
         pointer-events: none;
-        background: #f9fafb;
-      }
-
-      @media (min-width: 769px) {
-        .col-center {
-          text-align: center !important;
-        }
-      }
-
-      /* --- 移动端适配 (核心修复) --- */
-      @media (max-width: 768px) {
-        .main-container {
-          padding: 12px;
-        }
-
-        /* Agent卡片 */
-        .agents-grid {
-          grid-template-columns: 1fr; /* 强制单列 */
-        }
-
-        /* 隐藏表头 */
-        .table thead {
-          display: none;
-        }
-
-        /* 将每一行变成一个卡片 */
-        .table tr {
-          display: block;
-          border: 1px solid var(--border-color);
-          margin-bottom: 16px;
-          border-radius: 12px;
-          background: #fff;
-          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-        }
-
-        /* 单元格变成 Flex 布局 */
-        .table td {
-          display: flex;
-          justify-content: space-between;
-          align-items: center; /* 垂直居中 */
-          padding: 12px 16px;
-          border-bottom: 1px solid #f3f4f6;
-          text-align: right;
-          width: 100%; /* 确保占满 */
-          box-sizing: border-box;
-        }
-
-        /* 最后一格去掉底边框 */
-        .table td:last-child {
-          border-bottom: none;
-        }
-
-        /* 添加伪元素显示标题 */
-        .table td::before {
-          content: attr(data-label);
-          color: var(--text-sub);
-          font-weight: 600;
-          font-size: 0.85rem;
-          margin-right: 10px;
-          text-align: left;
-          flex-shrink: 0; /* 防止标题被压缩 */
-        }
-
-        /* 🚫 修复左右滑动：理由栏特殊处理 */
-        /* 针对理由栏，让它允许换行，并且上下排列而不是左右排列 */
-        .table td[data-label="理由"] {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 6px;
-        }
-        .reason-content {
-          min-width: 0 !important; /* 取消PC端的最小宽度 */
-          white-space: normal !important; /* 允许换行 */
-          text-align: left;
-          word-break: break-word; /* 防止长单词撑开 */
-          font-size: 0.85rem;
-          color: #4b5563;
-          background: #f9fafb;
-          padding: 8px;
-          border-radius: 6px;
-          width: 100%;
-        }
-
-        /* UUID 在手机上可以稍微宽一点 */
-        .uuid-wrapper {
-          max-width: 140px;
-        }
-
-        .status-bar .d-flex {
-          flex-direction: column;
-          gap: 6px;
-        }
+        animation: fade-out-up 1s ease-out forwards;
       }
     </style>
   </head>
-  <body>
-    <nav class="navbar sticky-top">
-      <div class="container-fluid main-container" style="padding: 0 24px">
-        <div class="d-flex justify-content-between align-items-center w-100">
-          <div class="nav-brand">💸自动亏钱Agent</div>
-          <div class="d-flex gap-2">
-            <select
-              class="custom-select"
+  <body class="bg-gray-50 text-gray-800 font-sans antialiased overflow-x-hidden selection:bg-blue-100">
+
+    <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur shadow-sm border-b border-gray-200">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex flex-col sm:flex-row justify-between items-center py-3 gap-3">
+          <div class="font-bold text-lg tracking-tight text-gray-900 flex items-center gap-2">
+            💸 <span class="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">自动亏钱Agent</span>
+          </div>
+          
+          <div class="flex w-full sm:w-auto items-center gap-2 justify-between sm:justify-end">
+             <select
+              id="symbolSelect"
               onchange="window.location.href = '?symbol=' + this.value"
+              class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-40"
             >
-              {% for sym in symbols %} {% if sym == current_symbol %}
-              <option value="{{ sym }}" selected>{{ sym }}</option>
-              {% else %}
-              <option value="{{ sym }}">{{ sym }}</option>
-              {% endif %} {% endfor %}
+              {% for sym in symbols %} 
+                <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
+              {% endfor %}
             </select>
-            <button
-              class="btn btn-sm btn-outline-secondary"
-              onclick="location.reload()"
-              style="border-color: var(--border-color); color: var(--text-sub)"
-            >
-              ↻
-            </button>
+            
+            <div class="flex gap-2">
+                <div class="inline-flex rounded-md shadow-sm" role="group">
+                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-3 py-2 text-sm font-medium text-blue-600 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 hover:text-blue-700 focus:z-10 focus:ring-2 focus:ring-blue-700 focus:text-blue-700 flex items-center justify-center min-w-[42px]">
+                       📜
+                    </a>
+                    <button onclick="confirmDelete()" title="清除历史" class="px-3 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700 focus:z-10 focus:ring-2 focus:ring-red-700 focus:text-red-700 flex items-center justify-center min-w-[42px]">
+                       🗑️
+                    </button>
+                </div>
+
+                <button
+                  onclick="location.reload()"
+                  title="刷新"
+                  class="p-2 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-900 focus:ring-2 focus:ring-gray-200"
+                >
+                  ↻
+                </button>
+            </div>
           </div>
         </div>
       </div>
     </nav>
 
-    <div class="status-bar">
-      <div class="container-fluid main-container" style="padding: 0 24px">
-        <div class="d-flex justify-content-between flex-wrap gap-2">
-          <div>
-            <span class="live-indicator"></span>
-            <strong>状态:</strong> 运行中
-            <span style="color: #d97706; margin: 0 8px">|</span>
-            <strong>当前模式:</strong>
-            <span style="color: #b45309; font-weight: 700"
-              >{{ symbol_mode }}</span
-            >
-            <span style="color: #d97706; margin: 0 8px">|</span>
-            <strong>频率:</strong>
-            <span style="color: #047857; font-weight: 700"
-              >{{ symbol_freq }}</span
-            >
+    <div class="bg-amber-50 border-b border-amber-200 text-amber-900 text-sm">
+      <div class="max-w-7xl mx-auto px-4 py-2 sm:px-6 lg:px-8">
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span>
+                <span class="font-medium">运行中</span>
+            </span>
+            <span class="text-amber-300 hidden sm:inline">|</span>
+            <span>模式: <span class="font-bold text-amber-800">{{ symbol_mode }}</span></span>
+            <span class="text-amber-300 hidden sm:inline">|</span>
+            <span>频率: <span class="font-bold text-emerald-700">{{ symbol_freq }}</span></span>
           </div>
           <div>
-            <strong>风控系统:</strong>
-            <span style="color: #059669; font-weight: 700">已启动</span>
+            风控系统: <span class="font-bold text-emerald-600">已启动</span>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="main-container">
-      <div class="agents-grid">
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 auto-rows-fr">
         {% if agent_summaries %} {% for summary in agent_summaries %}
-        <div class="agent-card">
-          <div class="agent-header">
-            <span style="font-weight: 700; font-size: 1rem; color: #111827"
-              >🤖 {{ summary.agent_name or 'AI-Agent' }}</span
-            >
-            <span
-              style="
-                color: var(--text-sub);
-                font-size: 0.85rem;
-                font-family: monospace;
-              "
-            >
+        <div class="bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col overflow-hidden h-full">
+          <div class="px-5 py-3 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
+            <span class="font-bold text-gray-900 flex items-center gap-2 truncate">
+                🤖 {{ summary.agent_name or 'AI-Agent' }}
+            </span>
+            <span class="text-xs font-mono text-gray-500 bg-gray-100 px-2 py-1 rounded whitespace-nowrap">
               {{ summary.timestamp }}
             </span>
           </div>
-          <div class="agent-body">
-            <div style="line-height: 1.6; color: #374151">
-              {{ summary.content }}
-            </div>
-            <div class="logic-box">
-              <div
-                style="font-weight: 700; margin-bottom: 6px; font-size: 0.8rem"
-              >
-                💡 策略思路
-              </div>
-              {{ summary.strategy_logic }}
+          <div class="p-5 flex flex-col gap-4 flex-grow">
+            <div class="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">{{ summary.content }}</div>
+            
+            <div class="mt-auto bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r text-sm text-blue-900">
+              <div class="font-bold text-xs uppercase text-blue-400 mb-1">Strategy Logic</div>
+              <div class="whitespace-pre-wrap">{{ summary.strategy_logic }}</div>
             </div>
           </div>
         </div>
         {% endfor %} {% else %}
-        <div
-          style="
-            grid-column: 1/-1;
-            text-align: center;
-            padding: 60px;
-            color: var(--text-sub);
-            background: #fff;
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-          "
-        >
-          暂无分析数据，正在等待 Agent 亏钱...
+        <div class="col-span-full text-center py-12 bg-white rounded-xl border border-dashed border-gray-300 text-gray-500">
+           <p class="text-lg">暂无分析数据，正在等待 Agent 亏钱...</p>
         </div>
         {% endif %}
       </div>
 
-      <div class="table-card">
-        <div class="table-header">
-          <span style="font-weight: 700; font-size: 1.1rem; color: #111827"
-            >📜 亏钱日志</span
-          >
-          <span class="badge bg-light text-dark border" style="font-weight: 600"
-            >Total: {{ total_orders }}</span
-          >
+      <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50/50">
+          <h3 class="font-bold text-gray-900 text-lg">📜 亏钱日志</h3>
+          <span class="bg-gray-100 text-gray-600 text-xs font-medium px-2.5 py-0.5 rounded border border-gray-200">
+            Total: {{ total_orders }}
+          </span>
         </div>
 
-        <div style="overflow-x: auto">
-          <table class="table">
-            <thead>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm text-left text-gray-600">
+            <thead class="hidden md:table-header-group text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200">
               <tr>
-                <th width="140">时间</th>
-                <th width="100">Order ID</th>
-                <th width="80" class="col-center">模式</th>
-                <th width="100">Agent</th>
-                <th width="80" class="col-center">方向</th>
-                <th width="140">价格 / 触发</th>
-                <th width="160">风控 (止盈/止损)</th>
-                <th>理由</th>
+                <th class="px-6 py-3 font-medium w-32">时间</th>
+                <th class="px-6 py-3 font-medium">Order ID</th>
+                <th class="px-6 py-3 font-medium text-center w-24">模式</th>
+                <th class="px-6 py-3 font-medium">Agent</th>
+                <th class="px-6 py-3 font-medium text-center w-24">方向</th>
+                <th class="px-6 py-3 font-medium">价格/触发</th>
+                <th class="px-6 py-3 font-medium">风控 (TP/SL)</th>
+                <th class="px-6 py-3 font-medium min-w-[200px]">理由</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody class="divide-y divide-gray-200">
               {% for order in orders %}
-              <tr>
-                <td data-label="时间">
-                  <span
-                    style="
-                      font-family: monospace;
-                      color: var(--text-sub);
-                      font-size: 0.85rem;
-                      white-space: nowrap;
-                    "
-                  >
-                    {{ order.timestamp }}
-                  </span>
+              <tr class="bg-white hover:bg-gray-50 flex flex-col md:table-row mb-4 md:mb-0 border md:border-none rounded-lg md:rounded-none shadow-sm md:shadow-none m-4 md:m-0 p-4 md:p-0">
+                
+                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top">
+                  <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">时间</span>
+                  <span class="font-mono text-xs text-gray-500 whitespace-nowrap">{{ order.timestamp }}</span>
                 </td>
 
-                <td data-label="Order ID">
-                  {% if order.order_id %}
-                  <div class="uuid-wrapper">
-                    <span class="uuid-text">{{ order.order_id }}</span>
-                    <div class="uuid-tooltip">{{ order.order_id }}</div>
-                  </div>
-                  {% else %}
-                  <span style="color: #d1d5db">-</span>
-                  {% endif %}
-                </td>
-
-                <td data-label="模式" class="col-center">
-                  {% if order.trade_mode == 'REAL' %}
-                  <span class="badge-mode mode-real">实盘</span>
-                  {% else %}
-                  <span class="badge-mode mode-strat">策略</span>
-                  {% endif %}
-                </td>
-
-                <td data-label="Agent">
-                  <span
-                    style="
-                      font-weight: 600;
-                      color: #374151;
-                      white-space: nowrap;
-                    "
-                    >{{ order.agent_name or 'System' }}</span
-                  >
-                </td>
-
-                <td data-label="方向" class="col-center">
-                  <span
-                    class="tag-side {% if 'buy' in order.side|lower %}side-buy{% elif 'sell' in order.side|lower %}side-sell{% endif %}"
-                  >
-                    {{ order.side|upper }}
-                  </span>
-                </td>
-
-                <td data-label="入场价">
-                  {% if order.trigger_price and order.trigger_price > 0 %}
-                  <span
-                    style="
-                      color: #d97706;
-                      font-weight: 600;
-                      white-space: nowrap;
-                    "
-                    >⚡ {{ order.trigger_price }}</span
-                  >
-                  {% else %}
-                  <span class="price-val">{{ order.entry_price }}</span>
-                  {% endif %}
-                </td>
-
-                <td data-label="风控">
-                  <div class="tp-sl-row">
-                    <div>
-                      <span class="label-mini">TP</span>
-                      <span
-                        style="font-weight: 600; color: {% if order.take_profit > 0 %}var(--buy-color){% else %}#9ca3af{% endif %}"
-                      >
-                        {{ order.take_profit if order.take_profit > 0 else '--'
-                        }}
-                      </span>
+                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top relative">
+                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase flex-shrink-0 mr-4">Order ID</span>
+                    {% if order.order_id %}
+                    <div class="tooltip-container group relative cursor-pointer inline-block">
+                        <span class="font-mono text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded border border-gray-200 truncate max-w-[80px] md:max-w-[100px] block">
+                            {{ order.order_id }}
+                        </span>
+                        <div class="tooltip-content hidden group-hover:block absolute bottom-full left-0 mb-1 z-50 w-max max-w-[240px] break-all bg-gray-800 text-white text-xs rounded p-2 shadow-xl border border-gray-700">
+                            {{ order.order_id }}
+                            <div class="absolute top-full left-4 -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                        </div>
                     </div>
-                    <div>
-                      <span class="label-mini">SL</span>
-                      <span
-                        style="font-weight: 600; color: {% if order.stop_loss > 0 %}var(--sell-color){% else %}#9ca3af{% endif %}"
-                      >
-                        {{ order.stop_loss if order.stop_loss > 0 else '--' }}
-                      </span>
-                    </div>
-                  </div>
+                    {% else %}
+                    <span class="text-gray-300">-</span>
+                    {% endif %}
                 </td>
 
-                <td data-label="理由">
-                  <div
-                    class="reason-content"
-                    style="
-                      min-width: 200px;
-                      color: var(--text-sub);
-                      font-size: 0.9rem;
-                    "
-                  >
-                    {{ order.reason }}
-                  </div>
+                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell md:text-center align-top">
+                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">模式</span>
+                    {% if order.trade_mode == 'REAL' %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-600 text-white shadow-sm">实盘</span>
+                    {% else %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-600 text-white shadow-sm">策略</span>
+                    {% endif %}
                 </td>
+
+                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top relative">
+                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">Agent</span>
+                    <div class="tooltip-container group relative cursor-pointer inline-block">
+                         <span class="font-semibold text-gray-700 truncate max-w-[100px] md:max-w-[140px] block">
+                            {{ order.agent_name or 'System' }}
+                        </span>
+                        <div class="tooltip-content hidden group-hover:block absolute bottom-full left-0 mb-1 z-50 w-max max-w-[200px] bg-gray-800 text-white text-xs rounded p-2 shadow-xl border border-gray-700 whitespace-normal">
+                            {{ order.agent_name or 'System' }}
+                            <div class="absolute top-full left-4 -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                        </div>
+                    </div>
+                </td>
+
+                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell md:text-center align-top">
+                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">方向</span>
+                    
+                    {% set s = order.side|lower %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-bold uppercase shadow-sm
+                        {% if 'buy' in s %} bg-emerald-100 text-emerald-800 border border-emerald-200
+                        {% elif 'sell' in s %} bg-red-100 text-red-800 border border-red-200
+                        {% elif 'close' in s %} bg-orange-100 text-orange-800 border border-orange-200
+                        {% elif 'cancel' in s %} bg-slate-200 text-slate-600 border border-slate-300
+                        {% else %} bg-gray-100 text-gray-800 border border-gray-200 {% endif %}">
+                        {{ order.side|upper }}
+                    </span>
+                </td>
+
+                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top">
+                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">价格</span>
+                    {% if order.trigger_price and order.trigger_price > 0 %}
+                    <span 
+                        onclick="handleCopy('{{ order.trigger_price }}', event)" 
+                        class="cursor-pointer font-mono font-bold text-amber-600 hover:text-amber-800 border-b border-dashed border-amber-300 hover:border-amber-600 transition-colors" 
+                        title="点击复制">⚡ {{ order.trigger_price }}
+                    </span>
+                    {% else %}
+                    <span 
+                        onclick="handleCopy('{{ order.entry_price }}', event)" 
+                        class="cursor-pointer font-mono font-bold text-gray-900 hover:text-blue-600 border-b border-dashed border-gray-300 hover:border-blue-500 transition-colors" 
+                        title="点击复制">{{ order.entry_price }}
+                    </span>
+                    {% endif %}
+                </td>
+
+                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top">
+                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">风控</span>
+                    <div class="flex gap-3 text-xs font-mono">
+                        <div class="flex items-center gap-1">
+                            <span class="text-gray-400">TP</span>
+                            <span 
+                                onclick="handleCopy('{{ order.take_profit }}', event)"
+                                class="cursor-pointer font-bold {% if order.take_profit > 0 %}text-buy border-b border-dashed border-emerald-200 hover:border-emerald-500{% else %}text-gray-300{% endif %}"
+                                title="点击复制"
+                            >
+                                {{ order.take_profit if order.take_profit > 0 else '--' }}
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-1">
+                            <span class="text-gray-400">SL</span>
+                            <span 
+                                onclick="handleCopy('{{ order.stop_loss }}', event)"
+                                class="cursor-pointer font-bold {% if order.stop_loss > 0 %}text-sell border-b border-dashed border-red-200 hover:border-red-500{% else %}text-gray-300{% endif %}"
+                                title="点击复制"
+                            >
+                                {{ order.stop_loss if order.stop_loss > 0 else '--' }}
+                            </span>
+                        </div>
+                    </div>
+                </td>
+
+                <td class="px-6 py-2 md:py-4 md:table-cell w-full md:w-auto align-top">
+                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase block mb-1">理由</span>
+                    <div class="bg-gray-50 rounded p-2 text-xs text-gray-600 leading-snug break-words">
+                        {{ order.reason }}
+                    </div>
+                </td>
+
               </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
 
-        <div
-          style="
-            padding: 16px 24px;
-            border-top: 1px solid var(--border-color);
-            display: flex;
-            justify-content: flex-end;
-          "
-        >
-          <ul class="pagination">
-            <li>
-              <a
-                href="?symbol={{current_symbol}}&page={{current_page-1}}"
-                class="page-link {% if current_page <= 1 %}disabled{% endif %}"
-                >上一页</a
-              >
-            </li>
-            <li>
-              <span class="page-link disabled"
-                >{{ current_page }} / {{ total_pages }}</span
-              >
-            </li>
-            <li>
-              <a
-                href="?symbol={{current_symbol}}&page={{current_page+1}}"
-                class="page-link {% if current_page >= total_pages %}disabled{% endif %}"
-                >下一页</a
-              >
-            </li>
-          </ul>
+        <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end">
+          <nav class="inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+            <a href="?symbol={{current_symbol}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-l-md hover:bg-gray-50">
+              上一页
+            </a>
+            <span class="relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border-t border-b border-gray-300">
+              {{ current_page }} / {{ total_pages }}
+            </span>
+            <a href="?symbol={{current_symbol}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-r-md hover:bg-gray-50">
+              下一页
+            </a>
+          </nav>
         </div>
       </div>
-    </div>
+    </main>
+
+    <script>
+    // 复制功能函数
+    function handleCopy(text, event) {
+        // 防止数值无效时复制
+        if (!text || text === '0' || text === '--' || text === '0.0') return;
+        
+        navigator.clipboard.writeText(text).then(() => {
+            showCopyFeedback(event.clientX, event.clientY);
+        }).catch(err => {
+            console.error('Copy failed:', err);
+        });
+    }
+
+    // 显示复制反馈动画
+    function showCopyFeedback(x, y) {
+        const el = document.createElement('div');
+        el.className = 'copy-feedback';
+        el.innerText = '已复制';
+        
+        // 放置在鼠标点击位置上方
+        el.style.left = x + 'px';
+        el.style.top = (y - 10) + 'px';
+        
+        document.body.appendChild(el);
+        
+        // 动画结束后移除 DOM
+        setTimeout(() => {
+            el.remove();
+        }, 1000);
+    }
+
+    async function confirmDelete() {
+        const symbol = document.getElementById('symbolSelect').value;
+        const msg = `⚠️ 高危操作 warning \n\n您确定要清空 [ ${symbol} ] 的所有 Agent 分析历史吗？\n(订单记录不会被删除)`;
+        
+        if (confirm(msg)) {
+            const password = prompt("🔐 请输入管理员密码以确认删除:");
+            if (password) {
+                try {
+                    const response = await fetch('/api/clean_history', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ symbol: symbol, password: password })
+                    });
+                    const result = await response.json();
+                    if (result.success) {
+                        alert("✅ " + result.message);
+                        location.reload();
+                    } else {
+                        alert("❌ 失败: " + result.message);
+                    }
+                } catch (e) {
+                    alert("网络错误: " + e);
+                }
+            }
+        }
+    }
+    </script>
   </body>
 </html>
