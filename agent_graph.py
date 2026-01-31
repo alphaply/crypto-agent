@@ -31,7 +31,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 当前监控: {symbol} | 模式: 实盘交易 | 杠杆: {leverage}x
 当前价格: {current_price} | 15m ATR: {atr_15m:.2f}
 
-【角色任务】
+【任务】
 捕捉日内 结构清晰 的波段机会。你的目标是稳定盈利，而非频繁刷单。
 如果市场出现符合策略的高盈亏比机会，你却因为过度犹豫而选择观望，将被视为严重失职。
 **实盘模式下，你不需要设置止盈止损 (TP/SL)，专注于优异的进场位置与出场位置。**
@@ -76,7 +76,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
    - BUY_LIMIT 入场价格必须 <= {current_price}
    - SELL_LIMIT 入场价格必须 >= {current_price}
    - CLOSE 价格务必合理（多单止盈价 > 现价，空单止盈价 < 现价，或者为了快速跑路选一个接近现价的位置）。
-3. 禁止梭哈，单笔下单金额不得超过 可用余额 的 40%。
+3. 禁止梭哈，单笔下单金额不得超过 可用余额 的 50%。
 
 思路 解读 中文描述
 - `action`: BUY_LIMIT / SELL_LIMIT / CLOSE / CANCEL / NO_ACTION
@@ -95,7 +95,7 @@ STRATEGY_PROMPT_TEMPLATE = """
 当前监控: {symbol} | 模式: 策略分析 (STRATEGY IDEA)
 当前价格: {current_price} | 15m ATR: {atr_15m:.2f}
 
-【角色任务】
+【任务】
 你需要分析中长线趋势，生成具有高盈亏比 (R/R Ratio) 的交易计划。(4h级别日线级别)
 你要做的是长线趋势单策略，而非频繁短线交易。
 长线趋势单精准接针是一个非常重要的技能。
