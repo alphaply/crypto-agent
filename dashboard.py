@@ -19,6 +19,11 @@ app = Flask(__name__)
 TZ_CN = pytz.timezone('Asia/Shanghai')
 logger = setup_logger("Dashboard")
 
+def get_scheduler_status():
+    """获取调度器状态，根据环境变量决定是否运行调度器"""
+    scheduler_enabled = os.getenv('ENABLE_SCHEDULER', 'true').lower() == 'true'
+    return scheduler_enabled
+
 def get_dashboard_data(symbol, page=1, per_page=10):
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -99,13 +104,10 @@ def get_symbol_specific_status(symbol):
     # 逻辑：完全复刻 main_scheduler.py 的判断
     if mode == 'REAL':
         mode_text = "🔴 实盘模式 (Real)"
-        if weekday == 5: freq_text = "1h (周六休整)"
-        elif weekday == 6 and hour < 20: freq_text = "1h (周日白天)"
-        else: freq_text = "15m (高频执行)"
+        freq_text = "15m (高频执行)"
     else:
         mode_text = "🔵 策略模式 (Strategy)"
-        if weekday >= 5: freq_text = "4h (周末长线)"
-        else: freq_text = "1h (工作日标准)"
+        freq_text = "1h (工作日标准)"
         
     return mode_text, freq_text
 
@@ -122,6 +124,9 @@ def index():
 
     # 1. 获取特定币种的状态 (新增)
     symbol_mode, symbol_freq = get_symbol_specific_status(symbol)
+    
+    # 2. 获取调度器状态
+    scheduler_enabled = get_scheduler_status()
 
     return render_template(
         'dashboard.html', 
@@ -134,7 +139,8 @@ def index():
         total_orders=total_count,
         # 传给前端的变量改了
         symbol_mode=symbol_mode,
-        symbol_freq=symbol_freq
+        symbol_freq=symbol_freq,
+        scheduler_enabled=scheduler_enabled
     )
 
 
@@ -179,7 +185,34 @@ def clean_history():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+
+@app.route('/api/scheduler-status', methods=['GET'])
+def get_scheduler_status_api():
+    """API接口：返回调度器状态"""
+    status = get_scheduler_status()
+    return jsonify({"enabled": status})
+
+
+@app.route('/api/toggle-scheduler', methods=['POST'])
+def toggle_scheduler():
+    """API接口：切换调度器状态"""
+    data = request.json
+    enable = data.get('enable', None)
+    if enable is not None:
+        # 注意：这里只是模拟设置，实际需要重启调度器
+        logger.info(f"调度器状态切换请求: {'启用' if enable else '禁用'}")
+        return jsonify({"success": True, "enabled": enable})
+    else:
+        return jsonify({"success": False, "message": "参数错误"})
+    
+
 if __name__ == "__main__":
     init_db() 
-    threading.Thread(target=run_smart_scheduler, daemon=True).start()
+    # 检查是否启用调度器
+    if get_scheduler_status():
+        scheduler_thread = threading.Thread(target=run_smart_scheduler, daemon=True)
+        scheduler_thread.start()
+        print("✅ 定时任务已启动")
+    else:
+        print("❌ 定时任务已被禁用，仅运行网页服务")
     app.run(host='0.0.0.0', port=7860, debug=False)

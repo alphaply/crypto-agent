@@ -29,6 +29,13 @@
       }
       .animate-pulse-custom { animation: pulse-custom 2s infinite; }
       
+      /* 红色呼吸灯动画 */
+      @keyframes pulse-red {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      .animate-pulse-red { animation: pulse-red 1.5s infinite; }
+      
       /* Tooltip 在手机端点击显示的辅助 */
       .tooltip-container:active .tooltip-content,
       .tooltip-container:focus-within .tooltip-content {
@@ -109,8 +116,14 @@
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
           <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span class="flex items-center gap-2">
+                <!-- 根据调度器状态显示不同颜色和动画 -->
+                {% if scheduler_enabled %}
                 <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span>
                 <span class="font-medium">运行中</span>
+                {% else %}
+                <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span>
+                <span class="font-medium text-red-500">停止运行</span>
+                {% endif %}
             </span>
             <span class="text-amber-300 hidden sm:inline">|</span>
             <span>模式: <span class="font-bold text-amber-800">{{ symbol_mode }}</span></span>
@@ -180,7 +193,7 @@
               <tr class="bg-white hover:bg-gray-50 flex flex-col md:table-row mb-4 md:mb-0 border md:border-none rounded-lg md:rounded-none shadow-sm md:shadow-none m-4 md:m-0 p-4 md:p-0">
                 
                 <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top">
-                  <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">时间</span>
+                  <span class="md:hidden font-semibold text-gray-500 text-xs uppercase flex-shrink-0 mr-4">时间</span>
                   <span class="font-mono text-xs text-gray-500 whitespace-nowrap">{{ order.timestamp }}</span>
                 </td>
 
@@ -369,3 +382,4 @@
     </script>
   </body>
 </html>
+

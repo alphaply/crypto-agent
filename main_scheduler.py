@@ -43,7 +43,7 @@ def get_all_configs():
 
 def process_single_config(config):
     """
-    单线程任务 - 智能混合调度逻辑
+    单线程任务
     """
     symbol = config.get('symbol')
     mode = config.get('mode', 'STRATEGY').upper()
@@ -51,13 +51,16 @@ def process_single_config(config):
     if not symbol: return
 
     # ==========================================
-    # 核心逻辑：策略模式“偷懒”机制
+    # 策略模式：严格限制在整点运行
     # ==========================================
-    # 如果是 STRATEGY 模式，但当前时间不是整点（容差 ±5分钟）
-    # 就直接跳过执行。
+    # 如果是 STRATEGY 模式，我们只允许在整点 (XX:00) 附近运行。
+    # 这样即使调度器因为实盘币种每 15分钟 唤醒了一次，
+    # 策略币种在 15分、30分、45分 的时候也会自动跳过。
     if mode == 'STRATEGY':
         now_min = datetime.now(TZ_CN).minute
+        # 容差 ±5分钟 (比如 09:55 - 10:05 之间算整点)
         if 5 < now_min < 55:
+            # logger.info(f"⏳ {symbol} 跳过 (当前 {now_min}分，非整点)")
             return
 
     try:
@@ -65,9 +68,13 @@ def process_single_config(config):
     except Exception as e:
         logger.error(f"❌ Error {symbol}: {e}")
 
+
 def get_next_run_settings():
     """
     决定调度器的“心跳”频率
+    逻辑：
+    - 只要有实盘 (REAL) -> 15分钟一次
+    - 全是策略 (STRATEGY) -> 1小时一次
     """
     configs = get_all_configs()
     
@@ -78,49 +85,13 @@ def get_next_run_settings():
     real_coins = [c['symbol'] for c in configs if c.get('mode', 'STRATEGY').upper() == 'REAL']
     has_real_mode = len(real_coins) > 0
     
-    now = datetime.now(TZ_CN)
-    weekday = now.weekday() # 0=周一 ... 6=周日
-    current_hour = now.hour
-
-    interval_minutes = 60 # 默认
-    mode_name = "未知"
-
-    # ==========================================
-    # 分支 A: 混合模式 (实盘 + 策略)
-    # 调度器必须按最快的节奏跑 (15m)，但文案上我们标记清楚
-    # ==========================================
     if has_real_mode:
-        # 1. 周六：实盘休息，全员 1h
-        if weekday == 5:
-            interval_minutes = 60
-            mode_name = "🔴实盘休整(1h)"
-            
-        # 2. 周日：20:00 前 1h，20:00 后 15m
-        elif weekday == 6:
-            if current_hour < 20:
-                interval_minutes = 60
-                mode_name = "🔴实盘休整(1h)"
-            else:
-                interval_minutes = 15
-                mode_name = "🚀混合双打 (实盘15m / 策略1h)" 
-                
-        # 3. 工作日：15m 心跳
-        else:
-            interval_minutes = 15
-            mode_name = "🚀混合双打 (实盘15m / 策略1h)" 
-
-    # ==========================================
-    # 分支 B: 纯策略模式
-    # ==========================================
+        # 只要有一个是实盘，整个系统必须保持高频心跳
+        return 15, "🚀 混合/实盘模式 (15m)"
     else:
-        if weekday >= 5:
-            interval_minutes = 240 # 4小时
-            mode_name = "🔵纯策略-周末(4h)"
-        else:
-            interval_minutes = 60
-            mode_name = "🔵纯策略-工作日(1h)"
+        # 全是策略，只需要每小时醒来一次
+        return 60, "🔵 纯策略模式 (1h)"
 
-    return interval_minutes, mode_name
 
 def wait_until_next_slot(interval_minutes, delay_seconds=10):
     now = datetime.now().astimezone(TZ_CN)
