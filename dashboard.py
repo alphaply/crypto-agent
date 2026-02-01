@@ -107,7 +107,7 @@ def get_symbol_specific_status(symbol):
         freq_text = "15m (高频执行)"
     else:
         mode_text = "🔵 策略模式 (Strategy)"
-        freq_text = "1h (工作日标准)"
+        freq_text = "1h (低频执行)"
         
     return mode_text, freq_text
 

@@ -367,11 +367,9 @@ def execution_node(state: AgentState) -> AgentState:
     summary = output.get('summary', {})
     raw_orders = output.get('orders', [])
     
-    # CANCEL(0) > CLOSE(1) > 其他开仓(2) 先平仓 再开仓
     orders = sorted(raw_orders, key=lambda x: 0 if x['action']=='CANCEL' else (1 if x['action']=='CLOSE' else 2))
     
-    # 1. 保存分析日志 (通用)
-    content = f"[{trade_mode}] Trend: {summary.get('current_trend')}\nPredict: {summary.get('predict')}"
+    content = f"Trend: {summary.get('current_trend')}\nKey Levels: {summary.get('key_levels')}\nPredict: {summary.get('predict')}"
     try:
         database.save_summary(symbol, agent_name, content, summary.get('strategy_thought'))
     except Exception as db_err:
@@ -427,11 +425,13 @@ def execution_node(state: AgentState) -> AgentState:
                 if close_res:
                      database.save_order_log("CLOSE_CMD", symbol, agent_name, "CLOSE", order.get('entry_price'), 0, 0, log_reason, trade_mode="REAL")
 
-            # 3. 开仓 (Limit) - ✅ 增加防重检测
+            # 3. 开仓 (Limit) - 
             elif action in ['BUY_LIMIT', 'SELL_LIMIT']:
                 entry_price = float(order.get('entry_price', 0))
-                # 获取当前实盘挂单
-                real_open_orders = state['account_context'].get('real_open_orders', [])
+                
+                # 在下单前获取最新的实盘挂单，而不是使用旧的缓存数据
+                latest_account_data = market_tool.get_account_status(symbol, is_real=True)
+                real_open_orders = latest_account_data.get('real_open_orders', [])
                 
                 if _is_duplicate_order(action, entry_price, real_open_orders):
                     logger.info(f"🛑 [Filter] 忽略重复实盘挂单: {action} @ {entry_price}")
@@ -459,12 +459,14 @@ def execution_node(state: AgentState) -> AgentState:
             # 2. 开仓 - ✅ 增加防重检测
             elif action in ['BUY_LIMIT', 'SELL_LIMIT']:
                 entry_price = float(order.get('entry_price', 0))
-                # 获取当前策略挂单
-                mock_open_orders = state['account_context'].get('mock_open_orders', [])
+                
+                # 在下单前获取最新的策略挂单，而不是使用旧的缓存数据
+                # latest_account_data = market_tool.get_account_status(symbol, is_real=False)
+                # mock_open_orders = latest_account_data.get('mock_open_orders', [])
 
-                if _is_duplicate_order(action, entry_price, mock_open_orders):
-                    logger.info(f"🛑 [Filter] 忽略重复策略挂单: {action} @ {entry_price}")
-                    continue # 跳过入库
+                # if _is_duplicate_order(action, entry_price, mock_open_orders):
+                #     logger.info(f"🛑 [Filter] 忽略重复策略挂单: {action} @ {entry_price}")
+                #     continue # 跳过入库
 
                 side = 'BUY' if 'BUY' in action else 'SELL'
                 mock_id = f"ST-{uuid.uuid4().hex[:6]}"
