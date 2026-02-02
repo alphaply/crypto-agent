@@ -3,7 +3,6 @@
 将复杂的数据结构转换为 Agent 易读的文本格式
 """
 
-
 def format_positions_to_agent_friendly(positions: list) -> str:
     """
     将复杂的持仓 JSON 转换为 Agent 易读的精简文本
@@ -31,8 +30,6 @@ def format_positions_to_agent_friendly(positions: list) -> str:
 def format_orders_to_agent_friendly(orders: list) -> str:
     """
     将活跃挂单转换为 Agent 易读的精简文本
-    输入样例: [{"id": "84862268134", "side": "buy", "type": "限价入场", "price": 873.5, "amount": 0.01}]
-    输出样例: [BUY] LIMIT | ID: 84862268134 | Price: 873.5 | Amt: 0.01
     """
     if not orders:
         return "无活跃挂单 (No Active Orders)"
@@ -71,7 +68,7 @@ def format_orders_to_agent_friendly(orders: list) -> str:
 def format_market_data_to_markdown(data: dict) -> str:
     """
     将复杂的市场 JSON 数据转换为 LLM 易读的 Markdown 格式
-    (更新：新增 ATR, Vol Status, Recent Closes 列)
+    (更新：新增 Recent Highs/Lows 列)
     """
     def fmt_price(price):
         if price is None or price == 0: return "0"
@@ -102,9 +99,10 @@ def format_market_data_to_markdown(data: dict) -> str:
         f"Sentiment: Fund: {funding:.4f}% | OI: {oi_str} | Vol24h: {vol_24h}\n"
     )
 
+    # ------------------ 修改点 1：表头增加 Highs 和 Lows ------------------
     table_header = (
-        "| TF | Price | ATR | RSI | Vol Status | Recent Closes (Last 5) | EMA (20/50/100/200) | POC | VA Range | HVN |\n"
-        "|---|---|---|---|---|---|---|---|---|---|\n"
+        "| TF | Price | ATR | RSI | Vol Status | Last 5 Closes | Last 5 Highs | Last 5 Lows | EMA (20/50/100/200) | POC | VA Range | HVN |\n"
+        "|---|---|---|---|---|---|---|---|---|---|---|---|\n"
     )
     
     rows = []
@@ -123,10 +121,15 @@ def format_market_data_to_markdown(data: dict) -> str:
         # 2. 成交量状态
         vol_stat = d.get('volume_status', 'N/A')
         
+        # ------------------ 修改点 2：提取并格式化 Highs 和 Lows ------------------
         raw_closes = d.get('recent_closes', [])
-        # 为了节省 token 和版面，如果价格数字很大，这里只显示最后几位小数可能不够直观，
-        # 建议直接用 fmt_price 格式化，逗号分隔
         closes_str = ", ".join([fmt_price(x) for x in raw_closes])
+        
+        raw_highs = d.get('recent_highs', [])
+        highs_str = ", ".join([fmt_price(x) for x in raw_highs])
+
+        raw_lows = d.get('recent_lows', [])
+        lows_str = ", ".join([fmt_price(x) for x in raw_lows])
         
         # 4. EMA
         ema = d.get('ema', {})
@@ -147,8 +150,8 @@ def format_market_data_to_markdown(data: dict) -> str:
         top_hvns = sorted(raw_hvns, reverse=True)[:3]
         hvn_str = ",".join([fmt_price(h) for h in top_hvns])
         
-        # 组装行
-        row = f"| {tf} | {tf_price} | {atr} | {rsi} | {vol_stat} | {closes_str} | {ema_str} | {poc} | {va_range} | {hvn_str} |"
+        # ------------------ 修改点 3：将新数据加入行中 ------------------
+        row = f"| {tf} | {tf_price} | {atr} | {rsi} | {vol_stat} | {closes_str} | {highs_str} | {lows_str} | {ema_str} | {poc} | {va_range} | {hvn_str} |"
         rows.append(row)
     
     return header + table_header + "\n".join(rows)

@@ -381,10 +381,14 @@ class MarketTool:
             if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": []}
             
             recent_closes = [round(x, 2) for x in df['close'].tail(5).values.tolist()]
+            recent_highs = [round(x, 2) for x in df['high'].tail(5).values.tolist()]
+            recent_lows = [round(x, 2) for x in df['low'].tail(5).values.tolist()]
             
             return {
                 "price": close.iloc[-1],
                 "recent_closes": recent_closes,
+                "recent_highs": recent_highs,
+                "recent_lows": recent_lows,
                 "rsi": round(rsi, 2),
                 "atr": round(atr, 2),
                 "ema": {"ema_20": round(ema20, 2), "ema_50": round(ema50, 2), "ema_100": round(ema100, 2), "ema_200": round(ema200, 2)},

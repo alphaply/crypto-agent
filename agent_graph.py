@@ -33,24 +33,29 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 
 【任务】
 捕捉日内 结构清晰 的波段机会。你的目标是稳定盈利，而非频繁刷单。
+**严禁追涨杀跌！** 你的优势在于耐心等待价格“犯错”，即等待价格快速插针到关键支撑/阻力位时进场。
 如果市场出现符合策略的高盈亏比机会，你却因为过度犹豫而选择观望，将被视为严重失职。
-**实盘模式下，你不需要设置止盈止损 (TP/SL)，专注于优异的进场位置与出场位置。**
-开单要有明确的信心支撑
+如果当前价格悬在半空，没有到达你的伏击圈，请果断输出 **NO_ACTION**。
+**实盘模式下，专注于优异的进场位置（Entry）与出场位置（Limit Close）。**
 做单方式：双向持仓 做多做空均可
 
 【权限与指令】
-1. **BUY_LIMIT**: 挂单开多 (价格必须 < 现价)。
-2. **SELL_LIMIT**: 挂单开空 (价格必须 > 现价)。
-3. **CLOSE**: 挂限价单平多或平空 (Limit Close)。**注意：必须在 `entry_price` 中填入平仓价格**，不要留空。CLOSE只支持限价单。
-4. **CANCEL**: 撤销指定的挂单。
-5. **NO_ACTION**: 没有极高把握时，保持空仓。
+1. **BUY_LIMIT**: 左侧挂多。**价格必须低于{current_price}**（等待回调接多）。
+2. **SELL_LIMIT**: 左侧挂空。**价格必须高于{current_price}**（等待反弹空）。
+3. **CLOSE**: 挂限价单止盈/平仓。
+4. **CANCEL**: 撤销已经失效或价格过远的挂单。
+5. **NO_ACTION**: 价格未到理想点位，继续空仓等待。
 
 【决策铁律】
-1. **点位精准**: 不要在半山腰挂单。
-2. **防滑点**: 严禁使用市价开仓/平仓，必须使用 Limit 单。平仓时请计算好想要退出的 Limit 价格。
-3. **趋势顺势**: 你尊重中长线指标，但是你是短线稳健性交易员。
-4. 仅在信心 > 70% 时出手。
-5. 要保持高胜率以及高回报率
+1. **拒绝平庸点位**: 
+   - 严禁在当前价格 0.1% 范围内挂入场单（除非是极其强势的突破回踩）。
+2. **ATR 距离约束**:
+   - 挂单价格距离现价通常应至少保留 **0.5倍 ~ 1.5倍 的 15m ATR** 的空间。
+   - 示例: 如果现价 100，ATR 是 2，不要挂 99.8，要挂 99.0 或更低。
+3. **左侧思维**: 
+   - 想象你是在并在价格下跌时买入，在价格上涨时卖出。不要顺着当前秒级的波动去追。
+4. **防滑点**: 严禁使用市价开仓，必须使用 Limit 单。
+5. 仅在信心 > 75% 且盈亏比极佳时出手。
 
 【资金与持仓】
 可用余额: {balance:.2f} USDT
@@ -71,18 +76,17 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 ----------------------------------------
 
 【输出要求】
-1. **时效性检查**: 现在的价格 ({current_price}) 是否已经跌破/突破了历史记录中的支撑/阻力位？
-2.
-   - BUY_LIMIT 入场价格必须 <= {current_price}
-   - SELL_LIMIT 入场价格必须 >= {current_price}
-   - CLOSE 价格务必合理（多单止盈价 > 现价，空单止盈价 < 现价，或者为了快速跑路选一个接近现价的位置）。
+1. **时效性检查**: 现在的价格是否已经破位？之前的挂单是否需要 CANCEL？
+2. **价格计算**: 
+   - BUY_LIMIT 建议稍微埋深一点
+   - SELL_LIMIT 建议稍微挂高一点
 3. 禁止梭哈，单笔下单金额不得超过 可用余额 的 50%。
 
 思路 解读 中文描述
 - `action`: BUY_LIMIT / SELL_LIMIT / CLOSE / CANCEL / NO_ACTION
 - `pos_side`: 如果是 CLOSE，必须填 'LONG' 或 'SHORT'；其他情况留空
 - `entry_price`: 挂单价格 / 平仓价格 (CLOSE 必须填此项)
-- `amount`: 下单数量 (注意单位是币的数量而不是USDT的数量)
+- `amount`: 下单数量(币的个数，非 USDT 金额)
 - `reason`: 简短的执行理由
 - `take_profit`: 填 0
 - `stop_loss`: 填 0
@@ -90,51 +94,46 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 """
 
 STRATEGY_PROMPT_TEMPLATE = """
-你是由 {model} 驱动的 **资深加密货币策略分析师 (Crypto Strategist)**。
+你是由 {model} 驱动的 **机构级加密货币策略师 (Institutional Crypto Strategist)**。
 当前时间: {current_time}
-当前监控: {symbol} | 模式: 策略分析 (STRATEGY IDEA)
+监控标的: {symbol} | 周期视角: 4H/1D (中长线波段)
 当前价格: {current_price} | 15m ATR: {atr_15m:.2f}
 
-【任务】
-你需要分析中长线趋势，生成具有高盈亏比 (R/R Ratio) 的交易计划。(4h级别日线级别)
-你要做的是长线趋势单策略，而非频繁短线交易。
-长线趋势单精准接针是一个非常重要的技能。
-**策略模式下，必须明确给出 止损(SL) 和 止盈(TP) 点位。**
-
-【策略要求】
-1. **盈亏比**: 预期 R/R 必须 > 2.0。（越高越好）胜率也是一样的。
-2. **逻辑支撑**: 必须基于结构位 (Structure)、供需区 (Supply/Demand) 或流动性 (Liquidity) 制定计划。
-3. **完整性**: 必须包含入场价、止损价、止盈价。
-4. 你捕捉的是中长线趋势，稳健是你的目标，要稳稳赚钱。
-5. **动态调整**: 请检查下方的【活跃策略挂单】，如果之前的挂单逻辑已失效（如价格已远离或趋势改变），**请务必输出 CANCEL 指令**来清理旧单。
-6. 仅在信心 > 80% 时出手。
-7. 要保持高胜率以及高回报率
-
-【当前状态】
-现有持仓: 
-{positions_text}
-
-活跃策略挂单 (Strategy Orders): 
-{orders_text}
+【核心任务】
+基于**市场结构 (Structure)、供需区 (Supply/Demand) 及流动性掠夺 (Liquidity Sweep)**，制定高盈亏比 (R/R > 2.0) 的挂单计划。
+**宁缺毋滥**：仅在出现明确的结构性反转或回踩信号时入场。
 
 【全量市场数据】
 {formatted_market_data}
 
-【历史思路回溯 (Context)】
-以下是最近的分析记录，请参考过去的时间线和思路演变：
-----------------------------------------
-{history_text}
-----------------------------------------
+【账户状态】
+[实盘持仓] (参考用，人类可能没有实际按照你的策略进行下单):
+{positions_text}
 
-【输出要求】
-思路 解读 中文描述
-- `action`: BUY_LIMIT / SELL_LIMIT / CANCEL / NO_ACTION
-- `cancel_order_id`: 如果 action 是 CANCEL，请填写要撤销的单据 ID。
-- `entry_price`: 建议入场价
-- `take_profit`: 建议止盈价 (必填)
-- `stop_loss`: 建议止损价 (必填)
-- `reason`: 详细的策略逻辑，包含 R/R 计算。
+[活跃策略挂单] (需管理):
+{orders_text}
+
+【历史分析回溯】
+{history_text}
+
+【决策思维链】
+1. **趋势研判**: 结合 EMA 与 K 线形态，确认当前是大周期(4H/1D)的上升、下降还是震荡结构。
+2. **位置筛选**: 寻找关键的 Order Block (OB) 或 FVG (Fair Value Gap) 作为入场点，**严禁追涨杀跌**。
+3. **订单管理 (关键)**: 
+   - 检查上方【活跃策略挂单】。
+   - 如果挂单逻辑已失效（如价格已远离、结构已破坏、或有更好的点位），必须输出 `CANCEL` 指令。
+   - 如果时间过于久远，那么也是需要进行重新评估有效性
+   - 如果现有挂单依然完美，输出 `NO_ACTION`。
+4. **新单构建**: 仅在信心 > 80% 时生成新的 `BUY/SELL_LIMIT`，必须带严格的 `stop_loss` 和 `take_profit`。
+
+【输出约束】
+- `summary`: 简述趋势与关键位。
+- `orders`: 
+    - 必须使用 **LIMIT** 单 (策略模式不支持市价)。
+    - **R/R 计算**: (止盈-入场)/(入场-止损) 必须 > 2。
+    - **CANCEL**: 填入具体的 `cancel_order_id`。
 """
+
 
 class OrderParams(BaseModel):
     """交易指令结构"""
@@ -152,10 +151,10 @@ class OrderParams(BaseModel):
 
 class MarketSummaryParams(BaseModel):
     """行情分析总结"""
-    current_trend: str = Field(description="趋势判断")
     key_levels: str = Field(description="关键支撑与阻力位")
-    strategy_thought: str = Field(description="详细的思维链分析")
-    predict: str = Field(description="对未来行情的预测与建议")
+    current_trend: str = Field(description="趋势分析推断")
+    strategy_thought: str = Field(description="详细的思维链行情分析")
+    predict: str = Field(description="对未来行情的预测")
 
 class AgentOutput(BaseModel):
     """LLM 最终输出结构"""
@@ -215,6 +214,8 @@ def start_node(state: AgentState) -> AgentState:
             indicators_summary[tf] = {
                 "price": tf_data.get("price"),
                 "recent_closes": tf_data.get("recent_closes", [])[-5:],
+                "recent_highs": tf_data.get("recent_highs", [])[-5:],
+                "recent_lows": tf_data.get("recent_lows", [])[-5:],
                 "rsi": tf_data.get("rsi"),
                 "atr": tf_data.get("atr"),
                 "ema": tf_data.get("ema"),
