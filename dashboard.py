@@ -8,7 +8,8 @@ from datetime import datetime
 import pytz
 from database import (
     DB_NAME, init_db, 
-    get_paginated_summaries, get_summary_count, delete_summaries_by_symbol
+    get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
+    get_balance_history, get_trade_history, clean_financial_data
 )
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
@@ -128,6 +129,16 @@ def index():
     # 2. 获取调度器状态
     scheduler_enabled = get_scheduler_status()
 
+    # 获取资金曲线数据 (新增)
+    balance_history = get_balance_history(symbol, limit=200)
+    
+    # 获取历史成交记录 (新增)
+    trade_history = get_trade_history(symbol, limit=50)
+
+    # 处理资金曲线数据给前端 Chart.js 使用
+    chart_labels = [row['timestamp'][5:16] for row in balance_history] # 只取 MM-DD HH:MM
+    chart_data = [row['total_equity'] for row in balance_history]
+
     return render_template(
         'dashboard.html', 
         agent_summaries=agent_summaries, 
@@ -140,7 +151,11 @@ def index():
         # 传给前端的变量改了
         symbol_mode=symbol_mode,
         symbol_freq=symbol_freq,
-        scheduler_enabled=scheduler_enabled
+        scheduler_enabled=scheduler_enabled,
+        balance_history=balance_history,
+        trade_history=trade_history,
+        chart_labels=chart_labels,
+        chart_data=chart_data,
     )
 
 
@@ -179,12 +194,16 @@ def clean_history():
         return jsonify({'success': False, 'message': '密码错误，拒绝操作'})
         
     try:
-        count = delete_summaries_by_symbol(symbol)
-        logger.info(f"🗑️ [Dashboard] Cleaned history for {symbol}, count: {count}")
-        return jsonify({'success': True, 'message': f'已删除 {count} 条记录'})
+        # 删除分析记录
+        count_summary = delete_summaries_by_symbol(symbol)
+        
+        # 删除资金和成交记录 (新增)
+        count_financial = clean_financial_data(symbol)
+        
+        logger.info(f"🗑️ [Dashboard] Cleaned all data for {symbol}")
+        return jsonify({'success': True, 'message': f'已删除 {count_summary} 条分析, {count_financial} 条财务记录'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
-
 
 @app.route('/api/scheduler-status', methods=['GET'])
 def get_scheduler_status_api():

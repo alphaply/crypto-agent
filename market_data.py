@@ -560,3 +560,18 @@ class MarketTool:
             logger.error(f"   |-- ❌ {order_type} 参数错误: 请检查 reduceOnly。")
         else:
             logger.error(f"   |-- ❌ {order_type} 设置失败: {e}")
+
+
+
+
+    def fetch_recent_trades(self, symbol, limit=20):
+        """
+        获取最近的成交记录 (仅限实盘)
+        """
+        try:
+            # fetch_my_trades 是 CCXT 获取个人历史成交的标准方法
+            trades = self.exchange.fetch_my_trades(symbol, limit=limit)
+            return trades
+        except Exception as e:
+            logger.warning(f"⚠️ 无法获取成交记录 ({symbol}): {e}")
+            return []

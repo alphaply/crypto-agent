@@ -65,6 +65,85 @@ def format_orders_to_agent_friendly(orders: list) -> str:
     return "\n".join(lines)
 
 
+def format_market_data_to_text(data: dict) -> str:
+    """
+    将市场数据转换为 LLM 友好的结构化纯文本格式
+    优势：无表格符号干扰、层次清晰、关键指标前置、序列数据紧凑表达
+    """
+    def fmt_price(price):
+        if price is None or price == 0: return "0"
+        abs_p = abs(price)
+        if abs_p >= 1000: return f"{int(price)}"      
+        if abs_p >= 1: return f"{price:.2f}"          
+        if abs_p >= 0.01: return f"{price:.4f}"       
+        return f"{price:.8f}".rstrip('0')              
+
+    def fmt_num(num):
+        if num > 1_000_000_000: return f"{num/1_000_000_000:.1f}B"
+        if num > 1_000_000: return f"{num/1_000_000:.1f}M"
+        if num > 1_000: return f"{num/1_000:.1f}K"
+        return f"{num:.0f}"
+
+    # ========== 市场快照 ==========
+    current_price = data.get("current_price", 0)
+    atr_15m = data.get("atr_15m", 0)
+    sent = data.get("sentiment", {})
+    funding = sent.get("funding_rate", 0) * 100 
+    oi = fmt_num(sent.get("open_interest", 0))
+    vol_24h = fmt_num(sent.get("24h_quote_vol", 0))
+    
+    output = [
+        "【市场快照】",
+        f"• 当前价格: {fmt_price(current_price)} | 15m ATR: {fmt_price(atr_15m)}",
+        f"• 资金费率: {funding:.4f}% | 未平仓合约: {oi} | 24h成交量: {vol_24h}",
+        ""
+    ]
+
+    # ========== 按周期组织技术指标 ==========
+    indicators = data.get("technical_indicators", {})
+    timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
+    
+    for tf in timeframes:
+        if tf not in indicators: 
+            continue
+            
+        d = indicators[tf]
+        output.append(f"【{tf}周期】")
+        
+        # 核心指标（前置关键信息）
+        tf_price = fmt_price(d.get('price', 0))
+        atr = fmt_price(d.get('atr', 0))
+        rsi = d.get('rsi', 0)
+        vol_stat = d.get('volume_status', 'N/A')
+        output.append(f"• 价格: {tf_price} | ATR: {atr} | RSI: {rsi:.1f} | 量能: {vol_stat}")
+        
+        # K线序列（紧凑表达，避免冗长换行）
+        closes = [fmt_price(x) for x in d.get('recent_closes', [])[-5:]]
+        highs = [fmt_price(x) for x in d.get('recent_highs', [])[-5:]]
+        lows = [fmt_price(x) for x in d.get('recent_lows', [])[-5:]]
+        if closes:
+            output.append(f"• 近5根K线: 收盘[{', '.join(closes)}] 高点[{', '.join(highs)}] 低点[{', '.join(lows)}]")
+        
+        # EMA（简化表达）
+        ema = d.get('ema', {})
+        e20 = fmt_price(ema.get('ema_20', 0))
+        e50 = fmt_price(ema.get('ema_50', 0))
+        e100 = fmt_price(ema.get('ema_100', 0))
+        e200 = fmt_price(ema.get('ema_200', 0))
+        output.append(f"• EMA: 20={e20} / 50={e50} / 100={e100} / 200={e200}")
+        
+        # 价值分布（Volume Profile）
+        vp = d.get('vp', {})
+        poc = fmt_price(vp.get('poc', 0))
+        val = fmt_price(vp.get('val', 0))
+        vah = fmt_price(vp.get('vah', 0))
+        hvns = sorted([fmt_price(h) for h in vp.get('hvns', [])], reverse=True)[:3]
+        hvn_str = ", ".join(hvns) if hvns else "N/A"
+        output.append(f"• 价值区: POC={poc} | VA=[{val}~{vah}] | 高量节点: {hvn_str}")
+        output.append("")  # 空行分隔周期
+
+    return "\n".join(output).strip()
+
 def format_market_data_to_markdown(data: dict) -> str:
     """
     将复杂的市场 JSON 数据转换为 LLM 易读的 Markdown 格式

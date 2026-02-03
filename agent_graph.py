@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import pytz
 from tool.logger import setup_logger
-from tool.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, format_market_data_to_markdown
+from tool.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, format_market_data_to_markdown,format_market_data_to_text
 
 TZ_CN = pytz.timezone('Asia/Shanghai')
 logger = setup_logger("AgentGraph")
@@ -36,7 +36,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 **严禁追涨杀跌！** 你的优势在于耐心等待价格“犯错”，即等待价格快速插针到关键支撑/阻力位时进场。
 如果市场出现符合策略的高盈亏比机会，你却因为过度犹豫而选择观望，将被视为严重失职。
 如果当前价格悬在半空，没有到达你的伏击圈，请果断输出 **NO_ACTION**。
-**实盘模式下，专注于优异的进场位置（Entry）与出场位置（Limit Close）。**
+**实盘模式下，专注于优异的进场位置（Entry）与出场位置（Limit Close），收割利润很重要**
 做单方式：双向持仓 做多做空均可
 
 【权限与指令】
@@ -49,13 +49,13 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 【决策铁律】
 1. **拒绝平庸点位**: 
    - 严禁在当前价格 0.1% 范围内挂入场单（除非是极其强势的突破回踩）。
-2. **ATR 距离约束**:
-   - 挂单价格距离现价通常应至少保留 **0.5倍 ~ 1.5倍 的 15m ATR** 的空间。
-   - 示例: 如果现价 100，ATR 是 2，不要挂 99.8，要挂 99.0 或更低。
+2. **ATR 距离建议**:
+   - 挂单价格距离现价通常应至少保留 **0.5倍 ~ 1.5倍 的 15m ATR** 的空间。（建议，实际操作应该按照技术分析）
 3. **左侧思维**: 
    - 想象你是在并在价格下跌时买入，在价格上涨时卖出。不要顺着当前秒级的波动去追。
 4. **防滑点**: 严禁使用市价开仓，必须使用 Limit 单。
-5. 仅在信心 > 75% 且盈亏比极佳时出手。
+5. 仅在信心 > 80% 且盈亏比极佳时出手。
+6.开仓时需要谨慎，持仓管理注意风险控制！
 
 【资金与持仓】
 可用余额: {balance:.2f} USDT
@@ -71,6 +71,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 
 【历史思路回溯 (Context)】
 以下是最近 3 次的分析记录，请参考过去的时间线和思路演变：
+独立思考，市场每分钟都在变化，必须基于的全量市场数据进行零基分析
 ----------------------------------------
 {history_text}
 ----------------------------------------
@@ -80,7 +81,10 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 2. **价格计算**: 
    - BUY_LIMIT 建议稍微埋深一点
    - SELL_LIMIT 建议稍微挂高一点
-3. 禁止梭哈，单笔下单金额不得超过 可用余额 的 50%。
+3. **资金风控 (重要)**:
+   - 最小下单金额: `entry_price * amount` 必须 > 21 USDT。
+   - 最大下单金额: 不得超过 可用余额 的 50%。
+   - 开仓时需要谨慎，持仓管理注意风险控制！
 
 思路 解读 中文描述
 - `action`: BUY_LIMIT / SELL_LIMIT / CLOSE / CANCEL / NO_ACTION
@@ -114,16 +118,22 @@ STRATEGY_PROMPT_TEMPLATE = """
 {orders_text}
 
 【历史分析回溯】
+独立思考，市场每分钟都在变化，必须基于的全量市场数据进行零基分析
+
 {history_text}
+
+
 
 【决策思维链】
 1. **趋势研判**: 结合 EMA 与 K 线形态，确认当前是大周期(4H/1D)的上升、下降还是震荡结构。
 2. **位置筛选**: 寻找关键的 Order Block (OB) 或 FVG (Fair Value Gap) 作为入场点，**严禁追涨杀跌**。
-3. **订单管理 (关键)**: 
-   - 检查上方【活跃策略挂单】。
+3. **订单管理 (关键 - 失效自检)**: 
+   - **核心检查**: 对比【活跃策略挂单】中的 TP/SL 与表格中 `Last 5 Highs` 和 `Last 5 Lows` 数据。
+     - **做多单 (BUY_LIMIT) 失效判定**: 如果 `Last 5 Lows` 中的最低值 <= 该订单的 `Stop Loss`，说明止损位已被触及，结构已破坏，**必须输出 CANCEL**。
+     - **做空单 (SELL_LIMIT) 失效判定**: 如果 `Last 5 Highs` 中的最高值 >= 该订单的 `Stop Loss`，说明止损位已被触及，结构已破坏，**必须输出 CANCEL**。
+     - **已成交判定**: 如果价格穿过了挂单价格但没打止损，说明在实盘中可能已经成交，但在策略模式下为了避免重复挂单，也可以考虑 CANCEL 旧单并评估新机会。
    - 如果挂单逻辑已失效（如价格已远离、结构已破坏、或有更好的点位），必须输出 `CANCEL` 指令。
-   - 如果时间过于久远，那么也是需要进行重新评估有效性
-   - 如果现有挂单依然完美，输出 `NO_ACTION`。
+   - 如果时间过于久远（例如超过 24小时未成交），也建议 CANCEL 重新评估。
 4. **新单构建**: 仅在信心 > 80% 时生成新的 `BUY/SELL_LIMIT`，必须带严格的 `stop_loss` 和 `take_profit`。
 
 【输出约束】
@@ -152,8 +162,8 @@ class OrderParams(BaseModel):
 class MarketSummaryParams(BaseModel):
     """行情分析总结"""
     key_levels: str = Field(description="关键支撑与阻力位")
-    current_trend: str = Field(description="趋势分析推断")
-    strategy_thought: str = Field(description="详细的思维链行情分析")
+    current_trend: str = Field(description="各种周期趋势分析推断")
+    strategy_thought: str = Field(description="详细的思维链，对行情以及现有持仓进行分析")
     predict: str = Field(description="对未来行情的预测")
 
 class AgentOutput(BaseModel):
@@ -196,6 +206,29 @@ def start_node(state: AgentState) -> AgentState:
         account_data = {'balance': 0, 'real_open_orders': [], 'mock_open_orders': [], 'real_positions': []}
         recent_summaries = []
     
+
+    if is_real_exec:
+        try:
+            # 1. 记录资金曲线 (Snapshot)
+            balance = account_data.get('balance', 0)
+            positions = account_data.get('real_positions', [])
+            
+            total_unrealized_pnl = sum([float(p.get('unrealized_pnl', 0)) for p in positions])
+            
+            # 保存到数据库
+            database.save_balance_snapshot(symbol, balance, total_unrealized_pnl)
+            
+            # 2. 同步成交记录 (Sync Trades)
+            # 获取最近 10 条成交，存入数据库 (自动去重)
+            recent_trades = market_tool.fetch_recent_trades(symbol, limit=10)
+            if recent_trades:
+                database.save_trade_history(recent_trades)
+                logger.info(f"🔄 [Data] Synced {len(recent_trades)} trades from exchange.")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to save real-time stats: {e}")
+
+            
     # 资金计算
     leverage = int(os.getenv('LEVERAGE', 10))
     balance = account_data.get('balance', 0)
@@ -235,7 +268,7 @@ def start_node(state: AgentState) -> AgentState:
         "technical_indicators": indicators_summary 
     }
     
-    formatted_market_data = format_market_data_to_markdown(market_context_llm)
+    formatted_market_data = format_market_data_to_text(market_context_llm)
     
     # 历史数据结构化处理
     history_entries = []
@@ -247,9 +280,10 @@ def start_node(state: AgentState) -> AgentState:
             if "LLM Failed" in logic or "json_invalid" in logic:
                 continue 
                 
-            content = s['content'][:200] + "..." if len(s['content']) > 200 else s['content']
-            logic = logic[:300] + "..." if len(logic) > 300 else logic
-            entry = f" [{ts}] {agent}: {content} | Logic: {logic}"
+            content = s['content'][:150] + "..." if len(s['content']) > 200 else s['content']
+            # logic = logic[:200] + "..." if len(logic) > 300 else logic
+            # entry = f" [{ts}] {content} | Logic: {logic}"
+            entry = f" [{ts}] {agent} | Logic: {logic}"
             history_entries.append(entry)
         formatted_history_text = "\n".join(history_entries)
     else:
