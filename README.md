@@ -28,7 +28,7 @@
 
 注意：该项目的大部分代码都是由gemini 3 pro完成，本人只是给gemini老师指指路，有bug欢迎issue与pr！
 
-### 1. 环境准备
+###  环境准备
 
 推荐使用 `uv` 进行快速环境管理，或者使用标准的 `pip`。
 
@@ -43,58 +43,14 @@ uv sync
 pip install -r requirements.txt
 ```
 
-### 2. 配置文件设置
+###  配置文件设置
 
-在项目根目录修改`.env.template`为`.env` 文件，并参照以下格式填写(下面为重要部分)：
+在项目根目录修改`.env.template`为`.env` 文件，并参照格式填写：
 
 大陆如果无法访问合约api需要在`agent_graph.py`中初始化**MarketTool**的时候传入**proxy_port**参数（如本地运行v2ray服务(开启局域网连接)则填写10809）
 
-```ini
-# --- 调度器控制开关 ---
 
-# --- 交易所配置 (实盘必填) ---
-# 请确保 API 已开启合约交易权限，并绑定了运行环境的 IP 白名单
-BINANCE_API_KEY=your_binance_api_key_here
-BINANCE_SECRET=your_binance_secret_key_here
-
-# --- 系统安全 ---
-# 用于在前端 Dashboard 删除历史记录时的验证密码
-ADMIN_PASSWORD=your_secure_password
-
-# --- 杠杆设置 ---
-# 注意：当前版本此参数仅作为 Prompt 提示 Agent，不会自动调整交易所杠杆倍数！
-# 请务必去 Binance App/网页端手动调整对应币种的杠杆倍数。
-LEVERAGE=10
-
-# --- LangSmith (可选，用于调试 Agent 思维链) ---
-LANGCHAIN_TRACING_V2=false
-LANGCHAIN_API_KEY=your_langchain_api_key_here
-LANGCHAIN_PROJECT=crypto-agent
-
-# --- 交易对与 Agent 配置 (JSON 格式) ---
-# 这是一个列表，支持为同一个币种配置多个不同性格/模型的 Agent
-SYMBOL_CONFIGS='[
-    {
-        "symbol": "BTC/USDT",
-        "api_base": "[https://dashscope.aliyuncs.com/compatible-mode/v1](https://dashscope.aliyuncs.com/compatible-mode/v1)",
-        "api_key": "your_qwen_api_key",
-        "model": "qwen3-max",
-        "temperature": 0.7,
-        "mode": "STRATEGY"
-    },
-    {
-        "symbol": "ETH/USDT",
-        "api_base": "[https://dashscope.aliyuncs.com/compatible-mode/v1](https://dashscope.aliyuncs.com/compatible-mode/v1)",
-        "api_key": "your_qwen_api_key",
-        "model": "qwen-plus",
-        "temperature": 0.5,
-        "mode": "REAL"
-    }
-]'
-
-```
-
-### 3. 运行项目
+###  运行项目
 
 **启动调度器与后端:**
 
@@ -104,16 +60,10 @@ python dashboard.py
 
 访问 `http://localhost:7860` 查看实盘/策略运行状态。
 
-## 🔧 环境变量说明
-
-### ENABLE_SCHEDULER
-* **作用**: 控制是否启用定时任务调度器
-* **默认值**: `true`
-* **说明**: 设置为 `true` 时，定时任务会按照预设逻辑定期执行；设置为 `false` 时，定时任务会被禁用，仅运行网页服务
 
 ## ⚙️ 核心机制说明
 
-### 1. 多 Agent 灵活性
+###  多 Agent 灵活性
 
 你可以在 `SYMBOL_CONFIGS` 中为一个币种配置多个 Agent。
 
@@ -122,7 +72,7 @@ python dashboard.py
 实际使用请参考FAQ之后自行测试。
 
 
-### 2. 交易模式
+### 交易模式
 
 * **STRATEGY (策略模式)**:
 * 仅进行纸面交易（Paper Trading）。
@@ -139,7 +89,9 @@ python dashboard.py
 
 详细说明：
 
-```markdown
+```
+
+
 场景A：只有 BTC (策略)
 
 调度器每 60分钟 醒来一次。
@@ -167,7 +119,7 @@ ETH 运行。
 ```
 
 
-### 3. 杠杆 (LEVERAGE)
+### 杠杆 (LEVERAGE)
 
 配置文件中的 `LEVERAGE` 参数目前**仅用于 Prompt 注入**（告诉 AI 当前是多少倍杠杆）。
 
@@ -175,7 +127,7 @@ ETH 运行。
 * 请确保 `.env` 中的值与你 Binance 账户中实际设置的杠杆倍数一致。
 
 
-### 4. TODO
+### TODO
 
-实盘模式有bug时候进行修复（还在测试中）
-策略模式目前胜率较低，盈亏比不佳，需要再次调整
+- [ ] 暂不支持reasoning model调用工具进行（强制先调用工具而不是先输出思维链导致的）解决方式也许是如果没有调用工具则重试？
+- [ ] Prompt配置问题优化
