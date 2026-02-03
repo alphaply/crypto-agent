@@ -366,11 +366,20 @@ def agent_node(state: AgentState) -> AgentState:
     logger.info(f"--- [Node] Agent: {config.get('model')} is thinking for {symbol} ---")
     
     try:
+        # 1. 获取配置中的 extra_body，如果没有则为空字典
+        extra_body_params = config.get('extra_body', {})
+
+        # 2. 构造 model_kwargs
+        # 在 langchain_openai 中，通过 extra_body 参数将非标准字段传给底层 API
+        kwargs = {}
+        if extra_body_params:
+            kwargs["extra_body"] = extra_body_params
         current_llm = ChatOpenAI(
             model=config.get('model'),
             api_key=config.get('api_key'),
             base_url=config.get('api_base'),
-            temperature=config.get('temperature', 0.5) 
+            temperature=config.get('temperature', 0.5),
+            model_kwargs=kwargs
         ).with_structured_output(AgentOutput,method="function_calling")
         
         response = current_llm.invoke(state['messages'])
