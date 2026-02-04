@@ -18,92 +18,45 @@
       }
     </script>
     <style>
-      /* 少量必要的自定义样式：隐藏滚动条但保留功能 */
       .no-scrollbar::-webkit-scrollbar { display: none; }
       .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-      /* 动画 */
-      @keyframes pulse-custom {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.5; }
-      }
+      @keyframes pulse-custom { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
       .animate-pulse-custom { animation: pulse-custom 2s infinite; }
-      
-      /* 红色呼吸灯动画 */
-      @keyframes pulse-red {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.4; }
-      }
+      @keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
       .animate-pulse-red { animation: pulse-red 1.5s infinite; }
+      @keyframes fade-out-up { 0% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -20px); } }
+      .copy-feedback { position: fixed; z-index: 9999; background: rgba(17, 24, 39, 0.9); color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; pointer-events: none; animation: fade-out-up 1s ease-out forwards; }
       
-      /* Tooltip 在手机端点击显示的辅助 */
-      .tooltip-container:active .tooltip-content,
-      .tooltip-container:focus-within .tooltip-content {
-        display: block;
-      }
-
-      /* 复制成功的浮动提示动画 */
-      @keyframes fade-out-up {
-        0% { opacity: 1; transform: translate(-50%, 0); }
-        100% { opacity: 0; transform: translate(-50%, -20px); }
-      }
-      .copy-feedback {
-        position: fixed;
-        z-index: 9999;
-        background: rgba(17, 24, 39, 0.9);
-        color: white;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 12px;
-        pointer-events: none;
-        animation: fade-out-up 1s ease-out forwards;
-      }
+      /* 迷你滚动条 */
+      .mini-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+      .mini-scroll::-webkit-scrollbar-track { background: transparent; }
+      .mini-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
     </style>
   </head>
   <body class="bg-gray-50 text-gray-800 font-sans antialiased overflow-x-hidden selection:bg-blue-100">
 
     <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur shadow-sm border-b border-gray-200">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex flex-col sm:flex-row justify-between items-center py-3 gap-3">
+      <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8"> <div class="flex flex-col sm:flex-row justify-between items-center py-3 gap-3">
           <div class="font-bold text-lg tracking-tight text-gray-900 flex items-center gap-2">
             <span class="flex items-center gap-2">
                 💸 <span class="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">自动亏钱Agent</span>
             </span>
-            
-            <a href="https://github.com/alphaply/crypto-agent" target="_blank" class="ml-2 text-gray-400 hover:text-gray-900 transition-colors" title="GitHub Repository">
-                <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                </svg>
+             <a href="https://github.com/alphaply/crypto-agent" target="_blank" class="ml-2 text-gray-400 hover:text-gray-900 transition-colors" title="GitHub Repository">
+                <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
             </a>
           </div>
-          
           <div class="flex w-full sm:w-auto items-center gap-2 justify-between sm:justify-end">
-             <select
-              id="symbolSelect"
-              onchange="window.location.href = '?symbol=' + this.value"
-              class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-40"
-            >
+             <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-40">
               {% for sym in symbols %} 
                 <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
               {% endfor %}
             </select>
-            
             <div class="flex gap-2">
                 <div class="inline-flex rounded-md shadow-sm" role="group">
-                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-3 py-2 text-sm font-medium text-blue-600 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 hover:text-blue-700 focus:z-10 focus:ring-2 focus:ring-blue-700 focus:text-blue-700 flex items-center justify-center min-w-[42px]">
-                       📜
-                    </a>
-                    <button onclick="confirmDelete()" title="清除历史" class="px-3 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700 focus:z-10 focus:ring-2 focus:ring-red-700 focus:text-red-700 flex items-center justify-center min-w-[42px]">
-                       🗑️
-                    </button>
+                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-3 py-2 text-sm font-medium text-blue-600 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 hover:text-blue-700">📜</a>
+                    <button onclick="confirmDelete()" title="清除历史" class="px-3 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700">🗑️</button>
                 </div>
-
-                <button
-                  onclick="location.reload()"
-                  title="刷新"
-                  class="p-2 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-900 focus:ring-2 focus:ring-gray-200"
-                >
-                  ↻
-                </button>
+                <button onclick="location.reload()" title="刷新" class="p-2 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-100">↻</button>
             </div>
           </div>
         </div>
@@ -111,50 +64,93 @@
     </nav>
 
     <div class="bg-amber-50 border-b border-amber-200 text-amber-900 text-sm">
-      <div class="max-w-7xl mx-auto px-4 py-2 sm:px-6 lg:px-8">
+      <div class="max-w-[1600px] mx-auto px-4 py-2 sm:px-6 lg:px-8">
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
           <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span class="flex items-center gap-2">
-                {% if scheduler_enabled %}
-                <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span>
-                <span class="font-medium">运行中</span>
-                {% else %}
-                <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span>
-                <span class="font-medium text-red-500">停止运行</span>
-                {% endif %}
+                {% if scheduler_enabled %} <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span> <span class="font-medium">运行中</span>
+                {% else %} <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span> <span class="font-medium text-red-500">停止运行</span> {% endif %}
             </span>
             <span class="text-amber-300 hidden sm:inline">|</span>
             <span>模式: <span class="font-bold text-amber-800">{{ symbol_mode }}</span></span>
             <span class="text-amber-300 hidden sm:inline">|</span>
             <span>频率: <span class="font-bold text-emerald-700">{{ symbol_freq }}</span></span>
           </div>
-          <div>
-            风控系统: <span class="font-bold text-emerald-600">已启动</span>
-          </div>
+          <div>风控系统: <span class="font-bold text-emerald-600">已启动</span></div>
         </div>
       </div>
     </div>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 auto-rows-fr">
+      <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
         {% if agent_summaries %} {% for summary in agent_summaries %}
         <div class="bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col overflow-hidden h-full">
           <div class="px-5 py-3 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
-            <span class="font-bold text-gray-900 flex items-center gap-2 truncate">
+            <span class="font-bold text-gray-900 flex items-center gap-2 truncate text-base">
                 🤖 {{ summary.agent_name or 'AI-Agent' }}
             </span>
-            <span class="text-xs font-mono text-gray-500 bg-gray-100 px-2 py-1 rounded whitespace-nowrap">
-              {{ summary.timestamp }}
-            </span>
+            <span class="text-[10px] font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded whitespace-nowrap">
+              {{ summary.timestamp[5:-3] }} </span>
           </div>
+
           <div class="p-5 flex flex-col gap-4 flex-grow">
-            <div class="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">{{ summary.content }}</div>
+            <div class="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto mini-scroll pr-1">{{ summary.content }}</div>
             
             <div class="mt-auto bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r text-sm text-blue-900">
-              <div class="font-bold text-xs uppercase text-blue-400 mb-1">Strategy Logic</div>
-              <div class="whitespace-pre-wrap">{{ summary.strategy_logic }}</div>
+              <div class="font-bold text-[10px] uppercase text-blue-400 mb-1">Strategy Logic</div>
+              <div class="whitespace-pre-wrap text-xs">{{ summary.strategy_logic }}</div>
             </div>
+          </div>
+
+          <div class="border-t border-gray-200 bg-gray-50 p-3">
+             <h4 class="text-xs font-bold text-gray-500 uppercase mb-2 flex justify-between items-center">
+                <span>Recent Decisions</span>
+                <span class="bg-gray-200 text-gray-600 px-1.5 rounded text-[10px]">{{ summary.recent_orders|length }}</span>
+             </h4>
+             {% if summary.recent_orders %}
+             <div class="overflow-x-auto mini-scroll">
+                <table class="w-full text-xs text-left">
+                    <thead class="text-gray-400 font-medium border-b border-gray-200">
+                        <tr>
+                            <th class="py-1 pr-2">Side</th>
+                            <th class="py-1 px-2">Price</th>
+                            <th class="py-1 px-2">TP/SL</th>
+                            <th class="py-1 pl-2 text-right">Time</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100">
+                        {% for order in summary.recent_orders %}
+                        <tr>
+                            <td class="py-1.5 pr-2 whitespace-nowrap">
+                                {% set s = order.side|lower %}
+                                <span class="px-1.5 py-0.5 rounded font-bold uppercase
+                                    {% if 'buy' in s %} bg-emerald-100 text-emerald-700
+                                    {% elif 'sell' in s %} bg-red-100 text-red-700
+                                    {% elif 'close' in s %} bg-orange-100 text-orange-700
+                                    {% elif 'cancel' in s %} bg-gray-200 text-gray-500 line-through
+                                    {% endif %}">
+                                    {{ order.side[:1] }}{{ order.side[1:]|lower }} </span>
+                            </td>
+                            <td class="py-1.5 px-2 font-mono text-gray-700">
+                                {{ order.trigger_price or order.entry_price }}
+                            </td>
+                            <td class="py-1.5 px-2 font-mono text-gray-500">
+                                {% if order.take_profit > 0 or order.stop_loss > 0 %}
+                                <span class="text-buy">{{ order.take_profit|int }}</span>/<span class="text-sell">{{ order.stop_loss|int }}</span>
+                                {% else %}-{% endif %}
+                            </td>
+                            <td class="py-1.5 pl-2 text-right text-gray-400 font-mono text-[10px]">
+                                {{ order.timestamp[11:16] }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+             </div>
+             {% else %}
+                <div class="text-center text-gray-400 text-xs py-2 italic">暂无近期操作</div>
+             {% endif %}
           </div>
         </div>
         {% endfor %} {% else %}
@@ -164,219 +160,82 @@
         {% endif %}
       </div>
 
-      <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+      <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden mt-8">
         <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50/50">
-          <h3 class="font-bold text-gray-900 text-lg">📜 决策日志</h3>
+          <h3 class="font-bold text-gray-900 text-lg">📜 全局决策流水 (Global Logs)</h3>
           <span class="bg-gray-100 text-gray-600 text-xs font-medium px-2.5 py-0.5 rounded border border-gray-200">
             Total: {{ total_orders }}
           </span>
         </div>
-
         <div class="overflow-x-auto">
           <table class="w-full text-sm text-left text-gray-600">
-            <thead class="hidden md:table-header-group text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200">
+             <thead class="hidden md:table-header-group text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200">
               <tr>
                 <th class="px-6 py-3 font-medium w-32">时间</th>
-                <th class="px-6 py-3 font-medium">Order ID</th>
                 <th class="px-6 py-3 font-medium text-center w-24">模式</th>
                 <th class="px-6 py-3 font-medium">Agent</th>
                 <th class="px-6 py-3 font-medium text-center w-24">方向</th>
-                <th class="px-6 py-3 font-medium">价格/触发</th>
-                <th class="px-6 py-3 font-medium">风控 (TP/SL)</th>
+                <th class="px-6 py-3 font-medium">价格</th>
                 <th class="px-6 py-3 font-medium min-w-[200px]">理由</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-200">
               {% for order in orders %}
               <tr class="bg-white hover:bg-gray-50 flex flex-col md:table-row mb-4 md:mb-0 border md:border-none rounded-lg md:rounded-none shadow-sm md:shadow-none m-4 md:m-0 p-4 md:p-0">
-                
-                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top">
-                  <span class="md:hidden font-semibold text-gray-500 text-xs uppercase flex-shrink-0 mr-4">时间</span>
-                  <span class="font-mono text-xs text-gray-500 whitespace-nowrap">{{ order.timestamp }}</span>
-                </td>
-
-                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top relative">
-                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase flex-shrink-0 mr-4">Order ID</span>
-                    {% if order.order_id %}
-                    <div class="tooltip-container group relative cursor-pointer inline-block">
-                        <span class="font-mono text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded border border-gray-200 truncate max-w-[80px] md:max-w-[100px] block">
-                            {{ order.order_id }}
-                        </span>
-                        <div class="tooltip-content hidden group-hover:block absolute bottom-full left-0 mb-1 z-50 w-max max-w-[240px] break-all bg-gray-800 text-white text-xs rounded p-2 shadow-xl border border-gray-700">
-                            {{ order.order_id }}
-                            <div class="absolute top-full left-4 -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                        </div>
-                    </div>
-                    {% else %}
-                    <span class="text-gray-300">-</span>
-                    {% endif %}
-                </td>
-
-                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell md:text-center align-top">
-                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">模式</span>
-                    {% if order.trade_mode == 'REAL' %}
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-600 text-white shadow-sm">实盘</span>
-                    {% else %}
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-600 text-white shadow-sm">策略</span>
-                    {% endif %}
-                </td>
-
-                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top relative">
-                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">Agent</span>
-                    <div class="tooltip-container group relative cursor-pointer inline-block">
-                         <span class="font-semibold text-gray-700 truncate max-w-[100px] md:max-w-[140px] block">
-                            {{ order.agent_name or 'System' }}
-                        </span>
-                        <div class="tooltip-content hidden group-hover:block absolute bottom-full left-0 mb-1 z-50 w-max max-w-[200px] bg-gray-800 text-white text-xs rounded p-2 shadow-xl border border-gray-700 whitespace-normal">
-                            {{ order.agent_name or 'System' }}
-                            <div class="absolute top-full left-4 -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                        </div>
-                    </div>
-                </td>
-
-                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell md:text-center align-top">
-                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">方向</span>
-                    
-                    {% set s = order.side|lower %}
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-bold uppercase shadow-sm
-                        {% if 'buy' in s %} bg-emerald-100 text-emerald-800 border border-emerald-200
-                        {% elif 'sell' in s %} bg-red-100 text-red-800 border border-red-200
-                        {% elif 'close' in s %} bg-orange-100 text-orange-800 border border-orange-200
-                        {% elif 'cancel' in s %} bg-slate-200 text-slate-600 border border-slate-300
-                        {% else %} bg-gray-100 text-gray-800 border border-gray-200 {% endif %}">
-                        {{ order.side|upper }}
-                    </span>
-                </td>
-
-                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top">
-                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">价格</span>
-                    {% if order.trigger_price and order.trigger_price > 0 %}
-                    <span 
-                        onclick="handleCopy('{{ order.trigger_price }}', event)" 
-                        class="cursor-pointer font-mono font-bold text-amber-600 hover:text-amber-800 border-b border-dashed border-amber-300 hover:border-amber-600 transition-colors" 
-                        title="点击复制">⚡ {{ order.trigger_price }}
-                    </span>
-                    {% else %}
-                    <span 
-                        onclick="handleCopy('{{ order.entry_price }}', event)" 
-                        class="cursor-pointer font-mono font-bold text-gray-900 hover:text-blue-600 border-b border-dashed border-gray-300 hover:border-blue-500 transition-colors" 
-                        title="点击复制">{{ order.entry_price }}
-                    </span>
-                    {% endif %}
-                </td>
-
-                <td class="px-6 py-2 md:py-4 flex justify-between md:table-cell align-top">
-                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase">风控</span>
-                    <div class="flex gap-3 text-xs font-mono">
-                        <div class="flex items-center gap-1">
-                            <span class="text-gray-400">TP</span>
-                            <span 
-                                onclick="handleCopy('{{ order.take_profit }}', event)"
-                                class="cursor-pointer font-bold {% if order.take_profit > 0 %}text-buy border-b border-dashed border-emerald-200 hover:border-emerald-500{% else %}text-gray-300{% endif %}"
-                                title="点击复制"
-                            >
-                                {{ order.take_profit if order.take_profit > 0 else '--' }}
-                            </span>
-                        </div>
-                        <div class="flex items-center gap-1">
-                            <span class="text-gray-400">SL</span>
-                            <span 
-                                onclick="handleCopy('{{ order.stop_loss }}', event)"
-                                class="cursor-pointer font-bold {% if order.stop_loss > 0 %}text-sell border-b border-dashed border-red-200 hover:border-red-500{% else %}text-gray-300{% endif %}"
-                                title="点击复制"
-                            >
-                                {{ order.stop_loss if order.stop_loss > 0 else '--' }}
-                            </span>
-                        </div>
-                    </div>
-                </td>
-
-                <td class="px-6 py-2 md:py-4 md:table-cell w-full md:w-auto align-top">
-                    <span class="md:hidden font-semibold text-gray-500 text-xs uppercase block mb-1">理由</span>
-                    <div class="bg-gray-50 rounded p-2 text-xs text-gray-600 leading-snug break-words">
-                        {{ order.reason }}
-                    </div>
-                </td>
-
+                 <td class="px-6 py-3 md:table-cell flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">TIME</span>
+                    <span class="font-mono text-xs">{{ order.timestamp }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell text-center flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">MODE</span>
+                    <span class="text-xs font-bold px-2 py-0.5 rounded {{ 'bg-red-100 text-red-800' if order.trade_mode=='REAL' else 'bg-blue-100 text-blue-800' }}">{{ order.trade_mode }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">AGENT</span>
+                    <span class="font-bold text-gray-700">{{ order.agent_name }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell text-center flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">SIDE</span>
+                    <span class="font-bold {{ 'text-buy' if 'buy' in order.side|lower else 'text-sell' }}">{{ order.side|upper }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">PRICE</span>
+                    <span class="font-mono">{{ order.entry_price }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell w-full">
+                    <div class="text-xs text-gray-500 break-words">{{ order.reason }}</div>
+                 </td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
-
+        
         <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end">
-          <nav class="inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
-            <a href="?symbol={{current_symbol}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-l-md hover:bg-gray-50">
-              上一页
-            </a>
-            <span class="relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border-t border-b border-gray-300">
-              {{ current_page }} / {{ total_pages }}
-            </span>
-            <a href="?symbol={{current_symbol}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-r-md hover:bg-gray-50">
-              下一页
-            </a>
-          </nav>
+           <nav class="inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+             <a href="?symbol={{current_symbol}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-l-md hover:bg-gray-50">上一页</a>
+             <span class="relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border-t border-b border-gray-300">{{ current_page }} / {{ total_pages }}</span>
+             <a href="?symbol={{current_symbol}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-r-md hover:bg-gray-50">下一页</a>
+           </nav>
         </div>
       </div>
     </main>
 
     <script>
-    // 复制功能函数
-    function handleCopy(text, event) {
-        // 防止数值无效时复制
-        if (!text || text === '0' || text === '--' || text === '0.0') return;
-        
-        navigator.clipboard.writeText(text).then(() => {
-            showCopyFeedback(event.clientX, event.clientY);
-        }).catch(err => {
-            console.error('Copy failed:', err);
-        });
-    }
-
-    // 显示复制反馈动画
-    function showCopyFeedback(x, y) {
-        const el = document.createElement('div');
-        el.className = 'copy-feedback';
-        el.innerText = '已复制';
-        
-        // 放置在鼠标点击位置上方
-        el.style.left = x + 'px';
-        el.style.top = (y - 10) + 'px';
-        
-        document.body.appendChild(el);
-        
-        // 动画结束后移除 DOM
-        setTimeout(() => {
-            el.remove();
-        }, 1000);
-    }
-
-    async function confirmDelete() {
-        const symbol = document.getElementById('symbolSelect').value;
-        const msg = `⚠️ 高危操作 warning \n\n您确定要清空 [ ${symbol} ] 的所有 Agent 分析历史吗？\n(订单记录不会被删除)`;
-        
-        if (confirm(msg)) {
-            const password = prompt("🔐 请输入管理员密码以确认删除:");
-            if (password) {
-                try {
-                    const response = await fetch('/api/clean_history', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ symbol: symbol, password: password })
-                    });
-                    const result = await response.json();
-                    if (result.success) {
-                        alert("✅ " + result.message);
-                        location.reload();
-                    } else {
-                        alert("❌ 失败: " + result.message);
-                    }
-                } catch (e) {
-                    alert("网络错误: " + e);
-                }
+      function handleCopy(text, e) { navigator.clipboard.writeText(text); alert('Copied!'); }
+      async function confirmDelete() {
+         if(confirm('Delete history?')) {
+            const pwd = prompt('Password:');
+            if(pwd) {
+                await fetch('/api/clean_history', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({symbol: document.getElementById('symbolSelect').value, password: pwd})
+                });
+                location.reload();
             }
-        }
-    }
+         }
+      }
     </script>
   </body>
 </html>

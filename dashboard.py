@@ -25,6 +25,7 @@ def get_scheduler_status():
     scheduler_enabled = os.getenv('ENABLE_SCHEDULER', 'true').lower() == 'true'
     return scheduler_enabled
 
+
 def get_dashboard_data(symbol, page=1, per_page=10):
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -36,14 +37,25 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         
         agent_summaries = []
         for agent in agents:
+            # 获取最新分析
             latest_summary = conn.execute(
                 "SELECT * FROM summaries WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 1", 
                 (symbol, agent)
             ).fetchone()
+            
             if latest_summary:
-                agent_summaries.append(dict(latest_summary))
+                summary_dict = dict(latest_summary)
+                
+                # 🔥 新增: 获取该 Agent 最近的 5 条决策记录 (用于卡片内展示)
+                recent_agent_orders = conn.execute(
+                    "SELECT * FROM orders WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 5",
+                    (symbol, agent)
+                ).fetchall()
+                summary_dict['recent_orders'] = [dict(o) for o in recent_agent_orders]
+                
+                agent_summaries.append(summary_dict)
 
-        # 2. 获取订单
+        # 2. 获取全局订单列表 (保持原样，用于底部总表)
         offset = (page - 1) * per_page
         total_count = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", (symbol,)).fetchone()[0]
         
@@ -54,11 +66,13 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         orders = [dict(row) for row in cursor.fetchall()]
         
         conn.close()
+        # 对 agent_summaries 按 agent_name 排序，保证对比顺序固定
+        agent_summaries.sort(key=lambda x: x['agent_name'])
+        
         return agent_summaries, orders, total_count
     except Exception as e:
         logger.error(f"Error: {e}")
         return [], [], 0
-
 def get_all_configs():
     """读取所有配置的辅助函数"""
     configs_str = os.getenv('SYMBOL_CONFIGS', '[]')

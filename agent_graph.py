@@ -108,6 +108,7 @@ def start_node(state: AgentState) -> AgentState:
     
     trade_mode = config.get('mode', 'STRATEGY').upper()
     is_real_exec = (trade_mode == 'REAL')
+    agent_name = config.get('model', 'Unknown_Agent')
     
     logger.info(f"--- [Node] Start: Analyzing {symbol} | Mode: {trade_mode} ---")
 
@@ -115,7 +116,7 @@ def start_node(state: AgentState) -> AgentState:
         # 获取全量数据
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode)
         # 获取账户数据
-        account_data = market_tool.get_account_status(symbol, is_real=is_real_exec)
+        account_data = market_tool.get_account_status(symbol, is_real=is_real_exec,agent_name=agent_name)
         # 获取最近历史记录
         recent_summaries = database.get_recent_summaries(symbol, limit=3)
     except Exception as e:
@@ -322,22 +323,22 @@ def execution_node(state: AgentState) -> AgentState:
             if action == 'CANCEL':
                 cancel_id = order.get('cancel_order_id')
                 if cancel_id:
-                    market_tool.place_real_order(symbol, 'CANCEL', order)
+                    market_tool.place_real_order(symbol, 'CANCEL', order,agent_name=agent_name)
                     database.save_order_log(cancel_id, symbol, agent_name, "CANCEL", 0, 0, 0, f"撤单: {cancel_id}", trade_mode="REAL")
 
             elif action == 'CLOSE':
-                market_tool.place_real_order(symbol, 'CLOSE', order)
+                market_tool.place_real_order(symbol, 'CLOSE', order,agent_name=agent_name)
                 database.save_order_log("CLOSE_CMD", symbol, agent_name, "CLOSE", order.get('entry_price'), 0, 0, log_reason, trade_mode="REAL")
 
             elif action in ['BUY_LIMIT', 'SELL_LIMIT']:
                 entry_price = float(order.get('entry_price', 0))
                 # 实时防重
-                latest_account = market_tool.get_account_status(symbol, is_real=True)
+                latest_account = market_tool.get_account_status(symbol, is_real=True,agent_name=agent_name)
                 if _is_duplicate_real_order(action, entry_price, latest_account.get('real_open_orders', [])):
                     logger.info(f"🛑 [Filter] 忽略重复实盘挂单: {action} @ {entry_price}")
                     continue
 
-                res = market_tool.place_real_order(symbol, action, order)
+                res = market_tool.place_real_order(symbol, action, order,agent_name=agent_name)
                 if res and 'id' in res:
                     database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', entry_price, 0, 0, log_reason, trade_mode="REAL")
 

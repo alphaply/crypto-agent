@@ -223,7 +223,7 @@ class MarketTool:
     # 1. 获取数据逻辑
     # ==========================================
 
-    def get_account_status(self, symbol, is_real=False):
+    def get_account_status(self, symbol, is_real=False,agent_name=None):
         status_data = {
             "balance": 0,
             "real_positions": [],
@@ -257,6 +257,12 @@ class MarketTool:
                     
                     real_open_orders = []
                     for o in all_orders:
+                        client_oid = o.get('clientOrderId') or o.get('info', {}).get('clientOrderId', '')
+                        if agent_name and client_oid:
+                            # 如果订单有 clientOrderId 且 不以 agent_name 开头，则跳过 (视为其他 Agent 的单)
+                            # 注意：手动下的单可能没有特定前缀，这里策略是“只认自己的”
+                            if not client_oid.startswith(str(agent_name)):
+                                continue
                         # CCXT 的 order 对象里有一个 'info' 字段，里面装着交易所原始返回的完整 JSON
                         # 我们主要依赖 CCXT 解析好的字段，但特殊字段(如 reduceOnly)需要从 info 里取
                         raw = o.get('info', {})
@@ -403,8 +409,12 @@ class MarketTool:
     # ==========================================
     # 实盘下单逻辑 (修改：Close 使用 Limit 单)
     # ==========================================
-    def place_real_order(self, symbol, action, order_params):
+    def place_real_order(self, symbol, action, order_params,agent_name=None):
         try:
+            client_oid = None
+            if agent_name:
+                sanitized_name = str(agent_name).replace(" ", "").replace("/", "")
+                client_oid = f"{sanitized_name}_{uuid.uuid4().hex[:8]}"
             if not self.exchange.markets: self.exchange.load_markets()
             symbol = str(symbol)
             
