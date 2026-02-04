@@ -180,16 +180,31 @@ def save_summary(symbol, agent_name, content, strategy_logic):
     conn.commit()
     conn.close()
 
-def get_recent_summaries(symbol, limit=10):
-    """获取最近的分析记录"""
+
+def get_recent_summaries(symbol, agent_name=None, limit=10):
+    """获取最近的分析记录 (增加 agent_name 隔离)"""
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT * FROM summaries WHERE symbol = ? ORDER BY id DESC LIMIT ?", (symbol, limit))
+    
+    if agent_name:
+        # 🔥 核心修改：增加 AND agent_name = ?
+        c.execute("""
+            SELECT * FROM summaries 
+            WHERE symbol = ? AND agent_name = ? 
+            ORDER BY id DESC LIMIT ?
+        """, (symbol, agent_name, limit))
+    else:
+        # 兼容旧逻辑或全局查看
+        c.execute("""
+            SELECT * FROM summaries 
+            WHERE symbol = ? 
+            ORDER BY id DESC LIMIT ?
+        """, (symbol, limit))
+        
     rows = [dict(row) for row in c.fetchall()]
     conn.close()
     return rows
-
 def get_summary_count(symbol):
     """获取某币种的分析记录总数"""
     conn = sqlite3.connect(DB_NAME)

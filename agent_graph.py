@@ -118,7 +118,7 @@ def start_node(state: AgentState) -> AgentState:
         # 获取账户数据
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec,agent_name=agent_name)
         # 获取最近历史记录
-        recent_summaries = database.get_recent_summaries(symbol, limit=3)
+        recent_summaries = database.get_recent_summaries(symbol, agent_name=agent_name, limit=3)
     except Exception as e:
         logger.error(f"❌ [Data Fetch Error]: {e}")
         market_full = {}
