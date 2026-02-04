@@ -16,15 +16,33 @@
                 返回控制台
             </a>
             
-<div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto">
-    <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
-        📜 历史回溯: <span class="text-blue-600">{{ current_symbol }}</span>
-    </h1>
-    
-    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto">
-        Total: {{ total_count }} Records
-    </span>
-</div>
+            <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto">
+                <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
+                    📜 历史回溯: <span class="text-blue-600">{{ current_symbol }}</span>
+                </h1>
+                
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto">
+                    Total: {{ total_count }} Records
+                </span>
+            </div>
+        </div>
+
+        <div class="mb-6 flex flex-wrap gap-2 items-center">
+            <span class="text-sm text-gray-500 mr-2 font-medium">Filter by:</span>
+            
+            <a href="?symbol={{ current_symbol }}&agent=ALL" 
+               class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border 
+               {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == 'ALL' else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
+               ALL
+            </a>
+
+            {% for agent in active_agents %}
+            <a href="?symbol={{ current_symbol }}&agent={{ agent }}" 
+               class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border 
+               {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == agent else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
+               {{ agent }}
+            </a>
+            {% endfor %}
         </div>
 
         {% if summaries %}
@@ -57,13 +75,13 @@
 
             <div class="mt-8 flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg shadow-sm">
                 <div class="flex flex-1 justify-between sm:hidden">
-                    <a href="?symbol={{current_symbol}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Previous</a>
-                    <a href="?symbol={{current_symbol}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Next</a>
+                    <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Previous</a>
+                    <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Next</a>
                 </div>
                 <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-center">
                     <div>
                         <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
-                            <a href="?symbol={{current_symbol}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
+                            <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
                                 <span class="sr-only">Previous</span>
                                 <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                     <path fill-rule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clip-rule="evenodd" />
@@ -75,14 +93,14 @@
                                     <span aria-current="page" class="relative z-10 inline-flex items-center bg-blue-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">{{ p }}</span>
                                 
                                 {% elif p == 1 or p == total_pages or (p >= current_page - 2 and p <= current_page + 2) %}
-                                    <a href="?symbol={{current_symbol}}&page={{ p }}" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">{{ p }}</a>
+                                    <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{ p }}" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">{{ p }}</a>
                                 
                                 {% elif p == current_page - 3 or p == current_page + 3 %}
                                     <span class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-700 ring-1 ring-inset ring-gray-300 focus:outline-offset-0">...</span>
                                 {% endif %}
                             {% endfor %}
 
-                            <a href="?symbol={{current_symbol}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
+                            <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
                                 <span class="sr-only">Next</span>
                                 <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                     <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />

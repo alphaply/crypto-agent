@@ -10,7 +10,8 @@ import pytz
 from database import (
     DB_NAME, init_db, 
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
-    get_balance_history, get_trade_history, clean_financial_data
+    get_balance_history, get_trade_history, clean_financial_data,
+    get_active_agents
 )
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
@@ -232,12 +233,18 @@ def index():
 @app.route('/history')
 def history_view():
     symbol = request.args.get('symbol', 'BTC/USDT')
+    agent_filter = request.args.get('agent', 'ALL') # 获取筛选参数，默认为 ALL
+    
     page = int(request.args.get('page', 1))
     per_page = 10 
     
-    summaries = get_paginated_summaries(symbol, page, per_page)
-    total_count = get_summary_count(symbol)
+    # 1. 获取数据 (传入筛选参数)
+    summaries = get_paginated_summaries(symbol, page, per_page, agent_name=agent_filter)
+    total_count = get_summary_count(symbol, agent_name=agent_filter)
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
+    
+    # 2. 获取筛选器列表
+    active_agents = get_active_agents(symbol)
     
     return render_template(
         'history.html', 
@@ -245,7 +252,9 @@ def history_view():
         current_symbol=symbol,
         current_page=page,
         total_pages=total_pages,
-        total_count=total_count  # <--- 🔥 新增这一行：传入真实总数
+        total_count=total_count,
+        active_agents=active_agents, # 传给前端生成按钮
+        current_agent=agent_filter   # 传给前端标记当前选中状态
     )
 
 # 3. 新增路由：删除历史 (API)

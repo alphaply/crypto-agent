@@ -179,7 +179,17 @@ def save_summary(symbol, agent_name, content, strategy_logic):
     
     conn.commit()
     conn.close()
-
+def get_active_agents(symbol):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        # 获取该币种下所有不为空的 agent_name
+        rows = c.execute("SELECT DISTINCT agent_name FROM summaries WHERE symbol = ? AND agent_name IS NOT NULL", (symbol,)).fetchall()
+        return [r[0] for r in rows if r[0]]
+    except:
+        return []
+    finally:
+        conn.close()
 
 def get_recent_summaries(symbol, agent_name=None, limit=10):
     """获取最近的分析记录 (增加 agent_name 隔离)"""
@@ -205,27 +215,41 @@ def get_recent_summaries(symbol, agent_name=None, limit=10):
     rows = [dict(row) for row in c.fetchall()]
     conn.close()
     return rows
-def get_summary_count(symbol):
-    """获取某币种的分析记录总数"""
+def get_summary_count(symbol, agent_name=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     try:
-        count = c.execute("SELECT COUNT(*) FROM summaries WHERE symbol = ?", (symbol,)).fetchone()[0]
+        sql = "SELECT COUNT(*) FROM summaries WHERE symbol = ?"
+        params = [symbol]
+        
+        if agent_name and agent_name != 'ALL':
+            sql += " AND agent_name = ?"
+            params.append(agent_name)
+            
+        count = c.execute(sql, tuple(params)).fetchone()[0]
     except:
         count = 0
     conn.close()
     return count
 
-def get_paginated_summaries(symbol, page=1, per_page=10):
-    """分页获取分析历史"""
+def get_paginated_summaries(symbol, page=1, per_page=10, agent_name=None):
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     offset = (page - 1) * per_page
     c = conn.cursor()
-    c.execute(
-        "SELECT * FROM summaries WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
-        (symbol, per_page, offset)
-    )
+    
+    # 动态构建 SQL
+    sql = "SELECT * FROM summaries WHERE symbol = ?"
+    params = [symbol]
+    
+    if agent_name and agent_name != 'ALL':
+        sql += " AND agent_name = ?"
+        params.append(agent_name)
+        
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    params.extend([per_page, offset])
+    
+    c.execute(sql, tuple(params))
     rows = [dict(row) for row in c.fetchall()]
     conn.close()
     return rows
