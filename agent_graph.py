@@ -202,7 +202,8 @@ def start_node(state: AgentState) -> AgentState:
             balance=balance,
             positions_text=positions_text,
             orders_text=orders_friendly_text,
-            formatted_market_data=formatted_market_data
+            formatted_market_data=formatted_market_data,
+            history_text=formatted_history_text
         )
     else:
         raw_mock_orders = account_data.get('mock_open_orders', [])

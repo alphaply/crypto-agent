@@ -16,14 +16,15 @@
                 返回控制台
             </a>
             
-            <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto">
-                <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
-                    📜 历史回溯: <span class="text-blue-600">{{ current_symbol }}</span>
-                </h1>
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto">
-                    Total: {{ total_pages * 10 }} Records
-                </span>
-            </div>
+<div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto">
+    <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
+        📜 历史回溯: <span class="text-blue-600">{{ current_symbol }}</span>
+    </h1>
+    
+    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto">
+        Total: {{ total_count }} Records
+    </span>
+</div>
         </div>
 
         {% if summaries %}

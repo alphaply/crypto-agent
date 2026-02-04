@@ -5,6 +5,7 @@ import math
 import json
 import os
 from datetime import datetime
+import re
 import pytz
 from database import (
     DB_NAME, init_db, 
@@ -27,6 +28,59 @@ def get_scheduler_status():
 
 
 def get_dashboard_data(symbol, page=1, per_page=10):
+    try:
+        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+        conn.row_factory = sqlite3.Row 
+        
+        # 1. 获取该币种下活跃的所有 Agent 的最新一条分析
+        agents_query = "SELECT DISTINCT agent_name FROM summaries WHERE symbol = ?"
+        agents = [row['agent_name'] for row in conn.execute(agents_query, (symbol,)).fetchall()]
+        
+        agent_summaries = []
+        for agent in agents:
+            latest_summary = conn.execute(
+                "SELECT * FROM summaries WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 1", 
+                (symbol, agent)
+            ).fetchone()
+            if latest_summary:
+                summary_dict = dict(latest_summary)
+                
+                # 获取该 Agent 最近的 5 条决策记录
+                recent_agent_orders = conn.execute(
+                    "SELECT * FROM orders WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 5",
+                    (symbol, agent)
+                ).fetchall()
+                
+                # 🔥 修改处：提取 validity 字段
+                processed_orders = []
+                for o in recent_agent_orders:
+                    d = dict(o)
+                    # 从 reason 中提取 (Valid: Xh)
+                    match = re.search(r"\(Valid:\s*(\d+h)\)", d.get('reason', ''))
+                    d['validity'] = match.group(1) if match else None
+                    processed_orders.append(d)
+                
+                summary_dict['recent_orders'] = processed_orders
+                
+                agent_summaries.append(summary_dict)
+
+        # 2. 获取订单 (保持不变)
+        offset = (page - 1) * per_page
+        total_count = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", (symbol,)).fetchone()[0]
+        
+        cursor = conn.execute(
+            "SELECT * FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
+            (symbol, per_page, offset)
+        )
+        orders = [dict(row) for row in cursor.fetchall()]
+        
+        conn.close()
+        return agent_summaries, orders, total_count
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        return [], [], 0
+
+
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         conn.row_factory = sqlite3.Row 
@@ -174,22 +228,24 @@ def index():
 
 
 
+
 @app.route('/history')
 def history_view():
     symbol = request.args.get('symbol', 'BTC/USDT')
     page = int(request.args.get('page', 1))
-    per_page = 10 # 每页显示10条分析
+    per_page = 10 
     
     summaries = get_paginated_summaries(symbol, page, per_page)
     total_count = get_summary_count(symbol)
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
     
     return render_template(
-        'history.html', # <--- 我们将创建这个新模板
+        'history.html', 
         summaries=summaries,
         current_symbol=symbol,
         current_page=page,
-        total_pages=total_pages
+        total_pages=total_pages,
+        total_count=total_count  # <--- 🔥 新增这一行：传入真实总数
     )
 
 # 3. 新增路由：删除历史 (API)

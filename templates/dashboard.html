@@ -87,7 +87,7 @@
         {% if agent_summaries %} {% for summary in agent_summaries %}
         <div class="bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col overflow-hidden h-full">
           <div class="px-5 py-3 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
-            <span class="font-bold text-gray-900 flex items-center gap-2 truncate text-base">
+            <span class="font-bold text-gray-900 flex items-center gap-2 truncate text-sm">
                 🤖 {{ summary.agent_name or 'AI-Agent' }}
             </span>
             <span class="text-[10px] font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded whitespace-nowrap">
@@ -109,45 +109,57 @@
                 <span class="bg-gray-200 text-gray-600 px-1.5 rounded text-[10px]">{{ summary.recent_orders|length }}</span>
              </h4>
              {% if summary.recent_orders %}
-             <div class="overflow-x-auto mini-scroll">
-                <table class="w-full text-xs text-left">
-                    <thead class="text-gray-400 font-medium border-b border-gray-200">
-                        <tr>
-                            <th class="py-1 pr-2">Side</th>
-                            <th class="py-1 px-2">Price</th>
-                            <th class="py-1 px-2">TP/SL</th>
-                            <th class="py-1 pl-2 text-right">Time</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-100">
-                        {% for order in summary.recent_orders %}
-                        <tr>
-                            <td class="py-1.5 pr-2 whitespace-nowrap">
-                                {% set s = order.side|lower %}
-                                <span class="px-1.5 py-0.5 rounded font-bold uppercase
-                                    {% if 'buy' in s %} bg-emerald-100 text-emerald-700
-                                    {% elif 'sell' in s %} bg-red-100 text-red-700
-                                    {% elif 'close' in s %} bg-orange-100 text-orange-700
-                                    {% elif 'cancel' in s %} bg-gray-200 text-gray-500 line-through
-                                    {% endif %}">
-                                    {{ order.side[:1] }}{{ order.side[1:]|lower }} </span>
-                            </td>
-                            <td class="py-1.5 px-2 font-mono text-gray-700">
-                                {{ order.trigger_price or order.entry_price }}
-                            </td>
-                            <td class="py-1.5 px-2 font-mono text-gray-500">
-                                {% if order.take_profit > 0 or order.stop_loss > 0 %}
-                                <span class="text-buy">{{ order.take_profit|int }}</span>/<span class="text-sell">{{ order.stop_loss|int }}</span>
-                                {% else %}-{% endif %}
-                            </td>
-                            <td class="py-1.5 pl-2 text-right text-gray-400 font-mono text-[10px]">
-                                {{ order.timestamp[11:16] }}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-             </div>
+<div class="overflow-x-auto mini-scroll">
+    <table class="w-full text-xs text-left">
+        <thead class="text-gray-400 font-medium border-b border-gray-200">
+            <tr>
+                <th class="py-1 pr-2">Side</th>
+                <th class="py-1 px-2">Price</th>
+                <th class="py-1 px-2">TP/SL</th>
+                <th class="py-1 px-2">Valid</th> <th class="py-1 pl-2 text-right">Time</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+            {% for order in summary.recent_orders %}
+            <tr>
+                <td class="py-1.5 pr-2 whitespace-nowrap">
+                    {% set s = order.side|lower %}
+                    <span class="px-1.5 py-0.5 rounded font-bold uppercase
+                        {% if 'buy' in s %} bg-emerald-100 text-emerald-700
+                        {% elif 'sell' in s %} bg-red-100 text-red-700
+                        {% elif 'close' in s %} bg-orange-100 text-orange-700
+                        {% elif 'cancel' in s %} bg-gray-200 text-gray-500 line-through
+                        {% endif %}">
+                        {{ order.side[:1] }}{{ order.side[1:]|lower }}
+                    </span>
+                </td>
+                <td class="py-1.5 px-2 font-mono text-gray-700">
+                    {{ order.trigger_price or order.entry_price }}
+                </td>
+                <td class="py-1.5 px-2 font-mono text-gray-500">
+                    {% if order.take_profit > 0 or order.stop_loss > 0 %}
+                    <span class="text-buy">{{ order.take_profit|int }}</span>/<span class="text-sell">{{ order.stop_loss|int }}</span>
+                    {% else %}-{% endif %}
+                </td>
+                
+                <td class="py-1.5 px-2 font-mono text-[10px]">
+                    {% if order.validity %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-600" title="有效期">
+                        ⏳ {{ order.validity }}
+                    </span>
+                    {% else %}
+                    <span class="text-gray-300">-</span>
+                    {% endif %}
+                </td>
+
+                <td class="py-1.5 pl-2 text-right text-gray-400 font-mono text-[10px]">
+                    {{ order.timestamp[11:16] }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
              {% else %}
                 <div class="text-center text-gray-400 text-xs py-2 italic">暂无近期操作</div>
              {% endif %}
@@ -162,7 +174,7 @@
 
       <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden mt-8">
         <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50/50">
-          <h3 class="font-bold text-gray-900 text-lg">📜 全局决策流水 (Global Logs)</h3>
+          <h3 class="font-bold text-gray-900 text-lg">📜 全局决策</h3>
           <span class="bg-gray-100 text-gray-600 text-xs font-medium px-2.5 py-0.5 rounded border border-gray-200">
             Total: {{ total_orders }}
           </span>
