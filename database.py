@@ -24,22 +24,23 @@ def init_db():
         c.execute("ALTER TABLE summaries ADD COLUMN agent_name TEXT")
     except: pass
 
-    # 2. Mock Orders 表 (活跃挂单池) - 新增 expire_at
     c.execute('''CREATE TABLE IF NOT EXISTS mock_orders (
                     order_id TEXT PRIMARY KEY,
                     timestamp TEXT,
                     symbol TEXT,
+                    agent_name TEXT,      -- 隔离字段
                     side TEXT,
                     type TEXT,
                     price REAL,
                     amount REAL,
                     stop_loss REAL,
                     take_profit REAL,
-                    expire_at REAL,       -- 新增: 过期时间戳
+                    expire_at REAL,
                     status TEXT DEFAULT 'OPEN'
                 )''')
-    try:
-        c.execute("ALTER TABLE mock_orders ADD COLUMN expire_at REAL")
+    try: c.execute("ALTER TABLE mock_orders ADD COLUMN agent_name TEXT")
+    except: pass
+    try: c.execute("ALTER TABLE mock_orders ADD COLUMN expire_at REAL")
     except: pass
 
     # 3. Orders 表 (历史订单/日志) - 包含 trade_mode
@@ -90,10 +91,9 @@ def init_db():
 
 # --- 模拟交易 / 挂单池功能 ---
 
-def get_mock_orders(symbol=None):
+def get_mock_orders(symbol=None, agent_name=None):
     """
-    获取当前活跃的模拟挂单
-    逻辑：Status='OPEN' 且 (无过期时间 或 过期时间 > 当前时间)
+    获取活跃模拟挂单 (支持 Agent 隔离)
     """
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
@@ -101,28 +101,27 @@ def get_mock_orders(symbol=None):
     
     current_ts = datetime.now().timestamp()
     
+    # 基础查询：状态开启 + 未过期
+    query = "SELECT * FROM mock_orders WHERE status='OPEN' AND (expire_at IS NULL OR expire_at > ?)"
+    params = [current_ts]
+
     if symbol:
-        c.execute("""
-            SELECT * FROM mock_orders 
-            WHERE symbol = ? 
-              AND status='OPEN' 
-              AND (expire_at IS NULL OR expire_at > ?)
-        """, (symbol, current_ts))
-    else:
-        c.execute("""
-            SELECT * FROM mock_orders 
-            WHERE status='OPEN' 
-              AND (expire_at IS NULL OR expire_at > ?)
-        """, (current_ts,))
-        
+        query += " AND symbol = ?"
+        params.append(symbol)
+    
+    # 🔥 隔离逻辑：如果传入 agent_name，则只查该 Agent 的单
+    if agent_name:
+        query += " AND agent_name = ?"
+        params.append(agent_name)
+
+    c.execute(query, tuple(params))
     rows = [dict(row) for row in c.fetchall()]
     conn.close()
     return rows
 
-def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, order_id=None, expire_at=None):
+def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, agent_name, order_id=None, expire_at=None):
     """
-    创建一个模拟挂单
-    :param expire_at: 过期时间戳 (float), None 表示不过期
+    创建模拟挂单 (必须传入 agent_name)
     """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -132,9 +131,9 @@ def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, order
 
     try:
         c.execute('''
-            INSERT INTO mock_orders (order_id, symbol, side, price, amount, stop_loss, take_profit, timestamp, expire_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (order_id, symbol, side, price, amount, stop_loss, take_profit, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), expire_at))
+            INSERT INTO mock_orders (order_id, symbol, agent_name, side, price, amount, stop_loss, take_profit, timestamp, expire_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (order_id, symbol, agent_name, side, price, amount, stop_loss, take_profit, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), expire_at))
         conn.commit()
     except Exception as e:
         logger.error(f"❌ DB Error (create_mock_order): {e}")
@@ -142,12 +141,9 @@ def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, order
         conn.close()
 
 def cancel_mock_order(order_id):
-    """撤销模拟挂单"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # 从活跃池删除
     c.execute("DELETE FROM mock_orders WHERE order_id = ?", (order_id,))
-    # 更新历史记录状态
     c.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", (order_id,))
     conn.commit()
     conn.close()

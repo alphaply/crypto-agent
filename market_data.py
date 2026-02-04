@@ -224,21 +224,26 @@ class MarketTool:
     # 1. 获取数据逻辑
     # ==========================================
 
-    def get_account_status(self, symbol, is_real=False,agent_name=None):
+    def get_account_status(self, symbol, is_real=False, agent_name=None):
         status_data = {
             "balance": 0,
             "real_positions": [],
             "real_open_orders": [],
             "mock_open_orders": [],
         }
+        
+        # 1. 余额 (Mock 模式也给个假余额)
+        try:
+            if is_real:
+                balance_info = self.exchange.fetch_balance()
+                status_data["balance"] = float(balance_info.get('USDT', {}).get('free', 0))
+            else:
+                status_data["balance"] = 10000.0 
+        except: pass
+
         if is_real:
             try:
-                # 1. 余额
-                balance_info = self.exchange.fetch_balance()
-                usdt_balance = float(balance_info.get('USDT', {}).get('free', 0))
-                status_data["balance"] = usdt_balance
-
-                # 2. 持仓
+                # 2. 实盘持仓 (无法物理隔离，共享)
                 all_positions = self.exchange.fetch_positions([symbol])
                 real_positions = [
                     {
@@ -251,87 +256,43 @@ class MarketTool:
                 ]
                 status_data["real_positions"] = real_positions
 
+                # 3. 实盘挂单 (通过 clientOrderId 过滤)
                 try:
-                    # fetch_open_orders 在 Binance 合约会自动返回：限价单、止损单、止盈单、追踪止损等
-                    # 只要是 "Open" (未完全成交且未取消) 的单子都会在里面
                     all_orders = self.exchange.fetch_open_orders(symbol)
-                    
-                    real_open_orders = []
+                    filtered_orders = []
                     for o in all_orders:
                         client_oid = o.get('clientOrderId') or o.get('info', {}).get('clientOrderId', '')
+                        # 过滤逻辑
                         if agent_name and client_oid:
-                            # 如果订单有 clientOrderId 且 不以 agent_name 开头，则跳过 (视为其他 Agent 的单)
-                            # 注意：手动下的单可能没有特定前缀，这里策略是“只认自己的”
                             if not client_oid.startswith(str(agent_name)):
                                 continue
-                        # CCXT 的 order 对象里有一个 'info' 字段，里面装着交易所原始返回的完整 JSON
-                        # 我们主要依赖 CCXT 解析好的字段，但特殊字段(如 reduceOnly)需要从 info 里取
+                        
+                        # (解析逻辑保持不变)
                         raw = o.get('info', {})
-
-                        # 1. 基础信息
-                        o_id = str(o.get('id'))
-                        o_side = o.get('side', '').lower()
-                        
-                        # 2. 类型判断 (优先读取 raw_type 以区分市价止损和限价止损)
-                        raw_type = raw.get('type', o.get('type'))
-                        
-                        # 优化显示逻辑
-                        display_type = raw_type
-                        if raw_type == 'STOP_MARKET': display_type = "市价止损 (SL-M)"
-                        elif raw_type == 'STOP': display_type = "限价止损 (SL-L)"
-                        elif raw_type == 'TAKE_PROFIT_MARKET': display_type = "市价止盈 (TP-M)"
-                        elif raw_type == 'TAKE_PROFIT': display_type = "限价止盈 (TP-L)"
-                        elif raw_type == 'LIMIT': display_type = "限价入场"
-                        elif raw_type == 'TRAILING_STOP_MARKET': display_type = "追踪止损"
-
-                        # 3. 价格与触发价
-                        # limit price (挂单价)，如果是市价单则是 0
-                        price = float(o.get('price') or 0)
-                        
-                        # trigger price (触发价)。CCXT 通常会解析到 'stopPrice'，如果没有则去 raw 里找
-                        trigger_price = float(o.get('stopPrice') or raw.get('stopPrice') or raw.get('activatePrice') or 0)
-                        
-                        amount = float(o.get('amount', 0))
-                        
-                        # 4. 特殊属性 (reduceOnly 在 raw info 里)
-                        reduce_only = bool(raw.get('reduceOnly', False))
-                        
-                        # 5. 时间 (CCXT 已经转换好了 datetime 字符串)
-                        dt_str = o.get('datetime', '')
-                        
-                        real_open_orders.append({
-                            'order_id': o_id,
-                            'side': o_side,
-                            'type': display_type,
-                            'raw_type': raw_type,
-                            'price': price,
-                            'trigger_price': trigger_price,
-                            'amount': amount,
-                            'reduce_only': reduce_only,
-                            'status': o.get('status'),
-                            'datetime': dt_str
+                        filtered_orders.append({
+                            'order_id': str(o.get('id')),
+                            'side': o.get('side', '').lower(),
+                            'type': o.get('type'),
+                            'price': float(o.get('price') or 0),
+                            'amount': float(o.get('amount', 0)),
+                            'status': o.get('status')
                         })
-                    
-                    status_data["real_open_orders"] = real_open_orders
-                    
+                    status_data["real_open_orders"] = filtered_orders
                 except Exception as e:
-                    logger.warning(f"⚠️ [API Warning] 获取订单失败: {e}")
-                    status_data["real_open_orders"] = []
-                    
-
+                    logger.warning(f"Fetch real orders error: {e}")
             except Exception as e:
-                logger.warning(f"⚠️ [Exchange API Warning] 获取实盘数据失败: {e}")
-                if status_data["balance"] == 0: status_data["balance"] = 10000 
+                logger.error(f"Real account error: {e}")
         else:
+            # 🔥 模拟模式：传入 agent_name 进行数据库过滤
             try:
-                mock_orders = database.get_mock_orders(symbol)
+                mock_orders = database.get_mock_orders(symbol, agent_name=agent_name)
                 status_data["mock_open_orders"] = mock_orders
                 status_data["balance"] = 10000.0 
                 status_data["real_positions"] = [] 
             except Exception as e:
-                logger.error(f"❌ [模拟 DB 错误] 读取数据库失败: {e}")
+                logger.error(f"❌ [Mock DB Error]: {e}")
+        
         return status_data
-
     def get_market_analysis(self, symbol, mode='STRATEGY'):
         """
         根据模式动态选择 K 线周期

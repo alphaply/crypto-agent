@@ -175,10 +175,9 @@ def start_node(state: AgentState) -> AgentState:
     if recent_summaries:
         for s in recent_summaries:
             ts = s.get('timestamp', 'Unknown')
-            # 兼容旧数据：如果是旧字段 content/logic，如果是新字段 strategy_logic
             logic = s.get('strategy_logic') or s.get('content', '')
             if "LLM Failed" in logic: continue 
-            entry = f" [{ts}] Logic: {logic[:100]}..."
+            entry = f" [{ts}] Logic: {logic}..."
             history_entries.append(entry)
         formatted_history_text = "\n".join(history_entries)
     else:
@@ -289,7 +288,7 @@ def execution_node(state: AgentState) -> AgentState:
     
     try:
         # content 字段存放 趋势+预测，strategy_logic 存放详细思路
-        content = f"[{trade_mode}] Trend: {trend}\nOutlook: {predict}"
+        content = f"[Trend: {trend}\nOutlook: {predict}"
         database.save_summary(symbol, agent_name, content, thought)
     except Exception as db_err:
         logger.warning(f"⚠️ [DB Error] Save summary failed: {db_err}")
@@ -375,6 +374,7 @@ def execution_node(state: AgentState) -> AgentState:
                     order.get('amount'), 
                     order.get('stop_loss'), 
                     order.get('take_profit'),
+                    agent_name=agent_name,
                     order_id=mock_id,
                     expire_at=expire_timestamp 
                 )
