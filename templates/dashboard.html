@@ -318,65 +318,6 @@
           </nav>
         </div>
       </div>
-
-      <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden mt-6">
-          <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50/50">
-              <h3 class="font-bold text-gray-900 text-lg">💰 交易所成交记录</h3>
-          </div>
-          <div class="overflow-x-auto">
-              <table class="w-full text-sm text-left text-gray-600">
-                  <thead class="text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200">
-                      <tr>
-                          <th class="px-6 py-3 whitespace-nowrap">时间</th>
-                          <th class="px-6 py-3">方向</th>
-                          <th class="px-6 py-3">价格</th>
-                          <th class="px-6 py-3">数量</th>
-                          <th class="px-6 py-3">成交额 (Cost)</th>
-                          <th class="px-6 py-3">手续费</th>
-                          <th class="px-6 py-3">已实现盈亏 (PnL)</th>
-                          
-                      </tr>
-                  </thead>
-                  <tbody class="divide-y divide-gray-200">
-                      {% if trade_history %}
-                      {% for t in trade_history %}
-                      <tr class="hover:bg-gray-50">
-                          <td class="px-6 py-3 font-mono text-xs whitespace-nowrap">{{ t.timestamp }}</td>
-                          <td class="px-6 py-3">
-                              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase
-                                  {% if 'buy' in t.side|lower %} text-emerald-700 bg-emerald-50
-                                  {% else %} text-red-700 bg-red-50 {% endif %}">
-                                  {{ t.side }}
-                              </span>
-                          </td>
-                          <td class="px-6 py-3 font-mono text-gray-900">{{ t.price }}</td>
-                          <td class="px-6 py-3 font-mono">{{ t.amount }}</td>
-                          <td class="px-6 py-3 font-mono text-gray-500">{{ t.cost|round(2) }}</td>
-                          <td class="px-6 py-3 font-mono text-xs text-gray-400">{{ t.fee|round(4) }} {{ t.fee_currency }}</td>
-                          <td class="px-6 py-3 font-mono font-bold">
-    {% set pnl = t.realized_pnl|default(0)|float %}
-    {% if pnl > 0 %}
-        <span class="text-buy">+{{ pnl|round(4) }}</span>
-    {% elif pnl < 0 %}
-        <span class="text-sell">{{ pnl|round(4) }}</span>
-    {% else %}
-        <span class="text-gray-300">-</span>
-    {% endif %}
-</td>
-                      </tr>
-                      {% endfor %}
-                      {% else %}
-                      <tr>
-                          <td colspan="6" class="px-6 py-8 text-center text-gray-400">
-                              暂无成交记录 (或处于策略模式)
-                          </td>
-                      </tr>
-                      {% endif %}
-                  </tbody>
-              </table>
-          </div>
-      </div>
-
     </main>
 
     <script>

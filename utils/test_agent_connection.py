@@ -8,7 +8,7 @@ from langchain_core.messages import SystemMessage
 from pydantic import BaseModel, Field
 import sys
 sys.path.insert(0, '..')
-from tool.logger import setup_logger
+from utils.logger import setup_logger
 
 load_dotenv()
 

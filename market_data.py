@@ -7,7 +7,7 @@ import time
 import warnings
 import database
 from datetime import datetime
-from tool.logger import setup_logger  # 引入 logger
+from utils.logger import setup_logger  # 引入 logger
 
 logger = setup_logger("MarketData")
 warnings.filterwarnings("ignore")

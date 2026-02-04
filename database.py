@@ -1,7 +1,7 @@
 import sqlite3
 import uuid
 from datetime import datetime
-from tool.logger import setup_logger
+from utils.logger import setup_logger
 
 DB_NAME = "trading_data.db"
 logger = setup_logger("Database")
@@ -24,7 +24,7 @@ def init_db():
         c.execute("ALTER TABLE summaries ADD COLUMN agent_name TEXT")
     except: pass
 
-    # 2. Mock Orders 表 (活跃挂单池)
+    # 2. Mock Orders 表 (活跃挂单池) - 新增 expire_at
     c.execute('''CREATE TABLE IF NOT EXISTS mock_orders (
                     order_id TEXT PRIMARY KEY,
                     timestamp TEXT,
@@ -35,17 +35,21 @@ def init_db():
                     amount REAL,
                     stop_loss REAL,
                     take_profit REAL,
+                    expire_at REAL,       -- 新增: 过期时间戳
                     status TEXT DEFAULT 'OPEN'
                 )''')
+    try:
+        c.execute("ALTER TABLE mock_orders ADD COLUMN expire_at REAL")
+    except: pass
 
-# 3. 修改 Orders 表，增加 trade_mode
+    # 3. Orders 表 (历史订单/日志) - 包含 trade_mode
     c.execute('''CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id TEXT,
                     timestamp TEXT,
                     symbol TEXT,
                     agent_name TEXT, 
-                    trade_mode TEXT,  -- 新增: 'REAL_EXEC' 或 'STRATEGY_IDEA'
+                    trade_mode TEXT,  -- 'REAL' 或 'STRATEGY'
                     side TEXT,
                     entry_price REAL,
                     take_profit REAL,
@@ -53,11 +57,11 @@ def init_db():
                     reason TEXT,
                     status TEXT DEFAULT 'OPEN'
                 )''')
+    try:
+        c.execute("ALTER TABLE orders ADD COLUMN trade_mode TEXT")
+    except: pass
 
-
-
-
-        # 4. 新增: 账户净值历史 (用于画盈亏曲线)
+    # 4. 账户净值历史 (用于画盈亏曲线)
     c.execute('''CREATE TABLE IF NOT EXISTS balance_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT,
@@ -67,7 +71,7 @@ def init_db():
                     total_equity REAL      -- 净值 (余额+未实现)
                 )''')
 
-    # 5. 新增: 实盘成交记录 (从交易所同步回来)
+    # 5. 实盘成交记录 (从交易所同步)
     c.execute('''CREATE TABLE IF NOT EXISTS trade_history (
                     trade_id TEXT PRIMARY KEY, -- 交易所的 trade id
                     timestamp TEXT,
@@ -80,46 +84,57 @@ def init_db():
                     fee_currency TEXT,
                     realized_pnl REAL          -- 部分交易所支持返回该字段
                 )''')
-    try:
-        c.execute("ALTER TABLE orders ADD COLUMN trade_mode TEXT")
-    except: pass
+
     conn.commit()
     conn.close()
 
 # --- 模拟交易 / 挂单池功能 ---
 
 def get_mock_orders(symbol=None):
-    """获取当前活跃的模拟挂单"""
+    """
+    获取当前活跃的模拟挂单
+    逻辑：Status='OPEN' 且 (无过期时间 或 过期时间 > 当前时间)
+    """
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+    
+    current_ts = datetime.now().timestamp()
+    
     if symbol:
-        c.execute("SELECT * FROM mock_orders WHERE symbol = ? AND status='OPEN'", (symbol,))
+        c.execute("""
+            SELECT * FROM mock_orders 
+            WHERE symbol = ? 
+              AND status='OPEN' 
+              AND (expire_at IS NULL OR expire_at > ?)
+        """, (symbol, current_ts))
     else:
-        c.execute("SELECT * FROM mock_orders WHERE status='OPEN'")
+        c.execute("""
+            SELECT * FROM mock_orders 
+            WHERE status='OPEN' 
+              AND (expire_at IS NULL OR expire_at > ?)
+        """, (current_ts,))
+        
     rows = [dict(row) for row in c.fetchall()]
     conn.close()
     return rows
 
-# database.py
-
-def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, order_id=None):
+def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, order_id=None, expire_at=None):
     """
     创建一个模拟挂单
-    新增参数: order_id (必须传入，保证和日志一致)
+    :param expire_at: 过期时间戳 (float), None 表示不过期
     """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
     if not order_id:
-        import uuid
         order_id = f"ST-{uuid.uuid4().hex[:6]}"
 
     try:
         c.execute('''
-            INSERT INTO mock_orders (order_id, symbol, side, price, amount, stop_loss, take_profit, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (order_id, symbol, side, price, amount, stop_loss, take_profit, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            INSERT INTO mock_orders (order_id, symbol, side, price, amount, stop_loss, take_profit, timestamp, expire_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (order_id, symbol, side, price, amount, stop_loss, take_profit, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), expire_at))
         conn.commit()
     except Exception as e:
         logger.error(f"❌ DB Error (create_mock_order): {e}")
@@ -130,7 +145,9 @@ def cancel_mock_order(order_id):
     """撤销模拟挂单"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    # 从活跃池删除
     c.execute("DELETE FROM mock_orders WHERE order_id = ?", (order_id,))
+    # 更新历史记录状态
     c.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", (order_id,))
     conn.commit()
     conn.close()
@@ -141,7 +158,7 @@ def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, tr
     c = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # 确保 trade_mode 只有两种合法值，方便前端展示
+    # 确保 trade_mode 格式统一
     valid_mode = "REAL" if trade_mode == "REAL" else "STRATEGY"
     
     c.execute("""
@@ -150,6 +167,8 @@ def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, tr
     """, (str(order_id), timestamp, symbol, str(agent_name), side, entry, tp, sl, reason, valid_mode))
     conn.commit()
     conn.close()
+
+# --- 数据分析与记录 ---
 
 def save_summary(symbol, agent_name, content, strategy_logic):
     """保存 AI 分析结果"""
@@ -175,8 +194,6 @@ def get_recent_summaries(symbol, limit=10):
     conn.close()
     return rows
 
-
-
 def get_summary_count(symbol):
     """获取某币种的分析记录总数"""
     conn = sqlite3.connect(DB_NAME)
@@ -194,7 +211,6 @@ def get_paginated_summaries(symbol, page=1, per_page=10):
     conn.row_factory = sqlite3.Row
     offset = (page - 1) * per_page
     c = conn.cursor()
-    # 按时间倒序排列
     c.execute(
         "SELECT * FROM summaries WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
         (symbol, per_page, offset)
@@ -239,7 +255,6 @@ def get_balance_history(symbol, limit=100):
     return rows
 
 
-
 def save_trade_history(trades):
     """批量保存成交记录 (会自动忽略已存在的 trade_id)"""
     if not trades: return
@@ -259,14 +274,13 @@ def save_trade_history(trades):
             if pnl is None:
                 pnl = 0
 
-            # 4. 手续费处理 (防报错)
+            # 4. 手续费处理
             fee_cost = 0
             fee_currency = ''
             if t.get('fee'):
                 fee_cost = float(t['fee'].get('cost', 0) or 0)
                 fee_currency = t['fee'].get('currency', '')
 
-            # 尝试插入，如果 trade_id 重复则忽略
             c.execute('''
                 INSERT OR IGNORE INTO trade_history 
                 (trade_id, timestamp, symbol, side, price, amount, cost, fee, fee_currency, realized_pnl)
@@ -281,7 +295,7 @@ def save_trade_history(trades):
                 float(t['cost']),
                 fee_cost,
                 fee_currency,
-                float(pnl) # ✅ 这里现在能存入真实的盈亏了
+                float(pnl)
             ))
         except Exception as e:
             logger.error(f"Save trade error: {e}")
