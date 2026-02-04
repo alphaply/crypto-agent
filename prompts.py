@@ -29,6 +29,10 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 4. 仅在信心 > 80% 且盈亏比极佳时出手。
 5.开仓时需要谨慎，持仓管理注意风险控制！
 
+【平仓价格逻辑 (Critical)】
+1. **平多 (Close Long)**: 本质是卖出。挂单价格必须 **高于 (> )** 现价。目标位应找上方的 **阻力位 (Resistance)**。
+2. **平空 (Close Short)**: 本质是买入。挂单价格必须 **低于 (< )** 现价。目标位应找下方的 **支撑位 (Support)**。
+
 【全量市场数据】
 {formatted_market_data}
 

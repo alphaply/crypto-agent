@@ -8,6 +8,7 @@ import warnings
 import database
 from datetime import datetime
 from utils.logger import setup_logger  # 引入 logger
+import uuid
 
 logger = setup_logger("MarketData")
 warnings.filterwarnings("ignore")
