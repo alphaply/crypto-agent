@@ -261,13 +261,12 @@ class MarketTool:
                     all_orders = self.exchange.fetch_open_orders(symbol)
                     filtered_orders = []
                     for o in all_orders:
-                        client_oid = o.get('clientOrderId') or o.get('info', {}).get('clientOrderId', '')
-                        # 过滤逻辑
-                        if agent_name and client_oid:
-                            if not client_oid.startswith(str(agent_name)):
-                                continue
+                        # client_oid = o.get('clientOrderId') or o.get('info', {}).get('clientOrderId', '')
+                        # # 过滤逻辑
+                        # if agent_name and client_oid:
+                        #     if not client_oid.startswith(str(agent_name)):
+                        #         continue
                         
-                        # (解析逻辑保持不变)
                         raw = o.get('info', {})
                         filtered_orders.append({
                             'order_id': str(o.get('id')),
@@ -283,7 +282,6 @@ class MarketTool:
             except Exception as e:
                 logger.error(f"Real account error: {e}")
         else:
-            # 🔥 模拟模式：传入 agent_name 进行数据库过滤
             try:
                 mock_orders = database.get_mock_orders(symbol, agent_name=agent_name)
                 status_data["mock_open_orders"] = mock_orders
