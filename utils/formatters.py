@@ -4,54 +4,36 @@
 """
 
 def format_positions_to_agent_friendly(positions: list) -> str:
-    """
-    将复杂的持仓 JSON 转换为 Agent 易读的精简文本
-    """
     if not positions:
         return "无持仓 (No Positions)"
     
     lines = []
     for p in positions:
         side = p.get('side', '').upper()
-        # 清理 symbol 名字，比如 BNB/USDT:USDT -> BNB/USDT
         sym = p.get('symbol', '').split(':')[0]
         amt = float(p.get('amount', 0))
         entry = float(p.get('entry_price', 0))
         pnl = float(p.get('unrealized_pnl', 0))
-        
         pnl_sign = "+" if pnl >= 0 else ""
-        
-        line = f"[{side}] {sym} | Amt: {amt} | Entry: {entry} | PnL: {pnl_sign}{pnl:.3f}"
-        lines.append(line)
+        lines.append(f"[{side}] {sym} | Amt: {amt} | Entry: {entry} | PnL: {pnl_sign}{pnl:.3f}")
         
     return "\n".join(lines)
 
 
 def format_orders_to_agent_friendly(orders: list) -> str:
-    """
-    将活跃挂单转换为 Agent 易读的精简文本
-    """
     if not orders:
         return "无活跃挂单 (No Active Orders)"
 
     lines = []
     for o in orders:
-        # 1. 提取方向
         side = o.get('side', '').upper()
-        
-        # 2. 标准化类型 (处理中文 "限价入场")
         raw_type = str(o.get('type', 'LIMIT'))
-        if '限价' in raw_type or 'limit' in raw_type.lower():
-            order_type = 'LIMIT'
-        else:
-            order_type = raw_type.upper()
+        order_type = 'LIMIT' if 'limit' in raw_type.lower() or '限价' in raw_type else raw_type.upper()
 
-        # 3. 提取核心数据
         oid = o.get('id', 'N/A')
         price = float(o.get('price', 0))
         amt = float(o.get('amount', 0))
 
-        # 4. 可选: 止盈止损 (策略单可能会有)
         tp = float(o.get('tp', 0) or o.get('take_profit', 0))
         sl = float(o.get('sl', 0) or o.get('stop_loss', 0))
         
@@ -59,8 +41,7 @@ def format_orders_to_agent_friendly(orders: list) -> str:
         if tp > 0 or sl > 0:
             extras = f" | TP: {tp} | SL: {sl}"
         
-        line = f"[{side}] {order_type} | ID: '{oid}' | Price: {price} | Amt: {amt}{extras}"
-        lines.append(line)
+        lines.append(f"[{side}] {order_type} | ID: '{oid}' | Price: {price} | Amt: {amt}{extras}")
 
     return "\n".join(lines)
 
@@ -68,15 +49,12 @@ def format_orders_to_agent_friendly(orders: list) -> str:
 def format_market_data_to_text(data: dict) -> str:
     """
     将市场数据转换为 LLM 友好的结构化纯文本格式
-    优势：无表格符号干扰、层次清晰、关键指标前置、序列数据紧凑表达
+    (已升级：支持 MACD/KDJ/BB/Trend 显示)
     """
     def fmt_price(price):
         if price is None or price == 0: return "0"
-        abs_p = abs(price)
-        if abs_p >= 1000: return f"{int(price)}"      
-        if abs_p >= 1: return f"{price:.2f}"          
-        if abs_p >= 0.01: return f"{price:.4f}"       
-        return f"{price:.8f}".rstrip('0')              
+        # 简单处理，因为 market_data.py 已经做过 smart_fmt
+        return str(price)
 
     def fmt_num(num):
         if num > 1_000_000_000: return f"{num/1_000_000_000:.1f}B"
@@ -94,7 +72,7 @@ def format_market_data_to_text(data: dict) -> str:
     
     output = [
         "【市场快照】",
-        f"• 当前价格: {fmt_price(current_price)} | 15m ATR: {fmt_price(atr_15m)}",
+        f"• 当前价格: {current_price} | 15m ATR: {atr_15m}",
         f"• 资金费率: {funding:.4f}% | 未平仓合约: {oi} | 24h成交量: {vol_24h}",
         ""
     ]
@@ -104,58 +82,71 @@ def format_market_data_to_text(data: dict) -> str:
     timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
     
     for tf in timeframes:
-        if tf not in indicators: 
-            continue
-            
+        if tf not in indicators: continue
         d = indicators[tf]
+        
         output.append(f"【{tf}周期】")
         
-        # 核心指标（前置关键信息）
-        tf_price = fmt_price(d.get('price', 0))
-        atr = fmt_price(d.get('atr', 0))
+        # 1. 核心与趋势
+        tf_price = d.get('price', 0)
+        atr = d.get('atr', 0)
         rsi = d.get('rsi', 0)
+        trend = d.get('trend_status', 'N/A')
         vol_stat = d.get('volume_status', 'N/A')
-        output.append(f"• 价格: {tf_price} | ATR: {atr} | RSI: {rsi:.1f} | 量能: {vol_stat}")
         
-        # K线序列（紧凑表达，避免冗长换行）
-        closes = [fmt_price(x) for x in d.get('recent_closes', [])[-5:]]
-        highs = [fmt_price(x) for x in d.get('recent_highs', [])[-5:]]
-        lows = [fmt_price(x) for x in d.get('recent_lows', [])[-5:]]
+        output.append(f"• 状态: 价格={tf_price} | 趋势={trend} | ATR={atr} | Vol={vol_stat}")
+        
+        # 2. 震荡指标 (RSI + KDJ)
+        kdj = d.get('kdj', {})
+        k, _d, j = kdj.get('k', 0), kdj.get('d', 0), kdj.get('j', 0)
+        output.append(f"• 震荡: RSI={rsi} | KDJ: K={k} D={_d} J={j}")
+
+        # 3. 动能 (MACD)
+        macd = d.get('macd', {})
+        diff, dea, hist = macd.get('diff', 0), macd.get('dea', 0), macd.get('hist', 0)
+        output.append(f"• MACD: Diff={diff} DEA={dea} Hist={hist}")
+
+        # 4. 布林带
+        bb = d.get('bollinger', {})
+        up, mid, low, width = bb.get('up',0), bb.get('mid',0), bb.get('low',0), bb.get('width',0)
+        output.append(f"• 布林带: Up={up} Low={low} Width={width}")
+        
+        # 5. K线序列
+        closes = d.get('recent_closes', [])
+        highs = d.get('recent_highs', [])
+        lows = d.get('recent_lows', [])
         if closes:
-            output.append(f"• 近5根K线: 收盘[{', '.join(closes)}] 高点[{', '.join(highs)}] 低点[{', '.join(lows)}]")
+            c_str = ", ".join([str(x) for x in closes])
+            h_str = ", ".join([str(x) for x in highs])
+            l_str = ", ".join([str(x) for x in lows])
+            output.append(f"• 近5根K线: Close[{c_str}] High[{h_str}] Low[{l_str}]")
         
-        # EMA（简化表达）
+        # 6. EMA
         ema = d.get('ema', {})
-        e20 = fmt_price(ema.get('ema_20', 0))
-        e50 = fmt_price(ema.get('ema_50', 0))
-        e100 = fmt_price(ema.get('ema_100', 0))
-        e200 = fmt_price(ema.get('ema_200', 0))
-        output.append(f"• EMA: 20={e20} / 50={e50} / 100={e100} / 200={e200}")
+        e20, e50, e200 = ema.get('ema_20', 0), ema.get('ema_50', 0), ema.get('ema_200', 0)
+        output.append(f"• EMA: 20={e20} / 50={e50} / 200={e200}")
         
-        # 价值分布（Volume Profile）
+        # 7. 价值分布
         vp = d.get('vp', {})
-        poc = fmt_price(vp.get('poc', 0))
-        val = fmt_price(vp.get('val', 0))
-        vah = fmt_price(vp.get('vah', 0))
-        hvns = sorted([fmt_price(h) for h in vp.get('hvns', [])], reverse=True)[:3]
-        hvn_str = ", ".join(hvns) if hvns else "N/A"
-        output.append(f"• 价值区: POC={poc} | VA=[{val}~{vah}] | 高量节点: {hvn_str}")
-        output.append("")  # 空行分隔周期
+        poc = vp.get('poc', 0)
+        val, vah = vp.get('val', 0), vp.get('vah', 0)
+        # 已经是排好序的数值列表，直接取前3
+        raw_hvns = vp.get('hvns', [])
+        hvn_str = ", ".join([str(x) for x in raw_hvns[:3]]) if raw_hvns else "N/A"
+        
+        output.append(f"• 价值区: POC={poc} | VA=[{val}~{vah}] | HVN: {hvn_str}")
+        output.append("")
 
     return "\n".join(output).strip()
 
+
 def format_market_data_to_markdown(data: dict) -> str:
     """
-    将复杂的市场 JSON 数据转换为 LLM 易读的 Markdown 格式
-    (更新：新增 Recent Highs/Lows 列)
+    将复杂的市场 JSON 数据转换为 Markdown 表格
+    (已升级：支持 MACD/KDJ/BB/Trend)
     """
     def fmt_price(price):
-        if price is None or price == 0: return "0"
-        abs_p = abs(price)
-        if abs_p >= 1000: return f"{int(price)}"      
-        if abs_p >= 1: return f"{price:.2f}"          
-        if abs_p >= 0.01: return f"{price:.4f}"       
-        return f"{price:.8f}".rstrip('0')              
+        return str(price)
 
     def fmt_num(num):
         if num > 1_000_000_000: return f"{num/1_000_000_000:.1f}B"
@@ -165,72 +156,61 @@ def format_market_data_to_markdown(data: dict) -> str:
 
     current_price = data.get("current_price", 0)
     atr_15m = data.get("atr_15m", 0)
-    
     sent = data.get("sentiment", {})
     funding = sent.get("funding_rate", 0) * 100 
-    oi = sent.get("open_interest", 0)
-    
-    vol_24h = fmt_num(sent.get("24h_quote_vol", 0))
-    oi_str = fmt_num(oi)
     
     header = (
-        f"**Snapshot** | Price: {fmt_price(current_price)} | 15m ATR: {fmt_price(atr_15m)}\n"
-        f"Sentiment: Fund: {funding:.4f}% | OI: {oi_str} | Vol24h: {vol_24h}\n"
+        f"**Snapshot** | Price: {current_price} | 15m ATR: {atr_15m}\n"
+        f"Sentiment: Fund: {funding:.4f}% | Vol24h: {fmt_num(sent.get('24h_quote_vol', 0))}\n"
     )
 
-    # ------------------ 修改点 1：表头增加 Highs 和 Lows ------------------
+    # 扩展表头
     table_header = (
-        "| TF | Price | ATR | RSI | Vol Status | Last 5 Closes | Last 5 Highs | Last 5 Lows | EMA (20/50/100/200) | POC | VA Range | HVN |\n"
-        "|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "| TF | Trend | RSI/KDJ | MACD (Diff/Hist) | BB Width | 5 Closes | EMA (20/50/200) | POC | HVN |\n"
+        "|---|---|---|---|---|---|---|---|---|\n"
     )
     
     rows = []
     indicators = data.get("technical_indicators", {})
-    all_possible_timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
+    timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
     
-    for tf in all_possible_timeframes:
+    for tf in timeframes:
         if tf not in indicators: continue
         d = indicators[tf]
         
-        # 1. 基础数据
-        tf_price = fmt_price(d.get('price', 0))
-        atr = fmt_price(d.get('atr', 0))
-        rsi = f"{d.get('rsi', 0):.1f}"
+        # 基础
+        trend = d.get('trend_status', 'N/A')
         
-        # 2. 成交量状态
-        vol_stat = d.get('volume_status', 'N/A')
+        # 震荡
+        rsi = d.get('rsi', 0)
+        kdj = d.get('kdj', {})
+        k, j = kdj.get('k',0), kdj.get('j',0)
+        osc_str = f"RSI:{rsi} K:{k} J:{j}"
         
-        # ------------------ 修改点 2：提取并格式化 Highs 和 Lows ------------------
-        raw_closes = d.get('recent_closes', [])
-        closes_str = ", ".join([fmt_price(x) for x in raw_closes])
+        # MACD
+        macd = d.get('macd', {})
+        diff, hist = macd.get('diff', 0), macd.get('hist', 0)
+        macd_str = f"{diff}/{hist}"
         
-        raw_highs = d.get('recent_highs', [])
-        highs_str = ", ".join([fmt_price(x) for x in raw_highs])
-
-        raw_lows = d.get('recent_lows', [])
-        lows_str = ", ".join([fmt_price(x) for x in raw_lows])
+        # BB
+        bb = d.get('bollinger', {})
+        width = bb.get('width', 0)
         
-        # 4. EMA
+        # K线
+        closes = d.get('recent_closes', [])
+        c_str = ",".join([str(x) for x in closes])
+        
+        # EMA
         ema = d.get('ema', {})
-        e20 = fmt_price(ema.get('ema_20', 0))
-        e50 = fmt_price(ema.get('ema_50', 0))
-        e100 = fmt_price(ema.get('ema_100', 0))
-        e200 = fmt_price(ema.get('ema_200', 0))
-        ema_str = f"{e20}/{e50}/{e100}/{e200}"
+        e_str = f"{ema.get('ema_20')}/{ema.get('ema_50')}/{ema.get('ema_200')}"
         
-        # 5. VP 数据
+        # VP
         vp = d.get('vp', {})
-        poc = fmt_price(vp.get('poc', 0))
-        val = fmt_price(vp.get('val', 0))
-        vah = fmt_price(vp.get('vah', 0))
-        va_range = f"{val}-{vah}"
+        poc = vp.get('poc', 0)
+        hvns = vp.get('hvns', [])[:3]
+        h_str = ",".join([str(x) for x in hvns])
         
-        raw_hvns = vp.get('hvns', [])
-        top_hvns = sorted(raw_hvns, reverse=True)[:3]
-        hvn_str = ",".join([fmt_price(h) for h in top_hvns])
-        
-        # ------------------ 修改点 3：将新数据加入行中 ------------------
-        row = f"| {tf} | {tf_price} | {atr} | {rsi} | {vol_stat} | {closes_str} | {highs_str} | {lows_str} | {ema_str} | {poc} | {va_range} | {hvn_str} |"
+        row = f"| {tf} | {trend} | {osc_str} | {macd_str} | {width} | {c_str} | {e_str} | {poc} | {h_str} |"
         rows.append(row)
     
     return header + table_header + "\n".join(rows)
