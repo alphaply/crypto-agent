@@ -123,8 +123,8 @@ def format_market_data_to_text(data: dict) -> str:
         
         # 6. EMA
         ema = d.get('ema', {})
-        e20, e50, e200 = ema.get('ema_20', 0), ema.get('ema_50', 0), ema.get('ema_200', 0)
-        output.append(f"• EMA: 20={e20} / 50={e50} / 200={e200}")
+        e20, e50, e100, e200 = ema.get('ema_20', 0), ema.get('ema_50', 0), ema.get('ema_100', 0), ema.get('ema_200', 0)
+        output.append(f"• EMA: 20={e20} / 50={e50} / 100={e100} / 200={e200}")
         
         # 7. 价值分布
         vp = d.get('vp', {})

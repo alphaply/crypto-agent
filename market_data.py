@@ -70,7 +70,7 @@ class MarketTool:
         elif abs_val >= 0.01:
             return round(val, 5)
         else:
-            return round(val, 8) # 针对 PEPE 等超小币种
+            return round(val, 8) 
 
     def _calc_ema(self, series, span):
         return series.ewm(span=span, adjust=False).mean()
@@ -111,7 +111,6 @@ class MarketTool:
         low_list = df['low'].rolling(n).min()
         high_list = df['high'].rolling(n).max()
         rsv = (df['close'] - low_list) / (high_list - low_list) * 100
-        # Pandas ewm 模拟 SMA 递归
         k = rsv.ewm(alpha=1/m1, adjust=False).mean()
         d = k.ewm(alpha=1/m2, adjust=False).mean()
         j = 3 * k - 2 * d
@@ -119,16 +118,19 @@ class MarketTool:
 
     def _calculate_vp(self, df, length=360, rows=100, va_perc=0.70):
         """
-        计算体积分布 (Volume Profile) - 优化版
+        计算体积分布 (Volume Profile) - 严格对齐 LuxAlgo 逻辑
+        LuxAlgo Logic: Peak detection uses N-neighbors comparison.
         """
         if len(df) < 50: return None
         
+        # 1. 数据截取
         subset = df.iloc[-length:].copy().reset_index(drop=True)
         high_val = subset['high'].max()
         low_val = subset['low'].min()
         
         if high_val == low_val: return None
         
+        # 2. 构建桶 (Bins)
         price_step = (high_val - low_val) / rows
         total_volume = np.zeros(rows)
         
@@ -136,7 +138,8 @@ class MarketTool:
         lows = subset['low'].values
         vols = subset['volume'].values
         
-        # 向量化分配成交量
+        # 3. 分配成交量 (Uniform Distribution Assumption)
+        # 注意: 纯 Python 无法获取 Lower Timeframe 数据，这里假设 K 线内成交量均匀分布
         for i in range(len(subset)):
             h, l, v = highs[i], lows[i], vols[i]
             if h == l:
@@ -146,48 +149,91 @@ class MarketTool:
             
             start_bin = max(0, min(int((l - low_val) / price_step), rows - 1))
             end_bin = max(0, min(int((h - low_val) / price_step), rows - 1))
-            vol_per_price = v / (h - l)
+            
+            # 防止除以零
+            price_range = h - l
+            if price_range == 0: 
+                vol_per_price = 0
+            else:
+                vol_per_price = v / price_range
             
             for b in range(start_bin, end_bin + 1):
                 bin_low = low_val + b * price_step
                 bin_high = low_val + (b + 1) * price_step
+                # 计算 K线 与 当前桶 的重叠高度
                 overlap = max(0, min(h, bin_high) - max(l, bin_low))
                 total_volume[b] += overlap * vol_per_price
 
-        # POC
+        # 4. 计算 POC
         poc_idx = np.argmax(total_volume)
         poc_price = low_val + (poc_idx + 0.5) * price_step
         
-        # VA (Value Area)
+        # 5. 计算 Value Area (VA)
         total_traded_vol = np.sum(total_volume)
         target_vol = total_traded_vol * va_perc
-        current_vol = total_volume[poc_idx]
-        vah_idx = val_idx = poc_idx
         
+        current_vol = total_volume[poc_idx]
+        vah_idx = poc_idx
+        val_idx = poc_idx
+        
+        # 严格按照从 POC 向两边扩展的逻辑
         while current_vol < target_vol:
-            if vah_idx >= rows - 1 and val_idx <= 0: break
+            # 边界检查
+            if vah_idx >= rows - 1 and val_idx <= 0:
+                break
+            
             up_vol = total_volume[vah_idx + 1] if vah_idx < rows - 1 else 0
             down_vol = total_volume[val_idx - 1] if val_idx > 0 else 0
             
             if up_vol >= down_vol:
-                vah_idx += 1; current_vol += up_vol
+                vah_idx += 1
+                current_vol += up_vol
             else:
-                val_idx -= 1; current_vol += down_vol
+                val_idx -= 1
+                current_vol += down_vol
                 
         vah_price = low_val + (vah_idx + 1) * price_step
         val_price = low_val + val_idx * price_step
         
-        # HVN (筹码峰)
+        # 6. 计算 HVN (High Volume Nodes) - 匹配 LuxAlgo "Peaks" 逻辑
+        # LuxAlgo Default: vn_peaksNumberOfNodes = 9% (of rows)
+        # 也就是左右各 N 个节点必须小于当前节点
         hvns = []
-        window = max(1, int(rows * 0.05)) 
-        for i in range(window, rows - window):
-            current_val = total_volume[i]
-            if current_val > np.max(total_volume) * 0.1: # 过滤噪点
-                # 检查局部最大值
-                if all(current_val >= total_volume[i-window:i]) and all(current_val >= total_volume[i+1:i+1+window]):
-                    hvns.append(low_val + (i + 0.5) * price_step)
         
-        if not hvns: hvns.append(poc_price)
+        # LuxAlgo 默认 9% 的行数作为检测窗口
+        detection_percent = 0.09 
+        neighbor_n = int(rows * detection_percent)
+        if neighbor_n < 1: neighbor_n = 1
+        
+        # 阈值：LuxAlgo 默认为 max volume 的 1%
+        threshold_vol = np.max(total_volume) * 0.01
+
+        for i in range(neighbor_n, rows - neighbor_n):
+            curr_vol = total_volume[i]
+            
+            # 基础阈值过滤
+            if curr_vol < threshold_vol:
+                continue
+
+            is_peak = True
+            
+            # 检查左边 N 个
+            # LuxAlgo 逻辑: if tempPeakTotalVolume.get(volumeNodeLevel - peaksNumberOfNodes) <= tempPeakTotalVolume.get(currentVolumeNode) -> peakUpperNth = false
+            # 意味着：当前节点必须 > 周围节点 (严格大于或大于等于视实现而定，通常找局部极大值)
+            for offset in range(1, neighbor_n + 1):
+                if total_volume[i - offset] >= curr_vol:
+                    is_peak = False
+                    break
+                if total_volume[i + offset] >= curr_vol:
+                    is_peak = False
+                    break
+            
+            if is_peak:
+                hvns.append(low_val + (i + 0.5) * price_step)
+        
+        # 如果没有检测到 HVN，至少放入 POC
+        if not hvns:
+            hvns.append(poc_price)
 
         return {
             "poc": self._smart_fmt(poc_price), 
@@ -353,12 +399,9 @@ class MarketTool:
             if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": []}
             
             # ================= 提取最新值 =================
-            # 使用 iloc[-1] 获取最新的一根K线（可能是未完成的）
-            # 注意：对于策略判断，通常看已完成的 (-2)，但这里返回最新状态供 Agent 参考
-            
             curr_close = close.iloc[-1]
             
-            # 趋势判定逻辑 (简单版)
+            # 趋势判定逻辑
             trend_status = "Consolidation"
             e20_val = ema20.iloc[-1]
             e50_val = ema50.iloc[-1]
@@ -366,10 +409,8 @@ class MarketTool:
             if e20_val > e50_val > e200_val: trend_status = "Uptrend"
             elif e20_val < e50_val < e200_val: trend_status = "Downtrend"
             
-            # ================= 序列数据提取 (Fix: 强制 float 转换) =================
-            # 取最近5根（包含当前未完成的）
+            # ================= 序列数据提取 =================
             def to_list(series, n=5):
-                # iloc切片 -> values -> tolist -> map(float) -> smart_fmt
                 raw = series.iloc[-n:].values.tolist()
                 return [self._smart_fmt(float(x)) for x in raw]
 
@@ -379,12 +420,11 @@ class MarketTool:
             
             return {
                 "price": self._smart_fmt(curr_close),
-                "trend_status": trend_status, # 新增
+                "trend_status": trend_status,
                 "recent_closes": recent_closes,
-                "recent_highs": recent_highs, # Fix: 确保有值
-                "recent_lows": recent_lows,   # Fix: 确保有值
+                "recent_highs": recent_highs,
+                "recent_lows": recent_lows,
                 
-                # 震荡指标
                 "rsi": round(float(rsi.iloc[-1]), 1),
                 "kdj": {
                     "k": round(float(k.iloc[-1]), 1),
@@ -392,7 +432,6 @@ class MarketTool:
                     "j": round(float(j.iloc[-1]), 1)
                 },
                 
-                # 波动率与动能
                 "atr": self._smart_fmt(atr.iloc[-1]),
                 "macd": {
                     "diff": self._smart_fmt(macd.iloc[-1]),
@@ -406,7 +445,7 @@ class MarketTool:
                     "width": round(float(bb_width.iloc[-1]), 4)
                 },
 
-                # 趋势均线
+                # FIXED: Added ema_100
                 "ema": {
                     "ema_20": self._smart_fmt(e20_val),
                     "ema_50": self._smart_fmt(e50_val),
@@ -414,14 +453,12 @@ class MarketTool:
                     "ema_200": self._smart_fmt(e200_val)
                 },
                 
-                # 量能
                 "volume_analysis": {
                     "current": self._smart_fmt(volume.iloc[-1]),
                     "ratio": round(float(vol_ratio.iloc[-1]), 2),
                     "status": "High" if float(vol_ratio.iloc[-1]) > 1.5 else ("Low" if float(vol_ratio.iloc[-1]) < 0.5 else "Normal")
                 },
                 
-                # 筹码分布
                 "vp": vp
             }
         except Exception as e:
@@ -431,47 +468,99 @@ class MarketTool:
             return None
 
     # ==========================================
-    # 实盘下单逻辑 (保持不变或微调)
+    # 实盘下单逻辑
     # ==========================================
     def place_real_order(self, symbol, action, order_params, agent_name=None):
         try:
             if not self.exchange.markets: self.exchange.load_markets()
             symbol = str(symbol)
             
+            # --- 日志：收到指令 ---
+            logger.info(f"🔔 [REAL_ORDER] 收到指令: {symbol} | {action} | Params: {order_params}")
+
             if action == 'CANCEL':
                 cancel_id = order_params.get('cancel_order_id')
                 if cancel_id:
-                    self.exchange.cancel_order(cancel_id, symbol)
-                    return {"status": "cancelled"}
+                    logger.info(f"🔄 [CANCEL] 正在撤单 ID: {cancel_id} ...")
+                    try:
+                        res = self.exchange.cancel_order(cancel_id, symbol)
+                        logger.info(f"✅ [CANCEL] 撤单成功: {cancel_id}")
+                        return {"status": "cancelled", "response": res}
+                    except Exception as e:
+                        logger.error(f"❌ [CANCEL] 撤单失败: {e}")
                 return None
 
             if action == 'CLOSE':
-                # 简化版平仓逻辑
                 raw_close_amount = float(order_params.get('amount', 0))
+                raw_close_price = float(order_params.get('entry_price', 0))
+                target_pos_side = order_params.get('pos_side', '').upper()
+                logger.info(f"🔍 [CLOSE] 检查持仓... 目标: {target_pos_side} | 量: {raw_close_amount} | 价: {raw_close_price}")
                 positions = self.exchange.fetch_positions([symbol])
+                executed = False
+
                 for pos in positions:
-                    amt = float(pos['contracts'])
+                    amt = float(pos['contracts']) # 当前持仓数量
+                    side = pos['side']            # 'long' or 'short'
+                    
+                    # 过滤方向：如果指定了只平 SHORT，就跳过 LONG
+                    current_pos_side_str = 'LONG' if side == 'long' else 'SHORT'
+                    if target_pos_side and target_pos_side != current_pos_side_str:
+                        continue
+
                     if amt > 0:
-                        side = pos['side']
+                        # 确定交易方向：平多=Sell，平空=Buy
                         close_side = 'sell' if side == 'long' else 'buy'
-                        # 如果指定数量且小于持仓，则部分平；否则全平
-                        final_amt = raw_close_amount if (0 < raw_close_amount < amt) else amt
                         
-                        self.exchange.create_order(symbol, 'MARKET', close_side, final_amt, params={'positionSide': 'LONG' if side == 'long' else 'SHORT'})
-                return {"status": "closed"}
+                        # 确定数量：部分平仓 vs 全平
+                        final_amt = raw_close_amount if (0 < raw_close_amount < amt) else amt
+                        formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
+
+                        params = {'positionSide': current_pos_side_str}
+                        
+                        # --- 核心修复：区分限价平仓与市价平仓 ---
+                        if raw_close_price > 0:
+                            # 1. 限价平仓 (Limit Close)
+                            order_type = 'LIMIT'
+                            formatted_price = self.exchange.price_to_precision(symbol, raw_close_price)
+                            params['timeInForce'] = 'GTC' # 限价单需要 GTC
+                            
+                            logger.info(f"🚀 [CLOSE-LIMIT] 下单: {current_pos_side_str} -> {close_side} {formatted_amt} @ {formatted_price}")
+                            self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
+                        else:
+                            # 2. 市价平仓 (Market Close)
+                            order_type = 'MARKET'
+                            logger.info(f"🚀 [CLOSE-MARKET] 下单: {current_pos_side_str} -> {close_side} {formatted_amt} @ 市价")
+                            self.exchange.create_order(symbol, order_type, close_side, final_amt, params=params)
+                        
+                        executed = True
+
+                if executed:
+                    logger.info(f"✅ [CLOSE] 平仓指令执行完毕")
+                    return {"status": "closed"}
+                else:
+                    logger.warning(f"⚠️ [CLOSE] 未找到对应方向的持仓或持仓为0，跳过")
+                    return {"status": "no_position"}
 
             if action in ['BUY_LIMIT', 'SELL_LIMIT']:
                 side = 'buy' if 'BUY' in action else 'sell'
                 pos_side = 'LONG' if side == 'buy' else 'SHORT'
+                
                 amount = self.exchange.amount_to_precision(symbol, float(order_params['amount']))
                 price = self.exchange.price_to_precision(symbol, float(order_params['entry_price']))
                 
                 params = {'timeInForce': 'GTC', 'positionSide': pos_side}
-                order = self.exchange.create_order(symbol, 'LIMIT', side, amount, price, params=params)
+                
+                logger.info(f"🚀 [OPEN-LIMIT] 开仓挂单: {pos_side} {side} {amount} @ {price}")
+                
+                order = self.exchange.create_order(symbol, 'LIMIT', side, float(amount), float(price), params=params)
+                
+                logger.info(f"✅ [OPEN-LIMIT] 挂单成功 ID: {order['id']}")
                 return order
 
         except Exception as e:
-            logger.error(f"Order Error: {e}")
+            logger.error(f"❌ [ORDER_ERROR] 执行异常: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
             
     def fetch_recent_trades(self, symbol, limit=20):
