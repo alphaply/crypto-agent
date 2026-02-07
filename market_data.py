@@ -332,10 +332,7 @@ class MarketTool:
         """
         全量获取市场数据的主入口
         """
-        if mode == 'REAL':
-            timeframes = ['5m', '15m', '1h', '4h']
-        else:
-            timeframes = ['15m', '1h', '4h', '1d', '1w']
+        timeframes = ['5m','15m', '1h', '4h', '1d', '1w']
 
         final_output = {
             "symbol": symbol,
@@ -347,7 +344,6 @@ class MarketTool:
         logger.info(f"Fetching {symbol} market data ({mode} mode: {timeframes})...")
         
         for tf in timeframes:
-            # 确保传递了 symbol 和 tf
             data = self.process_timeframe(symbol, tf)
             if data:
                 final_output["analysis"][tf] = data

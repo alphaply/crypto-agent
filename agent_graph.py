@@ -110,7 +110,7 @@ def start_node(state: AgentState) -> AgentState:
     try:
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name)
-        recent_summaries = database.get_recent_summaries(symbol, agent_name=agent_name, limit=3)
+        recent_summaries = database.get_recent_summaries(symbol, agent_name=agent_name, limit=4)
     except Exception as e:
         logger.error(f"❌ [Data Fetch Error]: {e}")
         market_full = {}
@@ -137,7 +137,7 @@ def start_node(state: AgentState) -> AgentState:
     
     # --- 核心修改：完整提取新指标 ---
     indicators_summary = {}
-    timeframes = ['1h', '4h', '1d', '1w'] if trade_mode == 'STRATEGY' else ['15m', '1h', '4h', '1d', '1w']
+    timeframes = ['1h', '4h', '1d', '1w'] if trade_mode == 'STRATEGY' else ['15m', '1h', '4h', '1d']
     
     raw_analysis = market_full.get("analysis", {})
     
@@ -180,9 +180,10 @@ def start_node(state: AgentState) -> AgentState:
         for s in recent_summaries:
             ts = s.get('timestamp', 'Unknown')
             logic = s.get('strategy_logic') or s.get('content', '')
-            trend = s.get('market_trend', '')
+            # trend = s.get('market_trend', '')
             if "LLM Failed" in logic: continue 
-            entry = f" [{ts}] Trend: {trend} Logic: {logic}"
+            # entry = f" [{ts}] Trend: {trend} Logic: {logic}"
+            entry = f" [{ts}] Logic: {logic}"
             history_entries.append(entry)
         formatted_history_text = "\n".join(history_entries)
     else:
