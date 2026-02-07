@@ -137,7 +137,7 @@ def start_node(state: AgentState) -> AgentState:
     
     # --- 核心修改：完整提取新指标 ---
     indicators_summary = {}
-    timeframes = ['5m', '15m', '1h', '4h', '1d', '1w'] if trade_mode == 'STRATEGY' else ['5m', '15m', '1h', '4h']
+    timeframes = ['1h', '4h', '1d', '1w'] if trade_mode == 'STRATEGY' else ['15m', '1h', '4h', '1d', '1w']
     
     raw_analysis = market_full.get("analysis", {})
     
@@ -180,8 +180,9 @@ def start_node(state: AgentState) -> AgentState:
         for s in recent_summaries:
             ts = s.get('timestamp', 'Unknown')
             logic = s.get('strategy_logic') or s.get('content', '')
+            trend = s.get('market_trend', '')
             if "LLM Failed" in logic: continue 
-            entry = f" [{ts}] Logic: {logic}..."
+            entry = f" [{ts}] Trend: {trend} Logic: {logic}"
             history_entries.append(entry)
         formatted_history_text = "\n".join(history_entries)
     else:
