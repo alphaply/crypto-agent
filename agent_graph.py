@@ -43,7 +43,7 @@ class RealOrderParams(BaseModel):
 class RealMarketSummary(BaseModel):
     market_trend: str = Field(description="当前短期市场微观趋势与动能")
     key_levels: str = Field(description="日内关键支撑位与阻力位")
-    strategy_logic: str = Field(description="当前持仓的风控评估、浮盈浮亏分析与执行逻辑")
+    strategy_logic: str = Field(description="存到历史记录的文字内容，作为下次行情分析的参考。")
     prediction: str = Field(description="短期价格行为(Price Action)预判")
 
 class RealAgentOutput(BaseModel):

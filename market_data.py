@@ -497,7 +497,8 @@ class MarketTool:
                 for pos in positions:
                     amt = float(pos['contracts']) # 当前持仓数量
                     side = pos['side']            # 'long' or 'short'
-                    
+                    ticker = self.exchange.fetch_ticker(symbol)
+                    current_price = float(ticker['last'])
                     # 过滤方向：如果指定了只平 SHORT，就跳过 LONG
                     current_pos_side_str = 'LONG' if side == 'long' else 'SHORT'
                     if target_pos_side and target_pos_side != current_pos_side_str:
@@ -513,15 +514,41 @@ class MarketTool:
 
                         params = {'positionSide': current_pos_side_str}
                         
-                        # --- 核心修复：区分限价平仓与市价平仓 ---
                         if raw_close_price > 0:
-                            # 1. 限价平仓 (Limit Close)
-                            order_type = 'LIMIT'
                             formatted_price = self.exchange.price_to_precision(symbol, raw_close_price)
-                            params['timeInForce'] = 'GTC' # 限价单需要 GTC
+                            is_stop_loss = False
+
+                            if side == 'long' and float(formatted_price) < current_price:
+                                is_stop_loss = True
+                            # 平空(Buy): 价格高于现价 -> 止损
+                            elif side == 'short' and float(formatted_price) > current_price:
+                                is_stop_loss = True
+
+                            if is_stop_loss:
+                                logger.info(f"🛑 [CLOSE-STOP] 检测到止损场景 (现价 {current_price} -> 目标 {formatted_price})")
+                                
+                                # 方案 A: 止损市价单 (推荐，保证止损触发后立刻跑路)
+                                order_type = 'STOP_MARKET' # STOP / STOP_LIMIT
+                                params['stopPrice'] = float(formatted_price) # 触发价格
+                                params['closePosition'] = True # 某些交易所支持直接平仓标志
+                                
+                                # 注意：STOP_MARKET 通常不需要传 price 参数 (传 None)，但需要 stopPrice
+                                self.exchange.create_order(symbol, order_type, close_side, final_amt, None, params=params)
+
+                            else:
+                                logger.info(f"💰 [CLOSE-TP] 检测到止盈场景 (现价 {current_price} -> 目标 {formatted_price})")
+                                order_type = 'LIMIT'
+                                params['timeInForce'] = 'GTC'
+                                self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
+
+
+                            # 1. 限价平仓 (Limit Close)
+                            # order_type = 'LIMIT'
+                            # formatted_price = self.exchange.price_to_precision(symbol, raw_close_price)
+                            # params['timeInForce'] = 'GTC' # 限价单需要 GTC
                             
-                            logger.info(f"🚀 [CLOSE-LIMIT] 下单: {current_pos_side_str} -> {close_side} {formatted_amt} @ {formatted_price}")
-                            self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
+                            # logger.info(f"🚀 [CLOSE-LIMIT] 下单: {current_pos_side_str} -> {close_side} {formatted_amt} @ {formatted_price}")
+                            # self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
                         else:
                             # 2. 市价平仓 (Market Close)
                             order_type = 'MARKET'
