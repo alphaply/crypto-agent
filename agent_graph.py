@@ -33,7 +33,7 @@ market_tool = MarketTool()
 class RealOrderParams(BaseModel):
     reason: str = Field(description="简短的执行理由")
     action: Literal['BUY_LIMIT', 'SELL_LIMIT', 'CLOSE', 'CANCEL', 'NO_ACTION'] = Field(
-        description="实盘动作。CLOSE用于平仓，LIMIT用于挂单"
+        description="BUY_LIMIT现价开多。SELL_LIMIT现价开空，CLOSE进行平多平空，NO_ACTION不做任何事情，CANCEL取消挂单"
     )
     pos_side: Optional[Literal['LONG', 'SHORT']] = Field(description="平仓方向: CLOSE时必填", default=None)
     cancel_order_id: str = Field(description="撤单ID", default="")
@@ -43,7 +43,7 @@ class RealOrderParams(BaseModel):
 class RealMarketSummary(BaseModel):
     market_trend: str = Field(description="当前短期市场微观趋势与动能")
     key_levels: str = Field(description="日内关键支撑位与阻力位")
-    strategy_logic: str = Field(description="存到历史记录的文字内容，作为下次行情分析的参考。")
+    strategy_logic: str = Field(description="存到历史记录的文字内容，作为下次行情分析的参考（简短）。")
     prediction: str = Field(description="短期价格行为(Price Action)预判")
 
 class RealAgentOutput(BaseModel):
@@ -193,7 +193,14 @@ def start_node(state: AgentState) -> AgentState:
 
     if is_real_exec:
         raw_orders = account_data.get('real_open_orders', [])
-        display_orders = [{"id": o.get('order_id'), "side": o.get('side'), "price": o.get('price'), "amount": o.get('amount')} for o in raw_orders]
+        # 增加 pos_side 字段的传递
+        display_orders = [{
+            "id": o.get('order_id'), 
+            "side": o.get('side'), 
+            "pos_side": o.get('pos_side'), # <--- 传递这个关键字段
+            "price": o.get('price'), 
+            "amount": o.get('amount')
+        } for o in raw_orders]
         orders_friendly_text = format_orders_to_agent_friendly(display_orders)
         
         system_prompt = PROMPT_MAP.get("REAL").format(

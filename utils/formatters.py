@@ -18,32 +18,54 @@ def format_positions_to_agent_friendly(positions: list) -> str:
         lines.append(f"[{side}] {sym} | Amt: {amt} | Entry: {entry} | PnL: {pnl_sign}{pnl:.3f}")
         
     return "\n".join(lines)
-
-
-def format_orders_to_agent_friendly(orders: list) -> str:
+def format_orders_to_agent_friendly(orders):
     if not orders:
-        return "无活跃挂单 (No Active Orders)"
-
+        return "(无挂单)"
+    
     lines = []
     for o in orders:
         side = o.get('side', '').upper()
-        raw_type = str(o.get('type', 'LIMIT'))
-        order_type = 'LIMIT' if 'limit' in raw_type.lower() or '限价' in raw_type else raw_type.upper()
-
-        oid = o.get('id', 'N/A')
-        price = float(o.get('price', 0))
-        amt = float(o.get('amount', 0))
-
-        tp = float(o.get('tp', 0) or o.get('take_profit', 0))
-        sl = float(o.get('sl', 0) or o.get('stop_loss', 0))
+        pos_side = o.get('pos_side', 'BOTH').upper()
+        price = o.get('price')
+        amt = o.get('amount')
         
-        extras = ""
-        if tp > 0 or sl > 0:
-            extras = f" | TP: {tp} | SL: {sl}"
+        # === 核心逻辑：转译为人类/AI 可读的意图 ===
+        action_str = side
+        if pos_side == 'LONG':
+            if side == 'BUY': action_str = "OPEN LONG (多)"
+            if side == 'SELL': action_str = "CLOSE LONG (平多/止盈损)"
+        elif pos_side == 'SHORT':
+            if side == 'SELL': action_str = "OPEN SHORT (空)"
+            if side == 'BUY': action_str = "CLOSE SHORT (平空/止盈损)"
         
-        lines.append(f"[{side}] {order_type} | ID: '{oid}' | Price: {price} | Amt: {amt}{extras}")
-
+        lines.append(f"- [{action_str}] 数量: {amt} @ 价格: {price}")
+        
     return "\n".join(lines)
+
+# def format_orders_to_agent_friendly(orders: list) -> str:
+#     if not orders:
+#         return "无活跃挂单 (No Active Orders)"
+
+#     lines = []
+#     for o in orders:
+#         side = o.get('side', '').upper()
+#         raw_type = str(o.get('type', 'LIMIT'))
+#         order_type = 'LIMIT' if 'limit' in raw_type.lower() or '限价' in raw_type else raw_type.upper()
+
+#         oid = o.get('id', 'N/A')
+#         price = float(o.get('price', 0))
+#         amt = float(o.get('amount', 0))
+
+#         tp = float(o.get('tp', 0) or o.get('take_profit', 0))
+#         sl = float(o.get('sl', 0) or o.get('stop_loss', 0))
+        
+#         extras = ""
+#         if tp > 0 or sl > 0:
+#             extras = f" | TP: {tp} | SL: {sl}"
+        
+#         lines.append(f"[{side}] {order_type} | ID: '{oid}' | Price: {price} | Amt: {amt}{extras}")
+
+#     return "\n".join(lines)
 
 
 def format_market_data_to_text(data: dict) -> str:
