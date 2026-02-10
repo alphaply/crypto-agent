@@ -53,10 +53,12 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 if config:
                     summary_dict['model'] = config.get('model', 'Unknown')
                     summary_dict['mode'] = config.get('mode', 'STRATEGY')
+                    summary_dict['leverage'] = global_config.get_leverage(config_id)
                     summary_dict['display_name'] = f"{config.get('model', 'Unknown')} ({config.get('mode', 'STRATEGY')})"
                 else:
                     summary_dict['model'] = 'Unknown'
                     summary_dict['mode'] = 'Unknown'
+                    summary_dict['leverage'] = global_config.leverage
                     summary_dict['display_name'] = agent
 
                 # 获取该 Agent 最近的 5 条决策记录

@@ -97,16 +97,29 @@
       <div class="grid grid-cols-1 {% if agent_summaries|length > 1 %}lg:grid-cols-2 xl:grid-cols-3{% else %}max-w-3xl mx-auto{% endif %} gap-6 items-start">
         {% if agent_summaries %} {% for summary in agent_summaries %}
         <div class="bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col overflow-hidden h-full">
-          <div class="px-5 py-3 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
-            <div class="flex flex-col gap-1">
-              <span class="font-bold text-gray-900 flex items-center gap-2 truncate text-base">
-                  🤖 {{ summary.display_name or summary.agent_name or 'AI-Agent' }}
+          <div class="px-5 py-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-gray-100/50">
+            <div class="flex justify-between items-start mb-2">
+              <div class="flex flex-col gap-1">
+                <span class="font-bold text-gray-900 flex items-center gap-2 text-base">
+                    🤖 {{ summary.display_name or summary.agent_name or 'AI-Agent' }}
+                </span>
+                <span class="text-[10px] font-mono text-gray-400">{{ summary.agent_name }}</span>
+              </div>
+              <span class="text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">
+                {{ summary.timestamp[5:-3] }}
               </span>
-              <span class="text-[10px] font-mono text-gray-400">ID: {{ summary.agent_name }}</span>
             </div>
-            <span class="text-[10px] font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded whitespace-nowrap">
-              {{ summary.timestamp[5:-3] }}
-            </span>
+            <div class="flex flex-wrap gap-2 mt-2">
+              <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-bold rounded-full {{ 'bg-red-100 text-red-700 border border-red-200' if summary.mode == 'REAL' else 'bg-blue-100 text-blue-700 border border-blue-200' }}">
+                {{ '🔴 实盘' if summary.mode == 'REAL' else '🔵 策略' }}
+              </span>
+              <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-purple-100 text-purple-700 rounded-full border border-purple-200">
+                🧠 {{ summary.model }}
+              </span>
+              <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-orange-100 text-orange-700 rounded-full border border-orange-200">
+                ⚡ {{ summary.leverage or '?' }}x
+              </span>
+            </div>
           </div>
 
           <div class="p-5 flex flex-col gap-4 flex-grow">
@@ -200,19 +213,29 @@
       </div>
 
       <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden mt-8">
-        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50/50">
-          <h3 class="font-bold text-gray-900 text-lg">📜 全局决策流水</h3>
-          <span class="bg-gray-100 text-gray-600 text-xs font-medium px-2.5 py-0.5 rounded border border-gray-200">
-            Total: {{ total_orders }}
-          </span>
+        <div class="px-6 py-4 border-b border-gray-200 bg-gray-50/50">
+          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <h3 class="font-bold text-gray-900 text-lg">📜 全局决策流水</h3>
+            <div class="flex items-center gap-3 w-full sm:w-auto">
+              <select id="agentFilter" onchange="filterOrders(this.value)" class="form-select bg-white border border-gray-300 text-gray-700 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-48">
+                <option value="ALL">🔍 全部配置</option>
+                {% for summary in agent_summaries %}
+                <option value="{{ summary.agent_name }}">{{ summary.display_name }}</option>
+                {% endfor %}
+              </select>
+              <span class="bg-gray-100 text-gray-600 text-xs font-medium px-2.5 py-1.5 rounded border border-gray-200 whitespace-nowrap">
+                Total: <span id="orderCount">{{ total_orders }}</span>
+              </span>
+            </div>
+          </div>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm text-left text-gray-600">
+          <table id="orderTable" class="w-full text-sm text-left text-gray-600">
              <thead class="hidden md:table-header-group text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200">
               <tr>
                 <th class="px-6 py-3 font-medium w-32">时间</th>
                 <th class="px-6 py-3 font-medium text-center w-24">模式</th>
-                <th class="px-6 py-3 font-medium">Agent</th>
+                <th class="px-6 py-3 font-medium">配置</th>
                 <th class="px-6 py-3 font-medium text-center w-24">方向</th>
                 <th class="px-6 py-3 font-medium">价格</th>
                 <th class="px-6 py-3 font-medium min-w-[200px]">理由</th>
@@ -220,7 +243,7 @@
             </thead>
             <tbody class="divide-y divide-gray-200">
               {% for order in orders %}
-              <tr class="bg-white hover:bg-gray-50 flex flex-col md:table-row mb-4 md:mb-0 border md:border-none rounded-lg md:rounded-none shadow-sm md:shadow-none m-4 md:m-0 p-4 md:p-0">
+              <tr data-agent="{{ order.agent_name }}" class="bg-white hover:bg-gray-50 flex flex-col md:table-row mb-4 md:mb-0 border md:border-none rounded-lg md:rounded-none shadow-sm md:shadow-none m-4 md:m-0 p-4 md:p-0">
                  <td class="px-6 py-3 md:table-cell flex justify-between">
                     <span class="md:hidden text-xs font-bold text-gray-400">TIME</span>
                     <span class="font-mono text-xs">{{ order.timestamp }}</span>
@@ -230,8 +253,10 @@
                     <span class="text-xs font-bold px-2 py-0.5 rounded {{ 'bg-red-100 text-red-800' if order.trade_mode=='REAL' else 'bg-blue-100 text-blue-800' }}">{{ order.trade_mode }}</span>
                  </td>
                  <td class="px-6 py-3 md:table-cell flex justify-between">
-                    <span class="md:hidden text-xs font-bold text-gray-400">AGENT</span>
-                    <span class="font-bold text-gray-700">{{ order.agent_name }}</span>
+                    <span class="md:hidden text-xs font-bold text-gray-400">CONFIG</span>
+                    <div class="flex flex-col gap-1">
+                      <span class="font-mono text-xs text-gray-500">{{ order.agent_name }}</span>
+                    </div>
                  </td>
                  <td class="px-6 py-3 md:table-cell text-center flex justify-between">
                     <span class="md:hidden text-xs font-bold text-gray-400">SIDE</span>
@@ -350,7 +375,7 @@
       async function confirmDeleteAction() {
           const pwd = document.getElementById('admin-pass').value;
           const symbol = document.getElementById('symbolSelect').value;
-          
+
           if (!pwd) {
               showToast('请输入管理员密码', 'error');
               return;
@@ -363,7 +388,7 @@
                   body: JSON.stringify({symbol: symbol, password: pwd})
               });
               const result = await response.json();
-              
+
               if (result.success) {
                   closeDeleteModal();
                   showToast(result.message, 'success');
@@ -375,6 +400,25 @@
           } catch (e) {
               showToast('网络请求失败', 'error');
           }
+      }
+
+      // 4. 订单筛选功能
+      function filterOrders(agentName) {
+          const rows = document.querySelectorAll('#orderTable tbody tr');
+          let visibleCount = 0;
+
+          rows.forEach(row => {
+              const rowAgent = row.getAttribute('data-agent');
+              if (agentName === 'ALL' || rowAgent === agentName) {
+                  row.style.display = '';
+                  visibleCount++;
+              } else {
+                  row.style.display = 'none';
+              }
+          });
+
+          // 更新计数
+          document.getElementById('orderCount').textContent = visibleCount;
       }
     </script>
   </body>
