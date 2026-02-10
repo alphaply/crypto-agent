@@ -7,6 +7,7 @@ import pytz
 from dotenv import load_dotenv
 from agent_graph import run_agent_for_config
 from utils.logger import setup_logger
+from config import config as global_config
 
 # 加载环境变量 (.env 文件)
 load_dotenv()
@@ -24,21 +25,12 @@ DEFAULT_SYMBOL_CONFIGS = '[]'
 
 def get_all_configs():
     """
-    获取配置
+    获取配置（使用统一配置管理）
     """
-    configs_str = os.getenv('SYMBOL_CONFIGS')
-    
-    if not configs_str:
-        configs_str = DEFAULT_SYMBOL_CONFIGS
-
     try:
-        if configs_str:
-            configs_str = configs_str.strip()
-            
-        configs = json.loads(configs_str)
-        return configs
+        return global_config.get_all_symbol_configs()
     except Exception as e:
-        logger.error(f"❌ 配置解析失败: {e}")
+        logger.error(f"❌ 配置获取失败: {e}")
         return []
 
 def process_single_config(config):

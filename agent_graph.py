@@ -23,7 +23,7 @@ import database
 from market_data import MarketTool
 
 load_dotenv()
-market_tool = MarketTool()
+# market_tool已移除，现在在每个节点中为交易对创建专属实例
 
 # ==========================================
 # 1. 定义 Schema (保持不变)
@@ -100,11 +100,14 @@ def start_node(state: AgentState) -> AgentState:
     now = datetime.now(TZ_CN)
     week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     current_time_str = f"{now.strftime('%Y-%m-%d %H:%M:%S')} ({week_map[now.weekday()]})"
-    
+
     trade_mode = config.get('mode', 'STRATEGY').upper()
     is_real_exec = (trade_mode == 'REAL')
     agent_name = config.get('model', 'Unknown_Agent')
-    
+
+    # 为该交易对创建专属的MarketTool实例
+    market_tool = MarketTool(symbol=symbol)
+
     logger.info(f"--- [Node] Start: Analyzing {symbol} | Mode: {trade_mode} ---")
 
     try:
@@ -285,7 +288,10 @@ def execution_node(state: AgentState) -> AgentState:
     config = state['agent_config']
     agent_name = config.get('model', 'Unknown')
     trade_mode = config.get('mode', 'STRATEGY').upper()
-    
+
+    # 为该交易对创建专属的MarketTool实例
+    market_tool = MarketTool(symbol=symbol)
+
     output = state['final_output']
     if not output: return state
 

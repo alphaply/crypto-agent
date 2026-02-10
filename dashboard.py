@@ -16,6 +16,7 @@ from database import (
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
 from utils.logger import setup_logger
+from config import config as global_config
 
 load_dotenv(dotenv_path='.env', override=True)
 app = Flask(__name__)
@@ -129,13 +130,11 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         logger.error(f"Error: {e}")
         return [], [], 0
 def get_all_configs():
-    """读取所有配置的辅助函数"""
-    configs_str = os.getenv('SYMBOL_CONFIGS', '[]')
+    """读取所有配置的辅助函数（使用统一配置管理）"""
     try:
-        if configs_str: configs_str = configs_str.strip()
-        configs = json.loads(configs_str)
-        return configs
-    except:
+        return global_config.get_all_symbol_configs()
+    except Exception as e:
+        logger.error(f"❌ 配置获取失败: {e}")
         return []
 
 def get_configured_symbols():

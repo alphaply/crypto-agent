@@ -16,14 +16,20 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 class MarketTool:
-    def __init__(self, proxy_port=None):
+    def __init__(self, symbol: str = None, proxy_port=None):
         """
         初始化交易所连接
+        :param symbol: 交易对符号 (例如 "BTC/USDT")，用于获取专属API配置
         :param proxy_port: 本地代理端口 (例如 7890 或 10809), None 为直连
         """
-        api_key = os.getenv('BINANCE_API_KEY')
-        secret = os.getenv('BINANCE_SECRET')
-        
+        from config import config as global_config
+
+        # 获取该交易对的币安API凭证（支持专属配置）
+        api_key, secret = global_config.get_binance_credentials(symbol)
+
+        if not api_key or not secret:
+            raise ValueError(f"未找到币安API配置 (symbol={symbol})")
+
         config = {
             'apiKey': api_key,
             'secret': secret,
@@ -31,23 +37,24 @@ class MarketTool:
             'options': {
                 'defaultType': 'swap',
                 'adjustForTimeDifference': True,
-                'recvWindow': 60000,
+                'recvWindow': global_config.DEFAULT_RECVWINDOW,
             }
         }
-        
+
         if proxy_port:
             config['proxies'] = {
                 'http': f'http://127.0.0.1:{proxy_port}',
                 'https': f'http://127.0.0.1:{proxy_port}',
             }
-            
+
         self.exchange = ccxt.binanceusdm(config)
-        
+        self.symbol = symbol  # 保存交易对信息
+
         try:
             self.exchange.load_markets()
-            logger.info("✅ 交易所连接成功，时间已校准。")
+            logger.info(f"✅ 交易所连接成功 [{symbol}]，时间已校准。")
         except Exception as e:
-            logger.warning(f"⚠️ 初始化加载市场失败: {e}")
+            logger.warning(f"⚠️ 初始化加载市场失败 [{symbol}]: {e}")
 
     # ==========================================
     # 0. 基础工具 (指标计算与格式化)
