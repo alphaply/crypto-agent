@@ -50,13 +50,24 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 # 🔥 新增：通过 config_id 获取配置信息，添加友好的显示名称
                 config_id = agent  # agent_name 就是 config_id
                 config = global_config.get_config_by_id(config_id)
+
+                # 向后兼容：如果通过 config_id 找不到，尝试通过 model 名称匹配
+                if not config:
+                    for cfg in global_config.get_all_symbol_configs():
+                        if cfg.get('symbol') == symbol and cfg.get('model') == agent:
+                            config = cfg
+                            break
+
                 if config:
                     summary_dict['model'] = config.get('model', 'Unknown')
                     summary_dict['mode'] = config.get('mode', 'STRATEGY')
-                    summary_dict['leverage'] = global_config.get_leverage(config_id)
-                    summary_dict['display_name'] = f"{config.get('model', 'Unknown')} ({config.get('mode', 'STRATEGY')})"
+                    summary_dict['leverage'] = global_config.get_leverage(config.get('config_id'))
+                    # 优化display_name，加入config_id后缀以便区分相同model+mode的配置
+                    config_suffix = config_id.split('_')[-1] if '_' in config_id else config_id[-4:]
+                    summary_dict['display_name'] = f"{config.get('model', 'Unknown')} ({config.get('mode', 'STRATEGY')}) #{config_suffix}"
                 else:
-                    summary_dict['model'] = 'Unknown'
+                    # 完全找不到配置，使用默认值
+                    summary_dict['model'] = agent  # 直接显示 agent_name
                     summary_dict['mode'] = 'Unknown'
                     summary_dict['leverage'] = global_config.leverage
                     summary_dict['display_name'] = agent
@@ -95,54 +106,6 @@ def get_dashboard_data(symbol, page=1, per_page=10):
     except Exception as e:
         logger.error(f"Error: {e}")
         return [], [], 0
-
-
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        conn.row_factory = sqlite3.Row 
-        
-        # 1. 获取该币种下活跃的所有 Agent 的最新一条分析
-        agents_query = "SELECT DISTINCT agent_name FROM summaries WHERE symbol = ?"
-        agents = [row['agent_name'] for row in conn.execute(agents_query, (symbol,)).fetchall()]
-        
-        agent_summaries = []
-        for agent in agents:
-            # 获取最新分析
-            latest_summary = conn.execute(
-                "SELECT * FROM summaries WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 1", 
-                (symbol, agent)
-            ).fetchone()
-            
-            if latest_summary:
-                summary_dict = dict(latest_summary)
-                
-                # 🔥 新增: 获取该 Agent 最近的 5 条决策记录 (用于卡片内展示)
-                recent_agent_orders = conn.execute(
-                    "SELECT * FROM orders WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 5",
-                    (symbol, agent)
-                ).fetchall()
-                summary_dict['recent_orders'] = [dict(o) for o in recent_agent_orders]
-                
-                agent_summaries.append(summary_dict)
-
-        # 2. 获取全局订单列表 (保持原样，用于底部总表)
-        offset = (page - 1) * per_page
-        total_count = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", (symbol,)).fetchone()[0]
-        
-        cursor = conn.execute(
-            "SELECT * FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
-            (symbol, per_page, offset)
-        )
-        orders = [dict(row) for row in cursor.fetchall()]
-        
-        conn.close()
-        # 对 agent_summaries 按 agent_name 排序，保证对比顺序固定
-        agent_summaries.sort(key=lambda x: x['agent_name'])
-        
-        return agent_summaries, orders, total_count
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        return [], [], 0
 def get_all_configs():
     """读取所有配置的辅助函数（使用统一配置管理）"""
     try:
@@ -167,31 +130,39 @@ def get_configured_symbols():
 def get_symbol_specific_status(symbol):
     """
     计算特定币种的当前运行状态和频率
+    支持多配置显示
     """
     configs = get_all_configs()
-    # 找到当前币种的配置
-    target_config = next((c for c in configs if c.get('symbol') == symbol), None)
-    
-    if not target_config:
+    # 找到当前币种的所有配置
+    symbol_configs = [c for c in configs if c.get('symbol') == symbol]
+
+    if not symbol_configs:
         return "未知", "N/A"
-        
-    mode = target_config.get('mode', 'STRATEGY').upper()
-    
-    # 获取时间判断频率 (复用调度器的逻辑)
-    now = datetime.now(TZ_CN)
-    weekday = now.weekday()
-    hour = now.hour
-    
-    freq_text = "Unknown"
-    
-    # 逻辑：完全复刻 main_scheduler.py 的判断
-    if mode == 'REAL':
+
+    # 收集所有模式
+    modes = set()
+    has_real = False
+    has_strategy = False
+
+    for config in symbol_configs:
+        mode = config.get('mode', 'STRATEGY').upper()
+        modes.add(mode)
+        if mode == 'REAL':
+            has_real = True
+        else:
+            has_strategy = True
+
+    # 构建模式文本
+    if has_real and has_strategy:
+        mode_text = "🔵 策略 + 🔴 实盘"
+        freq_text = "混合 (15m/1h)"
+    elif has_real:
         mode_text = "🔴 实盘模式 (Real)"
         freq_text = "15m (高频执行)"
     else:
         mode_text = "🔵 策略模式 (Strategy)"
         freq_text = "1h (低频执行)"
-        
+
     return mode_text, freq_text
 
 @app.route('/')

@@ -24,8 +24,10 @@ def format_orders_to_agent_friendly(orders):
     
     lines = []
     for o in orders:
-        side = o.get('side', '').upper()
-        pos_side = o.get('pos_side', 'BOTH').upper()
+        if not o:
+            continue
+        side = (o.get('side') or '').upper()
+        pos_side = (o.get('pos_side') or 'BOTH').upper()
         price = o.get('price')
         amt = o.get('amount')
         oid = o.get('id', 'N/A')

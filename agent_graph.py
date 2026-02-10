@@ -330,7 +330,7 @@ def execution_node(state: AgentState) -> AgentState:
         return False
 
     for order in orders:
-        action = order.get('action', '').upper()
+        action = (order.get('action') or '').upper()
         if action == 'NO_ACTION': continue
         log_reason = order.get('reason', '')
 
