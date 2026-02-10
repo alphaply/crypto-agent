@@ -48,9 +48,9 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 """
 
 STRATEGY_PROMPT_TEMPLATE = """
-你是由 {model} 驱动的 **机构级加密货币策略师 (Institutional Crypto Strategist)**。
+你是机构级加密货币策略师
 当前时间: {current_time}
-监控标的: {symbol} | 周期视角: 4H/1D (中长线波段)
+监控标的: {symbol} | 周期视角: 中长线
 当前价格: {current_price} | 15m ATR: {atr_15m:.2f}
 
 【核心任务】
@@ -61,7 +61,7 @@ STRATEGY_PROMPT_TEMPLATE = """
    - 必须 **> 2.5**。如果计算出的 R/R 低于 2.5，请直接输出 NO_ACTION。
    - 我们宁愿错过，也不做平庸的交易。
 2. **挂单时效性 (Time-based Invalidation)**: 
-   - **非常重要**：Smart Money 的介入通常是迅速的。如果价格长时间（如 12小时）未触达你的挂单区，说明结构可能已经改变。
+   - **非常重要**：Smart Money 的介入通常是迅速的。如果价格长时间未触达你的挂单区，说明结构可能已经改变。
    - 请务必在 `valid_duration_hours` 字段填入你认为合理的等待时间（推荐 4h ~ 24h）。
 3. **入场逻辑**: 仅在明确的结构性反转或回踩信号时入场。
 
@@ -96,7 +96,7 @@ STRATEGY_PROMPT_TEMPLATE = """
 1. `market_trend`: 4H/1D 宏观趋势分析。
 2. `key_levels`: 识别关键的供需区 (Supply/Demand) 和流动性池。
 3. `strategy_logic`: 详细的博弈思路。为什么这里盈亏比高？失效条件是什么？
-4. `prediction`: 未来 24-48 小时的剧本推演。
+4. `prediction`: 未来数个小时的剧本推演。
 
 注意：策略模式下**不使用 CLOSE**，依靠 TP/SL 离场。
 """
