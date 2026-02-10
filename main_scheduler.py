@@ -37,9 +37,10 @@ def process_single_config(config):
     """
     单线程任务
     """
+    config_id = config.get('config_id', 'unknown')
     symbol = config.get('symbol')
     mode = config.get('mode', 'STRATEGY').upper()
-    
+
     if not symbol: return
 
     # ==========================================
@@ -52,13 +53,13 @@ def process_single_config(config):
         now_min = datetime.now(TZ_CN).minute
         # 容差 ±5分钟 (比如 09:55 - 10:05 之间算整点)
         if 5 < now_min < 55:
-            # logger.info(f"⏳ {symbol} 跳过 (当前 {now_min}分，非整点)")
+            # logger.info(f"⏳ [{config_id}] {symbol} 跳过 (当前 {now_min}分，非整点)")
             return
 
     try:
         run_agent_for_config(config)
     except Exception as e:
-        logger.error(f"❌ Error {symbol}: {e}")
+        logger.error(f"❌ Error [{config_id}] {symbol}: {e}")
 
 
 def get_next_run_settings():

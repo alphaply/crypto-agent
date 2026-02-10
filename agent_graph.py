@@ -19,8 +19,9 @@ from prompts import PROMPT_MAP
 
 TZ_CN = pytz.timezone('Asia/Shanghai')
 logger = setup_logger("AgentGraph")
-import database 
+import database
 from market_data import MarketTool
+from config import config as global_config
 
 load_dotenv()
 # market_tool已移除，现在在每个节点中为交易对创建专属实例
@@ -81,6 +82,7 @@ class StrategyAgentOutput(BaseModel):
 # 2. State 定义 (保持不变)
 # ==========================================
 class AgentState(TypedDict):
+    config_id: str  # 配置ID（唯一标识符）
     symbol: str
     messages: List[BaseMessage]
     agent_config: Dict[str, Any]
@@ -95,6 +97,7 @@ class AgentState(TypedDict):
 # ==========================================
 
 def start_node(state: AgentState) -> AgentState:
+    config_id = state['config_id']
     symbol = state['symbol']
     config = state['agent_config']
     now = datetime.now(TZ_CN)
@@ -103,10 +106,11 @@ def start_node(state: AgentState) -> AgentState:
 
     trade_mode = config.get('mode', 'STRATEGY').upper()
     is_real_exec = (trade_mode == 'REAL')
-    agent_name = config.get('model', 'Unknown_Agent')
+    # 使用 config_id 作为 agent_name，实现完全隔离
+    agent_name = config_id
 
-    # 为该交易对创建专属的MarketTool实例
-    market_tool = MarketTool(symbol=symbol)
+    # 为该配置创建专属的MarketTool实例
+    market_tool = MarketTool(config_id=config_id)
 
     logger.info(f"--- [Node] Start: Analyzing {symbol} | Mode: {trade_mode} ---")
 
@@ -205,11 +209,14 @@ def start_node(state: AgentState) -> AgentState:
             "amount": o.get('amount')
         } for o in raw_orders]
         orders_friendly_text = format_orders_to_agent_friendly(display_orders)
-        
+
+        # 获取配置专属的杠杆值
+        leverage = global_config.get_leverage(config_id)
+
         system_prompt = PROMPT_MAP.get("REAL").format(
             model=config.get('model'),
             symbol=symbol,
-            leverage=int(os.getenv('LEVERAGE', 10)),
+            leverage=leverage,
             current_time=current_time_str,
             current_price=current_price,
             atr_15m=atr_15m,
@@ -284,13 +291,15 @@ def agent_node(state: AgentState) -> AgentState:
 def execution_node(state: AgentState) -> AgentState:
     # 保持原逻辑不变，此处省略以节省篇幅，请直接保留您原文件中的 execution_node 代码
     # ... (保持原代码不变) ...
+    config_id = state['config_id']
     symbol = state['symbol']
     config = state['agent_config']
-    agent_name = config.get('model', 'Unknown')
+    # 使用 config_id 作为 agent_name，实现完全隔离
+    agent_name = config_id
     trade_mode = config.get('mode', 'STRATEGY').upper()
 
-    # 为该交易对创建专属的MarketTool实例
-    market_tool = MarketTool(symbol=symbol)
+    # 为该配置创建专属的MarketTool实例
+    market_tool = MarketTool(config_id=config_id)
 
     output = state['final_output']
     if not output: return state
@@ -398,13 +407,15 @@ workflow.add_edge("execution", END)
 app = workflow.compile()
 
 def run_agent_for_config(config: dict):
+    config_id = config.get('config_id', 'unknown')
     symbol = config['symbol']
     mode_str = config.get('mode', 'STRATEGY').upper()
     logger.info(f"========================================================")
-    logger.info(f"🚀 Launching Agent: {symbol} | Model: {config.get('model')} | Mode: {mode_str}")
+    logger.info(f"🚀 Launching Agent: [{config_id}] {symbol} | Model: {config.get('model')} | Mode: {mode_str}")
     logger.info(f"========================================================")
 
     initial_state: AgentState = {
+        "config_id": config_id,
         "symbol": symbol,
         "messages": [],
         "agent_config": config,
@@ -417,6 +428,6 @@ def run_agent_for_config(config: dict):
     try:
         app.invoke(initial_state)
     except Exception as e:
-        logger.error(f"❌ Critical Graph Error for {symbol}: {e}")
+        logger.error(f"❌ Critical Graph Error for [{config_id}] {symbol}: {e}")
         import traceback
         traceback.print_exc()

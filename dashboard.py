@@ -41,18 +41,30 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         agent_summaries = []
         for agent in agents:
             latest_summary = conn.execute(
-                "SELECT * FROM summaries WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 1", 
+                "SELECT * FROM summaries WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 1",
                 (symbol, agent)
             ).fetchone()
             if latest_summary:
                 summary_dict = dict(latest_summary)
-                
+
+                # 🔥 新增：通过 config_id 获取配置信息，添加友好的显示名称
+                config_id = agent  # agent_name 就是 config_id
+                config = global_config.get_config_by_id(config_id)
+                if config:
+                    summary_dict['model'] = config.get('model', 'Unknown')
+                    summary_dict['mode'] = config.get('mode', 'STRATEGY')
+                    summary_dict['display_name'] = f"{config.get('model', 'Unknown')} ({config.get('mode', 'STRATEGY')})"
+                else:
+                    summary_dict['model'] = 'Unknown'
+                    summary_dict['mode'] = 'Unknown'
+                    summary_dict['display_name'] = agent
+
                 # 获取该 Agent 最近的 5 条决策记录
                 recent_agent_orders = conn.execute(
                     "SELECT * FROM orders WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 5",
                     (symbol, agent)
                 ).fetchall()
-                
+
                 # 🔥 修改处：提取 validity 字段
                 processed_orders = []
                 for o in recent_agent_orders:
@@ -61,9 +73,9 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                     match = re.search(r"\(Valid:\s*(\d+h)\)", d.get('reason', ''))
                     d['validity'] = match.group(1) if match else None
                     processed_orders.append(d)
-                
+
                 summary_dict['recent_orders'] = processed_orders
-                
+
                 agent_summaries.append(summary_dict)
 
         # 2. 获取订单 (保持不变)
@@ -301,7 +313,28 @@ def toggle_scheduler():
         return jsonify({"success": True, "enabled": enable})
     else:
         return jsonify({"success": False, "message": "参数错误"})
-    
+
+
+@app.route('/api/configs', methods=['GET'])
+def get_configs_api():
+    """API接口：获取所有配置列表"""
+    try:
+        configs = global_config.get_all_symbol_configs()
+        # 返回配置信息，包括 config_id、symbol、model、mode 等
+        config_list = []
+        for cfg in configs:
+            config_list.append({
+                'config_id': cfg.get('config_id', 'unknown'),
+                'symbol': cfg.get('symbol'),
+                'model': cfg.get('model'),
+                'mode': cfg.get('mode', 'STRATEGY'),
+                'temperature': cfg.get('temperature', 0.5)
+            })
+        return jsonify({'success': True, 'configs': config_list})
+    except Exception as e:
+        logger.error(f"获取配置列表失败: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
 
 if __name__ == "__main__":
     init_db() 

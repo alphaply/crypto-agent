@@ -16,19 +16,35 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 class MarketTool:
-    def __init__(self, symbol: str = None, proxy_port=None):
+    def __init__(self, config_id: str = None, symbol: str = None, proxy_port=None):
         """
         初始化交易所连接
-        :param symbol: 交易对符号 (例如 "BTC/USDT")，用于获取专属API配置
+        :param config_id: 配置ID（推荐使用，支持多个相同交易对）
+        :param symbol: 交易对符号（向后兼容，不推荐）
         :param proxy_port: 本地代理端口 (例如 7890 或 10809), None 为直连
         """
         from config import config as global_config
 
-        # 获取该交易对的币安API凭证（支持专属配置）
-        api_key, secret = global_config.get_binance_credentials(symbol)
+        # 优先使用 config_id，如果没有则使用 symbol（向后兼容）
+        if config_id:
+            # 通过 config_id 获取完整配置
+            cfg = global_config.get_config_by_id(config_id)
+            if not cfg:
+                raise ValueError(f"未找到配置ID: {config_id}")
+            self.config_id = config_id
+            self.symbol = cfg.get('symbol')
+            api_key, secret = global_config.get_binance_credentials(config_id=config_id)
+        elif symbol:
+            # 向后兼容：使用 symbol 查询
+            logger.warning(f"⚠️ 使用 symbol 初始化已过时，建议使用 config_id")
+            self.config_id = None
+            self.symbol = symbol
+            api_key, secret = global_config.get_binance_credentials(symbol=symbol)
+        else:
+            raise ValueError("必须提供 config_id 或 symbol")
 
         if not api_key or not secret:
-            raise ValueError(f"未找到币安API配置 (symbol={symbol})")
+            raise ValueError(f"未找到币安API配置 (config_id={config_id}, symbol={symbol})")
 
         config = {
             'apiKey': api_key,
@@ -48,13 +64,12 @@ class MarketTool:
             }
 
         self.exchange = ccxt.binanceusdm(config)
-        self.symbol = symbol  # 保存交易对信息
 
         try:
             self.exchange.load_markets()
-            logger.info(f"✅ 交易所连接成功 [{symbol}]，时间已校准。")
+            logger.info(f"✅ 交易所连接成功 [config_id={config_id}, symbol={self.symbol}]")
         except Exception as e:
-            logger.warning(f"⚠️ 初始化加载市场失败 [{symbol}]: {e}")
+            logger.warning(f"⚠️ 初始化加载市场失败 [config_id={config_id}, symbol={self.symbol}]: {e}")
 
     # ==========================================
     # 0. 基础工具 (指标计算与格式化)
