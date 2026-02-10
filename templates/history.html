@@ -73,12 +73,30 @@
             {% endfor %}
             </div>
 
-            <div class="mt-8 flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg shadow-sm">
-                <div class="flex flex-1 justify-between sm:hidden">
-                    <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Previous</a>
-                    <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Next</a>
+            <div class="mt-8 border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg shadow-sm">
+                <!-- 移动端分页 -->
+                <div class="flex flex-col gap-3 sm:hidden">
+                    <div class="text-center">
+                        <p class="text-sm text-gray-700">
+                            第 <span class="font-semibold">{{ current_page }}</span> 页 / 共 <span class="font-semibold">{{ total_pages }}</span> 页
+                            <span class="text-gray-500 ml-2">(共 {{ total_count }} 条记录)</span>
+                        </p>
+                    </div>
+                    <div class="flex justify-between">
+                        <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Previous</a>
+                        <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Next</a>
+                    </div>
                 </div>
-                <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-center">
+
+                <!-- 桌面端分页 -->
+                <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                    <div>
+                        <p class="text-sm text-gray-700">
+                            显示第 <span class="font-semibold">{{ (current_page - 1) * 10 + 1 }}</span>
+                            到 <span class="font-semibold">{{ [current_page * 10, total_count]|min }}</span> 条
+                            <span class="text-gray-500">/ 共 <span class="font-semibold text-gray-700">{{ total_count }}</span> 条记录</span>
+                        </p>
+                    </div>
                     <div>
                         <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
                             <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
