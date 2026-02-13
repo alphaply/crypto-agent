@@ -280,6 +280,7 @@ def start_node(state: AgentState) -> AgentState:
         )
 
     return {
+        "config_id":config_id,
         "symbol": symbol,
         "agent_config": config,
         "market_context": market_full,
