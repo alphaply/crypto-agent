@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request,jsonify
 import sqlite3
 import threading
 import math
@@ -8,7 +8,7 @@ from datetime import datetime
 import re
 import pytz
 from database import (
-    DB_NAME, init_db,
+    DB_NAME, init_db, 
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
     get_balance_history, get_trade_history, clean_financial_data,
     get_active_agents
@@ -23,7 +23,6 @@ app = Flask(__name__)
 TZ_CN = pytz.timezone('Asia/Shanghai')
 logger = setup_logger("Dashboard")
 
-
 def get_scheduler_status():
     """获取调度器状态，根据环境变量决定是否运行调度器"""
     scheduler_enabled = os.getenv('ENABLE_SCHEDULER', 'true').lower() == 'true'
@@ -33,12 +32,12 @@ def get_scheduler_status():
 def get_dashboard_data(symbol, page=1, per_page=10):
     try:
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-
+        conn.row_factory = sqlite3.Row 
+        
         # 1. 获取该币种下活跃的所有 Agent 的最新一条分析
         agents_query = "SELECT DISTINCT agent_name FROM summaries WHERE symbol = ?"
         agents = [row['agent_name'] for row in conn.execute(agents_query, (symbol,)).fetchall()]
-
+        
         agent_summaries = []
         for agent in agents:
             latest_summary = conn.execute(
@@ -65,8 +64,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                     summary_dict['leverage'] = global_config.get_leverage(config.get('config_id'))
                     # 优化display_name，加入config_id后缀以便区分相同model+mode的配置
                     config_suffix = config_id.split('_')[-1] if '_' in config_id else config_id[-4:]
-                    summary_dict[
-                        'display_name'] = f"{config.get('model', 'Unknown')} ({config.get('mode', 'STRATEGY')}) #{config_suffix}"
+                    summary_dict['display_name'] = f"{config.get('model', 'Unknown')} ({config.get('mode', 'STRATEGY')}) #{config_suffix}"
                 else:
                     # 完全找不到配置，使用默认值
                     summary_dict['model'] = agent  # 直接显示 agent_name
@@ -96,20 +94,18 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         # 2. 获取订单 (保持不变)
         offset = (page - 1) * per_page
         total_count = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", (symbol,)).fetchone()[0]
-
+        
         cursor = conn.execute(
-            "SELECT * FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
             (symbol, per_page, offset)
         )
         orders = [dict(row) for row in cursor.fetchall()]
-
+        
         conn.close()
         return agent_summaries, orders, total_count
     except Exception as e:
         logger.error(f"Error: {e}")
         return [], [], 0
-
-
 def get_all_configs():
     """读取所有配置的辅助函数（使用统一配置管理）"""
     try:
@@ -117,7 +113,6 @@ def get_all_configs():
     except Exception as e:
         logger.error(f"❌ 配置获取失败: {e}")
         return []
-
 
 def get_configured_symbols():
     configs = get_all_configs()
@@ -131,7 +126,6 @@ def get_configured_symbols():
             seen.add(s)
     if not unique: return ["BTC/USDT", "ETH/USDT"]
     return unique
-
 
 def get_symbol_specific_status(symbol):
     """
@@ -171,39 +165,38 @@ def get_symbol_specific_status(symbol):
 
     return mode_text, freq_text
 
-
 @app.route('/')
 def index():
     symbols = get_configured_symbols()
     symbol = request.args.get('symbol', symbols[0] if symbols else 'BTC/USDT')
     page = int(request.args.get('page', 1))
     per_page = 10
-
+    
     agent_summaries, orders, total_count = get_dashboard_data(symbol, page, per_page)
-
+    
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
 
     # 1. 获取特定币种的状态 (新增)
     symbol_mode, symbol_freq = get_symbol_specific_status(symbol)
-
+    
     # 2. 获取调度器状态
     scheduler_enabled = get_scheduler_status()
 
     # 获取资金曲线数据 (新增)
     balance_history = get_balance_history(symbol, limit=200)
-
+    
     # 获取历史成交记录 (新增)
     trade_history = get_trade_history(symbol, limit=50)
 
     # 处理资金曲线数据给前端 Chart.js 使用
-    chart_labels = [row['timestamp'][5:16] for row in balance_history]  # 只取 MM-DD HH:MM
+    chart_labels = [row['timestamp'][5:16] for row in balance_history] # 只取 MM-DD HH:MM
     chart_data = [row['total_equity'] for row in balance_history]
 
     return render_template(
-        'dashboard.html',
-        agent_summaries=agent_summaries,
-        orders=orders,
-        symbols=symbols,
+        'dashboard.html', 
+        agent_summaries=agent_summaries, 
+        orders=orders, 
+        symbols=symbols, 
         current_symbol=symbol,
         current_page=page,
         total_pages=total_pages,
@@ -219,33 +212,34 @@ def index():
     )
 
 
+
+
 @app.route('/history')
 def history_view():
     symbol = request.args.get('symbol', 'BTC/USDT')
-    agent_filter = request.args.get('agent', 'ALL')  # 获取筛选参数，默认为 ALL
-
+    agent_filter = request.args.get('agent', 'ALL') # 获取筛选参数，默认为 ALL
+    
     page = int(request.args.get('page', 1))
-    per_page = 10
-
+    per_page = 10 
+    
     # 1. 获取数据 (传入筛选参数)
     summaries = get_paginated_summaries(symbol, page, per_page, agent_name=agent_filter)
     total_count = get_summary_count(symbol, agent_name=agent_filter)
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
-
+    
     # 2. 获取筛选器列表
     active_agents = get_active_agents(symbol)
-
+    
     return render_template(
-        'history.html',
+        'history.html', 
         summaries=summaries,
         current_symbol=symbol,
         current_page=page,
         total_pages=total_pages,
         total_count=total_count,
-        active_agents=active_agents,  # 传给前端生成按钮
-        current_agent=agent_filter  # 传给前端标记当前选中状态
+        active_agents=active_agents, # 传给前端生成按钮
+        current_agent=agent_filter   # 传给前端标记当前选中状态
     )
-
 
 # 3. 新增路由：删除历史 (API)
 @app.route('/api/clean_history', methods=['POST'])
@@ -253,27 +247,26 @@ def clean_history():
     data = request.json
     password = data.get('password')
     symbol = data.get('symbol')
-
+    
     # 验证密码
     admin_pass = os.getenv('ADMIN_PASSWORD')
     if not admin_pass:
         return jsonify({'success': False, 'message': '服务端未配置 ADMIN_PASSWORD'})
-
+        
     if password != admin_pass:
         return jsonify({'success': False, 'message': '密码错误，拒绝操作'})
-
+        
     try:
         # 删除分析记录
         count_summary = delete_summaries_by_symbol(symbol)
-
+        
         # 删除资金和成交记录 (新增)
         count_financial = clean_financial_data(symbol)
-
+        
         logger.info(f"🗑️ [Dashboard] Cleaned all data for {symbol}")
         return jsonify({'success': True, 'message': f'已删除 {count_summary} 条分析, {count_financial} 条财务记录'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
-
 
 @app.route('/api/scheduler-status', methods=['GET'])
 def get_scheduler_status_api():
@@ -317,7 +310,7 @@ def get_configs_api():
 
 
 if __name__ == "__main__":
-    init_db()
+    init_db() 
     # 检查是否启用调度器
     if get_scheduler_status():
         scheduler_thread = threading.Thread(target=run_smart_scheduler, daemon=True)

@@ -98,8 +98,7 @@ class Config:
 
         logger.info("✅ 配置验证通过")
 
-    def get_binance_credentials(self, config_id: Optional[str] = None, symbol: Optional[str] = None) -> Tuple[
-        Optional[str], Optional[str]]:
+    def get_binance_credentials(self, config_id: Optional[str] = None, symbol: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         """
         获取币安API凭证
         优先级：config_id专属配置 > symbol专属配置 > 全局默认配置

@@ -1,237 +1,168 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-    <meta charset="UTF-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>{{ current_symbol }} - 自动亏钱Agent</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        'buy': '#059669',      // 买入绿
-                        'sell': '#dc2626',     // 卖出红
-                    }
-                }
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'buy': '#059669',      // 买入绿
+              'sell': '#dc2626',     // 卖出红
             }
+          }
         }
+      }
     </script>
     <style>
-        .no-scrollbar::-webkit-scrollbar {
-            display: none;
-        }
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      @keyframes pulse-custom { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+      .animate-pulse-custom { animation: pulse-custom 2s infinite; }
+      @keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+      .animate-pulse-red { animation: pulse-red 1.5s infinite; }
+      
+      /* Toast 动画 */
+      @keyframes slide-in-right {
+        0% { transform: translateX(100%); opacity: 0; }
+        100% { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes fade-out {
+        0% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      .toast-enter { animation: slide-in-right 0.3s ease-out forwards; }
+      .toast-exit { animation: fade-out 0.3s ease-in forwards; }
 
-        .no-scrollbar {
-            -ms-overflow-style: none;
-            scrollbar-width: none;
-        }
-
-        @keyframes pulse-custom {
-            0%, 100% {
-                opacity: 1;
-            }
-            50% {
-                opacity: 0.5;
-            }
-        }
-
-        .animate-pulse-custom {
-            animation: pulse-custom 2s infinite;
-        }
-
-        @keyframes pulse-red {
-            0%, 100% {
-                opacity: 1;
-            }
-            50% {
-                opacity: 0.4;
-            }
-        }
-
-        .animate-pulse-red {
-            animation: pulse-red 1.5s infinite;
-        }
-
-        /* Toast 动画 */
-        @keyframes slide-in-right {
-            0% {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-            100% {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-
-        @keyframes fade-out {
-            0% {
-                opacity: 1;
-            }
-            100% {
-                opacity: 0;
-            }
-        }
-
-        .toast-enter {
-            animation: slide-in-right 0.3s ease-out forwards;
-        }
-
-        .toast-exit {
-            animation: fade-out 0.3s ease-in forwards;
-        }
-
-        /* 迷你滚动条 */
-        .mini-scroll::-webkit-scrollbar {
-            width: 4px;
-            height: 4px;
-        }
-
-        .mini-scroll::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        .mini-scroll::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 2px;
-        }
+      /* 迷你滚动条 */
+      .mini-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+      .mini-scroll::-webkit-scrollbar-track { background: transparent; }
+      .mini-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
     </style>
-</head>
-<body class="bg-gray-50 text-gray-800 font-sans antialiased overflow-x-hidden selection:bg-blue-100">
+  </head>
+  <body class="bg-gray-50 text-gray-800 font-sans antialiased overflow-x-hidden selection:bg-blue-100">
 
-<nav class="sticky top-0 z-50 bg-white/95 backdrop-blur shadow-sm border-b border-gray-200">
-    <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
+    <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur shadow-sm border-b border-gray-200">
+      <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8"> 
         <div class="flex flex-col sm:flex-row justify-between items-center py-3 gap-3">
-            <div class="font-bold text-lg tracking-tight text-gray-900 flex items-center gap-2">
+          <div class="font-bold text-lg tracking-tight text-gray-900 flex items-center gap-2">
             <span class="flex items-center gap-2">
-                💸 <span
-                    class="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">自动亏钱Agent</span>
+                💸 <span class="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">自动亏钱Agent</span>
             </span>
-                <a href="https://github.com/alphaply/crypto-agent" target="_blank"
-                   class="ml-2 text-gray-400 hover:text-gray-900 transition-colors" title="GitHub Repository">
-                    <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current">
-                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                    </svg>
-                </a>
-            </div>
-            <div class="flex w-full sm:w-auto items-center gap-2 justify-between sm:justify-end">
-                <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value"
-                        class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-40">
-                    {% for sym in symbols %}
-                        <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
-                    {% endfor %}
-                </select>
-                <div class="flex gap-2">
-                    <div class="inline-flex rounded-md shadow-sm" role="group">
-                        <a href="/history?symbol={{ current_symbol }}" title="历史回溯"
-                           class="px-3 py-2 text-sm font-medium text-blue-600 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 hover:text-blue-700">📜</a>
-                        <button onclick="openDeleteModal()" title="清除历史"
-                                class="px-3 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700">
-                            🗑️
-                        </button>
-                    </div>
-                    <button onclick="location.reload()" title="刷新"
-                            class="p-2 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-100">↻
-                    </button>
+             <a href="https://github.com/alphaply/crypto-agent" target="_blank" class="ml-2 text-gray-400 hover:text-gray-900 transition-colors" title="GitHub Repository">
+                <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+            </a>
+          </div>
+          <div class="flex w-full sm:w-auto items-center gap-2 justify-between sm:justify-end">
+             <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-40">
+              {% for sym in symbols %} 
+                <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
+              {% endfor %}
+            </select>
+            <div class="flex gap-2">
+                <div class="inline-flex rounded-md shadow-sm" role="group">
+                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-3 py-2 text-sm font-medium text-blue-600 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 hover:text-blue-700">📜</a>
+                    <button onclick="openDeleteModal()" title="清除历史" class="px-3 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700">🗑️</button>
                 </div>
+                <button onclick="location.reload()" title="刷新" class="p-2 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-100">↻</button>
             </div>
+          </div>
         </div>
-    </div>
-</nav>
+      </div>
+    </nav>
 
-<div class="bg-amber-50 border-b border-amber-200 text-amber-900 text-sm">
-    <div class="max-w-[1600px] mx-auto px-4 py-2 sm:px-6 lg:px-8">
+    <div class="bg-amber-50 border-b border-amber-200 text-amber-900 text-sm">
+      <div class="max-w-[1600px] mx-auto px-4 py-2 sm:px-6 lg:px-8">
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-            <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span class="flex items-center gap-2">
-                {% if scheduler_enabled %}
-                    <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span>
-                    <span class="font-medium">运行中</span>
-                {% else %} <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span>
-                    <span class="font-medium text-red-500">停止运行</span> {% endif %}
+                {% if scheduler_enabled %} <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span> <span class="font-medium">运行中</span>
+                {% else %} <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span> <span class="font-medium text-red-500">停止运行</span> {% endif %}
             </span>
-                <span class="text-amber-300 hidden sm:inline">|</span>
-                <span>模式: <span class="font-bold text-amber-800">{{ symbol_mode }}</span></span>
-                <span class="text-amber-300 hidden sm:inline">|</span>
-                <span>频率: <span class="font-bold text-emerald-700">{{ symbol_freq }}</span></span>
-            </div>
-            <div>风控系统: <span class="font-bold text-emerald-600">已启动</span></div>
+            <span class="text-amber-300 hidden sm:inline">|</span>
+            <span>模式: <span class="font-bold text-amber-800">{{ symbol_mode }}</span></span>
+            <span class="text-amber-300 hidden sm:inline">|</span>
+            <span>频率: <span class="font-bold text-emerald-700">{{ symbol_freq }}</span></span>
+          </div>
+          <div>风控系统: <span class="font-bold text-emerald-600">已启动</span></div>
         </div>
+      </div>
     </div>
-</div>
 
-<main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-
-    <div class="grid grid-cols-1 {% if agent_summaries|length > 1 %}lg:grid-cols-2 xl:grid-cols-3{% else %}max-w-3xl mx-auto{% endif %} gap-6 items-start">
+    <main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      
+      <div class="grid grid-cols-1 {% if agent_summaries|length > 1 %}lg:grid-cols-2 xl:grid-cols-3{% else %}max-w-3xl mx-auto{% endif %} gap-6 items-start">
         {% if agent_summaries %} {% for summary in agent_summaries %}
-            <div class="bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col overflow-hidden h-full">
-                <div class="px-5 py-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-gray-100/50">
-                    <div class="flex justify-between items-start mb-2">
-                        <div class="flex flex-col gap-1">
+        <div class="bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col overflow-hidden h-full">
+          <div class="px-5 py-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-gray-100/50">
+            <div class="flex justify-between items-start mb-2">
+              <div class="flex flex-col gap-1">
                 <span class="font-bold text-gray-900 flex items-center gap-2 text-base">
                     🤖 {{ summary.display_name or summary.agent_name or 'AI-Agent' }}
                 </span>
-                            <span class="text-[10px] font-mono text-gray-400">{{ summary.agent_name }}</span>
-                        </div>
-                        <span class="text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">
+                <span class="text-[10px] font-mono text-gray-400">{{ summary.agent_name }}</span>
+              </div>
+              <span class="text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">
                 {{ summary.timestamp[5:-3] }}
               </span>
-                    </div>
-                    <div class="flex flex-wrap gap-2 mt-2">
+            </div>
+            <div class="flex flex-wrap gap-2 mt-2">
               <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-bold rounded-full {{ 'bg-red-100 text-red-700 border border-red-200' if summary.mode == 'REAL' else 'bg-blue-100 text-blue-700 border border-blue-200' }}">
                 {{ '🔴 实盘' if summary.mode == 'REAL' else '🔵 策略' }}
               </span>
-                        <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-purple-100 text-purple-700 rounded-full border border-purple-200">
+              <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-purple-100 text-purple-700 rounded-full border border-purple-200">
                 🧠 {{ summary.model }}
               </span>
-                        <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-orange-100 text-orange-700 rounded-full border border-orange-200">
+              <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-orange-100 text-orange-700 rounded-full border border-orange-200">
                 ⚡ {{ summary.leverage or '?' }}x
               </span>
-                    </div>
-                </div>
+            </div>
+          </div>
 
-                <div class="p-5 flex flex-col gap-4 flex-grow">
-                    <div class="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto mini-scroll pr-1">{{ summary.content }}</div>
+          <div class="p-5 flex flex-col gap-4 flex-grow">
+            <div class="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto mini-scroll pr-1">{{ summary.content }}</div>
+            
+            <div class="mt-auto bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r text-sm text-blue-900">
+              <div class="font-bold text-[10px] uppercase text-blue-400 mb-1">Strategy Logic</div>
+              <div class="whitespace-pre-wrap text-xs">{{ summary.strategy_logic }}</div>
+            </div>
+          </div>
 
-                    <div class="mt-auto bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r text-sm text-blue-900">
-                        <div class="font-bold text-[10px] uppercase text-blue-400 mb-1">Strategy Logic</div>
-                        <div class="whitespace-pre-wrap text-xs">{{ summary.strategy_logic }}</div>
-                    </div>
-                </div>
-
-                <div class="border-t border-gray-200 bg-gray-50 p-3">
-                    <h4 class="text-xs font-bold text-gray-500 uppercase mb-2 flex justify-between items-center">
-                        <span>Recent Decisions</span>
-                        <span class="bg-gray-200 text-gray-600 px-1.5 rounded text-[10px]">{{ summary.recent_orders|length }}</span>
-                    </h4>
-                    {% if summary.recent_orders %}
-                        <div class="overflow-x-auto mini-scroll">
-                            <table class="w-full text-xs text-left">
-                                <thead class="text-gray-400 font-medium border-b border-gray-200">
-                                <tr>
-                                    <th class="py-1 pr-1 w-12">ID</th>
-                                    <th class="py-1 px-1">Side</th>
-                                    <th class="py-1 px-1">Price</th>
-                                    <th class="py-1 px-1">TP/SL</th>
-                                    <th class="py-1 px-1">Valid</th>
-                                    <th class="py-1 pl-1 text-right">Time</th>
-                                </tr>
-                                </thead>
-                                <tbody class="divide-y divide-gray-100">
-                                {% for order in summary.recent_orders %}
-                                    <tr>
-                                        <td class="py-1.5 pr-1 relative group cursor-pointer">
+          <div class="border-t border-gray-200 bg-gray-50 p-3">
+             <h4 class="text-xs font-bold text-gray-500 uppercase mb-2 flex justify-between items-center">
+                <span>Recent Decisions</span>
+                <span class="bg-gray-200 text-gray-600 px-1.5 rounded text-[10px]">{{ summary.recent_orders|length }}</span>
+             </h4>
+             {% if summary.recent_orders %}
+             <div class="overflow-x-auto mini-scroll">
+                <table class="w-full text-xs text-left">
+                    <thead class="text-gray-400 font-medium border-b border-gray-200">
+                        <tr>
+                            <th class="py-1 pr-1 w-12">ID</th>
+                            <th class="py-1 px-1">Side</th>
+                            <th class="py-1 px-1">Price</th>
+                            <th class="py-1 px-1">TP/SL</th>
+                            <th class="py-1 px-1">Valid</th>
+                            <th class="py-1 pl-1 text-right">Time</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100">
+                        {% for order in summary.recent_orders %}
+                        <tr>
+                            <td class="py-1.5 pr-1 relative group cursor-pointer">
                                 <span class="font-mono text-[10px] text-gray-400 border-b border-dotted border-gray-300">
                                     {{ order.order_id[-4:] if order.order_id else '--' }}
                                 </span>
-                                            <div class="hidden group-hover:block absolute bottom-full left-0 mb-1 z-50 bg-gray-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap shadow-lg">
-                                                {{ order.order_id }}
-                                            </div>
-                                        </td>
-                                        <td class="py-1.5 px-1 whitespace-nowrap">
-                                            {% set s = order.side|lower %}
-                                            <span class="px-1.5 py-0.5 rounded font-bold uppercase text-[10px]
+                                <div class="hidden group-hover:block absolute bottom-full left-0 mb-1 z-50 bg-gray-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap shadow-lg">
+                                    {{ order.order_id }}
+                                </div>
+                            </td>
+                            <td class="py-1.5 px-1 whitespace-nowrap">
+                                {% set s = order.side|lower %}
+                                <span class="px-1.5 py-0.5 rounded font-bold uppercase text-[10px]
                                     {% if 'buy' in s %} bg-emerald-100 text-emerald-700
                                     {% elif 'sell' in s %} bg-red-100 text-red-700
                                     {% elif 'close' in s %} bg-orange-100 text-orange-700
@@ -239,278 +170,256 @@
                                     {% endif %}">
                                     {{ order.side[:1] }}
                                 </span>
-                                        </td>
-                                        <td class="py-1.5 px-1 font-mono text-gray-700">
-                                <span onclick="handleCopy('{{ order.trigger_price or order.entry_price }}', event)"
-                                      class="cursor-pointer hover:text-blue-600 hover:underline decoration-dashed"
+                            </td>
+                            <td class="py-1.5 px-1 font-mono text-gray-700">
+                                <span onclick="handleCopy('{{ order.trigger_price or order.entry_price }}', event)" 
+                                      class="cursor-pointer hover:text-blue-600 hover:underline decoration-dashed" 
                                       title="Copy Price">
                                     {{ order.trigger_price or order.entry_price }}
                                 </span>
-                                        </td>
-                                        <td class="py-1.5 px-1 font-mono text-gray-500">
-                                            {% if order.take_profit > 0 or order.stop_loss > 0 %}
-                                                <span onclick="handleCopy('{{ order.take_profit }}', event)"
-                                                      class="cursor-pointer hover:text-buy text-gray-600"
-                                                      title="Copy TP">{{ order.take_profit|int }}</span>
-                                                <span class="text-gray-300">/</span>
-                                                <span onclick="handleCopy('{{ order.stop_loss }}', event)"
-                                                      class="cursor-pointer hover:text-sell text-gray-600"
-                                                      title="Copy SL">{{ order.stop_loss|int }}</span>
-                                            {% else %}-{% endif %}
-                                        </td>
-                                        <td class="py-1.5 px-1 font-mono text-[10px]">
-                                            {% if order.validity %}
-                                                <span class="inline-flex items-center px-1 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500">
+                            </td>
+                            <td class="py-1.5 px-1 font-mono text-gray-500">
+                                {% if order.take_profit > 0 or order.stop_loss > 0 %}
+                                    <span onclick="handleCopy('{{ order.take_profit }}', event)" class="cursor-pointer hover:text-buy text-gray-600" title="Copy TP">{{ order.take_profit|int }}</span>
+                                    <span class="text-gray-300">/</span>
+                                    <span onclick="handleCopy('{{ order.stop_loss }}', event)" class="cursor-pointer hover:text-sell text-gray-600" title="Copy SL">{{ order.stop_loss|int }}</span>
+                                {% else %}-{% endif %}
+                            </td>
+                            <td class="py-1.5 px-1 font-mono text-[10px]">
+                                {% if order.validity %}
+                                <span class="inline-flex items-center px-1 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500">
                                     {{ order.validity }}
                                 </span>
-                                            {% else %}-{% endif %}
-                                        </td>
-                                        <td class="py-1.5 pl-1 text-right text-gray-400 font-mono text-[10px]">
-                                            {{ order.timestamp[11:16] }}
-                                        </td>
-                                    </tr>
-                                {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    {% else %}
-                        <div class="text-center text-gray-400 text-xs py-2 italic">暂无近期操作</div>
-                    {% endif %}
-                </div>
-            </div>
-        {% endfor %} {% else %}
-            <div class="col-span-full text-center py-12 bg-white rounded-xl border border-dashed border-gray-300 text-gray-500">
-                <p class="text-lg">暂无分析数据，正在等待 Agent 亏钱...</p>
-            </div>
-        {% endif %}
-    </div>
-
-    <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden mt-8">
-        <div class="px-6 py-4 border-b border-gray-200 bg-gray-50/50">
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                <h3 class="font-bold text-gray-900 text-lg">📜 全局决策流水</h3>
-                <div class="flex items-center gap-3 w-full sm:w-auto">
-                    <select id="agentFilter" onchange="filterOrders(this.value)"
-                            class="form-select bg-white border border-gray-300 text-gray-700 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-48">
-                        <option value="ALL">🔍 全部配置</option>
-                        {% for summary in agent_summaries %}
-                            <option value="{{ summary.agent_name }}">{{ summary.display_name }}</option>
+                                {% else %}-{% endif %}
+                            </td>
+                            <td class="py-1.5 pl-1 text-right text-gray-400 font-mono text-[10px]">
+                                {{ order.timestamp[11:16] }}
+                            </td>
+                        </tr>
                         {% endfor %}
-                    </select>
-                    <span class="bg-gray-100 text-gray-600 text-xs font-medium px-2.5 py-1.5 rounded border border-gray-200 whitespace-nowrap">
+                    </tbody>
+                </table>
+             </div>
+             {% else %}
+                <div class="text-center text-gray-400 text-xs py-2 italic">暂无近期操作</div>
+             {% endif %}
+          </div>
+        </div>
+        {% endfor %} {% else %}
+        <div class="col-span-full text-center py-12 bg-white rounded-xl border border-dashed border-gray-300 text-gray-500">
+           <p class="text-lg">暂无分析数据，正在等待 Agent 亏钱...</p>
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden mt-8">
+        <div class="px-6 py-4 border-b border-gray-200 bg-gray-50/50">
+          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <h3 class="font-bold text-gray-900 text-lg">📜 全局决策流水</h3>
+            <div class="flex items-center gap-3 w-full sm:w-auto">
+              <select id="agentFilter" onchange="filterOrders(this.value)" class="form-select bg-white border border-gray-300 text-gray-700 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-48">
+                <option value="ALL">🔍 全部配置</option>
+                {% for summary in agent_summaries %}
+                <option value="{{ summary.agent_name }}">{{ summary.display_name }}</option>
+                {% endfor %}
+              </select>
+              <span class="bg-gray-100 text-gray-600 text-xs font-medium px-2.5 py-1.5 rounded border border-gray-200 whitespace-nowrap">
                 Total: <span id="orderCount">{{ total_orders }}</span>
               </span>
-                </div>
             </div>
+          </div>
         </div>
         <div class="overflow-x-auto">
-            <table id="orderTable" class="w-full text-sm text-left text-gray-600">
-                <thead class="hidden md:table-header-group text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200">
-                <tr>
-                    <th class="px-6 py-3 font-medium w-32">时间</th>
-                    <th class="px-6 py-3 font-medium text-center w-24">模式</th>
-                    <th class="px-6 py-3 font-medium">配置</th>
-                    <th class="px-6 py-3 font-medium text-center w-24">方向</th>
-                    <th class="px-6 py-3 font-medium">价格</th>
-                    <th class="px-6 py-3 font-medium min-w-[200px]">理由</th>
-                </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-200">
-                {% for order in orders %}
-                    <tr data-agent="{{ order.agent_name }}"
-                        class="bg-white hover:bg-gray-50 flex flex-col md:table-row mb-4 md:mb-0 border md:border-none rounded-lg md:rounded-none shadow-sm md:shadow-none m-4 md:m-0 p-4 md:p-0">
-                        <td class="px-6 py-3 md:table-cell flex justify-between">
-                            <span class="md:hidden text-xs font-bold text-gray-400">TIME</span>
-                            <span class="font-mono text-xs">{{ order.timestamp }}</span>
-                        </td>
-                        <td class="px-6 py-3 md:table-cell text-center flex justify-between">
-                            <span class="md:hidden text-xs font-bold text-gray-400">MODE</span>
-                            <span class="text-xs font-bold px-2 py-0.5 rounded {{ 'bg-red-100 text-red-800' if order.trade_mode=='REAL' else 'bg-blue-100 text-blue-800' }}">{{ order.trade_mode }}</span>
-                        </td>
-                        <td class="px-6 py-3 md:table-cell flex justify-between">
-                            <span class="md:hidden text-xs font-bold text-gray-400">CONFIG</span>
-                            <div class="flex flex-col gap-1">
-                                <span class="font-mono text-xs text-gray-500">{{ order.agent_name }}</span>
-                            </div>
-                        </td>
-                        <td class="px-6 py-3 md:table-cell text-center flex justify-between">
-                            <span class="md:hidden text-xs font-bold text-gray-400">SIDE</span>
-                            <span class="font-bold {{ 'text-buy' if 'buy' in order.side|lower else 'text-sell' }}">{{ order.side|upper }}</span>
-                        </td>
-                        <td class="px-6 py-3 md:table-cell flex justify-between">
-                            <span class="md:hidden text-xs font-bold text-gray-400">PRICE</span>
-                            <span class="font-mono">{{ order.entry_price }}</span>
-                        </td>
-                        <td class="px-6 py-3 md:table-cell w-full">
-                            <div class="text-xs text-gray-500 break-words">{{ order.reason }}</div>
-                        </td>
-                    </tr>
-                {% endfor %}
-                </tbody>
-            </table>
+          <table id="orderTable" class="w-full text-sm text-left text-gray-600">
+             <thead class="hidden md:table-header-group text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th class="px-6 py-3 font-medium w-32">时间</th>
+                <th class="px-6 py-3 font-medium text-center w-24">模式</th>
+                <th class="px-6 py-3 font-medium">配置</th>
+                <th class="px-6 py-3 font-medium text-center w-24">方向</th>
+                <th class="px-6 py-3 font-medium">价格</th>
+                <th class="px-6 py-3 font-medium min-w-[200px]">理由</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+              {% for order in orders %}
+              <tr data-agent="{{ order.agent_name }}" class="bg-white hover:bg-gray-50 flex flex-col md:table-row mb-4 md:mb-0 border md:border-none rounded-lg md:rounded-none shadow-sm md:shadow-none m-4 md:m-0 p-4 md:p-0">
+                 <td class="px-6 py-3 md:table-cell flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">TIME</span>
+                    <span class="font-mono text-xs">{{ order.timestamp }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell text-center flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">MODE</span>
+                    <span class="text-xs font-bold px-2 py-0.5 rounded {{ 'bg-red-100 text-red-800' if order.trade_mode=='REAL' else 'bg-blue-100 text-blue-800' }}">{{ order.trade_mode }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">CONFIG</span>
+                    <div class="flex flex-col gap-1">
+                      <span class="font-mono text-xs text-gray-500">{{ order.agent_name }}</span>
+                    </div>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell text-center flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">SIDE</span>
+                    <span class="font-bold {{ 'text-buy' if 'buy' in order.side|lower else 'text-sell' }}">{{ order.side|upper }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell flex justify-between">
+                    <span class="md:hidden text-xs font-bold text-gray-400">PRICE</span>
+                    <span class="font-mono">{{ order.entry_price }}</span>
+                 </td>
+                 <td class="px-6 py-3 md:table-cell w-full">
+                    <div class="text-xs text-gray-500 break-words">{{ order.reason }}</div>
+                 </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
         <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end">
-            <nav class="inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
-                <a href="?symbol={{ current_symbol }}&page={{ current_page-1 }}"
-                   class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-l-md hover:bg-gray-50">上一页</a>
-                <span class="relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border-t border-b border-gray-300">{{ current_page }} / {{ total_pages }}</span>
-                <a href="?symbol={{ current_symbol }}&page={{ current_page+1}}"
-                   class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-r-md hover:bg-gray-50">下一页</a>
-            </nav>
+           <nav class="inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+             <a href="?symbol={{current_symbol}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-l-md hover:bg-gray-50">上一页</a>
+             <span class="relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border-t border-b border-gray-300">{{ current_page }} / {{ total_pages }}</span>
+             <a href="?symbol={{current_symbol}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-r-md hover:bg-gray-50">下一页</a>
+           </nav>
         </div>
-    </div>
-</main>
+      </div>
+    </main>
 
-<div id="delete-modal" class="fixed inset-0 z-[100] hidden" aria-labelledby="modal-title" role="dialog"
-     aria-modal="true">
-    <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm transition-opacity" onclick="closeDeleteModal()"></div>
+    <div id="delete-modal" class="fixed inset-0 z-[100] hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+        <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm transition-opacity" onclick="closeDeleteModal()"></div>
 
-    <div class="fixed inset-0 z-10 w-screen overflow-y-auto">
-        <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-            <div class="relative transform overflow-hidden rounded-xl bg-white text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg border border-gray-200">
-                <div class="bg-white px-4 pb-4 pt-5 sm:p-6 sm:pb-4">
-                    <div class="sm:flex sm:items-start">
-                        <div class="mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
-                            <svg class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                                 stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round"
-                                      d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
-                            </svg>
-                        </div>
-                        <div class="mt-3 text-center sm:ml-4 sm:mt-0 sm:text-left w-full">
-                            <h3 class="text-base font-semibold leading-6 text-gray-900" id="modal-title">
-                                清除历史记录</h3>
-                            <div class="mt-2">
-                                <p class="text-sm text-gray-500">
-                                    您确定要清空 <span class="font-bold text-gray-800">{{ current_symbol }}</span> 的所有
-                                    Agent 分析历史吗？此操作无法撤销。
-                                </p>
-                                <div class="mt-4">
-                                    <label for="admin-pass"
-                                           class="block text-xs font-medium text-gray-700 mb-1">管理员密码</label>
-                                    <input type="password" id="admin-pass"
-                                           class="w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 sm:text-sm p-2 border"
-                                           placeholder="请输入密码以确认...">
+        <div class="fixed inset-0 z-10 w-screen overflow-y-auto">
+            <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
+                <div class="relative transform overflow-hidden rounded-xl bg-white text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg border border-gray-200">
+                    <div class="bg-white px-4 pb-4 pt-5 sm:p-6 sm:pb-4">
+                        <div class="sm:flex sm:items-start">
+                            <div class="mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
+                                <svg class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                                </svg>
+                            </div>
+                            <div class="mt-3 text-center sm:ml-4 sm:mt-0 sm:text-left w-full">
+                                <h3 class="text-base font-semibold leading-6 text-gray-900" id="modal-title">清除历史记录</h3>
+                                <div class="mt-2">
+                                    <p class="text-sm text-gray-500">
+                                        您确定要清空 <span class="font-bold text-gray-800">{{ current_symbol }}</span> 的所有 Agent 分析历史吗？此操作无法撤销。
+                                    </p>
+                                    <div class="mt-4">
+                                        <label for="admin-pass" class="block text-xs font-medium text-gray-700 mb-1">管理员密码</label>
+                                        <input type="password" id="admin-pass" class="w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 sm:text-sm p-2 border" placeholder="请输入密码以确认...">
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
-                <div class="bg-gray-50 px-4 py-3 sm:flex sm:flex-row-reverse sm:px-6">
-                    <button type="button" onclick="confirmDeleteAction()"
-                            class="inline-flex w-full justify-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 sm:ml-3 sm:w-auto transition-colors">
-                        确认清空
-                    </button>
-                    <button type="button" onclick="closeDeleteModal()"
-                            class="mt-3 inline-flex w-full justify-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 sm:mt-0 sm:w-auto transition-colors">
-                        取消
-                    </button>
+                    <div class="bg-gray-50 px-4 py-3 sm:flex sm:flex-row-reverse sm:px-6">
+                        <button type="button" onclick="confirmDeleteAction()" class="inline-flex w-full justify-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 sm:ml-3 sm:w-auto transition-colors">确认清空</button>
+                        <button type="button" onclick="closeDeleteModal()" class="mt-3 inline-flex w-full justify-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 sm:mt-0 sm:w-auto transition-colors">取消</button>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
-</div>
 
-<div id="toast-container" class="fixed top-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none"></div>
+    <div id="toast-container" class="fixed top-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none"></div>
 
-<script>
-    // 1. Toast 提示函数 (替代 alert)
-    function showToast(message, type = 'success') {
-        const container = document.getElementById('toast-container');
-        const toast = document.createElement('div');
-        toast.className = `pointer-events-auto transform rounded-lg px-4 py-3 shadow-lg flex items-center gap-3 min-w-[300px] toast-enter ${
-            type === 'success' ? 'bg-white border-l-4 border-emerald-500 text-gray-800' : 'bg-white border-l-4 border-red-500 text-gray-800'
-        }`;
+    <script>
+      // 1. Toast 提示函数 (替代 alert)
+      function showToast(message, type = 'success') {
+          const container = document.getElementById('toast-container');
+          const toast = document.createElement('div');
+          toast.className = `pointer-events-auto transform rounded-lg px-4 py-3 shadow-lg flex items-center gap-3 min-w-[300px] toast-enter ${
+              type === 'success' ? 'bg-white border-l-4 border-emerald-500 text-gray-800' : 'bg-white border-l-4 border-red-500 text-gray-800'
+          }`;
+          
+          const icon = type === 'success' 
+              ? `<svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`
+              : `<svg class="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`;
 
-        const icon = type === 'success'
-            ? `<svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`
-            : `<svg class="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`;
-
-        toast.innerHTML = `
+          toast.innerHTML = `
               ${icon}
               <div class="flex-1 text-sm font-medium">${message}</div>
           `;
 
-        container.appendChild(toast);
+          container.appendChild(toast);
 
-        // 3秒后自动消失
-        setTimeout(() => {
-            toast.classList.remove('toast-enter');
-            toast.classList.add('toast-exit');
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
-    }
+          // 3秒后自动消失
+          setTimeout(() => {
+              toast.classList.remove('toast-enter');
+              toast.classList.add('toast-exit');
+              setTimeout(() => toast.remove(), 300);
+          }, 3000);
+      }
 
-    // 2. 复制功能 (保持不变，加了 Toast)
-    function handleCopy(text, e) {
-        if (!text || text === '-' || text === 'None') return;
-        navigator.clipboard.writeText(text).then(() => {
-            showToast(`已复制: ${text}`, 'success');
-        }).catch(() => {
-            showToast('复制失败', 'error');
-        });
-    }
+      // 2. 复制功能 (保持不变，加了 Toast)
+      function handleCopy(text, e) { 
+          if(!text || text === '-' || text === 'None') return;
+          navigator.clipboard.writeText(text).then(() => {
+              showToast(`已复制: ${text}`, 'success');
+          }).catch(() => {
+              showToast('复制失败', 'error');
+          });
+      }
 
-    // 3. Modal 逻辑 (替代 confirm/prompt)
-    function openDeleteModal() {
-        document.getElementById('delete-modal').classList.remove('hidden');
-        setTimeout(() => document.getElementById('admin-pass').focus(), 100);
-    }
+      // 3. Modal 逻辑 (替代 confirm/prompt)
+      function openDeleteModal() {
+          document.getElementById('delete-modal').classList.remove('hidden');
+          setTimeout(() => document.getElementById('admin-pass').focus(), 100);
+      }
 
-    function closeDeleteModal() {
-        document.getElementById('delete-modal').classList.add('hidden');
-        document.getElementById('admin-pass').value = ''; // 清空密码
-    }
+      function closeDeleteModal() {
+          document.getElementById('delete-modal').classList.add('hidden');
+          document.getElementById('admin-pass').value = ''; // 清空密码
+      }
 
-    // 提交删除
-    async function confirmDeleteAction() {
-        const pwd = document.getElementById('admin-pass').value;
-        const symbol = document.getElementById('symbolSelect').value;
+      // 提交删除
+      async function confirmDeleteAction() {
+          const pwd = document.getElementById('admin-pass').value;
+          const symbol = document.getElementById('symbolSelect').value;
 
-        if (!pwd) {
-            showToast('请输入管理员密码', 'error');
-            return;
-        }
+          if (!pwd) {
+              showToast('请输入管理员密码', 'error');
+              return;
+          }
 
-        try {
-            const response = await fetch('/api/clean_history', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({symbol: symbol, password: pwd})
-            });
-            const result = await response.json();
+          try {
+              const response = await fetch('/api/clean_history', {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({symbol: symbol, password: pwd})
+              });
+              const result = await response.json();
 
-            if (result.success) {
-                closeDeleteModal();
-                showToast(result.message, 'success');
-                // 延迟刷新以便看到提示
-                setTimeout(() => location.reload(), 1000);
-            } else {
-                showToast(result.message, 'error');
-            }
-        } catch (e) {
-            showToast('网络请求失败', 'error');
-        }
-    }
+              if (result.success) {
+                  closeDeleteModal();
+                  showToast(result.message, 'success');
+                  // 延迟刷新以便看到提示
+                  setTimeout(() => location.reload(), 1000);
+              } else {
+                  showToast(result.message, 'error');
+              }
+          } catch (e) {
+              showToast('网络请求失败', 'error');
+          }
+      }
 
-    // 4. 订单筛选功能
-    function filterOrders(agentName) {
-        const rows = document.querySelectorAll('#orderTable tbody tr');
-        let visibleCount = 0;
+      // 4. 订单筛选功能
+      function filterOrders(agentName) {
+          const rows = document.querySelectorAll('#orderTable tbody tr');
+          let visibleCount = 0;
 
-        rows.forEach(row => {
-            const rowAgent = row.getAttribute('data-agent');
-            if (agentName === 'ALL' || rowAgent === agentName) {
-                row.style.display = '';
-                visibleCount++;
-            } else {
-                row.style.display = 'none';
-            }
-        });
+          rows.forEach(row => {
+              const rowAgent = row.getAttribute('data-agent');
+              if (agentName === 'ALL' || rowAgent === agentName) {
+                  row.style.display = '';
+                  visibleCount++;
+              } else {
+                  row.style.display = 'none';
+              }
+          });
 
-        // 更新计数
-        document.getElementById('orderCount').textContent = visibleCount;
-    }
-</script>
-</body>
+          // 更新计数
+          document.getElementById('orderCount').textContent = visibleCount;
+      }
+    </script>
+  </body>
 </html>

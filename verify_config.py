@@ -14,7 +14,6 @@ print("=" * 60)
 print("\n[测试1] 导入config模块...")
 try:
     from config import config
-
     print("SUCCESS: 配置模块导入成功")
 except Exception as e:
     print(f"FAILED: {e}")
