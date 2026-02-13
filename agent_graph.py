@@ -3,6 +3,8 @@ import os
 import time
 import math
 import uuid
+from pathlib import Path
+from collections import defaultdict
 from typing import Annotated, List, TypedDict, Union, Dict, Any, Optional
 from datetime import datetime, timedelta
 
@@ -25,6 +27,7 @@ from config import config as global_config
 
 load_dotenv()
 # market_tool已移除，现在在每个节点中为交易对创建专属实例
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 # ==========================================
 # 1. 定义 Schema (保持不变)
@@ -95,6 +98,38 @@ class AgentState(TypedDict):
 # ==========================================
 # 3. Nodes (重点修改了 start_node)
 # ==========================================
+
+def _resolve_prompt_template(agent_config: Dict[str, Any], trade_mode: str) -> str:
+    """
+    解析配置对应的 Prompt 模板。
+    规则：
+    1) 配置了 prompt_file 且文件可读 => 使用该文件
+    2) 否则回退到默认 PROMPT_MAP
+    """
+    prompt_file = agent_config.get("prompt_file")
+
+    if isinstance(prompt_file, str) and prompt_file.strip():
+        try:
+            file_path = Path(prompt_file.strip())
+            if not file_path.is_absolute():
+                file_path = PROJECT_ROOT / file_path
+            if file_path.exists():
+                content = file_path.read_text(encoding="utf-8").strip()
+                if content:
+                    logger.info(f"🧩 使用自定义 Prompt 文件: {file_path}")
+                    return content
+                logger.warning(f"⚠️ Prompt 文件为空，回退默认模板: {file_path}")
+            else:
+                logger.warning(f"⚠️ Prompt 文件不存在，回退默认模板: {file_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ 读取 Prompt 文件失败，回退默认模板: {e}")
+
+    return PROMPT_MAP.get(trade_mode) or PROMPT_MAP.get("STRATEGY", "")
+
+
+def _render_prompt(template: str, **kwargs) -> str:
+    """安全渲染 Prompt，未提供的占位符默认置空。"""
+    return template.format_map(defaultdict(str, kwargs))
 
 def start_node(state: AgentState) -> AgentState:
     config_id = state['config_id']
@@ -197,6 +232,8 @@ def start_node(state: AgentState) -> AgentState:
         formatted_history_text = "(暂无历史记录)"
 
     positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
+    prompt_template = _resolve_prompt_template(config, trade_mode)
+    leverage = global_config.get_leverage(config_id)
 
     if is_real_exec:
         raw_orders = account_data.get('real_open_orders', [])
@@ -209,11 +246,8 @@ def start_node(state: AgentState) -> AgentState:
             "amount": o.get('amount')
         } for o in raw_orders]
         orders_friendly_text = format_orders_to_agent_friendly(display_orders)
-
-        # 获取配置专属的杠杆值
-        leverage = global_config.get_leverage(config_id)
-
-        system_prompt = PROMPT_MAP.get("REAL").format(
+        system_prompt = _render_prompt(
+            prompt_template,
             model=config.get('model'),
             symbol=symbol,
             leverage=leverage,
@@ -231,9 +265,11 @@ def start_node(state: AgentState) -> AgentState:
         display_mock_orders = [{"id": o.get('order_id'), "side": o.get('side'), "price": o.get('price'), "tp": o.get('take_profit'), "sl": o.get('stop_loss')} for o in raw_mock_orders]
         orders_friendly_text = format_orders_to_agent_friendly(display_mock_orders)
 
-        system_prompt = PROMPT_MAP.get("STRATEGY").format(
+        system_prompt = _render_prompt(
+            prompt_template,
             model=config.get('model'),
             symbol=symbol,
+            leverage=leverage,
             current_time=current_time_str,
             current_price=current_price,
             atr_15m=atr_15m,

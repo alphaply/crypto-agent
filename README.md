@@ -87,6 +87,11 @@ pip install -r requirements.txt
 | `temperature` | LLM 采样温度（0-1） |
 | `mode` | 交易模式（STRATEGY 或 REAL） |
 | `leverage` | 杠杆倍数（仅用于 Prompt 注入） |
+| `prompt_file` | 通用 Prompt 文件路径（相对项目根目录或绝对路径） |
+
+Prompt 规则：
+1. 配置了 `prompt_file` 且文件可读，就使用这个文件
+2. 否则使用 `prompts.py` 默认模板
 
 ### 3. 运行项目
 
@@ -155,8 +160,7 @@ python dashboard.py
 ## 📋 开发计划
 
 - [ ] 支持 Reasoning Model 的 Tool Call（当前 Reasoning Model 强制先调用工具而不输出思维链，考虑增加无工具调用时的重试机制）
-- [ ] Prompt 配置优化
-- [ ] 更多交易对类型支持
+- [ ] Prompt 教程规范
 - [ ] 增强仪表盘 UI
 
 ## 📞 支持与反馈
