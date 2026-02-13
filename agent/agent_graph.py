@@ -16,7 +16,10 @@ from utils.logger import setup_logger
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
 from utils.prompts import PROMPT_MAP
-from agent_models import RealAgentOutput as RealAgentOutputSchema, StrategyAgentOutput as StrategyAgentOutputSchema
+try:
+    from agent.agent_models import RealAgentOutput as RealAgentOutputSchema, StrategyAgentOutput as StrategyAgentOutputSchema
+except ModuleNotFoundError:
+    from agent_models import RealAgentOutput as RealAgentOutputSchema, StrategyAgentOutput as StrategyAgentOutputSchema
 from utils.prompt_utils import resolve_prompt_template, render_prompt
 
 TZ_CN = pytz.timezone('Asia/Shanghai')

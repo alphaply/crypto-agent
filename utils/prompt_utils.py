@@ -2,7 +2,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict
 
-from prompts import PROMPT_MAP
+from utils.prompts import PROMPT_MAP
 
 
 def resolve_prompt_template(
