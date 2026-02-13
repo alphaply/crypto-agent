@@ -1,7 +1,11 @@
+import json
+import os
+import time
+import math
 import uuid
 from pathlib import Path
 from collections import defaultdict
-from typing import List, TypedDict, Dict, Any, Optional
+from typing import Annotated, List, TypedDict, Union, Dict, Any, Optional
 from datetime import datetime, timedelta
 
 from langgraph.graph import StateGraph, END
@@ -13,15 +17,13 @@ from dotenv import load_dotenv
 import pytz
 from utils.logger import setup_logger
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
-    format_market_data_to_text
+    format_market_data_to_markdown, format_market_data_to_text
 from prompts import PROMPT_MAP
-from agent_models import RealAgentOutput as RealAgentOutputSchema, StrategyAgentOutput as StrategyAgentOutputSchema
-from utils.prompt_utils import resolve_prompt_template, render_prompt
 
 TZ_CN = pytz.timezone('Asia/Shanghai')
 logger = setup_logger("AgentGraph")
 import database
-from utils.market_data import MarketTool
+from market_data import MarketTool
 from config import config as global_config
 
 load_dotenv()
@@ -238,7 +240,7 @@ def start_node(state: AgentState) -> AgentState:
         formatted_history_text = "(暂无历史记录)"
 
     positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
-    prompt_template = resolve_prompt_template(config, trade_mode, PROJECT_ROOT, logger)
+    prompt_template = _resolve_prompt_template(config, trade_mode)
     leverage = global_config.get_leverage(config_id)
 
     if is_real_exec:
@@ -252,7 +254,7 @@ def start_node(state: AgentState) -> AgentState:
             "amount": o.get('amount')
         } for o in raw_orders]
         orders_friendly_text = format_orders_to_agent_friendly(display_orders)
-        system_prompt = render_prompt(
+        system_prompt = _render_prompt(
             prompt_template,
             model=config.get('model'),
             symbol=symbol,
@@ -273,7 +275,7 @@ def start_node(state: AgentState) -> AgentState:
              "sl": o.get('stop_loss')} for o in raw_mock_orders]
         orders_friendly_text = format_orders_to_agent_friendly(display_mock_orders)
 
-        system_prompt = render_prompt(
+        system_prompt = _render_prompt(
             prompt_template,
             model=config.get('model'),
             symbol=symbol,
@@ -310,7 +312,7 @@ def agent_node(state: AgentState) -> AgentState:
         if config.get('extra_body'):
             kwargs["extra_body"] = config.get('extra_body')
 
-        output_schema = RealAgentOutputSchema if trade_mode == 'REAL' else StrategyAgentOutputSchema
+        output_schema = RealAgentOutput if trade_mode == 'REAL' else StrategyAgentOutput
 
         structured_llm = ChatOpenAI(
             model=config.get('model'),
