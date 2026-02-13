@@ -16,13 +16,13 @@
 
 ## 🏗 项目架构
 
-| 组件 | 技术栈 |
-|------|--------|
-| **语言** | Python 3.10+ |
-| **前端** | Flask + Tailwind CSS (响应式仪表盘) |
-| **核心逻辑** | LangGraph (构建 Agent 决策 Pipeline) |
-| **交易执行** | CCXT (Binance USDM 合约) |
-| **数据持久化** | SQLite (订单记录、分析日志) |
+| 组件        | 技术栈                              |
+|-----------|----------------------------------|
+| **语言**    | Python 3.10+                     |
+| **前端**    | Flask + Tailwind CSS (响应式仪表盘)    |
+| **核心逻辑**  | LangGraph (构建 Agent 决策 Pipeline) |
+| **交易执行**  | CCXT (Binance USDM 合约)           |
+| **数据持久化** | SQLite (订单记录、分析日志)               |
 
 ## 📦 主要特性
 
@@ -42,11 +42,13 @@
 推荐使用 `uv` 进行快速环境管理（或使用标准 `pip`）。
 
 **使用 uv (推荐):**
+
 ```bash
 uv sync
 ```
 
 **使用 pip:**
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -54,19 +56,24 @@ pip install -r requirements.txt
 ### 2. 配置文件设置
 
 #### 基础配置
+
 在项目根目录修改 `.env.template` 为 `.env` 文件，填写配置参数。
 
 #### 网络代理配置
+
 大陆用户如无法访问合约 API，可在 `market_data.py` 中的 `MarketTool` 类中修改 `proxy_port` 参数：
+
 - 本地运行 v2ray 服务（开启局域网连接）：填写 `10809`
 - 或修改 `__init__` 中的代理参数为公网代理
 
 #### LangSmith 配置
+
 访问 [smith.langchain.com](https://smith.langchain.com) 个人设置获取 API Key：
 
 ![LangSmith API Key 配置](image/smith.png)
 
 #### Binance API 配置
+
 登录 Binance 账户获取 API Key 和 Secret：
 
 ![Binance API 配置](image/bn.png)
@@ -77,19 +84,20 @@ pip install -r requirements.txt
 
 ![交易对配置详解](image/env.png)
 
-| 参数 | 说明 |
-|------|------|
-| `config_id` | 配置唯一标识（确保不重复） |
-| `symbol` | Binance 合约交易对（如 BTC/USDT） |
-| `api_base` | LLM API 基础 URL |
-| `api_key` | LLM API Key |
-| `model` | 使用的 LLM 模型名称 |
-| `temperature` | LLM 采样温度（0-1） |
-| `mode` | 交易模式（STRATEGY 或 REAL） |
-| `leverage` | 杠杆倍数（仅用于 Prompt 注入） |
+| 参数            | 说明                           |
+|---------------|------------------------------|
+| `config_id`   | 配置唯一标识（确保不重复）                |
+| `symbol`      | Binance 合约交易对（如 BTC/USDT）    |
+| `api_base`    | LLM API 基础 URL               |
+| `api_key`     | LLM API Key                  |
+| `model`       | 使用的 LLM 模型名称                 |
+| `temperature` | LLM 采样温度（0-1）                |
+| `mode`        | 交易模式（STRATEGY 或 REAL）        |
+| `leverage`    | 杠杆倍数（仅用于 Prompt 注入）          |
 | `prompt_file` | 通用 Prompt 文件路径（相对项目根目录或绝对路径） |
 
 Prompt 规则：
+
 1. 配置了 `prompt_file` 且文件可读，就使用这个文件
 2. 否则使用 `prompts.py` 默认模板
 
@@ -110,6 +118,7 @@ python dashboard.py
 你可以在 `config.py` 的 `SYMBOL_CONFIGS` 中为同一个币种配置多个 Agent。
 
 **关键特性:**
+
 - **共享上下文**: 多个 Agent 共享同一个市场数据和历史记录
 - **执行顺序**: 调度器按顺序执行配置中的 Agent
 - **相互影响**: ⚠️ Agent 之间会相互影响。如果 Agent A 先执行并开仓，Agent B 在随后执行时会看到 Agent A 的持仓状态，其决策会受到影响
@@ -119,6 +128,7 @@ python dashboard.py
 ### 交易模式
 
 #### STRATEGY（策略模式）
+
 - 纯纸面交易（Paper Trading）
 - 生成带止盈止损的建议订单
 - 订单仅记录在数据库中，不消耗真实资金
@@ -126,6 +136,7 @@ python dashboard.py
 - **当前版本**: 每 1 小时执行一次
 
 #### REAL（实盘模式）
+
 - **⚠️ 高风险**: 直接调用 Binance 接口下单
 - 逻辑侧重于 Limit 挂单入场
 - **当前版本**: 每 15 分钟执行一次（周一到周日）
@@ -154,6 +165,7 @@ python dashboard.py
 配置文件中的 `LEVERAGE` 参数**仅用于 Prompt 注入**（告诉 AI 当前杠杆倍数）。
 
 ⚠️ **重要提醒**:
+
 - 程序**不会**自动去交易所修改杠杆倍数
 - 请确保 `.env` 中的值与你 Binance 账户中实际设置的杠杆倍数一致
 

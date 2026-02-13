@@ -1,142 +1,158 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
     <title>分析历史 - {{ current_symbol }}</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 text-gray-800 font-sans antialiased min-h-screen">
 
-    <div class="max-w-4xl mx-auto px-4 py-8 mb-12">
-        
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
-            <a href="/?symbol={{ current_symbol }}" class="inline-flex items-center text-gray-600 hover:text-gray-900 font-medium transition-colors">
-                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
-                返回控制台
-            </a>
-            
-            <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto">
-                <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
-                    📜 历史回溯: <span class="text-blue-600">{{ current_symbol }}</span>
-                </h1>
-                
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto">
+<div class="max-w-4xl mx-auto px-4 py-8 mb-12">
+
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+        <a href="/?symbol={{ current_symbol }}"
+           class="inline-flex items-center text-gray-600 hover:text-gray-900 font-medium transition-colors">
+            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+            </svg>
+            返回控制台
+        </a>
+
+        <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto">
+            <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
+                📜 历史回溯: <span class="text-blue-600">{{ current_symbol }}</span>
+            </h1>
+
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto">
                     Total: {{ total_count }} Records
                 </span>
-            </div>
         </div>
+    </div>
 
-        <div class="mb-6 flex flex-wrap gap-2 items-center">
-            <span class="text-sm text-gray-500 mr-2 font-medium">Filter by:</span>
-            
-            <a href="?symbol={{ current_symbol }}&agent=ALL" 
-               class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border 
+    <div class="mb-6 flex flex-wrap gap-2 items-center">
+        <span class="text-sm text-gray-500 mr-2 font-medium">Filter by:</span>
+
+        <a href="?symbol={{ current_symbol }}&agent=ALL"
+           class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border
                {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == 'ALL' else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
-               ALL
-            </a>
+            ALL
+        </a>
 
-            {% for agent in active_agents %}
-            <a href="?symbol={{ current_symbol }}&agent={{ agent }}" 
+        {% for agent in active_agents %}
+            <a href="?symbol={{ current_symbol }}&agent={{ agent }}"
                class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border 
                {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == agent else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
-               {{ agent }}
+                {{ agent }}
             </a>
+        {% endfor %}
+    </div>
+
+    {% if summaries %}
+        <div class="space-y-6">
+            {% for s in summaries %}
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="bg-gray-50 px-6 py-3 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                        <div class="flex items-center gap-3">
+                            <span class="font-bold text-gray-900">🤖 {{ s.agent_name or 'Agent' }}</span>
+                            <span class="font-mono text-xs text-gray-500 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">{{ s.timestamp }}</span>
+                        </div>
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                        {{ s.timeframe or '15m' }}
+                    </span>
+                    </div>
+
+                    <div class="p-6">
+                        <div class="text-gray-700 text-sm leading-7 whitespace-pre-wrap font-sans">{{ s.content }}</div>
+
+                        {% if s.strategy_logic %}
+                            <div class="mt-4 bg-blue-50/50 rounded-lg p-4 border-l-4 border-blue-500">
+                                <strong class="text-blue-900 text-sm block mb-2">💡 思维链 / 策略逻辑:</strong>
+                                <div class="text-blue-800 text-xs leading-relaxed whitespace-pre-wrap font-mono">{{ s.strategy_logic }}</div>
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
             {% endfor %}
         </div>
 
-        {% if summaries %}
-            <div class="space-y-6">
-            {% for s in summaries %}
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="bg-gray-50 px-6 py-3 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                    <div class="flex items-center gap-3">
-                        <span class="font-bold text-gray-900">🤖 {{ s.agent_name or 'Agent' }}</span>
-                        <span class="font-mono text-xs text-gray-500 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">{{ s.timestamp }}</span>
-                    </div>
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
-                        {{ s.timeframe or '15m' }}
-                    </span>
+        <div class="mt-8 border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg shadow-sm">
+            <!-- 移动端分页 -->
+            <div class="flex flex-col gap-3 sm:hidden">
+                <div class="text-center">
+                    <p class="text-sm text-gray-700">
+                        第 <span class="font-semibold">{{ current_page }}</span> 页 / 共 <span
+                            class="font-semibold">{{ total_pages }}</span> 页
+                        <span class="text-gray-500 ml-2">(共 {{ total_count }} 条记录)</span>
+                    </p>
                 </div>
-                
-                <div class="p-6">
-                    <div class="text-gray-700 text-sm leading-7 whitespace-pre-wrap font-sans">{{ s.content }}</div>
-                    
-                    {% if s.strategy_logic %}
-                    <div class="mt-4 bg-blue-50/50 rounded-lg p-4 border-l-4 border-blue-500">
-                        <strong class="text-blue-900 text-sm block mb-2">💡 思维链 / 策略逻辑:</strong>
-                        <div class="text-blue-800 text-xs leading-relaxed whitespace-pre-wrap font-mono">{{ s.strategy_logic }}</div>
-                    </div>
-                    {% endif %}
-                </div>
-            </div>
-            {% endfor %}
-            </div>
-
-            <div class="mt-8 border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg shadow-sm">
-                <!-- 移动端分页 -->
-                <div class="flex flex-col gap-3 sm:hidden">
-                    <div class="text-center">
-                        <p class="text-sm text-gray-700">
-                            第 <span class="font-semibold">{{ current_page }}</span> 页 / 共 <span class="font-semibold">{{ total_pages }}</span> 页
-                            <span class="text-gray-500 ml-2">(共 {{ total_count }} 条记录)</span>
-                        </p>
-                    </div>
-                    <div class="flex justify-between">
-                        <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Previous</a>
-                        <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Next</a>
-                    </div>
-                </div>
-
-                <!-- 桌面端分页 -->
-                <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
-                    <div>
-                        <p class="text-sm text-gray-700">
-                            显示第 <span class="font-semibold">{{ (current_page - 1) * 10 + 1 }}</span>
-                            到 <span class="font-semibold">{{ [current_page * 10, total_count]|min }}</span> 条
-                            <span class="text-gray-500">/ 共 <span class="font-semibold text-gray-700">{{ total_count }}</span> 条记录</span>
-                        </p>
-                    </div>
-                    <div>
-                        <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
-                            <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
-                                <span class="sr-only">Previous</span>
-                                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                    <path fill-rule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clip-rule="evenodd" />
-                                </svg>
-                            </a>
-
-                            {% for p in range(1, total_pages + 1) %}
-                                {% if p == current_page %}
-                                    <span aria-current="page" class="relative z-10 inline-flex items-center bg-blue-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">{{ p }}</span>
-                                
-                                {% elif p == 1 or p == total_pages or (p >= current_page - 2 and p <= current_page + 2) %}
-                                    <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{ p }}" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">{{ p }}</a>
-                                
-                                {% elif p == current_page - 3 or p == current_page + 3 %}
-                                    <span class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-700 ring-1 ring-inset ring-gray-300 focus:outline-offset-0">...</span>
-                                {% endif %}
-                            {% endfor %}
-
-                            <a href="?symbol={{current_symbol}}&agent={{current_agent}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
-                                <span class="sr-only">Next</span>
-                                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                    <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />
-                                </svg>
-                            </a>
-                        </nav>
-                    </div>
+                <div class="flex justify-between">
+                    <a href="?symbol={{ current_symbol }}&agent={{ current_agent }}&page={{ current_page-1 }}"
+                       class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Previous</a>
+                    <a href="?symbol={{ current_symbol }}&agent={{ current_agent }}&page={{ current_page+1}}"
+                       class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Next</a>
                 </div>
             </div>
 
-        {% else %}
-            <div class="text-center py-16 bg-white rounded-xl shadow-sm border border-dashed border-gray-300">
-                <div class="text-4xl mb-4">📭</div>
-                <h4 class="text-lg font-medium text-gray-900">暂无历史记录</h4>
-                <p class="text-gray-500 mt-1">Agent 还没开始工作，或者历史记录已被清空。</p>
+            <!-- 桌面端分页 -->
+            <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                <div>
+                    <p class="text-sm text-gray-700">
+                        显示第 <span class="font-semibold">{{ (current_page - 1) * 10 + 1 }}</span>
+                        到 <span class="font-semibold">{{ [current_page * 10, total_count]|min }}</span> 条
+                        <span class="text-gray-500">/ 共 <span
+                                class="font-semibold text-gray-700">{{ total_count }}</span> 条记录</span>
+                    </p>
+                </div>
+                <div>
+                    <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+                        <a href="?symbol={{ current_symbol }}&agent={{ current_agent }}&page={{ current_page-1 }}"
+                           class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
+                            <span class="sr-only">Previous</span>
+                            <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                <path fill-rule="evenodd"
+                                      d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z"
+                                      clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+
+                        {% for p in range(1, total_pages + 1) %}
+                            {% if p == current_page %}
+                                <span aria-current="page"
+                                      class="relative z-10 inline-flex items-center bg-blue-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">{{ p }}</span>
+
+                            {% elif p == 1 or p == total_pages or (p >= current_page - 2 and p <= current_page + 2) %}
+                                <a href="?symbol={{ current_symbol }}&agent={{ current_agent }}&page={{ p }}"
+                                   class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">{{ p }}</a>
+
+                            {% elif p == current_page - 3 or p == current_page + 3 %}
+                                <span class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-700 ring-1 ring-inset ring-gray-300 focus:outline-offset-0">...</span>
+                            {% endif %}
+                        {% endfor %}
+
+                        <a href="?symbol={{ current_symbol }}&agent={{ current_agent }}&page={{ current_page+1}}"
+                           class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
+                            <span class="sr-only">Next</span>
+                            <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                <path fill-rule="evenodd"
+                                      d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                                      clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </nav>
+                </div>
             </div>
-        {% endif %}
-    </div>
+        </div>
+
+    {% else %}
+        <div class="text-center py-16 bg-white rounded-xl shadow-sm border border-dashed border-gray-300">
+            <div class="text-4xl mb-4">📭</div>
+            <h4 class="text-lg font-medium text-gray-900">暂无历史记录</h4>
+            <p class="text-gray-500 mt-1">Agent 还没开始工作，或者历史记录已被清空。</p>
+        </div>
+    {% endif %}
+</div>
 
 </body>
 </html>

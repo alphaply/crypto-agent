@@ -8,6 +8,7 @@ import os
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
 def test_config_loading():
     """测试配置加载"""
     print("=" * 60)
@@ -22,6 +23,7 @@ def test_config_loading():
         print(f"❌ 配置模块加载失败: {e}")
         return False
 
+
 def test_global_config():
     """测试全局配置"""
     print("\n" + "=" * 60)
@@ -31,7 +33,8 @@ def test_global_config():
     try:
         from config import config
 
-        print(f"全局币安API Key: {config.global_binance_api_key[:10]}..." if config.global_binance_api_key else "未配置")
+        print(
+            f"全局币安API Key: {config.global_binance_api_key[:10]}..." if config.global_binance_api_key else "未配置")
         print(f"全局币安Secret: {config.global_binance_secret[:10]}..." if config.global_binance_secret else "未配置")
         print(f"杠杆倍数: {config.leverage}")
         print(f"启用调度器: {config.enable_scheduler}")
@@ -42,6 +45,7 @@ def test_global_config():
     except Exception as e:
         print(f"❌ 全局配置读取失败: {e}")
         return False
+
 
 def test_symbol_configs():
     """测试交易对配置"""
@@ -70,6 +74,7 @@ def test_symbol_configs():
     except Exception as e:
         print(f"❌ 交易对配置读取失败: {e}")
         return False
+
 
 def test_api_credentials_priority():
     """测试API凭证优先级"""
@@ -107,6 +112,7 @@ def test_api_credentials_priority():
         print(f"❌ API凭证优先级测试失败: {e}")
         return False
 
+
 def test_market_tool_initialization():
     """测试MarketTool初始化"""
     print("\n" + "=" * 60)
@@ -136,6 +142,7 @@ def test_market_tool_initialization():
         print(f"❌ MarketTool初始化失败: {e}")
         print("注意: 如果是网络连接错误，这是正常的（需要代理或网络连接）")
         return True  # 网络错误不算测试失败
+
 
 def main():
     """运行所有测试"""
@@ -170,6 +177,7 @@ def main():
         print("\n🎉 所有测试通过！配置系统工作正常。")
     else:
         print("\n⚠️ 部分测试失败，请检查配置。")
+
 
 if __name__ == "__main__":
     main()

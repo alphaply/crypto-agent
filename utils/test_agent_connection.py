@@ -7,6 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
 from pydantic import BaseModel, Field
 import sys
+
 sys.path.insert(0, '..')
 from utils.logger import setup_logger
 
@@ -29,15 +30,18 @@ class OrderParams(BaseModel):
     take_profit: float = Field(description="止盈", default=0.0)
     stop_loss: float = Field(description="止损", default=0.0)
 
+
 class MarketSummaryParams(BaseModel):
     current_trend: str = Field(description="趋势判断")
     key_levels: str = Field(description="关键点位")
     strategy_thought: str = Field(description="思维链")
     predict: str = Field(description="预测")
 
+
 class AgentOutput(BaseModel):
     summary: MarketSummaryParams
     orders: List[OrderParams]
+
 
 # ==========================================
 # 2. 你提供的 Input (Hardcoded for Test)
@@ -181,17 +185,18 @@ Predict: BTC若回踩86500-87000区域获得支撑，有望展开中期反弹至
 - `reason`: 详细的策略逻辑，包含 R/R 计算。
 """
 
+
 # ==========================================
 # 3. 执行测试逻辑
 # ==========================================
 
 def test_llm_connection():
     logger.info(f"\n🚀 开始测试 LLM 配置 (.env)")
-    
+
     api_key = API_KEY
     base_url = BASE_URL
     model_name = MODEL_NAME
-    
+
     logger.info(f"   Model: {model_name}")
     logger.info(f"   Base URL: {base_url}")
     logger.info(f"   API Key: {api_key[:6]}******" if api_key else "   ❌ API Key 未找到")
@@ -203,51 +208,53 @@ def test_llm_connection():
             api_key=api_key,
             base_url=base_url,
             temperature=0
-        ).with_structured_output(AgentOutput,method="function_calling") # 尝试使用tool use方式
-        
+        ).with_structured_output(AgentOutput, method="function_calling")  # 尝试使用tool use方式
+
         logger.info("✅ LLM 客户端初始化成功")
         return llm
     except Exception as e:
         logger.error(f"❌ LLM 初始化失败: {e}")
         return None
 
+
 def run_test(llm, test_name, prompt_content):
     logger.info(f"\n------------------------------------------------")
     logger.info(f"🧪 测试场景: {test_name}")
     logger.info(f"------------------------------------------------")
     logger.info("⏳ 正在发送请求给 LLM (这可能需要几秒钟)...")
-    
+
     start_t = time.time()
     try:
         # 发送 SystemMessage
         response = llm.invoke([SystemMessage(content=prompt_content)])
-        
+
         # 打印结果
-        logger.info(f"✅ 响应成功 (耗时 {time.time()-start_t:.2f}s)")
+        logger.info(f"✅ 响应成功 (耗时 {time.time() - start_t:.2f}s)")
         logger.info("\n👇 LLM 返回的 JSON 数据:")
         logger.info(response)
         logger.info(json.dumps(response.model_dump(), indent=2, ensure_ascii=False))
-        
+
         # 简单的逻辑检查
         if response.orders:
             logger.info(f"\n💡 生成了 {len(response.orders)} 个订单指令。")
         else:
             logger.info("\n💡 未生成订单 (NO_ACTION 或 观望)。")
-            
+
     except Exception as e:
         logger.error(f"❌ 调用失败: {e}")
         import traceback
         traceback.print_exc()
 
+
 if __name__ == "__main__":
     llm_client = test_llm_connection()
-    
+
     if llm_client:
         # 测试 1: 实盘模式
         run_test(llm_client, "实盘模式 (ETH/USDT)", REAL_PROMPT_INPUT)
-        
+
         # 休息一下避免速率限制
         time.sleep(1)
-        
+
         # 测试 2: 策略模式
         run_test(llm_client, "策略模式 (BTC/USDT)", STRATEGY_PROMPT_TEMPLATE)

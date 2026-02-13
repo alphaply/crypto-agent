@@ -9,8 +9,10 @@ from datetime import datetime
 # 设置时区
 TZ_CN = pytz.timezone('Asia/Shanghai')
 
+
 class LocalTimeFormatter(logging.Formatter):
     """重写 Formatter 以使用指定时区的时间"""
+
     def converter(self, timestamp):
         dt = datetime.fromtimestamp(timestamp, tz=TZ_CN)
         return dt.timetuple()
@@ -23,12 +25,13 @@ class LocalTimeFormatter(logging.Formatter):
             s = dt.strftime("%Y-%m-%d %H:%M:%S")
         return s
 
+
 def setup_logger(name, log_file='app.log', level=logging.INFO):
     """
     配置并返回一个 logger 实例
     """
     logger = logging.getLogger(name)
-    
+
     if not logger.handlers:
         logger.setLevel(level)
 
@@ -42,7 +45,7 @@ def setup_logger(name, log_file='app.log', level=logging.INFO):
         logger.addHandler(console_handler)
 
         # 3. 文件输出 (RotatingFileHandler) - 每个文件最大 10MB，保留 5 个备份
-        file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+        file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding='utf-8')
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
