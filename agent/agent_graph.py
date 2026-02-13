@@ -1,23 +1,25 @@
 import uuid
-from pathlib import Path
 from collections import defaultdict
-from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+from typing import Literal
 
-from langgraph.graph import StateGraph, END
+import pytz
+from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, BaseMessage
 from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
-from typing import Literal
-from typing_extensions import TypedDict
-from dotenv import load_dotenv
-import pytz
-from utils.logger import setup_logger
+
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
+from utils.logger import setup_logger
 from utils.prompts import PROMPT_MAP
+
 try:
-    from agent.agent_models import RealAgentOutput as RealAgentOutputSchema, StrategyAgentOutput as StrategyAgentOutputSchema
+    from agent.agent_models import RealAgentOutput as RealAgentOutputSchema, \
+        StrategyAgentOutput as StrategyAgentOutputSchema
 except ModuleNotFoundError:
     from agent_models import RealAgentOutput as RealAgentOutputSchema, StrategyAgentOutput as StrategyAgentOutputSchema
 from utils.prompt_utils import resolve_prompt_template, render_prompt
@@ -93,7 +95,7 @@ class StrategyAgentOutput(BaseModel):
 # ==========================================
 # 2. State 定义 (保持不变)
 # ==========================================
-class AgentState(TypedDict):
+class AgentState(BaseModel):
     config_id: str  # 配置ID（唯一标识符）
     symbol: str
     messages: List[BaseMessage]
@@ -142,9 +144,9 @@ def _render_prompt(template: str, **kwargs) -> str:
 
 
 def start_node(state: AgentState) -> AgentState:
-    config_id = state['config_id']
-    symbol = state['symbol']
-    config = state['agent_config']
+    config_id = state.config_id
+    symbol = state.symbol
+    config = state.agent_config
     now = datetime.now(TZ_CN)
     week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     current_time_str = f"{now.strftime('%Y-%m-%d %H:%M:%S')} ({week_map[now.weekday()]})"
@@ -291,21 +293,21 @@ def start_node(state: AgentState) -> AgentState:
             history_text=formatted_history_text
         )
 
-    return {
-        "config_id":config_id,
-        "symbol": symbol,
-        "agent_config": config,
-        "market_context": market_full,
-        "account_context": account_data,
-        "history_context": recent_summaries,
-        "messages": [SystemMessage(content=system_prompt)],
-        "final_output": {}
-    }
+    return AgentState(
+        config_id=config_id,
+        symbol=symbol,
+        agent_config=config,
+        market_context=market_full,
+        account_context=account_data,
+        history_context=recent_summaries,
+        messages=[SystemMessage(content=system_prompt)],
+        final_output={}
+    )
 
 
 def agent_node(state: AgentState) -> AgentState:
-    config = state['agent_config']
-    symbol = state['symbol']
+    config = state.agent_config
+    symbol = state.symbol
     trade_mode = config.get('mode', 'STRATEGY').upper()
 
     logger.info(f"--- [Node] Agent: {config.get('model')} ({trade_mode}) ---")
@@ -326,7 +328,7 @@ def agent_node(state: AgentState) -> AgentState:
         ).with_structured_output(output_schema, method="function_calling")
 
         response = structured_llm.invoke(state['messages'])
-        return {**state, "final_output": response.model_dump()}
+        return state.model_copy(update={"final_output": response.model_dump()})
 
     except Exception as e:
         logger.error(f"❌ [LLM Error] ({symbol}): {e}")
@@ -334,15 +336,15 @@ def agent_node(state: AgentState) -> AgentState:
             "market_trend": "Error", "key_levels": "N/A",
             "strategy_logic": f"LLM Failed: {str(e)}", "prediction": "Wait"
         }
-        return {**state, "final_output": {"summary": error_summary, "orders": []}}
+        return state.model_copy(update={"final_output": error_summary})
 
 
 def execution_node(state: AgentState) -> AgentState:
     # 保持原逻辑不变，此处省略以节省篇幅，请直接保留您原文件中的 execution_node 代码
     # ... (保持原代码不变) ...
-    config_id = state['config_id']
-    symbol = state['symbol']
-    config = state['agent_config']
+    config_id = state.config_id
+    symbol = state.symbol
+    config = state.agent_config
     # 使用 config_id 作为 agent_name，实现完全隔离
     agent_name = config_id
     trade_mode = config.get('mode', 'STRATEGY').upper()
@@ -350,7 +352,7 @@ def execution_node(state: AgentState) -> AgentState:
     # 为该配置创建专属的MarketTool实例
     market_tool = MarketTool(config_id=config_id)
 
-    output = state['final_output']
+    output = state.final_output
     if not output: return state
 
     summary = output.get('summary', {})
@@ -468,16 +470,16 @@ def run_agent_for_config(config: dict):
     logger.info(f"🚀 Launching Agent: [{config_id}] {symbol} | Model: {config.get('model')} | Mode: {mode_str}")
     logger.info(f"========================================================")
 
-    initial_state: AgentState = {
-        "config_id": config_id,
-        "symbol": symbol,
-        "messages": [],
-        "agent_config": config,
-        "market_context": {},
-        "account_context": {},
-        "history_context": [],
-        "final_output": {}
-    }
+    initial_state = AgentState(
+        config_id=config_id,
+        symbol=symbol,
+        messages=[],
+        agent_config=config,
+        market_context={},
+        account_context={},
+        history_context=[],
+        final_output={}
+    )
 
     try:
         app.invoke(initial_state)
