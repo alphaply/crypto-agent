@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
 from collections import defaultdict
-from typing import List, TypedDict, Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
 from langgraph.graph import StateGraph, END
@@ -9,12 +9,13 @@ from langchain_core.messages import SystemMessage, BaseMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from typing import Literal
+from typing_extensions import TypedDict
 from dotenv import load_dotenv
 import pytz
 from utils.logger import setup_logger
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
-from prompts import PROMPT_MAP
+from utils.prompts import PROMPT_MAP
 from agent_models import RealAgentOutput as RealAgentOutputSchema, StrategyAgentOutput as StrategyAgentOutputSchema
 from utils.prompt_utils import resolve_prompt_template, render_prompt
 
@@ -288,6 +289,7 @@ def start_node(state: AgentState) -> AgentState:
         )
 
     return {
+        "config_id":config_id,
         "symbol": symbol,
         "agent_config": config,
         "market_context": market_full,
@@ -445,9 +447,9 @@ def execution_node(state: AgentState) -> AgentState:
 
 # 5. Graph 编译与运行
 workflow = StateGraph(AgentState)
-workflow.add_node("start", start_node)
-workflow.add_node("agent", agent_node)
-workflow.add_node("execution", execution_node)
+workflow.add_node("start", start_node, input_schema=AgentState)
+workflow.add_node("agent", agent_node, input_schema=AgentState)
+workflow.add_node("execution", execution_node, input_schema=AgentState)
 workflow.set_entry_point("start")
 workflow.add_edge("start", "agent")
 workflow.add_edge("agent", "execution")
