@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel, Field
@@ -50,7 +50,7 @@ class StrategyAgentOutput(BaseModel):
     orders: List[StrategyOrderParams]
 
 
-class AgentState(TypedDict):
+class AgentState(BaseModel):
     config_id: str
     symbol: str
     messages: List[BaseMessage]

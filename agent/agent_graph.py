@@ -2,20 +2,17 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from typing import Literal
 
 import pytz
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage, BaseMessage
+from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
-from pydantic import BaseModel, Field
 
+from agent.agent_models import AgentState
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
 from utils.logger import setup_logger
-from utils.prompts import PROMPT_MAP
 
 try:
     from agent.agent_models import RealAgentOutput as RealAgentOutputSchema, \
@@ -36,106 +33,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 # ==========================================
-# 1. 定义 Schema (保持不变)
-# ==========================================
-
-# --- 实盘模式 Schema ---
-class RealOrderParams(BaseModel):
-    reason: str = Field(description="简短的执行理由")
-    action: Literal['BUY_LIMIT', 'SELL_LIMIT', 'CLOSE', 'CANCEL', 'NO_ACTION'] = Field(
-        description="BUY_LIMIT现价开多。SELL_LIMIT现价开空，CLOSE进行平多平空，NO_ACTION不做任何事情，CANCEL取消挂单"
-    )
-    pos_side: Optional[Literal['LONG', 'SHORT']] = Field(description="平仓方向: CLOSE时必填", default=None)
-    cancel_order_id: str = Field(description="撤单ID", default="")
-    entry_price: float = Field(description="挂单价格/平仓价格", default=0.0)
-    amount: float = Field(description="下单数量", default=0.0)
-
-
-class RealMarketSummary(BaseModel):
-    market_trend: str = Field(description="当前短期市场微观趋势与动能")
-    key_levels: str = Field(description="日内关键支撑位与阻力位")
-    strategy_logic: str = Field(description="存到历史记录的文字内容，作为下次行情分析的参考（简短）。")
-    prediction: str = Field(description="短期价格行为(Price Action)预判")
-
-
-class RealAgentOutput(BaseModel):
-    summary: RealMarketSummary
-    orders: List[RealOrderParams]
-
-
-# --- 策略模式 Schema ---
-class StrategyOrderParams(BaseModel):
-    reason: str = Field(description="策略逻辑与盈亏比分析 (例如 R/R: 3.2)")
-    action: Literal['BUY_LIMIT', 'SELL_LIMIT', 'CANCEL', 'NO_ACTION'] = Field(
-        description="策略动作"
-    )
-    cancel_order_id: str = Field(description="撤单ID", default="")
-    entry_price: float = Field(description="入场挂单价格", default=0.0)
-    amount: float = Field(description="模拟下单数量", default=0.0)
-    take_profit: float = Field(description="计划止盈位 (必须设置)", default=0.0)
-    stop_loss: float = Field(description="计划止损位 (必须设置)", default=0.0)
-
-    valid_duration_hours: int = Field(
-        description="挂单有效期(小时)", default=24
-    )
-
-
-class StrategyMarketSummary(BaseModel):
-    market_trend: str = Field(description="4H/1D 宏观趋势分析")
-    key_levels: str = Field(description="市场结构(Structure)、供需区与流动性分布")
-    strategy_logic: str = Field(description="详细的策略思维链、盈亏比逻辑与挂单失效条件")
-    prediction: str = Field(description="未来走势推演与剧本规划")
-
-
-class StrategyAgentOutput(BaseModel):
-    summary: StrategyMarketSummary
-    orders: List[StrategyOrderParams]
-
-
-# ==========================================
-# 2. State 定义 (保持不变)
-# ==========================================
-class AgentState(BaseModel):
-    config_id: str  # 配置ID（唯一标识符）
-    symbol: str
-    messages: List[BaseMessage]
-    agent_config: Dict[str, Any]
-    market_context: Dict[str, Any]
-    account_context: Dict[str, Any]
-    history_context: List[Dict[str, Any]]
-    final_output: Dict[str, Any]
-
-
-# ==========================================
 # 3. Nodes (重点修改了 start_node)
 # ==========================================
-
-def _resolve_prompt_template(agent_config: Dict[str, Any], trade_mode: str) -> str:
-    """
-    解析配置对应的 Prompt 模板。
-    规则：
-    1) 配置了 prompt_file 且文件可读 => 使用该文件
-    2) 否则回退到默认 PROMPT_MAP
-    """
-    prompt_file = agent_config.get("prompt_file")
-
-    if isinstance(prompt_file, str) and prompt_file.strip():
-        try:
-            file_path = Path(prompt_file.strip())
-            if not file_path.is_absolute():
-                file_path = PROJECT_ROOT / file_path
-            if file_path.exists():
-                content = file_path.read_text(encoding="utf-8").strip()
-                if content:
-                    logger.info(f"🧩 使用自定义 Prompt 文件: {file_path}")
-                    return content
-                logger.warning(f"⚠️ Prompt 文件为空，回退默认模板: {file_path}")
-            else:
-                logger.warning(f"⚠️ Prompt 文件不存在，回退默认模板: {file_path}")
-        except Exception as e:
-            logger.warning(f"⚠️ 读取 Prompt 文件失败，回退默认模板: {e}")
-
-    return PROMPT_MAP.get(trade_mode) or PROMPT_MAP.get("STRATEGY", "")
 
 
 def _render_prompt(template: str, **kwargs) -> str:
@@ -327,7 +226,7 @@ def agent_node(state: AgentState) -> AgentState:
             model_kwargs=kwargs
         ).with_structured_output(output_schema, method="function_calling")
 
-        response = structured_llm.invoke(state['messages'])
+        response = structured_llm.invoke(state.messages)
         return state.model_copy(update={"final_output": response.model_dump()})
 
     except Exception as e:
@@ -452,14 +351,14 @@ def execution_node(state: AgentState) -> AgentState:
 
 # 5. Graph 编译与运行
 workflow = StateGraph(AgentState)
-workflow.add_node("start", start_node, input_schema=AgentState)
-workflow.add_node("agent", agent_node, input_schema=AgentState)
-workflow.add_node("execution", execution_node, input_schema=AgentState)
+workflow.add_node("start", start_node)
+workflow.add_node("agent", agent_node)
+workflow.add_node("execution", execution_node)
 workflow.set_entry_point("start")
 workflow.add_edge("start", "agent")
 workflow.add_edge("agent", "execution")
 workflow.add_edge("execution", END)
-app = workflow.compile()
+app = workflow.compile(name='Crypto Agent')
 
 
 def run_agent_for_config(config: dict):
