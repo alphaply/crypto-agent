@@ -152,7 +152,7 @@ def start_node(state: AgentState) -> AgentState:
         display_orders = [{
             "id": o.get('order_id'),
             "side": o.get('side'),
-            "pos_side": o.get('pos_side'),  # <--- 传递这个关键字段
+            "pos_side": o.get('pos_side'),  
             "price": o.get('price'),
             "amount": o.get('amount')
         } for o in raw_orders]
