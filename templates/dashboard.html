@@ -10,9 +10,9 @@
             theme: {
                 extend: {
                     colors: {
-                        'buy': '#10b981',      // 翠绿
-                        'sell': '#ef4444',     // 鲜红
-                        'neutral': '#64748b',  // 灰蓝
+                        'buy': '#10b981',
+                        'sell': '#ef4444',
+                        'neutral': '#64748b',
                     }
                 }
             }
@@ -26,268 +26,235 @@
         .mini-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
         .mini-scroll::-webkit-scrollbar-track { background: transparent; }
         .mini-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
-        
-        /* 响应式调整 */
-        @media (max-width: 640px) {
-            .mobile-hide { display: none; }
-        }
     </style>
 </head>
-<body class="bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-indigo-100">
+<body class="bg-[#f1f5f9] text-slate-800 font-sans antialiased selection:bg-indigo-100">
 
     <!-- 顶部导航栏 -->
-    <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200">
+    <nav class="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-200">
         <div class="max-w-[1600px] mx-auto px-4 h-16 flex items-center justify-between">
             <div class="flex items-center gap-3">
-                <div class="bg-indigo-600 p-2 rounded-lg shadow-indigo-200 shadow-lg">
+                <div class="bg-indigo-600 p-2 rounded-xl shadow-indigo-200 shadow-lg">
                     <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
                 </div>
-                <h1 class="font-bold text-slate-900 tracking-tight hidden sm:block">Crypto <span class="text-indigo-600">Agent</span> Terminal</h1>
+                <h1 class="font-black text-slate-900 tracking-tight hidden sm:block text-xl">TERMINAL <span class="text-indigo-600">v2.0</span></h1>
             </div>
 
             <div class="flex items-center gap-3">
-                <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="bg-slate-100 border-none text-slate-900 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 block p-2 outline-none font-bold">
+                <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="bg-slate-100 border-none text-slate-900 text-sm rounded-xl focus:ring-2 focus:ring-indigo-500 block p-2.5 outline-none font-bold">
                     {% for sym in symbols %} 
                     <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
                     {% endfor %}
                 </select>
-                <div class="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                    <a href="/history?symbol={{ current_symbol }}" class="p-2 hover:bg-white rounded-md transition-all" title="历史回溯">📜</a>
-                    <button onclick="openDeleteModal()" class="p-2 hover:bg-white rounded-md transition-all text-red-500" title="清空数据">🗑️</button>
-                    <button onclick="location.reload()" class="p-2 hover:bg-white rounded-md transition-all text-indigo-600" title="刷新">↻</button>
+                <div class="flex gap-1 bg-slate-100 p-1 rounded-xl">
+                    <a href="/history?symbol={{ current_symbol }}" class="p-2 hover:bg-white rounded-lg transition-all" title="历史回溯">📜</a>
+                    <button onclick="openDeleteModal()" class="p-2 hover:bg-white rounded-lg transition-all text-red-500" title="清空数据">🗑️</button>
+                    <button onclick="location.reload()" class="p-2 hover:bg-white rounded-lg transition-all text-indigo-600" title="刷新">↻</button>
                 </div>
             </div>
         </div>
     </nav>
 
-    <!-- 状态条 -->
-    <div class="bg-white border-b border-slate-200 px-4 py-2">
-        <div class="max-w-[1600px] mx-auto flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px] font-medium">
+    <!-- 状态显示 -->
+    <div class="bg-indigo-600 text-white/90 px-4 py-2.5">
+        <div class="max-w-[1600px] mx-auto flex flex-wrap items-center gap-x-6 gap-y-2 text-xs font-bold uppercase tracking-widest">
             <div class="flex items-center gap-2">
                 {% if scheduler_enabled %}
-                <span class="relative flex h-2 w-2">
+                <span class="flex h-2 w-2 relative">
                     <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
                 </span>
-                <span class="text-emerald-600 uppercase tracking-wider font-bold">Live Execution</span>
+                <span class="text-emerald-300">System Active</span>
                 {% else %}
-                <span class="h-2 w-2 rounded-full bg-slate-400"></span>
-                <span class="text-slate-500 uppercase tracking-wider font-bold">Paused</span>
+                <span class="h-2 w-2 rounded-full bg-red-400"></span>
+                <span class="text-red-200">System Paused</span>
                 {% endif %}
             </div>
-            <div class="h-4 w-[1px] bg-slate-200 mobile-hide"></div>
-            <div class="text-slate-500">模式: <span class="text-slate-900">{{ symbol_mode }}</span></div>
-            <div class="h-4 w-[1px] bg-slate-200 mobile-hide"></div>
-            <div class="text-slate-500">运行频率: <span class="text-slate-900">{{ symbol_freq }}</span></div>
+            <div class="opacity-30">|</div>
+            <div>Mode: <span class="text-white">{{ symbol_mode }}</span></div>
+            <div class="opacity-30">|</div>
+            <div>Freq: <span class="text-white">{{ symbol_freq }}</span></div>
         </div>
     </div>
 
-    <main class="max-w-[1600px] mx-auto px-4 py-6 space-y-8">
+    <main class="max-w-[1600px] mx-auto px-4 py-8">
         
-        <!-- Agent 分析卡片展示区 -->
-        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+        <!-- Agent 卡片区 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             {% if agent_summaries %}
             {% for summary in agent_summaries %}
-            <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-all duration-300">
-                <!-- 卡片头部 -->
-                <div class="p-5 border-b border-slate-100 bg-slate-50/50">
-                    <div class="flex justify-between items-start mb-4">
+            <div class="bg-white rounded-[2rem] border border-slate-200 shadow-xl shadow-slate-200/50 overflow-hidden flex flex-col hover:border-indigo-300 transition-all duration-500">
+                <!-- 头部 -->
+                <div class="p-8 pb-4">
+                    <div class="flex justify-between items-start mb-6">
                         <div>
-                            <div class="flex items-center gap-2 mb-1">
-                                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider {{ 'bg-red-500 text-white' if summary.mode == 'REAL' else 'bg-indigo-600 text-white' }}">
-                                    {{ summary.mode }}
-                                </span>
-                                <span class="text-slate-400 text-[10px] font-mono">{{ summary.timestamp[5:-3] }}</span>
-                            </div>
-                            <h2 class="text-lg font-bold text-slate-900">{{ summary.display_name }}</h2>
+                            <span class="inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[0.2em] mb-3 {{ 'bg-red-100 text-red-600' if summary.mode == 'REAL' else 'bg-indigo-100 text-indigo-600' }}">
+                                {{ summary.mode }} MODE
+                            </span>
+                            <h2 class="text-2xl font-black text-slate-900 leading-tight">{{ summary.display_name }}</h2>
                         </div>
-                        <div class="text-right">
-                            <div class="text-[10px] text-slate-400 font-mono mb-1">LEVERAGE</div>
-                            <div class="text-sm font-bold text-orange-600">{{ summary.leverage or '?' }}x</div>
+                        <div class="bg-slate-50 p-3 rounded-2xl text-center min-w-[60px] border border-slate-100">
+                            <div class="text-[9px] font-bold text-slate-400 uppercase mb-1">LVG</div>
+                            <div class="text-lg font-black text-indigo-600">{{ summary.leverage or '?' }}x</div>
                         </div>
                     </div>
 
-                    <!-- 专业指标徽章区 -->
-                    <div class="grid grid-cols-3 gap-2">
+                    <!-- 纵向指标列表 (重点修改: 上下排放) -->
+                    <div class="space-y-3">
                         {% set content = summary.content %}
-                        <!-- 情绪解析 -->
-                        <div class="bg-white p-2 rounded-xl border border-slate-100 shadow-sm text-center">
-                            <div class="text-[9px] text-slate-400 uppercase font-bold mb-1">Sentiment</div>
-                            <div class="text-[11px] font-bold truncate 
-                                {% if '贪婪' in content or 'Greed' in content %} text-red-500 
-                                {% elif '恐惧' in content or 'Fear' in content %} text-indigo-500
-                                {% else %} text-slate-600 {% endif %}">
+                        
+                        <!-- 市场情绪 -->
+                        <div class="flex items-center justify-between p-4 rounded-2xl bg-slate-50 border border-slate-100">
+                            <span class="text-[11px] font-black text-slate-400 uppercase tracking-wider">Market Sentiment</span>
+                            <span class="text-sm font-bold {% if '贪婪' in content or 'Greed' in content %} text-red-600 {% elif '恐惧' in content or 'Fear' in content %} text-indigo-600 {% else %} text-slate-700 {% endif %}">
                                 {{ content.split('Sentiment: ')[1].split('\n')[0] if 'Sentiment: ' in content else 'Stable' }}
-                            </div>
+                            </span>
                         </div>
-                        <!-- 对齐解析 -->
-                        <div class="bg-white p-2 rounded-xl border border-slate-100 shadow-sm text-center">
-                            <div class="text-[9px] text-slate-400 uppercase font-bold mb-1">Alignment</div>
-                            <div class="text-[11px] font-bold truncate {{ 'text-emerald-600' if '一致' in content or 'Unified' in content else 'text-slate-600' }}">
-                                {{ content.split('Alignment: ')[1].split('\n')[0] if 'Alignment: ' in content else 'Checking' }}
-                            </div>
+
+                        <!-- 周期对齐 -->
+                        <div class="flex items-center justify-between p-4 rounded-2xl bg-slate-50 border border-slate-100">
+                            <span class="text-[11px] font-black text-slate-400 uppercase tracking-wider">TF Alignment</span>
+                            <span class="text-sm font-bold {{ 'text-emerald-600' if '一致' in content or 'Unified' in content else 'text-slate-700' }}">
+                                {{ content.split('Alignment: ')[1].split('\n')[0] if 'Alignment: ' in content else 'Analyzing' }}
+                            </span>
                         </div>
-                        <!-- RR解析 -->
-                        <div class="bg-white p-2 rounded-xl border border-slate-100 shadow-sm text-center">
-                            <div class="text-[9px] text-slate-400 uppercase font-bold mb-1">R/R Ratio</div>
-                            <div class="text-[11px] font-bold text-indigo-600">
+
+                        <!-- 盈亏比 -->
+                        <div class="flex items-center justify-between p-4 rounded-2xl bg-indigo-50/50 border border-indigo-100">
+                            <span class="text-[11px] font-black text-indigo-400 uppercase tracking-wider">Expectancy (R/R)</span>
+                            <span class="text-sm font-black text-indigo-600">
                                 {{ content.split('RR: ')[1].split('\n')[0] if 'RR: ' in content else 'N/A' }}
-                            </div>
+                            </span>
                         </div>
                     </div>
                 </div>
 
-                <!-- 核心逻辑区 -->
-                <div class="p-5 space-y-4 flex-grow">
-                    <div>
-                        <h4 class="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-2">
-                            <span class="w-1.5 h-1.5 rounded-full bg-indigo-500"></span> Strategy Logic
-                        </h4>
-                        <div class="text-sm text-slate-700 leading-relaxed italic bg-indigo-50/50 p-3 rounded-xl border border-indigo-100/50">
-                            "{{ summary.strategy_logic }}"
-                        </div>
+                <!-- 策略思维 -->
+                <div class="px-8 py-6 space-y-6 flex-grow">
+                    <div class="relative">
+                        <div class="absolute -left-4 top-0 bottom-0 w-1 bg-indigo-100 rounded-full"></div>
+                        <h4 class="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 ml-2">Thought Process</h4>
+                        <p class="text-[15px] text-slate-600 leading-relaxed font-medium pl-2">
+                            {{ summary.strategy_logic }}
+                        </p>
                     </div>
 
-                    <!-- 近期决策小表 -->
+                    <!-- 最近订单 -->
                     {% if summary.recent_orders %}
-                    <div class="space-y-2">
-                        <h4 class="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2">Recent Execution</h4>
-                        <div class="space-y-1.5">
+                    <div class="bg-slate-50 rounded-3xl p-5 border border-slate-100">
+                        <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Live Activity</h4>
+                        <div class="space-y-3">
                             {% for order in summary.recent_orders %}
-                            <div class="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 border border-transparent hover:border-slate-100 transition-all text-xs">
+                            <div class="flex items-center justify-between text-xs font-bold">
                                 <div class="flex items-center gap-3">
-                                    <span class="w-8 py-0.5 rounded text-center font-bold text-[10px] uppercase
-                                        {% if 'buy' in order.side|lower %} bg-emerald-100 text-emerald-700
-                                        {% elif 'sell' in order.side|lower %} bg-red-100 text-red-700
-                                        {% else %} bg-slate-100 text-slate-600 {% endif %}">
+                                    <span class="w-12 py-1 rounded-lg text-center text-[10px] uppercase
+                                        {% if 'buy' in order.side|lower %} bg-emerald-500 text-white
+                                        {% elif 'sell' in order.side|lower %} bg-red-500 text-white
+                                        {% else %} bg-slate-400 text-white {% endif %}">
                                         {{ order.side[:4] }}
                                     </span>
-                                    <span class="font-mono font-medium">{{ order.trigger_price or order.entry_price }}</span>
+                                    <span class="font-mono text-slate-700">{{ order.trigger_price or order.entry_price }}</span>
                                 </div>
-                                <div class="flex items-center gap-2">
-                                    {% if order.validity %}
-                                    <span class="text-[10px] text-slate-400 border border-slate-200 px-1 rounded">{{ order.validity }}</span>
-                                    {% endif %}
-                                    <span class="text-slate-300 font-mono">{{ order.timestamp[11:16] }}</span>
-                                </div>
+                                <span class="text-slate-300 font-mono text-[10px]">{{ order.timestamp[11:16] }}</span>
                             </div>
                             {% endfor %}
                         </div>
                     </div>
                     {% endif %}
                 </div>
+                
+                <div class="px-8 py-4 bg-slate-50 border-t border-slate-100 text-center">
+                    <span class="text-[10px] font-mono text-slate-400">AGENT_ID: {{ summary.agent_name[-8:] }}</span>
+                </div>
             </div>
             {% endfor %}
             {% else %}
-            <div class="col-span-full py-20 text-center">
-                <div class="inline-block p-6 bg-white rounded-3xl border border-dashed border-slate-300">
-                    <p class="text-slate-400 text-sm font-medium">Waiting for Agent analysis...</p>
-                </div>
+            <div class="col-span-full py-32 text-center bg-white rounded-[3rem] border-4 border-dashed border-slate-100">
+                <p class="text-slate-300 font-black text-2xl uppercase tracking-tighter">No Active Signals Detected</p>
             </div>
             {% endif %}
         </div>
 
-        <!-- 底部大表：全局决策流水 -->
-        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div class="p-6 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                <h3 class="font-bold text-slate-900 flex items-center gap-2">
-                    <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                    Order Flow Journal
-                </h3>
-                <div class="flex items-center gap-3 w-full sm:w-auto">
-                    <select id="agentFilter" onchange="filterOrders(this.value)" class="bg-slate-50 border-none text-slate-600 text-xs rounded-lg p-2 font-semibold focus:ring-2 focus:ring-indigo-500">
-                        <option value="ALL">ALL AGENTS</option>
+        <!-- 历史流水大表 -->
+        <div class="mt-12 bg-white rounded-[2.5rem] border border-slate-200 shadow-2xl shadow-slate-200/50 overflow-hidden">
+            <div class="p-8 border-b border-slate-100 flex flex-col md:flex-row justify-between items-center gap-6">
+                <h3 class="text-xl font-black text-slate-900 tracking-tight">EXECUTION JOURNAL</h3>
+                <div class="flex items-center gap-4 w-full md:w-auto">
+                    <select id="agentFilter" onchange="filterOrders(this.value)" class="flex-grow md:flex-grow-0 bg-slate-100 border-none rounded-2xl px-4 py-3 text-xs font-bold focus:ring-2 focus:ring-indigo-500">
+                        <option value="ALL">ALL OPERATORS</option>
                         {% for summary in agent_summaries %}
                         <option value="{{ summary.agent_name }}">{{ summary.display_name }}</option>
                         {% endfor %}
                     </select>
-                    <div class="text-[10px] font-bold text-slate-400 bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 uppercase tracking-tighter">
-                        Records: <span id="orderCount" class="text-indigo-600">{{ total_orders }}</span>
+                    <div class="bg-indigo-600 text-white px-4 py-3 rounded-2xl font-black text-xs tracking-tighter">
+                        TOTAL: <span id="orderCount">{{ total_orders }}</span>
                     </div>
                 </div>
             </div>
 
             <div class="overflow-x-auto">
-                <table id="orderTable" class="w-full text-left border-collapse">
-                    <thead class="bg-slate-50/50 text-[10px] text-slate-400 uppercase font-bold tracking-widest border-b border-slate-100">
+                <table id="orderTable" class="w-full text-left">
+                    <thead class="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
                         <tr>
-                            <th class="px-6 py-4">Timestamp</th>
-                            <th class="px-6 py-4">Configuration</th>
-                            <th class="px-6 py-4 text-center">Side</th>
-                            <th class="px-6 py-4">Price</th>
-                            <th class="px-6 py-4">Rational Analysis</th>
+                            <th class="px-8 py-5">Time</th>
+                            <th class="px-8 py-5">Operator</th>
+                            <th class="px-8 py-5 text-center">Action</th>
+                            <th class="px-8 py-5">Price</th>
+                            <th class="px-8 py-5">Rationale</th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-slate-50">
+                    <tbody class="divide-y divide-slate-100 font-medium">
                         {% for order in orders %}
                         <tr data-agent="{{ order.agent_name }}" class="hover:bg-slate-50/50 transition-colors">
-                            <td class="px-6 py-4 whitespace-nowrap font-mono text-[11px] text-slate-500">
-                                {{ order.timestamp }}
+                            <td class="px-8 py-6 whitespace-nowrap font-mono text-xs text-slate-400">{{ order.timestamp }}</td>
+                            <td class="px-8 py-6">
+                                <div class="text-xs font-bold text-slate-700">{{ order.agent_name.split('_')[-1] }}</div>
+                                <div class="text-[9px] text-slate-300 font-black">{{ order.trade_mode }}</div>
                             </td>
-                            <td class="px-6 py-4">
-                                <div class="text-[11px] font-bold text-slate-700">{{ order.agent_name.split('_')[-1] }}</div>
-                                <div class="text-[10px] text-slate-400 font-mono">{{ order.trade_mode }}</div>
-                            </td>
-                            <td class="px-6 py-4 text-center">
-                                <span class="px-2 py-1 rounded text-[10px] font-bold uppercase {{ 'bg-emerald-100 text-emerald-700' if 'buy' in order.side|lower else 'bg-red-100 text-red-700' }}">
+                            <td class="px-8 py-6 text-center">
+                                <span class="px-3 py-1.5 rounded-xl text-[10px] font-black uppercase {{ 'bg-emerald-500 text-white' if 'buy' in order.side|lower else 'bg-red-500 text-white' }}">
                                     {{ order.side }}
                                 </span>
                             </td>
-                            <td class="px-6 py-4 font-mono text-sm text-slate-700">{{ order.entry_price }}</td>
-                            <td class="px-6 py-4">
-                                <p class="text-xs text-slate-500 max-w-md line-clamp-2 hover:line-clamp-none cursor-default transition-all">
-                                    {{ order.reason }}
-                                </p>
-                            </td>
+                            <td class="px-8 py-6 font-mono text-sm text-slate-900">{{ order.entry_price }}</td>
+                            <td class="px-8 py-6 text-xs text-slate-500 leading-relaxed max-w-md">{{ order.reason }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
-
-            <!-- 分页 -->
-            <div class="p-6 border-t border-slate-50 bg-slate-50/30 flex justify-between items-center">
-                <div class="text-[11px] text-slate-400 font-bold uppercase">Page {{ current_page }} of {{ total_pages }}</div>
-                <nav class="flex gap-2">
-                    <a href="?symbol={{current_symbol}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-30{% endif %} px-4 py-2 bg-white border border-slate-200 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all shadow-sm">PREV</a>
-                    <a href="?symbol={{current_symbol}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-30{% endif %} px-4 py-2 bg-white border border-slate-200 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all shadow-sm">NEXT</a>
-                </nav>
-            </div>
         </div>
     </main>
 
-    <!-- 删除确认 Modal -->
+    <!-- Modal -->
     <div id="delete-modal" class="fixed inset-0 z-[100] hidden flex items-center justify-center p-4">
-        <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity" onclick="closeDeleteModal()"></div>
-        <div class="relative bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 border border-slate-100 transform transition-all scale-100">
-            <h3 class="text-xl font-bold text-slate-900 mb-2">Clean Terminal Data</h3>
-            <p class="text-slate-500 text-sm mb-6">Are you sure you want to clear analysis history for <span class="font-bold text-indigo-600">{{ current_symbol }}</span>?</p>
-            <input type="password" id="admin-pass" class="w-full bg-slate-50 border-none rounded-2xl p-4 text-sm mb-6 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Enter admin password...">
-            <div class="flex gap-3">
-                <button onclick="confirmDeleteAction()" class="flex-1 bg-red-500 text-white font-bold py-3 rounded-2xl hover:bg-red-600 transition-all shadow-lg shadow-red-100">CONFIRM</button>
-                <button onclick="closeDeleteModal()" class="flex-1 bg-slate-100 text-slate-600 font-bold py-3 rounded-2xl hover:bg-slate-200 transition-all">CANCEL</button>
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onclick="closeDeleteModal()"></div>
+        <div class="relative bg-white rounded-[3rem] p-10 max-w-md w-full shadow-2xl border border-slate-100">
+            <h3 class="text-2xl font-black text-slate-900 mb-4">PURGE DATA?</h3>
+            <p class="text-slate-500 mb-8 font-medium">This will permanently delete the analytical history for {{ current_symbol }}.</p>
+            <input type="password" id="admin-pass" class="w-full bg-slate-100 border-none rounded-2xl p-4 mb-8 outline-none focus:ring-2 focus:ring-red-500 font-bold" placeholder="ADMIN PASSWORD">
+            <div class="flex gap-4">
+                <button onclick="confirmDeleteAction()" class="flex-1 bg-red-500 text-white font-black py-4 rounded-2xl hover:bg-red-600 transition-all shadow-lg shadow-red-200">PURGE</button>
+                <button onclick="closeDeleteModal()" class="flex-1 bg-slate-100 text-slate-500 font-black py-4 rounded-2xl hover:bg-slate-200 transition-all">ABORT</button>
             </div>
         </div>
     </div>
 
-    <!-- Toast 容器 -->
-    <div id="toast-container" class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2"></div>
+    <div id="toast-container" class="fixed bottom-10 left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-3"></div>
 
     <script>
         function showToast(message, type = 'success') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
-            toast.className = `px-6 py-3 rounded-2xl shadow-xl text-sm font-bold transition-all duration-300 transform translate-y-full opacity-0 ${
+            toast.className = `px-8 py-4 rounded-2xl shadow-2xl text-xs font-black tracking-widest transition-all duration-500 transform translate-y-10 opacity-0 ${
                 type === 'success' ? 'bg-indigo-600 text-white' : 'bg-red-500 text-white'
             }`;
-            toast.innerText = message;
+            toast.innerText = message.toUpperCase();
             container.appendChild(toast);
+            setTimeout(() => { toast.classList.remove('translate-y-10', 'opacity-0'); }, 10);
             setTimeout(() => {
-                toast.classList.remove('translate-y-full', 'opacity-0');
-            }, 10);
-            setTimeout(() => {
-                toast.classList.add('translate-y-full', 'opacity-0');
-                setTimeout(() => toast.remove(), 300);
+                toast.classList.add('translate-y-10', 'opacity-0');
+                setTimeout(() => toast.remove(), 500);
             }, 3000);
         }
 
@@ -306,7 +273,7 @@
             });
             const result = await response.json();
             if (result.success) {
-                showToast('Data cleared successfully');
+                showToast('Archive Purged');
                 setTimeout(() => location.reload(), 1000);
             } else {
                 showToast(result.message, 'error');
