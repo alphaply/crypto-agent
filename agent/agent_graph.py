@@ -88,7 +88,7 @@ def start_node(state: AgentState) -> AgentState:
     current_price = analysis_data.get("price", 0)
     atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
 
-    # --- 核心修改：完整提取新指标 ---
+    # TODO 指标prompt确定下来。
     indicators_summary = {}
     timeframes = ['1h', '4h', '1d', '1w'] if trade_mode == 'STRATEGY' else ['15m', '1h', '4h', '1d']
 
@@ -232,8 +232,14 @@ def agent_node(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error(f"❌ [LLM Error] ({symbol}): {e}")
         error_summary = {
-            "market_trend": "Error", "key_levels": "N/A",
-            "strategy_logic": f"LLM Failed: {str(e)}", "prediction": "Wait"
+            "summary": {
+                "market_sentiment": "Error",
+                "timeframe_alignment": "Error",
+                "key_levels": "N/A",
+                "strategy_logic": f"LLM Failed: {str(e)}",
+                "risk_reward_ratio": "0"
+            },
+            "orders": []
         }
         return state.model_copy(update={"final_output": error_summary})
 
@@ -258,11 +264,18 @@ def execution_node(state: AgentState) -> AgentState:
     raw_orders = output.get('orders', [])
 
     thought = summary.get('strategy_logic', '')
-    predict = summary.get('prediction', '')
-    trend = summary.get('market_trend', '')
+    
+    if trade_mode == 'REAL':
+        sentiment = summary.get('market_sentiment', '')
+        alignment = summary.get('timeframe_alignment', '')
+        rr = summary.get('risk_reward_ratio', '')
+        content = f"Sentiment: {sentiment}\nAlignment: {alignment}\nRR: {rr}"
+    else:
+        predict = summary.get('prediction', '')
+        trend = summary.get('market_trend', '')
+        content = f"Trend: {trend}\nOutlook: {predict}"
 
     try:
-        content = f"Trend: {trend}\nOutlook: {predict}"
         database.save_summary(symbol, agent_name, content, thought)
     except Exception as db_err:
         logger.warning(f"⚠️ [DB Error] Save summary failed: {db_err}")

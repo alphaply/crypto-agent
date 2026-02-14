@@ -16,10 +16,11 @@ class RealOrderParams(BaseModel):
 
 
 class RealMarketSummary(BaseModel):
-    market_trend: str = Field(description="当前短期市场微观趋势与动能")
-    key_levels: str = Field(description="日内关键支撑位与阻力位")
-    strategy_logic: str = Field(description="存到历史记录的文字内容，作为下次行情分析的参考（简短）。")
-    prediction: str = Field(description="短期价格行为(Price Action)预测")
+    market_sentiment: str = Field(description="综合资金费率、成交量和 OI，判断当前是贪婪、恐惧还是观望。")
+    timeframe_alignment: str = Field(description="4h, 1h, 15m 的趋势是否统一？若冲突，目前应采取何种策略？")
+    key_levels: str = Field(description="识别最近的 POC, HVN 和布林带上下轨。")
+    strategy_logic: str = Field(description="解释做出此决定的核心逻辑（如：回踩 1h EMA50 不破且 RSI 低位金叉）。")
+    risk_reward_ratio: str = Field(description="预估这笔交易的盈亏比。")
 
 
 class RealAgentOutput(BaseModel):
