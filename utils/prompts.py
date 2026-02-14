@@ -109,11 +109,12 @@ STRATEGY_PROMPT_TEMPLATE = """
    - 设定 `valid_duration_hours`。
 
 【输出要求】
-请严格遵守 JSON Schema 输出，Summary 部分包含以下四个维度：
-1. `market_trend`: 4H/1D 宏观趋势分析。
-2. `key_levels`: 识别关键的供需区 (Supply/Demand) 和流动性池。
-3. `strategy_logic`: 详细的博弈思路。为什么这里盈亏比高？失效条件是什么？
-4. `prediction`: 未来数个小时的剧本推演。
+请严格遵守 JSON Schema 输出，Summary 部分包含以下五个维度：
+1. `market_sentiment`: 综合资金费率、成交量和 OI，判断当前是贪婪、恐惧还是观望。
+2. `timeframe_alignment`: 4h, 1h, 15m 的趋势是否统一？若冲突，目前应采取何种策略？
+3. `key_levels`: 识别关键的供需区 (Supply/Demand) 和流动性池。
+4. `strategy_logic`: 详细的博弈思路。为什么这里盈亏比高？失效条件是什么？
+5. `risk_reward_ratio`: 预估这笔交易的盈亏比。
 
 注意：策略模式下**不使用 CLOSE**，依靠 TP/SL 离场。
 """

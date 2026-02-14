@@ -265,15 +265,11 @@ def execution_node(state: AgentState) -> AgentState:
 
     thought = summary.get('strategy_logic', '')
     
-    if trade_mode == 'REAL':
-        sentiment = summary.get('market_sentiment', '')
-        alignment = summary.get('timeframe_alignment', '')
-        rr = summary.get('risk_reward_ratio', '')
-        content = f"Sentiment: {sentiment}\nAlignment: {alignment}\nRR: {rr}"
-    else:
-        predict = summary.get('prediction', '')
-        trend = summary.get('market_trend', '')
-        content = f"Trend: {trend}\nOutlook: {predict}"
+    # 统一格式化 Content，方便前端解析中文标签
+    sentiment = summary.get('market_sentiment', 'Stable')
+    alignment = summary.get('timeframe_alignment', 'Analyzing')
+    rr = summary.get('risk_reward_ratio', 'N/A')
+    content = f"Sentiment: {sentiment}\nAlignment: {alignment}\nRR: {rr}"
 
     try:
         database.save_summary(symbol, agent_name, content, thought)
@@ -335,6 +331,13 @@ def execution_node(state: AgentState) -> AgentState:
 
             elif action in ['BUY_LIMIT', 'SELL_LIMIT']:
                 entry_price = float(order.get('entry_price', 0))
+
+                # 增加模拟盘去重检查
+                latest_account = market_tool.get_account_status(symbol, is_real=False, agent_name=agent_name)
+                if _is_duplicate_real_order(action, entry_price, latest_account.get('mock_open_orders', [])):
+                    logger.info(f"🛑 [Filter] 忽略重复策略挂单: {action} @ {entry_price}")
+                    continue
+
                 valid_hours = order.get('valid_duration_hours', 24)
                 if valid_hours <= 0: valid_hours = 24
 

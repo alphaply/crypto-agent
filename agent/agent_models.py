@@ -40,10 +40,11 @@ class StrategyOrderParams(BaseModel):
 
 
 class StrategyMarketSummary(BaseModel):
-    market_trend: str = Field(description="4H/1D 宏观趋势分析")
-    key_levels: str = Field(description="市场结构(Structure)、供需区与流动性分布")
-    strategy_logic: str = Field(description="详细的策略思维链、盈亏比逻辑与挂单失效条件")
-    prediction: str = Field(description="未来走势推演与剧本规划")
+    market_sentiment: str = Field(description="综合资金费率、成交量和 OI，判断当前是贪婪、恐惧还是观望。")
+    timeframe_alignment: str = Field(description="4h, 1h, 15m 的趋势是否统一？若冲突，目前应采取何种策略？")
+    key_levels: str = Field(description="识别关键的供需区 (Supply/Demand) 和流动性池。")
+    strategy_logic: str = Field(description="详细的策略思维链、盈亏比逻辑与挂单失效条件。")
+    risk_reward_ratio: str = Field(description="预估这笔交易的盈亏比。")
 
 
 class StrategyAgentOutput(BaseModel):
