@@ -267,9 +267,10 @@ def execution_node(state: AgentState) -> AgentState:
     
     # 统一格式化 Content，方便前端解析中文标签
     sentiment = summary.get('market_sentiment', 'Stable')
+    key_levels =  summary.get('key_levels', 'N/A')
     alignment = summary.get('timeframe_alignment', 'Analyzing')
     rr = summary.get('risk_reward_ratio', 'N/A')
-    content = f"Sentiment: {sentiment}\nAlignment: {alignment}\nRR: {rr}"
+    content = f"市场情绪: {sentiment}\n支阻：{key_levels}\n时间框架: {alignment}\nRR: {rr}"
 
     try:
         database.save_summary(symbol, agent_name, content, thought)

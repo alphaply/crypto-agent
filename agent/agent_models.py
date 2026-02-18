@@ -17,10 +17,10 @@ class RealOrderParams(BaseModel):
 
 class RealMarketSummary(BaseModel):
     market_sentiment: str = Field(description="综合资金费率、成交量和 OI，判断当前是贪婪、恐惧还是观望。")
-    timeframe_alignment: str = Field(description="4h, 1h, 15m 的趋势是否统一？若冲突，目前应采取何种策略？")
-    key_levels: str = Field(description="识别最近的 POC, HVN 和布林带上下轨。")
-    strategy_logic: str = Field(description="解释做出此决定的核心逻辑（如：回踩 1h EMA50 不破且 RSI 低位金叉）。")
-    risk_reward_ratio: str = Field(description="预估这笔交易的盈亏比。")
+    timeframe_alignment: str = Field(description="对多个周期进行趋势分析")
+    key_levels: str = Field(description="根据周期，数据指标找到支撑位和阻力位")
+    strategy_logic: str = Field(description="解释做出此决定的核心逻辑（内容会作为历史记录留存）。")
+    risk_reward_ratio: str = Field(description="盈亏比计算分析")
 
 
 class RealAgentOutput(BaseModel):
@@ -29,7 +29,7 @@ class RealAgentOutput(BaseModel):
 
 
 class StrategyOrderParams(BaseModel):
-    reason: str = Field(description="策略逻辑与盈亏比分析 (例如 R/R: 3.2)")
+    reason: str = Field(description="策略逻辑与盈亏比分析")
     action: Literal["BUY_LIMIT", "SELL_LIMIT", "CANCEL", "NO_ACTION"] = Field(description="策略动作")
     cancel_order_id: str = Field(description="撤单ID", default="")
     entry_price: float = Field(description="入场挂单价格", default=0.0)
