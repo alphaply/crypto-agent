@@ -16,11 +16,11 @@ class RealOrderParams(BaseModel):
 
 
 class RealMarketSummary(BaseModel):
-    market_sentiment: str = Field(description="综合资金费率、成交量和 OI，判断当前是贪婪、恐惧还是观望。")
-    timeframe_alignment: str = Field(description="对多个周期进行趋势分析")
-    key_levels: str = Field(description="根据周期，数据指标找到支撑位和阻力位")
-    strategy_logic: str = Field(description="解释做出此决定的核心逻辑（内容会作为历史记录留存）。")
-    risk_reward_ratio: str = Field(description="盈亏比计算分析")
+    market_sentiment: str = Field(description="当前市场的趋势与动能分析")
+    # timeframe_alignment: str = Field(description="对多个周期进行趋势分析")
+    key_levels: str = Field(description="根据周期，数据指标找到日内的支撑位和阻力位")
+    strategy_logic: str = Field(description="存到历史记录的文字内容，做单的逻辑等等")
+    prediction: str = Field(description="对市场进行一个预测")
 
 
 class RealAgentOutput(BaseModel):

@@ -245,8 +245,6 @@ def agent_node(state: AgentState) -> AgentState:
 
 
 def execution_node(state: AgentState) -> AgentState:
-    # 保持原逻辑不变，此处省略以节省篇幅，请直接保留您原文件中的 execution_node 代码
-    # ... (保持原代码不变) ...
     config_id = state.config_id
     symbol = state.symbol
     config = state.agent_config
@@ -268,9 +266,9 @@ def execution_node(state: AgentState) -> AgentState:
     # 统一格式化 Content，方便前端解析中文标签
     sentiment = summary.get('market_sentiment', 'Stable')
     key_levels =  summary.get('key_levels', 'N/A')
-    alignment = summary.get('timeframe_alignment', 'Analyzing')
-    rr = summary.get('risk_reward_ratio', 'N/A')
-    content = f"市场情绪: {sentiment}\n支阻：{key_levels}\n时间框架: {alignment}\nRR: {rr}"
+    # alignment = summary.get('timeframe_alignment', 'Analyzing')
+    prediction = summary.get('prediction', 'N/A')
+    content = f"市场情绪: {sentiment}\n支阻：{key_levels}\n预测: {prediction}"
 
     try:
         database.save_summary(symbol, agent_name, content, thought)
