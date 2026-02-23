@@ -12,6 +12,7 @@
             colors: {
               'buy': '#059669',      // 买入绿
               'sell': '#dc2626',     // 卖出红
+              'cancel': '#94a3b8',   // 撤单灰
             }
           }
         }
@@ -260,7 +261,14 @@
                  </td>
                  <td class="px-6 py-3 md:table-cell text-center flex justify-between">
                     <span class="md:hidden text-xs font-bold text-gray-400">SIDE</span>
-                    <span class="font-bold {{ 'text-buy' if 'buy' in order.side|lower else 'text-sell' }}">{{ order.side|upper }}</span>
+                    <span class="font-bold 
+                        {% if 'buy' in order.side|lower %}text-buy
+                        {% elif 'sell' in order.side|lower %}text-sell
+                        {% elif 'cancel' in order.side|lower %}text-cancel
+                        {% else %}text-gray-500
+                        {% endif %}">
+                        {{ order.side|upper }}
+                    </span>
                  </td>
                  <td class="px-6 py-3 md:table-cell flex justify-between">
                     <span class="md:hidden text-xs font-bold text-gray-400">PRICE</span>

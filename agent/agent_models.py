@@ -18,9 +18,9 @@ class RealOrderParams(BaseModel):
 class RealMarketSummary(BaseModel):
     market_sentiment: str = Field(description="当前市场的趋势与动能分析")
     # timeframe_alignment: str = Field(description="对多个周期进行趋势分析")
-    key_levels: str = Field(description="根据周期，数据指标找到日内的支撑位和阻力位")
+    key_levels: str = Field(description="根据周期，数据指标分析的支撑位和阻力位")
     strategy_logic: str = Field(description="存到历史记录的文字内容，做单的逻辑等等")
-    prediction: str = Field(description="对市场进行一个预测")
+    prediction: str = Field(description="对市场进行一个大致预测")
 
 
 class RealAgentOutput(BaseModel):
@@ -40,11 +40,16 @@ class StrategyOrderParams(BaseModel):
 
 
 class StrategyMarketSummary(BaseModel):
-    market_sentiment: str = Field(description="综合资金费率、成交量和 OI，判断当前是贪婪、恐惧还是观望。")
-    timeframe_alignment: str = Field(description="4h, 1h, 15m 的趋势是否统一？若冲突，目前应采取何种策略？")
-    key_levels: str = Field(description="识别关键的供需区 (Supply/Demand) 和流动性池。")
-    strategy_logic: str = Field(description="详细的策略思维链、盈亏比逻辑与挂单失效条件。")
-    risk_reward_ratio: str = Field(description="预估这笔交易的盈亏比。")
+    
+    market_sentiment: str = Field(description="当前市场的趋势与动能分析")
+    key_levels: str = Field(description="根据周期，数据指标找到支撑位和阻力位")
+    strategy_logic: str = Field(description="存到历史记录的文字内容，做单的逻辑等等")
+    prediction: str = Field(description="对市场进行一个预测")
+    # market_sentiment: str = Field(description="综合资金费率、成交量和 OI，判断当前是贪婪、恐惧还是观望。")
+    # timeframe_alignment: str = Field(description="4h, 1h, 15m 的趋势是否统一？若冲突，目前应采取何种策略？")
+    # key_levels: str = Field(description="识别关键的供需区 (Supply/Demand) 和流动性池。")
+    # strategy_logic: str = Field(description="详细的策略思维链、盈亏比逻辑与挂单失效条件。")
+    # risk_reward_ratio: str = Field(description="预估这笔交易的盈亏比。")
 
 
 class StrategyAgentOutput(BaseModel):
