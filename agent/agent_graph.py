@@ -192,6 +192,10 @@ def agent_node(state: AgentState) -> AgentState:
     symbol = state.symbol
     logger.info(f"--- [Node] Agent: {config.get('model')} ---")
 
+    # 工具执行完回到 agent 节点时，如果模型已经有过分析，且只是执行结果确认
+    # 我们可以通过简单的 AI 回复来“礼貌”收尾，或者让模型简要总结
+    messages = state.messages
+
     try:
         kwargs = {}
         if config.get('extra_body'):
@@ -205,7 +209,7 @@ def agent_node(state: AgentState) -> AgentState:
             model_kwargs=kwargs
         ).bind_tools([open_position, close_position, cancel_orders])
 
-        response = llm.invoke(state.messages)
+        response = llm.invoke(messages)
         return state.model_copy(update={"messages": state.messages + [response]})
 
     except Exception as e:
@@ -246,28 +250,42 @@ def tools_node(state: AgentState) -> AgentState:
     return state.model_copy(update={"messages": state.messages + tool_outputs})
 
 def finalize_node(state: AgentState) -> AgentState:
-    """处理最终文本输出并保存。"""
+    """合并 AI 消息的内容并保存到数据库。"""
     config_id = state.config_id
     symbol = state.symbol
     agent_name = config_id
     
-    analysis_msg = None
-    for msg in reversed(state.messages):
-        if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-            analysis_msg = msg
-            break
-            
-    if analysis_msg:
-        content = analysis_msg.content
-        strategy_logic = summarize_content(content, state.agent_config)
+    # 收集本次运行中所有 AI 消息的内容
+    # 我们优先取那条“最长的”消息（通常是包含分析的那条），并拼接后续的确认消息
+    # 这样可以防止“已执行”覆盖掉原来的长篇分析
+    all_ai_messages = [msg for msg in state.messages if isinstance(msg, AIMessage) and msg.content]
+    
+    if all_ai_messages:
+        # 按长度排序，确保包含分析的消息排在前面
+        sorted_msgs = sorted(all_ai_messages, key=lambda m: len(m.content), reverse=True)
+        main_content = sorted_msgs[0].content # 最长的那条分析
+        
+        # 收集其他消息（如果有的话，比如执行后的简短确认）
+        other_parts = [m.content for m in all_ai_messages if m != sorted_msgs[0]]
+        
+        if other_parts:
+            full_content = main_content + "\n\n---\n\n" + "\n\n".join(other_parts)
+        else:
+            full_content = main_content
+        
+        # 调用 Summarizer Pipeline
+        strategy_logic = summarize_content(full_content, state.agent_config)
+        
         try:
-            database.save_summary(symbol, agent_name, content, strategy_logic)
+            database.save_summary(symbol, agent_name, full_content, strategy_logic)
         except Exception as e:
             logger.warning(f"⚠️ Save summary failed: {e}")
+
     return state
 
 def should_continue(state: AgentState):
     last_message = state.messages[-1]
+    # 只有当上一条消息带有工具调用时，才继续去 tools 节点
     if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
         return "tools"
     return "finalize"

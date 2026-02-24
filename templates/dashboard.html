@@ -18,8 +18,13 @@
         }
       }
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
-      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .markdown-body { font-size: 0.875rem; line-height: 1.6; }
+      .markdown-body p { margin-bottom: 0.75rem; }
+      .markdown-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.75rem; }
+      .markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight: bold; margin-top: 1rem; margin-bottom: 0.5rem; }
+      .markdown-body code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-family: monospace; }
       .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
       @keyframes pulse-custom { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
       .animate-pulse-custom { animation: pulse-custom 2s infinite; }
@@ -146,7 +151,6 @@
                             <th class="py-1 px-1">Side</th>
                             <th class="py-1 px-1">Price</th>
                             <th class="py-1 px-1">TP/SL</th>
-                            <th class="py-1 px-1">Valid</th>
                             <th class="py-1 pl-1 text-right">Time</th>
                         </tr>
                     </thead>
@@ -184,13 +188,6 @@
                                     <span onclick="handleCopy('{{ order.take_profit }}', event)" class="cursor-pointer hover:text-buy text-gray-600" title="Copy TP">{{ order.take_profit|int }}</span>
                                     <span class="text-gray-300">/</span>
                                     <span onclick="handleCopy('{{ order.stop_loss }}', event)" class="cursor-pointer hover:text-sell text-gray-600" title="Copy SL">{{ order.stop_loss|int }}</span>
-                                {% else %}-{% endif %}
-                            </td>
-                            <td class="py-1.5 px-1 font-mono text-[10px]">
-                                {% if order.validity %}
-                                <span class="inline-flex items-center px-1 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500">
-                                    {{ order.validity }}
-                                </span>
                                 {% else %}-{% endif %}
                             </td>
                             <td class="py-1.5 pl-1 text-right text-gray-400 font-mono text-[10px]">
@@ -331,6 +328,17 @@
     <div id="toast-container" class="fixed top-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none"></div>
 
     <script>
+      // 初始化 Markdown 渲染
+      document.addEventListener('DOMContentLoaded', function() {
+          const summaries = document.querySelectorAll('.text-gray-700.text-sm.leading-relaxed.whitespace-pre-wrap');
+          summaries.forEach(div => {
+              const rawContent = div.textContent;
+              div.classList.remove('whitespace-pre-wrap');
+              div.classList.add('markdown-body');
+              div.innerHTML = marked.parse(rawContent);
+          });
+      });
+
       // 1. Toast 提示函数 (替代 alert)
       function showToast(message, type = 'success') {
           const container = document.getElementById('toast-container');
