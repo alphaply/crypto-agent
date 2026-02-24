@@ -13,7 +13,10 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
 from agent.agent_models import AgentState
-from agent.agent_tools import open_position, close_position, cancel_orders
+from agent.agent_tools import (
+    open_position_real, close_position_real, cancel_orders_real,
+    open_position_strategy, cancel_orders_strategy
+)
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
 from utils.logger import setup_logger
@@ -190,10 +193,9 @@ def start_node(state: AgentState) -> AgentState:
 def agent_node(state: AgentState) -> AgentState:
     config = state.agent_config
     symbol = state.symbol
-    logger.info(f"--- [Node] Agent: {config.get('model')} ---")
+    trade_mode = config.get('mode', 'STRATEGY').upper()
+    logger.info(f"--- [Node] Agent: {config.get('model')} (Mode: {trade_mode}) ---")
 
-    # 工具执行完回到 agent 节点时，如果模型已经有过分析，且只是执行结果确认
-    # 我们可以通过简单的 AI 回复来“礼貌”收尾，或者让模型简要总结
     messages = state.messages
 
     try:
@@ -201,13 +203,19 @@ def agent_node(state: AgentState) -> AgentState:
         if config.get('extra_body'):
             kwargs["extra_body"] = config.get('extra_body')
 
+        # 根据模式选择工具集
+        if trade_mode == 'REAL':
+            tools = [open_position_real, close_position_real, cancel_orders_real]
+        else:
+            tools = [open_position_strategy, cancel_orders_strategy]
+
         llm = ChatOpenAI(
             model=config.get('model'),
             api_key=config.get('api_key'),
             base_url=config.get('api_base'),
             temperature=config.get('temperature', 0.5),
             model_kwargs=kwargs
-        ).bind_tools([open_position, close_position, cancel_orders])
+        ).bind_tools(tools)
 
         response = llm.invoke(messages)
         return state.model_copy(update={"messages": state.messages + [response]})
@@ -226,10 +234,13 @@ def tools_node(state: AgentState) -> AgentState:
     trade_mode = state.agent_config.get('mode', 'STRATEGY').upper()
     
     tool_outputs = []
-    available_tools = {
-        "open_position": open_position,
-        "close_position": close_position,
-        "cancel_orders": cancel_orders
+    # 动态映射可用工具
+    available_tools_map = {
+        "open_position_real": open_position_real,
+        "close_position_real": close_position_real,
+        "cancel_orders_real": cancel_orders_real,
+        "open_position_strategy": open_position_strategy,
+        "cancel_orders_strategy": cancel_orders_strategy
     }
     
     for tool_call in tool_calls:
@@ -237,13 +248,19 @@ def tools_node(state: AgentState) -> AgentState:
         args = tool_call['args']
         logger.info(f"🛠️ ToolNode Dispatching: {tool_name}")
         
-        if tool_name in available_tools:
+        if tool_name in available_tools_map:
+            tool_obj = available_tools_map[tool_name]
             # 注入上下文
             args['config_id'] = config_id
             args['symbol'] = symbol
-            args['trade_mode'] = trade_mode
-            result = available_tools[tool_name].invoke(args)
-            tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=str(result)))
+            
+            try:
+                # 使用 .func(**args) 直接调用原始函数，确保注入的参数能正确传递
+                result = tool_obj.func(**args)
+                tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=str(result)))
+            except Exception as e:
+                logger.error(f"❌ Error executing tool {tool_name}: {e}")
+                tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=f"Error: {str(e)}"))
         else:
             tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=f"Error: Tool '{tool_name}' not found."))
             

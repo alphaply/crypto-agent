@@ -5,7 +5,7 @@ from typing import List, Literal, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from agent.agent_models import OpenOrder, CloseOrder
+from agent.agent_models import OpenOrderReal, OpenOrderStrategy, CloseOrder
 import database
 from utils.market_data import MarketTool
 from utils.logger import setup_logger
@@ -24,21 +24,35 @@ def _is_duplicate_real_order(new_action, new_price, current_open_orders):
             return True
     return False
 
-@tool
-def open_position(orders: List[OpenOrder], config_id: str, symbol: str, trade_mode: str):
+# ==========================================
+# 工具参数 Schema 定义 (用于精简 LLM 看到的参数)
+# ==========================================
+
+class OpenRealSchema(BaseModel):
+    orders: List[OpenOrderReal] = Field(description="开多或开空指令列表")
+
+class CloseRealSchema(BaseModel):
+    orders: List[CloseOrder] = Field(description="平仓指令列表")
+
+class CancelRealSchema(BaseModel):
+    order_ids: List[str] = Field(description="要撤销的订单 ID 列表")
+
+class OpenStrategySchema(BaseModel):
+    orders: List[OpenOrderStrategy] = Field(description="模拟开仓指令列表")
+
+class CancelStrategySchema(BaseModel):
+    order_ids: List[str] = Field(description="要撤销的模拟订单 ID 列表")
+
+# ==========================================
+# 1. 实盘模式工具 (REAL Mode Tools)
+# ==========================================
+
+@tool(args_schema=OpenRealSchema)
+def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str):
     """
-    【交易核心工具：开多或开空】
-    仅在执行 BUY_LIMIT (做多) 或 SELL_LIMIT (做空) 指令时调用此工具。
-    
-    参数规范：
-    - action: 必须明确是做多还是做空。
-    - entry_price: 建议参考当前 15m/1h 周期的支撑阻力位。
-    - amount: 下单数量，请务必参考你的可用余额 (balance) 和杠杆倍数 单位是币而不是USDT。
-    - take_profit / stop_loss: 强烈建议设置，用于保护仓位。
-    
-    系统约束：
-    - 此工具严禁用于平仓 (CLOSE) 或撤单 (CANCEL)。
-    - 系统会自动处理 symbol 和杠杆，你只需要关注买卖逻辑。
+    【实盘开仓：做多或做空】
+    仅在执行 BUY_LIMIT (做多) 或 SELL_LIMIT (做空) 时调用。
+    注意：实盘挂单暂不支持自动止盈止损。
     """
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
@@ -49,46 +63,27 @@ def open_position(orders: List[OpenOrder], config_id: str, symbol: str, trade_mo
             action = op.action
             price = op.entry_price
             
-            if trade_mode == 'REAL':
-                latest = market_tool.get_account_status(symbol, is_real=True, agent_name=agent_name)
-                if _is_duplicate_real_order(action, price, latest.get('real_open_orders', [])):
-                    execution_results.append(f"⚠️ [Duplicate] {action} @ {price} 已存在，跳过。")
-                    continue
-                
-                res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=agent_name)
-                if res and 'id' in res:
-                    database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, op.take_profit or 0, op.stop_loss or 0, op.reason, trade_mode="REAL")
-            else:
-                latest = market_tool.get_account_status(symbol, is_real=False, agent_name=agent_name)
-                if _is_duplicate_real_order(action, price, latest.get('mock_open_orders', [])):
-                    execution_results.append(f"⚠️ [Duplicate Strategy] {action} @ {price} 已存在。")
-                    continue
-                
-                expire_at = (datetime.now() + timedelta(hours=op.valid_duration_hours)).timestamp()
-                mock_id = f"ST-{uuid.uuid4().hex[:6]}"
-                database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, op.stop_loss or 0, op.take_profit or 0, agent_name=agent_name, order_id=mock_id, expire_at=expire_at)
-                database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, op.take_profit or 0, op.stop_loss or 0, f"[Strategy] {op.reason}", trade_mode="STRATEGY")
+            latest = market_tool.get_account_status(symbol, is_real=True, agent_name=agent_name)
+            if _is_duplicate_real_order(action, price, latest.get('real_open_orders', [])):
+                execution_results.append(f"⚠️ [Duplicate] {action} @ {price} 已存在，跳过。")
+                continue
             
-            execution_results.append(f"✅ [Executed] {action} {symbol} @ {price} (Qty: {op.amount})")
+            res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=agent_name)
+            if res and 'id' in res:
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, op.reason, trade_mode="REAL")
+                execution_results.append(f"✅ [Executed Real] {action} {symbol} @ {price} (Qty: {op.amount})")
+            else:
+                execution_results.append(f"❌ [Error] {action} 下单失败")
         except Exception as e:
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
             
     return "\n".join(execution_results)
 
-@tool
-def close_position(orders: List[CloseOrder], config_id: str, symbol: str, trade_mode: str):
+@tool(args_schema=CloseRealSchema)
+def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     """
-    【交易核心工具：平掉现有仓位】
-    仅当你拥有现有仓位 (Positions) 且希望止盈、止损或强制平仓时，调用此工具。
-    
-    参数规范：
-    - pos_side: 必须匹配你要平掉的仓位方向 (LONG 或 SHORT)。
-    - entry_price: 平仓的触发价格，通常填入当前市场最新价。
-    - amount: 想要平仓的数量（单位是币种而不是USDT)。
-    
-    系统约束：
-    - 严禁在此工具中设置 take_profit 或 stop_loss 参数。
-    - 如果没有持仓，调用此工具将不会产生任何效果。
+    【实盘平仓：平掉现有持仓】
+    当你拥有仓位且希望止盈、止损或强制平仓时，调用此工具。
     """
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
@@ -96,29 +91,19 @@ def close_position(orders: List[CloseOrder], config_id: str, symbol: str, trade_
 
     for op in orders:
         try:
-            if trade_mode == 'REAL':
-                market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=agent_name)
-                database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, op.reason, trade_mode="REAL")
-            else:
-                database.save_order_log("CLOSE_MOCK", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, f"[Strategy] {op.reason}", trade_mode="STRATEGY")
-            
-            execution_results.append(f"✅ [Executed] 平仓成功 ({op.pos_side}) @ {op.entry_price}")
+            market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=agent_name)
+            database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, op.reason, trade_mode="REAL")
+            execution_results.append(f"✅ [Executed Real] 平仓成功 ({op.pos_side}) @ {op.entry_price}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 平仓失败: {str(e)}")
             
     return "\n".join(execution_results)
 
-@tool
-def cancel_orders(order_ids: List[str], config_id: str, symbol: str, trade_mode: str):
+@tool(args_schema=CancelRealSchema)
+def cancel_orders_real(order_ids: List[str], config_id: str, symbol: str):
     """
-    【交易辅助工具：撤销挂单】
-    当现有的挂单 (Orders) 已经不符合当前市场逻辑、或者你想重新调整挂单价格时，先调用此工具撤销旧订单。
-    
-    参数规范：
-    - order_ids: 包含你要撤销的订单 ID 列表。例如: ["8389766110438432057"]
-    
-    系统约束：
-    - 撤销后可以紧接着调用 open_position 设置新的挂单。
+    【实盘撤单：撤销现有挂单】
+    当现有挂单已不符合逻辑时调用。
     """
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
@@ -126,14 +111,63 @@ def cancel_orders(order_ids: List[str], config_id: str, symbol: str, trade_mode:
 
     for oid in order_ids:
         try:
-            if trade_mode == 'REAL':
-                market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=agent_name)
-                database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"撤单: {oid}", trade_mode="REAL")
-            else:
-                database.cancel_mock_order(oid)
-                database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"[Strategy] Cancel", trade_mode="STRATEGY")
+            market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=agent_name)
+            database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"撤单: {oid}", trade_mode="REAL")
+            execution_results.append(f"✅ [Cancelled Real] 订单 {oid} 已撤回。")
+        except Exception as e:
+            execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
             
-            execution_results.append(f"✅ [Cancelled] 订单 {oid} 已撤回。")
+    return "\n".join(execution_results)
+
+
+# ==========================================
+# 2. 策略/模拟模式工具 (STRATEGY Mode Tools)
+# ==========================================
+
+@tool(args_schema=OpenStrategySchema)
+def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symbol: str):
+    """
+    【策略开仓：记录模拟交易】
+    在模拟模式下记录开多或开空指令，支持止盈止损。
+    """
+    agent_name = config_id
+    market_tool = MarketTool(config_id=config_id)
+    execution_results = []
+
+    for op in orders:
+        try:
+            action = op.action
+            price = op.entry_price
+            
+            latest = market_tool.get_account_status(symbol, is_real=False, agent_name=agent_name)
+            if _is_duplicate_real_order(action, price, latest.get('mock_open_orders', [])):
+                execution_results.append(f"⚠️ [Duplicate Strategy] {action} @ {price} 已存在。")
+                continue
+            
+            expire_at = (datetime.now() + timedelta(hours=op.valid_duration_hours)).timestamp()
+            mock_id = f"ST-{uuid.uuid4().hex[:6]}"
+            database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, op.stop_loss or 0, op.take_profit or 0, agent_name=agent_name, order_id=mock_id, expire_at=expire_at)
+            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, op.take_profit or 0, op.stop_loss or 0, f"[Strategy] {op.reason}", trade_mode="STRATEGY")
+            
+            execution_results.append(f"✅ [Executed Strategy] {action} {symbol} @ {price} (Qty: {op.amount})")
+        except Exception as e:
+            execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
+            
+    return "\n".join(execution_results)
+
+@tool(args_schema=CancelStrategySchema)
+def cancel_orders_strategy(order_ids: List[str], config_id: str, symbol: str):
+    """
+    【策略撤单：撤销模拟挂单】
+    """
+    agent_name = config_id
+    execution_results = []
+
+    for oid in order_ids:
+        try:
+            database.cancel_mock_order(oid)
+            database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"[Strategy] Cancel", trade_mode="STRATEGY")
+            execution_results.append(f"✅ [Cancelled Strategy] 订单 {oid} 已撤回。")
         except Exception as e:
             execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
             
