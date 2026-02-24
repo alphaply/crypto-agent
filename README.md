@@ -1,4 +1,4 @@
-# 💸 自动亏钱 Agent (Automated Loss-Making Agent)
+# 💸 自动亏钱 Agent (Automated Loss-Making Agent) V0.2
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Framework](https://img.shields.io/badge/Framework-LangGraph-orange)](https://langchain-ai.github.io/langgraph/)
@@ -30,6 +30,7 @@
 - 🔌 兼容 OpenAI 规范的 API 接口（需支持 Tool Call）
 - ⏰ 启动后自动按 15 分钟和 1 小时周期执行
 - 📊 Prompt 内置常见技术指标分析
+- Agent形式的交易模式，通过langgraph实现状态机（有向环图）后续将支持用户交互。
 
 ## 🚀 快速开始
 

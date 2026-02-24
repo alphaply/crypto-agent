@@ -12,6 +12,7 @@ from utils.logger import setup_logger
 
 logger = setup_logger("AgentTools")
 
+
 def _is_duplicate_real_order(new_action, new_price, current_open_orders):
     """防抖逻辑：检查在相同价格区间内是否已存在相同方向的挂单。"""
     if new_action not in ['BUY_LIMIT', 'SELL_LIMIT']: return False

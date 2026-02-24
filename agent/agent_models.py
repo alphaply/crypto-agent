@@ -36,3 +36,4 @@ class AgentState(BaseModel):
     account_context: Dict[str, Any]
     history_context: List[Dict[str, Any]]
     full_analysis: str = ""
+    human_message: Optional[str] = None

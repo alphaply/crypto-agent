@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytz
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage, AIMessage, ToolMessage
+from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
@@ -183,11 +183,15 @@ def start_node(state: AgentState) -> AgentState:
         history_text=formatted_history_text
     )
 
+    messages = [SystemMessage(content=system_prompt)]
+    if state.human_message:
+        messages.append(HumanMessage(content=state.human_message))
+
     return state.model_copy(update={
         "market_context": market_full,
         "account_context": account_data,
         "history_context": recent_summaries,
-        "messages": [SystemMessage(content=system_prompt)]
+        "messages": messages
     })
 
 def agent_node(state: AgentState) -> AgentState:
@@ -326,7 +330,7 @@ workflow.add_edge("finalize", END)
 
 app = workflow.compile(name='Crypto Agent')
 
-def run_agent_for_config(config: dict):
+def run_agent_for_config(config: dict, human_message: str = None):
     config_id = config.get('config_id', 'unknown')
     symbol = config['symbol']
     initial_state = AgentState(
@@ -337,7 +341,8 @@ def run_agent_for_config(config: dict):
         market_context={},
         account_context={},
         history_context=[],
-        full_analysis=""
+        full_analysis="",
+        human_message=human_message
     )
     try:
         app.invoke(initial_state)
