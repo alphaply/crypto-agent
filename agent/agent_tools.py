@@ -60,6 +60,10 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
 
     for op in orders:
         try:
+            # 兼容 dict 格式
+            if isinstance(op, dict):
+                op = OpenOrderReal(**op)
+            
             action = op.action
             price = op.entry_price
             
@@ -91,6 +95,10 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
 
     for op in orders:
         try:
+            # 兼容 dict 格式
+            if isinstance(op, dict):
+                op = CloseOrder(**op)
+            
             market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=agent_name)
             database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, op.reason, trade_mode="REAL")
             execution_results.append(f"✅ [Executed Real] 平仓成功 ({op.pos_side}) @ {op.entry_price}")
@@ -136,6 +144,10 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
 
     for op in orders:
         try:
+            # 兼容 dict 格式
+            if isinstance(op, dict):
+                op = OpenOrderStrategy(**op)
+            
             action = op.action
             price = op.entry_price
             
