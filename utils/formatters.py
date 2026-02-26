@@ -3,6 +3,18 @@
 将复杂的数据结构转换为 Agent 易读的文本格式
 """
 
+def escape_markdown_special_chars(text: str) -> str:
+    """
+    转义Markdown中的特殊字符，避免被错误解析
+    特别处理波浪号，防止被当作删除线标记
+    """
+    if not text:
+        return ""
+    # 直接将所有波浪号替换为 \~，这是 Markdown 的转义方式
+    # 这样既不会被解析为删除线，在渲染时也会显示为原生的 ~
+    return text.replace('~', r'\~')
+
+
 def format_positions_to_agent_friendly(positions: list) -> str:
     if not positions:
         return "无持仓 (No Positions)"

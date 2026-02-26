@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 class OpenOrderReal(BaseModel):
     """实盘开仓参数：仅包含限价单核心参数，不包含止盈止损（实盘暂不支持自动带止盈止损）"""
     action: Literal["BUY_LIMIT", "SELL_LIMIT"] = Field(description="BUY_LIMIT: 限价开多, SELL_LIMIT: 限价开空")
-    entry_price: float = Field(description="入场的价格")
+    entry_price: float = Field(description="入场的价格（限价单）")
     amount: float = Field(description="下单数量 (标的币种数量)")
     reason: str = Field(description="开仓理由")
 
@@ -23,9 +23,9 @@ class CloseOrder(BaseModel):
     """平仓的精确参数"""
     action: Literal["CLOSE"] = Field("CLOSE", description="固定为 CLOSE")
     pos_side: Literal["LONG", "SHORT"] = Field(description="你要平掉哪一个方向的仓位: LONG(平多), SHORT(平空)")
-    entry_price: float = Field(description="触发平仓的价格 (如果是止损通常设为低于现价，如果是止盈设为高于现价)")
-    amount: float = Field(description="平仓数量 (标的币种数量)")
-    reason: str = Field(description="平仓理由")
+    entry_price: float = Field(description="触发平仓的价格，自动挂上限价订单")
+    amount: float = Field(description="数量 (标的币种数量)")
+    reason: str = Field(description="理由")
 
 class AgentState(BaseModel):
     config_id: str

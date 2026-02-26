@@ -18,7 +18,7 @@ from agent.agent_tools import (
     open_position_strategy, cancel_orders_strategy
 )
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
-    format_market_data_to_text
+    format_market_data_to_text, escape_markdown_special_chars
 from utils.logger import setup_logger
 from utils.prompt_utils import resolve_prompt_template, render_prompt
 
@@ -183,7 +183,7 @@ def start_node(state: AgentState) -> AgentState:
         history_text=formatted_history_text
     )
 
-    messages = [SystemMessage(content=system_prompt)]
+    messages = [HumanMessage(content=system_prompt)]
     if state.human_message:
         messages.append(HumanMessage(content=state.human_message))
 
@@ -297,8 +297,12 @@ def finalize_node(state: AgentState) -> AgentState:
         # 调用 Summarizer Pipeline
         strategy_logic = summarize_content(full_content, state.agent_config)
         
+        # 处理Markdown特殊字符，避免波浪号被解析为删除线
+        processed_content = escape_markdown_special_chars(full_content)
+        processed_strategy_logic = escape_markdown_special_chars(strategy_logic)
+        
         try:
-            database.save_summary(symbol, agent_name, full_content, strategy_logic)
+            database.save_summary(symbol, agent_name, processed_content, processed_strategy_logic)
         except Exception as e:
             logger.warning(f"⚠️ Save summary failed: {e}")
 

@@ -76,7 +76,7 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
             res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=agent_name)
             if res and 'id' in res:
                 database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, op.reason, trade_mode="REAL")
-                execution_results.append(f"✅ [Executed Real] {action} {symbol} @ {price} (Qty: {op.amount})")
+                execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price} (Qty: {op.amount})")
             else:
                 execution_results.append(f"❌ [Error] {action} 下单失败")
         except Exception as e:
@@ -87,8 +87,9 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
 @tool(args_schema=CloseRealSchema)
 def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     """
-    【实盘平仓：平掉现有持仓】
-    当你拥有仓位且希望止盈、止损或强制平仓时，调用此工具。
+    【平仓：挂单平掉现有持仓】
+    持仓时希望止盈、止损时，调用此工具。
+    
     """
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
@@ -102,9 +103,9 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             
             market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=agent_name)
             database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, op.reason, trade_mode="REAL")
-            execution_results.append(f"✅ [Executed Real] 平仓成功 ({op.pos_side}) @ {op.entry_price}")
+            execution_results.append(f"✅ 下单成功 ({op.pos_side}) @ {op.entry_price}")
         except Exception as e:
-            execution_results.append(f"❌ [Error] 平仓失败: {str(e)}")
+            execution_results.append(f"❌ [Error] 下单失败: {str(e)}")
             
     return "\n".join(execution_results)
 
