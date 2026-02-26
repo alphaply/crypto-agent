@@ -6,6 +6,10 @@
 
 如果真的能 100% 亏钱，那么反指就是 100% 胜率！
 
+
+TODO：重新构建文档（新的功能即将完成）
+
+
 ## 🌐 演示网站
 
 在线 Demo: [https://crypto-agent.elpha.top/](https://crypto-agent.elpha.top/)

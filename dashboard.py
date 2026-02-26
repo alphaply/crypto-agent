@@ -21,7 +21,15 @@ from dotenv import load_dotenv
 from utils.logger import setup_logger
 from config import config as global_config
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
-from agent.chat_graph import invoke_chat, resume_chat, get_chat_state, delete_chat_threads, stream_chat
+from agent.chat_graph import (
+    invoke_chat,
+    resume_chat,
+    get_chat_state,
+    get_chat_interrupt,
+    delete_chat_threads,
+    stream_chat,
+    stream_resume_chat,
+)
 
 load_dotenv(dotenv_path='.env', override=True)
 app = Flask(__name__)
@@ -488,12 +496,17 @@ def stream_chat_message_api(session_id):
         return jsonify({"success": False, "message": "会话不存在"}), 404
 
     message = (request.args.get("message") or "").strip()
-    if not message:
+    approval_raw = request.args.get("approval")
+    is_approval_stream = approval_raw is not None
+
+    if not is_approval_stream and not message:
         return jsonify({"success": False, "message": "message 不能为空"}), 400
 
-    cfg = global_config.get_config_by_id(chat_meta["config_id"])
-    if not cfg:
-        return jsonify({"success": False, "message": "配置不存在"}), 404
+    cfg = None
+    if not is_approval_stream:
+        cfg = global_config.get_config_by_id(chat_meta["config_id"])
+        if not cfg:
+            return jsonify({"success": False, "message": "配置不存在"}), 404
 
     def sse(payload):
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -501,33 +514,25 @@ def stream_chat_message_api(session_id):
     @stream_with_context
     def generate():
         try:
-            payload = {
-                "messages": [HumanMessage(content=message)],
-                "config_id": chat_meta["config_id"],
-                "symbol": chat_meta["symbol"],
-                "agent_config": cfg,
-            }
-            
-            final_message = None
-            for chunk in stream_chat(session_id, payload):
-                # We can get AIMessageChunk objects here
-                if chunk.content:
-                    yield sse({"type": "chunk", "content": chunk.content})
-                if final_message is None:
-                    final_message = chunk
-                else:
-                    final_message += chunk
-
-            # After streaming, check for tool calls
-            if final_message and final_message.tool_calls:
-                # The current UI expects a pending approval flow.
-                # We need to replicate the data structure for the frontend.
-                # For now, we will just send a 'done' message. A more complex UI change would be needed to handle this.
-                yield sse({"type": "done", "has_tool_calls": True})
+            if is_approval_stream:
+                approved = str(approval_raw).lower() in ("1", "true", "yes", "y")
+                for token in stream_resume_chat(session_id, approved):
+                    yield sse({"type": "token", "token": token})
             else:
-                yield sse({"type": "done", "has_tool_calls": False})
+                payload = {
+                    "messages": [HumanMessage(content=message)],
+                    "config_id": chat_meta["config_id"],
+                    "symbol": chat_meta["symbol"],
+                    "agent_config": cfg,
+                }
+                for token in stream_chat(session_id, payload):
+                    yield sse({"type": "token", "token": token})
 
+            state = get_chat_state(session_id) or {}
+            messages = [_serialize_message(m) for m in state.get("messages", [])]
+            pending = get_chat_interrupt(session_id)
             touch_chat_session(session_id)
+            yield sse({"type": "done", "messages": messages, "pending_approval": pending})
 
         except Exception as e:
             logger.error(f"chat stream failed: {e}", exc_info=True)

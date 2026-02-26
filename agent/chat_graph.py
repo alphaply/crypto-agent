@@ -6,7 +6,12 @@ import sqlite3
 from typing import Annotated, Any, Dict, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, trim_messages, HumanMessage
+from langchain_core.messages import (
+    BaseMessageChunk,
+    HumanMessage,
+    ToolMessage,
+    trim_messages,
+)
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
@@ -29,7 +34,8 @@ load_dotenv()
 logger = setup_logger("ChatGraph")
 
 CHAT_CHECKPOINT_DB = os.getenv("CHAT_CHECKPOINT_DB", "chat_checkpoints.sqlite")
-CHAT_MAX_HISTORY_MESSAGES = int(os.getenv("CHAT_MAX_HISTORY_MESSAGES", "15"))
+CHAT_MAX_HISTORY_MESSAGES = int(os.getenv("CHAT_MAX_HISTORY_MESSAGES", "8"))
+CHAT_TRIM_MAX_TOKENS = int(os.getenv("CHAT_TRIM_MAX_TOKENS", "6000"))
 
 
 class ChatState(TypedDict):
@@ -48,6 +54,98 @@ def _get_chat_tools(trade_mode: str):
 
 def _message_counter(msgs: list) -> int:
     return len(msgs)
+
+
+def _tool_call_ids_from_message(msg) -> list[str]:
+    tool_calls = getattr(msg, "tool_calls", None) or []
+    ids = []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            tcid = tc.get("id")
+        else:
+            tcid = getattr(tc, "id", None)
+        if tcid:
+            ids.append(str(tcid))
+    return ids
+
+
+def _sanitize_tool_sequences(messages: list):
+    """
+    Keep only tool-call spans that are protocol-complete:
+    assistant(tool_calls) + contiguous matching tool messages.
+    Drop orphan ToolMessage or incomplete tool-call spans (usually caused by trim boundary).
+    """
+    sanitized = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+
+        if isinstance(msg, ToolMessage):
+            # Orphan tool message.
+            i += 1
+            continue
+
+        required_ids = _tool_call_ids_from_message(msg)
+        if not required_ids:
+            sanitized.append(msg)
+            i += 1
+            continue
+
+        required = set(required_ids)
+        seen = set()
+        matched_tools = []
+        j = i + 1
+        while j < len(messages) and isinstance(messages[j], ToolMessage):
+            tcid = str(getattr(messages[j], "tool_call_id", "") or "")
+            if tcid in required and tcid not in seen:
+                matched_tools.append(messages[j])
+                seen.add(tcid)
+            j += 1
+
+        if seen == required:
+            sanitized.append(msg)
+            sanitized.extend(matched_tools)
+        # else: incomplete span, drop it.
+        i = j
+
+    return sanitized
+
+
+def _trim_chat_messages(system_prompt: str, history: list):
+    # Force the market-context prompt to be a HumanMessage and never trim it.
+    pinned_prompt = HumanMessage(content=system_prompt)
+
+    # Stage 1: token trim on history only.
+    if history:
+        token_trimmed_history = trim_messages(
+            history,
+            max_tokens=CHAT_TRIM_MAX_TOKENS,
+            token_counter="approximate",
+            strategy="last",
+            include_system=False,
+            allow_partial=False,
+        )
+    else:
+        token_trimmed_history = []
+    token_trimmed_history = _sanitize_tool_sequences(token_trimmed_history)
+
+    # Stage 2: strict message-count trim on history only.
+    tail_limit = max(0, CHAT_MAX_HISTORY_MESSAGES - 1)  # reserve 1 for pinned_prompt
+    if tail_limit == 0 or not token_trimmed_history:
+        count_trimmed_history = []
+    else:
+        count_trimmed_history = trim_messages(
+            token_trimmed_history,
+            max_tokens=tail_limit,
+            token_counter=_message_counter,
+            strategy="last",
+            include_system=False,
+            allow_partial=False,
+        )
+    count_trimmed_history = _sanitize_tool_sequences(count_trimmed_history)
+
+    final_messages = [pinned_prompt] + count_trimmed_history
+    return final_messages
 
 
 def start_node(state: ChatState):
@@ -90,16 +188,8 @@ def model_node(state: ChatState):
         model_kwargs=kwargs,
     ).bind_tools(_get_chat_tools(mode))
 
-    history = [m for m in state["messages"] if not isinstance(m, SystemMessage)]
-    llm_messages = [SystemMessage(content=state.get("system_prompt", ""))] + history
-    trimmed = trim_messages(
-        llm_messages,
-        max_tokens=CHAT_MAX_HISTORY_MESSAGES,
-        token_counter=_message_counter,
-        strategy="last",
-        include_system=True,
-        allow_partial=False,
-    )
+    history = state["messages"]
+    trimmed = _trim_chat_messages(state.get("system_prompt", ""), history)
 
     response = llm.invoke(trimmed)
     return {"messages": [response], "agent_config": cfg}
@@ -191,70 +281,51 @@ atexit.register(lambda: _checkpointer_cm.__exit__(None, None, None))
 chat_app = workflow.compile(checkpointer=checkpointer, name="CryptoChat")
 
 
+def _chunk_to_text(chunk: BaseMessageChunk | Any) -> str:
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 def stream_chat(session_id: str, payload: Dict[str, Any]):
-    """
-    Streams the chat response from the LLM, bypassing the main graph but using its components.
-    This is a generator that yields chunks of the response.
-    """
+    """Token-level stream from the compiled LangGraph execution."""
     config = {"configurable": {"thread_id": session_id}}
-    
-    # 1. Get current state
-    snapshot = chat_app.get_state(config)
-    
-    # 2. Prepare for LLM call (similar to start_node and model_node)
-    human_message = payload["messages"][0]
-    cfg = payload.get("agent_config")
-    if not cfg:
-        raise ValueError("Config not found in payload")
+    for item in chat_app.stream(payload, config=config, stream_mode="messages"):
+        # LangGraph returns (message_chunk, metadata) in messages mode.
+        if not isinstance(item, tuple) or len(item) != 2:
+            continue
+        chunk, metadata = item
+        if not metadata or metadata.get("langgraph_node") != "model":
+            continue
+        token = _chunk_to_text(chunk)
+        if token:
+            yield token
 
-    # Get system prompt
-    scheduler_state = AgentState(
-        config_id=payload["config_id"],
-        symbol=payload["symbol"],
-        messages=[],
-        agent_config=cfg,
-        market_context={},
-        account_context={},
-        history_context=[],
-        full_analysis="",
-        human_message=None,
-    )
-    started = scheduler_start_node(scheduler_state)
-    system_prompt_content = started.messages[0].content if started.messages else ""
 
-    # Prepare messages
-    history = [m for m in snapshot.values.get("messages", []) if not isinstance(m, SystemMessage)]
-    llm_messages = [SystemMessage(content=system_prompt_content)] + history + [human_message]
-    
-    trimmed = trim_messages(
-        llm_messages,
-        max_tokens=CHAT_MAX_HISTORY_MESSAGES,
-        strategy="last",
-        include_system=True,
-    )
-
-    # 3. Instantiate LLM and stream
-    mode = cfg.get("mode", "STRATEGY").upper()
-    llm = ChatOpenAI(
-        model=cfg.get("model"),
-        api_key=cfg.get("api_key"),
-        base_url=cfg.get("api_base"),
-        temperature=cfg.get("temperature", 0.5),
-    ).bind_tools(_get_chat_tools(mode))
-
-    full_response = None
-    for chunk in llm.stream(trimmed):
-        yield chunk
-        if full_response is None:
-            full_response = chunk
-        else:
-            full_response += chunk
-    
-    # 4. Update state with the new messages
-    if full_response:
-        # Manually add the human message that initiated the stream
-        final_messages = [human_message, full_response]
-        chat_app.update_state(config, {"messages": final_messages})
+def stream_resume_chat(session_id: str, approved: bool):
+    """Token-level stream for resume after human approval."""
+    config = {"configurable": {"thread_id": session_id}}
+    command = Command(resume={"approved": approved})
+    for item in chat_app.stream(command, config=config, stream_mode="messages"):
+        if not isinstance(item, tuple) or len(item) != 2:
+            continue
+        chunk, metadata = item
+        if not metadata or metadata.get("langgraph_node") != "model":
+            continue
+        token = _chunk_to_text(chunk)
+        if token:
+            yield token
 
 
 def invoke_chat(session_id: str, payload: Dict[str, Any]):
@@ -271,6 +342,18 @@ def get_chat_state(session_id: str):
     config = {"configurable": {"thread_id": session_id}}
     snapshot = chat_app.get_state(config)
     return snapshot.values if snapshot else {}
+
+
+def get_chat_interrupt(session_id: str):
+    config = {"configurable": {"thread_id": session_id}}
+    snapshot = chat_app.get_state(config)
+    if not snapshot or not getattr(snapshot, "interrupts", None):
+        return None
+    intr = snapshot.interrupts[0]
+    return {
+        "id": getattr(intr, "id", ""),
+        "value": getattr(intr, "value", {}) or {},
+    }
 
 
 def delete_chat_threads(session_ids):
