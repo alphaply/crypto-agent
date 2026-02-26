@@ -51,9 +51,9 @@ class CancelStrategySchema(BaseModel):
 @tool(args_schema=OpenRealSchema)
 def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str):
     """
-    【实盘开仓：做多或做空】
+    【开仓：限价做多或做空】
     仅在执行 BUY_LIMIT (做多) 或 SELL_LIMIT (做空) 时调用。
-    注意：实盘挂单暂不支持自动止盈止损。
+    暂不支持自动止盈止损，需要使用平仓工具配合实现。
     """
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
@@ -89,7 +89,6 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     """
     【平仓：挂单平掉现有持仓】
     持仓时希望止盈、止损时，调用此工具。
-    
     """
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
@@ -112,7 +111,7 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
 @tool(args_schema=CancelRealSchema)
 def cancel_orders_real(order_ids: List[str], config_id: str, symbol: str):
     """
-    【实盘撤单：撤销现有挂单】
+    【撤单：撤销现有挂单】
     当现有挂单已不符合逻辑时调用。
     """
     agent_name = config_id
