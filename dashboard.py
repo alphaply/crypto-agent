@@ -1,9 +1,11 @@
-from flask import Flask, render_template, request,jsonify
+from flask import Flask, render_template, request, jsonify, session, Response, stream_with_context
 import sqlite3
 import threading
 import math
 import json
 import os
+import uuid
+import time
 from datetime import datetime
 import re
 import pytz
@@ -11,17 +13,74 @@ from database import (
     DB_NAME, init_db, 
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
     get_balance_history, get_trade_history, clean_financial_data,
-    get_active_agents
+    get_active_agents, create_chat_session, get_chat_sessions, get_chat_session,
+    touch_chat_session, delete_chat_session, delete_chat_sessions
 )
 from main_scheduler import run_smart_scheduler, get_next_run_settings
 from dotenv import load_dotenv
 from utils.logger import setup_logger
 from config import config as global_config
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
+from agent.chat_graph import invoke_chat, resume_chat, get_chat_state, delete_chat_threads, stream_chat
 
 load_dotenv(dotenv_path='.env', override=True)
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", os.getenv("ADMIN_PASSWORD", "dev-secret"))
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 TZ_CN = pytz.timezone('Asia/Shanghai')
 logger = setup_logger("Dashboard")
+
+
+def _chat_password():
+    return os.getenv("CHAT_PASSWORD") or os.getenv("ADMIN_PASSWORD")
+
+
+def _chat_authed() -> bool:
+    return bool(session.get("chat_authed", False))
+
+
+def _require_chat_auth_api():
+    if not _chat_authed():
+        return jsonify({"success": False, "message": "未授权，请先输入密码"}), 401
+    return None
+
+
+def _serialize_message(msg):
+    role = "assistant"
+    if isinstance(msg, HumanMessage):
+        role = "user"
+    elif isinstance(msg, ToolMessage):
+        role = "tool"
+    elif isinstance(msg, SystemMessage):
+        role = "system"
+
+    payload = {
+        "role": role,
+        "content": msg.content,
+    }
+    if isinstance(msg, AIMessage):
+        payload["tool_calls"] = getattr(msg, "tool_calls", []) or []
+    return payload
+
+
+def _extract_interrupt(result):
+    interrupts = result.get("__interrupt__", []) if isinstance(result, dict) else []
+    if not interrupts:
+        return None
+    intr = interrupts[0]
+    value = getattr(intr, "value", {}) or {}
+    return {
+        "id": getattr(intr, "id", ""),
+        "value": value,
+    }
+
+
+def _latest_ai_text(messages):
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            return msg.get("content", "") or ""
+    return ""
 
 def get_scheduler_status():
     """获取调度器状态，根据环境变量决定是否运行调度器"""
@@ -63,8 +122,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                     summary_dict['mode'] = config.get('mode', 'STRATEGY')
                     summary_dict['leverage'] = global_config.get_leverage(config.get('config_id'))
                     # 优化display_name，加入config_id后缀以便区分相同model+mode的配置
-                    config_suffix = config_id.split('_')[-1] if '_' in config_id else config_id[-4:]
-                    summary_dict['display_name'] = f"{config.get('model', 'Unknown')} ({config.get('mode', 'STRATEGY')}) #{config_suffix}"
+                    summary_dict['display_name'] = f"{config.get('model', 'Unknown')} ({config.get('mode', 'STRATEGY')})"
                 else:
                     # 完全找不到配置，使用默认值
                     summary_dict['model'] = agent  # 直接显示 agent_name
@@ -307,6 +365,224 @@ def get_configs_api():
     except Exception as e:
         logger.error(f"获取配置列表失败: {e}")
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/chat')
+def chat_view():
+    return render_template('chat.html', authed=_chat_authed())
+
+
+@app.route('/api/chat/auth', methods=['POST'])
+def chat_auth():
+    data = request.json or {}
+    password = data.get("password", "")
+    expected = _chat_password()
+    if not expected:
+        return jsonify({"success": False, "message": "服务端未配置聊天密码"}), 500
+    if password != expected:
+        return jsonify({"success": False, "message": "密码错误"}), 401
+    session["chat_authed"] = True
+    return jsonify({"success": True})
+
+
+@app.route('/api/chat/bootstrap', methods=['GET'])
+def chat_bootstrap():
+    auth_resp = _require_chat_auth_api()
+    if auth_resp:
+        return auth_resp
+
+    configs = []
+    for cfg in global_config.get_all_symbol_configs():
+        configs.append({
+            "config_id": cfg.get("config_id", ""),
+            "symbol": cfg.get("symbol", ""),
+            "model": cfg.get("model", ""),
+            "mode": cfg.get("mode", "STRATEGY"),
+        })
+    sessions = get_chat_sessions(limit=200)
+    return jsonify({"success": True, "configs": configs, "sessions": sessions})
+
+
+@app.route('/api/chat/sessions', methods=['POST'])
+def create_chat_session_api():
+    auth_resp = _require_chat_auth_api()
+    if auth_resp:
+        return auth_resp
+
+    data = request.json or {}
+    config_id = data.get("config_id")
+    if not config_id:
+        return jsonify({"success": False, "message": "缺少 config_id"}), 400
+
+    cfg = global_config.get_config_by_id(config_id)
+    if not cfg:
+        return jsonify({"success": False, "message": "配置不存在"}), 404
+
+    session_id = uuid.uuid4().hex
+    symbol = cfg.get("symbol", "")
+    title = data.get("title") or f"{symbol} · {cfg.get('mode', 'STRATEGY')}"
+    create_chat_session(session_id, config_id, symbol, title)
+    return jsonify({
+        "success": True,
+        "session": {
+            "session_id": session_id,
+            "title": title,
+            "config_id": config_id,
+            "symbol": symbol,
+        },
+    })
+
+
+@app.route('/api/chat/sessions/<session_id>/messages', methods=['GET'])
+def get_chat_messages_api(session_id):
+    auth_resp = _require_chat_auth_api()
+    if auth_resp:
+        return auth_resp
+
+    chat_meta = get_chat_session(session_id)
+    if not chat_meta:
+        return jsonify({"success": False, "message": "会话不存在"}), 404
+
+    state = get_chat_state(session_id) or {}
+    messages = [_serialize_message(m) for m in state.get("messages", [])]
+    return jsonify({"success": True, "session": chat_meta, "messages": messages})
+
+
+@app.route('/api/chat/sessions/<session_id>', methods=['DELETE'])
+def delete_chat_session_api(session_id):
+    auth_resp = _require_chat_auth_api()
+    if auth_resp:
+        return auth_resp
+
+    deleted = delete_chat_session(session_id)
+    delete_chat_threads([session_id])
+    if deleted <= 0:
+        return jsonify({"success": False, "message": "会话不存在"}), 404
+    return jsonify({"success": True, "deleted": deleted})
+
+
+@app.route('/api/chat/sessions', methods=['DELETE'])
+def delete_chat_sessions_api():
+    auth_resp = _require_chat_auth_api()
+    if auth_resp:
+        return auth_resp
+
+    data = request.json or {}
+    session_ids = data.get("session_ids") or []
+    if not isinstance(session_ids, list) or not session_ids:
+        return jsonify({"success": False, "message": "session_ids 不能为空"}), 400
+
+    deleted_meta = delete_chat_sessions(session_ids)
+    delete_chat_threads(session_ids)
+    return jsonify({"success": True, "deleted": deleted_meta})
+
+
+@app.route('/api/chat/sessions/<session_id>/stream', methods=['GET'])
+def stream_chat_message_api(session_id):
+    auth_resp = _require_chat_auth_api()
+    if auth_resp:
+        return auth_resp
+
+    chat_meta = get_chat_session(session_id)
+    if not chat_meta:
+        return jsonify({"success": False, "message": "会话不存在"}), 404
+
+    message = (request.args.get("message") or "").strip()
+    if not message:
+        return jsonify({"success": False, "message": "message 不能为空"}), 400
+
+    cfg = global_config.get_config_by_id(chat_meta["config_id"])
+    if not cfg:
+        return jsonify({"success": False, "message": "配置不存在"}), 404
+
+    def sse(payload):
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    @stream_with_context
+    def generate():
+        try:
+            payload = {
+                "messages": [HumanMessage(content=message)],
+                "config_id": chat_meta["config_id"],
+                "symbol": chat_meta["symbol"],
+                "agent_config": cfg,
+            }
+            
+            final_message = None
+            for chunk in stream_chat(session_id, payload):
+                # We can get AIMessageChunk objects here
+                if chunk.content:
+                    yield sse({"type": "chunk", "content": chunk.content})
+                if final_message is None:
+                    final_message = chunk
+                else:
+                    final_message += chunk
+
+            # After streaming, check for tool calls
+            if final_message and final_message.tool_calls:
+                # The current UI expects a pending approval flow.
+                # We need to replicate the data structure for the frontend.
+                # For now, we will just send a 'done' message. A more complex UI change would be needed to handle this.
+                yield sse({"type": "done", "has_tool_calls": True})
+            else:
+                yield sse({"type": "done", "has_tool_calls": False})
+
+            touch_chat_session(session_id)
+
+        except Exception as e:
+            logger.error(f"chat stream failed: {e}", exc_info=True)
+            yield sse({"type": "error", "message": str(e)})
+
+    return Response(generate(), mimetype="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+
+
+@app.route('/api/chat/sessions/<session_id>/send', methods=['POST'])
+def send_chat_message_api(session_id):
+    auth_resp = _require_chat_auth_api()
+    if auth_resp:
+        return auth_resp
+
+    chat_meta = get_chat_session(session_id)
+    if not chat_meta:
+        return jsonify({"success": False, "message": "会话不存在"}), 404
+
+    data = request.json or {}
+    message = (data.get("message") or "").strip()
+    approval = data.get("approval")
+
+    cfg = global_config.get_config_by_id(chat_meta["config_id"])
+    if not cfg:
+        return jsonify({"success": False, "message": "配置不存在"}), 404
+
+    try:
+        if approval is not None:
+            result = resume_chat(session_id, bool(approval))
+        else:
+            if not message:
+                return jsonify({"success": False, "message": "message 不能为空"}), 400
+            payload = {
+                "messages": [HumanMessage(content=message)],
+                "config_id": chat_meta["config_id"],
+                "symbol": chat_meta["symbol"],
+                "agent_config": cfg,
+            }
+            result = invoke_chat(session_id, payload)
+
+        state = get_chat_state(session_id) or {}
+        messages = [_serialize_message(m) for m in state.get("messages", [])]
+        pending = _extract_interrupt(result)
+        touch_chat_session(session_id)
+        return jsonify({
+            "success": True,
+            "messages": messages,
+            "pending_approval": pending,
+        })
+    except Exception as e:
+        logger.error(f"chat send failed: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 if __name__ == "__main__":

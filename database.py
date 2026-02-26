@@ -86,6 +86,15 @@ def init_db():
                     realized_pnl REAL          -- 部分交易所支持返回该字段
                 )''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS chat_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    title TEXT,
+                    config_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )''')
+
     conn.commit()
     conn.close()
 
@@ -359,6 +368,81 @@ def clean_financial_data(symbol):
     conn.commit()
     conn.close()
     return c1 + c2
+
+
+def create_chat_session(session_id: str, config_id: str, symbol: str, title: str):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute(
+        '''
+        INSERT INTO chat_sessions (session_id, title, config_id, symbol, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''',
+        (session_id, title, config_id, symbol, now, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def touch_chat_session(session_id: str):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute(
+        "UPDATE chat_sessions SET updated_at = ? WHERE session_id = ?",
+        (now, session_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_chat_session(session_id: str):
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    row = c.execute(
+        "SELECT * FROM chat_sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_chat_sessions(limit: int = 100):
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    rows = c.execute(
+        "SELECT * FROM chat_sessions ORDER BY updated_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def delete_chat_session(session_id: str) -> int:
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def delete_chat_sessions(session_ids):
+    ids = [sid for sid in session_ids if sid]
+    if not ids:
+        return 0
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    placeholders = ",".join(["?"] * len(ids))
+    c.execute(f"DELETE FROM chat_sessions WHERE session_id IN ({placeholders})", tuple(ids))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 if __name__ == "__main__":
     init_db()

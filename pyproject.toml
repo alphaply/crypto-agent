@@ -10,6 +10,7 @@ dependencies = [
     "gradio>=6.4.0",
     "langchain-openai>=1.1.7",
     "langgraph>=1.0.7",
+    "langgraph-checkpoint-sqlite>=3.0.3",
     "numpy>=2.2.6",
     "pandas>=2.3.3",
     "plotly>=6.5.2",
