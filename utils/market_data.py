@@ -125,19 +125,32 @@ class MarketTool:
         low = df['low']
         close = df['close']
         
-        plus_dm = high.diff()
-        minus_dm = low.diff(-1)
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm < 0] = 0
-        
-        tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(window=period).mean()
-        
-        plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-        minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
-        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
-        adx = dx.rolling(window=period).mean()
-        return adx.fillna(0), plus_di.fillna(0), minus_di.fillna(0)
+        # Wilder's ADX: avoid look-ahead and smooth with RMA (EMA alpha=1/period)
+        up_move = high.diff()
+        down_move = low.shift(1) - low
+
+        plus_dm = pd.Series(
+            np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
+            index=df.index,
+        )
+        minus_dm = pd.Series(
+            np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
+            index=df.index,
+        )
+
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+
+        plus_di = 100 * plus_dm.ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr
+        minus_di = 100 * minus_dm.ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr
+        di_sum = (plus_di + minus_di).replace(0, np.nan)
+        dx = 100 * (plus_di - minus_di).abs() / di_sum
+        adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+        return adx.fillna(0.0), plus_di.fillna(0.0), minus_di.fillna(0.0)
 
     def _calc_vwap(self, df):
         """计算 VWAP (成交量加权平均价)"""

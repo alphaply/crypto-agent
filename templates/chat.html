@@ -148,7 +148,7 @@
           <div id="sessionList" class="flex-1 min-h-0 overflow-y-auto scroll-thin"></div>
         </aside>
 
-        <section class="h-full rounded-2xl border border-slate-200 bg-white/95 shadow-sm flex flex-col overflow-hidden min-h-0">
+        <section class="h-full rounded-2xl border border-slate-200 bg-white/95 shadow-sm flex flex-col overflow-hidden min-h-0 relative">
           <div class="px-3 sm:px-4 py-3 border-b border-slate-200 bg-slate-50/60">
             <div class="flex items-center gap-2">
               <button onclick="toggleMobileSidebar()" title="会话列表" class="lg:hidden rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700">
@@ -161,6 +161,9 @@
           </div>
 
           <div id="messages" class="flex-1 min-h-0 overflow-y-auto scroll-thin p-3 sm:p-4 bg-[linear-gradient(180deg,#f8fbff_0%,#f4f8fb_100%)] space-y-3"></div>
+          <button id="jumpToBottomBtn" onclick="scrollToBottomAndFollow()" class="hidden absolute right-4 bottom-24 z-20 rounded-full border border-blue-200 bg-white/95 text-blue-700 px-3 py-1.5 text-xs shadow-sm hover:bg-blue-50">
+            回到底部
+          </button>
 
           <div id="approvalBar" class="hidden border-t border-amber-200 bg-amber-50 px-4 py-3">
             <div class="text-sm">
@@ -210,6 +213,10 @@
       let selectedSessionIds = new Set();
       let mobileSidebarOpen = false;
       let approvalLoading = false;
+      let streamRenderTimer = null;
+      let streamRenderQueue = null;
+      let autoScrollEnabled = true;
+      const AUTO_SCROLL_THRESHOLD = 56;
 
       const mdEscapeHtml = (str) => String(str || '')
         .replace(/&/g, '&amp;')
@@ -242,6 +249,57 @@
           return mdEscapeHtml(content).replace(/\n/g, '<br>');
         }
         return DOMPurify.sanitize(md.render(content));
+      }
+
+      function scheduleStreamRender(messages, force = false) {
+        if (force) {
+          if (streamRenderTimer) {
+            clearTimeout(streamRenderTimer);
+            streamRenderTimer = null;
+          }
+          streamRenderQueue = null;
+          renderMessages(messages);
+          return;
+        }
+
+        streamRenderQueue = messages;
+        if (streamRenderTimer) return;
+        streamRenderTimer = setTimeout(() => {
+          streamRenderTimer = null;
+          const nextMessages = streamRenderQueue || currentMessages;
+          streamRenderQueue = null;
+          renderMessages(nextMessages);
+        }, 60);
+      }
+
+      function isNearBottom(container) {
+        if (!container) return true;
+        return (container.scrollHeight - container.scrollTop - container.clientHeight) <= AUTO_SCROLL_THRESHOLD;
+      }
+
+      function updateJumpToBottomButton() {
+        const btn = document.getElementById('jumpToBottomBtn');
+        if (!btn) return;
+        btn.classList.toggle('hidden', autoScrollEnabled);
+      }
+
+      function scrollToBottomAndFollow() {
+        const container = ensureMessagesScrollListener();
+        if (!container) return;
+        autoScrollEnabled = true;
+        container.scrollTop = container.scrollHeight;
+        updateJumpToBottomButton();
+      }
+
+      function ensureMessagesScrollListener() {
+        const container = document.getElementById('messages');
+        if (!container || container._scrollListenerInitialized) return container;
+        container._scrollListenerInitialized = true;
+        container.addEventListener('scroll', () => {
+          autoScrollEnabled = isNearBottom(container);
+          updateJumpToBottomButton();
+        });
+        return container;
       }
 
       function toggleMobileSidebar() {
@@ -428,11 +486,13 @@
         if (!data.success) return;
         document.getElementById('chatHeader').textContent = `${data.session.title} (${data.session.symbol} / ${data.session.config_id})`;
         currentMessages = data.messages || [];
+        autoScrollEnabled = true;
         renderMessages(currentMessages);
       }
 
       function renderMessages(messages) {
-        const container = document.getElementById('messages');
+        const container = ensureMessagesScrollListener();
+        const shouldAutoScroll = autoScrollEnabled || isNearBottom(container);
         container.innerHTML = '';
 
         if (!messages.length) {
@@ -447,20 +507,22 @@
           let bubbleClass = '';
           let roleText = '';
           if (isUser) {
-            bubbleClass = 'bubble-user ml-auto mobile-bubble-max sm:max-w-[82%]';
+            bubbleClass = 'bg-gradient-to-br from-blue-600 to-blue-700 text-white ml-auto mobile-bubble-max sm:max-w-[82%]';
             roleText = '你';
           } else if (isTool) {
             const isError = (m.content || '').toLowerCase().includes('error');
             const isRejected = (m.content || '').toLowerCase().includes('rejected');
-            bubbleClass = (isError || isRejected) ? 'bubble-tool mobile-bubble-max sm:max-w-[90%]' : 'bubble-tool-result mobile-bubble-max sm:max-w-[90%]';
+            bubbleClass = (isError || isRejected) 
+                ? 'bg-rose-50 border border-rose-100 text-rose-900 mobile-bubble-max sm:max-w-[90%]' 
+                : 'bg-emerald-50 border border-emerald-100 text-emerald-900 mobile-bubble-max sm:max-w-[90%]';
             roleText = isError ? 'Tool (Error)' : (isRejected ? 'Tool (Rejected)' : 'Tool Result');
           } else {
-            bubbleClass = 'bubble-ai mobile-bubble-max sm:max-w-[90%]';
+            bubbleClass = 'bg-white border border-slate-200 text-slate-800 mobile-bubble-max sm:max-w-[90%]';
             roleText = 'Agent';
           }
 
           const el = document.createElement('div');
-          el.className = `rounded-2xl px-3 py-2.5 text-sm break-words shadow-[0_1px_2px_rgba(15,23,42,0.04)] ${bubbleClass}`;
+          el.className = `rounded-2xl px-3 py-2.5 text-sm break-words shadow-sm ${bubbleClass}`;
           
           let contentHtml = '';
           const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
@@ -469,7 +531,56 @@
             if (isUser) {
               contentHtml = escapeHtml(m.content);
             } else {
-              contentHtml = renderMarkdown(m.content);
+              // 处理 <thinking> 标签
+              let displayContent = m.content;
+              const thinkingMatch = displayContent.match(/<thinking>([\s\S]*?)<\/thinking>/);
+              let thinkingHtml = '';
+              
+              if (thinkingMatch) {
+                const thinkingText = thinkingMatch[1].trim();
+                thinkingHtml = `
+                  <details class="mb-3 rounded-xl border border-slate-200 bg-slate-50/50 overflow-hidden group" open>
+                    <summary class="flex items-center justify-between gap-1.5 px-3 py-2 cursor-pointer hover:bg-slate-100/50 transition-colors list-none select-none">
+                      <div class="flex items-center gap-1.5 opacity-60">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9l-.707.707M12 21v-1m4.243-4.243l.707.707m2.828-9.9l.707.707"></path></svg>
+                        <span class="text-[11px] font-bold uppercase tracking-wider">Reasoning</span>
+                      </div>
+                      <svg class="w-3 h-3 opacity-40 transition-transform duration-200 group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </summary>
+                    <div class="px-3 pb-3 pt-1 text-slate-500 italic text-[13px] leading-relaxed border-t border-slate-100/50">
+                      ${renderMarkdown(thinkingText)}
+                    </div>
+                  </details>
+                `;
+                displayContent = displayContent.replace(/<thinking>[\s\S]*?<\/thinking>/, '').trim();
+              } else if (displayContent.includes('<thinking>')) {
+                // 处理流式传输中未闭合的标签
+                const parts = displayContent.split('<thinking>');
+                const beforeThinking = parts[0].trim();
+                const thinkingInProgress = parts[1].trim();
+                
+                if (beforeThinking) {
+                    thinkingHtml = renderMarkdown(beforeThinking);
+                }
+                
+                thinkingHtml += `
+                  <details class="mb-3 rounded-xl border border-blue-100 bg-blue-50/20 overflow-hidden group animate-pulse" open>
+                    <summary class="flex items-center justify-between gap-1.5 px-3 py-2 cursor-pointer list-none select-none">
+                      <div class="flex items-center gap-1.5 opacity-60 text-blue-600">
+                        <svg class="w-3.5 h-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9l-.707.707M12 21v-1m4.243-4.243l.707.707m2.828-9.9l.707.707"></path></svg>
+                        <span class="text-[11px] font-bold uppercase tracking-wider">Thinking...</span>
+                      </div>
+                      <svg class="w-3 h-3 opacity-40 transition-transform duration-200 group-open:rotate-180 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </summary>
+                    <div class="px-3 pb-3 pt-1 text-slate-500 italic text-[13px] leading-relaxed border-t border-blue-100/30">
+                      ${renderMarkdown(thinkingInProgress)}
+                    </div>
+                  </details>
+                `;
+                displayContent = ''; 
+              }
+              
+              contentHtml = thinkingHtml + (displayContent ? renderMarkdown(displayContent) : '');
             }
           } else if (m.__streaming) {
             contentHtml = '<div class="flex items-center gap-1"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
@@ -486,20 +597,20 @@
                     displayVal = escapeHtml(String(val));
                 }
                 argRows += `
-                  <div class="tool-arg-row flex-col items-start mb-2">
-                    <span class="tool-arg-key">${escapeHtml(key)}:</span>
-                    <span class="tool-arg-val w-full">${displayVal}</span>
+                  <div class="flex flex-col items-start mb-2 last:mb-0 text-[11px]">
+                    <span class="font-semibold text-slate-500">${escapeHtml(key)}:</span>
+                    <span class="text-slate-700 w-full break-all">${displayVal}</span>
                   </div>
                 `;
               }
               return `
-                <div class="tool-card shadow-sm">
-                  <div class="tool-card-header">
-                    <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a2 2 0 01-2 2H3a2 2 0 01-2-2V4a2 2 0 114 0v10a2 2 0 002 2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0"></path></svg>
-                    <span class="text-xs font-bold text-slate-700">调用工具: ${escapeHtml(name)}</span>
+                <div class="mt-2 rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+                  <div class="bg-slate-50 px-3 py-1.5 border-b border-slate-200 flex items-center gap-2">
+                    <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a2 2 0 01-2 2H3a2 2 0 01-2-2V4a2 2 0 114 0v10a2 2 0 002 2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0"></path></svg>
+                    <span class="text-[11px] font-bold text-slate-700">CALL: ${escapeHtml(name)}</span>
                   </div>
-                  <div class="tool-card-body">
-                    ${argRows || '<span class="text-[11px] text-slate-400">无参数</span>'}
+                  <div class="p-3">
+                    ${argRows || '<span class="text-[11px] text-slate-400">No parameters</span>'}
                   </div>
                 </div>
               `;
@@ -531,10 +642,15 @@
           pre.appendChild(btn);
         });
 
-        container.scrollTop = container.scrollHeight;
+        if (shouldAutoScroll) {
+          container.scrollTop = container.scrollHeight;
+          autoScrollEnabled = true;
+        }
+        updateJumpToBottomButton();
       }
 
       async function sendMessage() {
+        autoScrollEnabled = true;
         if (!currentSessionId || pendingApproval) return;
         const input = document.getElementById('input');
         const message = input.value.trim();
@@ -555,7 +671,7 @@
 
           if (payload.type === 'token') {
             currentMessages[streamAssistantIndex].content += payload.token || '';
-            renderMessages(currentMessages);
+            scheduleStreamRender(currentMessages);
           } else if (payload.type === 'done') {
             currentMessages = payload.messages || currentMessages;
             currentMessages = currentMessages.map(m => {
@@ -567,7 +683,7 @@
               return m;
             });
             pendingApproval = payload.pending_approval || null;
-            renderMessages(currentMessages);
+            scheduleStreamRender(currentMessages, true);
             showApproval();
             streamClosed = true;
             eventSource.close();
@@ -579,7 +695,7 @@
             if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
               currentMessages[streamAssistantIndex].__streaming = false;
               currentMessages[streamAssistantIndex].content = currentMessages[streamAssistantIndex].content || '[流式失败]';
-              renderMessages(currentMessages);
+              scheduleStreamRender(currentMessages, true);
             }
             alert(payload.message || '流式传输失败');
             eventSource.close();
@@ -592,7 +708,7 @@
           if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
             currentMessages[streamAssistantIndex].__streaming = false;
             currentMessages[streamAssistantIndex].content = currentMessages[streamAssistantIndex].content || '[连接中断]';
-            renderMessages(currentMessages);
+            scheduleStreamRender(currentMessages, true);
           }
           alert('与服务器的连接丢失。');
           eventSource.close();
@@ -602,6 +718,7 @@
 
       async function respondApproval(approved) {
         if (!currentSessionId || !pendingApproval || approvalLoading) return;
+        autoScrollEnabled = true;
         setApprovalLoading(true);
         if (approved) {
           const yesBtn = document.getElementById('approvalYesBtn');
@@ -619,11 +736,11 @@
           const payload = JSON.parse(event.data);
           if (payload.type === 'token') {
             currentMessages[streamAssistantIndex].content += payload.token || '';
-            renderMessages(currentMessages);
+            scheduleStreamRender(currentMessages);
           } else if (payload.type === 'done') {
             currentMessages = payload.messages || currentMessages;
             pendingApproval = payload.pending_approval || null;
-            renderMessages(currentMessages);
+            scheduleStreamRender(currentMessages, true);
             showApproval();
             streamClosed = true;
             setApprovalLoading(false);
@@ -634,7 +751,7 @@
             if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
               currentMessages[streamAssistantIndex].__streaming = false;
               currentMessages[streamAssistantIndex].content = currentMessages[streamAssistantIndex].content || '[审批流式失败]';
-              renderMessages(currentMessages);
+              scheduleStreamRender(currentMessages, true);
             }
             setApprovalLoading(false);
             alert(payload.message || '审批失败');
@@ -647,7 +764,7 @@
           if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
             currentMessages[streamAssistantIndex].__streaming = false;
             currentMessages[streamAssistantIndex].content = currentMessages[streamAssistantIndex].content || '[审批连接中断]';
-            renderMessages(currentMessages);
+            scheduleStreamRender(currentMessages, true);
           }
           setApprovalLoading(false);
           alert('与服务器的连接丢失。');

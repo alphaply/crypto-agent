@@ -185,6 +185,7 @@ def model_node(state: ChatState):
         api_key=cfg.get("api_key"),
         base_url=cfg.get("api_base"),
         temperature=cfg.get("temperature", 0.5),
+        streaming=True,
         model_kwargs=kwargs,
     ).bind_tools(_get_chat_tools(mode))
 

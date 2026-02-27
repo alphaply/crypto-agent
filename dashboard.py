@@ -514,6 +514,10 @@ def stream_chat_message_api(session_id):
     @stream_with_context
     def generate():
         try:
+            # Send an initial padded comment to reduce intermediary proxy buffering.
+            yield ":" + (" " * 2048) + "\n\n"
+            yield sse({"type": "ready"})
+
             if is_approval_stream:
                 approved = str(approval_raw).lower() in ("1", "true", "yes", "y")
                 for token in stream_resume_chat(session_id, approved):
@@ -539,7 +543,8 @@ def stream_chat_message_api(session_id):
             yield sse({"type": "error", "message": str(e)})
 
     return Response(generate(), mimetype="text/event-stream", headers={
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     })
 
