@@ -103,8 +103,57 @@ class MarketTool:
         loss = (-delta.where(delta < 0, 0))
         avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+        avg_loss = avg_loss.replace(0, 1e-10)
         rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.replace([np.inf, -np.inf], 50.0)
+        return rsi
+
+    def _calc_stoch_rsi(self, rsi, period=14, k_period=3, d_period=3):
+        """计算 StochRSI"""
+        rsi_min = rsi.rolling(window=period).min()
+        rsi_max = rsi.rolling(window=period).max()
+        stoch_rsi = (rsi - rsi_min) / (rsi_max - rsi_min)
+        stoch_rsi = stoch_rsi.replace([np.inf, -np.inf], 0.5).fillna(0.5)
+        fast_k = stoch_rsi.rolling(window=k_period).mean() * 100
+        fast_d = fast_k.rolling(window=d_period).mean()
+        return fast_k, fast_d
+
+    def _calc_adx(self, df, period=14):
+        """计算 ADX (Trend Strength)"""
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        plus_dm = high.diff()
+        minus_dm = low.diff(-1)
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm < 0] = 0
+        
+        tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(window=period).mean()
+        
+        plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
+        minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        adx = dx.rolling(window=period).mean()
+        return adx.fillna(0), plus_di.fillna(0), minus_di.fillna(0)
+
+    def _calc_vwap(self, df):
+        """计算 VWAP (成交量加权平均价)"""
+        # 简单实现：按整个数据集周期计算 (如果是日内分析比较准确)
+        v = df['volume']
+        p = (df['high'] + df['low'] + df['close']) / 3
+        vwap = (p * v).cumsum() / v.cumsum()
+        return vwap.fillna(p)
+
+    def _calc_cci(self, df, period=20):
+        """计算 CCI (Commodity Channel Index)"""
+        tp = (df['high'] + df['low'] + df['close']) / 3
+        ma = tp.rolling(window=period).mean()
+        md = tp.rolling(window=period).apply(lambda x: np.fabs(x - x.mean()).mean())
+        cci = (tp - ma) / (0.015 * md)
+        return cci.fillna(0)
 
     def _calc_atr(self, df, period=14):
         high, low, close = df['high'], df['low'], df['close']
@@ -126,13 +175,25 @@ class MarketTool:
         rolling_std = close.rolling(window=window).std()
         upper = rolling_mean + (rolling_std * num_std)
         lower = rolling_mean - (rolling_std * num_std)
-        return upper, rolling_mean, lower
+        # 防止除零错误：当中轨为0时的处理
+        safe_mean = rolling_mean.replace(0, 1e-10)
+        width = (upper - lower) / safe_mean
+        # 处理可能的无穷大值
+        width = width.replace([np.inf, -np.inf], 0.0)
+        return upper, rolling_mean, lower, width
 
     def _calc_kdj(self, df, n=9, m1=3, m2=3):
         """计算 KDJ 指标"""
         low_list = df['low'].rolling(n).min()
         high_list = df['high'].rolling(n).max()
-        rsv = (df['close'] - low_list) / (high_list - low_list) * 100
+        # 防止除零错误：当高低区间为0时，设置RSV为50（中间值）
+        diff_list = high_list - low_list
+        # 替换分母为0的情况，避免除零错误
+        diff_list = diff_list.replace(0, np.nan)
+        rsv = pd.Series((df['close'] - low_list) / diff_list * 100, index=df.index)
+        # 将可能的无穷大值或NaN值替换为50
+        rsv = rsv.fillna(50.0)
+        rsv = rsv.replace([np.inf, -np.inf], 50.0)
         k = rsv.ewm(alpha=1/m1, adjust=False).mean()
         d = k.ewm(alpha=1/m2, adjust=False).mean()
         j = 3 * k - 2 * d
@@ -400,19 +461,24 @@ class MarketTool:
             
             # 2. 动量与震荡
             rsi = self._calc_rsi(close, 14)
+            stoch_k, stoch_d = self._calc_stoch_rsi(rsi)
             atr = self._calc_atr(df, 14)
             macd, signal, hist = self._calc_macd(close)
             k, d, j = self._calc_kdj(df)
+            cci = self._calc_cci(df)
             
-            # 3. 布林带 (判断波动率挤压)
-            bb_up, bb_mid, bb_low = self._calc_bollinger_bands(close)
-            bb_width = (bb_up - bb_low) / bb_mid # 带宽
+            # 3. 趋势强度 (ADX) 与 价值中枢 (VWAP)
+            adx, plus_di, minus_di = self._calc_adx(df)
+            vwap = self._calc_vwap(df)
             
-            # 4. 成交量分析
+            # 4. 布林带 (判断波动率挤压)
+            bb_up, bb_mid, bb_low, bb_width = self._calc_bollinger_bands(close)
+            
+            # 5. 成交量分析
             vol_ma20 = volume.rolling(window=20).mean()
             vol_ratio = (volume / vol_ma20).fillna(0)
             
-            # 5. VP 分布
+            # 6. VP 分布
             vp = self._calculate_vp(df, length=360)
             if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": []}
             
@@ -424,8 +490,14 @@ class MarketTool:
             e20_val = ema20.iloc[-1]
             e50_val = ema50.iloc[-1]
             e200_val = ema200.iloc[-1]
-            if e20_val > e50_val > e200_val: trend_status = "Uptrend"
-            elif e20_val < e50_val < e200_val: trend_status = "Downtrend"
+            if e20_val > e50_val > e200_val: trend_status = "Strong Uptrend"
+            elif e20_val < e50_val < e200_val: trend_status = "Strong Downtrend"
+            elif curr_close > e200_val: trend_status = "Bullish Neutral"
+            elif curr_close < e200_val: trend_status = "Bearish Neutral"
+
+            # 趋势强度 (ADX > 25 表示强趋势)
+            adx_val = float(adx.iloc[-1])
+            trend_strength = "Strong" if adx_val > 25 else "Weak/Ranging"
             
             # ================= 序列数据提取 =================
             def to_list(series, n=5):
@@ -438,12 +510,22 @@ class MarketTool:
             
             return {
                 "price": self._smart_fmt(curr_close),
-                "trend_status": trend_status,
+                "trend": {
+                    "status": trend_status,
+                    "strength": trend_strength,
+                    "adx": round(adx_val, 1)
+                },
+                "vwap": self._smart_fmt(vwap.iloc[-1]),
                 "recent_closes": recent_closes,
                 "recent_highs": recent_highs,
                 "recent_lows": recent_lows,
                 
-                "rsi": round(float(rsi.iloc[-1]), 1),
+                "rsi_analysis": {
+                    "rsi": round(float(rsi.iloc[-1]), 1),
+                    "stoch_k": round(float(stoch_k.iloc[-1]), 1),
+                    "stoch_d": round(float(stoch_d.iloc[-1]), 1),
+                },
+                "cci": round(float(cci.iloc[-1]), 1),
                 "kdj": {
                     "k": round(float(k.iloc[-1]), 1),
                     "d": round(float(d.iloc[-1]), 1),
@@ -463,7 +545,6 @@ class MarketTool:
                     "width": round(float(bb_width.iloc[-1]), 4)
                 },
 
-                # FIXED: Added ema_100
                 "ema": {
                     "ema_20": self._smart_fmt(e20_val),
                     "ema_50": self._smart_fmt(e50_val),

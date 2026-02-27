@@ -88,6 +88,7 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
 def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     """
     【平仓：挂单平掉现有持仓】
+    只有持仓存在时才可以调用。
     持仓时希望止盈、止损时，调用此工具。
     """
     agent_name = config_id

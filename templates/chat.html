@@ -14,11 +14,46 @@
       .scroll-thin::-webkit-scrollbar-thumb { background: #bfd0dc; border-radius: 10px; }
       .bubble-user { background: linear-gradient(145deg, #2563eb, #1d4ed8); color: #fff; }
       .bubble-ai { background: #fff; border: 1px solid #d8e1ee; }
-      .bubble-tool { background: #fffbeb; border: 1px solid #fde68a; }
+      .bubble-tool { background: #f8fafc; border: 1px solid #e2e8f0; }
+      .bubble-tool-result { background: #f0fdf4; border: 1px solid #bbf7d0; }
       .prose {
         max-width: 100%;
         overflow-wrap: anywhere;
         word-break: break-word;
+      }
+      /* Tool Card Styles */
+      .tool-card {
+        border-radius: 0.75rem;
+        background: white;
+        border: 1px solid #e2e8f0;
+        margin-top: 0.5rem;
+        overflow: hidden;
+      }
+      .tool-card-header {
+        background: #f1f5f9;
+        padding: 0.5rem 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .tool-card-body {
+        padding: 0.75rem;
+      }
+      .tool-arg-row {
+        display: flex;
+        font-size: 0.75rem;
+        margin-bottom: 0.25rem;
+      }
+      .tool-arg-key {
+        font-weight: 600;
+        color: #64748b;
+        width: 80px;
+        flex-shrink: 0;
+      }
+      .tool-arg-val {
+        color: #1e293b;
+        word-break: break-all;
       }
       .prose table {
         display: block;
@@ -408,41 +443,79 @@
         messages.forEach(m => {
           const isUser = m.role === 'user';
           const isTool = m.role === 'tool';
-          const bubbleClass = isUser
-            ? 'bubble-user ml-auto mobile-bubble-max sm:max-w-[82%]'
-            : (isTool ? 'bubble-tool mobile-bubble-max sm:max-w-[90%]' : 'bubble-ai mobile-bubble-max sm:max-w-[90%]');
-          const roleText = isUser ? '你' : (isTool ? 'Tool' : 'Agent');
+          
+          let bubbleClass = '';
+          let roleText = '';
+          if (isUser) {
+            bubbleClass = 'bubble-user ml-auto mobile-bubble-max sm:max-w-[82%]';
+            roleText = '你';
+          } else if (isTool) {
+            const isError = (m.content || '').toLowerCase().includes('error');
+            const isRejected = (m.content || '').toLowerCase().includes('rejected');
+            bubbleClass = (isError || isRejected) ? 'bubble-tool mobile-bubble-max sm:max-w-[90%]' : 'bubble-tool-result mobile-bubble-max sm:max-w-[90%]';
+            roleText = isError ? 'Tool (Error)' : (isRejected ? 'Tool (Rejected)' : 'Tool Result');
+          } else {
+            bubbleClass = 'bubble-ai mobile-bubble-max sm:max-w-[90%]';
+            roleText = 'Agent';
+          }
+
           const el = document.createElement('div');
           el.className = `rounded-2xl px-3 py-2.5 text-sm break-words shadow-[0_1px_2px_rgba(15,23,42,0.04)] ${bubbleClass}`;
           
-          let contentHtml;
+          let contentHtml = '';
           const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+          
           if (m.content) {
-              if (isUser) {
-                  contentHtml = escapeHtml(m.content);
-              } else {
-                  contentHtml = renderMarkdown(m.content);
-              }
+            if (isUser) {
+              contentHtml = escapeHtml(m.content);
+            } else {
+              contentHtml = renderMarkdown(m.content);
+            }
           } else if (m.__streaming) {
-              contentHtml = '<div class="flex items-center gap-1"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
+            contentHtml = '<div class="flex items-center gap-1"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
           } else if (hasToolCalls) {
-              const toolBlocks = m.tool_calls.map(tc => {
-                const name = escapeHtml(tc.name || 'unknown_tool');
-                const args = escapeHtml(JSON.stringify(tc.args || {}, null, 2));
-                return `<div class="mb-2"><div class="text-xs font-semibold text-slate-600">调用工具: ${name}</div><pre class="mt-1 tool-args"><code>${args}</code></pre></div>`;
-              }).join('');
-              contentHtml = `<div class="text-xs text-slate-500 mb-1">模型发起了工具调用，等待执行结果：</div>${toolBlocks}`;
+            const toolBlocks = m.tool_calls.map(tc => {
+              const name = tc.name || 'unknown_tool';
+              const args = tc.args || {};
+              let argRows = '';
+              for (const [key, val] of Object.entries(args)) {
+                let displayVal = '';
+                if (typeof val === 'object' && val !== null) {
+                    displayVal = `<pre class="text-[10px] bg-slate-50 p-1 rounded border border-slate-100 mt-1 overflow-x-auto">${escapeHtml(JSON.stringify(val, null, 2))}</pre>`;
+                } else {
+                    displayVal = escapeHtml(String(val));
+                }
+                argRows += `
+                  <div class="tool-arg-row flex-col items-start mb-2">
+                    <span class="tool-arg-key">${escapeHtml(key)}:</span>
+                    <span class="tool-arg-val w-full">${displayVal}</span>
+                  </div>
+                `;
+              }
+              return `
+                <div class="tool-card shadow-sm">
+                  <div class="tool-card-header">
+                    <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a2 2 0 01-2 2H3a2 2 0 01-2-2V4a2 2 0 114 0v10a2 2 0 002 2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0"></path></svg>
+                    <span class="text-xs font-bold text-slate-700">调用工具: ${escapeHtml(name)}</span>
+                  </div>
+                  <div class="tool-card-body">
+                    ${argRows || '<span class="text-[11px] text-slate-400">无参数</span>'}
+                  </div>
+                </div>
+              `;
+            }).join('');
+            contentHtml = `<div class="text-[11px] text-slate-500 italic mb-1">模型准备执行以下操作：</div>${toolBlocks}`;
           } else {
-              contentHtml = '<span class="text-slate-400 text-xs">[空响应]</span>';
+            contentHtml = '<span class="text-slate-400 text-[11px]">[空响应]</span>';
           }
           
-          el.innerHTML = `<div class="text-[11px] opacity-70 mb-1">${roleText}</div><div class="prose prose-sm max-w-none">${contentHtml}</div>`;
+          el.innerHTML = `<div class="text-[10px] uppercase font-bold tracking-wider opacity-60 mb-1.5">${roleText}</div><div class="prose prose-sm max-w-none">${contentHtml}</div>`;
           container.appendChild(el);
         });
 
         // Add copy buttons to new code blocks
         container.querySelectorAll('pre').forEach(pre => {
-          if (pre.querySelector('.copy-btn')) return; // a lready has a button
+          if (pre.querySelector('.copy-btn')) return; // already has a button
           const code = pre.querySelector('code');
           if (!code) return;
 
@@ -530,6 +603,10 @@
       async function respondApproval(approved) {
         if (!currentSessionId || !pendingApproval || approvalLoading) return;
         setApprovalLoading(true);
+        if (approved) {
+          const yesBtn = document.getElementById('approvalYesBtn');
+          if (yesBtn) yesBtn.innerHTML = '<span class="flex items-center gap-1"><svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> 正在执行...</span>';
+        }
 
         currentMessages.push({ role: 'assistant', content: '', __streaming: true });
         const streamAssistantIndex = currentMessages.length - 1;
@@ -581,14 +658,35 @@
       function showApproval() {
         const bar = document.getElementById('approvalBar');
         const txt = document.getElementById('approvalText');
+        const yesBtn = document.getElementById('approvalYesBtn');
+        if (yesBtn) yesBtn.textContent = '同意执行'; // Reset text
+
         if (!pendingApproval || !pendingApproval.value) {
           bar.classList.add('hidden');
-          txt.textContent = '';
+          txt.innerHTML = '';
           setApprovalLoading(false);
           return;
         }
         const v = pendingApproval.value;
-        txt.textContent = `${v.tool_name}(${JSON.stringify(v.tool_args)})`;
+        const name = v.tool_name || 'unknown';
+        const args = v.tool_args || {};
+        let argSummary = '';
+        for (const [key, val] of Object.entries(args)) {
+          let valText = '';
+          if (typeof val === 'object' && val !== null) {
+              valText = JSON.stringify(val);
+          } else {
+              valText = String(val);
+          }
+          argSummary += `<span class="inline-block bg-white border border-amber-200 rounded px-1 text-[10px] mr-1 max-w-[200px] truncate" title="${escapeHtml(valText)}">${escapeHtml(key)}: ${escapeHtml(valText)}</span>`;
+        }
+
+        txt.innerHTML = `
+          <div class="inline-flex items-center gap-2 max-w-full overflow-hidden">
+            <span class="bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[11px] font-bold border border-amber-200 uppercase flex-shrink-0">${escapeHtml(name)}</span>
+            <div class="flex flex-wrap gap-y-1 items-center min-w-0">${argSummary}</div>
+          </div>
+        `;
         bar.classList.remove('hidden');
       }
 

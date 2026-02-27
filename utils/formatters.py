@@ -129,19 +129,31 @@ def format_market_data_to_text(data: dict) -> str:
         
         output.append(f"【{tf}周期】")
         
-        # 1. 核心与趋势
+        # 1. 核心与趋势 (已升级：含 ADX 强度)
         tf_price = d.get('price', 0)
+        vwap = d.get('vwap', 'N/A')
         atr = d.get('atr', 0)
-        rsi = d.get('rsi', 0)
-        trend = d.get('trend_status', 'N/A')
+        
+        trend = d.get('trend', {})
+        t_status = trend.get('status', 'N/A')
+        t_strength = trend.get('strength', 'N/A')
+        adx = trend.get('adx', 0)
         vol_stat = d.get('volume_status', 'N/A')
         
-        output.append(f"• 状态: 价格={tf_price} | 趋势={trend} | ATR={atr} | Vol={vol_stat}")
+        output.append(f"• 状态: 价格={tf_price} | VWAP={vwap} | 趋势={t_status} (强度:{t_strength}, ADX:{adx})")
+        output.append(f"• 波动: ATR={atr} | 成交量={vol_stat}")
         
-        # 2. 震荡指标 (RSI + KDJ)
+        # 2. 震荡指标 (StochRSI + KDJ + CCI)
+        rsi_data = d.get('rsi_analysis', {})
+        rsi = rsi_data.get('rsi', 0)
+        st_k, st_d = rsi_data.get('stoch_k', 0), rsi_data.get('stoch_d', 0)
+        
         kdj = d.get('kdj', {})
         k, _d, j = kdj.get('k', 0), kdj.get('d', 0), kdj.get('j', 0)
-        output.append(f"• 震荡: RSI={rsi} | KDJ: K={k} D={_d} J={j}")
+        
+        cci = d.get('cci', 0)
+        
+        output.append(f"• 震荡: RSI={rsi} (StochK={st_k}, StochD={st_d}) | KDJ: K={k} D={_d} J={j} | CCI={cci}")
 
         # 3. 动能 (MACD)
         macd = d.get('macd', {})
