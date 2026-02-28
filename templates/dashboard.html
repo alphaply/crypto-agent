@@ -215,21 +215,36 @@
                           <!-- 近期决策记录 -->
                           <div class="pt-4 border-t border-gray-100">
                               <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">Latest 10 Decisions</div>
-                              <div class="space-y-2">
+                              <div class="space-y-3">
                                   {% if summary.all_orders %}
                                       {% for order in summary.all_orders[:10] %}
-                                      <div class="flex items-center justify-between p-3 rounded-xl bg-gray-50 border border-gray-100 group hover:border-blue-200 transition-colors">
-                                          <div class="flex items-center gap-3">
-                                              {% set s = order.side|lower %}
-                                              <span class="w-2 h-2 rounded-full 
-                                                  {% if 'buy' in s %} bg-emerald-500
-                                                  {% elif 'sell' in s %} bg-rose-500
-                                                  {% elif 'close' in s %} bg-orange-500
-                                                  {% else %} bg-gray-400 {% endif %}"></span>
-                                              <span class="text-[10px] font-black uppercase text-gray-700 w-10">{{ order.side[:4] }}</span>
-                                              <span class="text-[10px] font-mono text-gray-500 group-hover:text-blue-600 transition-colors">{{ order.entry_price }}</span>
+                                      <div class="flex flex-col gap-1.5 p-3 rounded-xl bg-gray-50 border border-gray-100 group hover:border-blue-200 transition-colors">
+                                          <div class="flex items-center justify-between">
+                                              <div class="flex items-center gap-2">
+                                                  {% set s = order.side|lower %}
+                                                  <span class="w-2 h-2 rounded-full 
+                                                      {% if 'buy' in s %} bg-emerald-500
+                                                      {% elif 'sell' in s %} bg-rose-500
+                                                      {% elif 'close' in s %} bg-orange-500
+                                                      {% else %} bg-gray-400 {% endif %}"></span>
+                                                  <span class="text-[10px] font-black uppercase text-gray-700 w-10">{{ order.side[:4] }}</span>
+                                                  <span class="text-[10px] font-mono font-bold text-blue-600 group-hover:text-blue-700">{{ order.entry_price }}</span>
+                                              </div>
+                                              <div class="text-[9px] text-gray-400 font-mono">{{ order.timestamp[11:16] }}</div>
                                           </div>
-                                          <div class="text-[9px] text-gray-400 font-mono">{{ order.timestamp[11:16] }}</div>
+                                          
+                                          <!-- 止盈止损 (策略模式核心) -->
+                                          {% if order.take_profit > 0 or order.stop_loss > 0 %}
+                                          <div class="flex gap-3 text-[9px] font-bold">
+                                              <span class="text-emerald-600 flex items-center gap-0.5">🎯 <span class="opacity-70">TP:</span> {{ order.take_profit|int }}</span>
+                                              <span class="text-rose-500 flex items-center gap-0.5">🛡️ <span class="opacity-70">SL:</span> {{ order.stop_loss|int }}</span>
+                                          </div>
+                                          {% endif %}
+
+                                          <!-- 简短理由 -->
+                                          <div class="text-[9px] text-gray-400 leading-tight line-clamp-1 italic">
+                                              {{ order.reason }}
+                                          </div>
                                       </div>
                                       {% endfor %}
                                   {% else %}
@@ -544,7 +559,15 @@
             <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-gray-200 modal-content h-auto !max-h-fit !rounded-xl">
                 <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">🔐 身份验证</h3>
                 <p class="text-sm text-gray-500 mb-4">访问敏感功能需要管理员权限。</p>
-                <input type="password" id="auth-pass" class="w-full border rounded-lg p-3 mb-4 outline-none focus:ring-2 focus:ring-blue-500" placeholder="请输入密码...">
+                <input type="password" id="auth-pass" class="w-full border rounded-lg p-3 mb-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="请输入密码...">
+                
+                <div class="flex items-center gap-3 mb-4">
+                    <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshCaptcha()" title="点击刷新">
+                        <img id="captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
+                    </div>
+                    <input type="text" id="auth-captcha" class="flex-1 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
+                </div>
+
                 <div class="flex gap-3">
                     <button onclick="submitAuth()" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认</button>
                     <button onclick="closeAuthModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold">取消</button>

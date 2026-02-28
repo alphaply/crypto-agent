@@ -368,40 +368,30 @@ def save_config_api():
         return jsonify({"success": False, "message": "配置不能为空"}), 400
 
     try:
-        # 读取现有的 .env
+        # 读取现有的 .env 内容
         with open('.env', 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+            content = f.read()
 
-        new_lines = []
-        found_keys = set()
-        
-        # 准备要写入的键值对
         updates = {
-            'SYMBOL_CONFIGS': json.dumps(new_configs, ensure_ascii=False)
+            'SYMBOL_CONFIGS': json.dumps(new_configs, ensure_ascii=False),
+            'LEVERAGE': str(global_settings.get('leverage', global_config.leverage)),
+            'ENABLE_SCHEDULER': 'true' if global_settings.get('enable_scheduler', True) else 'false'
         }
-        if 'leverage' in global_settings:
-            updates['LEVERAGE'] = str(global_settings['leverage'])
-        if 'enable_scheduler' in global_settings:
-            updates['ENABLE_SCHEDULER'] = 'true' if global_settings['enable_scheduler'] else 'false'
 
-        for line in lines:
-            matched = False
-            for key, val in updates.items():
-                if line.startswith(f"{key}="):
-                    new_lines.append(f"{key}='{val}'\n")
-                    found_keys.add(key)
-                    matched = True
-                    break
-            if not matched:
-                new_lines.append(line)
-
-        # 添加不存在的键
         for key, val in updates.items():
-            if key not in found_keys:
-                new_lines.append(f"{key}='{val}'\n")
+            # 使用正则表达式匹配 key=... 结构，支持单引号、双引号或无引号，且支持跨行匹配
+            # 这个正则会找到第一个匹配的 key 并将其及其值替换为单行格式
+            pattern = re.compile(rf'^{key}=.*?(?=\n\w+=|\n#|$)', re.MULTILINE | re.DOTALL)
+            new_entry = f"{key}='{val}'"
+            
+            if pattern.search(content):
+                content = pattern.sub(new_entry, content)
+            else:
+                # 如果不存在，则在文件末尾添加
+                content += f"\n{new_entry}\n"
 
         with open('.env', 'w', encoding='utf-8') as f:
-            f.writelines(new_lines)
+            f.write(content.strip() + '\n')
 
         # 重新加载配置
         global_config.reload_config()
@@ -577,16 +567,108 @@ def chat_view():
     return render_template('chat.html', authed=_chat_authed())
 
 
+import random
+import io
+import base64
+from PIL import Image, ImageDraw, ImageFont
+
+# --- 安全防御配置 ---
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_DURATION = 900  # 15 分钟
+
+def generate_captcha_text(length=4):
+    """生成随机字母数字验证码"""
+    chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ' # 排除易混淆字符
+    return ''.join(random.choices(chars, k=length))
+
+@app.route('/api/chat/captcha', methods=['GET'])
+def get_captcha():
+    """生成扭曲的图形验证码图片"""
+    text = generate_captcha_text()
+    session['captcha_answer'] = text.upper()
+    
+    # 创建画布 (120x40)
+    width, height = 120, 40
+    img = Image.new('RGB', (width, height), color=(245, 247, 250))
+    draw = ImageDraw.Draw(img)
+    
+    # 绘制干扰线
+    for _ in range(5):
+        draw.line([(random.randint(0, width), random.randint(0, height)), 
+                   (random.randint(0, width), random.randint(0, height))], 
+                  fill=(random.randint(150, 200), random.randint(150, 200), random.randint(150, 200)), width=1)
+    
+    # 绘制文字 (使用内置字体，防止环境缺失字体文件)
+    try:
+        # 尝试加载常用系统字体，如果失败则回退到默认
+        font = ImageFont.load_default(size=24)
+    except:
+        font = ImageFont.load_default()
+        
+    for i, char in enumerate(text):
+        draw.text((10 + i*25, 5 + random.randint(-5, 5)), char, font=font, 
+                  fill=(random.randint(20, 100), random.randint(20, 100), random.randint(20, 100)))
+    
+    # 转换为 Base64
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    img_b64 = base64.b64encode(buf.getvalue()).decode()
+    
+    return jsonify({
+        "success": True, 
+        "image": f"data:image/png;base64,{img_b64}",
+        "id": random.randint(1000, 9999)
+    })
+
 @app.route('/api/chat/auth', methods=['POST'])
 def chat_auth():
+    now = time.time()
+    
+    # 1. 检查锁定状态
+    lock_until = session.get('lock_until', 0)
+    if now < lock_until:
+        remain = int(lock_until - now)
+        return jsonify({"success": False, "message": f"尝试次数过多，请在 {remain} 秒后再试"}), 429
+
     data = request.json or {}
     password = data.get("password", "")
+    captcha = (data.get("captcha", "")).upper()
+    
+    # 2. 校验验证码
+    expected_captcha = session.get('captcha_answer')
+    if not expected_captcha:
+        return jsonify({"success": False, "message": "验证码已过期，请刷新"}), 400
+    
+    if captcha != expected_captcha:
+        session.pop('captcha_answer', None) # 强制刷新
+        return jsonify({"success": False, "message": "验证码错误"}), 403
+    
+    session.pop('captcha_answer', None)
+
+    # 3. 校验密码
     expected = _chat_password()
     if not expected:
-        return jsonify({"success": False, "message": "服务端未配置聊天密码"}), 500
+        return jsonify({"success": False, "message": "服务端未配置密码"}), 500
+        
     if password != expected:
-        return jsonify({"success": False, "message": "密码错误"}), 401
+        # 记录失败次数
+        fails = session.get('failed_attempts', 0) + 1
+        session['failed_attempts'] = fails
+        
+        if fails >= MAX_FAILED_ATTEMPTS:
+            session['lock_until'] = now + LOCKOUT_DURATION
+            session['failed_attempts'] = 0 # 重置计数，等待下一轮
+            logger.warning(f"🔒 安全警报: 连续 {MAX_FAILED_ATTEMPTS} 次登录失败，会话已锁定。")
+            return jsonify({"success": False, "message": "错误次数过多，账号已锁定 15 分钟"}), 429
+            
+        # 强制增加延迟 (防爆破核心)
+        time.sleep(fails * 0.5) 
+        return jsonify({"success": False, "message": f"密码错误 (剩余 {MAX_FAILED_ATTEMPTS - fails} 次尝试)"}), 401
+    
+    # 登录成功
     session["chat_authed"] = True
+    session['failed_attempts'] = 0
+    session.pop('lock_until', None)
     return jsonify({"success": True})
 
 

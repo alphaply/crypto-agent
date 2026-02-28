@@ -194,11 +194,25 @@ def model_node(state: ChatState):
     ).bind_tools(_get_chat_tools(mode))
 
     history = state["messages"]
-    trimmed = _trim_chat_messages(state.get("system_prompt", ""), history)
+    # --- 修复 DeepSeek 格式问题 ---
+    sanitized_history = []
+    for msg in history:
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            if "reasoning_content" not in msg.additional_kwargs:
+                msg.additional_kwargs["reasoning_content"] = msg.response_metadata.get("reasoning_content", "")
+        sanitized_history.append(msg)
+
+    trimmed = _trim_chat_messages(state.get("system_prompt", ""), sanitized_history)
 
     # 在 LangGraph 中，invoke 依然会等待流结束并聚合结果
     response = llm.invoke(trimmed)
     
+    # --- DeepSeek 思维链展示优化 ---
+    # 如果模型返回了 reasoning_content (DeepSeek 特有)，将其包装进 content
+    reasoning = response.additional_kwargs.get("reasoning_content") or response.response_metadata.get("reasoning_content")
+    if reasoning and "<thinking>" not in response.content:
+        response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
+
     # 记录 Token 使用情况
     try:
         # 注意：某些模型在流聚合后的 usage 字段路径可能略有不同，这里做兼容处理

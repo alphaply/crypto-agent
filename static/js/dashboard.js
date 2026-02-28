@@ -108,6 +108,20 @@ function handleCopy(text, e) {
 
 // --- 认证逻辑 ---
 
+async function refreshCaptcha() {
+    const img = document.getElementById('captcha-img');
+    if (!img) return;
+    try {
+        const resp = await fetch('/api/chat/captcha');
+        const data = await resp.json();
+        if (data.success) {
+            img.src = data.image;
+        }
+    } catch (e) {
+        console.error('加载验证码失败');
+    }
+}
+
 async function checkAuth(callback) {
     if (isAuthed) return callback();
     openAuthModal(callback);
@@ -115,6 +129,7 @@ async function checkAuth(callback) {
 
 function openAuthModal(onSuccess) {
     document.getElementById('auth-modal').classList.remove('hidden');
+    refreshCaptcha(); // 弹出时自动刷新验证码
     window._authSuccessCallback = onSuccess;
     setTimeout(() => document.getElementById('auth-pass').focus(), 100);
 }
@@ -122,18 +137,26 @@ function openAuthModal(onSuccess) {
 function closeAuthModal() {
     document.getElementById('auth-modal').classList.add('hidden');
     document.getElementById('auth-pass').value = '';
+    document.getElementById('auth-captcha').value = '';
 }
 
 async function submitAuth() {
     const pwd = document.getElementById('auth-pass').value;
+    const captcha = document.getElementById('auth-captcha').value;
+    
     if (!pwd) return showToast('请输入密码', 'error');
+    if (!captcha) return showToast('请输入计算结果', 'error');
 
     try {
         const resp = await fetch('/api/chat/auth', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({password: pwd})
+            body: JSON.stringify({
+                password: pwd,
+                captcha: captcha
+            })
         });
+        const data = await resp.json();
         if (resp.ok) {
             isAuthed = true;
             closeAuthModal();
@@ -143,7 +166,9 @@ async function submitAuth() {
                 window._authSuccessCallback = null;
             }
         } else {
-            showToast('密码错误', 'error');
+            showToast(data.message || '认证失败', 'error');
+            refreshCaptcha(); // 失败后自动刷新验证码
+            document.getElementById('auth-captcha').value = '';
         }
     } catch (e) {
         showToast('验证失败: ' + e, 'error');
