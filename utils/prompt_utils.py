@@ -17,7 +17,13 @@ def resolve_prompt_template(
         try:
             file_path = Path(prompt_file.strip())
             if not file_path.is_absolute():
-                file_path = project_root / file_path
+                # Try relative to project root first
+                candidate = project_root / file_path
+                if not candidate.exists():
+                    # Then try in the dedicated prompts directory
+                    candidate = project_root / "agent" / "prompts" / file_path
+                file_path = candidate
+
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8").strip()
                 if content:
