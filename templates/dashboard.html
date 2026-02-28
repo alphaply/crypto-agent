@@ -47,7 +47,7 @@
                 <div class="inline-flex rounded-md shadow-sm" role="group">
                     <a href="/chat" title="Chat" class="px-2.5 py-2 text-sm font-medium text-teal-700 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100">💬</a>
                     <button onclick="openConfigModal()" title="配置管理" class="px-2.5 py-2 text-sm font-medium text-indigo-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">⚙️</button>
-                    <button onclick="openStatsModal()" title="消耗统计" class="px-2.5 py-2 text-sm font-medium text-amber-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📊</button>
+                    <a href="/stats/public?symbol={{ current_symbol }}" title="公开统计" class="px-2.5 py-2 text-sm font-medium text-purple-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📈</a>
                     <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-2.5 py-2 text-sm font-medium text-blue-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📜</a>
                     <button onclick="openDeleteModal()" title="清除历史" class="px-2.5 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700">🗑️</button>
                 </div>
@@ -135,12 +135,20 @@
                       <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col h-full">
                           <div class="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
                               <h3 class="font-bold text-gray-900 text-sm flex items-center gap-2">📜 专属决策流水</h3>
-                              <span class="text-[10px] bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full font-bold">{{ summary.all_orders|length }}</span>
+                              <div class="flex items-center gap-2">
+                                  <button onclick="changeOrderPage('{{ summary.agent_name }}', -1)" class="p-1 hover:bg-gray-200 rounded transition-colors" title="上一页">
+                                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15 19l-7-7 7-7" stroke-width="2.5"/></svg>
+                                  </button>
+                                  <span id="page-indicator-{{ summary.agent_name }}" class="text-[10px] font-bold text-blue-600">1</span>
+                                  <button onclick="changeOrderPage('{{ summary.agent_name }}', 1)" class="p-1 hover:bg-gray-200 rounded transition-colors" title="下一页">
+                                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 5l7 7-7 7" stroke-width="2.5"/></svg>
+                                  </button>
+                              </div>
                           </div>
-                          <div class="flex-grow overflow-y-auto max-h-[600px] mini-scroll p-4 space-y-3">
+                          <div id="order-container-{{ summary.agent_name }}" class="flex-grow overflow-y-auto max-h-[600px] mini-scroll p-4 space-y-3">
                               {% if summary.all_orders %}
                                   {% for order in summary.all_orders %}
-                                  <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all">
+                                  <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all cursor-pointer" onclick="handleCopy('{{ order.entry_price }}', event)">
                                       <div class="flex justify-between items-start mb-2">
                                           <div class="flex items-center gap-2">
                                               {% set s = order.side|lower %}
@@ -152,7 +160,7 @@
                                                   {% endif %}">
                                                   {{ order.side }}
                                               </span>
-                                              <span class="text-xs font-mono font-bold text-gray-700">{{ order.entry_price }}</span>
+                                              <span class="text-xs font-mono font-bold text-gray-700 group-hover:text-blue-600 transition-colors" title="点击复制价格">{{ order.entry_price }}</span>
                                           </div>
                                           <span class="text-[9px] font-mono text-gray-400">{{ order.timestamp[11:16] }}</span>
                                       </div>
@@ -161,8 +169,8 @@
                                       </div>
                                       {% if order.take_profit > 0 or order.stop_loss > 0 %}
                                       <div class="mt-2 flex gap-3 text-[9px] font-bold">
-                                          <span class="text-emerald-600">🎯 TP: {{ order.take_profit|int }}</span>
-                                          <span class="text-red-500">🛡️ SL: {{ order.stop_loss|int }}</span>
+                                          <span class="text-emerald-600" onclick="handleCopy('{{ order.take_profit }}', event); event.stopPropagation();">🎯 TP: {{ order.take_profit|int }}</span>
+                                          <span class="text-red-500" onclick="handleCopy('{{ order.stop_loss }}', event); event.stopPropagation();">🛡️ SL: {{ order.stop_loss|int }}</span>
                                       </div>
                                       {% endif %}
                                   </div>
@@ -294,9 +302,17 @@
                                     <p class="text-sm text-gray-500">
                                         您确定要清空 <span class="font-bold text-gray-800">{{ current_symbol }}</span> 的所有分析历史、<b>决策流水</b>及挂单吗？此操作无法撤销。
                                     </p>
-                                    <div class="mt-4">
-                                        <label for="admin-pass" class="block text-xs font-medium text-gray-700 mb-1">管理员密码</label>
-                                        <input type="password" id="admin-pass" class="w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 sm:text-sm p-2 border" placeholder="请输入密码以确认...">
+                                    <div class="mt-4 space-y-3">
+                                        <div>
+                                            <label for="admin-pass" class="block text-xs font-medium text-gray-700 mb-1">管理员密码</label>
+                                            <input type="password" id="admin-pass" class="w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 sm:text-sm p-2 border" placeholder="请输入密码以确认...">
+                                        </div>
+                                        <div class="flex items-center gap-3">
+                                            <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshDeleteCaptcha()" title="点击刷新">
+                                                <img id="delete-captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
+                                            </div>
+                                            <input type="text" id="delete-captcha" class="flex-1 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -528,25 +544,6 @@
                 <div class="px-6 py-4 bg-gray-50 border-t flex gap-3">
                     <button onclick="applySymbolEdit()" class="flex-1 bg-blue-600 text-white py-2 rounded-lg font-bold shadow-sm">确定</button>
                     <button onclick="closeSymbolEditModal()" class="flex-1 bg-white border text-gray-500 py-2 rounded-lg font-bold">取消</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 统计中心模态框 -->
-    <div id="stats-modal" class="fixed inset-0 z-[100] hidden modal-container">
-        <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm" onclick="closeStatsModal()"></div>
-        <div class="fixed inset-0 z-10 flex items-center justify-center p-4">
-            <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden border border-gray-200 modal-content">
-                <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 flex-shrink-0">
-                    <h3 class="text-lg font-bold text-gray-900">📊 资源消耗统计</h3>
-                    <button onclick="closeStatsModal()" class="text-gray-400 hover:text-gray-600 text-2xl p-2">&times;</button>
-                </div>
-                <div id="stats-content" class="p-4 sm:p-6 overflow-y-auto mini-scroll modal-scroll-area">
-                    <div class="animate-pulse flex space-y-4 flex-col">
-                        <div class="h-4 bg-gray-200 rounded w-3/4"></div>
-                        <div class="h-4 bg-gray-200 rounded w-1/2"></div>
-                    </div>
                 </div>
             </div>
         </div>

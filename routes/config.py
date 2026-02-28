@@ -3,7 +3,7 @@ import json
 import re
 from flask import Blueprint, request, jsonify, Response
 from routes.utils import (
-    global_config, _require_chat_auth_api, logger, get_all_configs
+    global_config, _require_chat_auth_api, logger
 )
 from datetime import datetime
 
@@ -48,20 +48,16 @@ def save_config_api():
         }
 
         for key, val in updates.items():
-            pattern = re.compile(rf'^{key}=.*?(?=
-\w+=|
-#|$)', re.MULTILINE | re.DOTALL)
+            # 修复处的正则，使用单行字符串定义
+            pattern = re.compile(rf'^{key}=.*?(?=\n\w+=|\n#|$)', re.MULTILINE | re.DOTALL)
             new_entry = f"{key}='{val}'"
             if pattern.search(content):
                 content = pattern.sub(new_entry, content)
             else:
-                content += f"
-{new_entry}
-"
+                content += f"\n{new_entry}\n"
 
         with open('.env', 'w', encoding='utf-8') as f:
-            f.write(content.strip() + '
-')
+            f.write(content.strip() + '\n')
 
         global_config.reload_config()
         return jsonify({"success": True})

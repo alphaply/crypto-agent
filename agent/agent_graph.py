@@ -29,7 +29,7 @@ from config import config as global_config
 TZ_CN = pytz.timezone('Asia/Shanghai')
 logger = setup_logger("AgentGraph")
 load_dotenv()
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ==========================================
 # 1. Summarizer Pipeline
@@ -108,8 +108,8 @@ def start_node(state: AgentState) -> AgentState:
 
     try:
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode)
-        account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name)
-        recent_summaries = database.get_recent_summaries(symbol, agent_name=agent_name, limit=4)
+        account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
+        recent_summaries = database.get_recent_summaries(symbol, config_id=config_id, limit=4)
     except Exception as e:
         logger.error(f"❌ [Data Fetch Error]: {e}")
         market_full = {}
@@ -121,7 +121,12 @@ def start_node(state: AgentState) -> AgentState:
             balance = account_data.get('balance', 0)
             positions = account_data.get('real_positions', [])
             total_unrealized_pnl = sum([float(p.get('unrealized_pnl', 0)) for p in positions])
-            database.save_balance_snapshot(symbol, balance, total_unrealized_pnl)
+            
+            # 采样频率优化：仅在整点 (0-15分之间) 记录快照，避免 15m 高频打点
+            # 这样在 15m 的心跳中，每小时只会记录一次
+            if now.minute < 15:
+                database.save_balance_snapshot(symbol, balance, total_unrealized_pnl)
+                
             recent_trades = market_tool.fetch_recent_trades(symbol, limit=10)
             if recent_trades:
                 database.save_trade_history(recent_trades)
@@ -218,10 +223,22 @@ def start_node(state: AgentState) -> AgentState:
 def agent_node(state: AgentState) -> AgentState:
     config = state.agent_config
     symbol = state.symbol
+    model_name = config.get('model', '').lower()
     trade_mode = config.get('mode', 'STRATEGY').upper()
     logger.info(f"--- [Node] Agent: {config.get('model')} (Mode: {trade_mode}) ---")
 
-    messages = state.messages
+    # 兼容处理：针对 DeepSeek R1/V3 等模型处理 reasoning_content
+    # 1. 如果 assistant 消息包含 tool_calls，则必须包含 reasoning_content 字段
+    # 2. 将历史消息中的 reasoning_content 设为 None 以节省带宽并避免报错
+    messages = []
+    is_deepseek = "deepseek" in model_name or "r1" in model_name
+    
+    for msg in state.messages:
+        if isinstance(msg, AIMessage) and is_deepseek:
+            # 只要之前存在推理内容或者是带工具调用的 AI 消息，就确保字段存在且设为 None
+            if getattr(msg, "tool_calls", None) or "reasoning_content" in msg.additional_kwargs or msg.response_metadata.get("reasoning_content"):
+                msg.additional_kwargs["reasoning_content"] = None
+        messages.append(msg)
 
     try:
         kwargs = {}
@@ -243,6 +260,11 @@ def agent_node(state: AgentState) -> AgentState:
         ).bind_tools(tools)
 
         response = llm.invoke(messages)
+        
+        # 处理 DeepSeek R1 等模型的思维链展示
+        reasoning = response.additional_kwargs.get("reasoning_content") or response.response_metadata.get("reasoning_content")
+        if reasoning and "<thinking>" not in response.content:
+            response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
         
         # 记录 Token 使用情况
         try:
@@ -310,7 +332,8 @@ def finalize_node(state: AgentState) -> AgentState:
     """合并 AI 消息的内容并保存到数据库。"""
     config_id = state.config_id
     symbol = state.symbol
-    agent_name = config_id
+    # 这里的 agent_name 建议存模型名，方便历史回溯过滤；config_id 存唯一标识
+    agent_name = state.agent_config.get('model', 'Unknown')
     
     # 收集本次运行中所有 AI 消息的内容
     # 我们优先取那条“最长的”消息（通常是包含分析的那条），并拼接后续的确认消息
@@ -338,7 +361,7 @@ def finalize_node(state: AgentState) -> AgentState:
         processed_strategy_logic = escape_markdown_special_chars(strategy_logic)
         
         try:
-            database.save_summary(symbol, agent_name, processed_content, processed_strategy_logic)
+            database.save_summary(symbol, agent_name, processed_content, processed_strategy_logic, config_id=config_id)
         except Exception as e:
             logger.warning(f"⚠️ Save summary failed: {e}")
 

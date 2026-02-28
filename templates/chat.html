@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -10,79 +10,133 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/markdown-it@14/dist/markdown-it.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}">
+    <style>
+      /* 修复输入框高度自适应的平滑度 */
+      #input {
+        transition: height 0.1s ease-out;
+        overflow-y: hidden; /* 默认隐藏滚动条 */
+      }
+      #input:focus {
+        overflow-y: auto; /* 获取焦点或内容多时允许滚动 */
+      }
+      /* 输入状态动画 */
+      .typing-dot {
+        width: 4px;
+        height: 4px;
+        background: currentColor;
+        border-radius: 50%;
+        display: inline-block;
+        animation: typing 1.4s infinite both;
+        opacity: 0.4;
+      }
+      .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+      .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes typing {
+        0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+        40% { transform: scale(1.2); opacity: 1; }
+      }
+      /* 工具调用参数列表样式 */
+      .tool-arg-row {
+        display: grid;
+        grid-template-columns: minmax(60px, auto) 1fr;
+        gap: 8px;
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(0,0,0,0.05);
+      }
+      .tool-arg-row:last-child { border-bottom: none; }
+      .tool-arg-key { font-weight: 700; color: #64748b; }
+      .tool-arg-val { word-break: break-all; color: #1e293b; }
+    </style>
   </head>
-  <body class="h-screen overflow-hidden">
+  <body class="h-screen overflow-hidden bg-slate-50">
     <div id="authView" class="h-screen flex items-center justify-center px-4" {% if authed %}style="display:none"{% endif %}>
-      <div class="w-full max-w-sm rounded-2xl border border-slate-200 bg-white/95 p-6 shadow-xl">
-        <h1 class="text-xl font-semibold tracking-tight">聊天访问验证</h1>
-        <p class="mt-2 text-sm text-slate-500">输入密码后进入会话管理与聊天</p>
-        <input id="password" type="password" class="mt-4 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" placeholder="Password" />
-        <button onclick="login()" class="mt-3 w-full rounded-xl bg-blue-700 text-white py-2.5 hover:bg-blue-800 transition">进入聊天</button>
-        <p id="authErr" class="mt-2 text-sm text-rose-600"></p>
+      <div class="w-full max-w-sm rounded-3xl border border-slate-200 bg-white/80 backdrop-blur-xl p-8 shadow-2xl">
+        <div class="flex justify-center mb-6 text-4xl">💸</div>
+        <h1 class="text-2xl font-bold tracking-tight text-center text-slate-900">身份验证</h1>
+        <p class="mt-2 text-sm text-slate-500 text-center">访问聊天功能需要管理员权限</p>
+        <input id="password" type="password" class="mt-6 w-full rounded-2xl border border-slate-200 bg-slate-50/50 px-4 py-3 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-center font-mono" placeholder="管理密码" />
+        
+        <!-- 图形验证码区块 -->
+        <div class="mt-4 flex gap-2 h-12">
+          <div class="flex-1 bg-slate-50/50 rounded-2xl border border-slate-200 overflow-hidden cursor-pointer active:opacity-70 transition-opacity" onclick="refreshCaptcha()" title="点击刷新">
+            <img id="captcha-img" class="w-full h-full object-cover" alt="验证码">
+          </div>
+          <input id="captcha" type="text" class="w-24 rounded-2xl border border-slate-200 bg-slate-50/50 px-2 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-center font-bold uppercase" placeholder="验证码" />
+        </div>
+
+        <button onclick="login()" class="mt-4 w-full rounded-2xl bg-blue-600 text-white py-3.5 font-bold hover:bg-blue-700 active:scale-[0.98] transition-all shadow-lg shadow-blue-500/25">登录</button>
+        <p id="authErr" class="mt-3 text-xs text-rose-500 text-center font-medium"></p>
       </div>
     </div>
 
-    <div id="chatView" class="h-[100dvh] p-2 sm:p-4" {% if not authed %}style="display:none"{% endif %}>
-      <div id="mobileOverlay" onclick="closeMobileSidebar()" class="hidden fixed inset-0 bg-black/35 z-30 lg:hidden"></div>
-      <div class="relative h-full min-w-0 lg:grid lg:grid-cols-[340px_1fr] gap-3 sm:gap-4">
-        <aside id="sessionSidebar" class="fixed z-40 inset-y-2 left-2 w-[88vw] max-w-[360px] -translate-x-[110%] transition-transform duration-200 rounded-2xl border border-slate-200 bg-white/95 backdrop-blur shadow-sm overflow-hidden flex flex-col min-h-0 lg:static lg:z-auto lg:inset-auto lg:w-auto lg:max-w-none lg:translate-x-0">
-          <div class="p-3 border-b border-slate-200 bg-slate-50/70">
-            <div class="flex items-center justify-between gap-2">
-              <h2 class="font-semibold">会话管理</h2>
-              <button onclick="openNewSession()" title="新建会话" class="rounded-lg bg-blue-700 text-white px-2.5 py-1.5 hover:bg-blue-800">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
-                </svg>
+    <div id="chatView" class="h-[100dvh] flex flex-col p-0 sm:p-3" {% if not authed %}style="display:none"{% endif %}>
+      <div id="mobileOverlay" onclick="closeMobileSidebar()" class="hidden fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-30 lg:hidden transition-all"></div>
+      
+      <div class="relative flex-1 min-h-0 lg:grid lg:grid-cols-[320px_1fr] gap-4">
+        <aside id="sessionSidebar" class="fixed z-40 inset-y-0 left-0 w-[85vw] max-w-[320px] -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-out lg:static lg:w-auto rounded-none lg:rounded-3xl border-r lg:border border-slate-200 bg-white/80 backdrop-blur-xl shadow-2xl lg:shadow-sm overflow-hidden flex flex-col">
+          <div class="p-5 border-b border-slate-100">
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-lg font-bold text-slate-900 tracking-tight">会话记录</h2>
+              <button onclick="openNewSession(event)" class="group rounded-xl bg-slate-900 text-white p-2 hover:bg-blue-600 transition-all active:scale-90 shadow-lg shadow-slate-900/10">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
               </button>
             </div>
-            <div class="mt-2 flex items-center gap-2">
-              <button id="multiBtn" onclick="toggleMultiSelect()" class="text-xs rounded-lg border border-slate-300 px-2 py-1 hover:bg-slate-100">多选</button>
-              <button id="selectAllBtn" onclick="toggleSelectAllSessions()" class="hidden text-xs rounded-lg border border-slate-300 px-2 py-1 hover:bg-slate-100">全选</button>
-              <button id="deleteSelectedBtn" onclick="deleteSelectedSessions()" class="hidden text-xs rounded-lg bg-rose-600 text-white px-2 py-1 hover:bg-rose-700">删除选中</button>
-              <span id="selectedCount" class="hidden text-xs text-slate-500"></span>
+            <div class="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+              <button id="multiBtn" onclick="toggleMultiSelect()" class="text-[11px] font-bold uppercase tracking-wider rounded-lg border border-slate-200 px-3 py-1.5 hover:bg-slate-50 transition-colors whitespace-nowrap text-slate-500">批量管理</button>
+              <button id="selectAllBtn" onclick="toggleSelectAllSessions()" class="hidden text-[11px] font-bold uppercase tracking-wider rounded-lg border border-slate-200 px-3 py-1.5 hover:bg-slate-50 transition-colors whitespace-nowrap">全选</button>
+              <button id="deleteSelectedBtn" onclick="deleteSelectedSessions()" class="hidden text-[11px] font-bold uppercase tracking-wider rounded-lg bg-rose-50 text-rose-600 px-3 py-1.5 hover:bg-rose-100 transition-colors whitespace-nowrap">删除选中</button>
             </div>
           </div>
-          <div id="sessionList" class="flex-1 min-h-0 overflow-y-auto scroll-thin"></div>
+          <div id="sessionList" class="flex-1 min-h-0 overflow-y-auto mini-scroll py-2 px-2"></div>
         </aside>
 
-        <section class="h-full rounded-2xl border border-slate-200 bg-white/95 shadow-sm flex flex-col overflow-hidden min-h-0 min-w-0 relative">
-          <div class="px-3 sm:px-4 py-3 border-b border-slate-200 bg-slate-50/60">
-            <div class="flex items-center gap-2">
-              <button onclick="toggleMobileSidebar()" title="会话列表" class="lg:hidden rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-              </button>
-              <div id="chatHeader" class="text-sm text-slate-700 truncate">请选择或新建会话</div>
+        <section class="flex flex-col h-full bg-white lg:rounded-3xl lg:border border-slate-200 shadow-sm overflow-hidden relative">
+          <header class="px-4 py-4 border-b border-slate-100 bg-white/50 backdrop-blur-md flex items-center justify-between gap-3 shrink-0">
+            <div class="flex items-center gap-3 min-w-0">
+                <button onclick="toggleMobileSidebar()" class="lg:hidden p-2 rounded-xl hover:bg-slate-100 transition-colors">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
+                </button>
+                <div class="min-w-0">
+                  <div id="chatHeader" class="text-sm font-bold text-slate-900 truncate tracking-tight uppercase">当前对话</div>
+                  <div id="chatSubHeader" class="text-[10px] text-slate-400 font-mono mt-0.5 truncate uppercase tracking-widest">Crypto Agent V0.3</div>
+                </div>
             </div>
-          </div>
+            <a href="/" class="hidden lg:flex items-center gap-2 px-4 py-2 rounded-full bg-slate-100 hover:bg-blue-600 text-slate-600 hover:text-white font-bold text-xs transition-all shadow-sm active:scale-95">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+                返回控制台
+            </a>
+          </header>
 
-          <div id="messages" class="flex-1 min-h-0 overflow-y-auto scroll-thin p-3 sm:p-4 bg-[linear-gradient(180deg,#f8fbff_0%,#f4f8fb_100%)] space-y-3"></div>
-          <button id="jumpToBottomBtn" onclick="scrollToBottomAndFollow()" class="hidden absolute right-4 bottom-24 z-20 rounded-full border border-blue-200 bg-white/95 text-blue-700 px-3 py-1.5 text-xs shadow-sm hover:bg-blue-50">
-            回到底部
+          <div id="messages" class="flex-1 overflow-y-auto scroll-thin p-4 space-y-6 bg-slate-50/30"></div>
+          
+          <button id="jumpToBottomBtn" onclick="scrollToBottomAndFollow()" class="hidden absolute right-6 bottom-32 z-20 rounded-full bg-slate-900 text-white p-3 shadow-2xl hover:scale-110 active:scale-95 transition-all">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7-7-7m14-8l-7 7-7-7"></path></svg>
           </button>
 
-          <div id="approvalBar" class="hidden border-t border-amber-200 bg-amber-50 px-4 py-3">
-            <div class="text-sm">
-              <span class="font-semibold text-amber-800">工具调用待确认：</span>
-              <span id="approvalText" class="text-amber-900"></span>
-            </div>
-            <div class="mt-2 flex gap-2">
-              <button id="approvalYesBtn" onclick="respondApproval(true)" class="rounded-lg bg-emerald-600 text-white px-3 py-1.5 text-sm hover:bg-emerald-700">同意执行</button>
-              <button id="approvalNoBtn" onclick="respondApproval(false)" class="rounded-lg bg-rose-600 text-white px-3 py-1.5 text-sm hover:bg-rose-700">拒绝</button>
+          <div id="approvalBar" class="hidden mx-4 mb-2 rounded-2xl border border-amber-200 bg-amber-50/80 backdrop-blur-md p-4 shadow-lg animate-in slide-in-from-bottom-4">
+            <div class="flex items-start gap-3">
+              <div class="bg-amber-100 p-2 rounded-xl text-amber-600 shadow-sm">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+              </div>
+              <div class="flex-1">
+                <div class="text-[11px] font-bold text-amber-800 uppercase tracking-widest mb-1">等待操作确认</div>
+                <div id="approvalText" class="text-xs text-amber-900 font-medium leading-relaxed"></div>
+                <div class="mt-3 flex gap-2">
+                  <button id="approvalYesBtn" onclick="respondApproval(true)" class="flex-1 bg-emerald-600 text-white py-2 rounded-xl text-xs font-bold hover:bg-emerald-700 active:scale-95 transition-all shadow-sm">确认执行</button>
+                  <button id="approvalNoBtn" onclick="respondApproval(false)" class="flex-1 bg-white border border-amber-200 text-amber-700 py-2 rounded-xl text-xs font-bold hover:bg-amber-50 active:scale-95 transition-all">拒绝</button>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div id="composerBar" class="p-3 border-t border-slate-200 bg-white">
-            <div class="flex gap-2">
-              <textarea id="input" rows="1" class="flex-1 rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 resize-none min-h-[44px] max-h-[180px]" placeholder="输入消息..."></textarea>
-              <button onclick="sendMessage()" title="发送" class="self-end rounded-xl bg-blue-700 text-white px-3 py-2 hover:bg-blue-800">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M3 10l18-7-7 18-2-8-9-3z" />
-                </svg>
+          <div id="composerBar" class="p-4 bg-white shrink-0">
+            <div class="relative flex items-end gap-2 bg-slate-100 p-2 rounded-[24px] focus-within:bg-white focus-within:ring-4 focus-within:ring-blue-500/10 transition-all border border-transparent focus-within:border-slate-200">
+              <textarea id="input" rows="1" class="flex-1 bg-transparent px-3 py-2 outline-none text-sm text-slate-700 placeholder:text-slate-400 resize-none min-h-[40px] max-h-[200px]" placeholder="向 Agent 提问或发出指令... (Enter 发送, Shift+Enter 换行)"></textarea>
+              <button onclick="sendMessage()" class="group bg-blue-600 text-white p-2.5 rounded-2xl hover:bg-blue-700 active:scale-90 transition-all shadow-lg shadow-blue-500/20">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 transform group-hover:rotate-12 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10l18-7-7 18-2-8-9-3z" /></svg>
               </button>
             </div>
           </div>
@@ -90,15 +144,31 @@
       </div>
     </div>
 
-    <div id="newSessionModal" class="hidden fixed inset-0 bg-black/45 p-4 flex items-center justify-center">
-      <div class="w-full max-w-md rounded-2xl bg-white border border-slate-200 p-4 shadow-xl">
-        <h3 class="font-semibold">新建会话</h3>
-        <p class="text-sm text-slate-500 mt-1">请选择交易对配置</p>
-        <select id="configSelect" class="mt-3 w-full rounded-xl border border-slate-300 px-3 py-2.5"></select>
-        <input id="sessionTitle" class="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5" placeholder="会话标题（可选）" />
-        <div class="mt-3 flex justify-end gap-2">
-          <button onclick="closeNewSession()" class="rounded-lg border border-slate-300 px-3 py-1.5">取消</button>
-          <button onclick="createSession()" class="rounded-lg bg-blue-700 text-white px-3 py-1.5">创建</button>
+    <!-- 创建新会话 Modal -->
+    <div id="newSessionModal" class="hidden fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm p-4 flex items-center justify-center animate-in fade-in duration-200">
+      <div class="w-full max-w-sm rounded-3xl bg-white border border-slate-200 p-6 shadow-2xl scale-in-center">
+        <div class="flex items-center gap-3 mb-4">
+            <div class="bg-blue-100 p-2 rounded-xl text-blue-600 shadow-sm">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"></path></svg>
+            </div>
+            <h3 class="text-lg font-bold text-slate-900">创建新会话</h3>
+        </div>
+        <p class="text-xs text-slate-500 mb-4 leading-relaxed text-balance">创建一个新的聊天会话，你可以选择不同的 Agent 配置来开始对话。</p>
+        
+        <div class="space-y-4">
+            <div>
+                <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-1">选择 Agent 配置</label>
+                <select id="configSelect" class="w-full rounded-2xl border border-slate-200 bg-slate-50/50 px-4 py-3 text-sm focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all"></select>
+            </div>
+            <div>
+                <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 ml-1">会话标题 (可选)</label>
+                <input id="sessionTitle" class="w-full rounded-2xl border border-slate-200 bg-slate-50/50 px-4 py-3 text-sm focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" placeholder="例如：BTC 策略讨论" />
+            </div>
+        </div>
+
+        <div class="mt-8 flex gap-3">
+          <button onclick="closeNewSession()" class="flex-1 rounded-2xl border border-slate-200 py-3 text-sm font-bold text-slate-500 hover:bg-slate-50 transition-all">取消</button>
+          <button onclick="createSession()" class="flex-1 rounded-2xl bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700 shadow-lg shadow-blue-500/25 transition-all active:scale-95">立即创建</button>
         </div>
       </div>
     </div>
@@ -113,97 +183,31 @@
       let selectedSessionIds = new Set();
       let mobileSidebarOpen = false;
       let approvalLoading = false;
-      let streamRenderTimer = null;
-      let streamRenderQueue = null;
       let autoScrollEnabled = true;
       const AUTO_SCROLL_THRESHOLD = 56;
 
-      const mdEscapeHtml = (str) => String(str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-
-      const markdownitFactory = window.markdownit;
-      const md = (typeof markdownitFactory === 'function')
-        ? markdownitFactory({
-            html: false,
-            linkify: true,
-            breaks: false,
-            typographer: true,
-            highlight: function (str, lang) {
-              if (lang && window.hljs && hljs.getLanguage(lang)) {
-                try {
-                  return '<pre class="hljs"><code>' +
-                         hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
-                         '</code></pre>';
-                } catch (__) {}
-              }
-              return '<pre class="hljs"><code>' + mdEscapeHtml(str) + '</code></pre>';
-            }
-          })
-        : null;
-
-      if (md) {
-        const defaultLinkOpen = md.renderer.rules.link_open || function(tokens, idx, options, env, self) {
-          return self.renderToken(tokens, idx, options);
-        };
-        md.renderer.rules.link_open = function(tokens, idx, options, env, self) {
-          tokens[idx].attrSet('target', '_blank');
-          tokens[idx].attrSet('rel', 'noopener noreferrer nofollow');
-          return defaultLinkOpen(tokens, idx, options, env, self);
-        };
+      // 输入框自适应高度与快捷键
+      const inputEl = document.getElementById('input');
+      if (inputEl) {
+        inputEl.addEventListener('input', function() {
+          this.style.height = 'auto';
+          this.style.height = Math.min(this.scrollHeight, 200) + 'px';
+        });
+        inputEl.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+          }
+        });
       }
 
       function renderMarkdown(content) {
-        if (!md) {
-          return mdEscapeHtml(content).replace(/\n/g, '<br>');
+        if (!window.marked) return String(content || '');
+        try {
+          return DOMPurify.sanitize(marked.parse(String(content || '')));
+        } catch (e) {
+          return String(content || '');
         }
-        const html = DOMPurify.sanitize(md.render(content));
-        return html
-          .replace(/<table>/g, '<div class="md-table-wrap"><table>')
-          .replace(/<\/table>/g, '</table></div>');
-      }
-
-      function scheduleStreamRender(messages, force = false) {
-        if (force) {
-          if (streamRenderTimer) {
-            clearTimeout(streamRenderTimer);
-            streamRenderTimer = null;
-          }
-          streamRenderQueue = null;
-          renderMessages(messages);
-          return;
-        }
-
-        streamRenderQueue = messages;
-        if (streamRenderTimer) return;
-        streamRenderTimer = setTimeout(() => {
-          streamRenderTimer = null;
-          const nextMessages = streamRenderQueue || currentMessages;
-          streamRenderQueue = null;
-          renderMessages(nextMessages);
-        }, 60);
-      }
-
-      function isNearBottom(container) {
-        if (!container) return true;
-        return (container.scrollHeight - container.scrollTop - container.clientHeight) <= AUTO_SCROLL_THRESHOLD;
-      }
-
-      function updateJumpToBottomButton() {
-        const btn = document.getElementById('jumpToBottomBtn');
-        if (!btn) return;
-        btn.classList.toggle('hidden', autoScrollEnabled);
-      }
-
-      function scrollToBottomAndFollow() {
-        const container = ensureMessagesScrollListener();
-        if (!container) return;
-        autoScrollEnabled = true;
-        container.scrollTop = container.scrollHeight;
-        updateJumpToBottomButton();
       }
 
       function ensureMessagesScrollListener() {
@@ -211,29 +215,33 @@
         if (!container || container._scrollListenerInitialized) return container;
         container._scrollListenerInitialized = true;
         container.addEventListener('scroll', () => {
-          autoScrollEnabled = isNearBottom(container);
-          updateJumpToBottomButton();
+          autoScrollEnabled = (container.scrollHeight - container.scrollTop - container.clientHeight) <= AUTO_SCROLL_THRESHOLD;
+          const btn = document.getElementById('jumpToBottomBtn');
+          if (btn) btn.classList.toggle('hidden', autoScrollEnabled);
         });
         return container;
       }
 
-      function toggleMobileSidebar() {
-        mobileSidebarOpen ? closeMobileSidebar() : openMobileSidebar();
+      function scrollToBottomAndFollow() {
+        const container = document.getElementById('messages');
+        if (!container) return;
+        autoScrollEnabled = true;
+        container.scrollTop = container.scrollHeight;
       }
 
-      function openMobileSidebar() {
-        mobileSidebarOpen = true;
+      function toggleMobileSidebar() {
+        mobileSidebarOpen = !mobileSidebarOpen;
         const sidebar = document.getElementById('sessionSidebar');
         const overlay = document.getElementById('mobileOverlay');
-        if (sidebar) sidebar.classList.remove('-translate-x-[110%]');
-        if (overlay) overlay.classList.remove('hidden');
+        if (sidebar) sidebar.classList.toggle('-translate-x-full', !mobileSidebarOpen);
+        if (overlay) overlay.classList.toggle('hidden', !mobileSidebarOpen);
       }
 
       function closeMobileSidebar() {
         mobileSidebarOpen = false;
         const sidebar = document.getElementById('sessionSidebar');
         const overlay = document.getElementById('mobileOverlay');
-        if (sidebar) sidebar.classList.add('-translate-x-[110%]');
+        if (sidebar) sidebar.classList.add('-translate-x-full');
         if (overlay) overlay.classList.add('hidden');
       }
 
@@ -241,84 +249,66 @@
         approvalLoading = loading;
         const yesBtn = document.getElementById('approvalYesBtn');
         const noBtn = document.getElementById('approvalNoBtn');
-        [yesBtn, noBtn].forEach((btn) => {
-          if (!btn) return;
-          btn.disabled = loading;
-          btn.classList.toggle('opacity-50', loading);
-          btn.classList.toggle('cursor-not-allowed', loading);
-        });
+        if (yesBtn) yesBtn.disabled = loading;
+        if (noBtn) noBtn.disabled = loading;
       }
 
-      function getSessionIdFromUrl() {
-        const params = new URLSearchParams(window.location.search);
-        return params.get('sid');
-      }
-
-      function setSessionIdInUrl(sessionId) {
-        const url = new URL(window.location.href);
-        if (sessionId) {
-          url.searchParams.set('sid', sessionId);
-        } else {
-          url.searchParams.delete('sid');
+      async function refreshCaptcha() {
+        const img = document.getElementById('captcha-img');
+        if (!img) return;
+        try {
+          const resp = await fetch('/api/chat/captcha');
+          const data = await resp.json();
+          if (data.success) {
+            img.src = data.image;
+          }
+        } catch (e) {
+          console.error('Refresh captcha failed', e);
         }
-        window.history.replaceState({}, '', `${url.pathname}${url.search}`);
       }
-
-      document.addEventListener('DOMContentLoaded', () => {
-        const input = document.getElementById('input');
-        const autoResize = () => {
-          if (!input) return;
-          input.style.height = 'auto';
-          const next = Math.min(input.scrollHeight, 180);
-          input.style.height = `${Math.max(40, next)}px`;
-        };
-        if (input) {
-          autoResize();
-          input.addEventListener('input', autoResize);
-          input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              sendMessage();
-            }
-          });
-        }
-      });
 
       async function login() {
         const password = document.getElementById('password').value;
-        const res = await fetch('/api/chat/auth', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({password})
-        });
-        const data = await res.json();
-        if (!data.success) {
-          document.getElementById('authErr').textContent = data.message || '认证失败';
+        const captcha = document.getElementById('captcha').value;
+        if (!password || !captcha) {
+          document.getElementById('authErr').textContent = '请输入密码和验证码';
           return;
         }
-        document.getElementById('authView').style.display = 'none';
-        document.getElementById('chatView').style.display = 'block';
-        await bootstrap();
+        try {
+          const res = await fetch('/api/chat/auth', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({password, captcha})
+          });
+          const data = await res.json();
+          if (!data.success) {
+            document.getElementById('authErr').textContent = data.message || '验证失败';
+            refreshCaptcha();
+            return;
+          }
+          location.reload();
+        } catch (e) {
+          alert('Network error');
+        }
       }
 
       async function bootstrap() {
-        const res = await fetch('/api/chat/bootstrap');
-        const data = await res.json();
-        if (!data.success) return;
-        sessions = data.sessions || [];
-        configs = data.configs || [];
-        if (currentSessionId && !sessions.some(s => s.session_id === currentSessionId)) {
-          currentSessionId = null;
-          currentMessages = [];
-          setSessionIdInUrl(null);
-        }
-        renderSessions();
-
-        if (!currentSessionId) {
-          const sidFromUrl = getSessionIdFromUrl();
-          if (sidFromUrl && sessions.some(s => s.session_id === sidFromUrl)) {
-            await selectSession(sidFromUrl, { skipUrlSync: true });
+        try {
+          const res = await fetch('/api/chat/bootstrap');
+          if (res.status === 401) {
+            document.getElementById('authView').style.display = 'flex';
+            document.getElementById('chatView').style.display = 'none';
+            return;
           }
+          const data = await res.json();
+          if (!data.success) return;
+          sessions = data.sessions || [];
+          configs = data.configs || [];
+          renderSessions();
+          const sidFromUrl = new URLSearchParams(window.location.search).get('sid');
+          if (sidFromUrl && !currentSessionId) selectSession(sidFromUrl, {skipUrlSync: true});
+        } catch (e) {
+          console.error('Bootstrap failed', e);
         }
       }
 
@@ -328,516 +318,434 @@
         renderSessions();
       }
 
-      function toggleSelectAllSessions() {
-        if (!sessions.length) return;
-        if (selectedSessionIds.size === sessions.length) {
-          selectedSessionIds.clear();
-        } else {
-          selectedSessionIds = new Set(sessions.map(s => s.session_id));
-        }
-        renderSessions();
-      }
-
       function toggleSelected(sessionId, checked) {
         if (checked) selectedSessionIds.add(sessionId);
         else selectedSessionIds.delete(sessionId);
-        updateSelectionMeta();
-      }
-
-      function updateSelectionMeta() {
         const delBtn = document.getElementById('deleteSelectedBtn');
         const allBtn = document.getElementById('selectAllBtn');
-        const count = document.getElementById('selectedCount');
-        if (!multiSelectMode) {
-          delBtn.classList.add('hidden');
-          allBtn.classList.add('hidden');
-          count.classList.add('hidden');
-          return;
-        }
-        delBtn.classList.remove('hidden');
-        allBtn.classList.remove('hidden');
-        allBtn.textContent = selectedSessionIds.size === sessions.length && sessions.length > 0 ? '取消全选' : '全选';
-        count.classList.remove('hidden');
-        count.textContent = `已选 ${selectedSessionIds.size}`;
+        if (delBtn) delBtn.classList.toggle('hidden', !multiSelectMode);
+        if (allBtn) allBtn.classList.toggle('hidden', !multiSelectMode);
+      }
+
+      function toggleSelectAllSessions() {
+        if (selectedSessionIds.size === sessions.length) selectedSessionIds.clear();
+        else sessions.forEach(s => selectedSessionIds.add(s.session_id));
+        renderSessions();
       }
 
       function renderSessions() {
         const list = document.getElementById('sessionList');
         const multiBtn = document.getElementById('multiBtn');
-        multiBtn.textContent = multiSelectMode ? '退出多选' : '多选';
-        multiBtn.className = multiSelectMode
-          ? 'text-xs rounded-lg border border-blue-600 text-blue-700 px-2 py-1 bg-blue-50'
-          : 'text-xs rounded-lg border border-slate-300 px-2 py-1 hover:bg-slate-100';
-        updateSelectionMeta();
+        if (!list) return;
 
-        if (!sessions.length) {
-          list.innerHTML = '<div class="p-4 text-sm text-slate-500">暂无会话</div>';
-          return;
-        }
+        multiBtn.textContent = multiSelectMode ? '取消批量' : '批量管理';
 
-        list.innerHTML = sessions.map(s => {
-          const active = s.session_id === currentSessionId;
-          const selected = selectedSessionIds.has(s.session_id);
-          return `
-            <div class="group border-b border-slate-100 ${active ? 'bg-blue-50/70' : 'hover:bg-slate-50'}">
-              <div class="p-3 flex items-start gap-2">
-                ${multiSelectMode ? `<input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleSelected('${s.session_id}', this.checked)" class="mt-1 h-4 w-4" />` : ''}
-                <button onclick="selectSession('${s.session_id}')" class="flex-1 text-left min-w-0">
-                  <div class="font-medium text-sm truncate">${escapeHtml(s.title || s.symbol)}</div>
-                  <div class="text-xs text-slate-500 mt-1 truncate">${escapeHtml(s.symbol)} · ${escapeHtml(s.config_id)}</div>
-                </button>
-                <button onclick="deleteOneSession('${s.session_id}')" class="opacity-0 group-hover:opacity-100 transition text-xs rounded-md border border-rose-200 text-rose-600 px-2 py-1 hover:bg-rose-50">删</button>
-              </div>
+        list.innerHTML = sessions.map(s => `
+          <div class="group border-b border-slate-50 ${s.session_id === currentSessionId ? 'bg-blue-50/70 shadow-sm rounded-xl' : 'hover:bg-slate-50 rounded-xl transition-all'} m-1">
+            <div class="p-3 flex items-start gap-2">
+              ${multiSelectMode ? `<input type="checkbox" ${selectedSessionIds.has(s.session_id) ? 'checked' : ''} onchange="toggleSelected('${s.session_id}', this.checked)" class="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />` : ''}
+              <button onclick="selectSession('${s.session_id}')" class="flex-1 text-left min-w-0">
+                <div class="font-bold text-sm truncate text-slate-800">${escapeHtml(s.title || s.symbol)}</div>
+                <div class="text-[10px] text-slate-400 mt-1 uppercase font-mono">${escapeHtml(s.symbol)} · ${escapeHtml(s.config_id)}</div>
+              </button>
+              ${!multiSelectMode ? `<button onclick="deleteOneSession('${s.session_id}')" class="opacity-0 group-hover:opacity-100 text-[10px] text-rose-400 hover:text-rose-600 p-1 transition-opacity">删除</button>` : ''}
             </div>
-          `;
-        }).join('');
+          </div>
+        `).join('');
       }
 
       async function selectSession(sessionId, options = {}) {
         if (multiSelectMode) return;
         currentSessionId = sessionId;
+        const container = document.getElementById('messages');
+        if (container) container.innerHTML = '<div class="h-full flex flex-col items-center justify-center text-slate-400 text-xs animate-pulse space-y-2"><span>加载消息中...</span></div>';
+
         if (!options.skipUrlSync) {
-          setSessionIdInUrl(sessionId);
+          const url = new URL(window.location.href);
+          url.searchParams.set('sid', sessionId);
+          window.history.replaceState({}, '', url.search);
         }
         closeMobileSidebar();
         pendingApproval = null;
         showApproval();
         renderSessions();
 
-        const res = await fetch(`/api/chat/sessions/${sessionId}/messages`);
-        const data = await res.json();
-        if (!data.success) return;
-        document.getElementById('chatHeader').textContent = `${data.session.title} (${data.session.symbol} / ${data.session.config_id})`;
-        currentMessages = data.messages || [];
-        autoScrollEnabled = true;
-        renderMessages(currentMessages);
+        try {
+          const res = await fetch(`/api/chat/sessions/${sessionId}/messages`);
+          const data = await res.json();
+          if (data.success) {
+            const header = document.getElementById('chatHeader');
+            if (header && data.session) header.textContent = data.session.title;
+            currentMessages = normalizeMessages(data.messages || []);
+            renderMessages(currentMessages);
+          }
+        } catch (e) {
+          if (container) container.innerHTML = '<div class="text-rose-500 p-4 text-center">加载失败</div>';
+        }
+      }
+
+      function normalizeOneMessage(m) {
+        const msg = { ...(m || {}) };
+        if (msg.content == null) msg.content = '';
+        msg.content = String(msg.content);
+        if (msg.reasoning_content == null) msg.reasoning_content = '';
+        msg.reasoning_content = String(msg.reasoning_content || '');
+
+        const matched = msg.content.match(/<thinking>([\s\S]*?)<\/thinking>/i);
+        if (matched) {
+          if (!msg.reasoning_content) msg.reasoning_content = matched[1].trim();
+          msg.content = msg.content.replace(/<thinking>[\s\S]*?<\/thinking>\s*/ig, '').trimStart();
+        }
+
+        if (msg.__thinking_open == null) {
+          msg.__thinking_open = !!(msg.__streaming || msg.__loading || msg.reasoning_content);
+        }
+        return msg;
+      }
+
+      function normalizeMessages(messages) {
+        return (messages || []).map(normalizeOneMessage);
+      }
+
+      function renderThinkingHtml(message, idx, isStreaming) {
+        const reasoning = String(message.reasoning_content || '').trim();
+        // 关键修复：如果没有推理内容，且不是正在进行中的思考（没有收到过推理令牌），则不渲染思考块
+        if (!reasoning) return '';
+
+        const body = isStreaming
+          ? `<div class="whitespace-pre-wrap text-[11px] text-slate-500 italic leading-relaxed">${escapeHtml(reasoning)}<span class="animate-pulse">...</span></div>`
+          : `<div class="text-[11px] text-slate-500 italic leading-relaxed">${renderMarkdown(reasoning)}</div>`;
+
+        return `
+          <details data-thinking-wrap="1" class="mb-3 rounded-xl border border-slate-200 bg-slate-50/50 overflow-hidden" ${message.__thinking_open ? 'open' : ''}>
+            <summary onclick="rememberThinkingState(${idx}, this.parentElement.open)" class="px-3 py-2 cursor-pointer list-none select-none text-[10px] font-bold uppercase tracking-widest text-slate-400 flex items-center justify-between">
+              <span>思考过程</span>
+              <svg class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 9l-7 7-7-7" stroke-width="3"/></svg>
+            </summary>
+            <div data-thinking-body="1" class="px-3 pb-3 border-t border-slate-100/50">${body}</div>
+          </details>`;
+      }
+
+      function rememberThinkingState(idx, wasOpen) {
+        if (!currentMessages[idx]) return;
+        currentMessages[idx].__thinking_open = !wasOpen;
       }
 
       function renderMessages(messages) {
         const container = ensureMessagesScrollListener();
-        const shouldAutoScroll = autoScrollEnabled || isNearBottom(container);
-        container.innerHTML = '';
+        if (!container) return;
 
-        if (!messages.length) {
-          container.innerHTML = '<div class="text-center text-sm text-slate-400 mt-8">暂无消息，开始对话吧</div>';
-          return;
-        }
+        const html = messages.map((rawMessage, idx) => {
+          const m = normalizeOneMessage(rawMessage);
+          messages[idx] = m;
 
-        messages.forEach(m => {
+          const hasToolCalls = m.tool_calls && m.tool_calls.length > 0;
+          const hasThinking = !!String(m.reasoning_content || '').trim();
+          const isStreaming = m.__streaming || m.__loading;
+
+          if (!m.content && !hasToolCalls && !hasThinking && !isStreaming) return '';
+
           const isUser = m.role === 'user';
           const isTool = m.role === 'tool';
-          
-          let bubbleClass = '';
-          let roleText = '';
-          if (isUser) {
-            bubbleClass = 'ml-auto mobile-bubble-max sm:max-w-[82%]';
-            roleText = '你';
-          } else if (isTool) {
-            const isError = (m.content || '').toLowerCase().includes('error');
-            const isRejected = (m.content || '').toLowerCase().includes('rejected');
-            bubbleClass = 'mobile-bubble-max sm:max-w-[90%]';
-            roleText = isError ? 'Tool (Error)' : (isRejected ? 'Tool (Rejected)' : 'Tool Result');
-          } else {
-            bubbleClass = 'mobile-bubble-max sm:max-w-[90%]';
-            roleText = 'Agent';
+          const animationClass = (isStreaming || idx < messages.length - 1) ? '' : 'animate-in slide-in-from-bottom-2 duration-300';
+
+          if (isTool) {
+            return `
+              <div id="msg-${idx}" class="flex items-start gap-2 mb-4 max-w-[90%]">
+                <div class="flex-1 bg-slate-100 border border-slate-200 rounded-2xl p-3 text-[11px] font-mono text-slate-600 shadow-inner ${animationClass}">
+                  <div class="flex items-center gap-2 mb-1.5 opacity-60"><span class="font-bold uppercase tracking-wider">工具输出</span></div>
+                  <div class="whitespace-pre-wrap">${escapeHtml(m.content)}</div>
+                </div>
+              </div>`;
           }
 
-          const el = document.createElement('div');
-          el.className = `chat-bubble text-sm break-words ${bubbleClass}`;
-          el.dataset.role = isUser ? 'user' : (isTool ? 'tool' : 'assistant');
-          if (isTool) {
-            const lc = (m.content || '').toLowerCase();
-            const isErrorOrRejected = lc.includes('error') || lc.includes('rejected');
-            el.dataset.toolState = isErrorOrRejected ? 'error' : 'ok';
-          }
-          
-          let contentHtml = '';
-          const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
-          
-          if (m.content) {
-            if (isUser) {
-              contentHtml = escapeHtml(m.content);
-            } else {
-              // 处理 <thinking> 标签
-              let displayContent = m.content;
-              const thinkingMatch = displayContent.match(/<thinking>([\s\S]*?)<\/thinking>/);
-              let thinkingHtml = '';
-              
-              if (thinkingMatch) {
-                const thinkingText = thinkingMatch[1].trim();
-                thinkingHtml = `
-                  <details class="mb-3 rounded-xl border border-slate-200 bg-slate-50/50 overflow-hidden group" open>
-                    <summary class="flex items-center justify-between gap-1.5 px-3 py-2 cursor-pointer hover:bg-slate-100/50 transition-colors list-none select-none">
-                      <div class="flex items-center gap-1.5 opacity-60">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9l-.707.707M12 21v-1m4.243-4.243l.707.707m2.828-9.9l.707.707"></path></svg>
-                        <span class="text-[11px] font-bold uppercase tracking-wider">Reasoning</span>
-                      </div>
-                      <svg class="w-3 h-3 opacity-40 transition-transform duration-200 group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                    </summary>
-                    <div class="px-3 pb-3 pt-1 text-slate-500 italic text-[13px] leading-relaxed border-t border-slate-100/50">
-                      ${renderMarkdown(thinkingText)}
-                    </div>
-                  </details>
-                `;
-                displayContent = displayContent.replace(/<thinking>[\s\S]*?<\/thinking>/, '').trim();
-              } else if (displayContent.includes('<thinking>')) {
-                // 处理流式传输中未闭合的标签
-                const parts = displayContent.split('<thinking>');
-                const beforeThinking = parts[0].trim();
-                const thinkingInProgress = parts[1].trim();
-                
-                if (beforeThinking) {
-                    thinkingHtml = renderMarkdown(beforeThinking);
-                }
-                
-                thinkingHtml += `
-                  <details class="mb-3 rounded-xl border border-blue-100 bg-blue-50/20 overflow-hidden group animate-pulse" open>
-                    <summary class="flex items-center justify-between gap-1.5 px-3 py-2 cursor-pointer list-none select-none">
-                      <div class="flex items-center gap-1.5 opacity-60 text-blue-600">
-                        <svg class="w-3.5 h-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9l-.707.707M12 21v-1m4.243-4.243l.707.707m2.828-9.9l.707.707"></path></svg>
-                        <span class="text-[11px] font-bold uppercase tracking-wider">Thinking...</span>
-                      </div>
-                      <svg class="w-3 h-3 opacity-40 transition-transform duration-200 group-open:rotate-180 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                    </summary>
-                    <div class="px-3 pb-3 pt-1 text-slate-500 italic text-[13px] leading-relaxed border-t border-blue-100/30">
-                      ${renderMarkdown(thinkingInProgress)}
-                    </div>
-                  </details>
-                `;
-                displayContent = ''; 
-              }
-              
-              contentHtml = thinkingHtml + (displayContent ? renderMarkdown(displayContent) : '');
-            }
-          } else if (m.__streaming) {
-            contentHtml = '<div class="flex items-center gap-1"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
-          } else if (hasToolCalls) {
-            const toolBlocks = m.tool_calls.map(tc => {
-              const name = tc.name || 'unknown_tool';
+          const bubbleClass = isUser
+            ? 'ml-auto bg-blue-600 text-white rounded-br-none shadow-md'
+            : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm';
+
+          let toolCallsHtml = '';
+          if (hasToolCalls) {
+            toolCallsHtml = m.tool_calls.map(tc => {
               const args = tc.args || {};
-              let argRows = '';
-              for (const [key, val] of Object.entries(args)) {
-                let displayVal = '';
-                if (typeof val === 'object' && val !== null) {
-                    displayVal = `<pre class="text-[10px] bg-slate-50 p-1 rounded border border-slate-100 mt-1 overflow-x-auto">${escapeHtml(JSON.stringify(val, null, 2))}</pre>`;
-                } else {
-                    displayVal = escapeHtml(String(val));
-                }
-                argRows += `
-                  <div class="tool-arg-row">
-                    <span class="tool-arg-key">${escapeHtml(key)}</span>
-                    <span class="tool-arg-val">${displayVal}</span>
-                  </div>
-                `;
-              }
+              const argsHtml = Object.entries(args).map(([k, v]) => `
+                <div class="tool-arg-row">
+                  <span class="tool-arg-key">${escapeHtml(k)}</span>
+                  <span class="tool-arg-val">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</span>
+                </div>
+              `).join('');
+
               return `
-                <div class="tool-call-card">
-                  <div class="tool-call-head">
-                    <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a2 2 0 01-2 2H3a2 2 0 01-2-2V4a2 2 0 114 0v10a2 2 0 002 2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0"></path></svg>
-                    <span class="tool-call-name">${escapeHtml(name)}</span>
+                <div class="mt-3 p-4 bg-slate-50 rounded-2xl border border-slate-200 text-[11px]">
+                  <div class="flex items-center gap-2 text-blue-600 font-bold mb-3">
+                    <div class="bg-blue-600 text-white px-1.5 py-0.5 rounded text-[9px] uppercase">Tool</div>
+                    <span>${escapeHtml(tc.name)}</span>
                   </div>
-                  <div class="tool-call-body">
-                    ${argRows || '<span class="text-[11px] text-slate-400">No parameters</span>'}
-                  </div>
+                  <div class="space-y-1">${argsHtml}</div>
                 </div>
               `;
             }).join('');
-            contentHtml = `<div class="text-[11px] text-slate-500 italic mb-1">模型准备执行以下操作：</div>${toolBlocks}`;
-          } else {
-            contentHtml = '<span class="text-slate-400 text-[11px]">[空响应]</span>';
           }
-          
-          el.innerHTML = `<div class="text-[10px] uppercase font-bold tracking-wider opacity-60 mb-1.5">${roleText}</div><div class="md-content">${contentHtml}</div>`;
-          container.appendChild(el);
-        });
 
-        // Add copy buttons to new code blocks
-        container.querySelectorAll('pre').forEach(pre => {
-          if (pre.querySelector('.copy-btn')) return; // already has a button
-          const code = pre.querySelector('code');
-          if (!code) return;
+          const bodyHtml = isStreaming
+            ? `<div data-msg-body="1" class="md-content whitespace-pre-wrap">${m.content ? escapeHtml(m.content) : '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>'}</div>`
+            : `<div data-msg-body="1" class="md-content">${renderMarkdown(m.content)}</div>`;
 
-          const btn = document.createElement('button');
-          btn.textContent = 'Copy';
-          btn.className = 'copy-btn';
-          btn.onclick = () => {
-            navigator.clipboard.writeText(code.textContent).then(() => {
-              btn.textContent = 'Copied!';
-              setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
-            });
-          };
-          pre.appendChild(btn);
-        });
+          return `
+            <div id="msg-${idx}" class="flex flex-col gap-1 mb-4 ${isUser ? 'items-end' : 'items-start'}">
+              <div class="chat-bubble p-4 rounded-3xl max-w-[92%] sm:max-w-[85%] ${bubbleClass} ${animationClass}">
+                ${renderThinkingHtml(m, idx, isStreaming)}
+                ${bodyHtml}
+                ${toolCallsHtml}
+              </div>
+            </div>`;
+        }).join('');
 
-        if (shouldAutoScroll) {
-          container.scrollTop = container.scrollHeight;
-          autoScrollEnabled = true;
+        container.innerHTML = html;
+        if (autoScrollEnabled) scrollToBottomAndFollow();
+      }
+
+      function ensureThinkingDom(msgRoot, idx) {
+        let wrap = msgRoot.querySelector('[data-thinking-wrap="1"]');
+        if (!wrap) {
+          const bubble = msgRoot.querySelector('.chat-bubble');
+          if (!bubble) return null;
+
+          wrap = document.createElement('details');
+          wrap.setAttribute('data-thinking-wrap', '1');
+          wrap.className = 'mb-3 rounded-xl border border-slate-200 bg-slate-50/50 overflow-hidden';
+          wrap.innerHTML = `
+            <summary class="px-3 py-2 cursor-pointer list-none select-none text-[10px] font-bold uppercase tracking-widest text-slate-400 flex items-center justify-between">
+              <span>思考过程</span>
+              <svg class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 9l-7 7-7-7" stroke-width="3"/></svg>
+            </summary>
+            <div data-thinking-body="1" class="px-3 pb-3 border-t border-slate-100/50"></div>`;
+          const summary = wrap.querySelector('summary');
+          summary.onclick = () => rememberThinkingState(idx, wrap.open);
+          bubble.insertBefore(wrap, bubble.firstChild);
         }
-        updateJumpToBottomButton();
+        return wrap;
+      }
+
+      function updateStreamingAssistantMessage(idx) {
+        const msg = currentMessages[idx];
+        if (!msg) return;
+
+        const msgRoot = document.getElementById(`msg-${idx}`);
+        if (!msgRoot) {
+          renderMessages(currentMessages);
+          return;
+        }
+
+        const body = msgRoot.querySelector('[data-msg-body="1"]');
+        if (body) body.textContent = msg.content || '';
+
+        const reasoning = String(msg.reasoning_content || '').trim();
+        if (reasoning) {
+          const wrap = ensureThinkingDom(msgRoot, idx);
+          if (wrap) {
+            wrap.open = msg.__thinking_open !== false;
+            const thinkingBody = wrap.querySelector('[data-thinking-body="1"]');
+            if (thinkingBody) thinkingBody.innerHTML = `<div class="whitespace-pre-wrap text-[11px] text-slate-500 italic leading-relaxed">${escapeHtml(reasoning)}${msg.__streaming ? '<span class="animate-pulse">...</span>' : ''}</div>`;
+          }
+        }
+
+        if (autoScrollEnabled) scrollToBottomAndFollow();
+      }
+
+      function appendStreamDelta(streamIdx, delta) {
+        const msg = currentMessages[streamIdx];
+        if (!msg) return;
+
+        if (delta.reasoning) {
+          msg.reasoning_content = (msg.reasoning_content || '') + delta.reasoning;
+          if (msg.__thinking_open == null) msg.__thinking_open = true;
+        }
+        if (delta.content) {
+          msg.content = (msg.content || '') + delta.content;
+        }
+        msg.__streaming = true;
+
+        updateStreamingAssistantMessage(streamIdx);
       }
 
       async function sendMessage() {
-        autoScrollEnabled = true;
-        if (!currentSessionId || pendingApproval) return;
         const input = document.getElementById('input');
         const message = input.value.trim();
-        if (!message) return;
+        if (!message || !currentSessionId || pendingApproval) return;
+
         input.value = '';
         input.style.height = '40px';
-        input.disabled = true;
+
+        const isFirstMessage = currentMessages.length === 0;
 
         currentMessages.push({ role: 'user', content: message });
-        currentMessages.push({ role: 'assistant', content: '', __streaming: true });
-        const streamAssistantIndex = currentMessages.length - 1;
+        const streamIdx = currentMessages.length;
+        currentMessages.push({ role: 'assistant', content: '', reasoning_content: '', __streaming: true, __thinking_open: true });
         renderMessages(currentMessages);
 
         const eventSource = new EventSource(`/api/chat/sessions/${currentSessionId}/stream?message=${encodeURIComponent(message)}`);
-        let streamClosed = false;
-
-        eventSource.onmessage = function(event) {
-          const payload = JSON.parse(event.data);
-
+        eventSource.onmessage = (e) => {
+          const payload = JSON.parse(e.data);
           if (payload.type === 'token') {
-            currentMessages[streamAssistantIndex].content += payload.token || '';
-            scheduleStreamRender(currentMessages);
+            appendStreamDelta(streamIdx, { content: payload.token || '' });
+          } else if (payload.type === 'reasoning_token') {
+            appendStreamDelta(streamIdx, { reasoning: payload.token || '' });
           } else if (payload.type === 'done') {
-            currentMessages = payload.messages || currentMessages;
-            currentMessages = currentMessages.map(m => {
-              if (m && m.__streaming) {
-                const copy = { ...m };
-                delete copy.__streaming;
-                return copy;
-              }
-              return m;
-            });
-            pendingApproval = payload.pending_approval || null;
-            scheduleStreamRender(currentMessages, true);
+            currentMessages = normalizeMessages(payload.messages || []);
+            pendingApproval = payload.pending_approval;
+            renderMessages(currentMessages);
             showApproval();
-            streamClosed = true;
             eventSource.close();
-            input.disabled = false;
-            input.focus();
-            bootstrap(); // Refresh session list to show updated timestamp
-          } else if (payload.type === 'error') {
-            streamClosed = true;
-            if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
-              currentMessages[streamAssistantIndex].__streaming = false;
-              currentMessages[streamAssistantIndex].content = currentMessages[streamAssistantIndex].content || '[流式失败]';
-              scheduleStreamRender(currentMessages, true);
-            }
-            alert(payload.message || '流式传输失败');
-            eventSource.close();
-            input.disabled = false;
-          }
-        };
 
-        eventSource.onerror = function() {
-          if (streamClosed) return;
-          if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
-            currentMessages[streamAssistantIndex].__streaming = false;
-            currentMessages[streamAssistantIndex].content = currentMessages[streamAssistantIndex].content || '[连接中断]';
-            scheduleStreamRender(currentMessages, true);
+            // 自动总结标题
+            if (isFirstMessage) {
+              fetch(`/api/chat/sessions/${currentSessionId}/summarize_title`, {method: 'POST'})
+                .then(r => r.json())
+                .then(d => { if(d.success) bootstrap(); });
+            }
+          } else if (payload.type === 'error') {
+            alert('Streaming error: ' + payload.message);
+            eventSource.close();
           }
-          alert('与服务器的连接丢失。');
-          eventSource.close();
-          input.disabled = false;
         };
+        eventSource.onerror = () => eventSource.close();
       }
 
       async function respondApproval(approved) {
-        if (!currentSessionId || !pendingApproval || approvalLoading) return;
-
-        // --- 核心优化：立即隐藏审批栏 ---
-        const bar = document.getElementById('approvalBar');
-        if (bar) bar.classList.add('hidden');
-
-        autoScrollEnabled = true;
+        document.getElementById('approvalBar').classList.add('hidden');
         setApprovalLoading(true);
 
-        // 在消息列表中插入一条临时的“系统提示”气泡
-        const tempMsg = { 
-            role: 'assistant', 
-            content: approved ? '_正在执行工具操作，请稍候..._' : '_已拒绝工具执行申请。_',
-            __loading: true 
-        };
-        currentMessages.push(tempMsg);
+        const streamIdx = currentMessages.length;
+        currentMessages.push({ role: 'assistant', content: '执行中...', reasoning_content: '', __loading: true, __streaming: true, __thinking_open: true });
         renderMessages(currentMessages);
 
-        currentMessages.push({ role: 'assistant', content: '', __streaming: true });
-        const streamAssistantIndex = currentMessages.length - 1;
-
-        const eventSource = new EventSource(`/api/chat/sessions/${currentSessionId}/stream?approval=${approved ? 'true' : 'false'}`);
-        let streamClosed = false;
-
-        eventSource.onmessage = function(event) {
-          const payload = JSON.parse(event.data);
-
-          // 移除之前的临时提示气泡
-          if (payload.type === 'token' || payload.type === 'done') {
-              currentMessages = currentMessages.filter(m => !m.__loading);
-          }
-
+        const eventSource = new EventSource(`/api/chat/sessions/${currentSessionId}/stream?approval=${approved}`);
+        eventSource.onmessage = (e) => {
+          const payload = JSON.parse(e.data);
           if (payload.type === 'token') {
-            currentMessages[streamAssistantIndex].content += payload.token || '';
-            scheduleStreamRender(currentMessages);
-          } else if (payload.type === 'done') {
-            currentMessages = payload.messages || currentMessages;
-            pendingApproval = payload.pending_approval || null;
-            scheduleStreamRender(currentMessages, true);
-            showApproval();
-            streamClosed = true;
-            setApprovalLoading(false);
-            eventSource.close();
-            bootstrap();
-          }
- else if (payload.type === 'error') {
-            streamClosed = true;
-            if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
-              currentMessages[streamAssistantIndex].__streaming = false;
-              currentMessages[streamAssistantIndex].content = currentMessages[streamAssistantIndex].content || '[审批流式失败]';
-              scheduleStreamRender(currentMessages, true);
+            if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
+              currentMessages[streamIdx].content = '';
+              delete currentMessages[streamIdx].__loading;
             }
+            appendStreamDelta(streamIdx, { content: payload.token || '' });
+          } else if (payload.type === 'reasoning_token') {
+            if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
+              currentMessages[streamIdx].content = '';
+              delete currentMessages[streamIdx].__loading;
+            }
+            appendStreamDelta(streamIdx, { reasoning: payload.token || '' });
+          } else if (payload.type === 'done') {
+            currentMessages = normalizeMessages(payload.messages || []);
+            pendingApproval = payload.pending_approval;
+            renderMessages(currentMessages);
+            showApproval();
             setApprovalLoading(false);
-            alert(payload.message || '审批失败');
             eventSource.close();
           }
         };
-
-        eventSource.onerror = function() {
-          if (streamClosed) return;
-          if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
-            currentMessages[streamAssistantIndex].__streaming = false;
-            currentMessages[streamAssistantIndex].content = currentMessages[streamAssistantIndex].content || '[审批连接中断]';
-            scheduleStreamRender(currentMessages, true);
-          }
-          setApprovalLoading(false);
-          alert('与服务器的连接丢失。');
-          eventSource.close();
-        };
+        eventSource.onerror = () => { eventSource.close(); setApprovalLoading(false); };
       }
 
       function showApproval() {
         const bar = document.getElementById('approvalBar');
-        const txt = document.getElementById('approvalText');
-        const yesBtn = document.getElementById('approvalYesBtn');
-        if (yesBtn) yesBtn.textContent = '同意执行'; // Reset text
-
         if (!pendingApproval || !pendingApproval.value) {
-          bar.classList.add('hidden');
-          txt.innerHTML = '';
-          setApprovalLoading(false);
+          if (bar) bar.classList.add('hidden');
           return;
         }
         const v = pendingApproval.value;
-        const name = v.tool_name || 'unknown';
-        const args = v.tool_args || {};
-        let argSummary = '';
-        for (const [key, val] of Object.entries(args)) {
-          let valText = '';
-          if (typeof val === 'object' && val !== null) {
-              valText = JSON.stringify(val);
-          } else {
-              valText = String(val);
-          }
-          argSummary += `<span class="inline-block bg-white border border-amber-200 rounded px-1 text-[10px] mr-1 max-w-[200px] truncate" title="${escapeHtml(valText)}">${escapeHtml(key)}: ${escapeHtml(valText)}</span>`;
-        }
-
-        txt.innerHTML = `
-          <div class="inline-flex items-center gap-2 max-w-full overflow-hidden">
-            <span class="bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[11px] font-bold border border-amber-200 uppercase flex-shrink-0">${escapeHtml(name)}</span>
-            <div class="flex flex-wrap gap-y-1 items-center min-w-0">${argSummary}</div>
-          </div>
-        `;
-        bar.classList.remove('hidden');
+        const txt = document.getElementById('approvalText');
+        if (txt) txt.innerHTML = `<span class="bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-mono font-bold mr-2 uppercase text-[10px]">${v.tool_name}</span> <span class="opacity-70">${JSON.stringify(v.tool_args)}</span>`;
+        if (bar) bar.classList.remove('hidden');
       }
 
       async function deleteOneSession(sessionId) {
-        if (!confirm('确定删除这个会话吗？')) return;
-        const res = await fetch(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' });
-        const data = await res.json();
-        if (!data.success) {
-          alert(data.message || '删除失败');
-          return;
+        if (!confirm('确定删除此会话?')) return;
+        try {
+          const res = await fetch(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' });
+          const data = await res.json();
+          if (data.success) {
+            sessions = sessions.filter(s => s.session_id !== sessionId);
+            renderSessions();
+            if (currentSessionId === sessionId) {
+              currentSessionId = null;
+              currentMessages = [];
+              const msgDiv = document.getElementById('messages');
+              if (msgDiv) msgDiv.innerHTML = '';
+              const header = document.getElementById('chatHeader');
+              if (header) header.textContent = '请选择一个会话';
+              setSessionIdInUrl(null);
+            }
+          }
+        } catch (e) {
+          alert('删除失败');
         }
-
-        selectedSessionIds.delete(sessionId);
-        if (currentSessionId === sessionId) {
-          currentSessionId = null;
-          currentMessages = [];
-          setSessionIdInUrl(null);
-          pendingApproval = null;
-          showApproval();
-          document.getElementById('chatHeader').textContent = '请选择或新建会话';
-          renderMessages([]);
-        }
-        await bootstrap();
       }
 
       async function deleteSelectedSessions() {
-        if (!selectedSessionIds.size) return;
-        if (!confirm(`确定删除选中的 ${selectedSessionIds.size} 个会话吗？`)) return;
+        if (!selectedSessionIds.size || !confirm(`确定删除选中的 ${selectedSessionIds.size} 个会话?`)) return;
+        try {
+          const res = await fetch('/api/chat/sessions', {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ ids: Array.from(selectedSessionIds) })
+          });
+          const data = await res.json();
+          if (data.success) location.reload();
+        } catch (e) {
+          alert('批量删除失败');
+        }
+      }
 
-        const ids = Array.from(selectedSessionIds);
-        const res = await fetch('/api/chat/sessions', {
-          method: 'DELETE',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ session_ids: ids })
-        });
-        const data = await res.json();
-        if (!data.success) {
-          alert(data.message || '批量删除失败');
+      function openNewSession(e) {
+        const modal = document.getElementById('newSessionModal');
+        if (!modal) return;
+
+        if (configs.length === 0) {
+          // 如果没有配置，尝试刷新一次，并在完成后再次尝试打开
+          const btn = e ? e.currentTarget : null;
+          if (btn) btn.disabled = true;
+          bootstrap().then(() => {
+            if (btn) btn.disabled = false;
+            if (configs.length > 0) {
+              openNewSession();
+            } else {
+              alert('未发现可用的交易对配置，请在控制台检查 SYMBOL_CONFIGS 是否配置正确。');
+            }
+          });
           return;
         }
 
-        if (currentSessionId && selectedSessionIds.has(currentSessionId)) {
-          currentSessionId = null;
-          currentMessages = [];
-          setSessionIdInUrl(null);
-          pendingApproval = null;
-          showApproval();
-          document.getElementById('chatHeader').textContent = '请选择或新建会话';
-          renderMessages([]);
-        }
-        selectedSessionIds.clear();
-        multiSelectMode = false;
-        await bootstrap();
-      }
-
-      async function openNewSession() {
-        if (!configs.length) {
-          // Ensure configs are ready even when user clicks quickly after page load.
-          await bootstrap();
-        }
         const select = document.getElementById('configSelect');
-        select.innerHTML = configs.map(c => {
-          const configId = (c.config_id || '').trim();
-          const labelId = configId || 'MISSING_CONFIG_ID';
-          return `<option value="${escapeHtml(configId)}">[${escapeHtml(labelId)}] ${escapeHtml(c.symbol)} · ${escapeHtml(c.mode)}</option>`;
-        }).join('');
-        document.getElementById('sessionTitle').value = '';
-        document.getElementById('newSessionModal').classList.remove('hidden');
+        if (select) {
+          select.innerHTML = configs.map(c => `<option value="${c.config_id}">${escapeHtml(c.symbol)} (${escapeHtml(c.model)})</option>`).join('');
+        }
+        modal.classList.remove('hidden');
       }
 
       function closeNewSession() {
-        document.getElementById('newSessionModal').classList.add('hidden');
+        const modal = document.getElementById('newSessionModal');
+        if (modal) modal.classList.add('hidden');
       }
 
       async function createSession() {
-        const configId = document.getElementById('configSelect').value;
-        const title = document.getElementById('sessionTitle').value.trim();
-        const res = await fetch('/api/chat/sessions', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ config_id: configId, title })
-        });
-        const data = await res.json();
-        if (!data.success) {
-          alert(data.message || '创建失败');
-          return;
+        try {
+          const res = await fetch('/api/chat/sessions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              config_id: document.getElementById('configSelect').value,
+              title: document.getElementById('sessionTitle').value
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            closeNewSession();
+            await bootstrap();
+            selectSession(data.session_id);
+          }
+        } catch (e) {
+          alert('创建失败');
         }
-        closeNewSession();
-        await bootstrap();
-        await selectSession(data.session.session_id);
       }
 
       function escapeHtml(str) {
@@ -850,9 +758,15 @@
         }[s]));
       }
 
-      {% if authed %}
+      function setSessionIdInUrl(sessionId) {
+        const url = new URL(window.location.href);
+        if (sessionId) url.searchParams.set('sid', sessionId);
+        else url.searchParams.delete('sid');
+        window.history.replaceState({}, '', url.search);
+      }
+
+      refreshCaptcha();
       bootstrap();
-      {% endif %}
-    </script>
+</script>
   </body>
 </html>

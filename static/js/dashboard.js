@@ -99,11 +99,83 @@ function showToast(message, type = 'success') {
 
 function handleCopy(text, e) { 
     if(!text || text === '-' || text === 'None') return;
-    navigator.clipboard.writeText(text).then(() => {
+    if(e) e.stopPropagation();
+    navigator.clipboard.writeText(String(text)).then(() => {
         showToast(`已复制: ${text}`, 'success');
     }).catch(() => {
         showToast('复制失败', 'error');
     });
+}
+
+// 订单分页状态记录
+const orderPages = {};
+
+async function changeOrderPage(configId, delta) {
+    if (!orderPages[configId]) orderPages[configId] = 1;
+    const newPage = orderPages[configId] + delta;
+    if (newPage < 1) return;
+
+    const container = document.getElementById(`order-container-${configId}`);
+    const indicator = document.getElementById(`page-indicator-${configId}`);
+    
+    // 视觉反馈：半透明加载感
+    container.style.opacity = '0.5';
+
+    try {
+        const resp = await fetch(`/api/orders?config_id=${configId}&page=${newPage}`);
+        const data = await resp.json();
+        
+        if (data.success && data.orders.length > 0) {
+            orderPages[configId] = newPage;
+            indicator.textContent = newPage;
+            renderOrdersToContainer(configId, data.orders);
+        } else if (data.success && data.orders.length === 0 && delta > 0) {
+            showToast('已经是最后一页了', 'success');
+        }
+    } catch (e) {
+        showToast('加载订单失败', 'error');
+    } finally {
+        container.style.opacity = '1';
+    }
+}
+
+function renderOrdersToContainer(configId, orders) {
+    const container = document.getElementById(`order-container-${configId}`);
+    if (!container) return;
+
+    container.innerHTML = orders.map(order => {
+        const s = (order.side || '').toLowerCase();
+        let sideClass = 'bg-gray-400';
+        if (s.includes('buy')) sideClass = 'bg-emerald-500';
+        else if (s.includes('sell')) sideClass = 'bg-red-500';
+        else if (s.includes('close')) sideClass = 'bg-orange-500';
+        else if (s.includes('cancel')) sideClass = 'bg-gray-400';
+
+        const tpSlHtml = (order.take_profit > 0 || order.stop_loss > 0) 
+            ? `<div class="mt-2 flex gap-3 text-[9px] font-bold">
+                <span class="text-emerald-600" onclick="handleCopy('${order.take_profit}', event); event.stopPropagation();">🎯 TP: ${parseInt(order.take_profit)}</span>
+                <span class="text-red-500" onclick="handleCopy('${order.stop_loss}', event); event.stopPropagation();">🛡️ SL: ${parseInt(order.stop_loss)}</span>
+               </div>`
+            : '';
+
+        return `
+            <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all cursor-pointer" onclick="handleCopy('${order.entry_price}', event)">
+                <div class="flex justify-between items-start mb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="px-2 py-0.5 rounded-lg font-black uppercase text-[10px] shadow-sm text-white ${sideClass}">
+                            ${order.side}
+                        </span>
+                        <span class="text-xs font-mono font-bold text-gray-700 group-hover:text-blue-600 transition-colors" title="点击复制价格">${order.entry_price}</span>
+                    </div>
+                    <span class="text-[9px] font-mono text-gray-400">${(order.timestamp || '').substring(11, 16)}</span>
+                </div>
+                <div class="text-[10px] text-gray-500 leading-relaxed line-clamp-2 group-hover:line-clamp-none transition-all">
+                    ${order.reason}
+                </div>
+                ${tpSlHtml}
+            </div>
+        `;
+    }).join('');
 }
 
 // --- 认证逻辑 ---
@@ -546,64 +618,6 @@ async function deleteCurrentPrompt() {
     }
 }
 
-// --- 统计管理 ---
-
-async function openStatsModal() {
-    checkAuth(async () => {
-        document.getElementById('stats-modal').classList.remove('hidden');
-        const content = document.getElementById('stats-content');
-        content.innerHTML = '<div class="text-center py-10 text-gray-400">正在获取数据...</div>';
-        try {
-            const resp = await fetch('/api/stats/tokens');
-            const data = await resp.json();
-            if (data.success) {
-                let html = `
-                    <div class="space-y-4">
-                        <h4 class="text-sm font-bold border-b pb-1">📅 每日消耗 (最近14天)</h4>
-                        <div class="max-h-60 overflow-y-auto mini-scroll">
-                            <table class="w-full text-xs text-left">
-                                <thead class="bg-gray-50 sticky top-0">
-                                    <tr><th class="p-2">日期</th><th class="p-2">Prompt</th><th class="p-2">Completion</th><th class="p-2">Total</th></tr>
-                                </thead>
-                                <tbody class="divide-y">
-                                    ${data.daily.map(d => `
-                                        <tr>
-                                            <td class="p-2 font-mono">${d.day}</td>
-                                            <td class="p-2">${d.prompt.toLocaleString()}</td>
-                                            <td class="p-2">${d.completion.toLocaleString()}</td>
-                                            <td class="p-2 font-bold">${d.total.toLocaleString()}</td>
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                        <div class="grid grid-cols-2 gap-6 pt-4">
-                            <div>
-                                <h4 class="text-sm font-bold border-b pb-1 mb-2">🧠 按模型</h4>
-                                <div class="space-y-1">
-                                    ${data.models.map(m => `<div class="flex justify-between text-xs"><span class="text-gray-500">${m.model}</span><span class="font-mono font-bold">${m.total.toLocaleString()}</span></div>`).join('')}
-                                </div>
-                            </div>
-                            <div>
-                                <h4 class="text-sm font-bold border-b pb-1 mb-2">🤖 按 Agent</h4>
-                                <div class="space-y-1">
-                                    ${data.agents.map(a => `<div class="flex justify-between text-xs"><span class="text-gray-500 truncate w-32" title="${a.config_id}">${a.symbol} (${a.config_id.split('-').pop()})</span><span class="font-mono font-bold">${a.total.toLocaleString()}</span></div>`).join('')}
-                                </div>
-                            </div>
-                        </div>
-                    </div>`;
-                content.innerHTML = html;
-            }
-        } catch (e) {
-            content.innerHTML = '<div class="text-red-500 text-center py-10">获取失败</div>';
-        }
-    });
-}
-
-function closeStatsModal() {
-    document.getElementById('stats-modal').classList.add('hidden');
-}
-
 function closeConfigModal() {
     document.getElementById('config-modal').classList.add('hidden');
 }
@@ -623,25 +637,49 @@ function formatConfigJson() {
 
 // --- 删除历史 ---
 
+async function refreshDeleteCaptcha() {
+    const img = document.getElementById('delete-captcha-img');
+    if (!img) return;
+    try {
+        const resp = await fetch('/api/chat/captcha');
+        const data = await resp.json();
+        if (data.success) {
+            img.src = data.image;
+        }
+    } catch (e) {
+        console.error('加载验证码失败');
+    }
+}
+
 function openDeleteModal() {
     document.getElementById('delete-modal').classList.remove('hidden');
+    refreshDeleteCaptcha();
     setTimeout(() => document.getElementById('admin-pass').focus(), 100);
 }
 
 function closeDeleteModal() {
     document.getElementById('delete-modal').classList.add('hidden');
     document.getElementById('admin-pass').value = '';
+    document.getElementById('delete-captcha').value = '';
 }
 
 async function confirmDeleteAction() {
     const pwd = document.getElementById('admin-pass').value;
+    const captcha = document.getElementById('delete-captcha').value;
     const symbol = document.getElementById('symbolSelect').value;
+    
     if (!pwd) return showToast('请输入管理员密码', 'error');
+    if (!captcha) return showToast('请输入验证码', 'error');
+
     try {
         const response = await fetch('/api/clean_history', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({symbol: symbol, password: pwd})
+            body: JSON.stringify({
+                symbol: symbol, 
+                password: pwd,
+                captcha: captcha
+            })
         });
         const result = await response.json();
         if (result.success) {
@@ -650,6 +688,8 @@ async function confirmDeleteAction() {
             setTimeout(() => location.reload(), 1000);
         } else {
             showToast(result.message, 'error');
+            refreshDeleteCaptcha();
+            document.getElementById('delete-captcha').value = '';
         }
     } catch (e) {
         showToast('网络请求失败', 'error');

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from agent.agent_graph import run_agent_for_config
 from utils.logger import setup_logger
 from config import config as global_config
+from database import init_db
 
 # 加载环境变量 (.env 文件)
 load_dotenv()
@@ -124,6 +125,13 @@ def job():
 
 def run_smart_scheduler():
     logger.info("--- [系统] 智能调度器启动 ---")
+
+    # 显式初始化数据库，确保表结构完整
+    try:
+        init_db()
+        logger.info("✅ 数据库初始化完成")
+    except Exception as e:
+        logger.error(f"❌ 数据库初始化失败: {e}")
 
     # 打印一次当前配置
     configs = get_all_configs()

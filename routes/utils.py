@@ -46,6 +46,11 @@ def _serialize_message(msg):
     }
     if isinstance(msg, AIMessage):
         payload["tool_calls"] = getattr(msg, "tool_calls", []) or []
+        # 提取推理内容
+        reasoning = msg.additional_kwargs.get("reasoning_content") or \
+                    msg.response_metadata.get("reasoning_content") or ""
+        if reasoning:
+            payload["reasoning_content"] = reasoning
     return payload
 
 def _extract_interrupt(result):

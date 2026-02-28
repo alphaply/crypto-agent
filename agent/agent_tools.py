@@ -55,7 +55,9 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
     仅在执行 BUY_LIMIT (做多) 或 SELL_LIMIT (做空) 时调用。
     暂不支持自动止盈止损，需要使用平仓工具配合实现。
     """
-    agent_name = config_id
+    from config import config as global_config
+    agent_config = global_config.get_config_by_id(config_id)
+    agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
 
@@ -68,14 +70,14 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
             action = op.action
             price = op.entry_price
             
-            latest = market_tool.get_account_status(symbol, is_real=True, agent_name=agent_name)
+            latest = market_tool.get_account_status(symbol, is_real=True, agent_name=config_id)
             if _is_duplicate_real_order(action, price, latest.get('real_open_orders', [])):
                 execution_results.append(f"⚠️ [Duplicate] {action} @ {price} 已存在，跳过。")
                 continue
             
-            res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=agent_name)
+            res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=config_id)
             if res and 'id' in res:
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, op.reason, trade_mode="REAL")
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, op.reason, trade_mode="REAL", config_id=config_id)
                 execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price} (Qty: {op.amount})")
             else:
                 execution_results.append(f"❌ [Error] {action} 下单失败")
@@ -91,7 +93,9 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     只有持仓存在时才可以调用。
     持仓时希望止盈、止损时，调用此工具。
     """
-    agent_name = config_id
+    from config import config as global_config
+    agent_config = global_config.get_config_by_id(config_id)
+    agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
 
@@ -101,8 +105,8 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             if isinstance(op, dict):
                 op = CloseOrder(**op)
             
-            market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=agent_name)
-            database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, op.reason, trade_mode="REAL")
+            market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=config_id)
+            database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, op.reason, trade_mode="REAL", config_id=config_id)
             execution_results.append(f"✅ 下单成功 ({op.pos_side}) @ {op.entry_price}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 下单失败: {str(e)}")
@@ -115,14 +119,16 @@ def cancel_orders_real(order_ids: List[str], config_id: str, symbol: str):
     【撤单：撤销现有挂单】
     当现有挂单已不符合逻辑时调用。
     """
-    agent_name = config_id
+    from config import config as global_config
+    agent_config = global_config.get_config_by_id(config_id)
+    agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
 
     for oid in order_ids:
         try:
-            market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=agent_name)
-            database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"撤单: {oid}", trade_mode="REAL")
+            market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=config_id)
+            database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"撤单: {oid}", trade_mode="REAL", config_id=config_id)
             execution_results.append(f"✅ [Cancelled Real] 订单 {oid} 已撤回。")
         except Exception as e:
             execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
@@ -140,6 +146,9 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
     【策略开仓：记录模拟交易】
     在模拟模式下记录开多或开空指令，支持止盈止损。
     """
+    from config import config as global_config
+    agent_config = global_config.get_config_by_id(config_id)
+    # 统一使用 config_id 作为数据库中的唯一标识
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
@@ -153,15 +162,15 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
             action = op.action
             price = op.entry_price
             
-            latest = market_tool.get_account_status(symbol, is_real=False, agent_name=agent_name)
+            latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id)
             if _is_duplicate_real_order(action, price, latest.get('mock_open_orders', [])):
                 execution_results.append(f"⚠️ [Duplicate Strategy] {action} @ {price} 已存在。")
                 continue
             
             expire_at = (datetime.now() + timedelta(hours=op.valid_duration_hours)).timestamp()
             mock_id = f"ST-{uuid.uuid4().hex[:6]}"
-            database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, op.stop_loss or 0, op.take_profit or 0, agent_name=agent_name, order_id=mock_id, expire_at=expire_at)
-            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, op.take_profit or 0, op.stop_loss or 0, f"[Strategy] {op.reason}", trade_mode="STRATEGY")
+            database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, op.stop_loss or 0, op.take_profit or 0, agent_name=agent_name, config_id=config_id, order_id=mock_id, expire_at=expire_at)
+            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, op.take_profit or 0, op.stop_loss or 0, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id)
             
             execution_results.append(f"✅ [Executed Strategy] {action} {symbol} @ {price} (Qty: {op.amount})")
         except Exception as e:
@@ -174,13 +183,14 @@ def cancel_orders_strategy(order_ids: List[str], config_id: str, symbol: str):
     """
     【策略撤单：撤销模拟挂单】
     """
+    # 统一使用 config_id 作为数据库中的唯一标识
     agent_name = config_id
     execution_results = []
 
     for oid in order_ids:
         try:
             database.cancel_mock_order(oid)
-            database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"[Strategy] Cancel", trade_mode="STRATEGY")
+            database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"[Strategy] Cancel", trade_mode="STRATEGY", config_id=config_id)
             execution_results.append(f"✅ [Cancelled Strategy] 订单 {oid} 已撤回。")
         except Exception as e:
             execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")

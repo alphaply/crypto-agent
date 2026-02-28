@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import atexit
 import os
@@ -9,8 +9,11 @@ from dotenv import load_dotenv
 from langchain_core.messages import (
     BaseMessageChunk,
     HumanMessage,
+    AIMessage,
     ToolMessage,
+    SystemMessage,
     trim_messages,
+    BaseMessage
 )
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -35,7 +38,7 @@ load_dotenv()
 logger = setup_logger("ChatGraph")
 
 CHAT_CHECKPOINT_DB = os.getenv("CHAT_CHECKPOINT_DB", "chat_checkpoints.sqlite")
-CHAT_MAX_HISTORY_MESSAGES = int(os.getenv("CHAT_MAX_HISTORY_MESSAGES", "8"))
+CHAT_MAX_HISTORY_MESSAGES = int(os.getenv("CHAT_MAX_HISTORY_MESSAGES", "12"))
 CHAT_TRIM_MAX_TOKENS = int(os.getenv("CHAT_TRIM_MAX_TOKENS", "6000"))
 
 
@@ -45,6 +48,7 @@ class ChatState(TypedDict):
     symbol: str
     agent_config: Dict[str, Any]
     system_prompt: str
+    q: str
 
 
 def _get_chat_tools(trade_mode: str):
@@ -71,27 +75,18 @@ def _tool_call_ids_from_message(msg) -> list[str]:
 
 
 def _sanitize_tool_sequences(messages: list):
-    """
-    Keep only tool-call spans that are protocol-complete:
-    assistant(tool_calls) + contiguous matching tool messages.
-    Drop orphan ToolMessage or incomplete tool-call spans (usually caused by trim boundary).
-    """
     sanitized = []
     i = 0
     while i < len(messages):
         msg = messages[i]
-
         if isinstance(msg, ToolMessage):
-            # Orphan tool message.
             i += 1
             continue
-
         required_ids = _tool_call_ids_from_message(msg)
         if not required_ids:
             sanitized.append(msg)
             i += 1
             continue
-
         required = set(required_ids)
         seen = set()
         matched_tools = []
@@ -102,21 +97,15 @@ def _sanitize_tool_sequences(messages: list):
                 matched_tools.append(messages[j])
                 seen.add(tcid)
             j += 1
-
         if seen == required:
             sanitized.append(msg)
             sanitized.extend(matched_tools)
-        # else: incomplete span, drop it.
         i = j
-
     return sanitized
 
 
 def _trim_chat_messages(system_prompt: str, history: list):
-    # Force the market-context prompt to be a HumanMessage and never trim it.
     pinned_prompt = HumanMessage(content=system_prompt)
-
-    # Stage 1: token trim on history only.
     if history:
         token_trimmed_history = trim_messages(
             history,
@@ -129,35 +118,35 @@ def _trim_chat_messages(system_prompt: str, history: list):
     else:
         token_trimmed_history = []
     token_trimmed_history = _sanitize_tool_sequences(token_trimmed_history)
-
-    # Stage 2: strict message-count trim on history only.
-    tail_limit = max(0, CHAT_MAX_HISTORY_MESSAGES - 1)  # reserve 1 for pinned_prompt
-    if tail_limit == 0 or not token_trimmed_history:
-        count_trimmed_history = []
-    else:
-        count_trimmed_history = trim_messages(
-            token_trimmed_history,
-            max_tokens=tail_limit,
-            token_counter=_message_counter,
-            strategy="last",
-            include_system=False,
-            allow_partial=False,
-        )
+    # 确保最近的几条消息始终存在，避免 trim 过度导致用户输入丢失
+    count_trimmed_history = trim_messages(
+        token_trimmed_history,
+        max_tokens=CHAT_MAX_HISTORY_MESSAGES,
+        token_counter=_message_counter,
+        strategy="last",
+        include_system=False,
+        allow_partial=False,
+    )
     count_trimmed_history = _sanitize_tool_sequences(count_trimmed_history)
-
-    final_messages = [pinned_prompt] + count_trimmed_history
+    final_messages = [SystemMessage(content=system_prompt)] + count_trimmed_history
     return final_messages
 
 
 def start_node(state: ChatState):
-    cfg = state.get("agent_config") or global_config.get_config_by_id(state["config_id"])
+    config_id = state.get("config_id")
+    # 不要清空 q，让 model_node 也能看到它作为兜底
+    q = state.get("q")
+    
+    cfg = global_config.get_config_by_id(config_id)
     if not cfg:
-        raise ValueError(f"Config not found for config_id={state['config_id']}")
+        raise ValueError(f"Config not found for config_id={config_id}")
 
-    # Reuse the exact scheduler prompt/data flow to keep chat/system prompt consistent.
+    symbol = cfg.get("symbol", "Unknown")
+    
+    # 模拟调度器的启动逻辑来获取系统提示词
     scheduler_state = AgentState(
-        config_id=state["config_id"],
-        symbol=state["symbol"],
+        config_id=config_id,
+        symbol=symbol,
         messages=[],
         agent_config=cfg,
         market_context={},
@@ -168,15 +157,53 @@ def start_node(state: ChatState):
     )
     started = scheduler_start_node(scheduler_state)
     system_prompt = started.messages[0].content if started.messages else ""
-    return {"agent_config": cfg, "system_prompt": system_prompt}
+    
+    # 构造返回给 LangGraph 的 updates
+    # 注意：这里我们只提供基础信息，messages 的具体构造我们在 model_node 里精细化处理
+    updates = {
+        "agent_config": cfg, 
+        "system_prompt": system_prompt, 
+        "symbol": symbol,
+        "q": q
+    }
+    if q:
+        updates["messages"] = [HumanMessage(content=q)]
+    return updates
 
 
 def model_node(state: ChatState):
-    cfg = state.get("agent_config") or global_config.get_config_by_id(state["config_id"])
+    config_id = state.get("config_id")
+    cfg = state.get("agent_config") or global_config.get_config_by_id(config_id)
     if not cfg:
-        raise ValueError(f"Config not found for config_id={state['config_id']}")
+        raise ValueError(f"Config context lost for config_id={config_id}")
 
+    symbol = cfg.get("symbol", "Chat")
     mode = cfg.get("mode", "STRATEGY").upper()
+    
+    # --- 核心修复：构造消息队列 ---
+    history = list(state.get("messages", []))
+    # 这里的 history 应该已经通过 start_node 包含了当前用户输入的 HumanMessage
+
+    sanitized_history = []
+    for msg in history:
+        # DeepSeek 修复
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            if "reasoning_content" not in msg.additional_kwargs:
+                reasoning = msg.response_metadata.get("reasoning_content") or ""
+                msg.additional_kwargs["reasoning_content"] = reasoning
+        sanitized_history.append(msg)
+
+    # 构造最终列表
+    system_prompt = state.get("system_prompt", "")
+    trimmed = _trim_chat_messages(system_prompt, sanitized_history)
+    
+    # 日志监控：确保 HumanMessage 在列表里
+    has_human = any(isinstance(m, HumanMessage) for m in trimmed)
+    logger.info(f"LLM Input: {len(trimmed)} msgs (Has Human: {has_human}), model: {cfg.get('model')}")
+    if not has_human and len(trimmed) > 0:
+        logger.warning("!!! WARNING: No HumanMessage found in LLM prompt!")
+
+    # --- 调用 LLM ---
     kwargs = {}
     if cfg.get("extra_body"):
         kwargs["extra_body"] = cfg.get("extra_body")
@@ -193,45 +220,38 @@ def model_node(state: ChatState):
         },
     ).bind_tools(_get_chat_tools(mode))
 
-    history = state["messages"]
-    # --- 修复 DeepSeek 格式问题 ---
-    sanitized_history = []
-    for msg in history:
-        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-            if "reasoning_content" not in msg.additional_kwargs:
-                msg.additional_kwargs["reasoning_content"] = msg.response_metadata.get("reasoning_content", "")
-        sanitized_history.append(msg)
-
-    trimmed = _trim_chat_messages(state.get("system_prompt", ""), sanitized_history)
-
-    # 在 LangGraph 中，invoke 依然会等待流结束并聚合结果
     response = llm.invoke(trimmed)
     
-    # --- DeepSeek 思维链展示优化 ---
-    # 如果模型返回了 reasoning_content (DeepSeek 特有)，将其包装进 content
-    reasoning = response.additional_kwargs.get("reasoning_content") or response.response_metadata.get("reasoning_content")
+    # 推理内容处理
+    reasoning = response.additional_kwargs.get("reasoning_content") or \
+                response.response_metadata.get("reasoning_content") or ""
+    
     if reasoning and "<thinking>" not in response.content:
+        response.additional_kwargs["reasoning_content"] = reasoning
         response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
 
-    # 记录 Token 使用情况
+    # 保存 Token 使用情况
     try:
-        # 注意：某些模型在流聚合后的 usage 字段路径可能略有不同，这里做兼容处理
         usage = response.response_metadata.get("token_usage") or getattr(response, "usage_metadata", None)
         if usage:
             database.save_token_usage(
-                symbol=state.get("symbol", "Chat"),
-                config_id=state.get("config_id", "chat-user"),
+                symbol=symbol,
+                config_id=config_id or "chat-user",
                 model=cfg.get("model"),
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0)
+                prompt_tokens=getattr(usage, 'prompt_tokens', usage.get("prompt_tokens", 0)) if hasattr(usage, 'prompt_tokens') else usage.get("prompt_tokens", 0),
+                completion_tokens=getattr(usage, 'completion_tokens', usage.get("completion_tokens", 0)) if hasattr(usage, 'completion_tokens') else usage.get("completion_tokens", 0)
             )
-            logger.info(f"📊 [Chat Stream] Tokens saved: {usage.get('total_tokens', 0)}")
-        else:
-            logger.warning("⚠️ [Chat Stream] No token_usage found in stream_metadata")
     except Exception as usage_e:
-        logger.warning(f"⚠️ [Chat] Failed to save token usage: {usage_e}")
+        logger.warning(f"⚠️ [Chat] Token save failed: {usage_e}")
 
-    return {"messages": [response], "agent_config": cfg}
+    # 这里的返回将自动更新 LangGraph 状态中的 messages (由于 Annotated[list, add_messages])
+    # 同时我们要清空 q，并带上 agent_config 以防状态丢失
+    return {
+        "messages": [response], 
+        "symbol": symbol, 
+        "q": None, 
+        "agent_config": cfg
+    }
 
 
 def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str) -> str:
@@ -256,6 +276,9 @@ def tools_node(state: ChatState):
     last_message = state["messages"][-1]
     tool_calls = getattr(last_message, "tool_calls", []) or []
     outputs = []
+    config_id = state["config_id"]
+    cfg = state.get("agent_config") or global_config.get_config_by_id(config_id)
+    symbol = cfg.get("symbol", "Unknown") if cfg else state.get("symbol", "Unknown")
 
     for call in tool_calls:
         tool_name = call["name"]
@@ -267,8 +290,8 @@ def tools_node(state: ChatState):
                 "tool_call_id": call["id"],
                 "tool_name": tool_name,
                 "tool_args": tool_args,
-                "config_id": state["config_id"],
-                "symbol": state["symbol"],
+                "config_id": config_id,
+                "symbol": symbol,
             }
         )
 
@@ -279,22 +302,17 @@ def tools_node(state: ChatState):
             approved = approval
 
         if not approved:
-            outputs.append(
-                ToolMessage(
-                    tool_call_id=call["id"],
-                    content="Tool execution rejected by user.",
-                )
-            )
+            outputs.append(ToolMessage(tool_call_id=call["id"], content="Rejected by user."))
             continue
 
         try:
-            result = _run_tool(tool_name, tool_args, state["config_id"], state["symbol"])
+            result = _run_tool(tool_name, tool_args, config_id, symbol)
             outputs.append(ToolMessage(tool_call_id=call["id"], content=result))
         except Exception as exc:
-            logger.error(f"Tool execution failed ({tool_name}): {exc}")
+            logger.error(f"Tool error ({tool_name}): {exc}")
             outputs.append(ToolMessage(tool_call_id=call["id"], content=f"Error: {exc}"))
 
-    return {"messages": outputs}
+    return {"messages": outputs, "symbol": symbol}
 
 
 def should_continue(state: ChatState):
@@ -325,46 +343,103 @@ def _chunk_to_text(chunk: BaseMessageChunk | Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
+        return "".join([i.get("text", "") if isinstance(i, dict) else str(i) for i in content])
+    return ""
+
+
+def _coerce_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
         parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
+        for item in value:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(item))
         return "".join(parts)
+    if isinstance(value, dict):
+        for key in ("text", "content", "reasoning_content", "delta"):
+            if key in value:
+                return _coerce_text(value.get(key))
+        return ""
+    return str(value)
+
+
+def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
+    # 检查所有可能的推理字段位置，确保 DeepSeek 的响应不丢失
+    add_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+    resp_meta = getattr(chunk, "response_metadata", {}) or {}
+    
+    # 路径 1: 直接在 additional_kwargs
+    if "reasoning_content" in add_kwargs:
+        return _coerce_text(add_kwargs["reasoning_content"])
+    
+    # 路径 2: 在 response_metadata
+    if "reasoning_content" in resp_meta:
+        return _coerce_text(resp_meta["reasoning_content"])
+
+    # 路径 3: 在 delta 字典内 (DeepSeek 原生格式)
+    delta = add_kwargs.get("delta") or resp_meta.get("delta") or {}
+    if isinstance(delta, dict):
+        # 同时检查 reasoning_content 和 reasoning 字段
+        res = delta.get("reasoning_content") or delta.get("reasoning")
+        if res:
+            return _coerce_text(res)
+            
+    # 路径 4: 部分兼容层会放在 content 字段里但带有特殊前缀，
+    # 这种情况通过 stream_chat 里的 chunk.content 正常处理。
+    
     return ""
 
 
 def stream_chat(session_id: str, payload: Dict[str, Any]):
-    """Token-level stream from the compiled LangGraph execution."""
     config = {"configurable": {"thread_id": session_id}}
+    
+    # 显式构造输入，确保用户消息 q 被 LangGraph 接收到
     for item in chat_app.stream(payload, config=config, stream_mode="messages"):
-        # LangGraph returns (message_chunk, metadata) in messages mode.
+        # LangGraph 2.0+ stream_mode="messages" 返回的是 (chunk, metadata)
         if not isinstance(item, tuple) or len(item) != 2:
             continue
+        
         chunk, metadata = item
+        # 只处理 model 节点的输出
         if not metadata or metadata.get("langgraph_node") != "model":
             continue
+
+        # 处理思考过程 (Reasoning)
+        reasoning_token = _chunk_reasoning_text(chunk)
+        if reasoning_token:
+            yield {"type": "reasoning_token", "token": reasoning_token}
+
+        # 处理正文 (Content)
         token = _chunk_to_text(chunk)
         if token:
-            yield token
+            yield {"type": "token", "token": token}
 
 
 def stream_resume_chat(session_id: str, approved: bool):
     """Token-level stream for resume after human approval."""
     config = {"configurable": {"thread_id": session_id}}
     command = Command(resume={"approved": approved})
+
     for item in chat_app.stream(command, config=config, stream_mode="messages"):
         if not isinstance(item, tuple) or len(item) != 2:
             continue
         chunk, metadata = item
-        if not metadata or metadata.get("langgraph_node") != "model":
+        node = metadata.get("langgraph_node", "")
+        if node not in ["model", "tools"]:
             continue
+
+        reasoning_token = _chunk_reasoning_text(chunk)
+        if reasoning_token:
+            yield {"type": "reasoning_token", "token": reasoning_token}
+
         token = _chunk_to_text(chunk)
         if token:
-            yield token
+            yield {"type": "token", "token": token}
 
 
 def invoke_chat(session_id: str, payload: Dict[str, Any]):
@@ -386,42 +461,24 @@ def get_chat_state(session_id: str):
 def get_chat_interrupt(session_id: str):
     config = {"configurable": {"thread_id": session_id}}
     snapshot = chat_app.get_state(config)
-    if not snapshot or not getattr(snapshot, "interrupts", None):
-        return None
+    if not snapshot or not getattr(snapshot, "interrupts", None): return None
     intr = snapshot.interrupts[0]
-    return {
-        "id": getattr(intr, "id", ""),
-        "value": getattr(intr, "value", {}) or {},
-    }
+    return {"id": getattr(intr, "id", ""), "value": getattr(intr, "value", {}) or {}}
 
 
 def delete_chat_threads(session_ids):
     ids = [sid for sid in session_ids if sid]
-    if not ids:
-        return 0
-
-    # Ensure pending writes are flushed before direct sqlite cleanup.
+    if not ids: return 0
     checkpointer.conn.commit()
-
     conn = sqlite3.connect(CHAT_CHECKPOINT_DB)
     c = conn.cursor()
-    tables = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()
-
+    tables = c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     deleted = 0
     placeholders = ",".join(["?"] * len(ids))
     for (table_name,) in tables:
-        cols = c.execute(f"PRAGMA table_info({table_name})").fetchall()
-        col_names = {col[1] for col in cols}
-        if "thread_id" not in col_names:
-            continue
-        c.execute(
-            f"DELETE FROM {table_name} WHERE thread_id IN ({placeholders})",
-            tuple(ids),
-        )
+        if "thread_id" not in {col[1] for col in c.execute(f"PRAGMA table_info({table_name})").fetchall()}: continue
+        c.execute(f"DELETE FROM {table_name} WHERE thread_id IN ({placeholders})", tuple(ids))
         deleted += c.rowcount
-
     conn.commit()
     conn.close()
     return deleted

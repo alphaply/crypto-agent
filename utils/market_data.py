@@ -372,7 +372,7 @@ class MarketTool:
     # 1. 获取数据逻辑
     # ==========================================
 
-    def get_account_status(self, symbol, is_real=False, agent_name=None):
+    def get_account_status(self, symbol, is_real=False, agent_name=None, config_id=None):
         status_data = {
             "balance": 0,
             "real_positions": [],
@@ -390,7 +390,7 @@ class MarketTool:
                 real_positions = [
                     {
                         'symbol': p['symbol'],
-                        'side': p['side'],
+                        'side': str(p.get('side', '')).upper(), # 'LONG' or 'SHORT'
                         'amount': float(p['contracts']),
                         'entry_price': float(p['entryPrice']),
                         'unrealized_pnl': float(p['unrealizedPnl'])
@@ -403,9 +403,14 @@ class MarketTool:
                     all_orders = self.exchange.fetch_open_orders(symbol)
                     filtered_orders = []
                     for o in all_orders:
+                        # 从 exchange 的原始响应中提取 positionSide (针对币安 USDM)
+                        # ccxt 统一结构中通常在 o['info']['positionSide']
+                        pos_side = o.get('info', {}).get('positionSide', 'BOTH')
+                        
                         filtered_orders.append({
                             'order_id': str(o.get('id')),
                             'side': o.get('side', '').lower(),
+                            'pos_side': pos_side.upper(), # 'LONG', 'SHORT' or 'BOTH'
                             'type': o.get('type'),
                             'price': float(o.get('price') or 0),
                             'amount': float(o.get('amount', 0)),
@@ -417,7 +422,8 @@ class MarketTool:
             else:
                 # 模拟模式
                 status_data["balance"] = 10000.0 
-                status_data["mock_open_orders"] = database.get_mock_orders(symbol, agent_name=agent_name)
+                # 同时传入 config_id 和 agent_name 以获得最佳兼容性
+                status_data["mock_open_orders"] = database.get_mock_orders(symbol, agent_name=agent_name, config_id=config_id)
                 
         except Exception as e:
             logger.error(f"Account Status Error: {e}")

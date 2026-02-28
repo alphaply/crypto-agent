@@ -3,6 +3,7 @@ import threading
 from flask import Flask
 from routes.utils import logger, get_scheduler_status
 from main_scheduler import run_smart_scheduler
+from database import init_db
 
 # 导入蓝图
 from routes.main import main_bp
@@ -22,6 +23,11 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(config_bp)
 app.register_blueprint(stats_bp)
 app.register_blueprint(chat_bp)
+
+# 核心初始化：无论何种启动方式，均立即执行
+with app.app_context():
+    init_db()
+    logger.info("🚀 系统初始化：数据库结构已校验")
 
 if __name__ == '__main__':
     # 启动后台调度器

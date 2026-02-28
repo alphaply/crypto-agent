@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>公开统计 - Crypto Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans">
+    <nav class="bg-white shadow-sm border-b p-4">
+        <div class="max-w-6xl mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold text-blue-600">📊 策略公开看板</h1>
+            <div class="flex items-center gap-4">
+                <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="border rounded-lg p-2 text-sm outline-none">
+                    {% for sym in symbols %}
+                    <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
+                    {% endfor %}
+                </select>
+                <a href="/" class="text-xs text-gray-500 hover:text-blue-600 transition-colors">返回控制台</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-6xl mx-auto p-4 md:p-8 space-y-8">
+        <!-- 核心指标 -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                <div class="text-xs text-gray-400 font-bold uppercase mb-1">保证金余额 (净值)</div>
+                <div id="stat-latest-equity" class="text-2xl font-black text-blue-600">--</div>
+            </div>
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                <div class="text-xs text-gray-400 font-bold uppercase mb-1">钱包余额 (可用)</div>
+                <div id="stat-latest-balance" class="text-2xl font-black text-gray-900">--</div>
+            </div>
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                <div class="text-xs text-gray-400 font-bold uppercase mb-1">累计实现盈亏</div>
+                <div id="stat-total-pnl" class="text-2xl font-black text-gray-900">--</div>
+            </div>
+            <div id="stat-win-rate-card" class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                <div class="text-xs text-gray-400 font-bold uppercase mb-1">胜率</div>
+                <div id="stat-win-rate" class="text-2xl font-black text-gray-900">--</div>
+            </div>
+        </div>
+
+        <!-- 图表区 -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="lg:col-span-2 bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="font-bold text-gray-900 flex items-center gap-2">💹 净值曲线 <span class="text-[10px] text-gray-400 font-normal">Equity Curve</span></h3>
+                    <div class="flex bg-gray-100 p-1 rounded-lg text-[10px] font-bold">
+                        <button onclick="switchEquityMode('daily')" id="btn-equity-daily" class="px-3 py-1 rounded-md bg-white shadow-sm text-blue-600 transition-all">天图</button>
+                        <button onclick="switchEquityMode('hourly')" id="btn-equity-hourly" class="px-3 py-1 rounded-md text-gray-500 transition-all">分时</button>
+                    </div>
+                </div>
+                <div class="h-[300px] md:h-[400px]">
+                    <canvas id="equityChart"></canvas>
+                </div>
+            </div>
+            <div class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                <h3 class="font-bold text-gray-900 mb-6 flex items-center gap-2">🤖 Token 消耗 <span class="text-[10px] text-gray-400 font-normal">Consumption</span></h3>
+                <div class="h-[250px]">
+                    <canvas id="tokenChart"></canvas>
+                </div>
+                <div id="token-model-list" class="mt-4 space-y-2 max-h-[150px] overflow-y-auto mini-scroll">
+                    <!-- 模型消耗列表 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 计算器与工具 -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- 交易估算器 -->
+            <div class="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
+                <h3 class="font-bold text-gray-900 mb-6 flex items-center gap-2">🧮 收益估算器</h3>
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">进场价格</label>
+                            <input type="number" id="calc-entry" class="w-full border rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value="60000">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">离场价格</label>
+                            <input type="number" id="calc-exit" class="w-full border rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value="61000">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">名义价值 (USDT)</label>
+                            <input type="number" id="calc-amount" class="w-full border rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value="1000">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">杠杆倍数</label>
+                            <input type="number" id="calc-leverage" class="w-full border rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value="20">
+                        </div>
+                    </div>
+                    <div class="pt-6 border-t border-gray-100 grid grid-cols-3 gap-4">
+                        <div class="text-center">
+                            <div class="text-[10px] text-gray-400 font-bold uppercase">预估盈亏</div>
+                            <div id="calc-res-pnl" class="text-lg font-black text-gray-900">--</div>
+                        </div>
+                        <div class="text-center border-x border-gray-100">
+                            <div class="text-[10px] text-gray-400 font-bold uppercase">价格波幅</div>
+                            <div id="calc-res-pct" class="text-lg font-black text-gray-900">--</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-[10px] text-gray-400 font-bold uppercase">预估 ROE</div>
+                            <div id="calc-res-roe" class="text-lg font-black text-gray-900">--</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 关于策略 -->
+            <div class="bg-blue-600 p-8 rounded-3xl shadow-xl text-white relative overflow-hidden group">
+                <div class="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                    <svg class="w-32 h-32" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                </div>
+                <h3 class="text-xl font-bold mb-4">系统说明</h3>
+                <p class="text-blue-100 text-sm leading-relaxed mb-6">
+                    本看板展示的是 Crypto Agent 的实时运行状况。策略主要通过多维度技术指标、市场热度以及 AI 深度分析进行自动化决策。
+                </p>
+                <ul class="space-y-3 text-sm">
+                    <li class="flex items-center gap-2">
+                        <span class="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-[10px]">1</span>
+                        每 15 分钟/1 小时 自动执行分析。
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <span class="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-[10px]">2</span>
+                        实盘模式下根据实时账户风控执行。
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <span class="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-[10px]">3</span>
+                        所有记录均来自数据库真实存证。
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const symbol = "{{ current_symbol }}";
+        let equityChart = null;
+        let tokenChart = null;
+        let rawFinancialData = null;
+        let currentEquityMode = 'daily';
+
+        async function initStats() {
+            await initFinancialStats();
+            initTokenStats();
+        }
+
+        async function initFinancialStats() {
+            try {
+                const res = await fetch(`/api/stats/financial?symbol=${encodeURIComponent(symbol)}`);
+                const data = await res.json();
+                if (!data.success) return;
+
+                rawFinancialData = data;
+
+                // 更新概览卡片
+                document.getElementById('stat-latest-equity').textContent = data.summary.latest_equity + ' USDT';
+                document.getElementById('stat-latest-balance').textContent = data.summary.latest_balance + ' USDT';
+
+                document.getElementById('stat-total-pnl').textContent = (data.summary.total_pnl > 0 ? '+' : '') + data.summary.total_pnl;
+                document.getElementById('stat-total-pnl').className = `text-2xl font-black ${data.summary.total_pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
+                
+                document.getElementById('stat-win-rate').textContent = data.summary.win_rate + '%';
+
+                // 初始渲染
+                renderEquityChart();
+            } catch (e) {
+                console.error('Failed to load financial stats', e);
+            }
+        }
+
+        async function initTokenStats() {
+            try {
+                const res = await fetch(`/api/stats/tokens`);
+                const data = await res.json();
+                if (!data.success) return;
+
+                renderTokenChart(data.daily);
+
+                const list = document.getElementById('token-model-list');
+                list.innerHTML = data.models.map(m => `
+                    <div class="flex justify-between items-center p-2 hover:bg-gray-50 rounded-lg border border-gray-50 transition-colors">
+                        <span class="text-xs font-mono text-gray-500">${m.model}</span>
+                        <span class="text-xs font-bold text-gray-900">${m.total.toLocaleString()} tokens</span>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load token stats', e);
+            }
+        }
+
+        function switchEquityMode(mode) {
+            currentEquityMode = mode;
+            document.getElementById('btn-equity-daily').className = mode === 'daily' ? 'px-3 py-1 rounded-md bg-white shadow-sm text-blue-600 transition-all' : 'px-3 py-1 rounded-md text-gray-500 transition-all';
+            document.getElementById('btn-equity-hourly').className = mode === 'hourly' ? 'px-3 py-1 rounded-md bg-white shadow-sm text-blue-600 transition-all' : 'px-3 py-1 rounded-md text-gray-500 transition-all';
+            renderEquityChart();
+        }
+
+        function renderEquityChart() {
+            if (!rawFinancialData) return;
+            const ctx = document.getElementById('equityChart').getContext('2d');
+            
+            let labels, values;
+            if (currentEquityMode === 'daily') {
+                labels = rawFinancialData.daily_equity.map(h => h.day);
+                values = rawFinancialData.daily_equity.map(h => h.total_equity);
+            } else {
+                labels = rawFinancialData.balance_history.map(h => h.timestamp.split(' ')[1].substring(0, 5));
+                values = rawFinancialData.balance_history.map(h => h.total_equity);
+            }
+
+            if (equityChart) equityChart.destroy();
+
+            const gradient = ctx.createLinearGradient(0, 0, 0, 400);
+            gradient.addColorStop(0, 'rgba(37, 99, 235, 0.2)');
+            gradient.addColorStop(1, 'rgba(37, 99, 235, 0)');
+
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '账户总权益 (USDT)',
+                        data: values,
+                        borderColor: '#2563eb',
+                        borderWidth: 3,
+                        pointRadius: currentEquityMode === 'daily' ? 4 : 0,
+                        pointHoverRadius: 6,
+                        fill: true,
+                        backgroundColor: gradient,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            backgroundColor: '#1e293b',
+                            titleColor: '#94a3b8',
+                            padding: 12,
+                            cornerRadius: 8
+                        }
+                    },
+                    scales: {
+                        x: { 
+                            display: true, 
+                            grid: { display: false },
+                            ticks: {
+                                maxRotation: 0,
+                                autoSkip: true,
+                                maxTicksLimit: 10,
+                                font: { size: 10 }
+                            }
+                        },
+                        y: { 
+                            display: true, 
+                            grid: { color: 'rgba(0,0,0,0.05)', drawBorder: false },
+                            ticks: { font: { size: 10 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderTokenChart(daily) {
+            const ctx = document.getElementById('tokenChart').getContext('2d');
+            const sorted = [...daily].reverse();
+            const labels = sorted.map(d => d.day.substring(5));
+            const values = sorted.map(d => d.total);
+
+            if (tokenChart) tokenChart.destroy();
+
+            tokenChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '每日消耗',
+                        data: values,
+                        backgroundColor: '#94a3b8',
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { backgroundColor: '#1e293b' }
+                    },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { font: { size: 9 } } },
+                        y: { display: false }
+                    }
+                }
+            });
+        }
+
+        function updateCalc() {
+            const entry = parseFloat(document.getElementById('calc-entry').value) || 0;
+            const exit = parseFloat(document.getElementById('calc-exit').value) || 0;
+            const amount = parseFloat(document.getElementById('calc-amount').value) || 0;
+            const leverage = parseFloat(document.getElementById('calc-leverage').value) || 1;
+
+            const pct = ((exit - entry) / entry) * 100;
+            const pnl = amount * (pct / 100) * leverage;
+            const roe = pct * leverage;
+
+            document.getElementById('calc-res-pnl').textContent = (pnl > 0 ? '+' : '') + pnl.toFixed(2);
+            document.getElementById('calc-res-pnl').className = `text-lg font-black ${pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
+            
+            document.getElementById('calc-res-pct').textContent = (pct > 0 ? '+' : '') + pct.toFixed(2) + '%';
+            document.getElementById('calc-res-roe').textContent = (roe > 0 ? '+' : '') + roe.toFixed(2) + '%';
+            document.getElementById('calc-res-roe').className = `text-lg font-black ${roe >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
+        }
+
+        ['calc-entry', 'calc-exit', 'calc-amount', 'calc-leverage'].forEach(id => {
+            document.getElementById(id).addEventListener('input', updateCalc);
+        });
+
+        initStats();
+        updateCalc();
+    </script>
+</body>
+</html>

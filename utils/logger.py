@@ -42,7 +42,7 @@ def setup_logger(name, log_file='app.log', level=logging.INFO):
         logger.addHandler(console_handler)
 
         # 3. 文件输出 (RotatingFileHandler) - 每个文件最大 10MB，保留 5 个备份
-        file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+        file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8', delay=True)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
