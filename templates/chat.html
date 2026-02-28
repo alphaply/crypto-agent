@@ -4,117 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Chat - Crypto Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/markdown-it@14/dist/markdown-it.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
-    <style>
-      .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
-      .scroll-thin::-webkit-scrollbar-thumb { background: #bfd0dc; border-radius: 10px; }
-      .bubble-user { background: linear-gradient(145deg, #2563eb, #1d4ed8); color: #fff; }
-      .bubble-ai { background: #fff; border: 1px solid #d8e1ee; }
-      .bubble-tool { background: #f8fafc; border: 1px solid #e2e8f0; }
-      .bubble-tool-result { background: #f0fdf4; border: 1px solid #bbf7d0; }
-      .prose {
-        max-width: 100%;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      /* Tool Card Styles */
-      .tool-card {
-        border-radius: 0.75rem;
-        background: white;
-        border: 1px solid #e2e8f0;
-        margin-top: 0.5rem;
-        overflow: hidden;
-      }
-      .tool-card-header {
-        background: #f1f5f9;
-        padding: 0.5rem 0.75rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        border-bottom: 1px solid #e2e8f0;
-      }
-      .tool-card-body {
-        padding: 0.75rem;
-      }
-      .tool-arg-row {
-        display: flex;
-        font-size: 0.75rem;
-        margin-bottom: 0.25rem;
-      }
-      .tool-arg-key {
-        font-weight: 600;
-        color: #64748b;
-        width: 80px;
-        flex-shrink: 0;
-      }
-      .tool-arg-val {
-        color: #1e293b;
-        word-break: break-all;
-      }
-      .prose table {
-        display: block;
-        width: 100%;
-        max-width: 100%;
-        overflow-x: auto;
-        border-collapse: collapse;
-      }
-      .prose th,
-      .prose td {
-        white-space: normal;
-        word-break: break-word;
-        vertical-align: top;
-      }
-      .prose pre {
-        position: relative;
-        max-width: 100%;
-        overflow-x: auto;
-      }
-      .tool-args {
-        white-space: pre-wrap;
-        word-break: break-word;
-        overflow-wrap: anywhere;
-      }
-      .copy-btn {
-        position: absolute;
-        top: 0.5rem;
-        right: 0.5rem;
-        background-color: #444;
-        color: #ccc;
-        border: none;
-        padding: 0.25rem 0.5rem;
-        border-radius: 0.25rem;
-        cursor: pointer;
-        opacity: 0;
-        transition: opacity 0.2s;
-      }
-      .prose pre:hover .copy-btn {
-        opacity: 1;
-      }
-      .copy-btn:hover {
-        background-color: #555;
-      }
-      .typing-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 999px;
-        background: #94a3b8;
-        display: inline-block;
-        animation: bounce 1.1s infinite ease-in-out;
-      }
-      .typing-dot:nth-child(2) { animation-delay: 0.15s; }
-      .typing-dot:nth-child(3) { animation-delay: 0.3s; }
-      @keyframes bounce {
-        0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
-        40% { transform: translateY(-4px); opacity: 1; }
-      }
-      .mobile-bubble-max { max-width: 96%; }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}">
   </head>
-  <body class="h-screen overflow-hidden bg-slate-100 text-slate-900">
+  <body class="h-screen overflow-hidden">
     <div id="authView" class="h-screen flex items-center justify-center px-4" {% if authed %}style="display:none"{% endif %}>
       <div class="w-full max-w-sm rounded-2xl border border-slate-200 bg-white/95 p-6 shadow-xl">
         <h1 class="text-xl font-semibold tracking-tight">聊天访问验证</h1>
@@ -127,7 +27,7 @@
 
     <div id="chatView" class="h-[100dvh] p-2 sm:p-4" {% if not authed %}style="display:none"{% endif %}>
       <div id="mobileOverlay" onclick="closeMobileSidebar()" class="hidden fixed inset-0 bg-black/35 z-30 lg:hidden"></div>
-      <div class="relative h-full lg:grid lg:grid-cols-[340px_1fr] gap-3 sm:gap-4">
+      <div class="relative h-full min-w-0 lg:grid lg:grid-cols-[340px_1fr] gap-3 sm:gap-4">
         <aside id="sessionSidebar" class="fixed z-40 inset-y-2 left-2 w-[88vw] max-w-[360px] -translate-x-[110%] transition-transform duration-200 rounded-2xl border border-slate-200 bg-white/95 backdrop-blur shadow-sm overflow-hidden flex flex-col min-h-0 lg:static lg:z-auto lg:inset-auto lg:w-auto lg:max-w-none lg:translate-x-0">
           <div class="p-3 border-b border-slate-200 bg-slate-50/70">
             <div class="flex items-center justify-between gap-2">
@@ -148,7 +48,7 @@
           <div id="sessionList" class="flex-1 min-h-0 overflow-y-auto scroll-thin"></div>
         </aside>
 
-        <section class="h-full rounded-2xl border border-slate-200 bg-white/95 shadow-sm flex flex-col overflow-hidden min-h-0 relative">
+        <section class="h-full rounded-2xl border border-slate-200 bg-white/95 shadow-sm flex flex-col overflow-hidden min-h-0 min-w-0 relative">
           <div class="px-3 sm:px-4 py-3 border-b border-slate-200 bg-slate-50/60">
             <div class="flex items-center gap-2">
               <button onclick="toggleMobileSidebar()" title="会话列表" class="lg:hidden rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700">
@@ -176,10 +76,10 @@
             </div>
           </div>
 
-          <div class="p-3 border-t border-slate-200 bg-white pb-[max(12px,env(safe-area-inset-bottom))]">
+          <div id="composerBar" class="p-3 border-t border-slate-200 bg-white">
             <div class="flex gap-2">
-              <textarea id="input" rows="2" class="flex-1 rounded-xl border border-slate-300 px-3 py-2.5 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 resize-none" placeholder="输入消息... Shift+Enter 换行，Enter 发送"></textarea>
-              <button onclick="sendMessage()" title="发送" class="self-end rounded-xl bg-blue-700 text-white px-3 py-2.5 hover:bg-blue-800">
+              <textarea id="input" rows="1" class="flex-1 rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 resize-none min-h-[44px] max-h-[180px]" placeholder="输入消息..."></textarea>
+              <button onclick="sendMessage()" title="发送" class="self-end rounded-xl bg-blue-700 text-white px-3 py-2 hover:bg-blue-800">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M3 10l18-7-7 18-2-8-9-3z" />
                 </svg>
@@ -230,6 +130,7 @@
         ? markdownitFactory({
             html: false,
             linkify: true,
+            breaks: false,
             typographer: true,
             highlight: function (str, lang) {
               if (lang && window.hljs && hljs.getLanguage(lang)) {
@@ -244,11 +145,25 @@
           })
         : null;
 
+      if (md) {
+        const defaultLinkOpen = md.renderer.rules.link_open || function(tokens, idx, options, env, self) {
+          return self.renderToken(tokens, idx, options);
+        };
+        md.renderer.rules.link_open = function(tokens, idx, options, env, self) {
+          tokens[idx].attrSet('target', '_blank');
+          tokens[idx].attrSet('rel', 'noopener noreferrer nofollow');
+          return defaultLinkOpen(tokens, idx, options, env, self);
+        };
+      }
+
       function renderMarkdown(content) {
         if (!md) {
           return mdEscapeHtml(content).replace(/\n/g, '<br>');
         }
-        return DOMPurify.sanitize(md.render(content));
+        const html = DOMPurify.sanitize(md.render(content));
+        return html
+          .replace(/<table>/g, '<div class="md-table-wrap"><table>')
+          .replace(/<\/table>/g, '</table></div>');
       }
 
       function scheduleStreamRender(messages, force = false) {
@@ -351,7 +266,15 @@
 
       document.addEventListener('DOMContentLoaded', () => {
         const input = document.getElementById('input');
+        const autoResize = () => {
+          if (!input) return;
+          input.style.height = 'auto';
+          const next = Math.min(input.scrollHeight, 180);
+          input.style.height = `${Math.max(40, next)}px`;
+        };
         if (input) {
+          autoResize();
+          input.addEventListener('input', autoResize);
           input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -507,22 +430,26 @@
           let bubbleClass = '';
           let roleText = '';
           if (isUser) {
-            bubbleClass = 'bg-gradient-to-br from-blue-600 to-blue-700 text-white ml-auto mobile-bubble-max sm:max-w-[82%]';
+            bubbleClass = 'ml-auto mobile-bubble-max sm:max-w-[82%]';
             roleText = '你';
           } else if (isTool) {
             const isError = (m.content || '').toLowerCase().includes('error');
             const isRejected = (m.content || '').toLowerCase().includes('rejected');
-            bubbleClass = (isError || isRejected) 
-                ? 'bg-rose-50 border border-rose-100 text-rose-900 mobile-bubble-max sm:max-w-[90%]' 
-                : 'bg-emerald-50 border border-emerald-100 text-emerald-900 mobile-bubble-max sm:max-w-[90%]';
+            bubbleClass = 'mobile-bubble-max sm:max-w-[90%]';
             roleText = isError ? 'Tool (Error)' : (isRejected ? 'Tool (Rejected)' : 'Tool Result');
           } else {
-            bubbleClass = 'bg-white border border-slate-200 text-slate-800 mobile-bubble-max sm:max-w-[90%]';
+            bubbleClass = 'mobile-bubble-max sm:max-w-[90%]';
             roleText = 'Agent';
           }
 
           const el = document.createElement('div');
-          el.className = `rounded-2xl px-3 py-2.5 text-sm break-words shadow-sm ${bubbleClass}`;
+          el.className = `chat-bubble text-sm break-words ${bubbleClass}`;
+          el.dataset.role = isUser ? 'user' : (isTool ? 'tool' : 'assistant');
+          if (isTool) {
+            const lc = (m.content || '').toLowerCase();
+            const isErrorOrRejected = lc.includes('error') || lc.includes('rejected');
+            el.dataset.toolState = isErrorOrRejected ? 'error' : 'ok';
+          }
           
           let contentHtml = '';
           const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
@@ -597,19 +524,19 @@
                     displayVal = escapeHtml(String(val));
                 }
                 argRows += `
-                  <div class="flex flex-col items-start mb-2 last:mb-0 text-[11px]">
-                    <span class="font-semibold text-slate-500">${escapeHtml(key)}:</span>
-                    <span class="text-slate-700 w-full break-all">${displayVal}</span>
+                  <div class="tool-arg-row">
+                    <span class="tool-arg-key">${escapeHtml(key)}</span>
+                    <span class="tool-arg-val">${displayVal}</span>
                   </div>
                 `;
               }
               return `
-                <div class="mt-2 rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-                  <div class="bg-slate-50 px-3 py-1.5 border-b border-slate-200 flex items-center gap-2">
+                <div class="tool-call-card">
+                  <div class="tool-call-head">
                     <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a2 2 0 01-2 2H3a2 2 0 01-2-2V4a2 2 0 114 0v10a2 2 0 002 2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0V14a2 2 0 012-2h10a2 2 0 012 2v1a2 2 0 11-4 0"></path></svg>
-                    <span class="text-[11px] font-bold text-slate-700">CALL: ${escapeHtml(name)}</span>
+                    <span class="tool-call-name">${escapeHtml(name)}</span>
                   </div>
-                  <div class="p-3">
+                  <div class="tool-call-body">
                     ${argRows || '<span class="text-[11px] text-slate-400">No parameters</span>'}
                   </div>
                 </div>
@@ -620,7 +547,7 @@
             contentHtml = '<span class="text-slate-400 text-[11px]">[空响应]</span>';
           }
           
-          el.innerHTML = `<div class="text-[10px] uppercase font-bold tracking-wider opacity-60 mb-1.5">${roleText}</div><div class="prose prose-sm max-w-none">${contentHtml}</div>`;
+          el.innerHTML = `<div class="text-[10px] uppercase font-bold tracking-wider opacity-60 mb-1.5">${roleText}</div><div class="md-content">${contentHtml}</div>`;
           container.appendChild(el);
         });
 
@@ -656,6 +583,7 @@
         const message = input.value.trim();
         if (!message) return;
         input.value = '';
+        input.style.height = '40px';
         input.disabled = true;
 
         currentMessages.push({ role: 'user', content: message });
@@ -718,22 +646,37 @@
 
       async function respondApproval(approved) {
         if (!currentSessionId || !pendingApproval || approvalLoading) return;
+
+        // --- 核心优化：立即隐藏审批栏 ---
+        const bar = document.getElementById('approvalBar');
+        if (bar) bar.classList.add('hidden');
+
         autoScrollEnabled = true;
         setApprovalLoading(true);
-        if (approved) {
-          const yesBtn = document.getElementById('approvalYesBtn');
-          if (yesBtn) yesBtn.innerHTML = '<span class="flex items-center gap-1"><svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> 正在执行...</span>';
-        }
+
+        // 在消息列表中插入一条临时的“系统提示”气泡
+        const tempMsg = { 
+            role: 'assistant', 
+            content: approved ? '_正在执行工具操作，请稍候..._' : '_已拒绝工具执行申请。_',
+            __loading: true 
+        };
+        currentMessages.push(tempMsg);
+        renderMessages(currentMessages);
 
         currentMessages.push({ role: 'assistant', content: '', __streaming: true });
         const streamAssistantIndex = currentMessages.length - 1;
-        renderMessages(currentMessages);
 
         const eventSource = new EventSource(`/api/chat/sessions/${currentSessionId}/stream?approval=${approved ? 'true' : 'false'}`);
         let streamClosed = false;
 
         eventSource.onmessage = function(event) {
           const payload = JSON.parse(event.data);
+
+          // 移除之前的临时提示气泡
+          if (payload.type === 'token' || payload.type === 'done') {
+              currentMessages = currentMessages.filter(m => !m.__loading);
+          }
+
           if (payload.type === 'token') {
             currentMessages[streamAssistantIndex].content += payload.token || '';
             scheduleStreamRender(currentMessages);
@@ -746,7 +689,8 @@
             setApprovalLoading(false);
             eventSource.close();
             bootstrap();
-          } else if (payload.type === 'error') {
+          }
+ else if (payload.type === 'error') {
             streamClosed = true;
             if (currentMessages[streamAssistantIndex] && currentMessages[streamAssistantIndex].__streaming) {
               currentMessages[streamAssistantIndex].__streaming = false;

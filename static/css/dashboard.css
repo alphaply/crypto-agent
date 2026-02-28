@@ -1,0 +1,54 @@
+/* Dashboard 自定义样式 */
+.markdown-body { font-size: 0.875rem; line-height: 1.6; }
+.markdown-body p { margin-bottom: 0.75rem; }
+.markdown-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.75rem; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight: bold; margin-top: 1rem; margin-bottom: 0.5rem; }
+.markdown-body code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-family: monospace; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+@keyframes pulse-custom { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.animate-pulse-custom { animation: pulse-custom 2s infinite; }
+@keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.animate-pulse-red { animation: pulse-red 1.5s infinite; }
+
+/* Toast 动画 */
+@keyframes slide-in-right {
+  0% { transform: translateX(100%); opacity: 0; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+@keyframes fade-out {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.toast-enter { animation: slide-in-right 0.3s ease-out forwards; }
+.toast-exit { animation: fade-out 0.3s ease-in forwards; }
+
+/* 迷你滚动条 */
+.mini-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+.mini-scroll::-webkit-scrollbar-track { background: transparent; }
+.mini-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+
+/* 模态框移动端全屏优化 */
+@media (max-width: 640px) {
+  .modal-container { padding: 0 !important; }
+  .modal-content { 
+      max-width: 100% !important; 
+      max-height: 100vh !important; 
+      height: 100vh !important; 
+      border-radius: 0 !important; 
+  }
+  .modal-scroll-area { flex-grow: 1 !important; }
+}
+
+/* Toggle Switch 样式 */
+.switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 20px; }
+.slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+input:checked + .slider { background-color: #2563eb; }
+input:checked + .slider:before { transform: translateX(20px); }
+
+/* 卡片悬停效果 */
+.config-card { transition: all 0.2s ease; border: 1px solid #e5e7eb; }
+.config-card:hover { border-color: #3b82f6; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+.config-card.disabled { opacity: 0.6; background-color: #f9fafb; }

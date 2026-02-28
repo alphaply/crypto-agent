@@ -106,13 +106,17 @@ def wait_until_next_slot(interval_minutes, delay_seconds=10):
 
 def job():
     configs = get_all_configs()
-    if not configs:
+    # 过滤掉已禁用的配置
+    active_configs = [c for c in configs if c.get('enabled', True)]
+    
+    if not active_configs:
+        logger.info("⏳ 没有任何活跃配置 (enabled=true)，跳过本轮执行。")
         return
 
-    logger.info(f"🚀 系统唤醒 (检查 {len(configs)} 个配置)...")
+    logger.info(f"🚀 系统唤醒 (检查 {len(active_configs)}/{len(configs)} 个配置)...")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(process_single_config, config) for config in configs]
+        futures = [executor.submit(process_single_config, config) for config in active_configs]
         concurrent.futures.wait(futures)
 
     logger.info(f"本轮执行完毕。")
@@ -123,17 +127,31 @@ def run_smart_scheduler():
 
     # 打印一次当前配置
     configs = get_all_configs()
-    real = [c['symbol'] for c in configs if c.get('mode') == 'REAL']
-    strat = [c['symbol'] for c in configs if c.get('mode') != 'REAL']
+    active_configs = [c for c in configs if c.get('enabled', True)]
+    real = [c['symbol'] for c in active_configs if c.get('mode', 'STRATEGY').upper() == 'REAL']
+    strat = [c['symbol'] for c in active_configs if c.get('mode', 'STRATEGY').upper() != 'REAL']
 
-    logger.info(f"📊 实盘组: {real}")
-    logger.info(f"📊 策略组: {strat}")
+    logger.info(f"📊 活跃实盘组: {real}")
+    logger.info(f"📊 活跃策略组: {strat}")
+    logger.info(f"📊 已禁用组: {[c['symbol'] for c in configs if not c.get('enabled', True)]}")
 
     while True:
         try:
-            interval, mode_str = get_next_run_settings()
-            logger.info(f"📅 [模式切换] {mode_str}")
+            # 重新获取配置以应对热更新
+            configs = get_all_configs()
+            active_configs = [c for c in configs if c.get('enabled', True)]
+            
+            # 决定心跳频率 (基于活跃配置)
+            if not active_configs:
+                interval, mode_str = 60, "无活跃配置-休眠 (1h)"
+            else:
+                has_real_mode = any(c.get('mode', 'STRATEGY').upper() == 'REAL' for c in active_configs)
+                if has_real_mode:
+                    interval, mode_str = 15, "🚀 活跃实盘模式 (15m)"
+                else:
+                    interval, mode_str = 60, "🔵 活跃策略模式 (1h)"
 
+            logger.info(f"📅 [模式检测] {mode_str}")
             wait_until_next_slot(interval_minutes=interval, delay_seconds=10)
             job()
 

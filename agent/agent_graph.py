@@ -67,6 +67,21 @@ def summarize_content(content: str, agent_config: dict) -> str:
 {content}
 """
         response = llm.invoke([SystemMessage(content=prompt)])
+        
+        # 记录 Token 使用情况
+        try:
+            usage = response.response_metadata.get("token_usage", {})
+            if usage:
+                database.save_token_usage(
+                    symbol=agent_config.get("symbol", "System"),
+                    config_id=agent_config.get("config_id", "summarizer"),
+                    model=model,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0)
+                )
+        except Exception as usage_e:
+            logger.warning(f"⚠️ [Summarizer] Failed to save token usage: {usage_e}")
+
         return response.content.strip()
     except Exception as e:
         logger.error(f"❌ [Summarizer Error]: {e}")
@@ -228,6 +243,21 @@ def agent_node(state: AgentState) -> AgentState:
         ).bind_tools(tools)
 
         response = llm.invoke(messages)
+        
+        # 记录 Token 使用情况
+        try:
+            usage = response.response_metadata.get("token_usage", {})
+            if usage:
+                database.save_token_usage(
+                    symbol=symbol,
+                    config_id=state.config_id,
+                    model=config.get('model'),
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0)
+                )
+        except Exception as usage_e:
+            logger.warning(f"⚠️ [Agent] Failed to save token usage: {usage_e}")
+
         return state.model_copy(update={"messages": state.messages + [response]})
 
     except Exception as e:

@@ -138,39 +138,28 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                     summary_dict['leverage'] = global_config.leverage
                     summary_dict['display_name'] = agent
 
-                # 获取该 Agent 最近的 5 条决策记录
-                recent_agent_orders = conn.execute(
-                    "SELECT * FROM orders WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 5",
+                # 获取该 Agent 最近的 20 条决策记录 (用于详细展示)
+                full_agent_orders = conn.execute(
+                    "SELECT * FROM orders WHERE symbol = ? AND agent_name = ? ORDER BY id DESC LIMIT 20",
                     (symbol, agent)
                 ).fetchall()
 
-                # 🔥 修改处：提取 validity 字段
-                processed_orders = []
-                for o in recent_agent_orders:
+                processed_all_orders = []
+                for o in full_agent_orders:
                     d = dict(o)
-                    # 从 reason 中提取 (Valid: Xh)
                     match = re.search(r"\(Valid:\s*(\d+h)\)", d.get('reason', ''))
                     d['validity'] = match.group(1) if match else None
-                    processed_orders.append(d)
+                    processed_all_orders.append(d)
 
-                summary_dict['recent_orders'] = processed_orders
+                summary_dict['recent_orders'] = processed_all_orders[:5]
+                summary_dict['all_orders'] = processed_all_orders
 
                 agent_summaries.append(summary_dict)
 
-        # 2. 获取订单 (保持不变)
-        offset = (page - 1) * per_page
-        total_count = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", (symbol,)).fetchone()[0]
-        
-        cursor = conn.execute(
-            "SELECT * FROM orders WHERE symbol = ? ORDER BY id DESC LIMIT ? OFFSET ?", 
-            (symbol, per_page, offset)
-        )
-        orders = [dict(row) for row in cursor.fetchall()]
-        
         conn.close()
-        return agent_summaries, orders, total_count
+        return agent_summaries, [], len(agent_summaries)
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"❌ 获取仪表盘数据失败: {e}")
         return [], [], 0
 def get_all_configs():
     """读取所有配置的辅助函数（使用统一配置管理）"""
@@ -203,23 +192,30 @@ def get_symbol_specific_status(symbol):
     symbol_configs = [c for c in configs if c.get('symbol') == symbol]
 
     if not symbol_configs:
-        return "未知", "N/A"
+        return "未知", "N/A", False
 
     # 收集所有模式
     modes = set()
     has_real = False
     has_strategy = False
+    is_any_enabled = False
 
     for config in symbol_configs:
-        mode = config.get('mode', 'STRATEGY').upper()
-        modes.add(mode)
-        if mode == 'REAL':
-            has_real = True
-        else:
-            has_strategy = True
+        enabled = config.get('enabled', True)
+        if enabled:
+            is_any_enabled = True
+            mode = config.get('mode', 'STRATEGY').upper()
+            modes.add(mode)
+            if mode == 'REAL':
+                has_real = True
+            else:
+                has_strategy = True
 
     # 构建模式文本
-    if has_real and has_strategy:
+    if not is_any_enabled:
+        mode_text = "🚫 已禁用"
+        freq_text = "无执行任务"
+    elif has_real and has_strategy:
         mode_text = "🔵 策略 + 🔴 实盘"
         freq_text = "混合 (15m/1h)"
     elif has_real:
@@ -229,7 +225,7 @@ def get_symbol_specific_status(symbol):
         mode_text = "🔵 策略模式 (Strategy)"
         freq_text = "1h (低频执行)"
 
-    return mode_text, freq_text
+    return mode_text, freq_text, is_any_enabled
 
 @app.route('/')
 def index():
@@ -243,7 +239,7 @@ def index():
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
 
     # 1. 获取特定币种的状态 (新增)
-    symbol_mode, symbol_freq = get_symbol_specific_status(symbol)
+    symbol_mode, symbol_freq, symbol_enabled = get_symbol_specific_status(symbol)
     
     # 2. 获取调度器状态
     scheduler_enabled = get_scheduler_status()
@@ -271,6 +267,7 @@ def index():
         symbol_mode=symbol_mode,
         symbol_freq=symbol_freq,
         scheduler_enabled=scheduler_enabled,
+        symbol_enabled=symbol_enabled,
         balance_history=balance_history,
         trade_history=trade_history,
         chart_labels=chart_labels,
@@ -340,8 +337,208 @@ def get_scheduler_status_api():
     status = get_scheduler_status()
     return jsonify({"enabled": status})
 
+# --- 配置管理 API ---
+
+@app.route('/api/config/raw', methods=['GET'])
+def get_raw_config():
+    """获取原始 SYMBOL_CONFIGS JSON"""
+    if not _chat_authed():
+        return jsonify({"success": False, "message": "未授权"}), 401
+    try:
+        configs = global_config.get_all_symbol_configs()
+        return jsonify({"success": True, "configs": configs, "global": {
+            "leverage": global_config.leverage,
+            "enable_scheduler": global_config.enable_scheduler,
+            "trading_mode": global_config.trading_mode
+        }})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+@app.route('/api/config/save', methods=['POST'])
+def save_config_api():
+    """保存配置到 .env 文件"""
+    if not _chat_authed():
+        return jsonify({"success": False, "message": "未授权"}), 401
+    
+    data = request.json
+    new_configs = data.get('configs')
+    global_settings = data.get('global', {})
+
+    if new_configs is None:
+        return jsonify({"success": False, "message": "配置不能为空"}), 400
+
+    try:
+        # 读取现有的 .env
+        with open('.env', 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        new_lines = []
+        found_keys = set()
+        
+        # 准备要写入的键值对
+        updates = {
+            'SYMBOL_CONFIGS': json.dumps(new_configs, ensure_ascii=False)
+        }
+        if 'leverage' in global_settings:
+            updates['LEVERAGE'] = str(global_settings['leverage'])
+        if 'enable_scheduler' in global_settings:
+            updates['ENABLE_SCHEDULER'] = 'true' if global_settings['enable_scheduler'] else 'false'
+
+        for line in lines:
+            matched = False
+            for key, val in updates.items():
+                if line.startswith(f"{key}="):
+                    new_lines.append(f"{key}='{val}'\n")
+                    found_keys.add(key)
+                    matched = True
+                    break
+            if not matched:
+                new_lines.append(line)
+
+        # 添加不存在的键
+        for key, val in updates.items():
+            if key not in found_keys:
+                new_lines.append(f"{key}='{val}'\n")
+
+        with open('.env', 'w', encoding='utf-8') as f:
+            f.writelines(new_lines)
+
+        # 重新加载配置
+        global_config.reload_config()
+        logger.info("✅ 配置文件已更新并重载")
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"❌ 保存配置失败: {e}")
+        return jsonify({"success": False, "message": str(e)})
+
+@app.route('/api/config/export', methods=['GET'])
+def export_config():
+    """导出配置为 JSON 文件"""
+    if not _chat_authed():
+        return "Unauthorized", 401
+    configs = global_config.get_all_symbol_configs()
+    content = json.dumps(configs, indent=4, ensure_ascii=False)
+    return Response(
+        content,
+        mimetype="application/json",
+        headers={"Content-disposition": f"attachment; filename=crypto_configs_{datetime.now().strftime('%Y%m%d')}.json"}
+    )
+
+# --- 统计 API ---
+
+@app.route('/api/stats/tokens', methods=['GET'])
+def get_token_stats():
+    """获取 Token 消耗统计"""
+    if not _chat_authed():
+        return jsonify({"success": False, "message": "未授权"}), 401
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        # 1. 每日统计
+        daily_stats = c.execute("""
+            SELECT strftime('%Y-%m-%d', timestamp) as day, 
+                   SUM(prompt_tokens) as prompt, 
+                   SUM(completion_tokens) as completion,
+                   SUM(total_tokens) as total
+            FROM token_usage 
+            GROUP BY day 
+            ORDER BY day DESC LIMIT 14
+        """).fetchall()
+
+        # 2. 按模型统计
+        model_stats = c.execute("""
+            SELECT model, SUM(total_tokens) as total 
+            FROM token_usage 
+            GROUP BY model
+        """).fetchall()
+
+        # 3. 按配置(Agent)统计
+        agent_stats = c.execute("""
+            SELECT config_id, symbol, SUM(total_tokens) as total 
+            FROM token_usage 
+            GROUP BY config_id
+        """).fetchall()
+
+        conn.close()
+        return jsonify({
+            "success": True,
+            "daily": [dict(r) for r in daily_stats],
+            "models": [dict(r) for r in model_stats],
+            "agents": [dict(r) for r in agent_stats]
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+# --- Prompt 模板管理 API ---
+
+PROMPT_DIR = os.path.join(os.path.dirname(__file__), "agent", "prompts")
+
+@app.route('/api/prompts/list', methods=['GET'])
+def list_prompts():
+    """列出所有 Prompt 模板"""
+    if not _chat_authed():
+        return jsonify({"success": False, "message": "未授权"}), 401
+    try:
+        files = [f for f in os.listdir(PROMPT_DIR) if f.endswith('.txt')]
+        return jsonify({"success": True, "files": files})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+@app.route('/api/prompts/read', methods=['GET'])
+def read_prompt():
+    """读取 Prompt 内容"""
+    if not _chat_authed():
+        return jsonify({"success": False, "message": "未授权"}), 401
+    name = request.args.get('name')
+    if not name or '..' in name:
+        return jsonify({"success": False, "message": "无效文件名"}), 400
+    try:
+        path = os.path.join(PROMPT_DIR, name)
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return jsonify({"success": True, "content": content})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+@app.route('/api/prompts/save', methods=['POST'])
+def save_prompt():
+    """保存或创建 Prompt"""
+    if not _chat_authed():
+        return jsonify({"success": False, "message": "未授权"}), 401
+    data = request.json
+    name = data.get('name')
+    content = data.get('content')
+    if not name or '..' in name or not name.endswith('.txt'):
+        return jsonify({"success": False, "message": "文件名必须以 .txt 结尾且不能包含路径穿越字符"}), 400
+    try:
+        path = os.path.join(PROMPT_DIR, name)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+@app.route('/api/prompts/delete', methods=['POST'])
+def delete_prompt():
+    """删除 Prompt 文件"""
+    if not _chat_authed():
+        return jsonify({"success": False, "message": "未授权"}), 401
+    name = request.json.get('name')
+    if not name or '..' in name or name in ['real.txt', 'strategy.txt']:
+        return jsonify({"success": False, "message": "核心模板不允许删除"}), 400
+    try:
+        path = os.path.join(PROMPT_DIR, name)
+        if os.path.exists(path):
+            os.remove(path)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
 
 @app.route('/api/toggle-scheduler', methods=['POST'])
+
 def toggle_scheduler():
     """API接口：切换调度器状态"""
     data = request.json

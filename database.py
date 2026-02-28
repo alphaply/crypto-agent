@@ -95,10 +95,40 @@ def init_db():
                     updated_at TEXT NOT NULL
                 )''')
 
+    # 7. LLM Token 使用统计
+    c.execute('''CREATE TABLE IF NOT EXISTS token_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    symbol TEXT,
+                    config_id TEXT,
+                    model TEXT,
+                    prompt_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    total_tokens INTEGER
+                )''')
+
     conn.commit()
     conn.close()
 
 # --- 模拟交易 / 挂单池功能 ---
+
+def save_token_usage(symbol, config_id, model, prompt_tokens, completion_tokens):
+    """记录 LLM Token 使用情况"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    total_tokens = prompt_tokens + completion_tokens
+    
+    try:
+        c.execute('''
+            INSERT INTO token_usage (timestamp, symbol, config_id, model, prompt_tokens, completion_tokens, total_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (timestamp, symbol, config_id, model, prompt_tokens, completion_tokens, total_tokens))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"❌ DB Error (save_token_usage): {e}")
+    finally:
+        conn.close()
 
 def get_mock_orders(symbol=None, agent_name=None):
     """
@@ -264,14 +294,23 @@ def get_paginated_summaries(symbol, page=1, per_page=10, agent_name=None):
     return rows
 
 def delete_summaries_by_symbol(symbol):
-    """删除指定币种的所有分析历史"""
+    """删除指定币种的所有分析历史和决策流水"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    # 1. 删除分析历史
     c.execute("DELETE FROM summaries WHERE symbol = ?", (symbol,))
-    deleted_count = c.rowcount
+    s_count = c.rowcount
+    # 2. 删除决策流水 (日志)
+    c.execute("DELETE FROM orders WHERE symbol = ?", (symbol,))
+    o_count = c.rowcount
+    # 3. 删除模拟挂单
+    c.execute("DELETE FROM mock_orders WHERE symbol = ?", (symbol,))
+
     conn.commit()
     conn.close()
-    return deleted_count
+    logger.info(f"🗑️ Cleaned {symbol}: {s_count} summaries, {o_count} orders.")
+    return s_count
+
 
 
 def save_balance_snapshot(symbol, balance, unrealized_pnl):

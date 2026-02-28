@@ -28,6 +28,7 @@ from agent.agent_tools import (
     open_position_strategy,
 )
 from config import config as global_config
+import database
 from utils.logger import setup_logger
 
 load_dotenv()
@@ -186,13 +187,36 @@ def model_node(state: ChatState):
         base_url=cfg.get("api_base"),
         temperature=cfg.get("temperature", 0.5),
         streaming=True,
-        model_kwargs=kwargs,
+        model_kwargs={
+            **kwargs,
+            "stream_options": {"include_usage": True}
+        },
     ).bind_tools(_get_chat_tools(mode))
 
     history = state["messages"]
     trimmed = _trim_chat_messages(state.get("system_prompt", ""), history)
 
+    # 在 LangGraph 中，invoke 依然会等待流结束并聚合结果
     response = llm.invoke(trimmed)
+    
+    # 记录 Token 使用情况
+    try:
+        # 注意：某些模型在流聚合后的 usage 字段路径可能略有不同，这里做兼容处理
+        usage = response.response_metadata.get("token_usage") or getattr(response, "usage_metadata", None)
+        if usage:
+            database.save_token_usage(
+                symbol=state.get("symbol", "Chat"),
+                config_id=state.get("config_id", "chat-user"),
+                model=cfg.get("model"),
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0)
+            )
+            logger.info(f"📊 [Chat Stream] Tokens saved: {usage.get('total_tokens', 0)}")
+        else:
+            logger.warning("⚠️ [Chat Stream] No token_usage found in stream_metadata")
+    except Exception as usage_e:
+        logger.warning(f"⚠️ [Chat] Failed to save token usage: {usage_e}")
+
     return {"messages": [response], "agent_config": cfg}
 
 

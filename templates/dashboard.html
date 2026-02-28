@@ -19,62 +19,39 @@
       }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <style>
-      .markdown-body { font-size: 0.875rem; line-height: 1.6; }
-      .markdown-body p { margin-bottom: 0.75rem; }
-      .markdown-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.75rem; }
-      .markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight: bold; margin-top: 1rem; margin-bottom: 0.5rem; }
-      .markdown-body code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-family: monospace; }
-      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-      @keyframes pulse-custom { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-      .animate-pulse-custom { animation: pulse-custom 2s infinite; }
-      @keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-      .animate-pulse-red { animation: pulse-red 1.5s infinite; }
-      
-      /* Toast 动画 */
-      @keyframes slide-in-right {
-        0% { transform: translateX(100%); opacity: 0; }
-        100% { transform: translateX(0); opacity: 1; }
-      }
-      @keyframes fade-out {
-        0% { opacity: 1; }
-        100% { opacity: 0; }
-      }
-      .toast-enter { animation: slide-in-right 0.3s ease-out forwards; }
-      .toast-exit { animation: fade-out 0.3s ease-in forwards; }
-
-      /* 迷你滚动条 */
-      .mini-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
-      .mini-scroll::-webkit-scrollbar-track { background: transparent; }
-      .mini-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
   </head>
   <body class="bg-gray-50 text-gray-800 font-sans antialiased overflow-x-hidden selection:bg-blue-100">
 
     <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur shadow-sm border-b border-gray-200">
       <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8"> 
-        <div class="flex flex-col sm:flex-row justify-between items-center py-3 gap-3">
-          <div class="font-bold text-lg tracking-tight text-gray-900 flex items-center gap-2">
+        <div class="flex flex-col md:flex-row justify-between items-center py-3 gap-3">
+          <div class="font-bold text-lg tracking-tight text-gray-900 flex items-center justify-between w-full md:w-auto gap-2">
             <span class="flex items-center gap-2">
                 💸 <span class="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">自动亏钱Agent</span>
             </span>
-             <a href="https://github.com/alphaply/crypto-agent" target="_blank" class="ml-2 text-gray-400 hover:text-gray-900 transition-colors" title="GitHub Repository">
-                <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-            </a>
+            <div class="flex items-center gap-2">
+                <a href="https://github.com/alphaply/crypto-agent" target="_blank" class="text-gray-400 hover:text-gray-900 transition-colors" title="GitHub Repository">
+                    <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                </a>
+                <button onclick="location.reload()" title="刷新" class="p-1.5 md:hidden text-gray-500 bg-gray-50 border border-gray-200 rounded-lg">↻</button>
+            </div>
           </div>
-          <div class="flex w-full sm:w-auto items-center gap-2 justify-between sm:justify-end">
-             <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-40">
+          <div class="flex w-full md:w-auto items-center gap-2 justify-between md:justify-end">
+             <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow md:flex-grow-0 md:w-40">
               {% for sym in symbols %} 
                 <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
               {% endfor %}
             </select>
-            <div class="flex gap-2">
+            <div class="flex gap-1.5">
                 <div class="inline-flex rounded-md shadow-sm" role="group">
-                    <a href="/chat" title="Chat" class="px-3 py-2 text-sm font-medium text-teal-700 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100">💬</a>
-                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-3 py-2 text-sm font-medium text-blue-600 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 hover:text-blue-700">📜</a>
-                    <button onclick="openDeleteModal()" title="清除历史" class="px-3 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700">🗑️</button>
+                    <a href="/chat" title="Chat" class="px-2.5 py-2 text-sm font-medium text-teal-700 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100">💬</a>
+                    <button onclick="openConfigModal()" title="配置管理" class="px-2.5 py-2 text-sm font-medium text-indigo-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">⚙️</button>
+                    <button onclick="openStatsModal()" title="消耗统计" class="px-2.5 py-2 text-sm font-medium text-amber-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📊</button>
+                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-2.5 py-2 text-sm font-medium text-blue-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📜</a>
+                    <button onclick="openDeleteModal()" title="清除历史" class="px-2.5 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700">🗑️</button>
                 </div>
-                <button onclick="location.reload()" title="刷新" class="p-2 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-100">↻</button>
+                <button onclick="location.reload()" title="刷新" class="hidden md:block p-2 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-100">↻</button>
             </div>
           </div>
         </div>
@@ -86,8 +63,13 @@
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
           <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span class="flex items-center gap-2">
-                {% if scheduler_enabled %} <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span> <span class="font-medium">运行中</span>
-                {% else %} <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span> <span class="font-medium text-red-500">停止运行</span> {% endif %}
+                {% if scheduler_enabled and symbol_enabled %} 
+                    <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span> <span class="font-medium">运行中</span>
+                {% elif not scheduler_enabled %}
+                    <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span> <span class="font-medium text-red-500">调度器已禁用</span>
+                {% else %}
+                    <span class="w-2.5 h-2.5 bg-amber-500 rounded-full"></span> <span class="font-medium text-amber-600">已暂停 (禁用中)</span>
+                {% endif %}
             </span>
             <span class="text-amber-300 hidden sm:inline">|</span>
             <span>模式: <span class="font-bold text-amber-800">{{ symbol_mode }}</span></span>
@@ -101,193 +83,181 @@
 
     <main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       
-      <div class="grid grid-cols-1 {% if agent_summaries|length > 1 %}lg:grid-cols-2 xl:grid-cols-3{% else %}max-w-3xl mx-auto{% endif %} gap-6 items-start">
-        {% if agent_summaries %} {% for summary in agent_summaries %}
-        <div class="bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col overflow-hidden h-full">
-          <div class="px-5 py-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-gray-100/50">
-            <div class="flex justify-between items-start mb-2">
-              <div class="flex flex-col gap-1">
-                <span class="font-bold text-gray-900 flex items-center gap-2 text-base">
-                    🤖 {{ summary.display_name or summary.agent_name or 'AI-Agent' }}
-                </span>
-                <span class="text-[10px] font-mono text-gray-400">{{ summary.agent_name }}</span>
+      {% if agent_summaries %}
+      <!-- 1. Agent Tab 切换器 -->
+      <div class="flex flex-wrap items-center gap-2 p-1.5 bg-gray-200/50 rounded-2xl w-fit mini-scroll overflow-x-auto max-w-full">
+          {% for summary in agent_summaries %}
+          <button onclick="switchAgentTab('{{ summary.agent_name }}')" id="tab-btn-{{ summary.agent_name }}" 
+                  class="agent-tab-btn flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap
+                  {{ 'bg-white shadow-sm text-blue-600' if loop.first else 'text-gray-500 hover:bg-gray-100' }}">
+              <span>{{ '🔴' if summary.mode == 'REAL' else '🔵' }}</span>
+              {{ summary.display_name or summary.agent_name }}
+          </button>
+          {% endfor %}
+          <button onclick="switchAgentTab('COMPARE')" id="tab-btn-COMPARE" class="agent-tab-btn flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-100 transition-all">
+              ⚖️ 对比视图
+          </button>
+      </div>
+
+      <!-- 2. Agent 视窗容器 -->
+      <div id="agent-windows-container" class="relative">
+          {% for summary in agent_summaries %}
+          <div id="window-{{ summary.agent_name }}" class="agent-window {{ '' if loop.first else 'hidden' }} space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              
+              <!-- Agent 头部概览卡 -->
+              <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <!-- 左侧：分析正文 -->
+                  <div class="lg:col-span-2 space-y-6">
+                      <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+                          <div class="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
+                              <h3 class="font-bold text-gray-900 flex items-center gap-2">
+                                  📊 市场分析报告
+                                  <span class="text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">{{ summary.timestamp }}</span>
+                              </h3>
+                              <div class="flex gap-2">
+                                  <span class="px-2 py-1 text-[10px] font-bold bg-purple-50 text-purple-600 rounded-lg border border-purple-100">🧠 {{ summary.model }}</span>
+                                  <span class="px-2 py-1 text-[10px] font-bold bg-orange-50 text-orange-600 rounded-lg border border-orange-100">⚡ {{ summary.leverage }}x</span>
+                              </div>
+                          </div>
+                          <div class="p-6">
+                              <div class="markdown-content text-gray-700 text-sm leading-relaxed antialiased">{{ summary.content|trim }}</div>
+                              
+                              <div class="mt-6 bg-blue-50/50 border-l-4 border-blue-500 p-4 rounded-r-xl">
+                                  <div class="text-[10px] font-bold uppercase text-blue-400 mb-2 tracking-wider">执行策略逻辑 (Strategy Logic)</div>
+                                  <div class="markdown-content text-xs text-blue-900/80 leading-relaxed">{{ summary.strategy_logic|trim }}</div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+
+                  <!-- 右侧：专属流水表 -->
+                  <div class="lg:col-span-1 space-y-4">
+                      <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col h-full">
+                          <div class="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
+                              <h3 class="font-bold text-gray-900 text-sm flex items-center gap-2">📜 专属决策流水</h3>
+                              <span class="text-[10px] bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full font-bold">{{ summary.all_orders|length }}</span>
+                          </div>
+                          <div class="flex-grow overflow-y-auto max-h-[600px] mini-scroll p-4 space-y-3">
+                              {% if summary.all_orders %}
+                                  {% for order in summary.all_orders %}
+                                  <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all">
+                                      <div class="flex justify-between items-start mb-2">
+                                          <div class="flex items-center gap-2">
+                                              {% set s = order.side|lower %}
+                                              <span class="px-2 py-0.5 rounded-lg font-black uppercase text-[10px] shadow-sm
+                                                  {% if 'buy' in s %} bg-emerald-500 text-white
+                                                  {% elif 'sell' in s %} bg-red-500 text-white
+                                                  {% elif 'close' in s %} bg-orange-500 text-white
+                                                  {% elif 'cancel' in s %} bg-gray-400 text-white
+                                                  {% endif %}">
+                                                  {{ order.side }}
+                                              </span>
+                                              <span class="text-xs font-mono font-bold text-gray-700">{{ order.entry_price }}</span>
+                                          </div>
+                                          <span class="text-[9px] font-mono text-gray-400">{{ order.timestamp[11:16] }}</span>
+                                      </div>
+                                      <div class="text-[10px] text-gray-500 leading-relaxed line-clamp-2 group-hover:line-clamp-none transition-all">
+                                          {{ order.reason }}
+                                      </div>
+                                      {% if order.take_profit > 0 or order.stop_loss > 0 %}
+                                      <div class="mt-2 flex gap-3 text-[9px] font-bold">
+                                          <span class="text-emerald-600">🎯 TP: {{ order.take_profit|int }}</span>
+                                          <span class="text-red-500">🛡️ SL: {{ order.stop_loss|int }}</span>
+                                      </div>
+                                      {% endif %}
+                                  </div>
+                                  {% endfor %}
+                              {% else %}
+                                  <div class="text-center py-10 text-gray-400 text-xs italic">暂无流水数据</div>
+                              {% endif %}
+                          </div>
+                      </div>
+                  </div>
               </div>
-              <span class="text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">
-                {{ summary.timestamp[5:-3] }}
-              </span>
-            </div>
-            <div class="flex flex-wrap gap-2 mt-2">
-              <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-bold rounded-full {{ 'bg-red-100 text-red-700 border border-red-200' if summary.mode == 'REAL' else 'bg-blue-100 text-blue-700 border border-blue-200' }}">
-                {{ '🔴 实盘' if summary.mode == 'REAL' else '🔵 策略' }}
-              </span>
-              <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-purple-100 text-purple-700 rounded-full border border-purple-200">
-                🧠 {{ summary.model }}
-              </span>
-              <span class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-orange-100 text-orange-700 rounded-full border border-orange-200">
-                ⚡ {{ summary.leverage or '?' }}x
-              </span>
-            </div>
           </div>
+          {% endfor %}
 
-          <div class="p-5 flex flex-col gap-4 flex-grow">
-            <div class="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto mini-scroll pr-1">{{ summary.content }}</div>
-            
-            <div class="mt-auto bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r text-sm text-blue-900">
-              <div class="font-bold text-[10px] uppercase text-blue-400 mb-1">Strategy Logic</div>
-              <div class="whitespace-pre-wrap text-xs">{{ summary.strategy_logic }}</div>
-            </div>
-          </div>
+          <!-- 对比视图视窗 (交互滑动版 V4) -->
+          <div id="window-COMPARE" class="hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
+                  {% for summary in agent_summaries %}
+                  <div class="bg-white border border-gray-200 rounded-3xl shadow-lg flex flex-col h-[700px] overflow-hidden border-t-4 {{ 'border-t-rose-500' if summary.mode == 'REAL' else 'border-t-indigo-500' }}">
+                      <!-- 头部 -->
+                      <div class="px-6 py-4 border-b border-gray-100 bg-gray-50/30 flex justify-between items-center flex-shrink-0">
+                          <div class="min-w-0">
+                              <h4 class="font-black text-gray-900 text-sm truncate uppercase tracking-tight">{{ summary.agent_name }}</h4>
+                              <div class="flex items-center gap-2 mt-1">
+                                  <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-sm uppercase">{{ summary.model }}</span>
+                                  <span class="text-[9px] font-mono text-gray-400">{{ summary.timestamp[11:16] }}</span>
+                              </div>
+                          </div>
+                          <button onclick="switchAgentTab('{{ summary.agent_name }}')" class="p-2 text-blue-600 hover:bg-blue-50 rounded-full transition-colors">
+                              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke-width="2.5"/></svg>
+                          </button>
+                      </div>
 
-          <div class="border-t border-gray-200 bg-gray-50 p-3">
-             <h4 class="text-xs font-bold text-gray-500 uppercase mb-2 flex justify-between items-center">
-                <span>Recent Decisions</span>
-                <span class="bg-gray-200 text-gray-600 px-1.5 rounded text-[10px]">{{ summary.recent_orders|length }}</span>
-             </h4>
-             {% if summary.recent_orders %}
-             <div class="overflow-x-auto mini-scroll">
-                <table class="w-full text-xs text-left">
-                    <thead class="text-gray-400 font-medium border-b border-gray-200">
-                        <tr>
-                            <th class="py-1 pr-1 w-12">ID</th>
-                            <th class="py-1 px-1">Side</th>
-                            <th class="py-1 px-1">Price</th>
-                            <th class="py-1 px-1">TP/SL</th>
-                            <th class="py-1 pl-1 text-right">Time</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-100">
-                        {% for order in summary.recent_orders %}
-                        <tr>
-                            <td class="py-1.5 pr-1 relative group cursor-pointer">
-                                <span class="font-mono text-[10px] text-gray-400 border-b border-dotted border-gray-300">
-                                    {{ order.order_id[-4:] if order.order_id else '--' }}
-                                </span>
-                                <div class="hidden group-hover:block absolute bottom-full left-0 mb-1 z-50 bg-gray-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap shadow-lg">
-                                    {{ order.order_id }}
-                                </div>
-                            </td>
-                            <td class="py-1.5 px-1 whitespace-nowrap">
-                                {% set s = order.side|lower %}
-                                <span class="px-1.5 py-0.5 rounded font-bold uppercase text-[10px]
-                                    {% if 'buy' in s %} bg-emerald-100 text-emerald-700
-                                    {% elif 'sell' in s %} bg-red-100 text-red-700
-                                    {% elif 'close' in s %} bg-orange-100 text-orange-700
-                                    {% elif 'cancel' in s %} bg-gray-200 text-gray-500 line-through
-                                    {% endif %}">
-                                    {{ order.side[:1] }}
-                                </span>
-                            </td>
-                            <td class="py-1.5 px-1 font-mono text-gray-700">
-                                <span onclick="handleCopy('{{ order.trigger_price or order.entry_price }}', event)" 
-                                      class="cursor-pointer hover:text-blue-600 hover:underline decoration-dashed" 
-                                      title="Copy Price">
-                                    {{ order.trigger_price or order.entry_price }}
-                                </span>
-                            </td>
-                            <td class="py-1.5 px-1 font-mono text-gray-500">
-                                {% if order.take_profit > 0 or order.stop_loss > 0 %}
-                                    <span onclick="handleCopy('{{ order.take_profit }}', event)" class="cursor-pointer hover:text-buy text-gray-600" title="Copy TP">{{ order.take_profit|int }}</span>
-                                    <span class="text-gray-300">/</span>
-                                    <span onclick="handleCopy('{{ order.stop_loss }}', event)" class="cursor-pointer hover:text-sell text-gray-600" title="Copy SL">{{ order.stop_loss|int }}</span>
-                                {% else %}-{% endif %}
-                            </td>
-                            <td class="py-1.5 pl-1 text-right text-gray-400 font-mono text-[10px]">
-                                {{ order.timestamp[11:16] }}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-             </div>
-             {% else %}
-                <div class="text-center text-gray-400 text-xs py-2 italic">暂无近期操作</div>
-             {% endif %}
+                      <!-- 内部独立滚动区域 -->
+                      <div class="flex-grow overflow-y-auto mini-scroll p-6 space-y-6">
+                          <!-- 分析正文 -->
+                          <div class="space-y-3">
+                              <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Market Analysis</div>
+                              <div class="text-gray-700 text-[13px] leading-relaxed antialiased"><div class="markdown-content">{{ summary.content|trim }}</div></div>
+                          </div>
+                          
+                          <!-- 执行逻辑 -->
+                          <div class="pt-4 border-t border-gray-100">
+                              <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3 italic">Core Strategy Logic</div>
+                              <div class="bg-blue-50/30 p-4 rounded-2xl border border-blue-100/50">
+                                  <div class="markdown-content text-[11px] text-blue-900/80 leading-relaxed">{{ summary.strategy_logic|trim }}</div>
+                              </div>
+                          </div>
+
+                          <!-- 近期决策记录 -->
+                          <div class="pt-4 border-t border-gray-100">
+                              <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">Latest 10 Decisions</div>
+                              <div class="space-y-2">
+                                  {% if summary.all_orders %}
+                                      {% for order in summary.all_orders[:10] %}
+                                      <div class="flex items-center justify-between p-3 rounded-xl bg-gray-50 border border-gray-100 group hover:border-blue-200 transition-colors">
+                                          <div class="flex items-center gap-3">
+                                              {% set s = order.side|lower %}
+                                              <span class="w-2 h-2 rounded-full 
+                                                  {% if 'buy' in s %} bg-emerald-500
+                                                  {% elif 'sell' in s %} bg-rose-500
+                                                  {% elif 'close' in s %} bg-orange-500
+                                                  {% else %} bg-gray-400 {% endif %}"></span>
+                                              <span class="text-[10px] font-black uppercase text-gray-700 w-10">{{ order.side[:4] }}</span>
+                                              <span class="text-[10px] font-mono text-gray-500 group-hover:text-blue-600 transition-colors">{{ order.entry_price }}</span>
+                                          </div>
+                                          <div class="text-[9px] text-gray-400 font-mono">{{ order.timestamp[11:16] }}</div>
+                                      </div>
+                                      {% endfor %}
+                                  {% else %}
+                                      <div class="text-center py-6 text-gray-400 text-[10px] italic">No active data</div>
+                                  {% endif %}
+                              </div>
+                          </div>
+                      </div>
+
+                      <!-- 底部操作栏 -->
+                      <div class="px-6 py-4 bg-gray-50/50 border-t border-gray-100 flex-shrink-0">
+                          <a href="/chat?config_id={{ summary.agent_name }}&symbol={{ current_symbol }}" class="w-full inline-flex justify-center items-center gap-2 bg-white border border-gray-200 text-gray-700 py-2.5 rounded-xl font-bold shadow-sm hover:border-blue-500 hover:text-blue-600 transition-all text-[11px]">
+                              💬 Open Detailed Chat
+                          </a>
+                      </div>
+                  </div>
+                  {% endfor %}
+              </div>
           </div>
-        </div>
-        {% endfor %} {% else %}
-        <div class="col-span-full text-center py-12 bg-white rounded-xl border border-dashed border-gray-300 text-gray-500">
-           <p class="text-lg">暂无分析数据，正在等待 Agent 亏钱...</p>
-        </div>
-        {% endif %}
       </div>
-
-      <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden mt-8">
-        <div class="px-6 py-4 border-b border-gray-200 bg-gray-50/50">
-          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-            <h3 class="font-bold text-gray-900 text-lg">📜 全局决策流水</h3>
-            <div class="flex items-center gap-3 w-full sm:w-auto">
-              <select id="agentFilter" onchange="filterOrders(this.value)" class="form-select bg-white border border-gray-300 text-gray-700 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow sm:flex-grow-0 sm:w-48">
-                <option value="ALL">🔍 全部配置</option>
-                {% for summary in agent_summaries %}
-                <option value="{{ summary.agent_name }}">{{ summary.display_name }}</option>
-                {% endfor %}
-              </select>
-              <span class="bg-gray-100 text-gray-600 text-xs font-medium px-2.5 py-1.5 rounded border border-gray-200 whitespace-nowrap">
-                Total: <span id="orderCount">{{ total_orders }}</span>
-              </span>
-            </div>
-          </div>
-        </div>
-        <div class="overflow-x-auto">
-          <table id="orderTable" class="w-full text-sm text-left text-gray-600">
-             <thead class="hidden md:table-header-group text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th class="px-6 py-3 font-medium w-32">时间</th>
-                <th class="px-6 py-3 font-medium text-center w-24">模式</th>
-                <th class="px-6 py-3 font-medium">配置</th>
-                <th class="px-6 py-3 font-medium text-center w-24">方向</th>
-                <th class="px-6 py-3 font-medium">价格</th>
-                <th class="px-6 py-3 font-medium min-w-[200px]">理由</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-200">
-              {% for order in orders %}
-              <tr data-agent="{{ order.agent_name }}" class="bg-white hover:bg-gray-50 flex flex-col md:table-row mb-4 md:mb-0 border md:border-none rounded-lg md:rounded-none shadow-sm md:shadow-none m-4 md:m-0 p-4 md:p-0">
-                 <td class="px-6 py-3 md:table-cell flex justify-between">
-                    <span class="md:hidden text-xs font-bold text-gray-400">TIME</span>
-                    <span class="font-mono text-xs">{{ order.timestamp }}</span>
-                 </td>
-                 <td class="px-6 py-3 md:table-cell text-center flex justify-between">
-                    <span class="md:hidden text-xs font-bold text-gray-400">MODE</span>
-                    <span class="text-xs font-bold px-2 py-0.5 rounded {{ 'bg-red-100 text-red-800' if order.trade_mode=='REAL' else 'bg-blue-100 text-blue-800' }}">{{ order.trade_mode }}</span>
-                 </td>
-                 <td class="px-6 py-3 md:table-cell flex justify-between">
-                    <span class="md:hidden text-xs font-bold text-gray-400">CONFIG</span>
-                    <div class="flex flex-col gap-1">
-                      <span class="font-mono text-xs text-gray-500">{{ order.agent_name }}</span>
-                    </div>
-                 </td>
-                 <td class="px-6 py-3 md:table-cell text-center flex justify-between">
-                    <span class="md:hidden text-xs font-bold text-gray-400">SIDE</span>
-                    <span class="font-bold 
-                        {% if 'buy' in order.side|lower %}text-buy
-                        {% elif 'sell' in order.side|lower %}text-sell
-                        {% elif 'cancel' in order.side|lower %}text-cancel
-                        {% else %}text-gray-500
-                        {% endif %}">
-                        {{ order.side|upper }}
-                    </span>
-                 </td>
-                 <td class="px-6 py-3 md:table-cell flex justify-between">
-                    <span class="md:hidden text-xs font-bold text-gray-400">PRICE</span>
-                    <span class="font-mono">{{ order.entry_price }}</span>
-                 </td>
-                 <td class="px-6 py-3 md:table-cell w-full">
-                    <div class="text-xs text-gray-500 break-words">{{ order.reason }}</div>
-                 </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end">
-           <nav class="inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
-             <a href="?symbol={{current_symbol}}&page={{current_page-1}}" class="{% if current_page <= 1 %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-l-md hover:bg-gray-50">上一页</a>
-             <span class="relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border-t border-b border-gray-300">{{ current_page }} / {{ total_pages }}</span>
-             <a href="?symbol={{current_symbol}}&page={{current_page+1}}" class="{% if current_page >= total_pages %}pointer-events-none opacity-50{% endif %} relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-r-md hover:bg-gray-50">下一页</a>
-           </nav>
-        </div>
+      {% else %}
+      <div class="text-center py-24 bg-white rounded-3xl border-2 border-dashed border-gray-200 text-gray-400">
+          <div class="text-5xl mb-4">💤</div>
+          <p class="text-lg font-medium">当前币种没有任何 Agent 分析数据</p>
+          <p class="text-sm mt-2">请检查配置中心是否已启用对应的交易对</p>
       </div>
+      {% endif %}
+
     </main>
 
     <div id="delete-modal" class="fixed inset-0 z-[100] hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
@@ -304,10 +274,10 @@
                                 </svg>
                             </div>
                             <div class="mt-3 text-center sm:ml-4 sm:mt-0 sm:text-left w-full">
-                                <h3 class="text-base font-semibold leading-6 text-gray-900" id="modal-title">清除历史记录</h3>
+                                <h3 class="text-base font-semibold leading-6 text-gray-900" id="modal-title">重置交易数据</h3>
                                 <div class="mt-2">
                                     <p class="text-sm text-gray-500">
-                                        您确定要清空 <span class="font-bold text-gray-800">{{ current_symbol }}</span> 的所有 Agent 分析历史吗？此操作无法撤销。
+                                        您确定要清空 <span class="font-bold text-gray-800">{{ current_symbol }}</span> 的所有分析历史、<b>决策流水</b>及挂单吗？此操作无法撤销。
                                     </p>
                                     <div class="mt-4">
                                         <label for="admin-pass" class="block text-xs font-medium text-gray-700 mb-1">管理员密码</label>
@@ -326,117 +296,265 @@
         </div>
     </div>
 
+    <!-- 配置中心模态框 -->
+    <div id="config-modal" class="fixed inset-0 z-[100] hidden modal-container">
+        <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm" onclick="closeConfigModal()"></div>
+        <div class="fixed inset-0 z-10 flex items-center justify-center p-4">
+            <div class="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-gray-200 modal-content">
+                <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 flex-shrink-0">
+                    <div class="flex items-center gap-4">
+                        <h3 class="text-lg font-bold text-gray-900">⚙️ 配置中心</h3>
+                        <div class="flex bg-gray-200 p-1 rounded-lg text-[10px] font-bold uppercase">
+                            <button onclick="switchConfigTab('list')" id="tab-btn-list" class="px-3 py-1 rounded-md bg-white shadow-sm text-blue-600">列表模式</button>
+                            <button onclick="switchConfigTab('prompt')" id="tab-btn-prompt" class="px-3 py-1 rounded-md text-gray-500">Prompt 模板</button>
+                            <button onclick="switchConfigTab('raw')" id="tab-btn-raw" class="px-3 py-1 rounded-md text-gray-500">JSON 模式</button>
+                        </div>
+                    </div>
+                    <button onclick="closeConfigModal()" class="text-gray-400 hover:text-gray-600 text-2xl p-2">&times;</button>
+                </div>
+                
+                <div class="p-4 sm:p-6 overflow-y-auto modal-scroll-area mini-scroll">
+                    <!-- 列表模式视图 -->
+                    <div id="config-view-list" class="space-y-6">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div class="bg-blue-50 p-4 rounded-xl border border-blue-100">
+                                <label class="block text-xs font-bold text-blue-500 uppercase mb-2">全局运行控制</label>
+                                <div class="flex items-center justify-between">
+                                    <span class="text-sm font-medium text-blue-900">智能调度器状态</span>
+                                    <label class="switch">
+                                        <input type="checkbox" id="global-scheduler">
+                                        <span class="slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                <label class="block text-xs font-bold text-gray-400 uppercase mb-2">默认交易杠杆</label>
+                                <div class="flex items-center gap-3">
+                                    <input type="number" id="global-leverage" class="w-20 border rounded p-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                                    <span class="text-xs text-gray-400">仅用于 Prompt 提示</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="flex justify-between items-center mb-4">
+                                <h4 class="text-sm font-bold text-gray-700 flex items-center gap-2">
+                                    🚀 交易对配置
+                                    <span id="config-count-badge" class="bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full text-[10px]">0</span>
+                                </h4>
+                                <button onclick="addNewSymbolConfig()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition-all">
+                                    <span>+</span> 添加新币种
+                                </button>
+                            </div>
+                            <div id="symbol-config-list" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <!-- 卡片由 JS 动态生成 -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Prompt 模板视图 -->
+                    <div id="config-view-prompt" class="hidden flex flex-col md:flex-row gap-4 h-[600px]">
+                        <div class="w-full md:w-48 flex flex-col gap-2 bg-gray-50 p-2 rounded-xl border border-gray-200 overflow-y-auto mini-scroll flex-shrink-0">
+                            <div class="flex justify-between items-center px-2 py-1">
+                                <span class="text-[10px] font-bold text-gray-400 uppercase">文件列表</span>
+                                <button onclick="createNewPrompt()" class="text-blue-600 hover:text-blue-800" title="新建 Prompt">
+                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M12 4v16m8-8H4" stroke-width="2"/></svg>
+                                </button>
+                            </div>
+                            <div id="prompt-file-list" class="flex flex-col gap-1">
+                                <!-- 由 JS 渲染 -->
+                            </div>
+                        </div>
+                        <div class="flex-grow flex flex-col gap-2 overflow-hidden">
+                            <div class="flex justify-between items-center px-1">
+                                <span id="current-prompt-name" class="text-xs font-mono font-bold text-blue-600">未选择文件</span>
+                                <div class="flex gap-2">
+                                    <button onclick="saveCurrentPrompt()" class="text-[10px] bg-emerald-600 text-white px-3 py-1 rounded-md font-bold shadow-sm">保存文件</button>
+                                    <button onclick="deleteCurrentPrompt()" id="btn-delete-prompt" class="hidden text-[10px] bg-red-100 text-red-600 px-3 py-1 rounded-md font-bold">删除</button>
+                                </div>
+                            </div>
+                            <textarea id="prompt-editor" class="w-full flex-grow font-mono text-[11px] border rounded-xl p-4 bg-white focus:ring-2 focus:ring-blue-500 outline-none leading-relaxed mini-scroll" spellcheck="false" placeholder="点击左侧文件开始编辑..."></textarea>
+                        </div>
+                    </div>
+
+                    <!-- JSON 模式视图 -->
+                    <div id="config-view-raw" class="hidden space-y-4">
+                        <div class="flex justify-between items-center">
+                            <p class="text-[11px] text-gray-400">直接修改底层的 SYMBOL_CONFIGS JSON 字符串。</p>
+                            <div class="flex gap-2">
+                                <button onclick="formatConfigJson()" class="text-xs text-blue-600 font-bold">格式化</button>
+                                <a href="/api/config/export" class="text-xs text-green-600 font-bold">导出备份</a>
+                            </div>
+                        </div>
+                        <textarea id="config-json" class="w-full h-[500px] font-mono text-[11px] border rounded-xl p-4 bg-gray-50 focus:bg-white transition-colors outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed" spellcheck="false"></textarea>
+                    </div>
+                </div>
+
+                <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex flex-col sm:flex-row justify-between items-center gap-3 flex-shrink-0">
+                    <div class="text-[10px] text-gray-400 text-center sm:text-left leading-tight">⚠️ 保存后 .env 将实时更新并触发热重载</div>
+                    <div class="flex gap-3 w-full sm:w-auto">
+                        <button onclick="closeConfigModal()" class="flex-1 sm:flex-none px-6 py-2.5 rounded-lg text-sm font-bold text-gray-500 bg-white border border-gray-200">取消</button>
+                        <button onclick="saveConfigFromUI()" class="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-8 py-2.5 rounded-lg text-sm font-bold transition-all shadow-md active:scale-95">保存并应用</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 币种编辑表单 (独立的小模态框) -->
+    <div id="symbol-edit-modal" class="fixed inset-0 z-[120] hidden modal-container">
+        <div class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm" onclick="closeSymbolEditModal()"></div>
+        <div class="fixed inset-0 flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-gray-200 modal-content h-auto !max-h-[90vh]">
+                <div class="px-6 py-4 border-b bg-gray-50 flex justify-between items-center">
+                    <h4 id="symbol-modal-title" class="font-bold text-gray-900">编辑交易对</h4>
+                    <button onclick="closeSymbolEditModal()" class="text-gray-400 text-2xl">&times;</button>
+                </div>
+                <div class="p-6 space-y-6 overflow-y-auto max-h-[70vh] mini-scroll">
+                    <input type="hidden" id="edit-config-index">
+                    
+                    <!-- 1. 核心交易配置 -->
+                    <div class="space-y-4">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="w-1 h-4 bg-blue-600 rounded-full"></span>
+                            <h5 class="text-xs font-bold text-gray-900 uppercase">核心交易配置</h5>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">配置 ID</label>
+                                <input type="text" id="edit-config-id" class="w-full border rounded-lg p-2 text-xs bg-gray-50 font-mono" readonly>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">交易对 (Symbol)</label>
+                                <input type="text" id="edit-symbol" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="BTC/USDT">
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">运行模式</label>
+                                <select id="edit-mode" class="w-full border rounded-lg p-2 text-sm">
+                                    <option value="STRATEGY">模拟 (STRATEGY)</option>
+                                    <option value="REAL">实盘 (REAL)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">Prompt 模板</label>
+                                <select id="edit-prompt-file" class="w-full border rounded-lg p-2 text-sm"></select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">杠杆倍数</label>
+                                <input type="number" id="edit-leverage" class="w-full border rounded-lg p-2 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">LLM 温度</label>
+                                <input type="number" step="0.1" id="edit-temp" class="w-full border rounded-lg p-2 text-sm">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 2. 主决策模型配置 -->
+                    <div class="space-y-4 pt-4 border-t border-gray-100">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="w-1 h-4 bg-purple-600 rounded-full"></span>
+                            <h5 class="text-xs font-bold text-gray-900 uppercase">决策模型 (LLM)</h5>
+                        </div>
+                        <div class="grid grid-cols-1 gap-3">
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">模型名称</label>
+                                <input type="text" id="edit-model" class="w-full border rounded-lg p-2 text-sm" placeholder="gpt-4o">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Base URL</label>
+                                <input type="text" id="edit-api-base" class="w-full border rounded-lg p-2 text-sm" placeholder="https://api.openai.com/v1">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Key</label>
+                                <input type="password" id="edit-api-key" class="w-full border rounded-lg p-2 text-sm" placeholder="保持不变请留空...">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. 币安专属 API (可选) -->
+                    <div class="space-y-4 pt-4 border-t border-gray-100">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                <span class="w-1 h-4 bg-amber-500 rounded-full"></span>
+                                <h5 class="text-xs font-bold text-gray-900 uppercase">币安专属 API (可选)</h5>
+                            </div>
+                            <span class="text-[9px] text-gray-400 italic">不填则使用全局配置</span>
+                        </div>
+                        <div class="grid grid-cols-1 gap-3">
+                            <input type="password" id="edit-bn-key" class="w-full border rounded-lg p-2 text-xs" placeholder="Binance API Key">
+                            <input type="password" id="edit-bn-secret" class="w-full border rounded-lg p-2 text-xs" placeholder="Binance API Secret">
+                        </div>
+                    </div>
+
+                    <!-- 4. 总结模型配置 (Summarizer) -->
+                    <div class="space-y-4 pt-4 border-t border-gray-100">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                <span class="w-1 h-4 bg-emerald-500 rounded-full"></span>
+                                <h5 class="text-xs font-bold text-gray-900 uppercase">总结模型 (Summarizer)</h5>
+                            </div>
+                            <label class="flex items-center gap-1 cursor-pointer">
+                                <input type="checkbox" id="enable-sum-cfg" onchange="toggleSumSection(this.checked)" class="w-3 h-3">
+                                <span class="text-[10px] text-gray-500 font-bold">启用专属配置</span>
+                            </label>
+                        </div>
+                        <div id="sum-section" class="grid grid-cols-1 gap-3 opacity-40 pointer-events-none transition-opacity">
+                            <input type="text" id="edit-sum-model" class="w-full border rounded-lg p-2 text-xs" placeholder="总结模型名称 (如 gpt-4o-mini)">
+                            <input type="text" id="edit-sum-base" class="w-full border rounded-lg p-2 text-xs" placeholder="Summarizer API Base">
+                            <input type="password" id="edit-sum-key" class="w-full border rounded-lg p-2 text-xs" placeholder="Summarizer API Key">
+                        </div>
+                    </div>
+                </div>
+                <div class="px-6 py-4 bg-gray-50 border-t flex gap-3">
+                    <button onclick="applySymbolEdit()" class="flex-1 bg-blue-600 text-white py-2 rounded-lg font-bold shadow-sm">确定</button>
+                    <button onclick="closeSymbolEditModal()" class="flex-1 bg-white border text-gray-500 py-2 rounded-lg font-bold">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 统计中心模态框 -->
+    <div id="stats-modal" class="fixed inset-0 z-[100] hidden modal-container">
+        <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm" onclick="closeStatsModal()"></div>
+        <div class="fixed inset-0 z-10 flex items-center justify-center p-4">
+            <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden border border-gray-200 modal-content">
+                <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 flex-shrink-0">
+                    <h3 class="text-lg font-bold text-gray-900">📊 资源消耗统计</h3>
+                    <button onclick="closeStatsModal()" class="text-gray-400 hover:text-gray-600 text-2xl p-2">&times;</button>
+                </div>
+                <div id="stats-content" class="p-4 sm:p-6 overflow-y-auto mini-scroll modal-scroll-area">
+                    <div class="animate-pulse flex space-y-4 flex-col">
+                        <div class="h-4 bg-gray-200 rounded w-3/4"></div>
+                        <div class="h-4 bg-gray-200 rounded w-1/2"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 授权模态框 -->
+    <div id="auth-modal" class="fixed inset-0 z-[110] hidden modal-container">
+        <div class="fixed inset-0 bg-gray-900/80 backdrop-blur-md"></div>
+        <div class="fixed inset-0 flex items-center justify-center p-4">
+            <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-gray-200 modal-content h-auto !max-h-fit !rounded-xl">
+                <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">🔐 身份验证</h3>
+                <p class="text-sm text-gray-500 mb-4">访问敏感功能需要管理员权限。</p>
+                <input type="password" id="auth-pass" class="w-full border rounded-lg p-3 mb-4 outline-none focus:ring-2 focus:ring-blue-500" placeholder="请输入密码...">
+                <div class="flex gap-3">
+                    <button onclick="submitAuth()" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认</button>
+                    <button onclick="closeAuthModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="toast-container" class="fixed top-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none"></div>
 
-    <script>
-      // 初始化 Markdown 渲染
-      document.addEventListener('DOMContentLoaded', function() {
-          const summaries = document.querySelectorAll('.text-gray-700.text-sm.leading-relaxed.whitespace-pre-wrap');
-          summaries.forEach(div => {
-              const rawContent = div.textContent;
-              div.classList.remove('whitespace-pre-wrap');
-              div.classList.add('markdown-body');
-              div.innerHTML = marked.parse(rawContent);
-          });
-      });
-
-      // 1. Toast 提示函数 (替代 alert)
-      function showToast(message, type = 'success') {
-          const container = document.getElementById('toast-container');
-          const toast = document.createElement('div');
-          toast.className = `pointer-events-auto transform rounded-lg px-4 py-3 shadow-lg flex items-center gap-3 min-w-[300px] toast-enter ${
-              type === 'success' ? 'bg-white border-l-4 border-emerald-500 text-gray-800' : 'bg-white border-l-4 border-red-500 text-gray-800'
-          }`;
-          
-          const icon = type === 'success' 
-              ? `<svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`
-              : `<svg class="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`;
-
-          toast.innerHTML = `
-              ${icon}
-              <div class="flex-1 text-sm font-medium">${message}</div>
-          `;
-
-          container.appendChild(toast);
-
-          // 3秒后自动消失
-          setTimeout(() => {
-              toast.classList.remove('toast-enter');
-              toast.classList.add('toast-exit');
-              setTimeout(() => toast.remove(), 300);
-          }, 3000);
-      }
-
-      // 2. 复制功能 (保持不变，加了 Toast)
-      function handleCopy(text, e) { 
-          if(!text || text === '-' || text === 'None') return;
-          navigator.clipboard.writeText(text).then(() => {
-              showToast(`已复制: ${text}`, 'success');
-          }).catch(() => {
-              showToast('复制失败', 'error');
-          });
-      }
-
-      // 3. Modal 逻辑 (替代 confirm/prompt)
-      function openDeleteModal() {
-          document.getElementById('delete-modal').classList.remove('hidden');
-          setTimeout(() => document.getElementById('admin-pass').focus(), 100);
-      }
-
-      function closeDeleteModal() {
-          document.getElementById('delete-modal').classList.add('hidden');
-          document.getElementById('admin-pass').value = ''; // 清空密码
-      }
-
-      // 提交删除
-      async function confirmDeleteAction() {
-          const pwd = document.getElementById('admin-pass').value;
-          const symbol = document.getElementById('symbolSelect').value;
-
-          if (!pwd) {
-              showToast('请输入管理员密码', 'error');
-              return;
-          }
-
-          try {
-              const response = await fetch('/api/clean_history', {
-                  method: 'POST',
-                  headers: {'Content-Type': 'application/json'},
-                  body: JSON.stringify({symbol: symbol, password: pwd})
-              });
-              const result = await response.json();
-
-              if (result.success) {
-                  closeDeleteModal();
-                  showToast(result.message, 'success');
-                  // 延迟刷新以便看到提示
-                  setTimeout(() => location.reload(), 1000);
-              } else {
-                  showToast(result.message, 'error');
-              }
-          } catch (e) {
-              showToast('网络请求失败', 'error');
-          }
-      }
-
-      // 4. 订单筛选功能
-      function filterOrders(agentName) {
-          const rows = document.querySelectorAll('#orderTable tbody tr');
-          let visibleCount = 0;
-
-          rows.forEach(row => {
-              const rowAgent = row.getAttribute('data-agent');
-              if (agentName === 'ALL' || rowAgent === agentName) {
-                  row.style.display = '';
-                  visibleCount++;
-              } else {
-                  row.style.display = 'none';
-              }
-          });
-
-          // 更新计数
-          document.getElementById('orderCount').textContent = visibleCount;
-      }
-    </script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
   </body>
 </html>
