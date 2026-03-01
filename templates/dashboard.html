@@ -25,31 +25,31 @@
 
     <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur shadow-sm border-b border-gray-200">
       <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8"> 
-        <div class="flex flex-col md:flex-row justify-between items-center py-3 gap-3">
-          <div class="font-bold text-lg tracking-tight text-gray-900 flex items-center justify-between w-full md:w-auto gap-2">
-            <span class="flex items-center gap-2">
+        <div class="flex flex-col md:flex-row justify-between items-center py-2 md:py-3 gap-2 md:gap-3">
+          <div class="font-bold text-base md:text-lg tracking-tight text-gray-900 flex items-center justify-between w-full md:w-auto gap-2">
+            <span class="flex items-center gap-1.5">
                 💸 <span class="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">自动亏钱Agent</span>
             </span>
             <div class="flex items-center gap-2">
                 <a href="https://github.com/alphaply/crypto-agent" target="_blank" class="text-gray-400 hover:text-gray-900 transition-colors" title="GitHub Repository">
-                    <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <svg viewBox="0 0 24 24" class="h-4 w-4 md:h-5 md:w-5 fill-current"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                 </a>
                 <button onclick="location.reload()" title="刷新" class="p-1.5 md:hidden text-gray-500 bg-gray-50 border border-gray-200 rounded-lg">↻</button>
             </div>
           </div>
-          <div class="flex w-full md:w-auto items-center gap-2 justify-between md:justify-end">
-             <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none flex-grow md:flex-grow-0 md:w-40">
+          <div class="flex w-full md:w-auto items-center gap-2">
+             <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="form-select bg-gray-50 border border-gray-300 text-gray-900 text-xs md:text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-1.5 md:p-2 outline-none flex-grow md:w-40">
               {% for sym in symbols %} 
                 <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
               {% endfor %}
             </select>
-            <div class="flex gap-1.5">
+            <div class="flex gap-1">
                 <div class="inline-flex rounded-md shadow-sm" role="group">
-                    <a href="/chat" title="Chat" class="px-2.5 py-2 text-sm font-medium text-teal-700 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100">💬</a>
-                    <button onclick="openConfigModal()" title="配置管理" class="px-2.5 py-2 text-sm font-medium text-indigo-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">⚙️</button>
-                    <a href="/stats/public?symbol={{ current_symbol }}" title="公开统计" class="px-2.5 py-2 text-sm font-medium text-purple-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📈</a>
-                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-2.5 py-2 text-sm font-medium text-blue-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📜</a>
-                    <button onclick="openDeleteModal()" title="清除历史" class="px-2.5 py-2 text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700">🗑️</button>
+                    <a href="/chat" title="Chat" class="px-2 md:px-2.5 py-1.5 md:py-2 text-xs md:text-sm font-medium text-teal-700 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100">💬</a>
+                    <button onclick="openConfigModal()" title="配置管理" class="px-2 md:px-2.5 py-1.5 md:py-2 text-xs md:text-sm font-medium text-indigo-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">⚙️</button>
+                    <a href="/stats/public?symbol={{ current_symbol }}" title="公开统计" class="px-2 md:px-2.5 py-1.5 md:py-2 text-xs md:text-sm font-medium text-purple-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📈</a>
+                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="px-2 md:px-2.5 py-1.5 md:py-2 text-xs md:text-sm font-medium text-blue-600 bg-white border border-l-0 border-gray-200 hover:bg-gray-100">📜</a>
+                    <button onclick="openDeleteModal()" title="清除历史" class="px-2 md:px-2.5 py-1.5 md:py-2 text-xs md:text-sm font-medium text-red-600 bg-white border border-l-0 border-gray-200 rounded-r-lg hover:bg-gray-100 hover:text-red-700">🗑️</button>
                 </div>
                 <button onclick="location.reload()" title="刷新" class="hidden md:block p-2 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-100">↻</button>
             </div>
@@ -64,17 +64,13 @@
           <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span class="flex items-center gap-2">
                 {% if scheduler_enabled and symbol_enabled %} 
-                    <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span> <span class="font-medium">运行中</span>
+                    <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span> <span class="font-medium">调度器活跃中</span>
                 {% elif not scheduler_enabled %}
                     <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span> <span class="font-medium text-red-500">调度器已禁用</span>
                 {% else %}
                     <span class="w-2.5 h-2.5 bg-amber-500 rounded-full"></span> <span class="font-medium text-amber-600">已暂停 (禁用中)</span>
                 {% endif %}
             </span>
-            <span class="text-amber-300 hidden sm:inline">|</span>
-            <span>模式: <span class="font-bold text-amber-800">{{ symbol_mode }}</span></span>
-            <span class="text-amber-300 hidden sm:inline">|</span>
-            <span>频率: <span class="font-bold text-emerald-700">{{ symbol_freq }}</span></span>
           </div>
           <div>风控系统: <span class="font-bold text-emerald-600">已启动</span></div>
         </div>
@@ -87,14 +83,20 @@
       <!-- 1. Agent Tab 切换器 -->
       <div class="flex flex-wrap items-center gap-2 p-1.5 bg-gray-200/50 rounded-2xl w-fit mini-scroll overflow-x-auto max-w-full">
           {% for summary in agent_summaries %}
-          <button onclick="switchAgentTab('{{ summary.agent_name }}')" id="tab-btn-{{ summary.agent_name }}" 
-                  class="agent-tab-btn flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap
-                  {{ 'bg-white shadow-sm text-blue-600' if loop.first else 'text-gray-500 hover:bg-gray-100' }}">
-              <span>{{ '🔴' if summary.mode == 'REAL' else '🔵' }}</span>
-              {{ summary.display_name or summary.agent_name }}
+          <button onclick="switchAgentTab('{{ summary.config_id }}')" id="tab-btn-{{ summary.config_id }}" 
+                  class="agent-tab-btn flex flex-col items-start px-4 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap
+                  {{ 'bg-white shadow-sm text-blue-600' if loop.first else 'text-gray-500 hover:bg-gray-100' }} {{ 'opacity-60' if not summary.enabled else '' }}">
+              <div class="flex items-center gap-2">
+                <span class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full {{ 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' if summary.enabled else 'bg-gray-400' }}"></span>
+                    {{ '🔴' if summary.mode == 'REAL' else '🔵' }}
+                </span>
+                {{ summary.display_name or summary.agent_name }}
+              </div>
+              <div class="text-[9px] opacity-70 mt-0.5 ml-8">{{ summary.freq }}</div>
           </button>
           {% endfor %}
-          <button onclick="switchAgentTab('COMPARE')" id="tab-btn-COMPARE" class="agent-tab-btn flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-100 transition-all">
+          <button onclick="switchAgentTab('COMPARE')" id="tab-btn-COMPARE" class="agent-tab-btn flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-100 transition-all">
               ⚖️ 对比视图
           </button>
       </div>
@@ -102,29 +104,38 @@
       <!-- 2. Agent 视窗容器 -->
       <div id="agent-windows-container" class="relative">
           {% for summary in agent_summaries %}
-          <div id="window-{{ summary.agent_name }}" class="agent-window {{ '' if loop.first else 'hidden' }} space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div id="window-{{ summary.config_id }}" class="agent-window {{ '' if loop.first else 'hidden' }} space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
               
               <!-- Agent 头部概览卡 -->
-              <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
                   <!-- 左侧：分析正文 -->
-                  <div class="lg:col-span-2 space-y-6">
+                  <div class="lg:col-span-2 space-y-4 md:space-y-6">
                       <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-                          <div class="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
-                              <h3 class="font-bold text-gray-900 flex items-center gap-2">
+                          <div class="px-4 py-3 md:px-6 md:py-4 border-b border-gray-100 bg-gray-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                              <h3 class="font-bold text-gray-900 flex items-center gap-2 text-sm md:text-base">
                                   📊 市场分析报告
-                                  <span class="text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">{{ summary.timestamp }}</span>
+                                  <span class="text-[9px] md:text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">{{ summary.timestamp }}</span>
+                                  {% if not summary.enabled %}
+                                  <span class="px-2 py-0.5 text-[9px] bg-gray-100 text-gray-400 rounded-full border border-gray-200">已禁用</span>
+                                  {% endif %}
                               </h3>
-                              <div class="flex gap-2">
-                                  <span class="px-2 py-1 text-[10px] font-bold bg-purple-50 text-purple-600 rounded-lg border border-purple-100">🧠 {{ summary.model }}</span>
-                                  <span class="px-2 py-1 text-[10px] font-bold bg-orange-50 text-orange-600 rounded-lg border border-orange-100">⚡ {{ summary.leverage }}x</span>
+                              <div class="flex items-center justify-between w-full sm:w-auto gap-3">
+                                  <div class="flex flex-col items-start sm:items-end">
+                                      <span class="text-[9px] md:text-[10px] font-bold {{ 'text-red-600' if summary.mode == 'REAL' else 'text-blue-600' }}">{{ '🔴 实盘模式' if summary.mode == 'REAL' else '🔵 策略模式' }}</span>
+                                      <span class="text-[8px] md:text-[9px] text-gray-400">{{ summary.freq }}</span>
+                                  </div>
+                                  <div class="flex gap-1.5 md:gap-2">
+                                      <span class="px-1.5 md:px-2 py-0.5 md:py-1 text-[9px] md:text-[10px] font-bold bg-purple-50 text-purple-600 rounded-lg border border-purple-100">🧠 {{ summary.model }}</span>
+                                      <span class="px-1.5 md:px-2 py-0.5 md:py-1 text-[9px] md:text-[10px] font-bold bg-orange-50 text-orange-600 rounded-lg border border-orange-100">⚡ {{ summary.leverage }}x</span>
+                                  </div>
                               </div>
                           </div>
-                          <div class="p-6">
-                              <div class="markdown-content text-gray-700 text-sm leading-relaxed antialiased">{{ summary.content|trim }}</div>
+                          <div class="p-4 md:p-6">
+                              <div class="markdown-content text-gray-700 text-xs md:text-sm leading-relaxed antialiased">{{ summary.content|trim }}</div>
                               
-                              <div class="mt-6 bg-blue-50/50 border-l-4 border-blue-500 p-4 rounded-r-xl">
-                                  <div class="text-[10px] font-bold uppercase text-blue-400 mb-2 tracking-wider">执行策略逻辑 (Strategy Logic)</div>
-                                  <div class="markdown-content text-xs text-blue-900/80 leading-relaxed">{{ summary.strategy_logic|trim }}</div>
+                              <div class="mt-4 md:mt-6 bg-blue-50/50 border-l-4 border-blue-500 p-3 md:p-4 rounded-r-xl">
+                                  <div class="text-[9px] md:text-[10px] font-bold uppercase text-blue-400 mb-1 md:mb-2 tracking-wider">执行策略逻辑 (Strategy Logic)</div>
+                                  <div class="markdown-content text-[11px] md:text-xs text-blue-900/80 leading-relaxed">{{ summary.strategy_logic|trim }}</div>
                               </div>
                           </div>
                       </div>
@@ -133,19 +144,19 @@
                   <!-- 右侧：专属流水表 -->
                   <div class="lg:col-span-1 space-y-4">
                       <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col h-full">
-                          <div class="px-5 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
-                              <h3 class="font-bold text-gray-900 text-sm flex items-center gap-2">📜 专属决策流水</h3>
+                          <div class="px-4 py-3 md:px-5 md:py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
+                              <h3 class="font-bold text-gray-900 text-xs md:text-sm flex items-center gap-2">📜 专属决策流水</h3>
                               <div class="flex items-center gap-2">
-                                  <button onclick="changeOrderPage('{{ summary.agent_name }}', -1)" class="p-1 hover:bg-gray-200 rounded transition-colors" title="上一页">
-                                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15 19l-7-7 7-7" stroke-width="2.5"/></svg>
+                                  <button onclick="changeOrderPage('{{ summary.config_id }}', -1)" class="p-1 hover:bg-gray-200 rounded transition-colors" title="上一页">
+                                      <svg class="w-3.5 h-3.5 md:w-4 md:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15 19l-7-7 7-7" stroke-width="2.5"/></svg>
                                   </button>
-                                  <span id="page-indicator-{{ summary.agent_name }}" class="text-[10px] font-bold text-blue-600">1</span>
-                                  <button onclick="changeOrderPage('{{ summary.agent_name }}', 1)" class="p-1 hover:bg-gray-200 rounded transition-colors" title="下一页">
-                                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 5l7 7-7 7" stroke-width="2.5"/></svg>
+                                  <span id="page-indicator-{{ summary.config_id }}" class="text-[9px] md:text-[10px] font-bold text-blue-600">1</span>
+                                  <button onclick="changeOrderPage('{{ summary.config_id }}', 1)" class="p-1 hover:bg-gray-200 rounded transition-colors" title="下一页">
+                                      <svg class="w-3.5 h-3.5 md:w-4 md:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 5l7 7-7 7" stroke-width="2.5"/></svg>
                                   </button>
                               </div>
                           </div>
-                          <div id="order-container-{{ summary.agent_name }}" class="flex-grow overflow-y-auto max-h-[600px] mini-scroll p-4 space-y-3">
+                          <div id="order-container-{{ summary.config_id }}" class="flex-grow overflow-y-auto max-h-[400px] md:max-h-[600px] mini-scroll p-3 md:p-4 space-y-2.5 md:space-y-3">
                               {% if summary.all_orders %}
                                   {% for order in summary.all_orders %}
                                   <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all cursor-pointer" onclick="handleCopy('{{ order.entry_price }}', event)">
@@ -189,17 +200,21 @@
           <div id="window-COMPARE" class="hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
               <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
                   {% for summary in agent_summaries %}
-                  <div class="bg-white border border-gray-200 rounded-3xl shadow-lg flex flex-col h-[700px] overflow-hidden border-t-4 {{ 'border-t-rose-500' if summary.mode == 'REAL' else 'border-t-indigo-500' }}">
+                  <div class="bg-white border border-gray-200 rounded-3xl shadow-lg flex flex-col h-[700px] overflow-hidden border-t-4 {{ 'border-t-rose-500' if summary.mode == 'REAL' else 'border-t-indigo-500' }} {{ 'opacity-70 grayscale-[0.3]' if not summary.enabled else '' }}">
                       <!-- 头部 -->
                       <div class="px-6 py-4 border-b border-gray-100 bg-gray-50/30 flex justify-between items-center flex-shrink-0">
                           <div class="min-w-0">
-                              <h4 class="font-black text-gray-900 text-sm truncate uppercase tracking-tight">{{ summary.agent_name }}</h4>
+                              <h4 class="font-black text-gray-900 text-sm truncate uppercase tracking-tight flex items-center gap-2">
+                                  <span class="w-2 h-2 rounded-full {{ 'bg-emerald-500' if summary.enabled else 'bg-gray-400' }}"></span>
+                                  {{ summary.agent_name }}
+                              </h4>
                               <div class="flex items-center gap-2 mt-1">
+                                  <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-md {{ 'bg-red-50 text-red-600' if summary.mode == 'REAL' else 'bg-blue-50 text-blue-600' }}">{{ 'REAL (' + summary.freq + ')' if summary.mode == 'REAL' else 'STRAT (' + summary.freq + ')' }}</span>
                                   <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-sm uppercase">{{ summary.model }}</span>
                                   <span class="text-[9px] font-mono text-gray-400">{{ summary.timestamp[11:16] }}</span>
                               </div>
                           </div>
-                          <button onclick="switchAgentTab('{{ summary.agent_name }}')" class="p-2 text-blue-600 hover:bg-blue-50 rounded-full transition-colors">
+                          <button onclick="switchAgentTab('{{ summary.config_id }}')" class="p-2 text-blue-600 hover:bg-blue-50 rounded-full transition-colors">
                               <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke-width="2.5"/></svg>
                           </button>
                       </div>
@@ -264,7 +279,7 @@
 
                       <!-- 底部操作栏 -->
                       <div class="px-6 py-4 bg-gray-50/50 border-t border-gray-100 flex-shrink-0">
-                          <a href="/chat?config_id={{ summary.agent_name }}&symbol={{ current_symbol }}" class="w-full inline-flex justify-center items-center gap-2 bg-white border border-gray-200 text-gray-700 py-2.5 rounded-xl font-bold shadow-sm hover:border-blue-500 hover:text-blue-600 transition-all text-[11px]">
+                          <a href="/chat?config_id={{ summary.config_id }}&symbol={{ current_symbol }}" class="w-full inline-flex justify-center items-center gap-2 bg-white border border-gray-200 text-gray-700 py-2.5 rounded-xl font-bold shadow-sm hover:border-blue-500 hover:text-blue-600 transition-all text-[11px]">
                               💬 Open Detailed Chat
                           </a>
                       </div>
@@ -283,45 +298,27 @@
 
     </main>
 
-    <div id="delete-modal" class="fixed inset-0 z-[100] hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-        <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm transition-opacity" onclick="closeDeleteModal()"></div>
+    <!-- 删除历史数据模态框 -->
+    <div id="delete-modal" class="fixed inset-0 z-[110] hidden modal-container">
+        <div class="fixed inset-0 bg-gray-900/80 backdrop-blur-md"></div>
+        <div class="fixed inset-0 flex items-center justify-center p-4">
+            <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-gray-200 modal-content h-auto !max-h-fit !rounded-xl">
+                <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">🗑️ 重置交易数据</h3>
+                <p class="text-sm text-gray-500 mb-4">
+                    您确定要清空 <span class="font-bold text-gray-800">{{ current_symbol }}</span> 的所有分析历史及决策流水吗？
+                </p>
+                <input type="password" id="admin-pass" class="w-full border rounded-lg p-3 mb-3 outline-none focus:ring-2 focus:ring-red-500" placeholder="请输入管理员密码...">
+                
+                <div class="flex items-center gap-3 mb-4">
+                    <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshDeleteCaptcha()" title="点击刷新">
+                        <img id="delete-captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
+                    </div>
+                    <input type="text" id="delete-captcha" class="flex-1 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
+                </div>
 
-        <div class="fixed inset-0 z-10 w-screen overflow-y-auto">
-            <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-                <div class="relative transform overflow-hidden rounded-xl bg-white text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg border border-gray-200">
-                    <div class="bg-white px-4 pb-4 pt-5 sm:p-6 sm:pb-4">
-                        <div class="sm:flex sm:items-start">
-                            <div class="mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
-                                <svg class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                                </svg>
-                            </div>
-                            <div class="mt-3 text-center sm:ml-4 sm:mt-0 sm:text-left w-full">
-                                <h3 class="text-base font-semibold leading-6 text-gray-900" id="modal-title">重置交易数据</h3>
-                                <div class="mt-2">
-                                    <p class="text-sm text-gray-500">
-                                        您确定要清空 <span class="font-bold text-gray-800">{{ current_symbol }}</span> 的所有分析历史、<b>决策流水</b>及挂单吗？此操作无法撤销。
-                                    </p>
-                                    <div class="mt-4 space-y-3">
-                                        <div>
-                                            <label for="admin-pass" class="block text-xs font-medium text-gray-700 mb-1">管理员密码</label>
-                                            <input type="password" id="admin-pass" class="w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 sm:text-sm p-2 border" placeholder="请输入密码以确认...">
-                                        </div>
-                                        <div class="flex items-center gap-3">
-                                            <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshDeleteCaptcha()" title="点击刷新">
-                                                <img id="delete-captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
-                                            </div>
-                                            <input type="text" id="delete-captcha" class="flex-1 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="bg-gray-50 px-4 py-3 sm:flex sm:flex-row-reverse sm:px-6">
-                        <button type="button" onclick="confirmDeleteAction()" class="inline-flex w-full justify-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 sm:ml-3 sm:w-auto transition-colors">确认清空</button>
-                        <button type="button" onclick="closeDeleteModal()" class="mt-3 inline-flex w-full justify-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 sm:mt-0 sm:w-auto transition-colors">取消</button>
-                    </div>
+                <div class="flex gap-3">
+                    <button onclick="confirmDeleteAction()" class="flex-1 bg-red-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认清空</button>
+                    <button onclick="closeDeleteModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold">取消</button>
                 </div>
             </div>
         </div>

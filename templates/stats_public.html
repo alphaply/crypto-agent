@@ -3,176 +3,147 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>公开统计 - Crypto Agent</title>
+    <title>资源消耗看板 - Crypto Agent</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .mini-scroll::-webkit-scrollbar { width: 4px; }
+        .mini-scroll::-webkit-scrollbar-track { background: transparent; }
+        .mini-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        .glass-card { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(226, 232, 240, 0.8); }
+        .captcha-container img { filter: contrast(1.1) brightness(0.95); transition: all 0.3s; }
+        .captcha-container:hover img { filter: contrast(1.2) brightness(1); transform: scale(1.02); }
+    </style>
 </head>
-<body class="bg-gray-50 text-gray-800 font-sans">
-    <nav class="bg-white shadow-sm border-b p-4">
+<body class="bg-[#f8fafc] text-slate-900 font-sans antialiased">
+    
+    <nav class="sticky top-0 z-40 glass-card border-b p-4 mb-6">
         <div class="max-w-6xl mx-auto flex justify-between items-center">
-            <h1 class="text-xl font-bold text-blue-600">📊 策略公开看板</h1>
-            <div class="flex items-center gap-4">
-                <select id="symbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="border rounded-lg p-2 text-sm outline-none">
-                    {% for sym in symbols %}
-                    <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
-                    {% endfor %}
-                </select>
-                <a href="/" class="text-xs text-gray-500 hover:text-blue-600 transition-colors">返回控制台</a>
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200">
+                    <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                </div>
+                <div>
+                    <h1 class="text-lg font-black tracking-tight text-slate-800">资源消耗看板</h1>
+                    <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Resource Monitoring</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <button onclick="openPricingModal()" class="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-all shadow-sm">
+                    ⚙️ 计价配置
+                </button>
+                <a href="/" class="px-4 py-2 text-xs font-bold text-white bg-slate-900 rounded-xl hover:bg-slate-800 transition-all shadow-md">
+                    返回控制台
+                </a>
             </div>
         </div>
     </nav>
 
-    <main class="max-w-6xl mx-auto p-4 md:p-8 space-y-8">
-        <!-- 核心指标 -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-                <div class="text-xs text-gray-400 font-bold uppercase mb-1">保证金余额 (净值)</div>
-                <div id="stat-latest-equity" class="text-2xl font-black text-blue-600">--</div>
-            </div>
-            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-                <div class="text-xs text-gray-400 font-bold uppercase mb-1">钱包余额 (可用)</div>
-                <div id="stat-latest-balance" class="text-2xl font-black text-gray-900">--</div>
-            </div>
-            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-                <div class="text-xs text-gray-400 font-bold uppercase mb-1">累计实现盈亏</div>
-                <div id="stat-total-pnl" class="text-2xl font-black text-gray-900">--</div>
-            </div>
-            <div id="stat-win-rate-card" class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-                <div class="text-xs text-gray-400 font-bold uppercase mb-1">胜率</div>
-                <div id="stat-win-rate" class="text-2xl font-black text-gray-900">--</div>
-            </div>
-        </div>
-
-        <!-- 图表区 -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div class="lg:col-span-2 bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                <div class="flex justify-between items-center mb-6">
-                    <h3 class="font-bold text-gray-900 flex items-center gap-2">💹 净值曲线 <span class="text-[10px] text-gray-400 font-normal">Equity Curve</span></h3>
-                    <div class="flex bg-gray-100 p-1 rounded-lg text-[10px] font-bold">
-                        <button onclick="switchEquityMode('daily')" id="btn-equity-daily" class="px-3 py-1 rounded-md bg-white shadow-sm text-blue-600 transition-all">天图</button>
-                        <button onclick="switchEquityMode('hourly')" id="btn-equity-hourly" class="px-3 py-1 rounded-md text-gray-500 transition-all">分时</button>
-                    </div>
-                </div>
-                <div class="h-[300px] md:h-[400px]">
-                    <canvas id="equityChart"></canvas>
+    <main class="max-w-6xl mx-auto p-4 md:p-6 space-y-6">
+        
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="glass-card p-6 rounded-[2rem] shadow-sm">
+                <p class="text-[10px] font-bold text-slate-400 uppercase mb-2 tracking-widest">累计总消耗</p>
+                <div class="flex items-end gap-2">
+                    <h2 id="total-tokens" class="text-3xl font-black text-slate-900">0</h2>
+                    <span class="text-xs font-bold text-slate-400 mb-1">Tokens</span>
                 </div>
             </div>
-            <div class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                <h3 class="font-bold text-gray-900 mb-6 flex items-center gap-2">🤖 Token 消耗 <span class="text-[10px] text-gray-400 font-normal">Consumption</span></h3>
-                <div class="h-[250px]">
-                    <canvas id="tokenChart"></canvas>
+            <div class="glass-card p-6 rounded-[2rem] shadow-sm">
+                <p class="text-[10px] font-bold text-slate-400 uppercase mb-2 tracking-widest">估算总成本</p>
+                <div class="flex items-end gap-2 text-emerald-600">
+                    <span class="text-lg font-black mb-0.5">¥</span>
+                    <h2 id="total-cost" class="text-3xl font-black">0.00</h2>
                 </div>
-                <div id="token-model-list" class="mt-4 space-y-2 max-h-[150px] overflow-y-auto mini-scroll">
-                    <!-- 模型消耗列表 -->
+            </div>
+            <div class="glass-card p-6 rounded-[2rem] shadow-sm border-2 border-blue-600/10">
+                <p class="text-[10px] font-bold text-blue-500 uppercase mb-2 tracking-widest">平均响应效率</p>
+                <div class="flex items-end gap-2">
+                    <h2 id="avg-output" class="text-3xl font-black text-slate-900">0</h2>
+                    <span class="text-xs font-bold text-slate-400 mb-1">Out/In</span>
                 </div>
             </div>
         </div>
 
-        <!-- 计算器与工具 -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <!-- 交易估算器 -->
-            <div class="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
-                <h3 class="font-bold text-gray-900 mb-6 flex items-center gap-2">🧮 收益估算器</h3>
-                <div class="space-y-4">
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">进场价格</label>
-                            <input type="number" id="calc-entry" class="w-full border rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value="60000">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">离场价格</label>
-                            <input type="number" id="calc-exit" class="w-full border rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value="61000">
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">名义价值 (USDT)</label>
-                            <input type="number" id="calc-amount" class="w-full border rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value="1000">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">杠杆倍数</label>
-                            <input type="number" id="calc-leverage" class="w-full border rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value="20">
-                        </div>
-                    </div>
-                    <div class="pt-6 border-t border-gray-100 grid grid-cols-3 gap-4">
-                        <div class="text-center">
-                            <div class="text-[10px] text-gray-400 font-bold uppercase">预估盈亏</div>
-                            <div id="calc-res-pnl" class="text-lg font-black text-gray-900">--</div>
-                        </div>
-                        <div class="text-center border-x border-gray-100">
-                            <div class="text-[10px] text-gray-400 font-bold uppercase">价格波幅</div>
-                            <div id="calc-res-pct" class="text-lg font-black text-gray-900">--</div>
-                        </div>
-                        <div class="text-center">
-                            <div class="text-[10px] text-gray-400 font-bold uppercase">预估 ROE</div>
-                            <div id="calc-res-roe" class="text-lg font-black text-gray-900">--</div>
-                        </div>
-                    </div>
+        <div class="glass-card p-8 rounded-[2.5rem] shadow-sm">
+            <h3 class="text-xl font-black text-slate-800 mb-8">消耗与成本趋势 (RMB)</h3>
+            <div class="h-[400px] w-full">
+                <canvas id="tokenChart"></canvas>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="glass-card p-8 rounded-[2.5rem] shadow-sm">
+                <h3 class="text-lg font-black text-slate-800 mb-6">模型分布详情</h3>
+                <div id="token-model-list" class="space-y-4 max-h-[600px] overflow-y-auto mini-scroll pr-4">
                 </div>
             </div>
-
-            <!-- 关于策略 -->
-            <div class="bg-blue-600 p-8 rounded-3xl shadow-xl text-white relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
-                    <svg class="w-32 h-32" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            <div class="glass-card p-8 rounded-[2.5rem] shadow-sm">
+                <h3 class="text-lg font-black text-slate-800 mb-6">Agent 任务分配</h3>
+                <div id="token-agent-list" class="space-y-4 max-h-[600px] overflow-y-auto mini-scroll pr-4">
                 </div>
-                <h3 class="text-xl font-bold mb-4">系统说明</h3>
-                <p class="text-blue-100 text-sm leading-relaxed mb-6">
-                    本看板展示的是 Crypto Agent 的实时运行状况。策略主要通过多维度技术指标、市场热度以及 AI 深度分析进行自动化决策。
-                </p>
-                <ul class="space-y-3 text-sm">
-                    <li class="flex items-center gap-2">
-                        <span class="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-[10px]">1</span>
-                        每 15 分钟/1 小时 自动执行分析。
-                    </li>
-                    <li class="flex items-center gap-2">
-                        <span class="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-[10px]">2</span>
-                        实盘模式下根据实时账户风控执行。
-                    </li>
-                    <li class="flex items-center gap-2">
-                        <span class="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-[10px]">3</span>
-                        所有记录均来自数据库真实存证。
-                    </li>
-                </ul>
             </div>
         </div>
     </main>
 
+    <div id="pricing-modal" class="fixed inset-0 z-50 hidden">
+        <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onclick="closePricingModal()"></div>
+        <div class="absolute inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl flex flex-col">
+            <div class="p-8 border-b flex justify-between items-center">
+                <h2 class="text-xl font-black text-slate-800">计价策略配置 (¥)</h2>
+                <button onclick="closePricingModal()" class="text-slate-400 text-2xl">&times;</button>
+            </div>
+            <div id="pricing-list" class="flex-grow overflow-y-auto p-8 space-y-6 mini-scroll"></div>
+            <div class="p-8 bg-slate-50 border-t">
+                <button onclick="saveAllPricing()" class="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg shadow-blue-200">保存配置并应用</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="auth-modal" class="fixed inset-0 z-[60] hidden">
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onclick="closeAuthModal()"></div>
+        <div class="absolute inset-0 flex items-center justify-center p-4">
+            <div class="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-[360px] overflow-hidden border border-slate-200">
+                <div class="p-8">
+                    <div class="text-center mb-8">
+                        <div class="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-100 text-2xl">
+                            🔐
+                        </div>
+                        <h3 class="text-xl font-black text-slate-900 uppercase tracking-tight">Admin Auth</h3>
+                        <p class="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">Access Protected Settings</p>
+                    </div>
+
+                    <div class="space-y-5">
+                        <div class="space-y-1.5">
+                            <label class="text-[9px] font-bold text-slate-400 uppercase ml-1">Password</label>
+                            <input type="password" id="auth-pass" class="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-3.5 outline-none focus:bg-white focus:border-blue-500 transition-all font-bold text-sm" placeholder="••••••••">
+                        </div>
+                        
+                        <div class="space-y-1.5">
+                            <label class="text-[9px] font-bold text-slate-400 uppercase ml-1">Captcha</label>
+                            <div class="flex items-center gap-2">
+                                <input type="text" id="auth-captcha" class="flex-grow min-w-0 bg-slate-50 border-2 border-slate-100 rounded-2xl p-3.5 outline-none focus:bg-white focus:border-blue-500 transition-all font-black uppercase text-center text-sm" placeholder="验证码">
+                                <div class="w-28 h-[48px] flex-shrink-0 cursor-pointer captcha-container overflow-hidden rounded-xl border-2 border-slate-100 bg-slate-50" onclick="refreshAuthCaptcha()" title="点击刷新">
+                                    <img id="auth-captcha-img" class="w-full h-full object-cover" alt="验证码">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="submitAuth()" class="w-full bg-slate-900 text-white py-4 rounded-2xl font-black mt-8 shadow-xl hover:bg-slate-800 transition-all active:scale-[0.98] text-sm uppercase tracking-widest">
+                        Verify & Enter
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
-        const symbol = "{{ current_symbol }}";
-        let equityChart = null;
         let tokenChart = null;
-        let rawFinancialData = null;
-        let currentEquityMode = 'daily';
-
-        async function initStats() {
-            await initFinancialStats();
-            initTokenStats();
-        }
-
-        async function initFinancialStats() {
-            try {
-                const res = await fetch(`/api/stats/financial?symbol=${encodeURIComponent(symbol)}`);
-                const data = await res.json();
-                if (!data.success) return;
-
-                rawFinancialData = data;
-
-                // 更新概览卡片
-                document.getElementById('stat-latest-equity').textContent = data.summary.latest_equity + ' USDT';
-                document.getElementById('stat-latest-balance').textContent = data.summary.latest_balance + ' USDT';
-
-                document.getElementById('stat-total-pnl').textContent = (data.summary.total_pnl > 0 ? '+' : '') + data.summary.total_pnl;
-                document.getElementById('stat-total-pnl').className = `text-2xl font-black ${data.summary.total_pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
-                
-                document.getElementById('stat-win-rate').textContent = data.summary.win_rate + '%';
-
-                // 初始渲染
-                renderEquityChart();
-            } catch (e) {
-                console.error('Failed to load financial stats', e);
-            }
-        }
+        let isAuthed = false;
+        let currentModels = [];
 
         async function initTokenStats() {
             try {
@@ -180,155 +151,179 @@
                 const data = await res.json();
                 if (!data.success) return;
 
+                const pricing = data.pricing || {};
+                currentModels = data.models.map(m => m.model);
+
                 renderTokenChart(data.daily);
 
-                const list = document.getElementById('token-model-list');
-                list.innerHTML = data.models.map(m => `
-                    <div class="flex justify-between items-center p-2 hover:bg-gray-50 rounded-lg border border-gray-50 transition-colors">
-                        <span class="text-xs font-mono text-gray-500">${m.model}</span>
-                        <span class="text-xs font-bold text-gray-900">${m.total.toLocaleString()} tokens</span>
+                const totalTokens = data.models.reduce((sum, m) => sum + m.total, 0);
+                const totalCost = data.models.reduce((sum, m) => sum + (m.cost || 0), 0);
+                const totalPrompt = data.models.reduce((sum, m) => sum + m.prompt, 0);
+                const totalCompletion = data.models.reduce((sum, m) => sum + m.completion, 0);
+
+                document.getElementById('total-tokens').textContent = totalTokens.toLocaleString();
+                document.getElementById('total-cost').textContent = totalCost.toFixed(2);
+                document.getElementById('avg-output').textContent = totalPrompt > 0 ? (totalCompletion / totalPrompt).toFixed(2) : '0';
+
+                const modelList = document.getElementById('token-model-list');
+                modelList.innerHTML = data.models.map(m => {
+                    const promptPct = ((m.prompt / m.total) * 100).toFixed(1);
+                    const completionPct = ((m.completion / m.total) * 100).toFixed(1);
+                    return `
+                    <div class="p-6 bg-white border border-slate-100 rounded-[2rem] hover:border-blue-200 transition-all shadow-sm group">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex flex-col">
+                                <span class="text-sm font-black text-slate-800 group-hover:text-blue-600 transition-colors">${m.model}</span>
+                                <span class="text-[9px] text-slate-400 font-bold uppercase mt-1 tracking-widest">Model Distribution</span>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-sm font-black text-emerald-600">¥${(m.cost || 0).toFixed(4)}</div>
+                                <div class="text-[9px] text-slate-400 font-bold uppercase mt-1">Est. Cost (RMB)</div>
+                            </div>
+                        </div>
+                        <div class="space-y-3">
+                            <div class="flex-grow h-3 bg-slate-100 rounded-full flex overflow-hidden shadow-inner">
+                                <div class="h-full bg-blue-300 transition-all duration-500" style="width: ${promptPct}%" title="Input: ${promptPct}%"></div>
+                                <div class="h-full bg-blue-600 transition-all duration-500" style="width: ${completionPct}%" title="Output: ${completionPct}%"></div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="bg-slate-50/50 p-3 rounded-2xl border border-slate-50">
+                                    <div class="flex justify-between items-center mb-1">
+                                        <span class="text-[9px] font-bold text-slate-400 uppercase">Prompt</span>
+                                        <span class="text-[9px] font-black text-blue-400">${promptPct}%</span>
+                                    </div>
+                                    <div class="text-xs font-mono font-bold text-slate-700">${m.prompt.toLocaleString()}</div>
+                                </div>
+                                <div class="bg-slate-50/50 p-3 rounded-2xl border border-slate-50">
+                                    <div class="flex justify-between items-center mb-1">
+                                        <span class="text-[9px] font-bold text-slate-400 uppercase">Completion</span>
+                                        <span class="text-[9px] font-black text-blue-600">${completionPct}%</span>
+                                    </div>
+                                    <div class="text-xs font-mono font-bold text-slate-700">${m.completion.toLocaleString()}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-4 pt-4 border-t border-slate-50 flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase">
+                            <span>Total</span>
+                            <span class="text-xs font-mono font-black text-slate-900 bg-slate-100 px-3 py-1 rounded-lg">${m.total.toLocaleString()}</span>
+                        </div>
+                    </div>
+                `}).join('');
+
+                const agentList = document.getElementById('token-agent-list');
+                agentList.innerHTML = data.agents.map(a => `
+                    <div class="flex items-center justify-between p-5 bg-white border border-slate-100 rounded-2xl hover:bg-slate-50 transition-all">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center text-sm shadow-sm border border-blue-100">🤖</div>
+                            <div class="flex flex-col">
+                                <span class="text-xs font-black text-slate-700">${a.config_id}</span>
+                                <span class="text-[9px] text-slate-400 font-bold">${a.symbol}</span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-xs font-mono font-black text-slate-900">${a.total.toLocaleString()}</div>
+                            <div class="text-[9px] text-slate-400 font-bold uppercase">Tokens</div>
+                        </div>
                     </div>
                 `).join('');
-            } catch (e) {
-                console.error('Failed to load token stats', e);
-            }
-        }
 
-        function switchEquityMode(mode) {
-            currentEquityMode = mode;
-            document.getElementById('btn-equity-daily').className = mode === 'daily' ? 'px-3 py-1 rounded-md bg-white shadow-sm text-blue-600 transition-all' : 'px-3 py-1 rounded-md text-gray-500 transition-all';
-            document.getElementById('btn-equity-hourly').className = mode === 'hourly' ? 'px-3 py-1 rounded-md bg-white shadow-sm text-blue-600 transition-all' : 'px-3 py-1 rounded-md text-gray-500 transition-all';
-            renderEquityChart();
-        }
-
-        function renderEquityChart() {
-            if (!rawFinancialData) return;
-            const ctx = document.getElementById('equityChart').getContext('2d');
-            
-            let labels, values;
-            if (currentEquityMode === 'daily') {
-                labels = rawFinancialData.daily_equity.map(h => h.day);
-                values = rawFinancialData.daily_equity.map(h => h.total_equity);
-            } else {
-                labels = rawFinancialData.balance_history.map(h => h.timestamp.split(' ')[1].substring(0, 5));
-                values = rawFinancialData.balance_history.map(h => h.total_equity);
-            }
-
-            if (equityChart) equityChart.destroy();
-
-            const gradient = ctx.createLinearGradient(0, 0, 0, 400);
-            gradient.addColorStop(0, 'rgba(37, 99, 235, 0.2)');
-            gradient.addColorStop(1, 'rgba(37, 99, 235, 0)');
-
-            equityChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '账户总权益 (USDT)',
-                        data: values,
-                        borderColor: '#2563eb',
-                        borderWidth: 3,
-                        pointRadius: currentEquityMode === 'daily' ? 4 : 0,
-                        pointHoverRadius: 6,
-                        fill: true,
-                        backgroundColor: gradient,
-                        tension: 0.4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            mode: 'index',
-                            intersect: false,
-                            backgroundColor: '#1e293b',
-                            titleColor: '#94a3b8',
-                            padding: 12,
-                            cornerRadius: 8
-                        }
-                    },
-                    scales: {
-                        x: { 
-                            display: true, 
-                            grid: { display: false },
-                            ticks: {
-                                maxRotation: 0,
-                                autoSkip: true,
-                                maxTicksLimit: 10,
-                                font: { size: 10 }
-                            }
-                        },
-                        y: { 
-                            display: true, 
-                            grid: { color: 'rgba(0,0,0,0.05)', drawBorder: false },
-                            ticks: { font: { size: 10 } }
-                        }
-                    }
-                }
-            });
+                const pricingList = document.getElementById('pricing-list');
+                pricingList.innerHTML = currentModels.map(m => {
+                    const p = pricing[m] || {input_price_per_m: 0, output_price_per_m: 0};
+                    return `
+                        <div class="p-6 bg-slate-50 rounded-3xl space-y-4 border border-slate-100/50">
+                            <h4 class="text-xs font-black text-slate-800 uppercase tracking-tight ml-1">${m}</h4>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="space-y-1.5">
+                                    <label class="text-[9px] font-bold text-slate-400 uppercase ml-1 block">Input / 1M (¥)</label>
+                                    <input type="number" step="0.001" value="${p.input_price_per_m}" id="price-in-${m}" class="w-full bg-white border-2 border-transparent rounded-2xl py-3 px-4 text-xs font-bold focus:border-blue-500 outline-none transition-all">
+                                </div>
+                                <div class="space-y-1.5">
+                                    <label class="text-[9px] font-bold text-slate-400 uppercase ml-1 block">Output / 1M (¥)</label>
+                                    <input type="number" step="0.001" value="${p.output_price_per_m}" id="price-out-${m}" class="w-full bg-white border-2 border-transparent rounded-2xl py-3 px-4 text-xs font-bold focus:border-blue-500 outline-none transition-all">
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) { console.error(e); }
         }
 
         function renderTokenChart(daily) {
             const ctx = document.getElementById('tokenChart').getContext('2d');
             const sorted = [...daily].reverse();
             const labels = sorted.map(d => d.day.substring(5));
-            const values = sorted.map(d => d.total);
-
+            const prompts = sorted.map(d => d.prompt);
+            const completions = sorted.map(d => d.completion);
+            const costs = sorted.map(d => d.cost);
             if (tokenChart) tokenChart.destroy();
-
             tokenChart = new Chart(ctx, {
                 type: 'bar',
                 data: {
                     labels: labels,
-                    datasets: [{
-                        label: '每日消耗',
-                        data: values,
-                        backgroundColor: '#94a3b8',
-                        borderRadius: 4
-                    }]
+                    datasets: [
+                        { label: 'Prompt', data: prompts, backgroundColor: '#93c5fd', borderRadius: 6, stack: 'tokens' },
+                        { label: 'Completion', data: completions, backgroundColor: '#2563eb', borderRadius: 6, stack: 'tokens' },
+                        { label: 'Cost (¥)', data: costs, type: 'line', borderColor: '#10b981', borderWidth: 3, pointRadius: 4, pointBackgroundColor: '#10b981', tension: 0.4, yAxisID: 'y1' }
+                    ]
                 },
                 options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
-                        legend: { display: false },
-                        tooltip: { backgroundColor: '#1e293b' }
+                        legend: { position: 'top', align: 'end', labels: { boxWidth: 10, usePointStyle: true, font: { size: 10, weight: '700' } } }
                     },
                     scales: {
-                        x: { grid: { display: false }, ticks: { font: { size: 9 } } },
-                        y: { display: false }
+                        x: { grid: { display: false }, ticks: { font: { size: 10, weight: '700' }, color: '#94a3b8' } },
+                        y: { position: 'left', grid: { color: '#f1f5f9' }, ticks: { font: { size: 10, weight: '700' }, color: '#94a3b8', callback: v => v >= 1000 ? v/1000 + 'K' : v } },
+                        y1: { position: 'right', grid: { display: false }, ticks: { font: { size: 10, weight: '700' }, color: '#10b981', callback: v => '¥' + v.toFixed(2) } }
                     }
                 }
             });
         }
 
-        function updateCalc() {
-            const entry = parseFloat(document.getElementById('calc-entry').value) || 0;
-            const exit = parseFloat(document.getElementById('calc-exit').value) || 0;
-            const amount = parseFloat(document.getElementById('calc-amount').value) || 0;
-            const leverage = parseFloat(document.getElementById('calc-leverage').value) || 1;
+        function openPricingModal() { if (!isAuthed) return openAuthModal(); document.getElementById('pricing-modal').classList.remove('hidden'); }
+        function closePricingModal() { document.getElementById('pricing-modal').classList.add('hidden'); }
+        function openAuthModal() { refreshAuthCaptcha(); document.getElementById('auth-modal').classList.remove('hidden'); }
+        function closeAuthModal() { document.getElementById('auth-modal').classList.add('hidden'); }
 
-            const pct = ((exit - entry) / entry) * 100;
-            const pnl = amount * (pct / 100) * leverage;
-            const roe = pct * leverage;
-
-            document.getElementById('calc-res-pnl').textContent = (pnl > 0 ? '+' : '') + pnl.toFixed(2);
-            document.getElementById('calc-res-pnl').className = `text-lg font-black ${pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
-            
-            document.getElementById('calc-res-pct').textContent = (pct > 0 ? '+' : '') + pct.toFixed(2) + '%';
-            document.getElementById('calc-res-roe').textContent = (roe > 0 ? '+' : '') + roe.toFixed(2) + '%';
-            document.getElementById('calc-res-roe').className = `text-lg font-black ${roe >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
+        async function refreshAuthCaptcha() {
+            try {
+                const res = await fetch('/api/chat/captcha');
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('auth-captcha-img').src = data.image;
+                    document.getElementById('auth-captcha').value = '';
+                }
+            } catch (e) { console.error('Captcha refresh error', e); }
         }
 
-        ['calc-entry', 'calc-exit', 'calc-amount', 'calc-leverage'].forEach(id => {
-            document.getElementById(id).addEventListener('input', updateCalc);
-        });
+        async function submitAuth() {
+            const pwd = document.getElementById('auth-pass').value;
+            const captcha = document.getElementById('auth-captcha').value;
+            if (!pwd || !captcha) return alert('请输入密码和验证码');
+            try {
+                const res = await fetch('/api/chat/auth', { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({password: pwd, captcha: captcha}) 
+                });
+                const data = await res.json();
+                if (res.ok && data.success) { isAuthed = true; closeAuthModal(); openPricingModal(); }
+                else { alert(data.message || '验证失败'); refreshAuthCaptcha(); }
+            } catch (e) { alert('请求错误'); }
+        }
 
-        initStats();
-        updateCalc();
+        async function saveAllPricing() {
+            for (const m of currentModels) {
+                const inP = document.getElementById(`price-in-${m}`).value;
+                const outP = document.getElementById(`price-out-${m}`).value;
+                await fetch('/api/stats/pricing', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model: m, input_price: inP, output_price: outP}) });
+            }
+            closePricingModal(); initTokenStats();
+        }
+
+        initTokenStats();
     </script>
 </body>
 </html>

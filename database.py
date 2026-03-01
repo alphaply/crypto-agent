@@ -134,6 +134,37 @@ def init_db():
                         total_tokens INTEGER
                     )''')
 
+        # 8. 模型计价表 (单位: 美元/百万Token)
+        c.execute('''CREATE TABLE IF NOT EXISTS model_pricing (
+                        model TEXT PRIMARY KEY,
+                        input_price_per_m REAL DEFAULT 0,
+                        output_price_per_m REAL DEFAULT 0,
+                        currency TEXT DEFAULT 'USD'
+                    )''')
+
+        conn.commit()
+
+# --- 模型计价管理 ---
+
+def get_all_pricing():
+    """获取所有模型的计价信息"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        rows = c.execute("SELECT * FROM model_pricing").fetchall()
+        return {r['model']: dict(r) for r in rows}
+
+def update_model_pricing(model, input_price, output_price, currency='USD'):
+    """更新或插入模型计价"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO model_pricing (model, input_price_per_m, output_price_per_m, currency)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(model) DO UPDATE SET 
+                input_price_per_m=excluded.input_price_per_m,
+                output_price_per_m=excluded.output_price_per_m,
+                currency=excluded.currency
+        ''', (model, input_price, output_price, currency))
         conn.commit()
 
 # --- 模拟交易 / 挂单池功能 ---

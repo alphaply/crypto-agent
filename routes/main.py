@@ -18,34 +18,50 @@ def get_dashboard_data(symbol, page=1, per_page=10):
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         conn.row_factory = sqlite3.Row 
         
-        # 1. 获取该币种下活跃的所有 Agent 的最新一条分析
+        # 1. 获取该币种下配置的所有 Agent
         configs = global_config.get_all_symbol_configs()
-        symbol_config_ids = [conf['config_id'] for conf in configs if conf['symbol'] == symbol]
+        symbol_configs = [conf for conf in configs if conf['symbol'] == symbol]
         
         agent_summaries = []
-        for config_id in symbol_config_ids:
+        for config in symbol_configs:
+            config_id = config['config_id']
             latest_summary = conn.execute(
                 "SELECT * FROM summaries WHERE config_id = ? ORDER BY id DESC LIMIT 1",
                 (config_id,)
             ).fetchone()
             
-            config = global_config.get_config_by_id(config_id)
             model_name = config.get('model', 'Unknown')
+            mode = config.get('mode', 'STRATEGY')
+            enabled = config.get('enabled', True)
 
             if latest_summary:
                 summary_dict = dict(latest_summary)
-                summary_dict['model'] = model_name
-                summary_dict['mode'] = config.get('mode', 'STRATEGY')
-                summary_dict['leverage'] = global_config.get_leverage(config_id)
-                summary_dict['display_name'] = f"{model_name} ({config.get('mode', 'STRATEGY')})"
-                
-                # 默认获取第一页订单
-                orders, total = get_paginated_orders(config_id, page=1, per_page=10)
-                summary_dict['all_orders'] = orders
-                summary_dict['order_total'] = total
-                summary_dict['order_page'] = 1
-                
-                agent_summaries.append(summary_dict)
+            else:
+                # 如果没有历史摘要，创建一个占位符
+                summary_dict = {
+                    'config_id': config_id,
+                    'agent_name': model_name,
+                    'symbol': symbol,
+                    'content': "💤 该 Agent 尚未产生任何分析数据。请确保调度器已开启并等待其运行。",
+                    'strategy_logic': "暂无逻辑",
+                    'timestamp': "N/A",
+                    'id': -1
+                }
+            
+            summary_dict['model'] = model_name
+            summary_dict['mode'] = mode
+            summary_dict['enabled'] = enabled
+            summary_dict['freq'] = "15m (高频)" if mode == 'REAL' else "1h (低频)"
+            summary_dict['leverage'] = global_config.get_leverage(config_id)
+            summary_dict['display_name'] = f"{model_name} ({mode})"
+            
+            # 默认获取第一页订单
+            orders, total = get_paginated_orders(config_id, page=1, per_page=10)
+            summary_dict['all_orders'] = orders
+            summary_dict['order_total'] = total
+            summary_dict['order_page'] = 1
+            
+            agent_summaries.append(summary_dict)
 
         conn.close()
         return agent_summaries, [], len(agent_summaries)

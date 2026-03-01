@@ -1,6 +1,7 @@
 import sqlite3
 from flask import Blueprint, jsonify, request
 from routes.utils import DB_NAME, _require_chat_auth_api
+from database import get_all_pricing, update_model_pricing
 
 stats_bp = Blueprint('stats', __name__)
 
@@ -12,6 +13,8 @@ def get_token_stats():
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
+        pricing = get_all_pricing()
+
         daily_stats = c.execute("""
             SELECT strftime('%Y-%m-%d', timestamp) as day, 
                    SUM(prompt_tokens) as prompt, 
@@ -22,25 +25,81 @@ def get_token_stats():
             ORDER BY day DESC LIMIT 14
         """).fetchall()
 
+        # 计算每日成本
+        # 这里的 daily 计算成本比较复杂，因为一天内可能有多个模型。
+        # 为了简单起见，我们直接获取每条记录并计算
+        daily_costs = {}
+        all_usages = c.execute("SELECT timestamp, model, prompt_tokens, completion_tokens FROM token_usage").fetchall()
+        for u in all_usages:
+            day = u['timestamp'][:10]
+            m_price = pricing.get(u['model'], {'input_price_per_m': 0, 'output_price_per_m': 0})
+            cost = (u['prompt_tokens'] / 1000000 * m_price['input_price_per_m']) + \
+                   (u['completion_tokens'] / 1000000 * m_price['output_price_per_m'])
+            daily_costs[day] = daily_costs.get(day, 0) + cost
+
         model_stats = c.execute("""
-            SELECT model, SUM(total_tokens) as total 
+            SELECT model, 
+                   SUM(prompt_tokens) as prompt, 
+                   SUM(completion_tokens) as completion,
+                   SUM(total_tokens) as total 
             FROM token_usage 
             GROUP BY model
         """).fetchall()
 
+        # 为模型统计添加成本信息
+        model_stats_list = []
+        for m in model_stats:
+            d = dict(m)
+            m_price = pricing.get(d['model'], {'input_price_per_m': 0, 'output_price_per_m': 0})
+            d['cost'] = (d['prompt'] / 1000000 * m_price['input_price_per_m']) + \
+                        (d['completion'] / 1000000 * m_price['output_price_per_m'])
+            model_stats_list.append(d)
+
         agent_stats = c.execute("""
-            SELECT config_id, symbol, SUM(total_tokens) as total 
+            SELECT config_id, symbol, 
+                   SUM(prompt_tokens) as prompt, 
+                   SUM(completion_tokens) as completion,
+                   SUM(total_tokens) as total 
             FROM token_usage 
             GROUP BY config_id
         """).fetchall()
 
         conn.close()
+        
+        # 格式化 daily 数据，带上成本
+        daily_formatted = []
+        for r in daily_stats:
+            d = dict(r)
+            d['cost'] = round(daily_costs.get(d['day'], 0), 4)
+            daily_formatted.append(d)
+
         return jsonify({
             "success": True,
-            "daily": [dict(r) for r in daily_stats],
-            "models": [dict(r) for r in model_stats],
-            "agents": [dict(r) for r in agent_stats]
+            "daily": daily_formatted,
+            "models": model_stats_list,
+            "agents": [dict(r) for r in agent_stats],
+            "pricing": pricing
         })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+@stats_bp.route('/api/stats/pricing', methods=['POST'])
+def save_pricing():
+    """保存模型计价配置 (需要认证)"""
+    auth_err = _require_chat_auth_api()
+    if auth_err: return auth_err
+    
+    data = request.json
+    model = data.get('model')
+    input_p = float(data.get('input_price', 0))
+    output_p = float(data.get('output_price', 0))
+    
+    if not model:
+        return jsonify({"success": False, "message": "Missing model name"})
+    
+    try:
+        update_model_pricing(model, input_p, output_p)
+        return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
 

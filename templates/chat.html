@@ -72,74 +72,78 @@
       </div>
     </div>
 
-    <div id="chatView" class="h-[100dvh] flex flex-col p-0 sm:p-3" {% if not authed %}style="display:none"{% endif %}>
+    <div id="chatView" class="h-[100dvh] flex flex-col p-0 md:p-3" {% if not authed %}style="display:none"{% endif %}>
       <div id="mobileOverlay" onclick="closeMobileSidebar()" class="hidden fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-30 lg:hidden transition-all"></div>
       
-      <div class="relative flex-1 min-h-0 lg:grid lg:grid-cols-[320px_1fr] gap-4">
-        <aside id="sessionSidebar" class="fixed z-40 inset-y-0 left-0 w-[85vw] max-w-[320px] -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-out lg:static lg:w-auto rounded-none lg:rounded-3xl border-r lg:border border-slate-200 bg-white/80 backdrop-blur-xl shadow-2xl lg:shadow-sm overflow-hidden flex flex-col">
-          <div class="p-5 border-b border-slate-100">
+      <div class="relative flex-1 min-h-0 lg:grid lg:grid-cols-[280px_1fr] xl:grid-cols-[320px_1fr] gap-4">
+        <aside id="sessionSidebar" class="fixed z-40 inset-y-0 left-0 w-[80vw] max-w-[300px] -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-out lg:static lg:w-auto rounded-none lg:rounded-3xl border-r lg:border border-slate-200 bg-white/90 backdrop-blur-xl shadow-2xl lg:shadow-sm overflow-hidden flex flex-col">
+          <div class="p-4 md:p-5 border-b border-slate-100">
             <div class="flex items-center justify-between mb-4">
-              <h2 class="text-lg font-bold text-slate-900 tracking-tight">会话记录</h2>
+              <h2 class="text-base md:text-lg font-bold text-slate-900 tracking-tight">会话记录</h2>
               <button onclick="openNewSession(event)" class="group rounded-xl bg-slate-900 text-white p-2 hover:bg-blue-600 transition-all active:scale-90 shadow-lg shadow-slate-900/10">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 md:h-5 md:w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
               </button>
             </div>
-            <div class="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
-              <button id="multiBtn" onclick="toggleMultiSelect()" class="text-[11px] font-bold uppercase tracking-wider rounded-lg border border-slate-200 px-3 py-1.5 hover:bg-slate-50 transition-colors whitespace-nowrap text-slate-500">批量管理</button>
-              <button id="selectAllBtn" onclick="toggleSelectAllSessions()" class="hidden text-[11px] font-bold uppercase tracking-wider rounded-lg border border-slate-200 px-3 py-1.5 hover:bg-slate-50 transition-colors whitespace-nowrap">全选</button>
-              <button id="deleteSelectedBtn" onclick="deleteSelectedSessions()" class="hidden text-[11px] font-bold uppercase tracking-wider rounded-lg bg-rose-50 text-rose-600 px-3 py-1.5 hover:bg-rose-100 transition-colors whitespace-nowrap">删除选中</button>
+            <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1">
+              <button id="multiBtn" onclick="toggleMultiSelect()" class="text-[9px] md:text-[11px] font-bold uppercase tracking-wider rounded-lg border border-slate-200 px-2 md:px-3 py-1.5 hover:bg-slate-50 transition-colors whitespace-nowrap text-slate-500">批量管理</button>
+              <button id="selectAllBtn" onclick="toggleSelectAllSessions()" class="hidden text-[9px] md:text-[11px] font-bold uppercase tracking-wider rounded-lg border border-slate-200 px-2 md:px-3 py-1.5 hover:bg-slate-50 transition-colors whitespace-nowrap">全选</button>
+              <button id="deleteSelectedBtn" onclick="deleteSelectedSessions()" class="hidden text-[9px] md:text-[11px] font-bold uppercase tracking-wider rounded-lg bg-rose-50 text-rose-600 px-2 md:px-3 py-1.5 hover:bg-rose-100 transition-colors whitespace-nowrap">删除选中</button>
             </div>
           </div>
           <div id="sessionList" class="flex-1 min-h-0 overflow-y-auto mini-scroll py-2 px-2"></div>
         </aside>
 
         <section class="flex flex-col h-full bg-white lg:rounded-3xl lg:border border-slate-200 shadow-sm overflow-hidden relative">
-          <header class="px-4 py-4 border-b border-slate-100 bg-white/50 backdrop-blur-md flex items-center justify-between gap-3 shrink-0">
-            <div class="flex items-center gap-3 min-w-0">
+          <header class="px-3 py-3 md:px-4 md:py-4 border-b border-slate-100 bg-white/50 backdrop-blur-md flex items-center justify-between gap-3 shrink-0">
+            <div class="flex items-center gap-2 md:gap-3 min-w-0">
                 <button onclick="toggleMobileSidebar()" class="lg:hidden p-2 rounded-xl hover:bg-slate-100 transition-colors">
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
                 </button>
                 <div class="min-w-0">
-                  <div id="chatHeader" class="text-sm font-bold text-slate-900 truncate tracking-tight uppercase">当前对话</div>
-                  <div id="chatSubHeader" class="text-[10px] text-slate-400 font-mono mt-0.5 truncate uppercase tracking-widest">Crypto Agent V0.3</div>
+                  <div id="chatHeader" class="text-xs md:text-sm font-bold text-slate-900 truncate tracking-tight uppercase">当前对话</div>
+                  <div id="chatSubHeader" class="text-[9px] md:text-[10px] text-slate-400 font-mono mt-0.5 truncate uppercase tracking-widest">Crypto Agent V0.3</div>
                 </div>
             </div>
-            <a href="/" class="hidden lg:flex items-center gap-2 px-4 py-2 rounded-full bg-slate-100 hover:bg-blue-600 text-slate-600 hover:text-white font-bold text-xs transition-all shadow-sm active:scale-95">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
-                返回控制台
+            <a href="/" class="flex items-center gap-1.5 md:gap-2 px-3 md:px-4 py-1.5 md:py-2 rounded-full bg-slate-100 hover:bg-blue-600 text-slate-600 hover:text-white font-bold text-[10px] md:text-xs transition-all shadow-sm active:scale-95">
+                <svg class="w-3.5 h-3.5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+                <span class="hidden sm:inline">返回控制台</span>
+                <span class="sm:hidden text-lg">🏠</span>
             </a>
           </header>
 
-          <div id="messages" class="flex-1 overflow-y-auto scroll-thin p-4 space-y-6 bg-slate-50/30"></div>
+          <div id="messages" class="flex-1 overflow-y-auto scroll-thin p-3 md:p-4 space-y-4 md:space-y-6 bg-slate-50/30"></div>
           
-          <button id="jumpToBottomBtn" onclick="scrollToBottomAndFollow()" class="hidden absolute right-6 bottom-32 z-20 rounded-full bg-slate-900 text-white p-3 shadow-2xl hover:scale-110 active:scale-95 transition-all">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7-7-7m14-8l-7 7-7-7"></path></svg>
+          <button id="jumpToBottomBtn" onclick="scrollToBottomAndFollow()" class="hidden absolute right-4 md:right-6 bottom-28 md:bottom-32 z-20 rounded-full bg-slate-900 text-white p-2.5 md:p-3 shadow-2xl hover:scale-110 active:scale-95 transition-all">
+            <svg class="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7-7-7m14-8l-7 7-7-7"></path></svg>
           </button>
 
-          <div id="approvalBar" class="hidden mx-4 mb-2 rounded-2xl border border-amber-200 bg-amber-50/80 backdrop-blur-md p-4 shadow-lg animate-in slide-in-from-bottom-4">
-            <div class="flex items-start gap-3">
-              <div class="bg-amber-100 p-2 rounded-xl text-amber-600 shadow-sm">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+          <div id="approvalBar" class="hidden mx-3 md:mx-4 mb-2 rounded-2xl border border-amber-200 bg-amber-50/80 backdrop-blur-md p-3 md:p-4 shadow-lg animate-in slide-in-from-bottom-4">
+            <div class="flex items-start gap-2 md:gap-3">
+              <div class="bg-amber-100 p-1.5 md:p-2 rounded-xl text-amber-600 shadow-sm">
+                <svg class="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
               </div>
-              <div class="flex-1">
-                <div class="text-[11px] font-bold text-amber-800 uppercase tracking-widest mb-1">等待操作确认</div>
-                <div id="approvalText" class="text-xs text-amber-900 font-medium leading-relaxed"></div>
-                <div class="mt-3 flex gap-2">
-                  <button id="approvalYesBtn" onclick="respondApproval(true)" class="flex-1 bg-emerald-600 text-white py-2 rounded-xl text-xs font-bold hover:bg-emerald-700 active:scale-95 transition-all shadow-sm">确认执行</button>
-                  <button id="approvalNoBtn" onclick="respondApproval(false)" class="flex-1 bg-white border border-amber-200 text-amber-700 py-2 rounded-xl text-xs font-bold hover:bg-amber-50 active:scale-95 transition-all">拒绝</button>
+              <div class="flex-1 min-w-0">
+                <div class="text-[9px] md:text-[11px] font-bold text-amber-800 uppercase tracking-widest mb-1">等待操作确认</div>
+                <div id="approvalText" class="text-[11px] md:text-xs text-amber-900 font-medium leading-relaxed truncate md:whitespace-normal"></div>
+                <div class="mt-2 md:mt-3 flex gap-2">
+                  <button id="approvalYesBtn" onclick="respondApproval(true)" class="flex-1 bg-emerald-600 text-white py-1.5 md:py-2 rounded-xl text-[10px] md:text-xs font-bold hover:bg-emerald-700 active:scale-95 transition-all shadow-sm">确认</button>
+                  <button id="approvalNoBtn" onclick="respondApproval(false)" class="flex-1 bg-white border border-amber-200 text-amber-700 py-1.5 md:py-2 rounded-xl text-[10px] md:text-xs font-bold hover:bg-amber-50 active:scale-95 transition-all">拒绝</button>
                 </div>
               </div>
             </div>
           </div>
 
-          <div id="composerBar" class="p-4 bg-white shrink-0">
-            <div class="relative flex items-end gap-2 bg-slate-100 p-2 rounded-[24px] focus-within:bg-white focus-within:ring-4 focus-within:ring-blue-500/10 transition-all border border-transparent focus-within:border-slate-200">
-              <textarea id="input" rows="1" class="flex-1 bg-transparent px-3 py-2 outline-none text-sm text-slate-700 placeholder:text-slate-400 resize-none min-h-[40px] max-h-[200px]" placeholder="向 Agent 提问或发出指令... (Enter 发送, Shift+Enter 换行)"></textarea>
-              <button onclick="sendMessage()" class="group bg-blue-600 text-white p-2.5 rounded-2xl hover:bg-blue-700 active:scale-90 transition-all shadow-lg shadow-blue-500/20">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 transform group-hover:rotate-12 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10l18-7-7 18-2-8-9-3z" /></svg>
+          <div id="composerBar" class="p-3 md:p-4 bg-white shrink-0">
+            <div class="relative flex items-end gap-1.5 md:gap-2 bg-slate-100 p-1.5 md:p-2 rounded-[20px] md:rounded-[24px] focus-within:bg-white focus-within:ring-4 focus-within:ring-blue-500/10 transition-all border border-transparent focus-within:border-slate-200">
+              <textarea id="input" rows="1" class="flex-1 bg-transparent px-2 md:px-3 py-1.5 md:py-2 outline-none text-xs md:text-sm text-slate-700 placeholder:text-slate-400 resize-none min-h-[36px] max-h-[160px] md:max-h-[200px]" placeholder="提问或指令... (Enter发送)"></textarea>
+              <button onclick="sendMessage()" class="group bg-blue-600 text-white p-2 md:p-2.5 rounded-xl md:rounded-2xl hover:bg-blue-700 active:scale-90 transition-all shadow-lg shadow-blue-500/20">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 md:h-5 md:w-5 transform group-hover:rotate-12 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10l18-7-7 18-2-8-9-3z" /></svg>
               </button>
             </div>
           </div>
+        </section>
+      </div>
+    </div>
         </section>
       </div>
     </div>
