@@ -252,11 +252,11 @@ def agent_node(state: AgentState) -> AgentState:
 
         # 根据模式选择工具集
         if trade_mode == 'REAL':
-            tools = [open_position_real, close_position_real, cancel_orders_real, analyze_event_contract, format_event_contract_order]
+            tools = [open_position_real, close_position_real, cancel_orders_real]
         elif trade_mode == 'SPOT_DCA':
-            tools = [open_position_spot_dca, cancel_orders_real, analyze_event_contract, format_event_contract_order]
+            tools = [open_position_spot_dca, cancel_orders_real]
         else:
-            tools = [open_position_strategy, cancel_orders_strategy, analyze_event_contract, format_event_contract_order]
+            tools = [open_position_strategy, cancel_orders_strategy]
 
         llm = ChatOpenAI(
             model=config.get('model'),
