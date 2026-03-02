@@ -192,7 +192,7 @@ def cancel_orders_strategy(order_ids: List[str], config_id: str, symbol: str):
 def analyze_event_contract(*args, **kwargs) -> str:
     """
     [事件合约分析工具] 一次性扫描并返回当前交易对在 30min, 1h, 1d 三个关键时间窗口的客观指标看板。
-    
+    只有用户要求进行“事件合约”的交易时候才可以调用！
     使用说明：
     1. 此工具【不需要任何参数】。直接调用 `analyze_event_contract()` 即可。
     2. 它会自动处理当前正在讨论的交易对（Symbol）。
@@ -248,6 +248,7 @@ def format_event_contract_order(direction: Literal["Long", "Short"], duration: s
     """
     [事件合约格式化工具] 专门用于生成事件合约的开单指令格式。事件合约没有止损，到时间自动平仓。
     当用户确认想要进行事件合约交易，或要求输出事件合约开单格式时，使用此工具生成标准化的卡片输出。
+    只有用户要求进行“事件合约”的交易时候才可以调用！
     """
     direction_emoji = "🟢 多" if direction == "Long" else "🔴 空"
     

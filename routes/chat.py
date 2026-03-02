@@ -20,6 +20,11 @@ from database import (
 )
 from routes.utils import global_config, _require_chat_auth_api, _serialize_message, logger
 
+# 导入LangChain的消息类和模型类
+from langchain_core.messages import HumanMessage, ChatMessage
+from langchain_openai import ChatOpenAI
+
+
 chat_bp = Blueprint("chat", __name__)
 
 
@@ -199,7 +204,7 @@ def summarize_session_title_api(session_id):
         )
         summary_prompt = f"请根据以下对话内容，总结一个极其简短的标题（不超过6个字，不要带标点）：\n\n{content_to_summarize}"
         res = llm.invoke([HumanMessage(content=summary_prompt)])
-        new_title = res.content.strip().replace("\"", "").replace("'", "").replace("鏍欓", "").replace("锛?", "")
+        new_title = res.content.strip().replace("\"", "").replace("'", "").replace("鏍欓?", "").replace("锛?", "")
         if len(new_title) > 10: new_title = new_title[:10]
         
         # 更新数据库
@@ -209,6 +214,22 @@ def summarize_session_title_api(session_id):
     except Exception as e:
         logger.error(f"Title summary error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+@chat_bp.route("/api/chat/sessions/<session_id>/clear", methods=["POST"])
+def clear_chat_messages_api(session_id):
+    auth_err = _require_chat_auth_api()
+    if auth_err:
+        return auth_err
+
+    sess = get_chat_session(session_id)
+    if not sess:
+        return jsonify({"success": False, "message": "会话不存在"}), 404
+
+    # Clear runtime thread state but keep the session metadata.
+    delete_chat_threads([session_id])
+    touch_chat_session(session_id)
+    return jsonify({"success": True})
 
 
 @chat_bp.route("/api/chat/sessions", methods=["DELETE"])
