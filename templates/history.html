@@ -67,6 +67,14 @@
                 <div class="bg-gray-50 px-6 py-3 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                     <div class="flex items-center gap-3">
                         <span class="font-bold text-gray-900">🤖 {{ s.agent_name or 'Agent' }}</span>
+                        {% if s.agent_type %}
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold 
+                            {% if s.agent_type == 'REAL' %}bg-red-50 text-red-600
+                            {% elif s.agent_type == 'SPOT_DCA' %}bg-emerald-50 text-emerald-600
+                            {% else %}bg-blue-50 text-blue-600{% endif %}">
+                            {{ s.agent_type }}
+                        </span>
+                        {% endif %}
                         <span class="font-mono text-xs text-gray-500 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">{{ s.timestamp }}</span>
                     </div>
                     <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">

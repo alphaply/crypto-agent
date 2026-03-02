@@ -177,19 +177,9 @@ def model_node(state: ChatState):
         raise ValueError(f"Config context lost for config_id={config_id}")
 
     symbol = cfg.get("symbol", "Chat")
-    
     history = list(state.get("messages", []))
-
-    sanitized_history = []
-    for msg in history:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            if "reasoning_content" not in msg.additional_kwargs:
-                reasoning = msg.response_metadata.get("reasoning_content") or ""
-                msg.additional_kwargs["reasoning_content"] = reasoning
-        sanitized_history.append(msg)
-
     system_prompt = state.get("system_prompt", "")
-    trimmed = _trim_chat_messages(system_prompt, sanitized_history)
+    trimmed = _trim_chat_messages(system_prompt, history)
     
     has_human = any(isinstance(m, HumanMessage) for m in trimmed)
     logger.info(f"LLM Input: {len(trimmed)} msgs (Has Human: {has_human}), model: {cfg.get('model')}")
@@ -198,39 +188,25 @@ def model_node(state: ChatState):
     if cfg.get("extra_body"):
         kwargs["extra_body"] = cfg.get("extra_body")
 
+    # IMPORTANT: keep non-streaming here. streaming=True can make invoke()
+    # return a generator in some LangChain versions, which breaks add_messages.
     llm = ChatOpenAI(
         model=cfg.get("model"),
         api_key=cfg.get("api_key"),
         base_url=cfg.get("api_base"),
         temperature=0.5,
-        streaming=True,
-        model_kwargs={
-            **kwargs,
-            "stream_options": {"include_usage": True}
-        },
+        streaming=False,
+        model_kwargs=kwargs,
     ).bind_tools(_get_chat_tools(cfg))
 
+    # 使用 invoke 而不是 stream，避免将生成器返回给 Annotated[list, add_messages] 导致报错
+    # LangGraph 的 add_messages reducer 无法处理生成器类型
     response = llm.invoke(trimmed)
     
-    reasoning = response.additional_kwargs.get("reasoning_content") or \
-                response.response_metadata.get("reasoning_content") or ""
-    
-    if reasoning and "<thinking>" not in response.content:
-        response.additional_kwargs["reasoning_content"] = reasoning
+    # 统一处理 DeepSeek 等模型的思维链 (reasoning_content)
+    reasoning = response.additional_kwargs.get("reasoning_content") or response.response_metadata.get("reasoning_content")
+    if reasoning and not response.tool_calls and "<thinking>" not in response.content:
         response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
-
-    try:
-        usage = response.response_metadata.get("token_usage") or getattr(response, "usage_metadata", None)
-        if usage:
-            database.save_token_usage(
-                symbol=symbol,
-                config_id=config_id or "chat-user",
-                model=cfg.get("model"),
-                prompt_tokens=getattr(usage, 'prompt_tokens', usage.get("prompt_tokens", 0)) if hasattr(usage, 'prompt_tokens') else usage.get("prompt_tokens", 0),
-                completion_tokens=getattr(usage, 'completion_tokens', usage.get("completion_tokens", 0)) if hasattr(usage, 'completion_tokens') else usage.get("completion_tokens", 0)
-            )
-    except Exception as usage_e:
-        logger.warning(f"⚠️ [Chat] Token save failed: {usage_e}")
 
     return {
         "messages": [response], 
@@ -379,6 +355,22 @@ def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
     return ""
 
 
+def _extract_tool_calls(chunk: BaseMessageChunk | Any) -> list:
+    """提取增量的工具调用块"""
+    tcc = getattr(chunk, "tool_call_chunks", [])
+    if not tcc: return []
+    
+    res = []
+    for c in tcc:
+        res.append({
+            "index": c.get("index"),
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "args": c.get("args"),
+        })
+    return res
+
+
 def stream_chat(session_id: str, payload: Dict[str, Any]):
     config = {"configurable": {"thread_id": session_id}}
     for item in chat_app.stream(payload, config=config, stream_mode="messages"):
@@ -387,12 +379,18 @@ def stream_chat(session_id: str, payload: Dict[str, Any]):
         chunk, metadata = item
         if not metadata or metadata.get("langgraph_node") != "model":
             continue
+            
         reasoning_token = _chunk_reasoning_text(chunk)
         if reasoning_token:
             yield {"type": "reasoning_token", "token": reasoning_token}
+            
         token = _chunk_to_text(chunk)
         if token:
             yield {"type": "token", "token": token}
+            
+        tool_calls = _extract_tool_calls(chunk)
+        if tool_calls:
+            yield {"type": "tool_calls", "tool_calls": tool_calls}
 
 
 def stream_resume_chat(session_id: str, approved: bool):
@@ -405,12 +403,18 @@ def stream_resume_chat(session_id: str, approved: bool):
         node = metadata.get("langgraph_node", "")
         if node not in ["model", "tools"]:
             continue
+            
         reasoning_token = _chunk_reasoning_text(chunk)
         if reasoning_token:
             yield {"type": "reasoning_token", "token": reasoning_token}
+            
         token = _chunk_to_text(chunk)
         if token:
             yield {"type": "token", "token": token}
+
+        tool_calls = _extract_tool_calls(chunk)
+        if tool_calls:
+            yield {"type": "tool_calls", "tool_calls": tool_calls}
 
 
 def invoke_chat(session_id: str, payload: Dict[str, Any]):

@@ -89,7 +89,7 @@
               <div class="flex items-center gap-2">
                 <span class="flex items-center gap-1.5">
                     <span class="w-2 h-2 rounded-full {{ 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' if summary.enabled else 'bg-gray-400' }}"></span>
-                    {{ '🔴' if summary.mode == 'REAL' else '🔵' }}
+                    {% if summary.mode == 'REAL' %}🔴{% elif summary.mode == 'SPOT_DCA' %}🟢{% else %}🔵{% endif %}
                 </span>
                 {{ summary.display_name or summary.agent_name }}
               </div>
@@ -121,7 +121,14 @@
                               </h3>
                               <div class="flex items-center justify-between w-full sm:w-auto gap-3">
                                   <div class="flex flex-col items-start sm:items-end">
-                                      <span class="text-[9px] md:text-[10px] font-bold {{ 'text-red-600' if summary.mode == 'REAL' else 'text-blue-600' }}">{{ '🔴 实盘模式' if summary.mode == 'REAL' else '🔵 策略模式' }}</span>
+                                      <span class="text-[9px] md:text-[10px] font-bold 
+                                          {% if summary.mode == 'REAL' %}text-red-600
+                                          {% elif summary.mode == 'SPOT_DCA' %}text-emerald-600
+                                          {% else %}text-blue-600{% endif %}">
+                                          {% if summary.mode == 'REAL' %}🔴 实盘模式
+                                          {% elif summary.mode == 'SPOT_DCA' %}🟢 定投模式
+                                          {% else %}🔵 策略模式{% endif %}
+                                      </span>
                                       <span class="text-[8px] md:text-[9px] text-gray-400">{{ summary.freq }}</span>
                                   </div>
                                   <div class="flex gap-1.5 md:gap-2">
@@ -200,7 +207,11 @@
           <div id="window-COMPARE" class="hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
               <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
                   {% for summary in agent_summaries %}
-                  <div class="bg-white border border-gray-200 rounded-3xl shadow-lg flex flex-col h-[700px] overflow-hidden border-t-4 {{ 'border-t-rose-500' if summary.mode == 'REAL' else 'border-t-indigo-500' }} {{ 'opacity-70 grayscale-[0.3]' if not summary.enabled else '' }}">
+                  <div class="bg-white border border-gray-200 rounded-3xl shadow-lg flex flex-col h-[700px] overflow-hidden border-t-4 
+                      {% if summary.mode == 'REAL' %}border-t-rose-500
+                      {% elif summary.mode == 'SPOT_DCA' %}border-t-emerald-500
+                      {% else %}border-t-indigo-500{% endif %} 
+                      {{ 'opacity-70 grayscale-[0.3]' if not summary.enabled else '' }}">
                       <!-- 头部 -->
                       <div class="px-6 py-4 border-b border-gray-100 bg-gray-50/30 flex justify-between items-center flex-shrink-0">
                           <div class="min-w-0">
@@ -209,7 +220,14 @@
                                   {{ summary.agent_name }}
                               </h4>
                               <div class="flex items-center gap-2 mt-1">
-                                  <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-md {{ 'bg-red-50 text-red-600' if summary.mode == 'REAL' else 'bg-blue-50 text-blue-600' }}">{{ 'REAL (' + summary.freq + ')' if summary.mode == 'REAL' else 'STRAT (' + summary.freq + ')' }}</span>
+                                  <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-md 
+                                      {% if summary.mode == 'REAL' %}bg-red-50 text-red-600
+                                      {% elif summary.mode == 'SPOT_DCA' %}bg-emerald-50 text-emerald-600
+                                      {% else %}bg-blue-50 text-blue-600{% endif %}">
+                                      {% if summary.mode == 'REAL' %}REAL ({{ summary.freq }})
+                                      {% elif summary.mode == 'SPOT_DCA' %}DCA ({{ summary.freq }})
+                                      {% else %}STRAT ({{ summary.freq }}){% endif %}
+                                  </span>
                                   <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-sm uppercase">{{ summary.model }}</span>
                                   <span class="text-[9px] font-mono text-gray-400">{{ summary.timestamp[11:16] }}</span>
                               </div>

@@ -51,7 +51,14 @@ def get_dashboard_data(symbol, page=1, per_page=10):
             summary_dict['model'] = model_name
             summary_dict['mode'] = mode
             summary_dict['enabled'] = enabled
-            summary_dict['freq'] = "15m (高频)" if mode == 'REAL' else "1h (低频)"
+            
+            if mode == 'REAL':
+                summary_dict['freq'] = "15m (高频)"
+            elif mode == 'SPOT_DCA':
+                summary_dict['freq'] = "Daily (定投)"
+            else:
+                summary_dict['freq'] = "1h (低频)"
+                
             summary_dict['leverage'] = global_config.get_leverage(config_id)
             summary_dict['display_name'] = f"{model_name} ({mode})"
             

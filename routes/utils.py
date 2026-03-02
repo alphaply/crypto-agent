@@ -91,6 +91,7 @@ def get_symbol_specific_status(symbol):
 
     has_real = False
     has_strategy = False
+    has_dca = False
     is_any_enabled = False
 
     for config in symbol_configs:
@@ -98,9 +99,26 @@ def get_symbol_specific_status(symbol):
             is_any_enabled = True
             mode = config.get('mode', 'STRATEGY').upper()
             if mode == 'REAL': has_real = True
+            elif mode == 'SPOT_DCA': has_dca = True
             else: has_strategy = True
 
     if not is_any_enabled: return "🚫 已禁用", "无执行任务", False
-    if has_real and has_strategy: return "🔵 策略 + 🔴 实盘", "混合 (15m/1h)", True
-    if has_real: return "🔴 实盘模式 (Real)", "15m (高频)", True
-    return "🔵 策略模式 (Strategy)", "1h (低频)", True
+    
+    # 优先级显示逻辑
+    status_parts = []
+    freq_parts = []
+    
+    if has_real:
+        status_parts.append("🔴 实盘")
+        freq_parts.append("15m")
+    if has_dca:
+        status_parts.append("🟢 定投")
+        freq_parts.append("Daily")
+    if has_strategy:
+        status_parts.append("🔵 策略")
+        freq_parts.append("1h")
+        
+    status_text = " + ".join(status_parts)
+    freq_text = "混合 (" + "/".join(freq_parts) + ")" if len(freq_parts) > 1 else freq_parts[0] + (" (高频)" if has_real else (" (定投)" if has_dca else " (低频)"))
+    
+    return status_text, freq_text, True

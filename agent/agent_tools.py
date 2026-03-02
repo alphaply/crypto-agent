@@ -78,7 +78,7 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
                 continue
             res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=config_id)
             if res and 'id' in res:
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, op.reason, trade_mode="REAL", config_id=config_id)
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, op.reason, trade_mode="SPOT_DCA", config_id=config_id)
                 execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 现货开仓失败: {str(e)}")
@@ -191,8 +191,13 @@ def cancel_orders_strategy(order_ids: List[str], config_id: str, symbol: str):
 @tool(args_schema=AnalyzeEventContractSchema)
 def analyze_event_contract(*args, **kwargs) -> str:
     """
-    [事件合约分析工具] 一次性获取当前交易对在 30min, 1h, 1d 三个时间窗口的价格方向预测与开仓建议。
-    注意：此工具不需要任何参数，调用一次即可返回所有三个周期的完整分析报告。请勿传递时间周期等参数。
+    [事件合约分析工具] 一次性扫描并返回当前交易对在 30min, 1h, 1d 三个关键时间窗口的客观指标看板。
+    
+    使用说明：
+    1. 此工具【不需要任何参数】。直接调用 `analyze_event_contract()` 即可。
+    2. 它会自动处理当前正在讨论的交易对（Symbol）。
+    3. 输出包含：趋势状态、VWAP 偏离、RSI、布林带宽度、成交量状态、筹码分布(POC)及支撑压力位。
+    4. 适用于：当你需要快速了解多周期市场概况，或用户询问“现在行情如何”、“给我一些指标数据”时。
     """
     from utils.market_data import MarketTool
     # 动态获取当前的注入参数
@@ -208,23 +213,29 @@ def analyze_event_contract(*args, **kwargs) -> str:
             data = analysis['analysis'].get(tf)
             if not data: continue
             
-            price = data['price']
-            vwap = data['vwap']
-            bb = data['bollinger']
-            trend = data['trend']['status']
-            poc = data['vp']['poc']
+            price = data.get('price', 0)
+            vwap = data.get('vwap', 0)
+            bb = data.get('bollinger', {})
+            trend = data.get('trend', {}).get('status', 'N/A')
+            poc = data.get('vp', {}).get('poc', 0)
             
-            # 计算 VWAP 偏离度
-            vwap_dist = ((price - vwap) / vwap) * 100
-            direction = "BULLISH (看多)" if price > vwap and "Bullish" in trend else "BEARISH (看空)"
+            # 计算指标详情
+            vwap_dist = ((price - vwap) / vwap) * 100 if vwap != 0 else 0
+            rsi_data = data.get('rsi_analysis', {})
+            rsi = rsi_data.get('rsi', 0)
+            vol_status = data.get('volume_analysis', {}).get('status', 'N/A')
+            bb_width = bb.get('width', 0) * 100 # 转换为百分比
             
             res = (
-                f"### [{tf} 窗口] 预测分析\n"
-                f"- **当前基准价**: {price}\n"
-                f"- **建议开仓位**: {poc} (价值中心) 或 {bb['mid']} (布林中轨)\n"
-                f"- **核心动能方向**: {direction}\n"
-                f"- **指标状态**: Trend={trend}, VWAP偏离={vwap_dist:.3f}%\n"
-                f"- **预测有效期**: 未来 {tf}"
+                f"### [{tf} 数据看板]\n"
+                f"- **当前价**: {price}\n"
+                f"- **趋势引擎**: {trend}\n"
+                f"- **VWAP 偏离度**: {vwap_dist:.3f}%\n"
+                f"- **RSI (14)**: {rsi:.2f}\n"
+                f"- **布林带宽度**: {bb_width:.2f}%\n"
+                f"- **成交量状态**: {vol_status}\n"
+                f"- **筹码分布 (POC)**: {poc}\n"
+                f"- **支撑/压力 (BB)**: 上轨 {bb.get('up', 'N/A')} / 下轨 {bb.get('low', 'N/A')}"
             )
             results.append(res)
             

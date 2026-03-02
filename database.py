@@ -243,7 +243,12 @@ def cancel_mock_order(order_id):
 def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY", config_id=None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # 确保 trade_mode 格式统一
-    valid_mode = "REAL" if trade_mode == "REAL" else "STRATEGY"
+    if trade_mode == "REAL":
+        valid_mode = "REAL"
+    elif trade_mode == "SPOT_DCA":
+        valid_mode = "SPOT_DCA"
+    else:
+        valid_mode = "STRATEGY"
     
     with get_db_conn() as conn:
         c = conn.cursor()

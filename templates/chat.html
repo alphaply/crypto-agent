@@ -435,6 +435,47 @@
         currentMessages[idx].__thinking_open = !wasOpen;
       }
 
+      function renderToolCallsHtml(m) {
+        if (!m.tool_calls || m.tool_calls.length === 0) return '';
+        return m.tool_calls.map(tc => {
+          let args = tc.args || {};
+          if (typeof args === 'string') {
+            try {
+              args = JSON.parse(args);
+            } catch (e) {
+              // 如果还是部分字符串，保持原样显示
+            }
+          }
+          
+          let argsHtml = '';
+          if (typeof args === 'object' && args !== null) {
+            argsHtml = Object.entries(args).map(([k, v]) => `
+                  <div class="grid grid-cols-[auto_1fr] gap-2 py-1 border-b border-blue-100/50 last:border-0">
+                    <span class="font-semibold text-slate-500">${escapeHtml(k)}:</span>
+                    <span class="text-slate-700 break-all">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</span>
+                  </div>
+                `).join('');
+          } else {
+            argsHtml = `<div class="text-slate-500 italic break-all">${escapeHtml(args)}</div>`;
+          }
+
+          return `
+                <details open class="mt-3 rounded-xl border border-blue-100 bg-blue-50/50 overflow-hidden group">
+                  <summary class="px-3 py-2 cursor-pointer list-none select-none text-[11px] font-medium text-blue-700 flex items-center justify-between hover:bg-blue-100/50 transition-colors">
+                    <div class="flex items-center gap-2">
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                      <span class="font-bold tracking-wide">调用工具: ${escapeHtml(tc.name || '正在识别...')}</span>
+                    </div>
+                    <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                  </summary>
+                  <div class="px-3 pb-3 pt-1 border-t border-blue-100/50 text-[10px] font-mono">
+                    ${argsHtml || '<span class="text-slate-400 italic">无参数</span>'}
+                  </div>
+                </details>
+              `;
+        }).join('');
+      }
+
       function renderMessages(messages) {
         const container = ensureMessagesScrollListener();
         if (!container) return;
@@ -456,7 +497,7 @@
           if (isTool) {
             return `
               <div id="msg-${idx}" class="flex items-start gap-2 mb-4 w-full">
-                <details class="flex-1 bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden group max-w-[95%] sm:max-w-[85%] ${animationClass}">
+                <details open class="flex-1 bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden group max-w-[95%] sm:max-w-[85%] ${animationClass}">
                   <summary class="px-3 py-2 cursor-pointer list-none select-none text-[11px] font-medium text-slate-600 flex items-center justify-between hover:bg-slate-100/50 transition-colors">
                     <div class="flex items-center gap-2">
                       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
@@ -475,34 +516,6 @@
             ? 'ml-auto bg-blue-600 text-white rounded-br-none shadow-md'
             : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm';
 
-          let toolCallsHtml = '';
-          if (hasToolCalls) {
-            toolCallsHtml = m.tool_calls.map(tc => {
-              const args = tc.args || {};
-              const argsHtml = Object.entries(args).map(([k, v]) => `
-                <div class="grid grid-cols-[auto_1fr] gap-2 py-1 border-b border-blue-100/50 last:border-0">
-                  <span class="font-semibold text-slate-500">${escapeHtml(k)}:</span>
-                  <span class="text-slate-700 break-all">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</span>
-                </div>
-              `).join('');
-
-              return `
-                <details class="mt-3 rounded-xl border border-blue-100 bg-blue-50/50 overflow-hidden group">
-                  <summary class="px-3 py-2 cursor-pointer list-none select-none text-[11px] font-medium text-blue-700 flex items-center justify-between hover:bg-blue-100/50 transition-colors">
-                    <div class="flex items-center gap-2">
-                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                      <span class="font-bold tracking-wide">调用工具: ${escapeHtml(tc.name)}</span>
-                    </div>
-                    <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                  </summary>
-                  <div class="px-3 pb-3 pt-1 border-t border-blue-100/50 text-[10px] font-mono">
-                    ${argsHtml || '<span class="text-slate-400 italic">无参数</span>'}
-                  </div>
-                </details>
-              `;
-            }).join('');
-          }
-
           const bodyHtml = `<div data-msg-body="1" class="md-content">${m.content ? renderMarkdown(m.content) : (isStreaming ? '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>' : '')}</div>`;
 
           return `
@@ -510,7 +523,7 @@
               <div class="chat-bubble p-4 rounded-3xl max-w-[92%] sm:max-w-[85%] ${bubbleClass} ${animationClass}">
                 ${renderThinkingHtml(m, idx, isStreaming)}
                 ${bodyHtml}
-                ${toolCallsHtml}
+                <div data-tool-calls-wrap="1">${renderToolCallsHtml(m)}</div>
               </div>
             </div>`;
         }).join('');
@@ -553,7 +566,16 @@
 
         const body = msgRoot.querySelector('[data-msg-body="1"]');
         if (body) {
-          body.innerHTML = msg.content ? renderMarkdown(msg.content) : '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+          if (!msg.content && msg.__streaming) {
+            body.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+          } else {
+            body.innerHTML = msg.content ? renderMarkdown(msg.content) : '';
+          }
+        }
+
+        const toolCallsWrap = msgRoot.querySelector('[data-tool-calls-wrap="1"]');
+        if (toolCallsWrap) {
+          toolCallsWrap.innerHTML = renderToolCallsHtml(msg);
         }
 
         const reasoning = String(msg.reasoning_content || '').trim();
@@ -579,6 +601,19 @@
         }
         if (delta.content) {
           msg.content = (msg.content || '') + delta.content;
+        }
+        if (delta.tool_calls) {
+          if (!msg.tool_calls) msg.tool_calls = [];
+          delta.tool_calls.forEach(tc => {
+            let existing = msg.tool_calls.find(e => e.index === tc.index);
+            if (existing) {
+              if (tc.name) existing.name = (existing.name || '') + tc.name;
+              if (tc.args) existing.args = (existing.args || '') + tc.args;
+              if (tc.id) existing.id = tc.id;
+            } else {
+              msg.tool_calls.push(tc);
+            }
+          });
         }
         msg.__streaming = true;
 
@@ -607,6 +642,8 @@
             appendStreamDelta(streamIdx, { content: payload.token || '' });
           } else if (payload.type === 'reasoning_token') {
             appendStreamDelta(streamIdx, { reasoning: payload.token || '' });
+          } else if (payload.type === 'tool_calls') {
+            appendStreamDelta(streamIdx, { tool_calls: payload.tool_calls });
           } else if (payload.type === 'done') {
             currentMessages = normalizeMessages(payload.messages || []);
             pendingApproval = payload.pending_approval;
@@ -651,6 +688,12 @@
               delete currentMessages[streamIdx].__loading;
             }
             appendStreamDelta(streamIdx, { reasoning: payload.token || '' });
+          } else if (payload.type === 'tool_calls') {
+            if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
+              currentMessages[streamIdx].content = '';
+              delete currentMessages[streamIdx].__loading;
+            }
+            appendStreamDelta(streamIdx, { tool_calls: payload.tool_calls });
           } else if (payload.type === 'done') {
             currentMessages = normalizeMessages(payload.messages || []);
             pendingApproval = payload.pending_approval;

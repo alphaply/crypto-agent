@@ -303,7 +303,10 @@ function renderSymbolList() {
                 <div>
                     <div class="flex items-center gap-2">
                         <span class="font-bold text-gray-900">${conf.symbol}</span>
-                        <span class="text-[10px] px-1.5 py-0.5 rounded ${conf.mode === 'REAL' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'} font-bold">${conf.mode}</span>
+                        <span class="text-[10px] px-1.5 py-0.5 rounded ${
+                            conf.mode === 'REAL' ? 'bg-red-100 text-red-600' : 
+                            (conf.mode === 'SPOT_DCA' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600')
+                        } font-bold">${conf.mode}</span>
                     </div>
                     <div class="text-[10px] text-gray-400 font-mono mt-1">${conf.model}</div>
                 </div>

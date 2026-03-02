@@ -94,7 +94,7 @@ def process_single_config(config):
                 # 为了防止在 Agent 执行的 1-2 分钟内再次被调度器调度到（心跳可能 1m 一次，不过当前最快 15m）
                 # 这里不需特殊处理，因为如果是 15m 一次，同一个小时可能触发 4 次。我们需要在 Agent 外面防抖。
                 # 因此保存一条虚拟的“执行完成”记录：
-                save_order_log(f"DCA-TRIGGER-{int(now.timestamp())}", symbol, config_id, 'trigger', 0, 0, 0, "Spot DCA daily buy triggered", trade_mode="REAL", config_id=config_id)
+                save_order_log(f"DCA-TRIGGER-{int(now.timestamp())}", symbol, config_id, 'trigger', 0, 0, 0, "Spot DCA daily buy triggered", trade_mode="SPOT_DCA", config_id=config_id)
                 
         except Exception as e:
             logger.error(f"❌ Error [{config_id}] SPOT_DCA: {e}")
