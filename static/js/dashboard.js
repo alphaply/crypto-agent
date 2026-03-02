@@ -158,6 +158,31 @@ function renderOrdersToContainer(configId, orders) {
                </div>`
             : '';
 
+        let reasonHtml;
+        const reasonText = order.reason || '';
+        const knownEmojis = ['✅', '❌'];
+        let emoji = '';
+        let text = reasonText;
+
+        for (const e of knownEmojis) {
+            if (reasonText.startsWith(e)) {
+                emoji = e;
+                text = reasonText.substring(e.length).trim();
+                break;
+            }
+        }
+
+        if (emoji) {
+            reasonHtml = `
+                <div class="flex items-start gap-1.5">
+                    <span class="mt-px">${emoji}</span>
+                    <span>${text}</span>
+                </div>
+            `;
+        } else {
+            reasonHtml = `<div>${reasonText}</div>`;
+        }
+
         return `
             <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all cursor-pointer" onclick="handleCopy('${order.entry_price}', event)">
                 <div class="flex justify-between items-start mb-2">
@@ -170,7 +195,7 @@ function renderOrdersToContainer(configId, orders) {
                     <span class="text-[9px] font-mono text-gray-400">${(order.timestamp || '').substring(11, 16)}</span>
                 </div>
                 <div class="text-[10px] text-gray-500 leading-relaxed line-clamp-2 group-hover:line-clamp-none transition-all">
-                    ${order.reason}
+                    ${reasonHtml}
                 </div>
                 ${tpSlHtml}
             </div>
