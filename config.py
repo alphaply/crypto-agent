@@ -204,7 +204,7 @@ class Config:
         Returns:
             配置列表
         """
-        return self.symbol_configs
+        return list(self.symbol_configs)
 
     def reload_config(self):
         """重新加载配置（无需重启服务）"""

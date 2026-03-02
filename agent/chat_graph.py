@@ -29,6 +29,7 @@ from agent.agent_tools import (
     close_position_real,
     open_position_real,
     open_position_strategy,
+    analyze_event_contract
 )
 from config import config as global_config
 import database
@@ -51,10 +52,12 @@ class ChatState(TypedDict):
     q: str
 
 
-def _get_chat_tools(trade_mode: str):
+def _get_chat_tools(cfg: Dict[str, Any]):
+    trade_mode = cfg.get("mode", "STRATEGY").upper()
+    
     if trade_mode == "REAL":
-        return [open_position_real, close_position_real, cancel_orders_real]
-    return [open_position_strategy, cancel_orders_strategy]
+        return [open_position_real, close_position_real, cancel_orders_real, analyze_event_contract]
+    return [open_position_strategy, cancel_orders_strategy, analyze_event_contract]
 
 
 def _message_counter(msgs: list) -> int:
@@ -118,7 +121,6 @@ def _trim_chat_messages(system_prompt: str, history: list):
     else:
         token_trimmed_history = []
     token_trimmed_history = _sanitize_tool_sequences(token_trimmed_history)
-    # 确保最近的几条消息始终存在，避免 trim 过度导致用户输入丢失
     count_trimmed_history = trim_messages(
         token_trimmed_history,
         max_tokens=CHAT_MAX_HISTORY_MESSAGES,
@@ -134,7 +136,6 @@ def _trim_chat_messages(system_prompt: str, history: list):
 
 def start_node(state: ChatState):
     config_id = state.get("config_id")
-    # 不要清空 q，让 model_node 也能看到它作为兜底
     q = state.get("q")
     
     cfg = global_config.get_config_by_id(config_id)
@@ -143,7 +144,6 @@ def start_node(state: ChatState):
 
     symbol = cfg.get("symbol", "Unknown")
     
-    # 模拟调度器的启动逻辑来获取系统提示词
     scheduler_state = AgentState(
         config_id=config_id,
         symbol=symbol,
@@ -158,8 +158,6 @@ def start_node(state: ChatState):
     started = scheduler_start_node(scheduler_state)
     system_prompt = started.messages[0].content if started.messages else ""
     
-    # 构造返回给 LangGraph 的 updates
-    # 注意：这里我们只提供基础信息，messages 的具体构造我们在 model_node 里精细化处理
     updates = {
         "agent_config": cfg, 
         "system_prompt": system_prompt, 
@@ -178,32 +176,23 @@ def model_node(state: ChatState):
         raise ValueError(f"Config context lost for config_id={config_id}")
 
     symbol = cfg.get("symbol", "Chat")
-    mode = cfg.get("mode", "STRATEGY").upper()
     
-    # --- 核心修复：构造消息队列 ---
     history = list(state.get("messages", []))
-    # 这里的 history 应该已经通过 start_node 包含了当前用户输入的 HumanMessage
 
     sanitized_history = []
     for msg in history:
-        # DeepSeek 修复
         if isinstance(msg, AIMessage) and msg.tool_calls:
             if "reasoning_content" not in msg.additional_kwargs:
                 reasoning = msg.response_metadata.get("reasoning_content") or ""
                 msg.additional_kwargs["reasoning_content"] = reasoning
         sanitized_history.append(msg)
 
-    # 构造最终列表
     system_prompt = state.get("system_prompt", "")
     trimmed = _trim_chat_messages(system_prompt, sanitized_history)
     
-    # 日志监控：确保 HumanMessage 在列表里
     has_human = any(isinstance(m, HumanMessage) for m in trimmed)
     logger.info(f"LLM Input: {len(trimmed)} msgs (Has Human: {has_human}), model: {cfg.get('model')}")
-    if not has_human and len(trimmed) > 0:
-        logger.warning("!!! WARNING: No HumanMessage found in LLM prompt!")
 
-    # --- 调用 LLM ---
     kwargs = {}
     if cfg.get("extra_body"):
         kwargs["extra_body"] = cfg.get("extra_body")
@@ -212,17 +201,16 @@ def model_node(state: ChatState):
         model=cfg.get("model"),
         api_key=cfg.get("api_key"),
         base_url=cfg.get("api_base"),
-        temperature=cfg.get("temperature", 0.5),
+        temperature=0.5,
         streaming=True,
         model_kwargs={
             **kwargs,
             "stream_options": {"include_usage": True}
         },
-    ).bind_tools(_get_chat_tools(mode))
+    ).bind_tools(_get_chat_tools(cfg))
 
     response = llm.invoke(trimmed)
     
-    # 推理内容处理
     reasoning = response.additional_kwargs.get("reasoning_content") or \
                 response.response_metadata.get("reasoning_content") or ""
     
@@ -230,7 +218,6 @@ def model_node(state: ChatState):
         response.additional_kwargs["reasoning_content"] = reasoning
         response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
 
-    # 保存 Token 使用情况
     try:
         usage = response.response_metadata.get("token_usage") or getattr(response, "usage_metadata", None)
         if usage:
@@ -244,8 +231,6 @@ def model_node(state: ChatState):
     except Exception as usage_e:
         logger.warning(f"⚠️ [Chat] Token save failed: {usage_e}")
 
-    # 这里的返回将自动更新 LangGraph 状态中的 messages (由于 Annotated[list, add_messages])
-    # 同时我们要清空 q，并带上 agent_config 以防状态丢失
     return {
         "messages": [response], 
         "symbol": symbol, 
@@ -261,6 +246,7 @@ def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str)
         "cancel_orders_real": cancel_orders_real,
         "open_position_strategy": open_position_strategy,
         "cancel_orders_strategy": cancel_orders_strategy,
+        "analyze_event_contract": analyze_event_contract,
     }
     tool_obj = tool_map.get(tool_name)
     if not tool_obj:
@@ -284,22 +270,26 @@ def tools_node(state: ChatState):
         tool_name = call["name"]
         tool_args = call.get("args", {})
 
-        approval = interrupt(
-            {
-                "type": "tool_approval",
-                "tool_call_id": call["id"],
-                "tool_name": tool_name,
-                "tool_args": tool_args,
-                "config_id": config_id,
-                "symbol": symbol,
-            }
-        )
+        # 事件合约分析工具免审批
+        if tool_name == "analyze_event_contract":
+            approved = True
+        else:
+            approval = interrupt(
+                {
+                    "type": "tool_approval",
+                    "tool_call_id": call["id"],
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "config_id": config_id,
+                    "symbol": symbol,
+                }
+            )
 
-        approved = False
-        if isinstance(approval, dict):
-            approved = bool(approval.get("approved"))
-        elif isinstance(approval, bool):
-            approved = approval
+            approved = False
+            if isinstance(approval, dict):
+                approved = bool(approval.get("approved"))
+            elif isinstance(approval, bool):
+                approved = approval
 
         if not approved:
             outputs.append(ToolMessage(tool_call_id=call["id"], content="Rejected by user."))
@@ -369,62 +359,43 @@ def _coerce_text(value: Any) -> str:
 
 
 def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
-    # 检查所有可能的推理字段位置，确保 DeepSeek 的响应不丢失
     add_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
     resp_meta = getattr(chunk, "response_metadata", {}) or {}
     
-    # 路径 1: 直接在 additional_kwargs
     if "reasoning_content" in add_kwargs:
         return _coerce_text(add_kwargs["reasoning_content"])
     
-    # 路径 2: 在 response_metadata
     if "reasoning_content" in resp_meta:
         return _coerce_text(resp_meta["reasoning_content"])
 
-    # 路径 3: 在 delta 字典内 (DeepSeek 原生格式)
     delta = add_kwargs.get("delta") or resp_meta.get("delta") or {}
     if isinstance(delta, dict):
-        # 同时检查 reasoning_content 和 reasoning 字段
         res = delta.get("reasoning_content") or delta.get("reasoning")
         if res:
             return _coerce_text(res)
             
-    # 路径 4: 部分兼容层会放在 content 字段里但带有特殊前缀，
-    # 这种情况通过 stream_chat 里的 chunk.content 正常处理。
-    
     return ""
 
 
 def stream_chat(session_id: str, payload: Dict[str, Any]):
     config = {"configurable": {"thread_id": session_id}}
-    
-    # 显式构造输入，确保用户消息 q 被 LangGraph 接收到
     for item in chat_app.stream(payload, config=config, stream_mode="messages"):
-        # LangGraph 2.0+ stream_mode="messages" 返回的是 (chunk, metadata)
         if not isinstance(item, tuple) or len(item) != 2:
             continue
-        
         chunk, metadata = item
-        # 只处理 model 节点的输出
         if not metadata or metadata.get("langgraph_node") != "model":
             continue
-
-        # 处理思考过程 (Reasoning)
         reasoning_token = _chunk_reasoning_text(chunk)
         if reasoning_token:
             yield {"type": "reasoning_token", "token": reasoning_token}
-
-        # 处理正文 (Content)
         token = _chunk_to_text(chunk)
         if token:
             yield {"type": "token", "token": token}
 
 
 def stream_resume_chat(session_id: str, approved: bool):
-    """Token-level stream for resume after human approval."""
     config = {"configurable": {"thread_id": session_id}}
     command = Command(resume={"approved": approved})
-
     for item in chat_app.stream(command, config=config, stream_mode="messages"):
         if not isinstance(item, tuple) or len(item) != 2:
             continue
@@ -432,11 +403,9 @@ def stream_resume_chat(session_id: str, approved: bool):
         node = metadata.get("langgraph_node", "")
         if node not in ["model", "tools"]:
             continue
-
         reasoning_token = _chunk_reasoning_text(chunk)
         if reasoning_token:
             yield {"type": "reasoning_token", "token": reasoning_token}
-
         token = _chunk_to_text(chunk)
         if token:
             yield {"type": "token", "token": token}

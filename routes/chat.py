@@ -37,6 +37,7 @@ def chat_bootstrap():
                 "symbol": cfg.get("symbol", ""),
                 "model": cfg.get("model", ""),
                 "mode": cfg.get("mode", "STRATEGY"),
+                "title": cfg.get("title"), # 获取标题
             }
         )
     sessions = get_chat_sessions(limit=200)
@@ -60,7 +61,9 @@ def create_chat_session_api():
 
     session_id = uuid.uuid4().hex
     symbol = cfg.get("symbol", "")
-    title = data.get("title") or f"{symbol} · {cfg.get('mode', 'STRATEGY')}"
+    # 优先使用配置中的 title
+    default_title = cfg.get("title") or f"{symbol} · {cfg.get('mode', 'STRATEGY')}"
+    title = data.get("title") or default_title
     create_chat_session(session_id, config_id, symbol, title)
     return jsonify({"success": True, "session_id": session_id})
 

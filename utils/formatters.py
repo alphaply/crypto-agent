@@ -106,7 +106,7 @@ def format_market_data_to_text(data: dict) -> str:
 
     # ========== 市场快照 ==========
     current_price = data.get("current_price", 0)
-    atr_15m = data.get("atr_15m", 0)
+    atr_base = data.get("atr_base", 0)
     sent = data.get("sentiment", {})
     funding = sent.get("funding_rate", 0) * 100 
     oi = fmt_num(sent.get("open_interest", 0))
@@ -114,16 +114,18 @@ def format_market_data_to_text(data: dict) -> str:
     
     output = [
         "【市场快照】",
-        f"• 当前价格: {current_price} | 15m ATR: {atr_15m}",
+        f"• 当前价格: {current_price} | 基准 ATR: {atr_base}",
         f"• 资金费率: {funding:.4f}% | 未平仓合约: {oi} | 24h成交量: {vol_24h}",
         ""
     ]
 
     # ========== 按周期组织技术指标 ==========
     indicators = data.get("technical_indicators", {})
-    timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
+    # 动态获取所有可用的周期，并按大致时长排序
+    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+    available_tfs = [tf for tf in tf_order if tf in indicators]
     
-    for tf in timeframes:
+    for tf in available_tfs:
         if tf not in indicators: continue
         d = indicators[tf]
         
@@ -209,12 +211,12 @@ def format_market_data_to_markdown(data: dict) -> str:
         return f"{num:.0f}"
 
     current_price = data.get("current_price", 0)
-    atr_15m = data.get("atr_15m", 0)
+    atr_base = data.get("atr_base", 0)
     sent = data.get("sentiment", {})
     funding = sent.get("funding_rate", 0) * 100 
     
     header = (
-        f"**Snapshot** | Price: {current_price} | 15m ATR: {atr_15m}\n"
+        f"**Snapshot** | Price: {current_price} | Base ATR: {atr_base}\n"
         f"Sentiment: Fund: {funding:.4f}% | Vol24h: {fmt_num(sent.get('24h_quote_vol', 0))}\n"
     )
 
@@ -226,45 +228,47 @@ def format_market_data_to_markdown(data: dict) -> str:
     
     rows = []
     indicators = data.get("technical_indicators", {})
-    timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
+    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+    available_tfs = [tf for tf in tf_order if tf in indicators]
     
-    for tf in timeframes:
-        if tf not in indicators: continue
+    for tf in available_tfs:
         d = indicators[tf]
-        
+
         # 基础
-        trend = d.get('trend_status', 'N/A')
-        
+        trend = d.get('trend', {}).get('status', 'N/A')
+
         # 震荡
-        rsi = d.get('rsi', 0)
+        rsi_data = d.get('rsi_analysis', {})
+        rsi = rsi_data.get('rsi', 0)
         kdj = d.get('kdj', {})
         k, j = kdj.get('k',0), kdj.get('j',0)
-        osc_str = f"RSI:{rsi} K:{k} J:{j}"
-        
+        osc_str = f"RSI:{rsi:.1f} K:{k:.1f} J:{j:.1f}"
+
         # MACD
         macd = d.get('macd', {})
         diff, hist = macd.get('diff', 0), macd.get('hist', 0)
-        macd_str = f"{diff}/{hist}"
-        
+        macd_str = f"{diff:.4f}/{hist:.4f}"
+
         # BB
         bb = d.get('bollinger', {})
         width = bb.get('width', 0)
-        
+
         # K线
         closes = d.get('recent_closes', [])
         c_str = ",".join([str(x) for x in closes])
-        
+
         # EMA
         ema = d.get('ema', {})
         e_str = f"{ema.get('ema_20')}/{ema.get('ema_50')}/{ema.get('ema_200')}"
-        
+
         # VP
         vp = d.get('vp', {})
         poc = vp.get('poc', 0)
         hvns = vp.get('hvns', [])[:3]
         h_str = ",".join([str(x) for x in hvns])
-        
+
         row = f"| {tf} | {trend} | {osc_str} | {macd_str} | {width} | {c_str} | {e_str} | {poc} | {h_str} |"
         rows.append(row)
+
     
     return header + table_header + "\n".join(rows)

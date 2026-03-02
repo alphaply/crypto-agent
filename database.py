@@ -35,6 +35,7 @@ def init_db():
                         symbol TEXT,
                         agent_name TEXT, 
                         config_id TEXT,
+                        agent_type TEXT,
                         timeframe TEXT,
                         content TEXT,
                         strategy_logic TEXT
@@ -43,6 +44,8 @@ def init_db():
         try: c.execute("ALTER TABLE summaries ADD COLUMN agent_name TEXT")
         except: pass
         try: c.execute("ALTER TABLE summaries ADD COLUMN config_id TEXT")
+        except: pass
+        try: c.execute("ALTER TABLE summaries ADD COLUMN agent_type TEXT")
         except: pass
 
         # 2. Mock Orders
@@ -252,16 +255,16 @@ def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, tr
 
 # --- 数据分析与记录 ---
 
-def save_summary(symbol, agent_name, content, strategy_logic, config_id=None):
+def save_summary(symbol, agent_name, content, strategy_logic, config_id=None, agent_type=None):
     """保存 AI 分析结果"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute("""
-            INSERT INTO summaries (timestamp, symbol, timeframe, agent_name, config_id, content, strategy_logic) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (timestamp, symbol, "15m", agent_name, config_id or agent_name, content, strategy_logic))
+            INSERT INTO summaries (timestamp, symbol, timeframe, agent_name, config_id, agent_type, content, strategy_logic) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (timestamp, symbol, "15m", agent_name, config_id or agent_name, agent_type, content, strategy_logic))
         conn.commit()
 
 def get_active_agents(symbol):
@@ -274,11 +277,18 @@ def get_active_agents(symbol):
         except:
             return []
 
-def get_recent_summaries(symbol, agent_name=None, limit=10, config_id=None):
-    """获取最近的分析记录 (支持 agent_name 或 config_id 隔离)"""
+def get_recent_summaries(symbol, agent_name=None, limit=10, config_id=None, agent_type=None):
+    """获取最近的分析记录 (支持 agent_name, config_id 或 agent_type 隔离)"""
     with get_db_conn() as conn:
         c = conn.cursor()
-        if config_id:
+        if agent_type:
+             # 新增：按 agent_type 隔离（用于事件合约）
+            c.execute("""
+                SELECT * FROM summaries 
+                WHERE symbol = ? AND agent_type = ? 
+                ORDER BY id DESC LIMIT ?
+            """, (symbol, agent_type, limit))
+        elif config_id:
             # 优先使用 config_id
             c.execute("""
                 SELECT * FROM summaries 

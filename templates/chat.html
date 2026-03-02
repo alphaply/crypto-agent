@@ -721,7 +721,10 @@
 
         const select = document.getElementById('configSelect');
         if (select) {
-          select.innerHTML = configs.map(c => `<option value="${c.config_id}">${escapeHtml(c.symbol)} (${escapeHtml(c.model)})</option>`).join('');
+          select.innerHTML = configs.map(c => {
+            const displayName = c.title || `${c.symbol} (${c.model})`;
+            return `<option value="${c.config_id}">${escapeHtml(displayName)}</option>`;
+          }).join('');
         }
         modal.classList.remove('hidden');
       }

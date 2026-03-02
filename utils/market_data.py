@@ -34,12 +34,18 @@ class MarketTool:
             self.config_id = config_id
             self.symbol = cfg.get('symbol')
             api_key, secret = global_config.get_binance_credentials(config_id=config_id)
+            mode = cfg.get('mode', 'STRATEGY').upper()
+            market_type = cfg.get('market_type', 'swap')
+            if mode == 'SPOT_DCA':
+                market_type = 'spot'
         elif symbol:
             # 向后兼容：使用 symbol 查询
             logger.warning(f"⚠️ 使用 symbol 初始化已过时，建议使用 config_id")
             self.config_id = None
             self.symbol = symbol
             api_key, secret = global_config.get_binance_credentials(symbol=symbol)
+            cfg = None
+            market_type = 'swap'
         else:
             raise ValueError("必须提供 config_id 或 symbol")
 
@@ -51,7 +57,7 @@ class MarketTool:
             'secret': secret,
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',
+                'defaultType': market_type,
                 'adjustForTimeDifference': True,
                 'recvWindow': global_config.DEFAULT_RECVWINDOW,
             }
@@ -63,7 +69,10 @@ class MarketTool:
                 'https': f'http://127.0.0.1:{proxy_port}',
             }
 
-        self.exchange = ccxt.binanceusdm(config)
+        if market_type == 'spot':
+            self.exchange = ccxt.binance(config)
+        else:
+            self.exchange = ccxt.binanceusdm(config)
 
         try:
             self.exchange.load_markets()
@@ -386,17 +395,25 @@ class MarketTool:
                 status_data["balance"] = float(balance_info.get('USDT', {}).get('free', 0))
                 
                 # 实盘持仓
-                all_positions = self.exchange.fetch_positions([symbol])
-                real_positions = [
-                    {
-                        'symbol': p['symbol'],
-                        'side': str(p.get('side', '')).upper(), # 'LONG' or 'SHORT'
-                        'amount': float(p['contracts']),
-                        'entry_price': float(p['entryPrice']),
-                        'unrealized_pnl': float(p['unrealizedPnl'])
-                    } for p in all_positions if float(p['contracts']) > 0
-                ]
-                status_data["real_positions"] = real_positions
+                try:
+                    if self.exchange.options.get('defaultType') == 'spot':
+                        # 现货没有持仓概念，通过查询币种余额代替，为了简化这里暂返回空持仓
+                        status_data["real_positions"] = []
+                    else:
+                        all_positions = self.exchange.fetch_positions([symbol])
+                        real_positions = [
+                            {
+                                'symbol': p['symbol'],
+                                'side': str(p.get('side', '')).upper(), # 'LONG' or 'SHORT'
+                                'amount': float(p['contracts']),
+                                'entry_price': float(p['entryPrice']),
+                                'unrealized_pnl': float(p['unrealizedPnl'])
+                            } for p in all_positions if float(p['contracts']) > 0
+                        ]
+                        status_data["real_positions"] = real_positions
+                except Exception as e:
+                    logger.warning(f"Fetch real positions error (maybe spot market?): {e}")
+                    status_data["real_positions"] = []
 
                 # 实盘挂单
                 try:
@@ -430,11 +447,12 @@ class MarketTool:
         
         return status_data
 
-    def get_market_analysis(self, symbol, mode='STRATEGY'):
+    def get_market_analysis(self, symbol, mode='STRATEGY', timeframes=None):
         """
         全量获取市场数据的主入口
         """
-        timeframes = ['5m','15m', '1h', '4h', '1d', '1w']
+        if timeframes is None:
+            timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
 
         final_output = {
             "symbol": symbol,
@@ -688,14 +706,19 @@ class MarketTool:
 
             if action in ['BUY_LIMIT', 'SELL_LIMIT']:
                 side = 'buy' if 'BUY' in action else 'sell'
-                pos_side = 'LONG' if side == 'buy' else 'SHORT'
                 
                 amount = self.exchange.amount_to_precision(symbol, float(order_params['amount']))
                 price = self.exchange.price_to_precision(symbol, float(order_params['entry_price']))
                 
-                params = {'timeInForce': 'GTC', 'positionSide': pos_side}
+                params = {'timeInForce': 'GTC'}
                 
-                logger.info(f"🚀 [OPEN-LIMIT] 开仓挂单: {pos_side} {side} {amount} @ {price}")
+                is_spot = (self.exchange.options.get('defaultType') == 'spot')
+                if not is_spot:
+                    pos_side = 'LONG' if side == 'buy' else 'SHORT'
+                    params['positionSide'] = pos_side
+                    logger.info(f"🚀 [OPEN-LIMIT] 开仓挂单: {pos_side} {side} {amount} @ {price}")
+                else:
+                    logger.info(f"🚀 [SPOT-LIMIT] 现货挂单: {side} {amount} @ {price}")
                 
                 order = self.exchange.create_order(symbol, 'LIMIT', side, float(amount), float(price), params=params)
                 

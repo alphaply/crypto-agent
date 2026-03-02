@@ -1,6 +1,15 @@
 from typing import Any, Dict, List, Literal, Optional
-from langchain_core.messages import BaseMessage
+from typing import List, Literal, Optional, Any, Dict
 from pydantic import BaseModel, Field
+from langchain_core.messages import (
+    BaseMessageChunk,
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+    SystemMessage,
+    trim_messages,
+    BaseMessage
+)
 
 class OpenOrderReal(BaseModel):
     """开单参数：仅包含限价单核心参数，不包含止盈止损（暂不支持自动带止盈止损）"""
@@ -8,6 +17,13 @@ class OpenOrderReal(BaseModel):
     entry_price: float = Field(description="入场的价格（限价单）")
     amount: float = Field(description="下单数量 (币种数量)")
     reason: str = Field(description="开仓理由")
+
+class OpenOrderSpotDCA(BaseModel):
+    """现货定投开单参数：仅包含买入限价单核心参数"""
+    action: Literal["BUY_LIMIT"] = Field(description="BUY_LIMIT: 限价买入现货")
+    entry_price: float = Field(description="入场的价格（限价单）")
+    amount: float = Field(description="下单数量 (币种数量)")
+    reason: str = Field(description="定投买入理由")
 
 class OpenOrderStrategy(BaseModel):
     """策略模式开仓参数：包含止盈止损和有效期"""

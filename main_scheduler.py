@@ -34,6 +34,24 @@ def get_all_configs():
         return []
 
 
+# ==========================================
+# 辅助函数: 检查今日是否已执行过定投
+# ==========================================
+def check_dca_executed_today(config_id, date_str):
+    from database import get_db_conn
+    try:
+        with get_db_conn() as conn:
+            c = conn.cursor()
+            c.execute('''
+                SELECT count(*) as cnt FROM orders 
+                WHERE config_id = ? AND timestamp LIKE ? AND reason LIKE '%Spot DCA daily buy%'
+            ''', (config_id, f"{date_str}%"))
+            row = c.fetchone()
+            return row['cnt'] > 0
+    except Exception as e:
+        logger.error(f"❌ 检查DCA记录失败: {e}")
+        return False
+
 def process_single_config(config):
     """
     单线程任务
@@ -43,6 +61,44 @@ def process_single_config(config):
     mode = config.get('mode', 'STRATEGY').upper()
 
     if not symbol: return
+
+    # ==========================================
+    # 现货定投模式：每日指定时间执行一次
+    # ==========================================
+    if mode == 'SPOT_DCA':
+        try:
+            now = datetime.now(TZ_CN)
+            today_str = now.strftime('%Y-%m-%d')
+            target_hour = int(str(config.get('dca_time', '8')).split(':')[0])
+            
+            # 只有在设定的整点小时内才执行
+            if now.hour == target_hour:
+                # 检查数据库中今天是否已经挂单
+                if check_dca_executed_today(config_id, today_str):
+                    return
+                
+                logger.info(f"⏳ [{config_id}] 触发每日现货定投 Agent 任务...")
+                # 记录一个空日志或者用一个特殊字段保证 check_dca_executed_today 不会重复触发
+                from database import save_order_log
+                # 保存一条特殊记录防止重复触发 (假定状态为 INIT，虽然订单还没成交)
+                # 这个机制依赖于真实下单后也会带有 'Spot DCA daily buy'。
+                # 更好的做法是在这里运行 agent。
+                
+                # 为了防止 Agent 运行慢导致同一小时内重复触发，我们可以简单用内存或数据库加锁
+                # 在此，由于 check_dca_executed_today 检查的是真实订单，如果 Agent 跑完才下订单，中途可能重复。
+                # 所以我们先插入一条 pending 的执行记录，或者这里让 Agent 执行完毕后自然带有记录。
+                # 为简便，这里直接信任 Agent 执行
+                
+                run_agent_for_config(config)
+                
+                # 为了防止在 Agent 执行的 1-2 分钟内再次被调度器调度到（心跳可能 1m 一次，不过当前最快 15m）
+                # 这里不需特殊处理，因为如果是 15m 一次，同一个小时可能触发 4 次。我们需要在 Agent 外面防抖。
+                # 因此保存一条虚拟的“执行完成”记录：
+                save_order_log(f"DCA-TRIGGER-{int(now.timestamp())}", symbol, config_id, 'trigger', 0, 0, 0, "Spot DCA daily buy triggered", trade_mode="REAL", config_id=config_id)
+                
+        except Exception as e:
+            logger.error(f"❌ Error [{config_id}] SPOT_DCA: {e}")
+        return
 
     # ==========================================
     # 策略模式：严格限制在整点运行

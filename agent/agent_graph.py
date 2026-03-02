@@ -15,7 +15,8 @@ from langgraph.graph import StateGraph, END
 from agent.agent_models import AgentState
 from agent.agent_tools import (
     open_position_real, close_position_real, cancel_orders_real,
-    open_position_strategy, cancel_orders_strategy
+    open_position_strategy, cancel_orders_strategy, open_position_spot_dca,
+    analyze_event_contract
 )
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text, escape_markdown_special_chars
@@ -102,14 +103,6 @@ def start_node(state: AgentState) -> AgentState:
     week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     week_map_en = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     
-    # 判断美股是否开盘 (9:30 - 16:00 ET, Mon-Fri)
-    is_open = False
-    if now_us.weekday() < 5:
-        m_open = now_us.replace(hour=9, minute=30, second=0, microsecond=0)
-        m_close = now_us.replace(hour=16, minute=0, second=0, microsecond=0)
-        is_open = m_open <= now_us <= m_close
-    
-    # market_status = "【美股开盘中】" if is_open else "【美股休盘】"
     current_time_str = (
         f"北京: {now_cn.strftime('%Y-%m-%d %H:%M:%S')} ({week_map[now_cn.weekday()]}) | "
         f"美东: {now_us.strftime('%Y-%m-%d %H:%M:%S')} ({week_map_en[now_us.weekday()]})"
@@ -123,7 +116,8 @@ def start_node(state: AgentState) -> AgentState:
     logger.info(f"--- [Node] Start: Analyzing {symbol} | Mode: {trade_mode} ---")
 
     try:
-        market_full = market_tool.get_market_analysis(symbol, mode=trade_mode)
+        timeframes_to_fetch = ['5m', '15m', '1h', '4h', '1d', '1w']
+        market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
         recent_summaries = database.get_recent_summaries(symbol, config_id=config_id, limit=4)
     except Exception as e:
@@ -138,8 +132,6 @@ def start_node(state: AgentState) -> AgentState:
             positions = account_data.get('real_positions', [])
             total_unrealized_pnl = sum([float(p.get('unrealized_pnl', 0)) for p in positions])
             
-            # 采样频率优化：仅在整点 (0-15分之间) 记录快照，避免 15m 高频打点
-            # 这样在 15m 的心跳中，每小时只会记录一次
             if now.minute < 15:
                 database.save_balance_snapshot(symbol, balance, total_unrealized_pnl)
                 
@@ -156,6 +148,7 @@ def start_node(state: AgentState) -> AgentState:
 
     indicators_summary = {}
     timeframes = ['1h', '4h', '1d', '1w'] if trade_mode == 'STRATEGY' else ['15m', '1h', '4h', '1d']
+    
     raw_analysis = market_full.get("analysis", {})
 
     for tf in timeframes:
@@ -243,15 +236,11 @@ def agent_node(state: AgentState) -> AgentState:
     trade_mode = config.get('mode', 'STRATEGY').upper()
     logger.info(f"--- [Node] Agent: {config.get('model')} (Mode: {trade_mode}) ---")
 
-    # 兼容处理：针对 DeepSeek R1/V3 等模型处理 reasoning_content
-    # 1. 如果 assistant 消息包含 tool_calls，则必须包含 reasoning_content 字段
-    # 2. 将历史消息中的 reasoning_content 设为 None 以节省带宽并避免报错
     messages = []
     is_deepseek = "deepseek" in model_name or "r1" in model_name
     
     for msg in state.messages:
         if isinstance(msg, AIMessage) and is_deepseek:
-            # 只要之前存在推理内容或者是带工具调用的 AI 消息，就确保字段存在且设为 None
             if getattr(msg, "tool_calls", None) or "reasoning_content" in msg.additional_kwargs or msg.response_metadata.get("reasoning_content"):
                 msg.additional_kwargs["reasoning_content"] = None
         messages.append(msg)
@@ -263,9 +252,11 @@ def agent_node(state: AgentState) -> AgentState:
 
         # 根据模式选择工具集
         if trade_mode == 'REAL':
-            tools = [open_position_real, close_position_real, cancel_orders_real]
+            tools = [open_position_real, close_position_real, cancel_orders_real, analyze_event_contract]
+        elif trade_mode == 'SPOT_DCA':
+            tools = [open_position_spot_dca, cancel_orders_real, analyze_event_contract]
         else:
-            tools = [open_position_strategy, cancel_orders_strategy]
+            tools = [open_position_strategy, cancel_orders_strategy, analyze_event_contract]
 
         llm = ChatOpenAI(
             model=config.get('model'),
@@ -277,12 +268,10 @@ def agent_node(state: AgentState) -> AgentState:
 
         response = llm.invoke(messages)
         
-        # 处理 DeepSeek R1 等模型的思维链展示
         reasoning = response.additional_kwargs.get("reasoning_content") or response.response_metadata.get("reasoning_content")
         if reasoning and "<thinking>" not in response.content:
             response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
         
-        # 记录 Token 使用情况
         try:
             usage = response.response_metadata.get("token_usage", {})
             if usage:
@@ -309,7 +298,6 @@ def tools_node(state: AgentState) -> AgentState:
     
     config_id = state.config_id
     symbol = state.symbol
-    trade_mode = state.agent_config.get('mode', 'STRATEGY').upper()
     
     tool_outputs = []
     # 动态映射可用工具
@@ -318,7 +306,9 @@ def tools_node(state: AgentState) -> AgentState:
         "close_position_real": close_position_real,
         "cancel_orders_real": cancel_orders_real,
         "open_position_strategy": open_position_strategy,
-        "cancel_orders_strategy": cancel_orders_strategy
+        "cancel_orders_strategy": cancel_orders_strategy,
+        "open_position_spot_dca": open_position_spot_dca,
+        "analyze_event_contract": analyze_event_contract
     }
     
     for tool_call in tool_calls:
@@ -328,12 +318,10 @@ def tools_node(state: AgentState) -> AgentState:
         
         if tool_name in available_tools_map:
             tool_obj = available_tools_map[tool_name]
-            # 注入上下文
             args['config_id'] = config_id
             args['symbol'] = symbol
             
             try:
-                # 使用 .func(**args) 直接调用原始函数，确保注入的参数能正确传递
                 result = tool_obj.func(**args)
                 tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=str(result)))
             except Exception as e:
@@ -348,20 +336,13 @@ def finalize_node(state: AgentState) -> AgentState:
     """合并 AI 消息的内容并保存到数据库。"""
     config_id = state.config_id
     symbol = state.symbol
-    # 这里的 agent_name 建议存模型名，方便历史回溯过滤；config_id 存唯一标识
     agent_name = state.agent_config.get('model', 'Unknown')
     
-    # 收集本次运行中所有 AI 消息的内容
-    # 我们优先取那条“最长的”消息（通常是包含分析的那条），并拼接后续的确认消息
-    # 这样可以防止“已执行”覆盖掉原来的长篇分析
     all_ai_messages = [msg for msg in state.messages if isinstance(msg, AIMessage) and msg.content]
     
     if all_ai_messages:
-        # 按长度排序，确保包含分析的消息排在前面
         sorted_msgs = sorted(all_ai_messages, key=lambda m: len(m.content), reverse=True)
-        main_content = sorted_msgs[0].content # 最长的那条分析
-        
-        # 收集其他消息（如果有的话，比如执行后的简短确认）
+        main_content = sorted_msgs[0].content 
         other_parts = [m.content for m in all_ai_messages if m != sorted_msgs[0]]
         
         if other_parts:
@@ -369,10 +350,7 @@ def finalize_node(state: AgentState) -> AgentState:
         else:
             full_content = main_content
         
-        # 调用 Summarizer Pipeline
         strategy_logic = summarize_content(full_content, state.agent_config)
-        
-        # 处理Markdown特殊字符，避免波浪号被解析为删除线
         processed_content = escape_markdown_special_chars(full_content)
         processed_strategy_logic = escape_markdown_special_chars(strategy_logic)
         
@@ -385,7 +363,6 @@ def finalize_node(state: AgentState) -> AgentState:
 
 def should_continue(state: AgentState):
     last_message = state.messages[-1]
-    # 只有当上一条消息带有工具调用时，才继续去 tools 节点
     if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
         return "tools"
     return "finalize"
