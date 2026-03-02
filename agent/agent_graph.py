@@ -27,6 +27,7 @@ from utils.market_data import MarketTool
 from config import config as global_config
 
 TZ_CN = pytz.timezone('Asia/Shanghai')
+TZ_US = pytz.timezone('America/New_York')
 logger = setup_logger("AgentGraph")
 load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -95,9 +96,24 @@ def start_node(state: AgentState) -> AgentState:
     config_id = state.config_id
     symbol = state.symbol
     config = state.agent_config
-    now = datetime.now(TZ_CN)
+    now_cn = datetime.now(TZ_CN)
+    now_us = datetime.now(TZ_US)
+    now = now_cn  # Maintain backward compatibility for snapshot logic
     week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    current_time_str = f"{now.strftime('%Y-%m-%d %H:%M:%S')} ({week_map[now.weekday()]})"
+    week_map_en = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    
+    # 判断美股是否开盘 (9:30 - 16:00 ET, Mon-Fri)
+    is_open = False
+    if now_us.weekday() < 5:
+        m_open = now_us.replace(hour=9, minute=30, second=0, microsecond=0)
+        m_close = now_us.replace(hour=16, minute=0, second=0, microsecond=0)
+        is_open = m_open <= now_us <= m_close
+    
+    # market_status = "【美股开盘中】" if is_open else "【美股休盘】"
+    current_time_str = (
+        f"北京: {now_cn.strftime('%Y-%m-%d %H:%M:%S')} ({week_map[now_cn.weekday()]}) | "
+        f"美东: {now_us.strftime('%Y-%m-%d %H:%M:%S')} ({week_map_en[now_us.weekday()]})"
+    )
 
     trade_mode = config.get('mode', 'STRATEGY').upper()
     is_real_exec = (trade_mode == 'REAL')
