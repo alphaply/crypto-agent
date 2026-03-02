@@ -109,7 +109,7 @@ def start_node(state: AgentState) -> AgentState:
     )
 
     trade_mode = config.get('mode', 'STRATEGY').upper()
-    is_real_exec = (trade_mode == 'REAL')
+    is_real_exec = (trade_mode in ['REAL', 'SPOT_DCA'])
     agent_name = config_id
 
     market_tool = MarketTool(config_id=config_id)

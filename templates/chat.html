@@ -778,7 +778,7 @@
         const select = document.getElementById('configSelect');
         if (select) {
           select.innerHTML = configs.map(c => {
-            const displayName = c.title || `${c.symbol} (${c.model})`;
+            const displayName = `[${c.config_id}] ${c.symbol} (${c.model})`;
             return `<option value="${c.config_id}">${escapeHtml(displayName)}</option>`;
           }).join('');
         }
