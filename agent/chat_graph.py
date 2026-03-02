@@ -29,7 +29,8 @@ from agent.agent_tools import (
     close_position_real,
     open_position_real,
     open_position_strategy,
-    analyze_event_contract
+    analyze_event_contract,
+    format_event_contract_order
 )
 from config import config as global_config
 import database
@@ -56,8 +57,8 @@ def _get_chat_tools(cfg: Dict[str, Any]):
     trade_mode = cfg.get("mode", "STRATEGY").upper()
     
     if trade_mode == "REAL":
-        return [open_position_real, close_position_real, cancel_orders_real, analyze_event_contract]
-    return [open_position_strategy, cancel_orders_strategy, analyze_event_contract]
+        return [open_position_real, close_position_real, cancel_orders_real, analyze_event_contract, format_event_contract_order]
+    return [open_position_strategy, cancel_orders_strategy, analyze_event_contract, format_event_contract_order]
 
 
 def _message_counter(msgs: list) -> int:
@@ -247,6 +248,7 @@ def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str)
         "open_position_strategy": open_position_strategy,
         "cancel_orders_strategy": cancel_orders_strategy,
         "analyze_event_contract": analyze_event_contract,
+        "format_event_contract_order": format_event_contract_order,
     }
     tool_obj = tool_map.get(tool_name)
     if not tool_obj:
@@ -271,7 +273,7 @@ def tools_node(state: ChatState):
         tool_args = call.get("args", {})
 
         # 事件合约分析工具免审批
-        if tool_name == "analyze_event_contract":
+        if tool_name in ["analyze_event_contract", "format_event_contract_order"]:
             approved = True
         else:
             approval = interrupt(

@@ -16,7 +16,7 @@ from agent.agent_models import AgentState
 from agent.agent_tools import (
     open_position_real, close_position_real, cancel_orders_real,
     open_position_strategy, cancel_orders_strategy, open_position_spot_dca,
-    analyze_event_contract
+    analyze_event_contract, format_event_contract_order
 )
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text, escape_markdown_special_chars
@@ -252,11 +252,11 @@ def agent_node(state: AgentState) -> AgentState:
 
         # 根据模式选择工具集
         if trade_mode == 'REAL':
-            tools = [open_position_real, close_position_real, cancel_orders_real, analyze_event_contract]
+            tools = [open_position_real, close_position_real, cancel_orders_real, analyze_event_contract, format_event_contract_order]
         elif trade_mode == 'SPOT_DCA':
-            tools = [open_position_spot_dca, cancel_orders_real, analyze_event_contract]
+            tools = [open_position_spot_dca, cancel_orders_real, analyze_event_contract, format_event_contract_order]
         else:
-            tools = [open_position_strategy, cancel_orders_strategy, analyze_event_contract]
+            tools = [open_position_strategy, cancel_orders_strategy, analyze_event_contract, format_event_contract_order]
 
         llm = ChatOpenAI(
             model=config.get('model'),
@@ -308,7 +308,8 @@ def tools_node(state: AgentState) -> AgentState:
         "open_position_strategy": open_position_strategy,
         "cancel_orders_strategy": cancel_orders_strategy,
         "open_position_spot_dca": open_position_spot_dca,
-        "analyze_event_contract": analyze_event_contract
+        "analyze_event_contract": analyze_event_contract,
+        "format_event_contract_order": format_event_contract_order
     }
     
     for tool_call in tool_calls:

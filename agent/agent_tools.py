@@ -47,6 +47,14 @@ class OpenStrategySchema(BaseModel):
 class CancelStrategySchema(BaseModel):
     order_ids: List[str] = Field(description="要撤销的模拟订单 ID 列表")
 
+class EventContractOrderSchema(BaseModel):
+    direction: Literal["Long", "Short"] = Field(description="开仓方向，多 (Long) 或者 空 (Short)")
+    duration: str = Field(description="合约时间期限，例如：30min, 1h, 1d")
+    entry_condition: str = Field(description="理想入场位置或者条件，文字描述")
+
+class AnalyzeEventContractSchema(BaseModel):
+    pass # 无需参数，系统会自动注入当前 symbol 和 config_id
+
 # ==========================================
 # 1. 通用交易工具
 # ==========================================
@@ -180,13 +188,16 @@ def cancel_orders_strategy(order_ids: List[str], config_id: str, symbol: str):
 # 2. 专用分析工具
 # ==========================================
 
-@tool
-def analyze_event_contract(symbol: str, config_id: str) -> str:
+@tool(args_schema=AnalyzeEventContractSchema)
+def analyze_event_contract(*args, **kwargs) -> str:
     """
-    [事件合约分析工具] 仅在用户要求对特定时间窗口（30min, 1h, 1d）进行价格方向预测时使用。
-    输出：开仓具体点位/价格、预测方向（Long/Short）、预测有效时长。
+    [事件合约分析工具] 一次性获取当前交易对在 30min, 1h, 1d 三个时间窗口的价格方向预测与开仓建议。
+    注意：此工具不需要任何参数，调用一次即可返回所有三个周期的完整分析报告。请勿传递时间周期等参数。
     """
     from utils.market_data import MarketTool
+    # 动态获取当前的注入参数
+    symbol = kwargs.get("symbol", "Unknown")
+    config_id = kwargs.get("config_id", "Unknown")
     try:
         mt = MarketTool(config_id=config_id)
         # 获取 30m, 1h, 1d 周期数据
@@ -220,3 +231,22 @@ def analyze_event_contract(symbol: str, config_id: str) -> str:
         return "\n\n".join(results)
     except Exception as e:
         return f"Error executing event contract analysis: {str(e)}"
+
+@tool(args_schema=EventContractOrderSchema)
+def format_event_contract_order(direction: Literal["Long", "Short"], duration: str, entry_condition: str, symbol: str, config_id: str) -> str:
+    """
+    [事件合约格式化工具] 专门用于生成事件合约的开单指令格式。事件合约没有止损，到时间自动平仓。
+    当用户确认想要进行事件合约交易，或要求输出事件合约开单格式时，使用此工具生成标准化的卡片输出。
+    """
+    direction_emoji = "🟢 多" if direction == "Long" else "🔴 空"
+    
+    formatted_msg = (
+        f"📋 **事件合约 开单计划**\n"
+        f"------------------------\n"
+        f"🔹 **交易标的**: {symbol}\n"
+        f"🔹 **方向**: {direction_emoji} ({direction})\n"
+        f"🔹 **周期**: {duration}\n"
+        f"🔹 **入场条件**: {entry_condition}\n"
+        f"⚠️ **注意**: 事件合约无止损机制，到期后自动交割平仓。"
+    )
+    return formatted_msg

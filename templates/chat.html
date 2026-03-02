@@ -455,11 +455,19 @@
 
           if (isTool) {
             return `
-              <div id="msg-${idx}" class="flex items-start gap-2 mb-4 max-w-[90%]">
-                <div class="flex-1 bg-slate-100 border border-slate-200 rounded-2xl p-3 text-[11px] font-mono text-slate-600 shadow-inner ${animationClass}">
-                  <div class="flex items-center gap-2 mb-1.5 opacity-60"><span class="font-bold uppercase tracking-wider">工具输出</span></div>
-                  <div class="whitespace-pre-wrap">${escapeHtml(m.content)}</div>
-                </div>
+              <div id="msg-${idx}" class="flex items-start gap-2 mb-4 w-full">
+                <details class="flex-1 bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden group max-w-[95%] sm:max-w-[85%] ${animationClass}">
+                  <summary class="px-3 py-2 cursor-pointer list-none select-none text-[11px] font-medium text-slate-600 flex items-center justify-between hover:bg-slate-100/50 transition-colors">
+                    <div class="flex items-center gap-2">
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                      <span class="font-bold tracking-wide uppercase">工具返回结果</span>
+                    </div>
+                    <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                  </summary>
+                  <div class="px-3 pb-3 pt-1 border-t border-slate-200/60 text-[10px] font-mono text-slate-600 whitespace-pre-wrap overflow-x-auto break-words max-h-64 overflow-y-auto scroll-thin">
+                    ${escapeHtml(m.content)}
+                  </div>
+                </details>
               </div>`;
           }
 
@@ -472,27 +480,30 @@
             toolCallsHtml = m.tool_calls.map(tc => {
               const args = tc.args || {};
               const argsHtml = Object.entries(args).map(([k, v]) => `
-                <div class="tool-arg-row">
-                  <span class="tool-arg-key">${escapeHtml(k)}</span>
-                  <span class="tool-arg-val">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</span>
+                <div class="grid grid-cols-[auto_1fr] gap-2 py-1 border-b border-blue-100/50 last:border-0">
+                  <span class="font-semibold text-slate-500">${escapeHtml(k)}:</span>
+                  <span class="text-slate-700 break-all">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</span>
                 </div>
               `).join('');
 
               return `
-                <div class="mt-3 p-4 bg-slate-50 rounded-2xl border border-slate-200 text-[11px]">
-                  <div class="flex items-center gap-2 text-blue-600 font-bold mb-3">
-                    <div class="bg-blue-600 text-white px-1.5 py-0.5 rounded text-[9px] uppercase">Tool</div>
-                    <span>${escapeHtml(tc.name)}</span>
+                <details class="mt-3 rounded-xl border border-blue-100 bg-blue-50/50 overflow-hidden group">
+                  <summary class="px-3 py-2 cursor-pointer list-none select-none text-[11px] font-medium text-blue-700 flex items-center justify-between hover:bg-blue-100/50 transition-colors">
+                    <div class="flex items-center gap-2">
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                      <span class="font-bold tracking-wide">调用工具: ${escapeHtml(tc.name)}</span>
+                    </div>
+                    <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                  </summary>
+                  <div class="px-3 pb-3 pt-1 border-t border-blue-100/50 text-[10px] font-mono">
+                    ${argsHtml || '<span class="text-slate-400 italic">无参数</span>'}
                   </div>
-                  <div class="space-y-1">${argsHtml}</div>
-                </div>
+                </details>
               `;
             }).join('');
           }
 
-          const bodyHtml = isStreaming
-            ? `<div data-msg-body="1" class="md-content whitespace-pre-wrap">${m.content ? escapeHtml(m.content) : '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>'}</div>`
-            : `<div data-msg-body="1" class="md-content">${renderMarkdown(m.content)}</div>`;
+          const bodyHtml = `<div data-msg-body="1" class="md-content">${m.content ? renderMarkdown(m.content) : (isStreaming ? '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>' : '')}</div>`;
 
           return `
             <div id="msg-${idx}" class="flex flex-col gap-1 mb-4 ${isUser ? 'items-end' : 'items-start'}">
@@ -541,7 +552,9 @@
         }
 
         const body = msgRoot.querySelector('[data-msg-body="1"]');
-        if (body) body.textContent = msg.content || '';
+        if (body) {
+          body.innerHTML = msg.content ? renderMarkdown(msg.content) : '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+        }
 
         const reasoning = String(msg.reasoning_content || '').trim();
         if (reasoning) {

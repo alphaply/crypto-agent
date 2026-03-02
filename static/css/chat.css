@@ -26,6 +26,7 @@ body {
   border-radius: 1.25rem;
   box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   transition: all 0.2s ease;
+  overflow-x: auto; /* 防止内部宽元素撑破气泡 */
 }
 
 @keyframes message-in {
@@ -113,6 +114,8 @@ body {
   background: #94a3b8;
   border-radius: 50%;
   animation: typing 1.4s infinite;
+  display: inline-block;
+  margin-right: 2px;
 }
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
@@ -121,3 +124,62 @@ body {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-4px); }
 }
+
+/* Markdown 渲染样式 */
+.md-content {
+  font-size: 0.875rem; /* text-sm */
+  line-height: 1.6;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.md-content p { margin-bottom: 0.75rem; }
+.md-content p:last-child { margin-bottom: 0; }
+.md-content pre {
+  background-color: #f1f5f9;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin: 0.5rem 0 0.75rem 0;
+  font-size: 0.8125rem;
+  border: 1px solid #e2e8f0;
+}
+.md-content code {
+  background-color: rgba(0,0,0,0.05);
+  padding: 0.15rem 0.3rem;
+  border-radius: 0.25rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+}
+.md-content pre code {
+  background-color: transparent;
+  padding: 0;
+  font-size: 1em;
+}
+.md-content ul, .md-content ol {
+  margin-bottom: 0.75rem;
+  padding-left: 1.5rem;
+}
+.md-content ul { list-style-type: disc; }
+.md-content ol { list-style-type: decimal; }
+.md-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 0.75rem;
+  display: block;
+  overflow-x: auto;
+}
+.md-content th, .md-content td {
+  border: 1px solid #e2e8f0;
+  padding: 0.5rem;
+}
+.md-content th { background-color: #f8fafc; font-weight: 600; }
+.md-content a { color: #2563eb; text-decoration: underline; }
+.md-content blockquote {
+  border-left: 4px solid #cbd5e1;
+  padding-left: 1rem;
+  color: #64748b;
+  margin-left: 0;
+  margin-right: 0;
+  font-style: italic;
+}
+
