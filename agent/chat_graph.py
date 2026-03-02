@@ -191,23 +191,26 @@ def model_node(state: ChatState):
     if cfg.get("extra_body"):
         kwargs["extra_body"] = cfg.get("extra_body")
 
-    # IMPORTANT: keep non-streaming here. streaming=True can make invoke()
-    # return a generator in some LangChain versions, which breaks add_messages.
+    # Use invoke() with streaming=True. LangGraph's stream(stream_mode="messages") 
+    # hooks into the internal callbacks of invoke() to emit BaseMessageChunk events 
+    # in real-time. This is more robust than manual iteration within the node.
     llm = ChatOpenAI(
         model=cfg.get("model"),
         api_key=cfg.get("api_key"),
         base_url=cfg.get("api_base"),
         temperature=0.5,
-        streaming=False,
+        streaming=True,
         model_kwargs=kwargs,
     ).bind_tools(_get_chat_tools(cfg))
 
-    # 使用 invoke 而不是 stream，避免将生成器返回给 Annotated[list, add_messages] 导致报错
-    # LangGraph 的 add_messages reducer 无法处理生成器类型
+    # This call blocks until completion, but triggers streaming events externally
     response = llm.invoke(trimmed)
     
-    # 统一处理 DeepSeek 等模型的思维链 (reasoning_content)
-    reasoning = response.additional_kwargs.get("reasoning_content") or response.response_metadata.get("reasoning_content")
+    # Final formatting for the state (e.g. for DeepSeek reasoning)
+    reasoning = (
+        response.additional_kwargs.get("reasoning_content") or 
+        response.response_metadata.get("reasoning_content")
+    )
     if reasoning and not response.tool_calls and "<thinking>" not in response.content:
         response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
 
@@ -384,6 +387,11 @@ def stream_chat(session_id: str, payload: Dict[str, Any]):
         if not metadata or metadata.get("langgraph_node") != "model":
             continue
             
+        # 仅处理增量块 (BaseMessageChunk)，忽略节点结束时返回的完整消息 (AIMessage)
+        # 这样可以防止内容重复。
+        if not isinstance(chunk, BaseMessageChunk):
+            continue
+
         reasoning_token = _chunk_reasoning_text(chunk)
         if reasoning_token:
             yield {"type": "reasoning_token", "token": reasoning_token}
@@ -406,6 +414,10 @@ def stream_resume_chat(session_id: str, approved: bool):
         chunk, metadata = item
         node = metadata.get("langgraph_node", "")
         if node not in ["model", "tools"]:
+            continue
+        
+        # 同样仅处理增量块
+        if not isinstance(chunk, BaseMessageChunk):
             continue
             
         reasoning_token = _chunk_reasoning_text(chunk)
