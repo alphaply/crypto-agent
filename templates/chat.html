@@ -535,6 +535,7 @@
           const animationClass = (isStreaming || idx < messages.length - 1) ? '' : 'animate-in slide-in-from-bottom-2 duration-300';
 
           if (isTool) {
+            const toolContent = String(m.content || '').replace(/^\n+/, '');
             return `
               <div id="msg-${idx}" class="flex items-start gap-2 mb-4 w-full">
                 <details open class="flex-1 bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden group max-w-[95%] sm:max-w-[85%] ${animationClass}">
@@ -546,7 +547,7 @@
                     <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                   </summary>
                   <div class="px-3 pb-3 pt-1 border-t border-slate-200/60 text-[10px] font-mono text-slate-600 whitespace-pre-wrap overflow-x-auto break-words max-h-64 overflow-y-auto scroll-thin">
-                    ${escapeHtml(m.content)}
+                    ${escapeHtml(toolContent)}
                   </div>
                 </details>
               </div>`;
@@ -645,11 +646,24 @@
         if (delta.tool_calls) {
           if (!msg.tool_calls) msg.tool_calls = [];
           delta.tool_calls.forEach(tc => {
-            let existing = msg.tool_calls.find(e => e.index === tc.index);
+            let existing = null;
+            if (tc.id) {
+              existing = msg.tool_calls.find(e => e.id === tc.id);
+            }
+            if (!existing && tc.index != null) {
+              // 取同 index 的最后一个，避免不同工具复用 index 时互相拼接
+              for (let i = msg.tool_calls.length - 1; i >= 0; i--) {
+                if (msg.tool_calls[i].index === tc.index) {
+                  existing = msg.tool_calls[i];
+                  break;
+                }
+              }
+            }
             if (existing) {
               if (tc.name) existing.name = (existing.name || '') + tc.name;
               if (tc.args) existing.args = (existing.args || '') + tc.args;
               if (tc.id) existing.id = tc.id;
+              if (tc.type) existing.type = tc.type;
             } else {
               msg.tool_calls.push(tc);
             }
