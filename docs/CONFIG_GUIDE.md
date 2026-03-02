@@ -1,15 +1,13 @@
-# 配置指南 (Configuration Guide) - V0.3
+# 配置指南
 
-本项目采用高度灵活的 **多 Agent 架构**。所有的交易逻辑均由 `.env` 文件中的 `SYMBOL_CONFIGS` 字段驱动。
+本项目使用多 Agent 架构，所有交易逻辑由 `.env` 文件中的 `SYMBOL_CONFIGS` 字段驱动。
 
----
-
-## 1. 核心 JSON 结构 (SYMBOL_CONFIGS)
+## 核心配置结构 (SYMBOL_CONFIGS)
 
 `SYMBOL_CONFIGS` 是一个 JSON 数组，每个对象代表一个独立的交易 Agent。
 
-### 完整示例
-```json
+### 示例配置
+``json
 [
   {
     "config_id": "eth-claude-real",
@@ -33,63 +31,36 @@
 ]
 ```
 
----
+### 配置项说明
+- **config_id**: 唯一标识符，用于区分不同配置
+- **symbol**: 交易对名称，如 `BTC/USDT`
+- **enabled**: 开关，设为 `false` 则 Agent 停止运行
+- **mode**: 运行模式
+    - `REAL`: 实盘合约模式，每15分钟执行一次
+    - `STRATEGY`: 策略模拟模式，每1小时执行一次
+    - `SPOT_DCA`: 现货定投模式，每日定时执行
+- **dca_time**: 定投触发时间，仅在 `SPOT_DCA` 模式下有效，值为0-23
 
-### 基础信息
-- **`config_id`** (String): **唯一标识符**。用于在数据库中区分不同的配置。建议命名格式为 `币种-模型-模式`。
-- **`symbol`** (String): 交易对名称（CCXT 格式），例如 `BTC/USDT`。
-- **`enabled`** (Boolean): **活跃开关**。设为 `false` 则该 Agent 停止心跳检测，不执行任何操作。
-- **`mode`** (String): 运行模式。
-    - `REAL`: **🔴 实盘合约模式**。15分钟心跳检测，根据实时数据执行买入/卖出/平仓合约。
-    - `STRATEGY`: **🔵 策略模拟模式**。1小时心跳检测，仅记录分析结果和模拟挂单，不消耗资金。
-    - `SPOT_DCA`: **🟢 现货定投模式**。**[V0.4 新增]** 每日定时执行（默认 8:00），根据技术指标（如 RSI、VP、EMA）寻找日内低点挂单买入现货，以平摊持仓成本。
-- **`dca_time`** (Number/String): **定投触发时间**。仅在 `SPOT_DCA` 模式下生效，取值 0-23。例如 `"8"` 代表每天早上 8:00 (北京时间) 触发。
+### 主要配置项
+- **model**: 主决策模型名称
+- **api_base**: API 接口地址
+- **api_key**: API 密钥
+- **temperature**: 随机性参数（推荐0.3）
+- **prompt_file**: 策略模板路径
+- **leverage**: 杠杆倍数
 
----
+### 高级配置
+- **binance_api_key / binance_secret**: 专属交易密钥
+- **summarizer**: 总结模型配置
 
-## 3. 关键配置截图
+## 配置模式
 
-### 3.1 币安 API 配置
-在交易所 API 管理页面，勾选 **“允许读取”** 和 **“允许现货及杠杆交易”**（如果是实盘合约还需勾选 **“允许合约”**）。
+### 赛马对比
+为同一币种配置多个 Agent（使用不同模型），比较它们的表现。
 
-![Binance API 配置](image/bn.png)
+### 混合策略
+为一个币种配置一个实盘模式和一个模拟模式，实现风险控制。
 
-### 3.2 开发者监控 (LangSmith)
-如果需要监控 Agent 的推理过程（思维链 Trace），请在 [LangSmith](https://smith.langchain.com/) 获取 API Key 并配置。
+## 管理建议
 
-![LangSmith 配置](image/smith.png)
-
----
-
-## 4. 常见配置模式
-- **`model`**: 主决策模型名称。
-- **`api_base`**: OpenAI 兼容协议的 API 地址。
-- **`api_key`**: 对应平台的 API Key。
-- **`temperature`**: 随机性（推荐 `0.3` 保持逻辑严谨）。
-- **`prompt_file`**: 该 Agent 使用的策略模板路径（位于 `agent/prompts/` 目录下）。
-
-### 交易参数
-- **`leverage`**: 杠杆倍数。
-
-### 高级扩展 (可选)
-- **`binance_api_key` / `binance_secret`**: **专属交易密钥**。如果配置了此项，该 Agent 将使用独立的币安账户进行交易；如果不填，则默认使用全局配置。
-- **`summarizer`** (Object): **专属总结模型**。
-    - 用于压缩历史上下文。
-    - **建议**: 主模型用 `DeepSeek` 或 `Claude` 做决策，总结模型用 `GPT-4o-mini` 或 `Qwen-Plus` 以节省成本。
-
----
-
-## 3. 常见配置模式
-
-### 模式 A: 赛马对比 (同一个币种，多个模型)
-你可以为 `BTC/USDT` 同时配置 `DeepSeek` 和 `Qwen` 两个 Agent（均为 `STRATEGY` 模式），通过 **对比视图** 观察谁的判断更准。
-
-### 模式 B: 混合策略
-为一个币种配置一个 `REAL` 模式（实盘执行）和一个 `STRATEGY` 模式（长周期观察），实现风险对冲。
-
----
-
-## 4. UI 管理建议
-
-1. **可视化操作**: 推荐使用仪表盘的 **⚙️ 配置中心** 进行可视化修改，系统会自动处理 JSON 转义。
-2. **热重载**: 保存配置后，后端会自动调用 `config.reload_config()`，在下一次心跳周期（15min/1h）自动应用新参数。
+使用仪表盘的配置中心进行可视化修改，保存后系统会自动应用新配置。

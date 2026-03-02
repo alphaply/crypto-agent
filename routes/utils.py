@@ -112,7 +112,7 @@ def get_symbol_specific_status(symbol):
         status_parts.append("🔴 实盘")
         freq_parts.append("15m")
     if has_dca:
-        status_parts.append("🟢 定投")
+        status_parts.append("🟡 定投")
         freq_parts.append("Daily")
     if has_strategy:
         status_parts.append("🔵 策略")

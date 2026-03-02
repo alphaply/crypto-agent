@@ -89,7 +89,7 @@
               <div class="flex items-center gap-2">
                 <span class="flex items-center gap-1.5">
                     <span class="w-2 h-2 rounded-full {{ 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' if summary.enabled else 'bg-gray-400' }}"></span>
-                    {% if summary.mode == 'REAL' %}🔴{% elif summary.mode == 'SPOT_DCA' %}🟢{% else %}🔵{% endif %}
+                    {% if summary.mode == 'REAL' %}🔴{% elif summary.mode == 'SPOT_DCA' %}🟡{% else %}🔵{% endif %}
                 </span>
                 {{ summary.display_name or summary.agent_name }}
               </div>
@@ -126,7 +126,7 @@
                                           {% elif summary.mode == 'SPOT_DCA' %}text-emerald-600
                                           {% else %}text-blue-600{% endif %}">
                                           {% if summary.mode == 'REAL' %}🔴 实盘模式
-                                          {% elif summary.mode == 'SPOT_DCA' %}🟢 定投模式
+                                          {% elif summary.mode == 'SPOT_DCA' %}🟡 定投模式
                                           {% else %}🔵 策略模式{% endif %}
                                       </span>
                                       <span class="text-[8px] md:text-[9px] text-gray-400">{{ summary.freq }}</span>
