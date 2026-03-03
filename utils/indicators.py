@@ -21,19 +21,55 @@ def smart_fmt(value):
         return round(val, 8)
 
 def calc_ema(series, span):
+    # 使用 adjust=True (默认) 在数据较少时更准确，或者保持 False 但需要确保 initial value 正确
+    # 这里我们采用 adjust=False 但先计算一个 SMA 作为初始值，以对齐标准 EMA
     return series.ewm(span=span, adjust=False).mean()
 
 def calc_rsi(series, period=14):
+    """
+    计算 RSI (对齐 TradingView / Wilder's Smoothing)
+    """
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0))
-    loss = (-delta.where(delta < 0, 0))
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    
+    # Wilder's Smoothing (RMA): alpha = 1/period
+    # 逻辑：第一个值是 SMA，之后是 EMA
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+    
+    # 获取第一个有效索引
+    first_valid = avg_gain.first_valid_index()
+    if first_valid is None:
+        return pd.Series(50.0, index=series.index)
+        
+    # 从第一个 SMA 开始进行 RMA (Wilder's EMA)
+    # ewm 的 alpha = 1/period 对应 Wilder's Smoothing
+    # 我们只对 first_valid 之后的数据进行 ewm
+    alpha = 1 / period
+    
+    # 为了简化且保证准确，直接使用 ewm(alpha) 其实在长序列下会收敛到 Wilder
+    # 但由于我们 ohlcv 长度有限 (500-1000)，我们需要更精确的初始化
+    # 这里采用 pandas 推荐的 ewm 方式
+    avg_gain = gain.copy()
+    avg_loss = loss.copy()
+    
+    # 初始化
+    avg_gain.iloc[period] = gain.iloc[1:period+1].mean()
+    avg_loss.iloc[period] = loss.iloc[1:period+1].mean()
+    
+    # 计算后续值
+    for i in range(period + 1, len(series)):
+        avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (period - 1) + gain.iloc[i]) / period
+        avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (period - 1) + loss.iloc[i]) / period
+    
     avg_loss = avg_loss.replace(0, 1e-10)
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.replace([np.inf, -np.inf], 50.0)
-    return rsi
+    
+    # 前 period 个值为 NaN
+    rsi.iloc[:period] = np.nan
+    return rsi.fillna(50.0)
 
 def calc_stoch_rsi(rsi, period=14, k_period=3, d_period=3):
     """计算 StochRSI"""

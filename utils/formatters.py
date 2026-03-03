@@ -107,7 +107,7 @@ def format_market_data_to_text(data: dict) -> str:
     # ========== 市场快照 ==========
     current_price = data.get("current_price", 0)
     atr_base = data.get("atr_base", 0)
-    sent = data.get("sentiment", {})
+    sent = data.get("sentiment") or {}
     funding = sent.get("funding_rate", 0) * 100 
     oi = fmt_num(sent.get("open_interest", 0))
     vol_24h = fmt_num(sent.get("24h_quote_vol", 0))
@@ -120,78 +120,83 @@ def format_market_data_to_text(data: dict) -> str:
     ]
 
     # ========== 按周期组织技术指标 ==========
-    indicators = data.get("technical_indicators", {})
+    indicators = data.get("technical_indicators") or {}
     # 动态获取所有可用的周期，并按大致时长排序
     tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
     available_tfs = [tf for tf in tf_order if tf in indicators]
     
-    for tf in available_tfs:
-        if tf not in indicators: continue
-        d = indicators[tf]
-        
-        output.append(f"【{tf}周期】")
-        
-        # 1. 核心与趋势 (已升级：含 ADX 强度)
-        tf_price = d.get('price', 0)
-        vwap = d.get('vwap', 'N/A')
-        atr = d.get('atr', 0)
-        
-        trend = d.get('trend', {})
-        t_status = trend.get('status', 'N/A')
-        t_strength = trend.get('strength', 'N/A')
-        adx = trend.get('adx', 0)
-        vol_stat = d.get('volume_status', 'N/A')
-        
-        output.append(f"• 状态: 价格={tf_price} | VWAP={vwap} | 趋势={t_status} (强度:{t_strength}, ADX:{adx})")
-        output.append(f"• 波动: ATR={atr} | 成交量={vol_stat}")
-        
-        # 2. 震荡指标 (StochRSI + KDJ + CCI)
-        rsi_data = d.get('rsi_analysis', {})
-        rsi = rsi_data.get('rsi', 0)
-        st_k, st_d = rsi_data.get('stoch_k', 0), rsi_data.get('stoch_d', 0)
-        
-        kdj = d.get('kdj', {})
-        k, _d, j = kdj.get('k', 0), kdj.get('d', 0), kdj.get('j', 0)
-        
-        cci = d.get('cci', 0)
-        
-        output.append(f"• 震荡: RSI={rsi} (StochK={st_k}, StochD={st_d}) | KDJ: K={k} D={_d} J={j} | CCI={cci}")
-
-        # 3. 动能 (MACD)
-        macd = d.get('macd', {})
-        diff, dea, hist = macd.get('diff', 0), macd.get('dea', 0), macd.get('hist', 0)
-        output.append(f"• MACD: Diff={diff} DEA={dea} Hist={hist}")
-
-        # 4. 布林带
-        bb = d.get('bollinger', {})
-        up, mid, low, width = bb.get('up',0), bb.get('mid',0), bb.get('low',0), bb.get('width',0)
-        output.append(f"• 布林带: Up={up} Low={low} Width={width}")
-        
-        # 5. K线序列
-        closes = d.get('recent_closes', [])
-        highs = d.get('recent_highs', [])
-        lows = d.get('recent_lows', [])
-        if closes:
-            c_str = ", ".join([str(x) for x in closes])
-            h_str = ", ".join([str(x) for x in highs])
-            l_str = ", ".join([str(x) for x in lows])
-            output.append(f"• 近5根K线: Close[{c_str}] High[{h_str}] Low[{l_str}]")
-        
-        # 6. EMA
-        ema = d.get('ema', {})
-        e20, e50, e100, e200 = ema.get('ema_20', 0), ema.get('ema_50', 0), ema.get('ema_100', 0), ema.get('ema_200', 0)
-        output.append(f"• EMA: 20={e20} / 50={e50} / 100={e100} / 200={e200}")
-        
-        # 7. 价值分布
-        vp = d.get('vp', {})
-        poc = vp.get('poc', 0)
-        val, vah = vp.get('val', 0), vp.get('vah', 0)
-        # 已经是排好序的数值列表，直接取前3
-        raw_hvns = vp.get('hvns', [])
-        hvn_str = ", ".join([str(x) for x in raw_hvns[:3]]) if raw_hvns else "N/A"
-        
-        output.append(f"• 价值区: POC={poc} | VA=[{val}~{vah}] | HVN: {hvn_str}")
+    if not available_tfs:
+        output.append("【技术指标】")
+        output.append("• 暂无可用周期数据 (数据获取可能延迟或受限)")
         output.append("")
+    else:
+        for tf in available_tfs:
+            if tf not in indicators: continue
+            d = indicators[tf]
+            
+            output.append(f"【{tf}周期】")
+            
+            # 1. 核心与趋势 (已升级：含 ADX 强度)
+            tf_price = d.get('price', 0)
+            vwap = d.get('vwap', 'N/A')
+            atr = d.get('atr', 0)
+            
+            trend = d.get('trend', {})
+            t_status = trend.get('status', 'N/A')
+            t_strength = trend.get('strength', 'N/A')
+            adx = trend.get('adx', 0)
+            vol_stat = d.get('volume_status', 'N/A')
+            
+            output.append(f"• 状态: 价格={tf_price} | VWAP={vwap} | 趋势={t_status} (强度:{t_strength}, ADX:{adx})")
+            output.append(f"• 波动: ATR={atr} | 成交量={vol_stat}")
+            
+            # 2. 震荡指标 (StochRSI + KDJ + CCI)
+            rsi_data = d.get('rsi_analysis', {})
+            rsi = rsi_data.get('rsi', 0)
+            st_k, st_d = rsi_data.get('stoch_k', 0), rsi_data.get('stoch_d', 0)
+            
+            kdj = d.get('kdj', {})
+            k, _d, j = kdj.get('k', 0), kdj.get('d', 0), kdj.get('j', 0)
+            
+            cci = d.get('cci', 0)
+            
+            output.append(f"• 震荡: RSI={rsi} (StochK={st_k}, StochD={st_d}) | KDJ: K={k} D={_d} J={j} | CCI={cci}")
+
+            # 3. 动能 (MACD)
+            macd = d.get('macd', {})
+            diff, dea, hist = macd.get('diff', 0), macd.get('dea', 0), macd.get('hist', 0)
+            output.append(f"• MACD: Diff={diff} DEA={dea} Hist={hist}")
+
+            # 4. 布林带
+            bb = d.get('bollinger', {})
+            up, mid, low, width = bb.get('up',0), bb.get('mid',0), bb.get('low',0), bb.get('width',0)
+            output.append(f"• 布林带: Up={up} Low={low} Width={width}")
+            
+            # 5. K线序列
+            closes = d.get('recent_closes', [])
+            highs = d.get('recent_highs', [])
+            lows = d.get('recent_lows', [])
+            if closes:
+                c_str = ", ".join([str(x) for x in closes])
+                h_str = ", ".join([str(x) for x in highs])
+                l_str = ", ".join([str(x) for x in lows])
+                output.append(f"• 近5根K线: Close[{c_str}] High[{h_str}] Low[{l_str}]")
+            
+            # 6. EMA
+            ema = d.get('ema', {})
+            e20, e50, e100, e200 = ema.get('ema_20', 0), ema.get('ema_50', 0), ema.get('ema_100', 0), ema.get('ema_200', 0)
+            output.append(f"• EMA: 20={e20} / 50={e50} / 100={e100} / 200={e200}")
+            
+            # 7. 价值分布
+            vp = d.get('vp', {})
+            poc = vp.get('poc', 0)
+            val, vah = vp.get('val', 0), vp.get('vah', 0)
+            # 已经是排好序的数值列表，直接取前3
+            raw_hvns = vp.get('hvns', [])
+            hvn_str = ", ".join([str(x) for x in raw_hvns[:3]]) if raw_hvns else "N/A"
+            
+            output.append(f"• 价值区: POC={poc} | VA=[{val}~{vah}] | HVN: {hvn_str}")
+            output.append("")
 
     return "\n".join(output).strip()
 

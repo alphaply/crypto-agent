@@ -236,10 +236,10 @@ class MarketTool:
         try:
             logger.debug(f"    🔍 [{tf}] Fetching OHLCV data for {symbol}...")
             # 1. 获取 OHLCV
-            # limit 适当调大，保证 EMA/MACD 计算准确
-            ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=500)
-            if not ohlcv or len(ohlcv) < 50:
-                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles")
+            # limit 调大到 1000，确保 EMA200 等长周期指标有足够的预热数据
+            ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=1000)
+            if not ohlcv or len(ohlcv) < 200:
+                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data for reliable indicators: {len(ohlcv) if ohlcv else 0} candles (need >= 200)")
                 return None
 
             logger.debug(f"    ✅ [{tf}] Got {len(ohlcv)} candles, calculating indicators...")
