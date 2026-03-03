@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, System
 # 全局初始化
 load_dotenv(dotenv_path='.env', override=True)
 logger = setup_logger("Dashboard")
-TZ_CN = pytz.timezone(global_config.timezone)
+TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
 
 # --- 认证辅助 ---
 

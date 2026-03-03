@@ -12,7 +12,7 @@ from database import init_db
 load_dotenv()
 
 # 设置时区
-TZ_CN = pytz.timezone(global_config.timezone)
+TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
 
 # 初始化logger
 logger = setup_logger("MainScheduler")

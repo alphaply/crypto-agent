@@ -1,4 +1,4 @@
-# 自动亏钱 Agent (Automated Loss-Making Agent) V0.3
+# 自动亏钱 Agent (Automated Loss-Making Agent) V0.4
 
 这是一个基于大语言模型（LLM）和 LangGraph 的自动化加密货币交易系统。
 目标是通过"自动亏钱"反向验证策略的有效性。

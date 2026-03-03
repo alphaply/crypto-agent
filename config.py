@@ -18,6 +18,20 @@ class Config:
     DEFAULT_LEVERAGE = 20
     DEFAULT_RECVWINDOW = 60000
 
+    # 默认属性 (防止某些情况下加载失败导致 AttributeError)
+    timezone = 'Asia/Shanghai'
+    trading_mode = 'REAL'
+    leverage = 20
+    admin_password = '123456'
+    enable_scheduler = True
+    global_binance_api_key = None
+    global_binance_secret = None
+    langchain_tracing = False
+    langchain_api_key = ''
+    langchain_project = 'crypto-agent'
+    symbol_configs = []
+    configs_by_id = {}
+
     def __init__(self):
         """初始化配置管理器"""
         load_dotenv()
