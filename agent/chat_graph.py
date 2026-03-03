@@ -15,6 +15,7 @@ from langchain_core.messages import (
     trim_messages,
     BaseMessage
 )
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph

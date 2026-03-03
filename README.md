@@ -46,7 +46,7 @@
 - [安装与运行](docs/INSTALL.md)
 - [配置指南](docs/CONFIG_GUIDE.md)
 - [成本与胜率测评](docs/COST_ESTIMATION.md)
-- [常见问题](doc/FAQ.md)
+- [常见问题](docs/FAQ.md)
 
 飞书文档地址：https://my.feishu.cn/wiki/FfYkwTigTiFzIZkvgE4cW2oLnvd
 
