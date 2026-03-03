@@ -315,14 +315,19 @@
           renderSessions();
           
           const sidFromUrl = new URLSearchParams(window.location.search).get('sid');
-          if (sidFromUrl) {
-            // 如果 URL 有 ID，尝试加载
+          // 检查 URL 中的 ID 是否真的存在于当前会话列表中
+          const sessionExists = sessions.some(s => s.session_id === sidFromUrl);
+
+          if (sidFromUrl && sessionExists) {
+            // ID 有效且存在，直接选择
             selectSession(sidFromUrl, {skipUrlSync: true});
           } else if (sessions.length > 0) {
-            // 如果没有 ID 但有历史会话，自动加载第一条（最近更新的）
+            // URL ID 无效但有其他会话，清除无效 ID 并选择第一个
+            if (sidFromUrl) setSessionIdInUrl(null);
             selectSession(sessions[0].session_id);
           } else {
-            // 如果是全新用户，没有任何会话，自动弹出创建窗口
+            // 没有任何会话
+            setSessionIdInUrl(null);
             openNewSession();
             const container = document.getElementById('messages');
             if (container) {
