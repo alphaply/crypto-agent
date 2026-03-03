@@ -8,6 +8,11 @@ import warnings
 import database
 from datetime import datetime
 from utils.logger import setup_logger
+from utils.indicators import (
+    smart_fmt, calc_ema, calc_rsi, calc_stoch_rsi, calc_atr,
+    calc_macd, calc_kdj, calc_cci, calc_adx, calc_vwap,
+    calc_bollinger_bands, calculate_vp
+)
 import uuid
 import math
 
@@ -209,14 +214,19 @@ class MarketTool:
             "analysis": {},
             "sentiment": self._fetch_market_derivatives(symbol)
         }
-        
-        logger.info(f"Fetching {symbol} market data ({mode} mode: {timeframes})...")
-        
+
+        logger.info(f"📊 Fetching {symbol} market data ({mode} mode: {timeframes})...")
+
         for tf in timeframes:
+            logger.debug(f"  → Processing timeframe: {tf}")
             data = self.process_timeframe(symbol, tf)
             if data:
                 final_output["analysis"][tf] = data
-        
+                logger.debug(f"  ✅ {tf} data collected (price: {data.get('price', 'N/A')})")
+            else:
+                logger.warning(f"  ⚠️ {tf} data is None, skipping")
+
+        logger.info(f"✅ Market analysis complete. Collected {len(final_output['analysis'])} timeframes")
         return final_output
 
     def process_timeframe(self, symbol, tf):
@@ -224,11 +234,15 @@ class MarketTool:
         处理单个时间周期的核心逻辑（含指标计算升级）
         """
         try:
+            logger.debug(f"    🔍 [{tf}] Fetching OHLCV data for {symbol}...")
             # 1. 获取 OHLCV
             # limit 适当调大，保证 EMA/MACD 计算准确
             ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=500)
-            if not ohlcv or len(ohlcv) < 50: return None
-            
+            if not ohlcv or len(ohlcv) < 50:
+                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles")
+                return None
+
+            logger.debug(f"    ✅ [{tf}] Got {len(ohlcv)} candles, calculating indicators...")
             df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
             df['time'] = pd.to_datetime(df['time'], unit='ms')
             
@@ -293,8 +307,8 @@ class MarketTool:
             recent_closes = to_list(close)
             recent_highs = to_list(high)
             recent_lows = to_list(low)
-            
-            return {
+
+            result = {
                 "price": smart_fmt(curr_close),
                 "trend": {
                     "status": trend_status,
@@ -305,7 +319,7 @@ class MarketTool:
                 "recent_closes": recent_closes,
                 "recent_highs": recent_highs,
                 "recent_lows": recent_lows,
-                
+
                 "rsi_analysis": {
                     "rsi": round(float(rsi.iloc[-1]), 1),
                     "stoch_k": round(float(stoch_k.iloc[-1]), 1),
@@ -317,7 +331,7 @@ class MarketTool:
                     "d": round(float(d.iloc[-1]), 1),
                     "j": round(float(j.iloc[-1]), 1)
                 },
-                
+
                 "atr": smart_fmt(atr.iloc[-1]),
                 "macd": {
                     "diff": smart_fmt(macd.iloc[-1]),
@@ -337,19 +351,22 @@ class MarketTool:
                     "ema_100": smart_fmt(ema100.iloc[-1]),
                     "ema_200": smart_fmt(e200_val)
                 },
-                
+
                 "volume_analysis": {
                     "current": smart_fmt(volume.iloc[-1]),
                     "ratio": round(float(vol_ratio.iloc[-1]), 2),
                     "status": "High" if float(vol_ratio.iloc[-1]) > 1.5 else ("Low" if float(vol_ratio.iloc[-1]) < 0.5 else "Normal")
                 },
-                
+
                 "vp": vp
             }
+
+            logger.debug(f"    ✅ [{tf}] Indicators calculated successfully (price={result['price']}, atr={result['atr']})")
+            return result
         except Exception as e:
-            logger.error(f"Process TF Error {tf}: {e}")
+            logger.error(f"❌ Process TF Error [{tf}]: {e}")
             import traceback
-            traceback.print_exc()
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             return None
 
     # ==========================================

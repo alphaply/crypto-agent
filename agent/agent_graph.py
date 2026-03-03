@@ -143,8 +143,13 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
         recent_summaries = database.get_recent_summaries(symbol, config_id=config_id, limit=4)
+
+        logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
+        logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
     except Exception as e:
         logger.error(f"❌ [Data Fetch Error]: {e}")
+        import traceback
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
         market_full = {}
         account_data = {'balance': 0, 'real_open_orders': [], 'mock_open_orders': [], 'real_positions': []}
         recent_summaries = []
@@ -169,6 +174,8 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
     current_price = analysis_data.get("price", 0)
     atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
 
+    logger.debug(f"📈 Extracted from 15m: price={current_price}, atr={atr_15m}")
+
     indicators_summary = {}
     if trade_mode == 'STRATEGY':
         timeframes = ['1h', '4h', '1d', '1w']
@@ -176,11 +183,14 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         timeframes = ['1h', '4h', '1d', '1w']
     else:
         timeframes = ['15m', '1h', '4h', '1d']
-    
+
     raw_analysis = market_full.get("analysis", {})
+    logger.debug(f"🔍 Available timeframes in raw_analysis: {list(raw_analysis.keys())}")
 
     for tf in timeframes:
-        if tf not in raw_analysis: continue
+        if tf not in raw_analysis:
+            logger.warning(f"⚠️ Timeframe {tf} not found in raw_analysis")
+            continue
         tf_data = raw_analysis[tf]
         indicators_summary[tf] = {
             "price": tf_data.get("price"),
@@ -202,7 +212,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
     market_context_llm = {
         "current_price": current_price,
-        "atr_15m": atr_15m,
+        "atr_base": atr_15m,
         "sentiment": market_full.get("sentiment"),
         "technical_indicators": indicators_summary
     }
