@@ -313,8 +313,28 @@
           sessions = data.sessions || [];
           configs = data.configs || [];
           renderSessions();
+          
           const sidFromUrl = new URLSearchParams(window.location.search).get('sid');
-          if (sidFromUrl && !currentSessionId) selectSession(sidFromUrl, {skipUrlSync: true});
+          if (sidFromUrl) {
+            // 如果 URL 有 ID，尝试加载
+            selectSession(sidFromUrl, {skipUrlSync: true});
+          } else if (sessions.length > 0) {
+            // 如果没有 ID 但有历史会话，自动加载第一条（最近更新的）
+            selectSession(sessions[0].session_id);
+          } else {
+            // 如果是全新用户，没有任何会话，自动弹出创建窗口
+            openNewSession();
+            const container = document.getElementById('messages');
+            if (container) {
+                container.innerHTML = `
+                    <div class="h-full flex flex-col items-center justify-center text-slate-400 p-8 text-center">
+                        <div class="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4 text-2xl">💬</div>
+                        <h3 class="text-slate-600 font-bold mb-2">欢迎使用 Crypto Agent 聊天</h3>
+                        <p class="text-xs max-w-xs leading-relaxed">请在左侧选择一个现有会话，或者点击“立即创建”开始一段新的对话。</p>
+                    </div>
+                `;
+            }
+          }
         } catch (e) {
           console.error('Bootstrap failed', e);
         }
@@ -536,7 +556,7 @@
           const animationClass = (isStreaming || idx < messages.length - 1) ? '' : 'animate-in slide-in-from-bottom-2 duration-300';
 
           if (isTool) {
-            const toolContent = String(m.content || '').replace(/^\n+/, '');
+            const toolContent = String(m.content || '').trim();
             return `
               <div id="msg-${idx}" class="flex items-start gap-2 mb-4 w-full">
                 <details open class="flex-1 bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden group max-w-[95%] sm:max-w-[85%] ${animationClass}">
@@ -547,9 +567,7 @@
                     </div>
                     <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                   </summary>
-                  <div class="px-3 pb-3 pt-1 border-t border-slate-200/60 text-[10px] font-mono text-slate-600 whitespace-pre-wrap overflow-x-auto break-words max-h-64 overflow-y-auto scroll-thin">
-                    ${escapeHtml(toolContent)}
-                  </div>
+                  <div class="px-3 pb-3 pt-2 border-t border-slate-200/60 text-[10px] font-mono text-slate-600 whitespace-pre-wrap overflow-x-auto break-words max-h-64 overflow-y-auto scroll-thin">${escapeHtml(toolContent)}</div>
                 </details>
               </div>`;
           }
