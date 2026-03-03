@@ -81,271 +81,8 @@ class MarketTool:
             logger.warning(f"⚠️ 初始化加载市场失败 [config_id={config_id}, symbol={self.symbol}]: {e}")
 
     # ==========================================
-    # 0. 基础工具 (指标计算与格式化)
+    # 0. 基础工具 (衍生数据获取)
     # ==========================================
-    
-    def _smart_fmt(self, value):
-        """
-        智能保留小数位，防止小币种数据被 round(x,2) 抹平
-        """
-        if value is None or pd.isna(value):
-            return 0.0
-        val = float(value)
-        if val == 0: return 0.0
-        
-        abs_val = abs(val)
-        if abs_val >= 1000:
-            return round(val, 1)
-        elif abs_val >= 1:
-            return round(val, 3)
-        elif abs_val >= 0.01:
-            return round(val, 5)
-        else:
-            return round(val, 8) 
-
-    def _calc_ema(self, series, span):
-        return series.ewm(span=span, adjust=False).mean()
-
-    def _calc_rsi(self, series, period=14):
-        delta = series.diff()
-        gain = (delta.where(delta > 0, 0))
-        loss = (-delta.where(delta < 0, 0))
-        avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-        avg_loss = avg_loss.replace(0, 1e-10)
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        rsi = rsi.replace([np.inf, -np.inf], 50.0)
-        return rsi
-
-    def _calc_stoch_rsi(self, rsi, period=14, k_period=3, d_period=3):
-        """计算 StochRSI"""
-        rsi_min = rsi.rolling(window=period).min()
-        rsi_max = rsi.rolling(window=period).max()
-        stoch_rsi = (rsi - rsi_min) / (rsi_max - rsi_min)
-        stoch_rsi = stoch_rsi.replace([np.inf, -np.inf], 0.5).fillna(0.5)
-        fast_k = stoch_rsi.rolling(window=k_period).mean() * 100
-        fast_d = fast_k.rolling(window=d_period).mean()
-        return fast_k, fast_d
-
-    def _calc_adx(self, df, period=14):
-        """计算 ADX (Trend Strength)"""
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        
-        # Wilder's ADX: avoid look-ahead and smooth with RMA (EMA alpha=1/period)
-        up_move = high.diff()
-        down_move = low.shift(1) - low
-
-        plus_dm = pd.Series(
-            np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
-            index=df.index,
-        )
-        minus_dm = pd.Series(
-            np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
-            index=df.index,
-        )
-
-        tr = pd.concat([
-            high - low,
-            (high - close.shift()).abs(),
-            (low - close.shift()).abs(),
-        ], axis=1).max(axis=1)
-        atr = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-
-        plus_di = 100 * plus_dm.ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr
-        minus_di = 100 * minus_dm.ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr
-        di_sum = (plus_di + minus_di).replace(0, np.nan)
-        dx = 100 * (plus_di - minus_di).abs() / di_sum
-        adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-        return adx.fillna(0.0), plus_di.fillna(0.0), minus_di.fillna(0.0)
-
-    def _calc_vwap(self, df):
-        """计算 VWAP (成交量加权平均价)"""
-        # 简单实现：按整个数据集周期计算 (如果是日内分析比较准确)
-        v = df['volume']
-        p = (df['high'] + df['low'] + df['close']) / 3
-        vwap = (p * v).cumsum() / v.cumsum()
-        return vwap.fillna(p)
-
-    def _calc_cci(self, df, period=20):
-        """计算 CCI (Commodity Channel Index)"""
-        tp = (df['high'] + df['low'] + df['close']) / 3
-        ma = tp.rolling(window=period).mean()
-        md = tp.rolling(window=period).apply(lambda x: np.fabs(x - x.mean()).mean())
-        cci = (tp - ma) / (0.015 * md)
-        return cci.fillna(0)
-
-    def _calc_atr(self, df, period=14):
-        high, low, close = df['high'], df['low'], df['close']
-        tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-        return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-
-    def _calc_macd(self, close, fast=12, slow=26, signal=9):
-        """计算 MACD, Signal, Histogram"""
-        ema_fast = close.ewm(span=fast, adjust=False).mean()
-        ema_slow = close.ewm(span=slow, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-        histogram = macd_line - signal_line
-        return macd_line, signal_line, histogram
-
-    def _calc_bollinger_bands(self, close, window=20, num_std=2):
-        """计算布林带"""
-        rolling_mean = close.rolling(window=window).mean()
-        rolling_std = close.rolling(window=window).std()
-        upper = rolling_mean + (rolling_std * num_std)
-        lower = rolling_mean - (rolling_std * num_std)
-        # 防止除零错误：当中轨为0时的处理
-        safe_mean = rolling_mean.replace(0, 1e-10)
-        width = (upper - lower) / safe_mean
-        # 处理可能的无穷大值
-        width = width.replace([np.inf, -np.inf], 0.0)
-        return upper, rolling_mean, lower, width
-
-    def _calc_kdj(self, df, n=9, m1=3, m2=3):
-        """计算 KDJ 指标"""
-        low_list = df['low'].rolling(n).min()
-        high_list = df['high'].rolling(n).max()
-        # 防止除零错误：当高低区间为0时，设置RSV为50（中间值）
-        diff_list = high_list - low_list
-        # 替换分母为0的情况，避免除零错误
-        diff_list = diff_list.replace(0, np.nan)
-        rsv = pd.Series((df['close'] - low_list) / diff_list * 100, index=df.index)
-        # 将可能的无穷大值或NaN值替换为50
-        rsv = rsv.fillna(50.0)
-        rsv = rsv.replace([np.inf, -np.inf], 50.0)
-        k = rsv.ewm(alpha=1/m1, adjust=False).mean()
-        d = k.ewm(alpha=1/m2, adjust=False).mean()
-        j = 3 * k - 2 * d
-        return k, d, j
-
-    def _calculate_vp(self, df, length=360, rows=100, va_perc=0.70):
-        """
-        计算体积分布 (Volume Profile) - 严格对齐 LuxAlgo 逻辑
-        LuxAlgo Logic: Peak detection uses N-neighbors comparison.
-        """
-        if len(df) < 50: return None
-        
-        # 1. 数据截取
-        subset = df.iloc[-length:].copy().reset_index(drop=True)
-        high_val = subset['high'].max()
-        low_val = subset['low'].min()
-        
-        if high_val == low_val: return None
-        
-        # 2. 构建桶 (Bins)
-        price_step = (high_val - low_val) / rows
-        total_volume = np.zeros(rows)
-        
-        highs = subset['high'].values
-        lows = subset['low'].values
-        vols = subset['volume'].values
-        
-        # 3. 分配成交量 (Uniform Distribution Assumption)
-        # 注意: 纯 Python 无法获取 Lower Timeframe 数据，这里假设 K 线内成交量均匀分布
-        for i in range(len(subset)):
-            h, l, v = highs[i], lows[i], vols[i]
-            if h == l:
-                bin_idx = min(int((h - low_val) / price_step), rows - 1)
-                total_volume[bin_idx] += v
-                continue
-            
-            start_bin = max(0, min(int((l - low_val) / price_step), rows - 1))
-            end_bin = max(0, min(int((h - low_val) / price_step), rows - 1))
-            
-            # 防止除以零
-            price_range = h - l
-            if price_range == 0: 
-                vol_per_price = 0
-            else:
-                vol_per_price = v / price_range
-            
-            for b in range(start_bin, end_bin + 1):
-                bin_low = low_val + b * price_step
-                bin_high = low_val + (b + 1) * price_step
-                # 计算 K线 与 当前桶 的重叠高度
-                overlap = max(0, min(h, bin_high) - max(l, bin_low))
-                total_volume[b] += overlap * vol_per_price
-
-        # 4. 计算 POC
-        poc_idx = np.argmax(total_volume)
-        poc_price = low_val + (poc_idx + 0.5) * price_step
-        
-        # 5. 计算 Value Area (VA)
-        total_traded_vol = np.sum(total_volume)
-        target_vol = total_traded_vol * va_perc
-        
-        current_vol = total_volume[poc_idx]
-        vah_idx = poc_idx
-        val_idx = poc_idx
-        
-        # 严格按照从 POC 向两边扩展的逻辑
-        while current_vol < target_vol:
-            # 边界检查
-            if vah_idx >= rows - 1 and val_idx <= 0:
-                break
-            
-            up_vol = total_volume[vah_idx + 1] if vah_idx < rows - 1 else 0
-            down_vol = total_volume[val_idx - 1] if val_idx > 0 else 0
-            
-            if up_vol >= down_vol:
-                vah_idx += 1
-                current_vol += up_vol
-            else:
-                val_idx -= 1
-                current_vol += down_vol
-                
-        vah_price = low_val + (vah_idx + 1) * price_step
-        val_price = low_val + val_idx * price_step
-        
-        # 6. 计算 HVN (High Volume Nodes) - 匹配 LuxAlgo "Peaks" 逻辑
-        # LuxAlgo Default: vn_peaksNumberOfNodes = 9% (of rows)
-        # 也就是左右各 N 个节点必须小于当前节点
-        hvns = []
-        
-        # LuxAlgo 默认 9% 的行数作为检测窗口
-        detection_percent = 0.09 
-        neighbor_n = int(rows * detection_percent)
-        if neighbor_n < 1: neighbor_n = 1
-        
-        # 阈值：LuxAlgo 默认为 max volume 的 1%
-        threshold_vol = np.max(total_volume) * 0.01
-
-        for i in range(neighbor_n, rows - neighbor_n):
-            curr_vol = total_volume[i]
-            
-            # 基础阈值过滤
-            if curr_vol < threshold_vol:
-                continue
-
-            is_peak = True
-            
-            # 检查左边 N 个
-            # LuxAlgo 逻辑: if tempPeakTotalVolume.get(volumeNodeLevel - peaksNumberOfNodes) <= tempPeakTotalVolume.get(currentVolumeNode) -> peakUpperNth = false
-            # 意味着：当前节点必须 > 周围节点 (严格大于或大于等于视实现而定，通常找局部极大值)
-            for offset in range(1, neighbor_n + 1):
-                if total_volume[i - offset] >= curr_vol:
-                    is_peak = False
-                    break
-                if total_volume[i + offset] >= curr_vol:
-                    is_peak = False
-                    break
-            
-            if is_peak:
-                hvns.append(low_val + (i + 0.5) * price_step)
-        
-        # 如果没有检测到 HVN，至少放入 POC
-        if not hvns:
-            hvns.append(poc_price)
-
-        return {
-            "poc": self._smart_fmt(poc_price), 
-            "vah": self._smart_fmt(vah_price), 
-            "val": self._smart_fmt(val_price),
-            "hvns": [self._smart_fmt(x) for x in sorted(hvns, reverse=True)]
-        }
 
     def _fetch_market_derivatives(self, symbol):
         """获取资金费率、持仓量等衍生品数据"""
@@ -503,32 +240,32 @@ class MarketTool:
             
             # ================= 计算指标 =================
             # 1. 基础均线
-            ema20 = self._calc_ema(close, 20)
-            ema50 = self._calc_ema(close, 50)
-            ema100 = self._calc_ema(close, 100)
-            ema200 = self._calc_ema(close, 200)
+            ema20 = calc_ema(close, 20)
+            ema50 = calc_ema(close, 50)
+            ema100 = calc_ema(close, 100)
+            ema200 = calc_ema(close, 200)
             
             # 2. 动量与震荡
-            rsi = self._calc_rsi(close, 14)
-            stoch_k, stoch_d = self._calc_stoch_rsi(rsi)
-            atr = self._calc_atr(df, 14)
-            macd, signal, hist = self._calc_macd(close)
-            k, d, j = self._calc_kdj(df)
-            cci = self._calc_cci(df)
+            rsi = calc_rsi(close, 14)
+            stoch_k, stoch_d = calc_stoch_rsi(rsi)
+            atr = calc_atr(df, 14)
+            macd, signal, hist = calc_macd(close)
+            k, d, j = calc_kdj(df)
+            cci = calc_cci(df)
             
             # 3. 趋势强度 (ADX) 与 价值中枢 (VWAP)
-            adx, plus_di, minus_di = self._calc_adx(df)
-            vwap = self._calc_vwap(df)
+            adx, plus_di, minus_di = calc_adx(df)
+            vwap = calc_vwap(df)
             
             # 4. 布林带 (判断波动率挤压)
-            bb_up, bb_mid, bb_low, bb_width = self._calc_bollinger_bands(close)
+            bb_up, bb_mid, bb_low, bb_width = calc_bollinger_bands(close)
             
             # 5. 成交量分析
             vol_ma20 = volume.rolling(window=20).mean()
             vol_ratio = (volume / vol_ma20).fillna(0)
             
             # 6. VP 分布
-            vp = self._calculate_vp(df, length=360)
+            vp = calculate_vp(df, length=360)
             if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": []}
             
             # ================= 提取最新值 =================
@@ -551,20 +288,20 @@ class MarketTool:
             # ================= 序列数据提取 =================
             def to_list(series, n=5):
                 raw = series.iloc[-n:].values.tolist()
-                return [self._smart_fmt(float(x)) for x in raw]
+                return [smart_fmt(float(x)) for x in raw]
 
             recent_closes = to_list(close)
             recent_highs = to_list(high)
             recent_lows = to_list(low)
             
             return {
-                "price": self._smart_fmt(curr_close),
+                "price": smart_fmt(curr_close),
                 "trend": {
                     "status": trend_status,
                     "strength": trend_strength,
                     "adx": round(adx_val, 1)
                 },
-                "vwap": self._smart_fmt(vwap.iloc[-1]),
+                "vwap": smart_fmt(vwap.iloc[-1]),
                 "recent_closes": recent_closes,
                 "recent_highs": recent_highs,
                 "recent_lows": recent_lows,
@@ -581,28 +318,28 @@ class MarketTool:
                     "j": round(float(j.iloc[-1]), 1)
                 },
                 
-                "atr": self._smart_fmt(atr.iloc[-1]),
+                "atr": smart_fmt(atr.iloc[-1]),
                 "macd": {
-                    "diff": self._smart_fmt(macd.iloc[-1]),
-                    "dea": self._smart_fmt(signal.iloc[-1]),
-                    "hist": self._smart_fmt(hist.iloc[-1])
+                    "diff": smart_fmt(macd.iloc[-1]),
+                    "dea": smart_fmt(signal.iloc[-1]),
+                    "hist": smart_fmt(hist.iloc[-1])
                 },
                 "bollinger": {
-                    "up": self._smart_fmt(bb_up.iloc[-1]),
-                    "mid": self._smart_fmt(bb_mid.iloc[-1]),
-                    "low": self._smart_fmt(bb_low.iloc[-1]),
+                    "up": smart_fmt(bb_up.iloc[-1]),
+                    "mid": smart_fmt(bb_mid.iloc[-1]),
+                    "low": smart_fmt(bb_low.iloc[-1]),
                     "width": round(float(bb_width.iloc[-1]), 4)
                 },
 
                 "ema": {
-                    "ema_20": self._smart_fmt(e20_val),
-                    "ema_50": self._smart_fmt(e50_val),
-                    "ema_100": self._smart_fmt(ema100.iloc[-1]),
-                    "ema_200": self._smart_fmt(e200_val)
+                    "ema_20": smart_fmt(e20_val),
+                    "ema_50": smart_fmt(e50_val),
+                    "ema_100": smart_fmt(ema100.iloc[-1]),
+                    "ema_200": smart_fmt(e200_val)
                 },
                 
                 "volume_analysis": {
-                    "current": self._smart_fmt(volume.iloc[-1]),
+                    "current": smart_fmt(volume.iloc[-1]),
                     "ratio": round(float(vol_ratio.iloc[-1]), 2),
                     "status": "High" if float(vol_ratio.iloc[-1]) > 1.5 else ("Low" if float(vol_ratio.iloc[-1]) < 0.5 else "Normal")
                 },
