@@ -406,6 +406,14 @@
             if (header && data.session) header.textContent = data.session.title;
             currentMessages = normalizeMessages(data.messages || []);
             renderMessages(currentMessages);
+          } else {
+            // 如果会话不存在（可能被其他终端删除），重定向回初始状态
+            if (!options.isFallback) {
+              console.warn('会话失效，正在重定向...');
+              setSessionIdInUrl(null);
+              currentSessionId = null;
+              bootstrap();
+            }
           }
         } catch (e) {
           if (container) container.innerHTML = '<div class="text-rose-500 p-4 text-center">加载失败</div>';
