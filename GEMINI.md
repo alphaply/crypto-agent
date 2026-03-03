@@ -1,111 +1,86 @@
-# Crypto Agent 项目说明
+# Crypto Agent (自动亏钱 Agent)
 
-## 项目概览
-`crypto-agent` 是一个基于大语言模型（LLM）和 LangGraph 的自动化加密货币交易系统。它通过多 Agent 协作实现市场数据采集、趋势分析、策略生成到执行的完整流程。
+An automated cryptocurrency trading system powered by Large Language Models (LLMs) and LangGraph. It manages multiple trading agents across different symbols, timeframes, and strategies with a focus on risk management and multi-agent collaboration.
 
-### 技术栈
-- **语言/运行时**: Python 3.10+, [uv](https://github.com/astral-sh/uv) (推荐)
-- **AI 框架**: LangGraph (状态机), LangChain (LLM 编排), OpenAI/DeepSeek (推理引擎)
-- **Web 框架**: Flask (Dashboard & API)
-- **数据库**: SQLite (交易记录、Token 消耗、分析摘要)
-- **交易所对接**: ccxt (Binance USDM 永续合约)
+## Project Overview
 
----
+- **Purpose**: Automate crypto trading strategies (Real-time, Strategy/Simulation, and Spot DCA) using AI-driven decision-making.
+- **Key Features**:
+  - **Multi-Agent Architecture**: Independent configuration per trading pair (Model, Leverage, Prompts).
+  - **Trading Modes**: 
+    - `REAL`: 15m interval scanning with direct exchange execution (Futures).
+    - `STRATEGY`: 1h interval simulation for high R/R ratio testing.
+    - `SPOT_DCA`: Spot market Dollar Cost Averaging.
+  - **Dashboard**: Flask-based web interface for monitoring, config management, and token usage statistics.
+  - **Interactive Chat**: Directly talk to agents for analysis or manual trade approval.
+- **Tech Stack**:
+  - **Core**: Python 3.10+, [uv](https://github.com/astral-sh/uv) (Package Manager).
+  - **AI Framework**: LangGraph (Workflow Orchestration), LangChain (LLM interaction).
+  - **Exchange**: [ccxt](https://github.com/ccxt/ccxt) (Binance USDM & Spot).
+  - **Web Framework**: Flask (API & Dashboard).
+  - **Data/Math**: Pandas, Numpy, SQLite.
 
-## 核心架构
+## Architecture
 
-### 调度与执行
-- **智能调度器 (`main_scheduler.py`)**: 
-    - 根据 Agent 模式调整执行频率（实盘模式 15m，策略模式 1h）。
-    - 使用线程池并发执行多个 Agent 任务。
-- **Agent 状态机 (`agent/agent_graph.py`)**: 
-    - 流程: `start` (数据采集) -> `agent` (LLM 决策) -> `tools` (工具执行) -> `finalize` (总结归档)。
-    - 内置 Summarizer 压缩长篇分析。
-    - 支持多种模型的思维链展示。
+- **`dashboard.py`**: Main entry point for the Flask web server and scheduler launcher.
+- **`main_scheduler.py`**: Background task engine that triggers agent analysis cycles.
+- **`agent/`**: 
+  - `agent_graph.py`: The LangGraph state machine (Start -> Agent -> Tools -> Finalize).
+  - `agent_tools.py`: Tools used by agents (Opening/Closing positions, canceling orders).
+  - `prompts/`: System prompt templates for different trading modes.
+- **`utils/`**:
+  - `market_data.py`: High-level wrapper for fetching OHLCV and technical indicators.
+  - `indicators.py`: Implementation of TA indicators (EMA, RSI, MACD, Volume Profile, etc.).
+  - `formatters.py`: Data-to-text conversion for LLM consumption.
+- **`routes/`**: Modular Flask routes for authentication, stats, config, and chat.
 
-### 核心模块
-- **`agent/`**: 状态定义、工具集和提示词资源
-- **`utils/market_data.py`**: 基于 ccxt 的指标计算器，支持 EMA、RSI、MACD、布林带等
-- **`config.py`**: 统一配置管理，支持环境变量热重载
-- **`routes/`**: Flask 路由模块
+## Development Standards & Conventions
 
-## 目录结构
+### Indicator Calculation
+- **Wilder's Smoothing**: Standard TA indicators (RSI, ADX, ATR) must use Wilder's Smoothing (RMA) to align with professional charting tools like TradingView.
+- **Data Warm-up**: Always fetch at least 1000 candles for reliable calculation of long-term indicators like EMA200.
+- **Safety**: Functions in `utils/indicators.py` should handle `NaN` and `Inf` values gracefully using `smart_fmt` or `fillna`.
 
-### 根目录文件
-- **`dashboard.py`**: Web 服务入口
-- **`main_scheduler.py`**: 后台任务引擎
-- **`database.py`**: SQLite 持久层
-- **`config.py`**: 配置中心
-- **`pyproject.toml` / `requirements.txt`**: 依赖管理
+### Agent & Prompts
+- **Context Injection**: Market data is injected via the `{formatted_market_data}` placeholder in prompts.
+- **Tool Mapping**: Tools must be bound correctly based on the `trade_mode` (REAL vs STRATEGY).
+- **History**: Use `database.get_recent_summaries` to provide agents with memory of previous logic to avoid anchoring bias while maintaining continuity.
 
-### `agent/` 目录 (AI 逻辑)
-- **`agent_graph.py`**: LangGraph 定义的分析决策流
-- **`agent_models.py`**: 决策流中的状态定义
-- **`agent_tools.py`**: AI Agent 可调用的工具
-- **`chat_graph.py`**: 交互式对话流逻辑
-- **`prompts/`**: AI 决策所需的提示词模板
+### Security
+- **API Keys**: Never hardcode credentials. Use `.env` and the `Config` class in `config.py`.
+- **Mode Isolation**: Strictly separate `REAL` and `STRATEGY` execution paths to prevent accidental capital loss.
 
-### `routes/` 目录 (Web 接口)
-- **`main.py`**: 仪表盘主数据接口
-- **`auth.py`**: 身份验证
-- **`chat.py`**: LLM 实时对话流
-- **`stats.py`**: Token 消耗统计
-- **`config.py`**: 在线配置修改
-- **`utils.py`**: 共享辅助函数
+## Building and Running
 
-### `utils/` 目录 (工具库)
-- **`market_data.py`**: 行情计算器
-- **`logger.py`**: 统一日志
-- **`formatters.py`**: 数据美化输出
-- **`prompt_utils.py`**: 提示词模板加载器
-
-### `templates/` & `static/` (前端)
-- **`dashboard.html`**: 主监控台
-- **`chat.html`**: 聊天界面
-- **`stats_public.html`**: 资源消耗看板
-- **`static/js/`**: 前端交互逻辑
-
----
-
-## 构建与运行
-
-### 环境安装
+### Prerequisites
 ```bash
-# 使用 uv 安装依赖
-uv sync
-
-# 或者使用 pip
-pip install -r requirements.txt
+# Install uv
+powershell -c "irm https://astral-sh.net/uv/install.ps1 | iex" # Windows
 ```
 
-### 配置文件
-1. 复制 `.env.template` 为 `.env`。
-2. 填入关键参数：`BINANCE_API_KEY`, `BINANCE_SECRET`, `ADMIN_PASSWORD` 以及 `SYMBOL_CONFIGS`。
-
-### 启动服务
+### Installation
 ```bash
-# 启动 Web 服务 + 调度器
+uv sync
+cp .env.template .env
+# Edit .env with your keys
+```
+
+### Execution
+```bash
+# Start Web Server + Scheduler
 uv run dashboard.py
 ```
-- **访问地址**: `http://localhost:7860`
+
+## Key Files Summary
+
+| File | Description |
+| :--- | :--- |
+| `config.py` | Centralized configuration and credential management. |
+| `database.py` | SQLite persistence for snapshots, summaries, and token usage. |
+| `agent/agent_graph.py` | Core LangGraph logic defining the agent's behavior. |
+| `utils/market_data.py` | Primary interface for all market and account data fetching. |
+| `utils/indicators.py` | Professional-grade TA indicator implementations. |
+| `routes/chat.py` | Real-time agent interaction via Server-Sent Events (SSE). |
 
 ---
-
-## 开发规范
-
-### 核心原则
-- **安全性**: 不要在代码或日志中明文打印 API 密钥或密码。
-- **模式隔离**: 区分实盘与模拟模式，避免误操作资产。
-- **Token 效率**: 每次 LLM 交互需记录 Token 消耗。
-
-### 开发提示
-- 修改 UI: 修改 `templates/` 中的 HTML
-- 新增指标: 在 `utils/market_data.py` 添加计算逻辑
-- 新增工具: 在 `agent/agent_tools.py` 定义并在 `agent/agent_graph.py` 注册
-
----
-
-## 待办事项
-- 增加更多交易所支持
-- 优化移动端性能
-- 添加链上数据指标
+*Note: This GEMINI.md is generated for Gemini CLI to provide foundational context for this project.*
