@@ -157,7 +157,14 @@ def start_node(state: ChatState, config: RunnableConfig):
         human_message=None,
     )
     # Pass the config to scheduler_start_node as well
-    started = scheduler_start_node(scheduler_state, config=config)
+    # Crucially, include agent_config so it uses the correct prompt settings
+    chat_config = {
+        "configurable": {
+            **configurable,
+            "agent_config": cfg
+        }
+    }
+    started = scheduler_start_node(scheduler_state, config=chat_config)
     system_prompt = started.messages[0].content if started.messages else ""
     
     updates = {
