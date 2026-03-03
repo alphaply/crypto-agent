@@ -78,7 +78,10 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
                 continue
             res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=config_id)
             if res and 'id' in res:
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, op.reason, trade_mode="SPOT_DCA", config_id=config_id)
+                # 优化日志展示：增加金额和数量
+                cost = price * op.amount
+                enhanced_reason = f"💰 定投下单: {op.amount} {symbol.split('/')[0]} @ {price} (总额: ${cost:.2f}) | {op.reason}"
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, enhanced_reason, trade_mode="SPOT_DCA", config_id=config_id)
                 execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 现货开仓失败: {str(e)}")
@@ -103,7 +106,11 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
                 continue
             res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=config_id)
             if res and 'id' in res:
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, op.reason, trade_mode="REAL", config_id=config_id)
+                # 优化日志展示：增加金额和数量
+                cost = price * op.amount
+                side_str = "多" if "BUY" in action else "空"
+                enhanced_reason = f"🚀 实盘开{side_str}: {op.amount} {symbol.split('/')[0]} @ {price} (价值: ${cost:.2f}) | {op.reason}"
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id)
                 execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
@@ -122,7 +129,11 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
         try:
             if isinstance(op, dict): op = CloseOrder(**op)
             market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=config_id)
-            database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, op.reason, trade_mode="REAL", config_id=config_id)
+            # 优化日志展示
+            cost = op.entry_price * op.amount
+            side_str = "多" if op.pos_side == "LONG" else "空"
+            enhanced_reason = f"🏁 平{side_str}: {op.amount} {symbol.split('/')[0]} @ {op.entry_price} (价值: ${cost:.2f}) | {op.reason}"
+            database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id)
             execution_results.append(f"✅ 下单成功 ({op.pos_side}) @ {op.entry_price}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 下单失败: {str(e)}")
@@ -140,7 +151,7 @@ def cancel_orders_real(order_ids: List[str], config_id: str, symbol: str):
     for oid in order_ids:
         try:
             market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=config_id)
-            database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"撤单: {oid}", trade_mode="REAL", config_id=config_id)
+            database.save_order_log(oid, symbol, agent_name, "CANCEL", 0, 0, 0, f"🚫 撤单成功: {oid}", trade_mode="REAL", config_id=config_id)
             execution_results.append(f"✅ [Cancelled Real] 订单 {oid} 已撤回。")
         except Exception as e:
             execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")

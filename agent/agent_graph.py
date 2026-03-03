@@ -112,6 +112,26 @@ def start_node(state: AgentState) -> AgentState:
     is_real_exec = (trade_mode in ['REAL', 'SPOT_DCA'])
     agent_name = config_id
 
+    # 提取定投周期与预算逻辑 (SPOT_DCA 专属)
+    dca_period_text = "每天"
+    dca_budget = config.get('dca_amount') or config.get('dca_budget') or 100
+    
+    if trade_mode == 'SPOT_DCA':
+        dca_freq = config.get('dca_freq', '1d').lower()
+        dca_time = config.get('dca_time', '08:00')
+        dca_weekday = config.get('dca_weekday', 0)
+        weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        
+        if dca_freq == '1w':
+            try:
+                wd_idx = int(dca_weekday)
+                wd_str = weekdays[wd_idx % 7]
+            except:
+                wd_str = "指定日期"
+            dca_period_text = f"每周 ({wd_str}) {dca_time}"
+        else:
+            dca_period_text = f"每天 {dca_time}"
+
     market_tool = MarketTool(config_id=config_id)
     logger.info(f"--- [Node] Start: Analyzing {symbol} | Mode: {trade_mode} ---")
 
@@ -147,7 +167,12 @@ def start_node(state: AgentState) -> AgentState:
     atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
 
     indicators_summary = {}
-    timeframes = ['1h', '4h', '1d', '1w'] if trade_mode == 'STRATEGY' else ['15m', '1h', '4h', '1d']
+    if trade_mode == 'STRATEGY':
+        timeframes = ['1h', '4h', '1d', '1w']
+    elif trade_mode == 'SPOT_DCA':
+        timeframes = ['1h', '4h', '1d', '1w']
+    else:
+        timeframes = ['15m', '1h', '4h', '1d']
     
     raw_analysis = market_full.get("analysis", {})
 
@@ -215,7 +240,9 @@ def start_node(state: AgentState) -> AgentState:
         positions_text=positions_text,
         orders_text=orders_friendly_text,
         formatted_market_data=formatted_market_data,
-        history_text=formatted_history_text
+        history_text=formatted_history_text,
+        dca_period_text=dca_period_text,
+        dca_budget=dca_budget
     )
 
     messages = [HumanMessage(content=system_prompt)]
