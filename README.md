@@ -42,13 +42,17 @@
 
 ## 安装运行
 
+后期将把文档迁移到飞书里面去
+
+飞书文档地址：https://my.feishu.cn/wiki/FfYkwTigTiFzIZkvgE4cW2oLnvd
+
+
 查看以下文档获取详细说明:
 - [安装与运行](docs/INSTALL.md)
 - [配置指南](docs/CONFIG_GUIDE.md)
 - [成本与胜率测评](docs/COST_ESTIMATION.md)
 - [常见问题](docs/FAQ.md)
 
-飞书文档地址：https://my.feishu.cn/wiki/FfYkwTigTiFzIZkvgE4cW2oLnvd
 
 ---
 
