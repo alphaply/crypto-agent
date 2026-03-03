@@ -284,6 +284,9 @@ def agent_node(state: AgentState) -> AgentState:
             tools = [open_position_spot_dca, cancel_orders_real]
         else:
             tools = [open_position_strategy, cancel_orders_strategy]
+        
+        # if trade_mode == 'REAL':
+        #     tools += [analyze_event_contract, format_event_contract_order]
 
         llm = ChatOpenAI(
             model=config.get('model'),

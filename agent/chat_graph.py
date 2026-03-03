@@ -58,10 +58,10 @@ def _get_chat_tools(cfg: Dict[str, Any]):
     trade_mode = cfg.get("mode", "STRATEGY").upper()
     
     if trade_mode == "REAL":
-        return [open_position_real, close_position_real, cancel_orders_real, analyze_event_contract, format_event_contract_order]
+        return [open_position_real, close_position_real, cancel_orders_real] #, analyze_event_contract, format_event_contract_order]
     if trade_mode == "SPOT_DCA":
-        return [open_position_spot_dca, analyze_event_contract, format_event_contract_order]
-    return [open_position_strategy, cancel_orders_strategy, analyze_event_contract, format_event_contract_order]
+        return [open_position_spot_dca] #, analyze_event_contract, format_event_contract_order]
+    return [open_position_strategy, cancel_orders_strategy] #, analyze_event_contract, format_event_contract_order]
 
 
 def _message_counter(msgs: list) -> int:
