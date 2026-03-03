@@ -1,11 +1,8 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>分析历史 - {{ current_symbol }}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+{% extends "base.html" %}
+
+{% block title %}分析历史 - {{ current_symbol }}{% endblock %}
+
+{% block head %}
     <style>
         .markdown-content h1 { font-size: 1.5rem; line-height: 2rem; font-weight: 700; margin-bottom: 1rem; }
         .markdown-content h2 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 700; margin-bottom: 0.75rem; }
@@ -20,9 +17,9 @@
         .markdown-content table { width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
         .markdown-content th, .markdown-content td { border: 1px solid #d1d5db; padding: 0.5rem 1rem; }
     </style>
-</head>
-<body class="bg-gray-100 text-gray-800 font-sans antialiased min-h-screen">
+{% endblock %}
 
+{% block content %}
     <div class="max-w-4xl mx-auto px-4 py-8 mb-12">
         
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
@@ -169,5 +166,4 @@
         {% endif %}
     </div>
 
-</body>
-</html>
+{% endblock %}

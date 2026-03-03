@@ -1,10 +1,10 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>资源消耗看板 - Crypto Agent</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+{% extends "base.html" %}
+
+{% block title %}资源消耗看板 - Crypto Agent{% endblock %}
+
+{% block body_class %}bg-[#f8fafc] text-slate-900 font-sans antialiased{% endblock %}
+
+{% block head %}
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
@@ -16,9 +16,9 @@
         .captcha-container img { filter: contrast(1.1) brightness(0.95); transition: all 0.3s; }
         .captcha-container:hover img { filter: contrast(1.2) brightness(1); transform: scale(1.02); }
     </style>
-</head>
-<body class="bg-[#f8fafc] text-slate-900 font-sans antialiased">
-    
+{% endblock %}
+
+{% block navbar %}
     <nav class="sticky top-0 z-40 glass-card border-b p-4 mb-6">
         <div class="max-w-6xl mx-auto flex justify-between items-center">
             <div class="flex items-center gap-3">
@@ -325,5 +325,4 @@
 
         initTokenStats();
     </script>
-</body>
-</html>
+{% endblock %}
