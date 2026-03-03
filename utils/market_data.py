@@ -491,6 +491,15 @@ class MarketTool:
                 logger.info(f"✅ [OPEN-LIMIT] 挂单成功 ID: {order['id']}")
                 return order
 
+        except ccxt.InsufficientFunds as e:
+            logger.error(f"❌ [ORDER_ERROR] 资金不足: {e}")
+            return None
+        except ccxt.NetworkError as e:
+            logger.error(f"❌ [ORDER_ERROR] 网络异常: {e}")
+            return None
+        except ccxt.ExchangeError as e:
+            logger.error(f"❌ [ORDER_ERROR] 交易所API异常: {e}")
+            return None
         except Exception as e:
             logger.error(f"❌ [ORDER_ERROR] 执行异常: {e}")
             import traceback

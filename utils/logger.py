@@ -4,10 +4,11 @@ import sys
 import os
 from logging.handlers import RotatingFileHandler
 import pytz
+import os
 from datetime import datetime
 
 # 设置时区
-TZ_CN = pytz.timezone('Asia/Shanghai')
+TZ_CN = pytz.timezone(os.getenv('TIMEZONE', 'Asia/Shanghai'))
 
 class LocalTimeFormatter(logging.Formatter):
     """重写 Formatter 以使用指定时区的时间"""

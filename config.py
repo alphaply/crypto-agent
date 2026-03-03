@@ -44,6 +44,9 @@ class Config:
         # 交易模式
         self.trading_mode = os.getenv('TRADING_MODE', 'REAL')
 
+        # 时区配置
+        self.timezone = os.getenv('TIMEZONE', 'Asia/Shanghai')
+
         logger.info("✅ 全局配置加载完成")
 
     def _load_symbol_configs(self):

@@ -8,69 +8,66 @@ from routes.utils import (
 from database import (
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
     get_balance_history, get_trade_history, clean_financial_data,
-    get_active_agents, get_paginated_orders
+    get_active_agents, get_paginated_orders, get_db_conn
 )
 
 main_bp = Blueprint('main', __name__)
 
 def get_dashboard_data(symbol, page=1, per_page=10):
     try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        conn.row_factory = sqlite3.Row 
-        
-        # 1. 获取该币种下配置的所有 Agent
-        configs = global_config.get_all_symbol_configs()
-        symbol_configs = [conf for conf in configs if conf['symbol'] == symbol]
-        
-        agent_summaries = []
-        for config in symbol_configs:
-            config_id = config['config_id']
-            latest_summary = conn.execute(
-                "SELECT * FROM summaries WHERE config_id = ? ORDER BY id DESC LIMIT 1",
-                (config_id,)
-            ).fetchone()
+        with get_db_conn() as conn:
+            # 1. 获取该币种下配置的所有 Agent
+            configs = global_config.get_all_symbol_configs()
+            symbol_configs = [conf for conf in configs if conf['symbol'] == symbol]
             
-            model_name = config.get('model', 'Unknown')
-            mode = config.get('mode', 'STRATEGY')
-            enabled = config.get('enabled', True)
-
-            if latest_summary:
-                summary_dict = dict(latest_summary)
-            else:
-                # 如果没有历史摘要，创建一个占位符
-                summary_dict = {
-                    'config_id': config_id,
-                    'agent_name': model_name,
-                    'symbol': symbol,
-                    'content': "💤 该 Agent 尚未产生任何分析数据。请确保调度器已开启并等待其运行。",
-                    'strategy_logic': "暂无逻辑",
-                    'timestamp': "N/A",
-                    'id': -1
-                }
-            
-            summary_dict['model'] = model_name
-            summary_dict['mode'] = mode
-            summary_dict['enabled'] = enabled
-            
-            if mode == 'REAL':
-                summary_dict['freq'] = "15m (高频)"
-            elif mode == 'SPOT_DCA':
-                summary_dict['freq'] = "Daily (定投)"
-            else:
-                summary_dict['freq'] = "1h (低频)"
+            agent_summaries = []
+            for config in symbol_configs:
+                config_id = config['config_id']
+                latest_summary = conn.execute(
+                    "SELECT * FROM summaries WHERE config_id = ? ORDER BY id DESC LIMIT 1",
+                    (config_id,)
+                ).fetchone()
                 
-            summary_dict['leverage'] = global_config.get_leverage(config_id)
-            summary_dict['display_name'] = f"{model_name} ({mode})"
-            
-            # 默认获取第一页订单
-            orders, total = get_paginated_orders(config_id, page=1, per_page=10)
-            summary_dict['all_orders'] = orders
-            summary_dict['order_total'] = total
-            summary_dict['order_page'] = 1
-            
-            agent_summaries.append(summary_dict)
+                model_name = config.get('model', 'Unknown')
+                mode = config.get('mode', 'STRATEGY')
+                enabled = config.get('enabled', True)
 
-        conn.close()
+                if latest_summary:
+                    summary_dict = dict(latest_summary)
+                else:
+                    # 如果没有历史摘要，创建一个占位符
+                    summary_dict = {
+                        'config_id': config_id,
+                        'agent_name': model_name,
+                        'symbol': symbol,
+                        'content': "💤 该 Agent 尚未产生任何分析数据。请确保调度器已开启并等待其运行。",
+                        'strategy_logic': "暂无逻辑",
+                        'timestamp': "N/A",
+                        'id': -1
+                    }
+                
+                summary_dict['model'] = model_name
+                summary_dict['mode'] = mode
+                summary_dict['enabled'] = enabled
+                
+                if mode == 'REAL':
+                    summary_dict['freq'] = "15m (高频)"
+                elif mode == 'SPOT_DCA':
+                    summary_dict['freq'] = "Daily (定投)"
+                else:
+                    summary_dict['freq'] = "1h (低频)"
+                    
+                summary_dict['leverage'] = global_config.get_leverage(config_id)
+                summary_dict['display_name'] = f"{model_name} ({mode})"
+                
+                # 默认获取第一页订单
+                orders, total = get_paginated_orders(config_id, page=1, per_page=10)
+                summary_dict['all_orders'] = orders
+                summary_dict['order_total'] = total
+                summary_dict['order_page'] = 1
+                
+                agent_summaries.append(summary_dict)
+
         return agent_summaries, [], len(agent_summaries)
     except Exception as e:
         logger.error(f"❌ 获取仪表盘数据失败: {e}")

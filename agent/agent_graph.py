@@ -28,7 +28,7 @@ import database
 from utils.market_data import MarketTool
 from config import config as global_config
 
-TZ_CN = pytz.timezone('Asia/Shanghai')
+TZ_CN = pytz.timezone(global_config.timezone)
 TZ_US = pytz.timezone('America/New_York')
 logger = setup_logger("AgentGraph")
 load_dotenv()
