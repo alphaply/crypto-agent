@@ -721,44 +721,119 @@
       }
 
       async function respondApproval(approved) {
-        document.getElementById('approvalBar').classList.add('hidden');
+        const bar = document.getElementById('approvalBar');
+        if (bar) bar.classList.add('hidden');
         setApprovalLoading(true);
 
+        // 获取当前消息长度作为流式消息的索引。
+        // 在恢复模式下，后端会运行工具节点，产生 tool_result，然后可能再次进入模型生成。
         const streamIdx = currentMessages.length;
-        currentMessages.push({ role: 'assistant', content: '执行中...', reasoning_content: '', __loading: true, __streaming: true, __thinking_open: true });
+        currentMessages.push({ 
+          role: 'assistant', 
+          content: '正在执行工具...', 
+          reasoning_content: '', 
+          __loading: true, 
+          __streaming: true, 
+          __thinking_open: true 
+        });
         renderMessages(currentMessages);
 
         const eventSource = new EventSource(`/api/chat/sessions/${currentSessionId}/stream?approval=${approved}`);
+        
         eventSource.onmessage = (e) => {
           const payload = JSON.parse(e.data);
-          if (payload.type === 'token') {
-            if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
-              currentMessages[streamIdx].content = '';
-              delete currentMessages[streamIdx].__loading;
+          
+          if (payload.type === 'tool_result') {
+            // 当收到工具结果时，将占位符替换为工具消息，并为接下来的 AI 回复准备新的占位符
+            const toolMsg = {
+              role: 'tool',
+              content: payload.content,
+              tool_call_id: payload.tool_call_id,
+              __thinking_open: false
+            };
+            // 替换掉那个 "正在执行工具..." 的占位符
+            currentMessages[streamIdx] = toolMsg;
+            
+            // 为后面可能出现的 AI 回复预留一个新的索引（如果还没预留的话）
+            if (currentMessages.length === streamIdx + 1) {
+              currentMessages.push({
+                role: 'assistant',
+                content: '',
+                reasoning_content: '',
+                __loading: true,
+                __streaming: true,
+                __thinking_open: true
+              });
             }
-            appendStreamDelta(streamIdx, { content: payload.token || '' });
-          } else if (payload.type === 'reasoning_token') {
-            if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
-              currentMessages[streamIdx].content = '';
-              delete currentMessages[streamIdx].__loading;
+            renderMessages(currentMessages);
+          } 
+          else if (payload.type === 'token') {
+            // 找到最后一个 assistant 消息进行更新
+            let lastAiIdx = -1;
+            for (let i = currentMessages.length - 1; i >= 0; i--) {
+              if (currentMessages[i].role === 'assistant') {
+                lastAiIdx = i;
+                break;
+              }
             }
-            appendStreamDelta(streamIdx, { reasoning: payload.token || '' });
-          } else if (payload.type === 'tool_calls') {
-            if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
-              currentMessages[streamIdx].content = '';
-              delete currentMessages[streamIdx].__loading;
+            if (lastAiIdx !== -1) {
+              const msg = currentMessages[lastAiIdx];
+              if (msg.__loading) {
+                msg.content = '';
+                delete msg.__loading;
+              }
+              appendStreamDelta(lastAiIdx, { content: payload.token || '' });
             }
-            appendStreamDelta(streamIdx, { tool_calls: payload.tool_calls });
-          } else if (payload.type === 'done') {
+          } 
+          else if (payload.type === 'reasoning_token') {
+            let lastAiIdx = -1;
+            for (let i = currentMessages.length - 1; i >= 0; i--) {
+              if (currentMessages[i].role === 'assistant') {
+                lastAiIdx = i;
+                break;
+              }
+            }
+            if (lastAiIdx !== -1) {
+              const msg = currentMessages[lastAiIdx];
+              if (msg.__loading) {
+                msg.content = '';
+                delete msg.__loading;
+              }
+              appendStreamDelta(lastAiIdx, { reasoning: payload.token || '' });
+            }
+          } 
+          else if (payload.type === 'tool_calls') {
+            let lastAiIdx = -1;
+            for (let i = currentMessages.length - 1; i >= 0; i--) {
+              if (currentMessages[i].role === 'assistant') {
+                lastAiIdx = i;
+                break;
+              }
+            }
+            if (lastAiIdx !== -1) {
+              appendStreamDelta(lastAiIdx, { tool_calls: payload.tool_calls });
+            }
+          } 
+          else if (payload.type === 'done') {
             currentMessages = normalizeMessages(payload.messages || []);
             pendingApproval = payload.pending_approval;
             renderMessages(currentMessages);
             showApproval();
             setApprovalLoading(false);
             eventSource.close();
+          } 
+          else if (payload.type === 'error') {
+            console.error('Stream error:', payload.message);
+            eventSource.close();
+            setApprovalLoading(false);
           }
         };
-        eventSource.onerror = () => { eventSource.close(); setApprovalLoading(false); };
+        
+        eventSource.onerror = (err) => {
+          console.error('EventSource failed:', err);
+          eventSource.close();
+          setApprovalLoading(false);
+        };
       }
 
       function showApproval() {

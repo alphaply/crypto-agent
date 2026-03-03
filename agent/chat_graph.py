@@ -414,8 +414,6 @@ def stream_chat(session_id: str, payload: Dict[str, Any]):
 
 
 def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
-    # Retrieve the state to get config_id if needed, but usually it's already in the checkpoint
-    # However, to be safe and consistent with our new node logic that expects it in configurable:
     config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     
     command = Command(resume={"approved": approved})
@@ -427,21 +425,29 @@ def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
         if node not in ["model", "tools"]:
             continue
         
-        # 同样仅处理增量块
-        if not isinstance(chunk, BaseMessageChunk):
+        # 处理工具调用结果 (ToolMessage)
+        if node == "tools" and isinstance(chunk, ToolMessage):
+            yield {
+                "type": "tool_result", 
+                "tool_call_id": chunk.tool_call_id,
+                "content": chunk.content,
+                "role": "tool"
+            }
             continue
-            
-        reasoning_token = _chunk_reasoning_text(chunk)
-        if reasoning_token:
-            yield {"type": "reasoning_token", "token": reasoning_token}
-            
-        token = _chunk_to_text(chunk)
-        if token:
-            yield {"type": "token", "token": token}
 
-        tool_calls = _extract_tool_calls(chunk)
-        if tool_calls:
-            yield {"type": "tool_calls", "tool_calls": tool_calls}
+        # 处理模型输出 (BaseMessageChunk)
+        if isinstance(chunk, BaseMessageChunk):
+            reasoning_token = _chunk_reasoning_text(chunk)
+            if reasoning_token:
+                yield {"type": "reasoning_token", "token": reasoning_token}
+                
+            token = _chunk_to_text(chunk)
+            if token:
+                yield {"type": "token", "token": token}
+
+            tool_calls = _extract_tool_calls(chunk)
+            if tool_calls:
+                yield {"type": "tool_calls", "tool_calls": tool_calls}
 
 
 def invoke_chat(session_id: str, payload: Dict[str, Any]):
