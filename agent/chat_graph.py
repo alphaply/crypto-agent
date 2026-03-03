@@ -47,9 +47,7 @@ CHAT_TRIM_MAX_TOKENS = int(os.getenv("CHAT_TRIM_MAX_TOKENS", "6000"))
 
 class ChatState(TypedDict):
     messages: Annotated[list, add_messages]
-    config_id: str
     symbol: str
-    agent_config: Dict[str, Any]
     system_prompt: str
     q: str
 
@@ -138,8 +136,9 @@ def _trim_chat_messages(system_prompt: str, history: list):
     return final_messages
 
 
-def start_node(state: ChatState):
-    config_id = state.get("config_id")
+def start_node(state: ChatState, config: RunnableConfig):
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
     q = state.get("q")
     
     cfg = global_config.get_config_by_id(config_id)
@@ -149,21 +148,19 @@ def start_node(state: ChatState):
     symbol = cfg.get("symbol", "Unknown")
     
     scheduler_state = AgentState(
-        config_id=config_id,
         symbol=symbol,
         messages=[],
-        agent_config=cfg,
         market_context={},
         account_context={},
         history_context=[],
         full_analysis="",
         human_message=None,
     )
-    started = scheduler_start_node(scheduler_state)
+    # Pass the config to scheduler_start_node as well
+    started = scheduler_start_node(scheduler_state, config=config)
     system_prompt = started.messages[0].content if started.messages else ""
     
     updates = {
-        "agent_config": cfg, 
         "system_prompt": system_prompt, 
         "symbol": symbol,
         "q": q
@@ -173,9 +170,10 @@ def start_node(state: ChatState):
     return updates
 
 
-def model_node(state: ChatState):
-    config_id = state.get("config_id")
-    cfg = state.get("agent_config") or global_config.get_config_by_id(config_id)
+def model_node(state: ChatState, config: RunnableConfig):
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    cfg = global_config.get_config_by_id(config_id)
     if not cfg:
         raise ValueError(f"Config context lost for config_id={config_id}")
 
@@ -217,8 +215,7 @@ def model_node(state: ChatState):
     return {
         "messages": [response], 
         "symbol": symbol, 
-        "q": None, 
-        "agent_config": cfg
+        "q": None
     }
 
 
@@ -243,12 +240,15 @@ def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str)
     return str(tool_obj.func(**call_args))
 
 
-def tools_node(state: ChatState):
+def tools_node(state: ChatState, config: RunnableConfig):
     last_message = state["messages"][-1]
     tool_calls = getattr(last_message, "tool_calls", []) or []
     outputs = []
-    config_id = state["config_id"]
-    cfg = state.get("agent_config") or global_config.get_config_by_id(config_id)
+    
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    
+    cfg = global_config.get_config_by_id(config_id)
     symbol = cfg.get("symbol", "Unknown") if cfg else state.get("symbol", "Unknown")
 
     for call in tool_calls:
@@ -379,7 +379,8 @@ def _extract_tool_calls(chunk: BaseMessageChunk | Any) -> list:
 
 
 def stream_chat(session_id: str, payload: Dict[str, Any]):
-    config = {"configurable": {"thread_id": session_id}}
+    config_id = payload.pop("config_id", None)
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     for item in chat_app.stream(payload, config=config, stream_mode="messages"):
         if not isinstance(item, tuple) or len(item) != 2:
             continue
@@ -406,7 +407,14 @@ def stream_chat(session_id: str, payload: Dict[str, Any]):
 
 
 def stream_resume_chat(session_id: str, approved: bool):
+    # Retrieve the state to get config_id if needed, but usually it's already in the checkpoint
+    # However, to be safe and consistent with our new node logic that expects it in configurable:
+    snapshot = chat_app.get_state({"configurable": {"thread_id": session_id}})
+    # config_id is no longer in state, so we might need to recover it or assume it's in configurable
+    # For resume, the configurable from the original call is usually preserved if handled correctly by LangGraph
+    # but we can also just pass the thread_id.
     config = {"configurable": {"thread_id": session_id}}
+    
     command = Command(resume={"approved": approved})
     for item in chat_app.stream(command, config=config, stream_mode="messages"):
         if not isinstance(item, tuple) or len(item) != 2:
@@ -434,7 +442,8 @@ def stream_resume_chat(session_id: str, approved: bool):
 
 
 def invoke_chat(session_id: str, payload: Dict[str, Any]):
-    config = {"configurable": {"thread_id": session_id}}
+    config_id = payload.pop("config_id", None)
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     return chat_app.invoke(payload, config=config)
 
 

@@ -44,10 +44,8 @@ class CloseOrder(BaseModel):
     reason: str = Field(description="理由")
 
 class AgentState(BaseModel):
-    config_id: str
     symbol: str
     messages: List[BaseMessage]
-    agent_config: Dict[str, Any]
     market_context: Dict[str, Any]
     account_context: Dict[str, Any]
     history_context: List[Dict[str, Any]]

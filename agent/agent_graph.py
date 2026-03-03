@@ -9,6 +9,7 @@ from pathlib import Path
 import pytz
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
@@ -93,10 +94,12 @@ def summarize_content(content: str, agent_config: dict) -> str:
 # 2. Nodes
 # ==========================================
 
-def start_node(state: AgentState) -> AgentState:
-    config_id = state.config_id
+def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id", "unknown")
+    agent_config = configurable.get("agent_config", {})
+    
     symbol = state.symbol
-    config = state.agent_config
     now_cn = datetime.now(TZ_CN)
     now_us = datetime.now(TZ_US)
     now = now_cn  # Maintain backward compatibility for snapshot logic
@@ -108,18 +111,18 @@ def start_node(state: AgentState) -> AgentState:
         f"美东: {now_us.strftime('%Y-%m-%d %H:%M:%S')} ({week_map_en[now_us.weekday()]})"
     )
 
-    trade_mode = config.get('mode', 'STRATEGY').upper()
+    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
     is_real_exec = (trade_mode in ['REAL', 'SPOT_DCA'])
     agent_name = config_id
 
     # 提取定投周期与预算逻辑 (SPOT_DCA 专属)
     dca_period_text = "每天"
-    dca_budget = config.get('dca_amount') or config.get('dca_budget') or 100
+    dca_budget = agent_config.get('dca_amount') or agent_config.get('dca_budget') or 100
     
     if trade_mode == 'SPOT_DCA':
-        dca_freq = config.get('dca_freq', '1d').lower()
-        dca_time = config.get('dca_time', '08:00')
-        dca_weekday = config.get('dca_weekday', 0)
+        dca_freq = agent_config.get('dca_freq', '1d').lower()
+        dca_time = agent_config.get('dca_time', '08:00')
+        dca_weekday = agent_config.get('dca_weekday', 0)
         weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         
         if dca_freq == '1w':
@@ -216,7 +219,7 @@ def start_node(state: AgentState) -> AgentState:
         formatted_history_text = "(暂无历史记录)"
 
     positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
-    prompt_template = resolve_prompt_template(config, trade_mode, PROJECT_ROOT, logger)
+    prompt_template = resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger)
     leverage = global_config.get_leverage(config_id)
 
     if is_real_exec:
@@ -230,7 +233,7 @@ def start_node(state: AgentState) -> AgentState:
 
     system_prompt = render_prompt(
         prompt_template,
-        model=config.get('model'),
+        model=agent_config.get('model'),
         symbol=symbol,
         leverage=leverage,
         current_time=current_time_str,
@@ -256,12 +259,15 @@ def start_node(state: AgentState) -> AgentState:
         "messages": messages
     })
 
-def agent_node(state: AgentState) -> AgentState:
-    config = state.agent_config
+def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id", "unknown")
+    agent_config = configurable.get("agent_config", {})
+    
     symbol = state.symbol
-    model_name = config.get('model', '').lower()
-    trade_mode = config.get('mode', 'STRATEGY').upper()
-    logger.info(f"--- [Node] Agent: {config.get('model')} (Mode: {trade_mode}) ---")
+    model_name = agent_config.get('model', '').lower()
+    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
+    logger.info(f"--- [Node] Agent: {agent_config.get('model')} (Mode: {trade_mode}) ---")
 
     messages = []
     is_deepseek = "deepseek" in model_name or "r1" in model_name
@@ -274,8 +280,8 @@ def agent_node(state: AgentState) -> AgentState:
 
     try:
         kwargs = {}
-        if config.get('extra_body'):
-            kwargs["extra_body"] = config.get('extra_body')
+        if agent_config.get('extra_body'):
+            kwargs["extra_body"] = agent_config.get('extra_body')
 
         # 根据模式选择工具集
         if trade_mode == 'REAL':
@@ -289,10 +295,10 @@ def agent_node(state: AgentState) -> AgentState:
         #     tools += [analyze_event_contract, format_event_contract_order]
 
         llm = ChatOpenAI(
-            model=config.get('model'),
-            api_key=config.get('api_key'),
-            base_url=config.get('api_base'),
-            temperature=config.get('temperature', 0.5),
+            model=agent_config.get('model'),
+            api_key=agent_config.get('api_key'),
+            base_url=agent_config.get('api_base'),
+            temperature=agent_config.get('temperature', 0.5),
             model_kwargs=kwargs
         ).bind_tools(tools)
 
@@ -307,8 +313,8 @@ def agent_node(state: AgentState) -> AgentState:
             if usage:
                 database.save_token_usage(
                     symbol=symbol,
-                    config_id=state.config_id,
-                    model=config.get('model'),
+                    config_id=config_id,
+                    model=agent_config.get('model'),
                     prompt_tokens=usage.get("prompt_tokens", 0),
                     completion_tokens=usage.get("completion_tokens", 0)
                 )
@@ -321,12 +327,14 @@ def agent_node(state: AgentState) -> AgentState:
         logger.error(f"❌ [LLM Error] ({symbol}): {e}")
         return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")]})
 
-def tools_node(state: AgentState) -> AgentState:
+def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """通用的工具执行节点。"""
     last_message = state.messages[-1]
     tool_calls = getattr(last_message, 'tool_calls', [])
     
-    config_id = state.config_id
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id", "unknown")
+    
     symbol = state.symbol
     
     tool_outputs = []
@@ -363,11 +371,14 @@ def tools_node(state: AgentState) -> AgentState:
             
     return state.model_copy(update={"messages": state.messages + tool_outputs})
 
-def finalize_node(state: AgentState) -> AgentState:
+def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """合并 AI 消息的内容并保存到数据库。"""
-    config_id = state.config_id
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id", "unknown")
+    agent_config = configurable.get("agent_config", {})
+    
     symbol = state.symbol
-    agent_name = state.agent_config.get('model', 'Unknown')
+    agent_name = agent_config.get('model', 'Unknown')
     
     all_ai_messages = [msg for msg in state.messages if isinstance(msg, AIMessage) and msg.content]
     
@@ -381,7 +392,7 @@ def finalize_node(state: AgentState) -> AgentState:
         else:
             full_content = main_content
         
-        strategy_logic = summarize_content(full_content, state.agent_config)
+        strategy_logic = summarize_content(full_content, agent_config)
         processed_content = escape_markdown_special_chars(full_content)
         processed_strategy_logic = escape_markdown_special_chars(strategy_logic)
         
@@ -421,10 +432,8 @@ def run_agent_for_config(config: dict, human_message: str = None):
     config_id = config.get('config_id', 'unknown')
     symbol = config['symbol']
     initial_state = AgentState(
-        config_id=config_id,
         symbol=symbol,
         messages=[],
-        agent_config=config,
         market_context={},
         account_context={},
         history_context=[],
@@ -432,6 +441,6 @@ def run_agent_for_config(config: dict, human_message: str = None):
         human_message=human_message
     )
     try:
-        app.invoke(initial_state)
+        app.invoke(initial_state, config={"configurable": {"config_id": config_id, "agent_config": config}})
     except Exception as e:
         logger.error(f"❌ Critical Graph Error for [{config_id}] {symbol}: {e}")
