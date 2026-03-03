@@ -406,14 +406,10 @@ def stream_chat(session_id: str, payload: Dict[str, Any]):
             yield {"type": "tool_calls", "tool_calls": tool_calls}
 
 
-def stream_resume_chat(session_id: str, approved: bool):
+def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
     # Retrieve the state to get config_id if needed, but usually it's already in the checkpoint
     # However, to be safe and consistent with our new node logic that expects it in configurable:
-    snapshot = chat_app.get_state({"configurable": {"thread_id": session_id}})
-    # config_id is no longer in state, so we might need to recover it or assume it's in configurable
-    # For resume, the configurable from the original call is usually preserved if handled correctly by LangGraph
-    # but we can also just pass the thread_id.
-    config = {"configurable": {"thread_id": session_id}}
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     
     command = Command(resume={"approved": approved})
     for item in chat_app.stream(command, config=config, stream_mode="messages"):
@@ -447,19 +443,19 @@ def invoke_chat(session_id: str, payload: Dict[str, Any]):
     return chat_app.invoke(payload, config=config)
 
 
-def resume_chat(session_id: str, approved: bool):
-    config = {"configurable": {"thread_id": session_id}}
+def resume_chat(session_id: str, approved: bool, config_id: str = None):
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     return chat_app.invoke(Command(resume={"approved": approved}), config=config)
 
 
-def get_chat_state(session_id: str):
-    config = {"configurable": {"thread_id": session_id}}
+def get_chat_state(session_id: str, config_id: str = None):
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     snapshot = chat_app.get_state(config)
     return snapshot.values if snapshot else {}
 
 
-def get_chat_interrupt(session_id: str):
-    config = {"configurable": {"thread_id": session_id}}
+def get_chat_interrupt(session_id: str, config_id: str = None):
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     snapshot = chat_app.get_state(config)
     if not snapshot or not getattr(snapshot, "interrupts", None): return None
     intr = snapshot.interrupts[0]

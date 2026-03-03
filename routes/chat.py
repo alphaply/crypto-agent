@@ -88,14 +88,14 @@ def chat_session_api(session_id):
     if not sess:
         return jsonify({"success": False, "message": "会话不存在"}), 404
 
-    state = get_chat_state(session_id)
+    state = get_chat_state(session_id, config_id=sess["config_id"])
     messages = state.get("messages", []) if state else []
     return jsonify(
         {
             "success": True,
             "session": dict(sess),
             "messages": [_serialize_message(m) for m in messages],
-            "pending_approval": get_chat_interrupt(session_id),
+            "pending_approval": get_chat_interrupt(session_id, config_id=sess["config_id"]),
         }
     )
 
@@ -110,7 +110,7 @@ def get_chat_messages_api(session_id):
     if not sess:
         return jsonify({"success": False, "message": "会话不存在"}), 404
 
-    state = get_chat_state(session_id)
+    state = get_chat_state(session_id, config_id=sess["config_id"])
     messages = state.get("messages", []) if state else []
     return jsonify(
         {
@@ -137,7 +137,7 @@ def stream_chat_api(session_id):
     def generate():
         try:
             if approval:
-                gen = stream_resume_chat(session_id, approval == "true")
+                gen = stream_resume_chat(session_id, approval == "true", config_id=sess["config_id"])
             else:
                 payload = {"q": user_input, "config_id": sess["config_id"]}
                 gen = stream_chat(session_id, payload)
@@ -150,12 +150,12 @@ def stream_chat_api(session_id):
                     yield f"data: {json.dumps({'type': 'token', 'token': event})}\n\n"
 
             touch_chat_session(session_id)
-            state = get_chat_state(session_id)
+            state = get_chat_state(session_id, config_id=sess["config_id"])
             final_messages = [_serialize_message(m) for m in state.get("messages", [])]
             done_payload = {
                 "type": "done",
                 "messages": final_messages,
-                "pending_approval": get_chat_interrupt(session_id),
+                "pending_approval": get_chat_interrupt(session_id, config_id=sess["config_id"]),
             }
             yield f"data: {json.dumps(done_payload)}\n\n"
         except Exception as e:
@@ -183,7 +183,7 @@ def summarize_session_title_api(session_id):
     if not sess:
         return jsonify({"success": False, "message": "会话不存在"}), 404
 
-    state = get_chat_state(session_id)
+    state = get_chat_state(session_id, config_id=sess["config_id"])
     messages = state.get("messages", []) if state else []
     if not messages:
         return jsonify({"success": False, "message": "没有消息内容"}), 400
