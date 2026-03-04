@@ -9,3 +9,4 @@ wheels/
 .env copy
 # Virtual environments
 .venv
+trading_data.db
