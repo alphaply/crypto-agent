@@ -398,7 +398,7 @@ class MarketTool:
                 target_pos_side = order_params.get('pos_side', '').upper()
                 logger.info(f"🔍 [CLOSE] 检查持仓... 目标: {target_pos_side} | 量: {raw_close_amount} | 价: {raw_close_price}")
                 positions = self.exchange.fetch_positions([symbol])
-                executed = False
+                orders_executed = []
 
                 for pos in positions:
                     amt = float(pos['contracts']) # 当前持仓数量
@@ -420,6 +420,7 @@ class MarketTool:
 
                         params = {'positionSide': current_pos_side_str}
                         
+                        order = None
                         if raw_close_price > 0:
                             formatted_price = self.exchange.price_to_precision(symbol, raw_close_price)
                             is_stop_loss = False
@@ -439,33 +440,25 @@ class MarketTool:
                                 params['closePosition'] = True # 某些交易所支持直接平仓标志
                                 
                                 # 注意：STOP_MARKET 通常不需要传 price 参数 (传 None)，但需要 stopPrice
-                                self.exchange.create_order(symbol, order_type, close_side, final_amt, None, params=params)
+                                order = self.exchange.create_order(symbol, order_type, close_side, final_amt, None, params=params)
 
                             else:
                                 logger.info(f"💰 [CLOSE-TP] 检测到止盈场景 (现价 {current_price} -> 目标 {formatted_price})")
                                 order_type = 'LIMIT'
                                 params['timeInForce'] = 'GTC'
-                                self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
-
-
-                            # 1. 限价平仓 (Limit Close)
-                            # order_type = 'LIMIT'
-                            # formatted_price = self.exchange.price_to_precision(symbol, raw_close_price)
-                            # params['timeInForce'] = 'GTC' # 限价单需要 GTC
-                            
-                            # logger.info(f"🚀 [CLOSE-LIMIT] 下单: {current_pos_side_str} -> {close_side} {formatted_amt} @ {formatted_price}")
-                            # self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
+                                order = self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
                         else:
                             # 2. 市价平仓 (Market Close)
                             order_type = 'MARKET'
                             logger.info(f"🚀 [CLOSE-MARKET] 下单: {current_pos_side_str} -> {close_side} {formatted_amt} @ 市价")
-                            self.exchange.create_order(symbol, order_type, close_side, final_amt, params=params)
+                            order = self.exchange.create_order(symbol, order_type, close_side, final_amt, params=params)
                         
-                        executed = True
+                        if order:
+                            orders_executed.append(order)
 
-                if executed:
-                    logger.info(f"✅ [CLOSE] 平仓指令执行完毕")
-                    return {"status": "closed"}
+                if orders_executed:
+                    logger.info(f"✅ [CLOSE] 平仓指令执行完毕，共 {len(orders_executed)} 个订单")
+                    return orders_executed[0] if len(orders_executed) == 1 else {"status": "closed", "orders": orders_executed}
                 else:
                     logger.warning(f"⚠️ [CLOSE] 未找到对应方向的持仓或持仓为0，跳过")
                     return {"status": "no_position"}

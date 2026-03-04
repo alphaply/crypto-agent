@@ -1,4 +1,5 @@
 import uuid
+import time
 from datetime import datetime, timedelta
 from typing import List, Literal, Optional
 
@@ -128,13 +129,28 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     for op in orders:
         try:
             if isinstance(op, dict): op = CloseOrder(**op)
-            market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=config_id)
+            res = market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=config_id)
+            
+            # 提取订单 ID
+            order_ids = []
+            if isinstance(res, dict):
+                if 'id' in res:
+                    order_ids.append(str(res['id']))
+                elif 'orders' in res:
+                    order_ids.extend([str(o['id']) for o in res['orders'] if 'id' in o])
+            
+            # 如果没拿到 ID，回退到 CLOSE_CMD 但加上随机后缀或时间戳
+            final_log_id = order_ids[0] if order_ids else f"CLOSE-{int(time.time())}"
+
             # 优化日志展示
             cost = op.entry_price * op.amount
             side_str = "多" if op.pos_side == "LONG" else "空"
             enhanced_reason = f"🏁 平{side_str}: {op.amount} {symbol.split('/')[0]} @ {op.entry_price} (价值: ${cost:.2f}) | {op.reason}"
-            database.save_order_log("CLOSE_CMD", symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id)
-            execution_results.append(f"✅ 下单成功 ({op.pos_side}) @ {op.entry_price}")
+            
+            # 如果有多个订单，记录多条日志或合并记录
+            database.save_order_log(final_log_id, symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id)
+            
+            execution_results.append(f"✅ 下单成功 ({op.pos_side}) @ {op.entry_price} | ID: {final_log_id}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 下单失败: {str(e)}")
     return "\n".join(execution_results)
