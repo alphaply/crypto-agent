@@ -9,3 +9,6 @@ wheels/
 .env copy
 # Virtual environments
 .venv
+
+# Local runtime database
+trading_data.db
