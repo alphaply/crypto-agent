@@ -6,6 +6,12 @@
   --bubble-agent: #ffffff;
   --text-main: #1e293b;
 }
+[data-theme="dark"] {
+  --bg-main: #0b1220;
+  --bubble-user: #1d4ed8;
+  --bubble-agent: #111827;
+  --text-main: #e5e7eb;
+}
 
 body {
   font-family: 'Noto Sans SC', 'Manrope', sans-serif;
@@ -17,6 +23,7 @@ body {
 .scroll-thin::-webkit-scrollbar { width: 5px; height: 5px; }
 .scroll-thin::-webkit-scrollbar-track { background: transparent; }
 .scroll-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+[data-theme="dark"] .scroll-thin::-webkit-scrollbar-thumb { background: #475569; }
 
 /* 聊天气泡核心样式 */
 .chat-bubble {
@@ -47,6 +54,9 @@ body {
   border: 1px solid #e2e8f0;
   border-bottom-left-radius: 0.25rem;
 }
+[data-theme="dark"] .chat-bubble[data-role="assistant"] {
+  border-color: #334155;
+}
 
 .chat-bubble[data-role="tool"] {
   background-color: #f1f5f9;
@@ -54,6 +64,11 @@ body {
   border: 1px dashed #cbd5e1;
   font-size: 0.8rem;
   padding: 0.75rem 1rem;
+}
+[data-theme="dark"] .chat-bubble[data-role="tool"] {
+  background-color: #1e293b;
+  color: #cbd5e1;
+  border-color: #475569;
 }
 
 /* 会话列表项美化 */
@@ -78,6 +93,10 @@ body {
   margin-top: 0.5rem;
   overflow: hidden;
 }
+[data-theme="dark"] .tool-call-card {
+  background: #0f172a;
+  border-color: #334155;
+}
 
 .tool-call-head {
   background: #f1f5f9;
@@ -88,6 +107,9 @@ body {
   font-family: monospace;
   font-weight: bold;
 }
+[data-theme="dark"] .tool-call-head {
+  background: #1e293b;
+}
 
 .tool-arg-row {
   display: flex;
@@ -95,11 +117,17 @@ body {
   border-bottom: 1px solid #f1f5f9;
   font-size: 0.75rem;
 }
+[data-theme="dark"] .tool-arg-row {
+  border-bottom-color: #334155;
+}
 
 .tool-arg-key {
   color: #64748b;
   width: 80px;
   flex-shrink: 0;
+}
+[data-theme="dark"] .tool-arg-key {
+  color: #94a3b8;
 }
 
 /* 移动端特殊适配 */
@@ -143,12 +171,19 @@ body {
   font-size: 0.8125rem;
   border: 1px solid #e2e8f0;
 }
+[data-theme="dark"] .md-content pre {
+  background-color: #0f172a;
+  border-color: #334155;
+}
 .md-content code {
   background-color: rgba(0,0,0,0.05);
   padding: 0.15rem 0.3rem;
   border-radius: 0.25rem;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85em;
+}
+[data-theme="dark"] .md-content code {
+  background-color: #1e293b;
 }
 .md-content pre code {
   background-color: transparent;
@@ -172,7 +207,11 @@ body {
   border: 1px solid #e2e8f0;
   padding: 0.5rem;
 }
+[data-theme="dark"] .md-content th, [data-theme="dark"] .md-content td {
+  border-color: #334155;
+}
 .md-content th { background-color: #f8fafc; font-weight: 600; }
+[data-theme="dark"] .md-content th { background-color: #1e293b; }
 .md-content a { color: #2563eb; text-decoration: underline; }
 .md-content blockquote {
   border-left: 4px solid #cbd5e1;
@@ -181,5 +220,9 @@ body {
   margin-left: 0;
   margin-right: 0;
   font-style: italic;
+}
+[data-theme="dark"] .md-content blockquote {
+  border-left-color: #475569;
+  color: #94a3b8;
 }
 
