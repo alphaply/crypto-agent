@@ -1,0 +1,30 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景圆角矩形 -->
+  <rect width="64" height="64" rx="16" fill="url(#paint0_linear)"/>
+  
+  <!-- 装饰性背景线 (科技感) -->
+  <path d="M10 20L54 20M10 44L54 44M20 10L20 54M44 10L44 54" stroke="white" stroke-width="1" stroke-opacity="0.1"/>
+  
+  <!-- 硬币外圆 -->
+  <circle cx="32" cy="32" r="22" stroke="white" stroke-width="3" stroke-dasharray="2 4"/>
+  
+  <!-- 机器人/AI 核心 -->
+  <rect x="22" y="24" width="20" height="16" rx="3" stroke="white" stroke-width="2.5" fill="white" fill-opacity="0.1"/>
+  <!-- 眼睛 -->
+  <circle cx="28" cy="32" r="2" fill="white"/>
+  <circle cx="36" cy="32" r="2" fill="white"/>
+  <!-- 触角 -->
+  <path d="M32 24V18M28 18H36" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <!-- 底部曲线 (嘴巴) -->
+  <path d="M28 36C29 37 35 37 36 36" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+  
+  <!-- 底部字母标识 -->
+  <path d="M26 48L32 44L38 48" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <defs>
+    <linearGradient id="paint0_linear" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B82F6"/> <!-- 科技蓝 -->
+      <stop offset="1" stop-color="#10B981"/> <!-- 翡翠绿 -->
+    </linearGradient>
+  </defs>
+</svg>

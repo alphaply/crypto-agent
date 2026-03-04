@@ -191,6 +191,7 @@ function renderOrdersToContainer(configId, orders) {
                             ${order.side}
                         </span>
                         <span class="text-xs font-mono font-bold text-gray-700 group-hover:text-blue-600 transition-colors" title="点击复制价格">${order.entry_price}</span>
+                        <span class="text-[9px] font-mono text-gray-400 bg-gray-100 px-1 rounded ml-1" title="订单 ID">${order.order_id}</span>
                     </div>
                     <span class="text-[9px] font-mono text-gray-400">${(order.timestamp || '').substring(11, 16)}</span>
                 </div>

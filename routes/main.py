@@ -1,9 +1,11 @@
 import sqlite3
 import math
+from datetime import datetime, timedelta
+import pytz
 from flask import Blueprint, render_template, request, jsonify, session
 from routes.utils import (
     DB_NAME, global_config, get_scheduler_status, get_symbol_specific_status,
-    _chat_authed, logger
+    _chat_authed, logger, TZ_CN
 )
 from database import (
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
@@ -12,6 +14,46 @@ from database import (
 )
 
 main_bp = Blueprint('main', __name__)
+
+def calculate_next_run(config):
+    """根据配置计算下一次预定运行时间"""
+    mode = config.get('mode', 'STRATEGY').upper()
+    now = datetime.now(TZ_CN)
+    
+    if mode == 'REAL':
+        # 实盘每 15 分钟运行一次
+        minutes = (now.minute // 15 + 1) * 15
+        next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=minutes)
+        return next_run.strftime('%H:%M')
+        
+    elif mode == 'STRATEGY':
+        # 策略每小时整点运行
+        next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return next_run.strftime('%H:00')
+        
+    elif mode == 'SPOT_DCA':
+        # 定投根据 dca_time 计算
+        dca_time_str = config.get('dca_time', '08:00')
+        try:
+            hour, minute = map(int, dca_time_str.split(':'))
+        except:
+            hour, minute = 8, 0
+            
+        next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        
+        if config.get('dca_freq', '1d') == '1w':
+            target_weekday = int(config.get('dca_weekday', 0)) # 0=周一
+            days_ahead = target_weekday - now.weekday()
+            if days_ahead < 0 or (days_ahead == 0 and now > next_run):
+                days_ahead += 7
+            next_run += timedelta(days=days_ahead)
+        else:
+            if now > next_run:
+                next_run += timedelta(days=1)
+                
+        return next_run.strftime('%m-%d %H:%M')
+        
+    return "N/A"
 
 def get_dashboard_data(symbol, page=1, per_page=10):
     try:
@@ -49,11 +91,12 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict['model'] = model_name
                 summary_dict['mode'] = mode
                 summary_dict['enabled'] = enabled
+                summary_dict['next_run'] = calculate_next_run(config)
                 
                 if mode == 'REAL':
                     summary_dict['freq'] = "15m (高频)"
                 elif mode == 'SPOT_DCA':
-                    summary_dict['freq'] = "Daily (定投)"
+                    summary_dict['freq'] = f"{config.get('dca_freq', '1d')} (定投)"
                 else:
                     summary_dict['freq'] = "1h (低频)"
                     

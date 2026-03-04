@@ -63,7 +63,10 @@
                           <div class="px-4 py-3 md:px-6 md:py-4 border-b border-gray-100 bg-gray-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                               <h3 class="font-bold text-gray-900 flex items-center gap-2 text-sm md:text-base">
                                   📊 市场分析报告
-                                  <span class="text-[9px] md:text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">{{ summary.timestamp }}</span>
+                                  <span class="text-[9px] md:text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm" title="最近分析时间">{{ summary.timestamp }}</span>
+                                  {% if summary.enabled %}
+                                  <span class="text-[9px] md:text-[10px] font-mono text-blue-500 bg-blue-50 px-2 py-1 rounded border border-blue-100 shadow-sm" title="下次预定运行时间">⌛ 下次: {{ summary.next_run }}</span>
+                                  {% endif %}
                                   {% if not summary.enabled %}
                                   <span class="px-2 py-0.5 text-[9px] bg-gray-100 text-gray-400 rounded-full border border-gray-200">已禁用</span>
                                   {% endif %}
@@ -128,6 +131,7 @@
                                                   {{ order.side }}
                                               </span>
                                               <span class="text-xs font-mono font-bold text-gray-700 group-hover:text-blue-600 transition-colors" title="点击复制价格">{{ order.entry_price }}</span>
+                                              <span class="text-[9px] font-mono text-gray-400 bg-gray-100 px-1 rounded ml-1" title="订单 ID">{{ order.order_id }}</span>
                                           </div>
                                           <span class="text-[9px] font-mono text-gray-400">{{ order.timestamp[11:16] }}</span>
                                       </div>
@@ -178,7 +182,10 @@
                                       {% else %}STRAT ({{ summary.freq }}){% endif %}
                                   </span>
                                   <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-sm uppercase">{{ summary.model }}</span>
-                                  <span class="text-[9px] font-mono text-gray-400">{{ summary.timestamp[11:16] }}</span>
+                                  <span class="text-[9px] font-mono text-gray-400" title="最近分析时间">{{ summary.timestamp[11:16] }}</span>
+                                  {% if summary.enabled %}
+                                  <span class="text-[8px] font-mono text-blue-500 bg-blue-50 px-1 rounded border border-blue-100" title="下次运行">⌛ {{ summary.next_run }}</span>
+                                  {% endif %}
                               </div>
                           </div>
                           <button onclick="switchAgentTab('{{ summary.config_id }}')" class="p-2 text-blue-600 hover:bg-blue-50 rounded-full transition-colors">
@@ -219,6 +226,7 @@
                                                       {% else %} bg-gray-400 {% endif %}"></span>
                                                   <span class="text-[10px] font-black uppercase text-gray-700 w-10">{{ order.side[:4] }}</span>
                                                   <span class="text-[10px] font-mono font-bold text-blue-600 group-hover:text-blue-700">{{ order.entry_price }}</span>
+                                                  <span class="text-[9px] font-mono text-gray-400 bg-gray-100 px-1 rounded ml-1" title="订单 ID">{{ order.order_id }}</span>
                                               </div>
                                               <div class="text-[9px] text-gray-400 font-mono">{{ order.timestamp[11:16] }}</div>
                                           </div>
