@@ -4,7 +4,6 @@
 .markdown-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.75rem; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight: bold; margin-top: 1rem; margin-bottom: 0.5rem; }
 .markdown-body code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-family: monospace; }
-[data-theme="dark"] .markdown-body code { background: #1e293b; color: #e5e7eb; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
 @keyframes pulse-custom { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
@@ -28,7 +27,6 @@
 .mini-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
 .mini-scroll::-webkit-scrollbar-track { background: transparent; }
 .mini-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
-[data-theme="dark"] .mini-scroll::-webkit-scrollbar-thumb { background: #475569; }
 
 /* 模态框移动端全屏优化 */
 @media (max-width: 640px) {
@@ -46,7 +44,6 @@
 .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 20px; }
-[data-theme="dark"] .slider { background-color: #475569; }
 .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
 input:checked + .slider { background-color: #2563eb; }
 input:checked + .slider:before { transform: translateX(20px); }
@@ -55,5 +52,3 @@ input:checked + .slider:before { transform: translateX(20px); }
 .config-card { transition: all 0.2s ease; border: 1px solid #e5e7eb; }
 .config-card:hover { border-color: #3b82f6; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
 .config-card.disabled { opacity: 0.6; background-color: #f9fafb; }
-[data-theme="dark"] .config-card { border-color: #334155; background-color: #111827; }
-[data-theme="dark"] .config-card.disabled { background-color: #0f172a; }
