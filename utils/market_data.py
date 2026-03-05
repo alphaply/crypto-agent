@@ -186,7 +186,7 @@ class MarketTool:
                     
                     logger.info(f"[{symbol}] Fetched {len(regular_orders)} regular + {len(trigger_orders)} trigger orders")
                     for i, o in enumerate(all_orders):
-                        logger.info(f"  Order #{i}: ID={o.get('id')} Type={o.get('type')} Status={o.get('status')} Price={o.get('price')} StopPrice={o.get('stopPrice')}")
+                        logger.info(f"  Order #{i}: ID={o.get('id')} Type={o.get('type')} Status={o.get('status')} Price={o.get('price')} StopPrice={o.get('stopPrice')} Amount={o.get('amount')} RawInfo={o.get('info')}")
                     
                     filtered_orders = []
                     for o in all_orders:
@@ -208,7 +208,15 @@ class MarketTool:
                                 return default
 
                         price = safe_float(o.get('price'))
-                        amount = safe_float(o.get('amount'))
+                        # 尝试从多个地方获取数量：ccxt 标准字段 -> info['origQty'] -> info['qty']
+                        amount = safe_float(o.get('amount') or info.get('origQty') or info.get('qty'))
+                        
+                        # 特殊处理：如果是全平委托 (closePosition: true)，数量可能显示为 0
+                        # 此时我们从 info.get('type') 判断或给个提示
+                        if amount == 0 and info.get('closePosition') in [True, 'true', 'TRUE']:
+                            # 如果是平仓单，我们可以从持仓中查找数量，或者暂时标记为 "ALL"
+                            # 为了 UI 兼容性，我们暂时保持 0，但在 type 上体现
+                            pass
                         
                         # 尝试从多个位置获取触发价 (stopPrice)
                         stop_price = safe_float(o.get('stopPrice') or info.get('stopPrice') or info.get('triggerPrice'))
