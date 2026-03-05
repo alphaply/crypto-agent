@@ -15,8 +15,8 @@ from database import (
 
 main_bp = Blueprint('main', __name__)
 
-def calculate_next_run(config):
-    """根据配置计算下一次预定运行时间"""
+def calculate_next_run(config, latest_summary=None):
+    """根据配置和最后一次执行时间计算下一次预定运行时间"""
     mode = config.get('mode', 'STRATEGY').upper()
     now = datetime.now(TZ_CN)
     
@@ -25,15 +25,34 @@ def calculate_next_run(config):
         interval = int(config.get('run_interval', default_interval))
         if interval < 15: interval = 15
         
-        # 计算下一个整周期对齐的时间点
-        minutes_passed = now.hour * 60 + now.minute
-        next_total_minutes = ((minutes_passed // interval) + 1) * interval
+        # 基础逻辑：如果数据库有最后运行时间，基于它加间隔
+        last_run_time = None
+        if latest_summary and latest_summary.get('timestamp') and latest_summary['timestamp'] != 'N/A':
+            try:
+                # 转换格式: 2024-03-05 13:45:00
+                last_run_time = datetime.strptime(latest_summary['timestamp'], "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_CN)
+            except:
+                pass
         
-        next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
+        if last_run_time:
+            # 预测时间 = 最后一次运行 + 设定的间隔
+            next_run = last_run_time + timedelta(minutes=interval)
+            
+            # 如果预测的时间已经过去了（比如程序关了很久刚开），则重新对齐到当前时间后的下一个周期
+            if next_run < now:
+                minutes_passed = now.hour * 60 + now.minute
+                next_total_minutes = ((minutes_passed // interval) + 1) * interval
+                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
+        else:
+            # 没有任何历史记录，按整周期对齐
+            minutes_passed = now.hour * 60 + now.minute
+            next_total_minutes = ((minutes_passed // interval) + 1) * interval
+            next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
+            
         return next_run.strftime('%H:%M')
         
     elif mode == 'SPOT_DCA':
-        # 定投根据 dca_time 计算
+        # ... (定投逻辑保持不变)
         dca_time_str = config.get('dca_time', '08:00')
         try:
             hour, minute = map(int, dca_time_str.split(':'))
@@ -66,7 +85,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
             agent_summaries = []
             for config in symbol_configs:
                 config_id = config['config_id']
-                latest_summary = conn.execute(
+                latest_summary_row = conn.execute(
                     "SELECT * FROM summaries WHERE config_id = ? ORDER BY id DESC LIMIT 1",
                     (config_id,)
                 ).fetchone()
@@ -75,8 +94,10 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 mode = config.get('mode', 'STRATEGY').upper()
                 enabled = config.get('enabled', True)
 
-                if latest_summary:
-                    summary_dict = dict(latest_summary)
+                latest_summary = None
+                if latest_summary_row:
+                    latest_summary = dict(latest_summary_row)
+                    summary_dict = latest_summary.copy()
                 else:
                     # 如果没有历史摘要，创建一个占位符
                     summary_dict = {
@@ -92,14 +113,14 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict['model'] = model_name
                 summary_dict['mode'] = mode
                 summary_dict['enabled'] = enabled
-                summary_dict['next_run'] = calculate_next_run(config)
+                summary_dict['next_run'] = calculate_next_run(config, latest_summary)
                 
                 if mode == 'SPOT_DCA':
                     summary_dict['freq'] = f"{config.get('dca_freq', '1d')} (定投)"
                 else:
                     default_int = 60 if mode == 'STRATEGY' else 15
                     interval = config.get('run_interval', default_int)
-                    summary_dict['freq'] = f"{interval}m ({'高频' if interval <= 15 else '定期'})"
+                    summary_dict['freq'] = f"{interval}m ({'高频' if int(interval) <= 15 else '定期'})"
                     
                 summary_dict['leverage'] = global_config.get_leverage(config_id)
                 summary_dict['display_name'] = f"{model_name} ({mode})"
