@@ -43,6 +43,10 @@ class CloseOrder(BaseModel):
     amount: float = Field(description="数量 (币种数量)")
     reason: str = Field(description="理由")
 
+class SessionTitle(BaseModel):
+    """会话标题总结"""
+    title: str = Field(description="总结后的会话标题，不超过6个字，不带标点")
+
 class AgentState(BaseModel):
     symbol: str
     messages: List[BaseMessage]

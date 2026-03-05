@@ -23,28 +23,26 @@ logger = setup_logger("MainScheduler")
 
 def check_dca_executed(config_id, now, freq='1d'):
     """
-    检查指定周期内是否已执行过定投
+    检查指定周期内是否已执行过定投（通过检查是否有决策记录或分析摘要）
     """
     from database import get_db_conn
     try:
-        # 1d 模式检查当天，1w 模式检查本周（从周一 00:00 开始）
         if freq == '1w':
-            # 获取本周一的日期字符串
             start_of_week = (now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')
             query_time = f"{start_of_week}%"
-            # 注意：这里的 LIKE 逻辑对于跨周检查稍显简单，但在周定投场景下
-            # 配合 is_time_to_run 的周几检查，基本能保证一周只触发一次。
         else:
             query_time = f"{now.strftime('%Y-%m-%d')}%"
 
         with get_db_conn() as conn:
             c = conn.cursor()
+            # 检查 orders 表（买入/观望）或 summaries 表（分析结果）
             c.execute('''
-                SELECT count(*) as cnt FROM orders 
-                WHERE config_id = ? AND timestamp >= ? AND reason LIKE '%Spot DCA trigger%'
-            ''', (config_id, query_time))
+                SELECT 
+                    (SELECT count(*) FROM orders WHERE config_id = ? AND timestamp >= ?) +
+                    (SELECT count(*) FROM summaries WHERE config_id = ? AND timestamp >= ?) as cnt
+            ''', (config_id, query_time, config_id, query_time))
             row = c.fetchone()
-            return row['cnt'] > 0
+            return row[0] > 0
     except Exception as e:
         logger.error(f"❌ 检查DCA记录失败: {e}")
         return False
@@ -104,23 +102,6 @@ def process_single_config(config):
     if not is_time_to_run(config, now): return
 
     logger.info(f"⏳ [{config_id}] 满足触发条件 ({mode})，开始执行 Agent 任务...")
-
-    # 如果是 SPOT_DCA，在执行前存入一条虚拟记录防止重入
-    if mode == 'SPOT_DCA':
-        try:
-            from database import save_order_log
-            save_order_log(
-                f"DCA-TRIGGER-{int(now.timestamp())}", 
-                symbol, 
-                config_id, 
-                'trigger', 
-                0, 0, 0, 
-                f"⏰ 现货定投触发 (Freq: {config.get('dca_freq','1d')})，决策中... | Spot DCA trigger", 
-                trade_mode="SPOT_DCA", 
-                config_id=config_id
-            )
-        except Exception as e:
-            logger.error(f"❌ 记录DCA触发状态失败: {e}")
 
     try:
         run_agent_for_config(config)

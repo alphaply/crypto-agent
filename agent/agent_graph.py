@@ -408,8 +408,40 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
         
         try:
             database.save_summary(symbol, agent_name, processed_content, processed_strategy_logic, config_id=config_id)
+            
+            # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
+            trade_mode = agent_config.get('mode', 'STRATEGY').upper()
+            if trade_mode == 'SPOT_DCA':
+                # 检查是否执行了 open_position_spot_dca 工具
+                has_dca_order = False
+                for msg in state.messages:
+                    if isinstance(msg, ToolMessage):
+                        # 查找对应的 tool_call，通过 tool_call_id 匹配 AIMessage 中的 calls
+                        # 简化逻辑：直接看结果内容是否包含下单成功或失败的标记
+                        if "open_position_spot_dca" in str(getattr(msg, "name", "")):
+                            has_dca_order = True
+                            break
+                    # 另一种检查方法：看 AIMessage 里的 tool_calls
+                    if isinstance(msg, AIMessage) and msg.tool_calls:
+                        if any(tc['name'] == 'open_position_spot_dca' for tc in msg.tool_calls):
+                            has_dca_order = True
+                            break
+                
+                if not has_dca_order:
+                    # 补录一条“观望”记录到决策流水
+                    wait_reason = f"💤 本轮未触发挂单条件。逻辑摘要：{strategy_logic}"
+                    database.save_order_log(
+                        f"DCA-WAIT-{int(datetime.now().timestamp())}",
+                        symbol,
+                        agent_name,
+                        'WAIT',
+                        0, 0, 0,
+                        wait_reason,
+                        trade_mode="SPOT_DCA",
+                        config_id=config_id
+                    )
         except Exception as e:
-            logger.warning(f"⚠️ Save summary failed: {e}")
+            logger.warning(f"⚠️ Save summary/DCA log failed: {e}")
 
     return state
 

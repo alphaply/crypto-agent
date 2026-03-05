@@ -23,6 +23,7 @@ from routes.utils import global_config, _require_chat_auth_api, _serialize_messa
 # 导入LangChain的消息类和模型类
 from langchain_core.messages import HumanMessage, ChatMessage
 from langchain_openai import ChatOpenAI
+from agent.agent_models import SessionTitle
 
 
 chat_bp = Blueprint("chat", __name__)
@@ -202,9 +203,24 @@ def summarize_session_title_api(session_id):
             base_url=cfg.get("api_base"),
             temperature=0,
         )
+        
+        # 强制结构化输出
+        structured_llm = llm.with_structured_output(SessionTitle)
+        
         summary_prompt = f"请根据以下对话内容，总结一个极其简短的标题（不超过6个字，不要带标点）：\n\n{content_to_summarize}"
-        res = llm.invoke([HumanMessage(content=summary_prompt)])
-        new_title = res.content.strip().replace("\"", "").replace("'", "").replace("鏍欓?", "").replace("锛?", "")
+        
+        try:
+            # 尝试结构化提取
+            res = structured_llm.invoke([HumanMessage(content=summary_prompt)])
+            new_title = res.title.strip()
+        except Exception as struct_e:
+            logger.warning(f"Structured output failed, falling back to raw: {struct_e}")
+            # 兜底方案：普通文本提取
+            res = llm.invoke([HumanMessage(content=summary_prompt)])
+            new_title = res.content.strip().replace("\"", "").replace("'", "").replace("标题", "").replace("：", "").replace(":", "")
+
+        # 最终清洗与长度限制
+        new_title = new_title.replace("鏍欓?", "").replace("锛?", "")
         if len(new_title) > 10: new_title = new_title[:10]
         
         # 更新数据库
