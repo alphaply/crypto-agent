@@ -176,14 +176,29 @@ class MarketTool:
                     for o in all_orders:
                         # 从 exchange 的原始响应中提取 positionSide (针对币安 USDM)
                         # ccxt 统一结构中通常在 o['info']['positionSide']
-                        pos_side = o.get('info', {}).get('positionSide', 'BOTH')
+                        info = o.get('info', {})
+                        pos_side = info.get('positionSide', 'BOTH')
                         
+                        # 核心修复：处理条件单 (STOP_MARKET, TAKE_PROFIT_MARKET 等)
+                        # 这些订单在 fetch_open_orders 中 price 为 0，实际价格在 stopPrice 中
+                        order_type = o.get('type', '').upper()
+                        price = float(o.get('price') or 0)
+                        
+                        # 如果是条件单且价格为0，则使用触发价作为显示价格
+                        if price == 0 and 'stopPrice' in info:
+                            price = float(info['stopPrice'])
+                        
+                        # 增强类型显示
+                        display_type = order_type
+                        if 'STOP' in order_type: display_type = "STOP"
+                        if 'TAKE_PROFIT' in order_type: display_type = "TP"
+
                         filtered_orders.append({
                             'order_id': str(o.get('id')),
                             'side': o.get('side', '').lower(),
                             'pos_side': pos_side.upper(), # 'LONG', 'SHORT' or 'BOTH'
-                            'type': o.get('type'),
-                            'price': float(o.get('price') or 0),
+                            'type': display_type,
+                            'price': price,
                             'amount': float(o.get('amount', 0)),
                             'status': o.get('status')
                         })
