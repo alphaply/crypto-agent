@@ -171,11 +171,22 @@ class MarketTool:
 
                 # 实盘挂单
                 try:
-                    # 核心修改：增加 params={'trigger': True} 以拉取条件委托/触发单
-                    all_orders = self.exchange.fetch_open_orders(symbol, params={'trigger': True})
-                    logger.info(f"[{symbol}] Fetched {len(all_orders)} open orders (including triggers)")
+                    # 1. 获取常规挂单 (LIMIT, etc.)
+                    regular_orders = self.exchange.fetch_open_orders(symbol)
+                    
+                    # 2. 获取条件委托/触发单 (STOP_MARKET, etc.)
+                    trigger_orders = []
+                    try:
+                        trigger_orders = self.exchange.fetch_open_orders(symbol, params={'trigger': True})
+                    except Exception as te:
+                        logger.warning(f"Fetch trigger orders error: {te}")
+                    
+                    # 合并订单
+                    all_orders = regular_orders + trigger_orders
+                    
+                    logger.info(f"[{symbol}] Fetched {len(regular_orders)} regular + {len(trigger_orders)} trigger orders")
                     for i, o in enumerate(all_orders):
-                        logger.info(f"  Order #{i}: ID={o.get('id')} Type={o.get('type')} Status={o.get('status')} Price={o.get('price')} StopPrice={o.get('stopPrice')} InfoStop={o.get('info', {}).get('stopPrice')}")
+                        logger.info(f"  Order #{i}: ID={o.get('id')} Type={o.get('type')} Status={o.get('status')} Price={o.get('price')} StopPrice={o.get('stopPrice')}")
                     
                     filtered_orders = []
                     for o in all_orders:
