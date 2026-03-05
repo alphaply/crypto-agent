@@ -171,7 +171,8 @@ class MarketTool:
 
                 # 实盘挂单
                 try:
-                    all_orders = self.exchange.fetch_open_orders(symbol)
+                    # 核心修改：增加 params={'trigger': True} 以拉取条件委托/触发单
+                    all_orders = self.exchange.fetch_open_orders(symbol, params={'trigger': True})
                     filtered_orders = []
                     for o in all_orders:
                         # 从 exchange 的原始响应中提取 positionSide (针对币安 USDM)
