@@ -185,13 +185,26 @@ class MarketTool:
                         pos_side = info.get('positionSide', 'BOTH')
                         
                         # 核心修复：处理条件单 (STOP_MARKET, TAKE_PROFIT_MARKET 等)
-                        # 这些订单在 fetch_open_orders 中 price 为 0，实际价格在 stopPrice 中
+                        # 这些订单在 fetch_open_orders 中 price 为 0 或 None，实际价格在 stopPrice 中
                         order_type = o.get('type', '').upper()
-                        price = float(o.get('price') or 0)
+                        
+                        # 安全转换 float
+                        def safe_float(val, default=0.0):
+                            try:
+                                if val is None: return default
+                                return float(val)
+                            except:
+                                return default
+
+                        price = safe_float(o.get('price'))
+                        amount = safe_float(o.get('amount'))
+                        
+                        # 尝试从多个位置获取触发价 (stopPrice)
+                        stop_price = safe_float(o.get('stopPrice') or info.get('stopPrice') or info.get('triggerPrice'))
                         
                         # 如果是条件单且价格为0，则使用触发价作为显示价格
-                        if price == 0 and 'stopPrice' in info:
-                            price = float(info['stopPrice'])
+                        if price == 0 and stop_price > 0:
+                            price = stop_price
                         
                         # 增强类型显示
                         display_type = order_type
@@ -204,7 +217,7 @@ class MarketTool:
                             'pos_side': pos_side.upper(), # 'LONG', 'SHORT' or 'BOTH'
                             'type': display_type,
                             'price': price,
-                            'amount': float(o.get('amount', 0)),
+                            'amount': amount,
                             'status': o.get('status')
                         })
                     status_data["real_open_orders"] = filtered_orders
