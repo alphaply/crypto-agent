@@ -20,16 +20,17 @@ def calculate_next_run(config):
     mode = config.get('mode', 'STRATEGY').upper()
     now = datetime.now(TZ_CN)
     
-    if mode == 'REAL':
-        # 实盘每 15 分钟运行一次
-        minutes = (now.minute // 15 + 1) * 15
-        next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=minutes)
-        return next_run.strftime('%H:%M')
+    if mode in ['REAL', 'STRATEGY']:
+        default_interval = 60 if mode == 'STRATEGY' else 15
+        interval = int(config.get('run_interval', default_interval))
+        if interval < 15: interval = 15
         
-    elif mode == 'STRATEGY':
-        # 策略每小时整点运行
-        next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        return next_run.strftime('%H:00')
+        # 计算下一个整周期对齐的时间点
+        minutes_passed = now.hour * 60 + now.minute
+        next_total_minutes = ((minutes_passed // interval) + 1) * interval
+        
+        next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
+        return next_run.strftime('%H:%M')
         
     elif mode == 'SPOT_DCA':
         # 定投根据 dca_time 计算
@@ -71,7 +72,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 ).fetchone()
                 
                 model_name = config.get('model', 'Unknown')
-                mode = config.get('mode', 'STRATEGY')
+                mode = config.get('mode', 'STRATEGY').upper()
                 enabled = config.get('enabled', True)
 
                 if latest_summary:
@@ -93,12 +94,12 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict['enabled'] = enabled
                 summary_dict['next_run'] = calculate_next_run(config)
                 
-                if mode == 'REAL':
-                    summary_dict['freq'] = "15m (高频)"
-                elif mode == 'SPOT_DCA':
+                if mode == 'SPOT_DCA':
                     summary_dict['freq'] = f"{config.get('dca_freq', '1d')} (定投)"
                 else:
-                    summary_dict['freq'] = "1h (低频)"
+                    default_int = 60 if mode == 'STRATEGY' else 15
+                    interval = config.get('run_interval', default_int)
+                    summary_dict['freq'] = f"{interval}m ({'高频' if interval <= 15 else '定期'})"
                     
                 summary_dict['leverage'] = global_config.get_leverage(config_id)
                 summary_dict['display_name'] = f"{model_name} ({mode})"

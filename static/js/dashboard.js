@@ -381,6 +381,27 @@ function toggleSumSection(enabled) {
     section.style.pointerEvents = enabled ? 'auto' : 'none';
 }
 
+function onModeChange(mode) {
+    const isDca = mode === 'SPOT_DCA';
+    document.getElementById('section-interval').classList.toggle('hidden', isDca);
+    document.getElementById('section-dca').classList.toggle('hidden', !isDca);
+    
+    // 如果是定投模式，默认加载 dca.txt
+    if (isDca) {
+        const select = document.getElementById('edit-prompt-file');
+        for (let i = 0; i < select.options.length; i++) {
+            if (select.options[i].value === 'dca.txt') {
+                select.selectedIndex = i;
+                break;
+            }
+        }
+    }
+}
+
+function onDcaFreqChange(freq) {
+    document.getElementById('div-dca-weekday').classList.toggle('hidden', freq !== '1w');
+}
+
 async function editSymbol(index) {
     const conf = currentConfigs[index];
     if (!conf) return;
@@ -390,7 +411,8 @@ async function editSymbol(index) {
     
     document.getElementById('edit-config-id').value = conf.config_id || '';
     document.getElementById('edit-symbol').value = conf.symbol || '';
-    document.getElementById('edit-mode').value = conf.mode || 'STRATEGY';
+    const mode = conf.mode || 'STRATEGY';
+    document.getElementById('edit-mode').value = mode;
     document.getElementById('edit-leverage').value = conf.leverage || '';
     document.getElementById('edit-temp').value = conf.temperature || '';
     document.getElementById('edit-model').value = conf.model || '';
@@ -398,6 +420,16 @@ async function editSymbol(index) {
     document.getElementById('edit-api-key').value = '';
     document.getElementById('edit-bn-key').value = '';
     document.getElementById('edit-bn-secret').value = '';
+
+    // 运行周期与定投参数
+    document.getElementById('edit-interval').value = conf.run_interval || (mode === 'REAL' ? 15 : 60);
+    document.getElementById('edit-dca-freq').value = conf.dca_freq || '1d';
+    document.getElementById('edit-dca-time').value = conf.dca_time || '08:00';
+    document.getElementById('edit-dca-weekday').value = conf.dca_weekday || '0';
+    document.getElementById('edit-dca-amount').value = conf.dca_amount || conf.dca_budget || '100';
+
+    onModeChange(mode);
+    onDcaFreqChange(conf.dca_freq || '1d');
 
     const sum = conf.summarizer || {};
     const hasSum = !!sum.model;
@@ -426,7 +458,15 @@ async function addNewSymbolConfig() {
     document.getElementById('edit-api-key').value = '';
     document.getElementById('edit-bn-key').value = '';
     document.getElementById('edit-bn-secret').value = '';
+
+    // 默认值
+    document.getElementById('edit-interval').value = 60;
+    document.getElementById('edit-dca-freq').value = '1d';
+    document.getElementById('edit-dca-time').value = '08:00';
+    document.getElementById('edit-dca-amount').value = '100';
     
+    onModeChange('STRATEGY');
+
     document.getElementById('enable-sum-cfg').checked = false;
     toggleSumSection(false);
     document.getElementById('edit-sum-model').value = '';
@@ -442,10 +482,11 @@ function applySymbolEdit() {
     const symbol = document.getElementById('edit-symbol').value.trim();
     if (!symbol) return showToast('请输入交易对', 'error');
 
+    const mode = document.getElementById('edit-mode').value;
     const newConf = {
         config_id: document.getElementById('edit-config-id').value,
         symbol: symbol,
-        mode: document.getElementById('edit-mode').value,
+        mode: mode,
         prompt_file: document.getElementById('edit-prompt-file').value,
         leverage: parseInt(document.getElementById('edit-leverage').value) || 10,
         temperature: parseFloat(document.getElementById('edit-temp').value) || 0.5,
@@ -453,6 +494,18 @@ function applySymbolEdit() {
         api_base: document.getElementById('edit-api-base').value,
         enabled: idx === -1 ? true : (currentConfigs[idx].enabled !== false)
     };
+
+    // 专属参数
+    if (mode === 'SPOT_DCA') {
+        newConf.dca_freq = document.getElementById('edit-dca-freq').value;
+        newConf.dca_time = document.getElementById('edit-dca-time').value;
+        newConf.dca_amount = parseFloat(document.getElementById('edit-dca-amount').value) || 100;
+        if (newConf.dca_freq === '1w') {
+            newConf.dca_weekday = parseInt(document.getElementById('edit-dca-weekday').value);
+        }
+    } else {
+        newConf.run_interval = Math.max(15, parseInt(document.getElementById('edit-interval').value) || 15);
+    }
 
     const key = document.getElementById('edit-api-key').value;
     if (key) newConf.api_key = key;

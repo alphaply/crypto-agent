@@ -2,6 +2,7 @@ import time
 import concurrent.futures
 from datetime import datetime, timedelta
 import pytz
+import os
 from dotenv import load_dotenv
 from agent.agent_graph import run_agent_for_config
 from utils.logger import setup_logger
@@ -16,6 +17,9 @@ TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
 
 # 初始化logger
 logger = setup_logger("MainScheduler")
+
+# 记录每个 Agent 上次运行的时间，用于频率控制
+_last_run_times = {}
 
 # ==========================================
 # 1. 频率与触发逻辑优化
@@ -58,10 +62,14 @@ def is_time_to_run(config, now):
     if mode == 'SPOT_DCA':
         freq = config.get('dca_freq', '1d').lower() # '1d' or '1w'
         dca_time = config.get('dca_time', '08:00')
-        target_hour = int(str(dca_time).split(':')[0])
+        try:
+            target_hour = int(str(dca_time).split(':')[0])
+            target_minute = int(str(dca_time).split(':')[1])
+        except:
+            target_hour, target_minute = 8, 0
         
-        # 小时检查
-        if now.hour != target_hour:
+        # 精确到分钟的检查（由于是1分钟心跳，允许±1分钟误差）
+        if now.hour != target_hour or abs(now.minute - target_minute) > 1:
             return False
             
         # 周检查 (如果是 1w)
@@ -76,15 +84,24 @@ def is_time_to_run(config, now):
             
         return True
 
-    # 2. 策略模式 (STRATEGY) - 仅限整点
-    if mode == 'STRATEGY':
-        # 容差 ±5分钟
-        if 5 < now.minute < 55:
-            return False
-        return True
+    # 2. 策略模式 (STRATEGY) 或 实盘模式 (REAL)
+    # 使用自定义运行周期 (run_interval)，单位分钟
+    default_interval = 60 if mode == 'STRATEGY' else 15
+    interval = int(config.get('run_interval', default_interval))
+    if interval < 15: interval = 15 # 强制最低 15 分钟保护
 
-    # 3. 实盘模式 (REAL) - 默认每轮心跳都运行 (由 get_next_run_settings 控制 15m 一次)
-    if mode == 'REAL':
+    last_run = _last_run_times.get(config_id)
+    if not last_run:
+        # 如果是新启动，且刚好在整点附近，允许运行
+        if now.minute % interval <= 2:
+            return True
+        # 否则记录当前时间作为“逻辑上次运行时间”，等待下一个周期
+        _last_run_times[config_id] = now - timedelta(minutes=now.minute % interval)
+        return False
+
+    # 检查距离上次运行是否超过了设定的间隔
+    diff = (now - last_run).total_seconds() / 60
+    if diff >= (interval - 1): # 减 1 分钟容差处理心跳对齐
         return True
         
     return False
@@ -101,7 +118,10 @@ def process_single_config(config):
     if not symbol: return
     if not is_time_to_run(config, now): return
 
-    logger.info(f"⏳ [{config_id}] 满足触发条件 ({mode})，开始执行 Agent 任务...")
+    logger.info(f"🚀 [{config_id}] 满足触发条件 ({mode}, Interval: {config.get('run_interval','Default')})，开始执行...")
+    
+    # 更新最后运行时间
+    _last_run_times[config_id] = now
 
     try:
         run_agent_for_config(config)
@@ -109,37 +129,12 @@ def process_single_config(config):
         logger.error(f"❌ Error executing Agent [{config_id}]: {e}")
 
 
-def get_next_run_settings(active_configs):
+def wait_until_next_minute():
     """
-    决定调度器的心跳频率
+    精确等待到下一分钟的开始（如 XX:XX:00）
     """
-    if not active_configs:
-        return 60, "无活跃配置-休眠 (1h)"
-
-    # 只要有一个是实盘模式，系统保持 15m 心跳
-    has_real_mode = any(c.get('mode', 'STRATEGY').upper() == 'REAL' for c in active_configs)
-    
-    if has_real_mode:
-        return 15, "🚀 活跃实盘模式 (15m)"
-    else:
-        # 全是策略或定投，每小时醒来检查一次即可
-        return 60, "🔵 策略/定投模式 (1h)"
-
-
-def wait_until_next_slot(interval_minutes, delay_seconds=10):
     now = datetime.now().astimezone(TZ_CN)
-    now_ts = now.timestamp()
-    interval_seconds = interval_minutes * 60
-
-    next_ts = ((now_ts // interval_seconds) + 1) * interval_seconds
-    next_run_time_ts = next_ts + delay_seconds
-
-    next_run_time = datetime.fromtimestamp(next_run_time_ts).astimezone(TZ_CN)
-    sleep_seconds = next_run_time_ts - now_ts
-
-    logger.info(f"⏳ [调度器] 状态: 待机中 | 心跳间隔: {interval_minutes}m")
-    logger.info(f"   |-- 下次唤醒: {next_run_time.strftime('%H:%M:%S')}")
-
+    sleep_seconds = 60 - now.second - (now.microsecond / 1000000.0)
     if sleep_seconds > 0:
         time.sleep(sleep_seconds)
 
@@ -149,21 +144,16 @@ def job():
     active_configs = [c for c in configs if c.get('enabled', True)]
     
     if not active_configs:
-        logger.info("⏳ 没有任何活跃配置 (enabled=true)，跳过本轮执行。")
         return
-
-    logger.info(f"🚀 系统唤醒 (检查 {len(active_configs)}/{len(configs)} 个配置)...")
 
     # 使用线程池并行处理
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_single_config, config) for config in active_configs]
         concurrent.futures.wait(futures)
 
-    logger.info(f"本轮执行完毕。")
-
 
 def run_smart_scheduler():
-    logger.info("--- [系统] 智能调度器启动 ---")
+    logger.info("--- [系统] 智能调度器启动 (1分钟高频心跳模式) ---")
 
     try:
         init_db()
@@ -171,25 +161,30 @@ def run_smart_scheduler():
     except Exception as e:
         logger.error(f"❌ 数据库初始化失败: {e}")
 
+    # 启动时执行一次热加载
+    global_config.reload_config()
+
     while True:
         try:
-            # 重新获取配置以应对热更新
-            configs = global_config.get_all_symbol_configs()
-            active_configs = [c for c in configs if c.get('enabled', True)]
+            # 1. 等待到下一分钟开始
+            wait_until_next_minute()
             
-            # 决定心跳频率并等待
-            interval, mode_str = get_next_run_settings(active_configs)
-            logger.info(f"📅 [模式检测] {mode_str}")
-            
-            wait_until_next_slot(interval_minutes=interval, delay_seconds=10)
-            
-            # 重新加载配置并执行
-            global_config.reload_config()
+            # 2. 检查全局调度开关
+            if not global_config.enable_scheduler:
+                if datetime.now().minute % 10 == 0: # 每10分钟提示一次
+                    logger.info("💤 调度器全局已禁用，待机中...")
+                continue
+
+            # 3. 执行任务
             job()
+            
+            # 4. 周期性重载配置（每5分钟重载一次，或依赖 job 内部实时获取）
+            if datetime.now().minute % 5 == 0:
+                global_config.reload_config()
 
         except Exception as e:
             logger.error(f"❌ 调度主循环异常: {e}")
-            time.sleep(60)
+            time.sleep(10)
 
 
 if __name__ == "__main__":

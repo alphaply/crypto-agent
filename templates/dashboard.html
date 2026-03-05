@@ -435,7 +435,7 @@
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">交易模式</label>
-                                <select id="edit-mode" class="w-full bg-[#1A1D24] border border-gray-700 rounded-lg p-2 text-sm text-gray-200">
+                                <select id="edit-mode" class="w-full bg-[#1A1D24] border border-gray-700 rounded-lg p-2 text-sm text-gray-200" onchange="onModeChange(this.value)">
                                     <option value="STRATEGY">模拟 (STRATEGY)</option>
                                     <option value="REAL">实盘 (REAL)</option>
                                     <option value="SPOT_DCA">现货定投 (SPOT_DCA)</option>
@@ -446,6 +446,53 @@
                                 <select id="edit-prompt-file" class="w-full border rounded-lg p-2 text-sm"></select>
                             </div>
                         </div>
+
+                        <!-- 1.1 运行周期 (REAL/STRATEGY 专用) -->
+                        <div id="section-interval" class="grid grid-cols-1 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1 flex justify-between">
+                                    运行周期 (分钟)
+                                    <span class="text-[9px] lowercase font-normal">最低 15 分钟</span>
+                                </label>
+                                <input type="number" id="edit-interval" min="15" step="15" class="w-full border rounded-lg p-2 text-sm" placeholder="15">
+                            </div>
+                        </div>
+
+                        <!-- 1.2 定投参数 (SPOT_DCA 专用) -->
+                        <div id="section-dca" class="hidden space-y-4 bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投频率</label>
+                                    <select id="edit-dca-freq" class="w-full border rounded-lg p-2 text-sm" onchange="onDcaFreqChange(this.value)">
+                                        <option value="1d">每天 (Daily)</option>
+                                        <option value="1w">每周 (Weekly)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投时间 (HH:mm)</label>
+                                    <input type="time" id="edit-dca-time" class="w-full border rounded-lg p-2 text-sm">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div id="div-dca-weekday" class="hidden">
+                                    <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投周几</label>
+                                    <select id="edit-dca-weekday" class="w-full border rounded-lg p-2 text-sm">
+                                        <option value="0">周一</option>
+                                        <option value="1">周二</option>
+                                        <option value="2">周三</option>
+                                        <option value="3">周四</option>
+                                        <option value="4">周五</option>
+                                        <option value="5">周六</option>
+                                        <option value="6">周日</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">单笔金额 (USDT)</label>
+                                    <input type="number" id="edit-dca-amount" class="w-full border rounded-lg p-2 text-sm" placeholder="100">
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">杠杆倍数</label>
