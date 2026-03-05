@@ -90,18 +90,14 @@ def is_time_to_run(config, now):
     interval = int(config.get('run_interval', default_interval))
     if interval < 15: interval = 15 # 强制最低 15 分钟保护
 
-    last_run = _last_run_times.get(config_id)
-    if not last_run:
-        # 如果是新启动，且刚好在整点附近，允许运行
-        if now.minute % interval <= 2:
-            return True
-        # 否则记录当前时间作为“逻辑上次运行时间”，等待下一个周期
-        _last_run_times[config_id] = now - timedelta(minutes=now.minute % interval)
-        return False
-
-    # 检查距离上次运行是否超过了设定的间隔
-    diff = (now - last_run).total_seconds() / 60
-    if diff >= (interval - 1): # 减 1 分钟容差处理心跳对齐
+    # 检查当前分钟是否是该周期的对齐点 (以每天 00:00 为基准)
+    minutes_since_midnight = now.hour * 60 + now.minute
+    
+    if minutes_since_midnight % interval == 0:
+        # 防重复检查：确保在同一分钟内只触发一次
+        last_run = _last_run_times.get(config_id)
+        if last_run and last_run.hour == now.hour and last_run.minute == now.minute:
+            return False
         return True
         
     return False

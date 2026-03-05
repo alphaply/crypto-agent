@@ -24,33 +24,16 @@ def calculate_next_run(config, latest_summary=None):
         default_interval = 60 if mode == 'STRATEGY' else 15
         interval = int(config.get('run_interval', default_interval))
         if interval < 15: interval = 15
-        
-        # 基础逻辑：如果数据库有最后运行时间，基于它加间隔
-        last_run_time = None
-        if latest_summary and latest_summary.get('timestamp') and latest_summary['timestamp'] != 'N/A':
-            try:
-                # 转换格式: 2024-03-05 13:45:00
-                last_run_time = datetime.strptime(latest_summary['timestamp'], "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_CN)
-            except:
-                pass
-        
-        if last_run_time:
-            # 预测时间 = 最后一次运行 + 设定的间隔
-            next_run = last_run_time + timedelta(minutes=interval)
-            
-            # 如果预测的时间已经过去了（比如程序关了很久刚开），则重新对齐到当前时间后的下一个周期
-            if next_run < now:
-                minutes_passed = now.hour * 60 + now.minute
-                next_total_minutes = ((minutes_passed // interval) + 1) * interval
-                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
-        else:
-            # 没有任何历史记录，按整周期对齐
-            minutes_passed = now.hour * 60 + now.minute
-            next_total_minutes = ((minutes_passed // interval) + 1) * interval
-            next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
-            
-        return next_run.strftime('%H:%M')
-        
+
+        # 统一逻辑：按整点周期对齐 (以每天 00:00 为基准)
+        minutes_since_midnight = now.hour * 60 + now.minute
+        # 计算下一个对齐的时间点
+        next_total_minutes = ((minutes_since_midnight // interval) + 1) * interval
+
+        # 考虑到可能跨天
+        next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
+
+        return next_run.strftime('%H:%M')        
     elif mode == 'SPOT_DCA':
         # ... (定投逻辑保持不变)
         dca_time_str = config.get('dca_time', '08:00')
