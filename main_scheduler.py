@@ -68,8 +68,8 @@ def is_time_to_run(config, now):
         except:
             target_hour, target_minute = 8, 0
         
-        # 精确到分钟的检查（由于是1分钟心跳，允许±1分钟误差）
-        if now.hour != target_hour or abs(now.minute - target_minute) > 1:
+        # 精确到分钟的检查（由于是1分钟心跳，直接匹配当前分钟）
+        if now.hour != target_hour or now.minute != target_minute:
             return False
             
         # 周检查 (如果是 1w)
@@ -78,7 +78,12 @@ def is_time_to_run(config, now):
             if now.weekday() != target_weekday:
                 return False
         
-        # 防重复检查
+        # 防重复检查 (1): 内存级别检查，确保在同一分钟内绝不二次触发
+        last_run = _last_run_times.get(config_id)
+        if last_run and last_run.hour == now.hour and last_run.minute == now.minute:
+            return False
+
+        # 防重复检查 (2): 数据库级别检查，确保该周期内没有重复执行
         if check_dca_executed(config_id, now, freq):
             return False
             
