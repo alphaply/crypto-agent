@@ -436,12 +436,26 @@ class MarketTool:
                 cancel_id = order_params.get('cancel_order_id')
                 if cancel_id:
                     logger.info(f"🔄 [CANCEL] 正在撤单 ID: {cancel_id} ...")
+                    
+                    # 优先尝试普通撤单
                     try:
                         res = self.exchange.cancel_order(cancel_id, symbol)
-                        logger.info(f"✅ [CANCEL] 撤单成功: {cancel_id}")
+                        logger.info(f"✅ [CANCEL] 普通撤单成功: {cancel_id}")
                         return {"status": "cancelled", "response": res}
                     except Exception as e:
-                        logger.error(f"❌ [CANCEL] 撤单失败: {e}")
+                        # 如果报错 OrderNotFound，可能是条件单 (Trigger Order / Algo Order)
+                        logger.warning(f"⚠️ [CANCEL] 普通撤单失败或未找到订单，尝试条件单撤单模式: {e}")
+                        try:
+                            # 针对币安合约的条件单（如止损单），需加 params={'trigger': True} 或 {'stop': True}
+                            # CCXT 统一建议使用 trigger: True
+                            res = self.exchange.cancel_order(cancel_id, symbol, params={'trigger': True})
+                            logger.info(f"✅ [CANCEL] 条件单撤单成功: {cancel_id}")
+                            return {"status": "cancelled", "response": res}
+                        except Exception as e2:
+                            logger.error(f"❌ [CANCEL] 彻底撤单失败: {e2}")
+                            raise e2
+                else:
+                    raise ValueError("CANCEL 指令缺失 cancel_order_id 参数")
                 return None
 
             if action == 'CLOSE':
