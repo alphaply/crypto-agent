@@ -63,7 +63,7 @@ def summarize_content(content: str, agent_config: dict) -> str:
             base_url=api_base,
             temperature=temperature
         )
-        prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑”（150字以内），保留核心观点、关键点位和操作意图。
+        prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑”（100字以内），保留核心观点、关键点位和操作意图。
 直接输出压缩后的文字，不要有任何前缀。
 
 内容：
@@ -142,7 +142,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         timeframes_to_fetch = ['5m', '15m', '1h', '4h', '1d', '1w']
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
-        recent_summaries = database.get_recent_summaries(symbol, config_id=config_id, limit=4)
+        recent_summaries = database.get_recent_summaries(symbol, config_id=config_id, limit=8)
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
