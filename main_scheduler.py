@@ -35,9 +35,9 @@ def check_dca_executed(config_id, now, freq='1d'):
     try:
         if freq == '1w':
             start_of_week = (now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')
-            query_time = f"{start_of_week}%"
+            query_time = f"{start_of_week} 00:00:00"
         else:
-            query_time = f"{now.strftime('%Y-%m-%d')}%"
+            query_time = f"{now.strftime('%Y-%m-%d')} 00:00:00"
 
         with get_db_conn() as conn:
             c = conn.cursor()
