@@ -10,7 +10,7 @@ from routes.utils import (
 from database import (
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
     get_balance_history, get_trade_history, clean_financial_data,
-    get_active_agents, get_paginated_orders, get_db_conn
+    get_active_agents, get_paginated_orders, get_db_conn, get_daily_summaries
 )
 
 main_bp = Blueprint('main', __name__)
@@ -113,6 +113,9 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict['all_orders'] = orders
                 summary_dict['order_total'] = total
                 summary_dict['order_page'] = 1
+
+                # 每日策略汇总
+                summary_dict['daily_summaries'] = get_daily_summaries(config_id, days=7)
                 
                 agent_summaries.append(summary_dict)
 
@@ -246,3 +249,12 @@ def get_orders_api():
         "per_page": per_page,
         "total_pages": math.ceil(total / per_page)
     })
+
+@main_bp.route('/api/daily_summaries')
+def get_daily_summaries_api():
+    config_id = request.args.get('config_id')
+    days = int(request.args.get('days', 7))
+    if not config_id:
+        return jsonify({"success": False, "message": "Missing config_id"})
+    data = get_daily_summaries(config_id, days=days)
+    return jsonify({"success": True, "daily_summaries": data})

@@ -145,6 +145,18 @@ def init_db():
                         currency TEXT DEFAULT 'USD'
                     )''')
 
+        # 9. 每日策略汇总表
+        c.execute('''CREATE TABLE IF NOT EXISTS daily_summaries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date TEXT,
+                        symbol TEXT,
+                        config_id TEXT,
+                        summary TEXT,
+                        source_count INTEGER DEFAULT 0,
+                        created_at TEXT,
+                        UNIQUE(date, config_id)
+                    )''')
+
         conn.commit()
 
 # --- 模型计价管理 ---
@@ -545,6 +557,54 @@ def delete_chat_sessions(session_ids):
         deleted = c.rowcount
         conn.commit()
         return deleted
+
+# --- 每日策略汇总 ---
+
+def save_daily_summary(date_str, symbol, config_id, summary, source_count):
+    """保存或更新某天某 config 的每日策略汇总"""
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        try:
+            c.execute('''
+                INSERT INTO daily_summaries (date, symbol, config_id, summary, source_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date, config_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    source_count = excluded.source_count,
+                    created_at = excluded.created_at
+            ''', (date_str, symbol, config_id, summary, source_count, created_at))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"❌ DB Error (save_daily_summary): {e}")
+
+
+def get_daily_summaries(config_id, days=7):
+    """获取最近 N 天的每日策略汇总（按日期倒序）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            SELECT date, symbol, config_id, summary, source_count, created_at
+            FROM daily_summaries
+            WHERE config_id = ?
+            ORDER BY date DESC
+            LIMIT ?
+        ''', (config_id, days))
+        return [dict(row) for row in c.fetchall()]
+
+
+def get_pending_daily_summary_data(config_id, date_str):
+    """获取指定日期、指定 config 的所有 strategy_logic 原文（用于 LLM 汇总）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            SELECT strategy_logic, timestamp
+            FROM summaries
+            WHERE config_id = ? AND date(timestamp) = ?
+            ORDER BY id ASC
+        ''', (config_id, date_str))
+        return [dict(row) for row in c.fetchall()]
+
 
 if __name__ == "__main__":
     init_db()

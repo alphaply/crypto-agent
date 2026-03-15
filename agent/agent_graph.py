@@ -25,6 +25,7 @@ from utils.logger import setup_logger
 from utils.prompt_utils import resolve_prompt_template, render_prompt
 
 import database
+from database import get_daily_summaries
 from utils.market_data import MarketTool
 from config import config as global_config
 
@@ -33,6 +34,41 @@ TZ_US = pytz.timezone('America/New_York')
 logger = setup_logger("AgentGraph")
 load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def calculate_next_run_time(agent_config, now_cn):
+    """计算该 agent 的下次运行时间（用于注入 Prompt）"""
+    mode = agent_config.get('mode', 'STRATEGY').upper()
+
+    if mode in ['REAL', 'STRATEGY']:
+        default_interval = 60 if mode == 'STRATEGY' else 15
+        interval = int(agent_config.get('run_interval', default_interval))
+        if interval < 15:
+            interval = 15
+        minutes_since_midnight = now_cn.hour * 60 + now_cn.minute
+        next_total_minutes = ((minutes_since_midnight // interval) + 1) * interval
+        next_run = now_cn.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
+        return next_run.strftime('%H:%M')
+
+    elif mode == 'SPOT_DCA':
+        dca_time_str = agent_config.get('dca_time', '08:00')
+        try:
+            hour, minute = map(int, dca_time_str.split(':'))
+        except Exception:
+            hour, minute = 8, 0
+        next_run = now_cn.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if agent_config.get('dca_freq', '1d') == '1w':
+            target_weekday = int(agent_config.get('dca_weekday', 0))
+            days_ahead = target_weekday - now_cn.weekday()
+            if days_ahead < 0 or (days_ahead == 0 and now_cn > next_run):
+                days_ahead += 7
+            next_run += timedelta(days=days_ahead)
+        else:
+            if now_cn > next_run:
+                next_run += timedelta(days=1)
+        return next_run.strftime('%m-%d %H:%M')
+
+    return "N/A"
 
 # ==========================================
 # 1. Summarizer Pipeline
@@ -142,7 +178,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         timeframes_to_fetch = ['5m', '15m', '1h', '4h', '1d', '1w']
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
-        recent_summaries = database.get_recent_summaries(symbol, config_id=config_id, limit=8)
+        daily_history = get_daily_summaries(config_id, days=7)
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
@@ -152,7 +188,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         market_full = {}
         account_data = {'balance': 0, 'real_open_orders': [], 'mock_open_orders': [], 'real_positions': []}
-        recent_summaries = []
+        daily_history = []
 
     if is_real_exec:
         try:
@@ -219,14 +255,18 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
     formatted_market_data = format_market_data_to_text(market_context_llm)
     history_entries = []
-    if recent_summaries:
-        for s in recent_summaries:
-            logic = s.get('strategy_logic') or s.get('content', '')
-            if "LLM Failed" in logic: continue
-            history_entries.append(f" [{s.get('timestamp', 'Unknown')}] Logic: {logic}")
+    if daily_history:
+        for ds in daily_history:
+            date_str = ds.get('date', '未知日期')
+            summary = ds.get('summary', '')
+            count = ds.get('source_count', 0)
+            if summary:
+                history_entries.append(f"  [{date_str}] ({count}轮分析) {summary}")
         formatted_history_text = "\n".join(history_entries)
     else:
         formatted_history_text = "(暂无历史记录)"
+
+    next_run_time = calculate_next_run_time(agent_config, now_cn)
 
     positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
     prompt_template = resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger)
@@ -247,6 +287,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         symbol=symbol,
         leverage=leverage,
         current_time=current_time_str,
+        next_run_time=next_run_time,
         current_price=current_price,
         atr_15m=atr_15m,
         balance=balance,

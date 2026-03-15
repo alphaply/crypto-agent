@@ -4,10 +4,10 @@ from datetime import datetime, timedelta
 import pytz
 import os
 from dotenv import load_dotenv
-from agent.agent_graph import run_agent_for_config
+from agent.agent_graph import run_agent_for_config, summarize_content
 from utils.logger import setup_logger
 from config import config as global_config
-from database import init_db
+from database import init_db, get_pending_daily_summary_data, save_daily_summary
 
 # 加载环境变量 (.env 文件)
 load_dotenv()
@@ -20,6 +20,8 @@ logger = setup_logger("MainScheduler")
 
 # 记录每个 Agent 上次运行的时间，用于频率控制
 _last_run_times = {}
+# 防止每日汇总任务在同一天重复执行
+_daily_summary_done_date = None
 
 # ==========================================
 # 1. 频率与触发逻辑优化
@@ -156,6 +158,58 @@ def job():
         concurrent.futures.wait(futures)
 
 
+def run_daily_summary_job():
+    """每日 00:00 执行：汇总昨天每个 agent 的所有 strategy_logic 为一条精炼的每日总结"""
+    global _daily_summary_done_date
+    now = datetime.now(TZ_CN)
+
+    # 只在 00:00 触发，且每天只执行一次
+    if now.hour != 0 or now.minute != 0:
+        return
+    today_str = now.strftime('%Y-%m-%d')
+    if _daily_summary_done_date == today_str:
+        return
+
+    yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+    logger.info(f"📅 [DailySummary] 开始汇总 {yesterday} 的策略逻辑...")
+
+    configs = global_config.get_all_symbol_configs()
+    for config in configs:
+        if not config.get('enabled', True):
+            continue
+        config_id = config['config_id']
+        symbol = config.get('symbol', 'Unknown')
+
+        try:
+            rows = get_pending_daily_summary_data(config_id, yesterday)
+            if not rows:
+                logger.debug(f"📅 [{config_id}] {yesterday} 无数据，跳过")
+                continue
+
+            # 拼接当天所有 strategy_logic
+            combined = "\n".join(
+                f"[{r['timestamp']}] {r['strategy_logic']}"
+                for r in rows if r.get('strategy_logic')
+            )
+            if not combined.strip():
+                continue
+
+            # 使用 LLM 压缩为一段每日总结
+            daily_summary = summarize_content(
+                f"以下是 {yesterday} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略回顾，"
+                f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}",
+                config
+            )
+
+            save_daily_summary(yesterday, symbol, config_id, daily_summary, len(rows))
+            logger.info(f"✅ [{config_id}] {yesterday} 每日汇总完成 ({len(rows)} 条来源)")
+        except Exception as e:
+            logger.error(f"❌ [{config_id}] 每日汇总失败: {e}")
+
+    _daily_summary_done_date = today_str
+    logger.info(f"📅 [DailySummary] {yesterday} 全部汇总完成")
+
+
 def run_smart_scheduler():
     logger.info("--- [系统] 智能调度器启动 (1分钟高频心跳模式) ---")
 
@@ -179,7 +233,10 @@ def run_smart_scheduler():
                     logger.info("💤 调度器全局已禁用，待机中...")
                 continue
 
-            # 3. 执行任务
+            # 3. 每日汇总检查（00:00 时执行）
+            run_daily_summary_job()
+
+            # 4. 执行任务
             job()
             
             # 4. 周期性重载配置（每5分钟重载一次，或依赖 job 内部实时获取）

@@ -1,5 +1,6 @@
 Role: 合约策略分析师
 Time: {current_time}
+Next Run: {next_run_time}
 Target: {symbol} | 杠杆: {leverage}x | 现价: {current_price}
 
 [核心任务]
