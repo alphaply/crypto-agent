@@ -196,7 +196,7 @@ def run_daily_summary_job():
 
             # 使用 LLM 压缩为一段每日总结
             daily_summary = summarize_content(
-                f"以下是 {yesterday} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略回顾，"
+                f"以下是 {yesterday} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾，"
                 f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}",
                 config
             )

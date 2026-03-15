@@ -118,7 +118,7 @@
                           <div id="order-container-{{ summary.config_id }}" class="flex-grow overflow-y-auto max-h-[400px] lg:max-h-none min-h-0 mini-scroll p-3 md:p-4 space-y-2.5 md:space-y-3">
                               {% if summary.all_orders %}
                                   {% for order in summary.all_orders %}
-                                  <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all cursor-pointer" onclick="handleCopy('{{ order.entry_price }}', event)">
+                                  <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all">
                                       <div class="flex justify-between items-start mb-2">
                                           <div class="flex items-center gap-2">
                                               {% set s = order.side|lower %}
@@ -130,18 +130,18 @@
                                                   {% endif %}">
                                                   {{ order.side }}
                                               </span>
-                                              <span class="text-xs font-mono font-bold text-gray-700 group-hover:text-blue-600 transition-colors" title="点击复制价格">{{ order.entry_price }}</span>
+                                              <span class="text-xs font-mono font-bold text-gray-700 hover:text-blue-600 transition-colors cursor-pointer" title="点击复制价格" onclick="handleCopy('{{ order.entry_price }}', event)">{{ order.entry_price }}</span>
                                               <span class="text-[9px] font-mono text-gray-400 bg-gray-100 px-1 rounded ml-1" title="订单 ID">{{ order.order_id }}</span>
                                           </div>
                                           <span class="text-[9px] font-mono text-gray-400">{{ order.timestamp[11:16] }}</span>
                                       </div>
-                                      <div class="text-[10px] text-gray-500 leading-relaxed line-clamp-2 group-hover:line-clamp-none transition-all">
+                                      <div class="text-[10px] text-gray-500 leading-relaxed line-clamp-2 hover:line-clamp-none transition-all">
                                           {{ order.reason }}
                                       </div>
                                       {% if order.take_profit > 0 or order.stop_loss > 0 %}
                                       <div class="mt-2 flex gap-3 text-[9px] font-bold">
-                                          <span class="text-emerald-600" onclick="handleCopy('{{ order.take_profit }}', event); event.stopPropagation();">🎯 TP: {{ order.take_profit|int }}</span>
-                                          <span class="text-red-500" onclick="handleCopy('{{ order.stop_loss }}', event); event.stopPropagation();">🛡️ SL: {{ order.stop_loss|int }}</span>
+                                          <span class="text-emerald-600 cursor-pointer" onclick="handleCopy('{{ order.take_profit }}', event); event.stopPropagation();">🎯 TP: {{ order.take_profit|int }}</span>
+                                          <span class="text-red-500 cursor-pointer" onclick="handleCopy('{{ order.stop_loss }}', event); event.stopPropagation();">🛡️ SL: {{ order.stop_loss|int }}</span>
                                       </div>
                                       {% endif %}
                                   </div>

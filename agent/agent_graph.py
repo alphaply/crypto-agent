@@ -99,9 +99,8 @@ def summarize_content(content: str, agent_config: dict) -> str:
             base_url=api_base,
             temperature=temperature
         )
-        prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑”（100字以内），保留核心观点、关键点位和操作意图。
+        prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑思路”（150字以内），保留趋势情况、关键点位(支持阻力)和操作意图等等。
 直接输出压缩后的文字，不要有任何前缀。
-
 内容：
 {content}
 """
