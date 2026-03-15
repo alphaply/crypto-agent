@@ -383,10 +383,11 @@ class MarketTool:
             trend_strength = "Strong" if adx_val > 25 else "Weak/Ranging"
             
             # 序列数据
-            def to_list(series, n=5):
+            def to_list(series, n=10):
                 raw = series.iloc[-n:].values.tolist()
                 return [smart_fmt(float(x)) for x in raw]
 
+            recent_opens = to_list(df['open'])
             recent_closes = to_list(close)
             recent_highs = to_list(high)
             recent_lows = to_list(low)
@@ -406,6 +407,7 @@ class MarketTool:
                     "di_plus": round(float(plus_di.iloc[-1]), 1),
                     "di_minus": round(float(minus_di.iloc[-1]), 1),
                 },
+                "recent_opens": recent_opens,
                 "recent_closes": recent_closes,
                 "recent_highs": recent_highs,
                 "recent_lows": recent_lows,

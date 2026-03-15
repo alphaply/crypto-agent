@@ -167,9 +167,14 @@ def format_market_data_to_text(data: dict) -> str:
             
             # 5. K线序列
             closes = d.get('recent_closes', [])
-            if closes:
-                c_str = ", ".join([str(x) for x in closes])
-                output.append(f"• 近5根K线: [{c_str}]")
+            opens = d.get('recent_opens', [])
+            highs = d.get('recent_highs', [])
+            lows = d.get('recent_lows', [])
+            
+            if closes and len(closes) == len(opens) == len(highs) == len(lows):
+                ohlc_list = [f"[{o},{h},{l},{c}]" for o, h, l, c in zip(opens, highs, lows, closes)]
+                c_str = ", ".join(ohlc_list)
+                output.append(f"• 近{len(closes)}根K线(O,H,L,C): {c_str}")
             
             # 6. 价值分布
             vp = d.get('vp', {})

@@ -230,6 +230,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         indicators_summary[tf] = {
             "price": tf_data.get("price"),
             "trend": tf_data.get("trend", {}),
+            "recent_opens": tf_data.get("recent_opens", []),
             "recent_closes": tf_data.get("recent_closes", []),
             "recent_highs": tf_data.get("recent_highs", []),
             "recent_lows": tf_data.get("recent_lows", []),
