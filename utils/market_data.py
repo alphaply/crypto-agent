@@ -212,12 +212,13 @@ class MarketTool:
                         # 尝试从多个地方获取数量：ccxt 标准字段 -> info['origQty'] -> info['qty']
                         amount = safe_float(o.get('amount') or info.get('origQty') or info.get('qty'))
                         
-                        # 特殊处理：如果是全平委托 (closePosition: true)，数量可能显示为 0
-                        # 此时我们从 info.get('type') 判断或给个提示
-                        if amount == 0 and info.get('closePosition') in [True, 'true', 'TRUE']:
-                            # 如果是平仓单，我们可以从持仓中查找数量，或者暂时标记为 "ALL"
-                            # 为了 UI 兼容性，我们暂时保持 0，但在 type 上体现
-                            pass
+                        # 特殊处理：如果是全平委托 (closePosition: true)，数量会显示为 0
+                        # 此时我们需要从持仓中找到实际对应的数量，否则 Agent 看到数量为 0 会误判从而撤销并重新挂单
+                        if amount == 0 and str(info.get('closePosition', '')).lower() == 'true':
+                            for pos in status_data.get("real_positions", []):
+                                if pos["side"] == pos_side.upper():
+                                    amount = pos["amount"]
+                                    break
                         
                         # 尝试从多个位置获取触发价 (stopPrice)
                         stop_price = safe_float(o.get('stopPrice') or info.get('stopPrice') or info.get('triggerPrice'))
