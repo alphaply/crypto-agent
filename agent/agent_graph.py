@@ -230,20 +230,20 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         indicators_summary[tf] = {
             "price": tf_data.get("price"),
             "trend": tf_data.get("trend", {}),
-            "vwap": tf_data.get("vwap"),
             "recent_closes": tf_data.get("recent_closes", []),
             "recent_highs": tf_data.get("recent_highs", []),
             "recent_lows": tf_data.get("recent_lows", []),
             "ema": tf_data.get("ema"),
             "rsi_analysis": tf_data.get("rsi_analysis", {}),
-            "cci": tf_data.get("cci"),
-            "kdj": tf_data.get("kdj", {}),
             "atr": tf_data.get("atr"),
             "macd": tf_data.get("macd"),
             "bollinger": tf_data.get("bollinger"),
             "vp": tf_data.get("vp", {}),
-            "volume_status": tf_data.get("volume_analysis", {}).get("status"),
+            "volume_analysis": tf_data.get("volume_analysis", {}),
         }
+        # VWAP 仅日内周期存在
+        if tf_data.get("vwap") is not None:
+            indicators_summary[tf]["vwap"] = tf_data["vwap"]
 
     market_context_llm = {
         "current_price": current_price,

@@ -9,9 +9,10 @@ import database
 from datetime import datetime
 from utils.logger import setup_logger
 from utils.indicators import (
-    smart_fmt, calc_ema, calc_rsi, calc_stoch_rsi, calc_atr,
-    calc_macd, calc_kdj, calc_cci, calc_adx, calc_vwap,
-    calc_bollinger_bands, calculate_vp
+    smart_fmt, calc_ema, calc_rsi, calc_atr,
+    calc_macd, calc_adx, calc_vwap,
+    calc_bollinger_bands, calculate_vp,
+    detect_rsi_divergence
 )
 import uuid
 import math
@@ -281,77 +282,106 @@ class MarketTool:
         logger.info(f"✅ Market analysis complete. Collected {len(final_output['analysis'])} timeframes")
         return final_output
 
+    # VP 回看长度按周期自适应
+    VP_LENGTH_MAP = {
+        '5m': 576,   # ~2 天
+        '15m': 384,  # ~4 天
+        '1h': 360,   # ~15 天
+        '4h': 180,   # ~30 天
+        '1d': 120,   # ~4 个月
+        '1w': 52,    # ~1 年
+    }
+
+    # VWAP 仅在日内周期有效
+    VWAP_VALID_TFS = {'1m', '5m', '15m', '30m', '1h'}
+
     def process_timeframe(self, symbol, tf):
         """
-        处理单个时间周期的核心逻辑（含指标计算升级）
+        处理单个时间周期的核心逻辑（精简优化版 v2）
+        移除冗余指标 (StochRSI/KDJ/CCI/EMA100)，新增 MACD 动量标注与 RSI 背离检测
         """
         try:
             logger.debug(f"    🔍 [{tf}] Fetching OHLCV data for {symbol}...")
-            # 1. 获取 OHLCV
-            # limit 调大到 1000，确保 EMA200 等长周期指标有足够的预热数据
             ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=1000)
             if not ohlcv or len(ohlcv) < 200:
-                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data for reliable indicators: {len(ohlcv) if ohlcv else 0} candles (need >= 200)")
+                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles (need >= 200)")
                 return None
 
             logger.debug(f"    ✅ [{tf}] Got {len(ohlcv)} candles, calculating indicators...")
             df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
             df['time'] = pd.to_datetime(df['time'], unit='ms')
             
-            # 提取 Series
             close = df['close']
             high = df['high']
             low = df['low']
             volume = df['volume']
             
-            # ================= 计算指标 =================
-            # 1. 基础均线
+            # ================= 精简指标计算 =================
+            # 1. 均线 (移除 EMA100，保留 20/50/200)
             ema20 = calc_ema(close, 20)
             ema50 = calc_ema(close, 50)
-            ema100 = calc_ema(close, 100)
             ema200 = calc_ema(close, 200)
             
-            # 2. 动量与震荡
+            # 2. 动量 (仅保留 RSI，移除 StochRSI/KDJ/CCI)
             rsi = calc_rsi(close, 14)
-            stoch_k, stoch_d = calc_stoch_rsi(rsi)
             atr = calc_atr(df, 14)
-            macd, signal, hist = calc_macd(close)
-            k, d, j = calc_kdj(df)
-            cci = calc_cci(df)
+            macd_line, signal_line, hist = calc_macd(close)
             
-            # 3. 趋势强度 (ADX) 与 价值中枢 (VWAP)
+            # 3. 趋势强度
             adx, plus_di, minus_di = calc_adx(df)
-            vwap = calc_vwap(df)
             
-            # 4. 布林带 (判断波动率挤压)
+            # 4. VWAP (仅日内周期)
+            vwap_val = None
+            if tf in self.VWAP_VALID_TFS:
+                vwap = calc_vwap(df)
+                vwap_val = smart_fmt(vwap.iloc[-1])
+            
+            # 5. 布林带
             bb_up, bb_mid, bb_low, bb_width = calc_bollinger_bands(close)
             
-            # 5. 成交量分析
+            # 6. 成交量分析
             vol_ma20 = volume.rolling(window=20).mean()
             vol_ratio = (volume / vol_ma20).fillna(0)
             
-            # 6. VP 分布
-            vp = calculate_vp(df, length=360)
+            # 7. VP 分布 (自适应回看长度)
+            vp_length = self.VP_LENGTH_MAP.get(tf, 360)
+            vp = calculate_vp(df, length=vp_length)
             if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": []}
+            
+            # ================= 新增：MACD Hist 动量标注 =================
+            hist_prev = float(hist.iloc[-2])
+            hist_curr = float(hist.iloc[-1])
+            if hist_curr > 0 and hist_curr > hist_prev:
+                macd_momentum = "多头加速"
+            elif hist_curr > 0 and hist_curr <= hist_prev:
+                macd_momentum = "多头减速 ⚠️"
+            elif hist_curr < 0 and hist_curr < hist_prev:
+                macd_momentum = "空头加速"
+            elif hist_curr < 0 and hist_curr >= hist_prev:
+                macd_momentum = "空头减速 ⚠️"
+            else:
+                macd_momentum = "零轴附近"
+            
+            # ================= 新增：RSI 背离检测 =================
+            rsi_divergence = detect_rsi_divergence(close, rsi, lookback=20)
             
             # ================= 提取最新值 =================
             curr_close = close.iloc[-1]
-            
-            # 趋势判定逻辑
-            trend_status = "Consolidation"
             e20_val = ema20.iloc[-1]
             e50_val = ema50.iloc[-1]
             e200_val = ema200.iloc[-1]
+            
+            # 趋势判定
+            trend_status = "Consolidation"
             if e20_val > e50_val > e200_val: trend_status = "Strong Uptrend"
             elif e20_val < e50_val < e200_val: trend_status = "Strong Downtrend"
             elif curr_close > e200_val: trend_status = "Bullish Neutral"
             elif curr_close < e200_val: trend_status = "Bearish Neutral"
 
-            # 趋势强度 (ADX > 25 表示强趋势)
             adx_val = float(adx.iloc[-1])
             trend_strength = "Strong" if adx_val > 25 else "Weak/Ranging"
             
-            # ================= 序列数据提取 =================
+            # 序列数据
             def to_list(series, n=5):
                 raw = series.iloc[-n:].values.tolist()
                 return [smart_fmt(float(x)) for x in raw]
@@ -360,35 +390,33 @@ class MarketTool:
             recent_highs = to_list(high)
             recent_lows = to_list(low)
 
+            # ================= 构建精简结果 =================
+            rsi_val = round(float(rsi.iloc[-1]), 1)
+            rsi_result = {"rsi": rsi_val}
+            if rsi_divergence:
+                rsi_result["divergence"] = rsi_divergence
+
             result = {
                 "price": smart_fmt(curr_close),
                 "trend": {
                     "status": trend_status,
                     "strength": trend_strength,
-                    "adx": round(adx_val, 1)
+                    "adx": round(adx_val, 1),
+                    "di_plus": round(float(plus_di.iloc[-1]), 1),
+                    "di_minus": round(float(minus_di.iloc[-1]), 1),
                 },
-                "vwap": smart_fmt(vwap.iloc[-1]),
                 "recent_closes": recent_closes,
                 "recent_highs": recent_highs,
                 "recent_lows": recent_lows,
 
-                "rsi_analysis": {
-                    "rsi": round(float(rsi.iloc[-1]), 1),
-                    "stoch_k": round(float(stoch_k.iloc[-1]), 1),
-                    "stoch_d": round(float(stoch_d.iloc[-1]), 1),
-                },
-                "cci": round(float(cci.iloc[-1]), 1),
-                "kdj": {
-                    "k": round(float(k.iloc[-1]), 1),
-                    "d": round(float(d.iloc[-1]), 1),
-                    "j": round(float(j.iloc[-1]), 1)
-                },
+                "rsi_analysis": rsi_result,
 
                 "atr": smart_fmt(atr.iloc[-1]),
                 "macd": {
-                    "diff": smart_fmt(macd.iloc[-1]),
-                    "dea": smart_fmt(signal.iloc[-1]),
-                    "hist": smart_fmt(hist.iloc[-1])
+                    "diff": smart_fmt(macd_line.iloc[-1]),
+                    "dea": smart_fmt(signal_line.iloc[-1]),
+                    "hist": smart_fmt(hist_curr),
+                    "momentum": macd_momentum,
                 },
                 "bollinger": {
                     "up": smart_fmt(bb_up.iloc[-1]),
@@ -400,7 +428,6 @@ class MarketTool:
                 "ema": {
                     "ema_20": smart_fmt(e20_val),
                     "ema_50": smart_fmt(e50_val),
-                    "ema_100": smart_fmt(ema100.iloc[-1]),
                     "ema_200": smart_fmt(e200_val)
                 },
 
@@ -413,7 +440,11 @@ class MarketTool:
                 "vp": vp
             }
 
-            logger.debug(f"    ✅ [{tf}] Indicators calculated successfully (price={result['price']}, atr={result['atr']})")
+            # VWAP 仅在日内周期输出
+            if vwap_val is not None:
+                result["vwap"] = vwap_val
+
+            logger.debug(f"    ✅ [{tf}] Indicators calculated (price={result['price']}, atr={result['atr']}, momentum={macd_momentum})")
             return result
         except Exception as e:
             logger.error(f"❌ Process TF Error [{tf}]: {e}")

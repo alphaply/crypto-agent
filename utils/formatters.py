@@ -91,13 +91,8 @@ def format_orders_to_agent_friendly(orders):
 def format_market_data_to_text(data: dict) -> str:
     """
     将市场数据转换为 LLM 友好的结构化纯文本格式
-    (已升级：支持 MACD/KDJ/BB/Trend 显示)
+    (精简优化版 v2: 移除冗余指标，新增动量标注与背离检测)
     """
-    def fmt_price(price):
-        if price is None or price == 0: return "0"
-        # 简单处理，因为 market_data.py 已经做过 smart_fmt
-        return str(price)
-
     def fmt_num(num):
         if num > 1_000_000_000: return f"{num/1_000_000_000:.1f}B"
         if num > 1_000_000: return f"{num/1_000_000:.1f}M"
@@ -114,88 +109,75 @@ def format_market_data_to_text(data: dict) -> str:
     
     output = [
         "【市场快照】",
-        f"• 当前价格: {current_price} | 基准 ATR: {atr_base}",
-        f"• 资金费率: {funding:.4f}% | 未平仓合约: {oi} | 24h成交量: {vol_24h}",
+        f"• 价格: {current_price} | 基准ATR: {atr_base} | 资金费率: {funding:.4f}% | OI: {oi} | 24h量: {vol_24h}",
         ""
     ]
 
     # ========== 按周期组织技术指标 ==========
     indicators = data.get("technical_indicators") or {}
-    # 动态获取所有可用的周期，并按大致时长排序
     tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
     available_tfs = [tf for tf in tf_order if tf in indicators]
     
     if not available_tfs:
         output.append("【技术指标】")
-        output.append("• 暂无可用周期数据 (数据获取可能延迟或受限)")
+        output.append("• 暂无可用周期数据")
         output.append("")
     else:
         for tf in available_tfs:
-            if tf not in indicators: continue
             d = indicators[tf]
             
-            output.append(f"【{tf}周期】")
-            
-            # 1. 核心与趋势 (已升级：含 ADX 强度)
-            tf_price = d.get('price', 0)
-            vwap = d.get('vwap', 'N/A')
-            atr = d.get('atr', 0)
-            
+            # 1. 顶部行：趋势概览
             trend = d.get('trend', {})
             t_status = trend.get('status', 'N/A')
             t_strength = trend.get('strength', 'N/A')
             adx = trend.get('adx', 0)
-            vol_stat = d.get('volume_status', 'N/A')
+            di_plus = trend.get('di_plus', 0)
+            di_minus = trend.get('di_minus', 0)
+            atr = d.get('atr', 0)
+            vol_stat = d.get('volume_status') or d.get('volume_analysis', {}).get('status', 'N/A')
             
-            output.append(f"• 状态: 价格={tf_price} | VWAP={vwap} | 趋势={t_status} (强度:{t_strength}, ADX:{adx})")
-            output.append(f"• 波动: ATR={atr} | 成交量={vol_stat}")
+            output.append(f"【{tf}周期】 {t_status} | ADX={adx} ({t_strength}) DI+={di_plus} DI-={di_minus} | ATR={atr} | Vol={vol_stat}")
             
-            # 2. 震荡指标 (StochRSI + KDJ + CCI)
+            # 2. 均线 + VWAP（条件输出）
+            ema = d.get('ema', {})
+            e20, e50, e200 = ema.get('ema_20', 0), ema.get('ema_50', 0), ema.get('ema_200', 0)
+            ema_line = f"• EMA: 20={e20} / 50={e50} / 200={e200}"
+            vwap = d.get('vwap')
+            if vwap:
+                ema_line += f" | VWAP={vwap}"
+            output.append(ema_line)
+
+            # 3. RSI + MACD（含动量标注 + 背离检测）
             rsi_data = d.get('rsi_analysis', {})
             rsi = rsi_data.get('rsi', 0)
-            st_k, st_d = rsi_data.get('stoch_k', 0), rsi_data.get('stoch_d', 0)
+            divergence = rsi_data.get('divergence')
+            rsi_str = f"RSI={rsi}"
+            if divergence:
+                rsi_str += f" [{divergence}]"
             
-            kdj = d.get('kdj', {})
-            k, _d, j = kdj.get('k', 0), kdj.get('d', 0), kdj.get('j', 0)
-            
-            cci = d.get('cci', 0)
-            
-            output.append(f"• 震荡: RSI={rsi} (StochK={st_k}, StochD={st_d}) | KDJ: K={k} D={_d} J={j} | CCI={cci}")
-
-            # 3. 动能 (MACD)
             macd = d.get('macd', {})
-            diff, dea, hist = macd.get('diff', 0), macd.get('dea', 0), macd.get('hist', 0)
-            output.append(f"• MACD: Diff={diff} DEA={dea} Hist={hist}")
+            diff, hist = macd.get('diff', 0), macd.get('hist', 0)
+            momentum = macd.get('momentum', '')
+            output.append(f"• {rsi_str} | MACD: Diff={diff} Hist={hist} ({momentum})")
 
             # 4. 布林带
             bb = d.get('bollinger', {})
-            up, mid, low, width = bb.get('up',0), bb.get('mid',0), bb.get('low',0), bb.get('width',0)
-            output.append(f"• 布林带: Up={up} Low={low} Width={width}")
+            up, low, width = bb.get('up', 0), bb.get('low', 0), bb.get('width', 0)
+            output.append(f"• BB: Up={up} Low={low} Width={width}")
             
             # 5. K线序列
             closes = d.get('recent_closes', [])
-            highs = d.get('recent_highs', [])
-            lows = d.get('recent_lows', [])
             if closes:
                 c_str = ", ".join([str(x) for x in closes])
-                h_str = ", ".join([str(x) for x in highs])
-                l_str = ", ".join([str(x) for x in lows])
-                output.append(f"• 近5根K线: Close[{c_str}] High[{h_str}] Low[{l_str}]")
+                output.append(f"• 近5根K线: [{c_str}]")
             
-            # 6. EMA
-            ema = d.get('ema', {})
-            e20, e50, e100, e200 = ema.get('ema_20', 0), ema.get('ema_50', 0), ema.get('ema_100', 0), ema.get('ema_200', 0)
-            output.append(f"• EMA: 20={e20} / 50={e50} / 100={e100} / 200={e200}")
-            
-            # 7. 价值分布
+            # 6. 价值分布
             vp = d.get('vp', {})
             poc = vp.get('poc', 0)
-            val, vah = vp.get('val', 0), vp.get('vah', 0)
-            # 已经是排好序的数值列表，直接取前3
+            val_p, vah = vp.get('val', 0), vp.get('vah', 0)
             raw_hvns = vp.get('hvns', [])
             hvn_str = ", ".join([str(x) for x in raw_hvns[:3]]) if raw_hvns else "N/A"
-            
-            output.append(f"• 价值区: POC={poc} | VA=[{val}~{vah}] | HVN: {hvn_str}")
+            output.append(f"• VP: POC={poc} VA=[{val_p}~{vah}] HVN=[{hvn_str}]")
             output.append("")
 
     return "\n".join(output).strip()
@@ -203,12 +185,8 @@ def format_market_data_to_text(data: dict) -> str:
 
 def format_market_data_to_markdown(data: dict) -> str:
     """
-    将复杂的市场 JSON 数据转换为 Markdown 表格
-    (已升级：支持 MACD/KDJ/BB/Trend)
+    将复杂的市场 JSON 数据转换为 Markdown 表格（精简版 v2）
     """
-    def fmt_price(price):
-        return str(price)
-
     def fmt_num(num):
         if num > 1_000_000_000: return f"{num/1_000_000_000:.1f}B"
         if num > 1_000_000: return f"{num/1_000_000:.1f}M"
@@ -225,9 +203,8 @@ def format_market_data_to_markdown(data: dict) -> str:
         f"Sentiment: Fund: {funding:.4f}% | Vol24h: {fmt_num(sent.get('24h_quote_vol', 0))}\n"
     )
 
-    # 扩展表头
     table_header = (
-        "| TF | Trend | RSI/KDJ | MACD (Diff/Hist) | BB Width | 5 Closes | EMA (20/50/200) | POC | HVN |\n"
+        "| TF | Trend | RSI | MACD (Hist) | Momentum | BB Width | EMA (20/50/200) | POC | HVN |\n"
         "|---|---|---|---|---|---|---|---|---|\n"
     )
     
@@ -239,41 +216,31 @@ def format_market_data_to_markdown(data: dict) -> str:
     for tf in available_tfs:
         d = indicators[tf]
 
-        # 基础
         trend = d.get('trend', {}).get('status', 'N/A')
 
-        # 震荡
         rsi_data = d.get('rsi_analysis', {})
         rsi = rsi_data.get('rsi', 0)
-        kdj = d.get('kdj', {})
-        k, j = kdj.get('k',0), kdj.get('j',0)
-        osc_str = f"RSI:{rsi:.1f} K:{k:.1f} J:{j:.1f}"
+        divergence = rsi_data.get('divergence', '')
+        rsi_str = f"{rsi:.1f}"
+        if divergence:
+            rsi_str += f" {divergence}"
 
-        # MACD
         macd = d.get('macd', {})
-        diff, hist = macd.get('diff', 0), macd.get('hist', 0)
-        macd_str = f"{diff:.4f}/{hist:.4f}"
+        hist = macd.get('hist', 0)
+        momentum = macd.get('momentum', '')
 
-        # BB
         bb = d.get('bollinger', {})
         width = bb.get('width', 0)
 
-        # K线
-        closes = d.get('recent_closes', [])
-        c_str = ",".join([str(x) for x in closes])
-
-        # EMA
         ema = d.get('ema', {})
         e_str = f"{ema.get('ema_20')}/{ema.get('ema_50')}/{ema.get('ema_200')}"
 
-        # VP
         vp = d.get('vp', {})
         poc = vp.get('poc', 0)
         hvns = vp.get('hvns', [])[:3]
         h_str = ",".join([str(x) for x in hvns])
 
-        row = f"| {tf} | {trend} | {osc_str} | {macd_str} | {width} | {c_str} | {e_str} | {poc} | {h_str} |"
+        row = f"| {tf} | {trend} | {rsi_str} | {hist} | {momentum} | {width} | {e_str} | {poc} | {h_str} |"
         rows.append(row)
 
-    
     return header + table_header + "\n".join(rows)

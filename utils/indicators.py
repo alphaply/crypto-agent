@@ -254,3 +254,42 @@ def calculate_vp(df, length=360, rows=100, va_perc=0.70):
         "val": smart_fmt(val_price),
         "hvns": [smart_fmt(x) for x in sorted(hvns, reverse=True)]
     }
+
+
+def detect_rsi_divergence(close, rsi, lookback=20):
+    """
+    检测 RSI 与价格的顶/底背离（简化版）
+    - 看涨背离：价格创近期新低但 RSI 未创新低（底部抬高）
+    - 看跌背离：价格创近期新高但 RSI 未创新高（顶部降低）
+    返回: "看涨背离 🟢" | "看跌背离 🔴" | None
+    """
+    if len(close) < lookback + 5 or len(rsi) < lookback + 5:
+        return None
+
+    recent_close = close.iloc[-lookback:]
+    recent_rsi = rsi.iloc[-lookback:]
+    prev_close = close.iloc[-(lookback * 2):-lookback]
+    prev_rsi = rsi.iloc[-(lookback * 2):-lookback]
+
+    if len(prev_close) < 10:
+        return None
+
+    curr_price_low = recent_close.min()
+    prev_price_low = prev_close.min()
+    curr_rsi_low = recent_rsi.min()
+    prev_rsi_low = prev_rsi.min()
+
+    # 看涨背离：价格创新低但 RSI 底部抬高
+    if curr_price_low < prev_price_low and curr_rsi_low > prev_rsi_low * 1.03:
+        return "看涨背离 🟢"
+
+    curr_price_high = recent_close.max()
+    prev_price_high = prev_close.max()
+    curr_rsi_high = recent_rsi.max()
+    prev_rsi_high = prev_rsi.max()
+
+    # 看跌背离：价格创新高但 RSI 顶部降低
+    if curr_price_high > prev_price_high and curr_rsi_high < prev_rsi_high * 0.97:
+        return "看跌背离 🔴"
+
+    return None
