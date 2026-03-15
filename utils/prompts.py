@@ -5,6 +5,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 
 ## 当前环境
 - **当前时间**: {current_time}
+- **下次运行**: {next_run_time}
 - **交易品种**: {symbol} | **杠杆倍数**: {leverage}x
 - **当前价格**: {current_price} | **模式**: 实盘交易
 
@@ -67,6 +68,7 @@ REAL_TRADE_PROMPT_TEMPLATE = """
 STRATEGY_PROMPT_TEMPLATE = """
 你是机构级加密货币策略师
 当前时间: {current_time}
+下次运行: {next_run_time}
 监控标的: {symbol} | 周期视角: 中长线
 当前价格: {current_price} | 15m ATR: {atr_15m:.2f}
 
@@ -123,6 +125,7 @@ STRATEGY_PROMPT_TEMPLATE = """
 SPOT_DCA_PROMPT_TEMPLATE = """
 你是专业的加密货币现货定投策略师。
 当前时间: {current_time}
+下次运行: {next_run_time}
 监控标的: {symbol} | 模式: 现货定投 (SPOT_DCA) | 定投周期: {dca_period_text}
 当前价格: {current_price}
 

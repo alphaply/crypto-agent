@@ -101,7 +101,7 @@
                   </div>
 
                   <!-- 右侧：专属流水表 -->
-                  <div class="lg:col-span-1 space-y-4">
+                  <div class="lg:col-span-1 h-full min-h-0">
                       <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col h-full">
                           <div class="px-4 py-3 md:px-5 md:py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
                               <h3 class="font-bold text-gray-900 text-xs md:text-sm flex items-center gap-2">📜 专属决策流水</h3>
@@ -115,7 +115,7 @@
                                   </button>
                               </div>
                           </div>
-                          <div id="order-container-{{ summary.config_id }}" class="flex-grow overflow-y-auto max-h-[400px] md:max-h-[600px] mini-scroll p-3 md:p-4 space-y-2.5 md:space-y-3">
+                          <div id="order-container-{{ summary.config_id }}" class="flex-grow overflow-y-auto max-h-[400px] lg:max-h-none min-h-0 mini-scroll p-3 md:p-4 space-y-2.5 md:space-y-3">
                               {% if summary.all_orders %}
                                   {% for order in summary.all_orders %}
                                   <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all cursor-pointer" onclick="handleCopy('{{ order.entry_price }}', event)">

@@ -306,7 +306,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
     return state.model_copy(update={
         "market_context": market_full,
         "account_context": account_data,
-        "history_context": recent_summaries,
+        "history_context": daily_history,
         "messages": messages
     })
 
