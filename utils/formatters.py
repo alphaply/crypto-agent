@@ -106,10 +106,13 @@ def format_market_data_to_text(data: dict) -> str:
     funding = sent.get("funding_rate", 0) * 100 
     oi = fmt_num(sent.get("open_interest", 0))
     vol_24h = fmt_num(sent.get("24h_quote_vol", 0))
+    ls_ratio = sent.get("ls_ratio", "N/A")
+    ls_accounts = sent.get("ls_accounts", "N/A")
     
     output = [
         "【市场快照】",
-        f"• 价格: {current_price} | 基准ATR: {atr_base} | 资金费率: {funding:.4f}% | OI: {oi} | 24h量: {vol_24h}",
+        f"• 价格: {current_price} | 基准ATR: {atr_base} | 资金费率: {funding:.4f}% | OI: {oi}",
+        f"• 24h量: {vol_24h} | 大户多空比: {ls_ratio} | 人数多空比: {ls_accounts}",
         ""
     ]
 

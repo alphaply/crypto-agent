@@ -91,14 +91,13 @@ class MarketTool:
     # ==========================================
 
     def _fetch_market_derivatives(self, symbol):
-        """获取资金费率、持仓量等衍生品数据"""
+        """获取资金费率、持仓量、多空比、爆仓量等衍生品数据"""
         try:
             funding_rate = 0
             try:
                 fr_data = self.exchange.fetch_funding_rate(symbol)
                 funding_rate = float(fr_data.get('fundingRate', 0))
             except:
-                # 备用方法
                 ticker = self.exchange.fetch_ticker(symbol)
                 funding_rate = float(ticker.get('info', {}).get('lastFundingRate', 0))
 
@@ -110,15 +109,59 @@ class MarketTool:
                 
             ticker = self.exchange.fetch_ticker(symbol)
             quote_vol = float(ticker.get('quoteVolume', 0))
+
+            # --- 新增：币安特定深度情绪指标 ---
+            binance_sentiment = self._fetch_binance_specific_sentiment(symbol)
                 
             return {
                 "funding_rate": funding_rate,
                 "open_interest": oi,
-                "24h_quote_vol": quote_vol
+                "24h_quote_vol": quote_vol,
+                **binance_sentiment
             }
         except Exception as e:
             logger.error(f"Derivatives Error: {e}")
             return {"funding_rate": 0, "open_interest": 0, "24h_quote_vol": 0}
+
+    def _fetch_binance_specific_sentiment(self, symbol):
+        """
+        专门获取币安的多空人数比、大户持仓比等（仅限合约）
+        """
+        sentiment = {
+            "ls_ratio": "N/A",
+            "ls_accounts": "N/A",
+            "liquidations_24h": "N/A"
+        }
+        
+        # 仅限于 USDM 合约
+        if self.exchange.id != 'binanceusdm':
+            return sentiment
+
+        try:
+            # 去掉 symbol 中的 :USDT 等后缀，币安 API 通常只需要 BTCUSDT
+            clean_symbol = symbol.replace(':', '').replace('/', '')
+            
+            # 1. 全球多空人数比 (Global Long/Short Account Ratio)
+            try:
+                ls_data = self.exchange.fapiPublicGetGlobalLongShortAccountRatio({'symbol': clean_symbol, 'period': '5m'})
+                if ls_data and len(ls_data) > 0:
+                    sentiment["ls_accounts"] = float(ls_data[-1]['longShortRatio'])
+            except: pass
+
+            # 2. 大户持仓多空比 (Top Trader Long/Short Ratio)
+            try:
+                ls_positions = self.exchange.fapiPublicGetTopLongShortPositionRatio({'symbol': clean_symbol, 'period': '5m'})
+                if ls_positions and len(ls_positions) > 0:
+                    sentiment["ls_ratio"] = float(ls_positions[-1]['longShortRatio'])
+            except: pass
+
+            # 3. 24h 爆仓数据 (通常需要从 WebSocket 或专门爬取，但 CCXT 部分交易所支持 fetch_liquidations)
+            # 币安没有直接的 API 获取全量历史爆仓，通常需要订阅。这里暂留或尝试 ticker 中的隐含信息。
+            
+        except Exception as e:
+            logger.debug(f"Binance Specific Sentiment Fetch Failed: {e}")
+            
+        return sentiment
 
     # ==========================================
     # 1. 获取数据逻辑
