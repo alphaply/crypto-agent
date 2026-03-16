@@ -143,14 +143,14 @@ class MarketTool:
             
             # 1. 全球多空人数比 (Global Long/Short Account Ratio)
             try:
-                ls_data = self.exchange.fapiPublicGetGlobalLongShortAccountRatio({'symbol': clean_symbol, 'period': '5m'})
+                ls_data = self.exchange.fapiDataGetGlobalLongShortAccountRatio({'symbol': clean_symbol, 'period': '5m'})
                 if ls_data and len(ls_data) > 0:
                     sentiment["ls_accounts"] = float(ls_data[-1]['longShortRatio'])
             except: pass
 
             # 2. 大户持仓多空比 (Top Trader Long/Short Ratio)
             try:
-                ls_positions = self.exchange.fapiPublicGetTopLongShortPositionRatio({'symbol': clean_symbol, 'period': '5m'})
+                ls_positions = self.exchange.fapiDataGetTopLongShortPositionRatio({'symbol': clean_symbol, 'period': '5m'})
                 if ls_positions and len(ls_positions) > 0:
                     sentiment["ls_ratio"] = float(ls_positions[-1]['longShortRatio'])
             except: pass
