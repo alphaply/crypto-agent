@@ -1,54 +1,53 @@
 # Crypto Agent (自动亏钱 Agent)
 
-An automated cryptocurrency trading system powered by Large Language Models (LLMs) and LangGraph. It manages multiple trading agents across different symbols, timeframes, and strategies with a focus on risk management and multi-agent collaboration.
+An automated cryptocurrency trading system powered by Large Language Models (LLMs) and LangGraph. It manages multiple independent trading agents (configurations) across different symbols, timeframes, and strategies with robust risk management and performance tracking.
 
 ## Project Overview
 
-- **Purpose**: Automate crypto trading strategies (Real-time, Strategy/Simulation, and Spot DCA) using AI-driven decision-making.
+- **Purpose**: Automate diverse crypto trading strategies (Futures REAL, Strategy Simulation, and Spot DCA) using AI-driven logic.
 - **Key Features**:
-  - **Multi-Agent Architecture**: Independent configuration per trading pair (Model, Leverage, Prompts).
+  - **Isolated Configuration (`config_id`)**: Supports running multiple independent agents on the same symbol (e.g., BTC/USDT 15m Scalping vs BTC/USDT 1h Swing) by isolating state and history via unique IDs.
   - **Trading Modes**: 
-    - `REAL`: 15m interval scanning with direct exchange execution (Futures).
-    - `STRATEGY`: 1h interval simulation for high R/R ratio testing.
-    - `SPOT_DCA`: Spot market Dollar Cost Averaging.
-  - **Dashboard**: Flask-based web interface for monitoring, config management, and token usage statistics.
-  - **Interactive Chat**: Directly talk to agents for analysis or manual trade approval.
-- **Tech Stack**:
-  - **Core**: Python 3.10+, [uv](https://github.com/astral-sh/uv) (Package Manager).
-  - **AI Framework**: LangGraph (Workflow Orchestration), LangChain (LLM interaction).
-  - **Exchange**: [ccxt](https://github.com/ccxt/ccxt) (Binance USDM & Spot).
-  - **Web Framework**: Flask (API & Dashboard).
-  - **Data/Math**: Pandas, Numpy, SQLite.
+    - `REAL`: Professional futures execution (Long/Short) with automated Stop-Loss/Take-Profit management.
+    - `STRATEGY`: High-fidelity simulation for testing risk/reward ratios.
+    - `SPOT_DCA`: Flexible Spot market Dollar Cost Averaging with intelligent timing (Daily/Weekly).
+  - **Enhanced Indicator System (v2)**: Optimized signal set with MACD momentum labeling, RSI divergence detection, and adaptive Volume Profile.
+  - **Performance Analytics**: Real-time tracking of account equity, trade history, LLM token usage, and daily strategy summaries.
+  - **Interactive Chat**: SSE-based real-time chat with specific agents for manual analysis or trade approval.
 
 ## Architecture
 
-- **`dashboard.py`**: Main entry point for the Flask web server and scheduler launcher.
-- **`main_scheduler.py`**: Background task engine that triggers agent analysis cycles.
+- **`dashboard.py`**: Main Flask web interface and entry point for the smart scheduler.
+- **`main_scheduler.py`**: A 1-minute heartbeat engine that triggers agents based on individual timeframes or DCA schedules.
 - **`agent/`**: 
-  - `agent_graph.py`: The LangGraph state machine (Start -> Agent -> Tools -> Finalize).
-  - `agent_tools.py`: Tools used by agents (Opening/Closing positions, canceling orders).
-  - `prompts/`: System prompt templates for different trading modes.
+  - `agent_graph.py`: Core LangGraph state machine (Start -> Analyze -> Trade/Wait -> Finalize).
+  - `agent_tools.py`: Unified toolset for order execution and state management.
 - **`utils/`**:
-  - `market_data.py`: High-level wrapper for fetching OHLCV and technical indicators.
-  - `indicators.py`: Implementation of TA indicators (EMA, RSI, MACD, Volume Profile, etc.).
-  - `formatters.py`: Data-to-text conversion for LLM consumption.
-- **`routes/`**: Modular Flask routes for authentication, stats, config, and chat.
+  - `market_data.py`: `MarketTool` wrapper for standardized OHLCV, derivatives (funding/OI), and account status.
+  - `indicators.py`: Professional TA indicator implementations optimized for LLM consumption.
+  - `formatters.py`: Structural text/markdown formatters that convert complex JSON data into concise prompt context.
+- **`database.py`**: SQLite core for everything: orders, snapshots, token usage, and cross-session memory.
 
 ## Development Standards & Conventions
 
-### Indicator Calculation
-- **Wilder's Smoothing**: Standard TA indicators (RSI, ADX, ATR) must use Wilder's Smoothing (RMA) to align with professional charting tools like TradingView.
-- **Data Warm-up**: Always fetch at least 1000 candles for reliable calculation of long-term indicators like EMA200.
-- **Safety**: Functions in `utils/indicators.py` should handle `NaN` and `Inf` values gracefully using `smart_fmt` or `fillna`.
+### Indicator System (v2)
+- **Reduced Redundancy**: Removed overlapping indicators (StochRSI, KDJ, CCI, EMA100) to minimize token consumption and noise.
+- **Momentum & Divergence**: 
+  - MACD Histogram is labeled with momentum states (e.g., "多头加速", "多头减速 ⚠️").
+  - RSI includes automatic top/bottom divergence detection.
+- **Adaptive Volume Profile**: Lookback periods for VP (POC/VAH/VAL) are automatically adjusted per timeframe (e.g., 576 bars for 5m, 120 bars for 1d).
+- **Logical Scoping**: Indicators like VWAP are strictly limited to intraday timeframes (1m-1h) to ensure statistical validity.
+- **Wilder's Smoothing**: RSI/ADX/ATR use Wilder's RMA for alignment with standard charting tools.
 
 ### Agent & Prompts
-- **Context Injection**: Market data is injected via the `{formatted_market_data}` placeholder in prompts.
-- **Tool Mapping**: Tools must be bound correctly based on the `trade_mode` (REAL vs STRATEGY).
-- **History**: Use `database.get_recent_summaries` to provide agents with memory of previous logic to avoid anchoring bias while maintaining continuity.
+- **Config Isolation**: All database queries and tool actions MUST use `config_id` to prevent data leakage between parallel agents.
+- **Memory Enrichment**: 
+  - Short-term: `database.get_recent_summaries` provides last ~10 analysis cycles.
+  - Long-term: `database.get_daily_summaries` provides LLM-compressed summaries of previous days to maintain narrative continuity.
 
-### Security
-- **API Keys**: Never hardcode credentials. Use `.env` and the `Config` class in `config.py`.
-- **Mode Isolation**: Strictly separate `REAL` and `STRATEGY` execution paths to prevent accidental capital loss.
+### Security & Precision
+- **Mode Isolation**: Strictly separate `REAL`, `STRATEGY`, and `SPOT_DCA` execution paths.
+- **Precision Management**: Use `exchange.amount_to_precision` and `exchange.price_to_precision` before every order to avoid API errors.
 
 ## Building and Running
 
@@ -75,12 +74,14 @@ uv run dashboard.py
 
 | File | Description |
 | :--- | :--- |
-| `config.py` | Centralized configuration and credential management. |
-| `database.py` | SQLite persistence for snapshots, summaries, and token usage. |
-| `agent/agent_graph.py` | Core LangGraph logic defining the agent's behavior. |
-| `utils/market_data.py` | Primary interface for all market and account data fetching. |
-| `utils/indicators.py` | Professional-grade TA indicator implementations. |
-| `routes/chat.py` | Real-time agent interaction via Server-Sent Events (SSE). |
+| `config.py` | Centralized config management (symbol settings, model params, credentials). |
+| `database.py` | Persistent storage for snapshots, token usage, and agent memories. |
+| `agent/agent_graph.py` | The "brain" logic defining how agents process data and decide. |
+| `utils/market_data.py` | Primary API for fetching OHLCV, Funding Rate, OI, and Account stats. |
+| `utils/indicators.py` | Professional-grade TA indicators (EMA, MACD Momentum, RSI Div, VP). |
+| `utils/formatters.py` | Translates raw JSON data into high-density text for LLM prompts. |
+| `routes/chat.py` | Backend for the real-time interaction system. |
 
 ---
 *Note: This GEMINI.md is generated for Gemini CLI to provide foundational context for this project.*
+
