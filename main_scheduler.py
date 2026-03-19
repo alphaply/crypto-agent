@@ -5,7 +5,6 @@ import pytz
 import os
 from dotenv import load_dotenv
 from agent.agent_graph import run_agent_for_config, summarize_content
-from agent.multi_agent_graph import run_multi_agent_for_config
 from utils.logger import setup_logger
 from config import config as global_config
 from database import init_db, get_pending_daily_summary_data, save_daily_summary
@@ -131,10 +130,7 @@ def process_single_config(config):
     _last_run_times[config_id] = now
 
     try:
-        if mode == 'MULTI_AGENT':
-            run_multi_agent_for_config(config)
-        else:
-            run_agent_for_config(config)
+        run_agent_for_config(config)
     except Exception as e:
         logger.error(f"❌ Error executing Agent [{config_id}]: {e}")
 

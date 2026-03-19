@@ -310,6 +310,92 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         "messages": messages
     })
 
+from langchain_core.tools import tool
+
+@tool
+def submit_screening_decision(confidence: int, market_status: str, reason: str, is_risk_high: bool = False):
+    """
+    提交初筛决策。
+    confidence: 0-100的整数，表示机会概率。
+    market_status: 简短描述当前盘面状态（用于前端展示）。
+    reason: 理由。
+    is_risk_high: 若发现账户面临高风险（大额亏损、连续止损、极端行情），请设为 True。
+    """
+    pass
+
+def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id", "unknown")
+    agent_config = configurable.get("agent_config", {})
+    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
+    
+    if trade_mode != 'REAL':
+        return state
+
+    symbol = state.symbol
+    # 初筛模型优先级：screener_model -> 环境变量 -> 默认 mini
+    model_name = (agent_config.get('screener_model') or 
+                  os.getenv("GLOBAL_SCREENER_MODEL") or 
+                  "gpt-4o-mini")
+    
+    logger.info(f"--- [Node] Screener: {model_name} evaluating {symbol} ---")
+
+    llm = ChatOpenAI(
+        model=model_name,
+        api_key=agent_config.get('api_key'),
+        base_url=agent_config.get('api_base'),
+        temperature=0.2
+    ).bind_tools([submit_screening_decision], tool_choice="submit_screening_decision")
+
+    try:
+        response = llm.invoke(state.messages)
+        tool_call = response.tool_calls[0]
+        args = tool_call['args']
+        
+        result_dict = {
+            "confidence": args.get("confidence", 0),
+            "market_status": args.get("market_status", "Parsed"),
+            "reason": args.get("reason", ""),
+            "is_risk_high": args.get("is_risk_high", False)
+        }
+        
+        # 保存 token 使用量
+        usage = response.response_metadata.get("token_usage", {})
+        if usage:
+            database.save_token_usage(symbol, config_id, model_name, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+            
+        return state.model_copy(update={"screener_result": result_dict, "messages": state.messages + [response]})
+    except Exception as e:
+        logger.error(f"❌ [Screener Error]: {e}")
+        return state.model_copy(update={"screener_result": {"confidence": 100, "is_risk_high": True, "market_status": "Error", "reason": str(e)}})
+
+def screening_router(state: AgentState, config: RunnableConfig) -> str:
+    configurable = config.get("configurable", {})
+    agent_config = configurable.get("agent_config", {})
+    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
+    
+    if trade_mode != 'REAL':
+        return "continue"
+
+    res = state.screener_result
+    if not res:
+        return "continue"
+
+    confidence = res.get("confidence", 0)
+    is_risk_high = res.get("is_risk_high", False)
+    threshold = int(agent_config.get("escalation_threshold", 60))
+    
+    # 策略：有持仓时门槛降低
+    has_position = len(state.account_context.get('real_positions', [])) > 0
+    current_threshold = threshold - 20 if has_position else threshold
+
+    logger.info(f"🎯 [Screening] Confidence: {confidence}, Risk: {is_risk_high}, Threshold: {current_threshold}")
+
+    if is_risk_high or confidence >= current_threshold:
+        return "continue"
+    
+    return "skip"
+
 def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id", "unknown")
@@ -498,12 +584,32 @@ def should_continue(state: AgentState):
 
 workflow = StateGraph(AgentState)
 workflow.add_node("start", start_node)
+workflow.add_node("screener", screener_node)
 workflow.add_node("agent", agent_node)
 workflow.add_node("tools", tools_node)
 workflow.add_node("finalize", finalize_node)
 
 workflow.set_entry_point("start")
-workflow.add_edge("start", "agent")
+
+def start_router(state: AgentState, config: RunnableConfig) -> str:
+    configurable = config.get("configurable", {})
+    agent_config = configurable.get("agent_config", {})
+    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
+    
+    # 只有 REAL 模式且显示开启了 enable_screening 才会进入初筛
+    if trade_mode == 'REAL' and agent_config.get('enable_screening', False):
+        return "screener"
+    return "agent"
+
+workflow.add_conditional_edges("start", start_router, {
+    "screener": "screener",
+    "agent": "agent"
+})
+
+workflow.add_conditional_edges("screener", screening_router, {
+    "continue": "agent",
+    "skip": "finalize"
+})
 
 workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "finalize": "finalize"})
 workflow.add_edge("tools", "agent")
@@ -521,7 +627,8 @@ def run_agent_for_config(config: dict, human_message: str = None):
         account_context={},
         history_context=[],
         full_analysis="",
-        human_message=human_message
+        human_message=human_message,
+        screener_result=None
     )
     try:
         app.invoke(initial_state, config={"configurable": {"config_id": config_id, "agent_config": config}})
