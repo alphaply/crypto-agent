@@ -11,77 +11,40 @@ An automated cryptocurrency trading system powered by Large Language Models (LLM
     - `REAL`: Professional futures execution (Long/Short) with automated Stop-Loss/Take-Profit management.
     - `STRATEGY`: High-fidelity simulation for testing risk/reward ratios.
     - `SPOT_DCA`: Flexible Spot market Dollar Cost Averaging with intelligent timing (Daily/Weekly).
+  - **Smart Screener System (v2)**: 
+    - **Dual-Model Logic**: Uses a lightweight model (e.g., GPT-4o-mini) for initial screening. Only escalates to a powerful "Master Agent" (e.g., GPT-4o/Claude-3.5) if significant opportunities or risks are detected.
+    - **Built-in Intelligence**: Screener prompts are now built-in for consistency, providing structured analysis and price predictions even when not escalating.
+    - **Chat Integration**: The screener also acts as a "gatekeeper" in interactive chat, quickly answering simple market queries to save costs and latency.
+  - **Performance Analytics**: Real-time tracking of account equity, trade history, LLM token usage, and daily strategy summaries (now including screener insights).
   - **Enhanced Indicator System (v2)**: Optimized signal set with MACD momentum labeling, RSI divergence detection, and adaptive Volume Profile.
-  - **Performance Analytics**: Real-time tracking of account equity, trade history, LLM token usage, and daily strategy summaries.
-  - **Interactive Chat**: SSE-based real-time chat with specific agents for manual analysis or trade approval.
 
 ## Architecture
 
 - **`dashboard.py`**: Main Flask web interface and entry point for the smart scheduler.
 - **`main_scheduler.py`**: A 1-minute heartbeat engine that triggers agents based on individual timeframes or DCA schedules.
 - **`agent/`**: 
-  - `agent_graph.py`: Core LangGraph state machine (Start -> Analyze -> Trade/Wait -> Finalize).
+  - `agent_graph.py`: Core LangGraph state machine (Start -> Screener? -> Analyze -> Trade/Wait -> Finalize).
+  - `chat_graph.py`: Interactive LangGraph workflow with built-in screener support.
   - `agent_tools.py`: Unified toolset for order execution and state management.
 - **`utils/`**:
-  - `market_data.py`: `MarketTool` wrapper for standardized OHLCV, derivatives (funding/OI), and account status.
+  - `market_data.py`: `MarketTool` wrapper for standardized OHLCV, derivatives, and account status.
   - `indicators.py`: Professional TA indicator implementations optimized for LLM consumption.
-  - `formatters.py`: Structural text/markdown formatters that convert complex JSON data into concise prompt context.
-- **`database.py`**: SQLite core for everything: orders, snapshots, token usage, and cross-session memory.
+  - `formatters.py`: Translates raw JSON data into concise, high-density prompt context.
 
 ## Development Standards & Conventions
 
-### Indicator System (v2)
-- **Reduced Redundancy**: Removed overlapping indicators (StochRSI, KDJ, CCI, EMA100) to minimize token consumption and noise.
-- **Momentum & Divergence**: 
-  - MACD Histogram is labeled with momentum states (e.g., "多头加速", "多头减速 ⚠️").
-  - RSI includes automatic top/bottom divergence detection.
-- **Adaptive Volume Profile**: Lookback periods for VP (POC/VAH/VAL) are automatically adjusted per timeframe (e.g., 576 bars for 5m, 120 bars for 1d).
-- **Logical Scoping**: Indicators like VWAP are strictly limited to intraday timeframes (1m-1h) to ensure statistical validity.
-- **Wilder's Smoothing**: RSI/ADX/ATR use Wilder's RMA for alignment with standard charting tools.
+### Screener Configuration (v2)
+- **Nested Structure**: Screener settings are now nested under the `screener` key in the symbol configuration.
+- **Parameters**: Supports independent `model`, `api_base`, `api_key`, and `temperature`. 
+- **Escalation**: Controlled by `escalation_threshold` (0-100) and `should_escalate` flag from the model.
 
-### Agent & Prompts
-- **Config Isolation**: All database queries and tool actions MUST use `config_id` to prevent data leakage between parallel agents.
-- **Memory Enrichment**: 
-  - Short-term: `database.get_recent_summaries` provides last ~10 analysis cycles.
-  - Long-term: `database.get_daily_summaries` provides LLM-compressed summaries of previous days to maintain narrative continuity.
+### UI & Display
+- **Analysis Source**: The dashboard explicitly labels whether a result came from "🔍 初筛模型" or "🧠 决策模型".
+- **Layout Alignment**: Uses a balanced flex layout to ensure market analysis and order logs are visually aligned (equal height).
 
-### Security & Precision
+### Data Persistence
 - **Mode Isolation**: Strictly separate `REAL`, `STRATEGY`, and `SPOT_DCA` execution paths.
-- **Precision Management**: Use `exchange.amount_to_precision` and `exchange.price_to_precision` before every order to avoid API errors.
-
-## Building and Running
-
-### Prerequisites
-```bash
-# Install uv
-powershell -c "irm https://astral-sh.net/uv/install.ps1 | iex" # Windows
-```
-
-### Installation
-```bash
-uv sync
-cp .env.template .env
-# Edit .env with your keys
-```
-
-### Execution
-```bash
-# Start Web Server + Scheduler
-uv run dashboard.py
-```
-
-## Key Files Summary
-
-| File | Description |
-| :--- | :--- |
-| `config.py` | Centralized config management (symbol settings, model params, credentials). |
-| `database.py` | Persistent storage for snapshots, token usage, and agent memories. |
-| `agent/agent_graph.py` | The "brain" logic defining how agents process data and decide. |
-| `utils/market_data.py` | Primary API for fetching OHLCV, Funding Rate, OI, and Account stats. |
-| `utils/indicators.py` | Professional-grade TA indicators (EMA, MACD Momentum, RSI Div, VP). |
-| `utils/formatters.py` | Translates raw JSON data into high-density text for LLM prompts. |
-| `routes/chat.py` | Backend for the real-time interaction system. |
+- **Agent Type**: Records are tagged with `agent_type` (e.g., `SCREENER`) to allow granular filtering and comprehensive daily summaries.
 
 ---
-*Note: This GEMINI.md is generated for Gemini CLI to provide foundational context for this project.*
-
+*Note: This GEMINI.md is updated for Gemini CLI to reflect the 2026.03.19 refactoring.*

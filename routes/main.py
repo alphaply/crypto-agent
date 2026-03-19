@@ -128,6 +128,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                         'content': "💤 该 Agent 尚未产生任何分析数据。请确保调度器已开启并等待其运行。",
                         'strategy_logic': "暂无逻辑",
                         'timestamp': "N/A",
+                        'agent_type': None,
                         'id': -1
                     }
                 

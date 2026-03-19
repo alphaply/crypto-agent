@@ -51,6 +51,67 @@ class ChatState(TypedDict):
     symbol: str
     system_prompt: str
     q: str
+    screener_result: Dict[str, Any]
+
+def screener_node_wrapper(state: ChatState, config: RunnableConfig):
+    """对话模式下的初筛节点封装"""
+    from agent.agent_graph import screener_node, AgentState
+    
+    # 构造临时 AgentState
+    agent_state = AgentState(
+        symbol=state["symbol"],
+        messages=state["messages"],
+        market_context={}, # 由 screener_node 内部重新获取最新数据
+        account_context={},
+        history_context=[],
+        full_analysis="",
+        human_message=state["q"],
+        screener_result=None
+    )
+    
+    # 调用通用的 screener_node
+    # 注意：screener_node 内部会使用 agent_config 获取 market_tool 数据
+    res_state = screener_node(agent_state, config)
+    
+    return {
+        "screener_result": res_state.screener_result
+    }
+
+def screening_router(state: ChatState, config: RunnableConfig) -> str:
+    """对话初筛路由"""
+    res = state.get("screener_result")
+    if not res:
+        return "model"
+
+    should_escalate = res.get("should_escalate", False)
+    confidence = res.get("confidence", 0)
+    
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    cfg = global_config.get_config_by_id(config_id)
+    threshold = int(cfg.get("escalation_threshold", 60))
+
+    logger.info(f"💬 [Chat Screening] Escalate: {should_escalate}, Confidence: {confidence}, Threshold: {threshold}")
+
+    if should_escalate or confidence >= threshold:
+        return "model"
+    
+    return "finalize"
+
+def finalize_chat_node(state: ChatState, config: RunnableConfig):
+    """初筛直接回答节点"""
+    res = state.get("screener_result", {})
+    
+    analysis = res.get("analysis", "")
+    prediction = res.get("prediction", "")
+    reason = res.get("reason", "")
+    
+    content = f"### 🔍 初筛快速分析\n\n{analysis}\n\n### 📈 走势预测\n\n{prediction}\n\n---\n> 💡 本次回答由初筛模型完成。原因：{reason}"
+    
+    return {
+        "messages": [AIMessage(content=content)],
+        "q": None
+    }
 
 
 def _get_chat_tools(cfg: Dict[str, Any]):
@@ -305,14 +366,39 @@ def should_continue(state: ChatState):
     return "end"
 
 
+def start_router(state: ChatState, config: RunnableConfig) -> str:
+    """对话起始路由：判断是否启用初筛"""
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    cfg = global_config.get_config_by_id(config_id)
+    
+    # 只有 REAL 模式且开启了 enable_screening 才进入初筛
+    if cfg and cfg.get("mode") == "REAL" and cfg.get("enable_screening"):
+        return "screener"
+    return "model"
+
 workflow = StateGraph(ChatState)
 workflow.add_node("start", start_node)
+workflow.add_node("screener", screener_node_wrapper)
 workflow.add_node("model", model_node)
+workflow.add_node("finalize", finalize_chat_node)
 workflow.add_node("tools", tools_node)
+
 workflow.set_entry_point("start")
-workflow.add_edge("start", "model")
+
+workflow.add_conditional_edges("start", start_router, {
+    "screener": "screener",
+    "model": "model"
+})
+
+workflow.add_conditional_edges("screener", screening_router, {
+    "model": "model",
+    "finalize": "finalize"
+})
+
 workflow.add_conditional_edges("model", should_continue, {"tools": "tools", "end": END})
 workflow.add_edge("tools", "model")
+workflow.add_edge("finalize", END)
 
 _checkpointer_cm = SqliteSaver.from_conn_string(CHAT_CHECKPOINT_DB)
 checkpointer = _checkpointer_cm.__enter__()

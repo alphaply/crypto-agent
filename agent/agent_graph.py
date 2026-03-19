@@ -641,10 +641,12 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
             full_content = main_content
     
     # 如果没有 AI 消息（可能是因为 screener 直接跳过了 agent），则使用 screener 的结果
+    agent_type = None
     if not full_content and state.screener_result:
         res = state.screener_result
         full_content = f"### 初筛分析\n{res.get('analysis', '')}\n\n### 行情预测\n{res.get('prediction', '')}\n\n> 本轮分析由初筛模型完成，未触发大模型深度分析。判断理由：{res.get('reason', '')}"
         agent_name = (agent_config.get("screener", {}).get("model") or "Screener")
+        agent_type = "SCREENER"
 
     if full_content:
         strategy_logic = summarize_content(full_content, agent_config)
@@ -652,7 +654,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
         processed_strategy_logic = escape_markdown_special_chars(strategy_logic)
         
         try:
-            database.save_summary(symbol, agent_name, processed_content, processed_strategy_logic, config_id=config_id)
+            database.save_summary(symbol, agent_name, processed_content, processed_strategy_logic, config_id=config_id, agent_type=agent_type)
             
             # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
             trade_mode = agent_config.get('mode', 'STRATEGY').upper()
