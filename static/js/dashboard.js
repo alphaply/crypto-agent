@@ -393,25 +393,21 @@ function toggleSumSection(enabled) {
 
 function onModeChange(mode) {
     const isDca = mode === 'SPOT_DCA';
-    const isMulti = mode === 'MULTI_AGENT';
+    const isReal = mode === 'REAL';
+    
     document.getElementById('section-interval').classList.toggle('hidden', isDca);
     document.getElementById('section-dca').classList.toggle('hidden', !isDca);
-    document.getElementById('section-multi-agent').classList.toggle('hidden', !isMulti);
+    document.getElementById('section-screener').classList.toggle('hidden', !isReal);
     
-    // 动态调整文案使其更明确
-    const labelMainPrompt = document.getElementById('label-main-prompt');
-    const titleMainModel = document.getElementById('title-main-model');
-    if (isMulti) {
-        if (labelMainPrompt) labelMainPrompt.innerHTML = '<span class="text-violet-500">Screener Prompt (筛选)</span>';
-        if (titleMainModel) titleMainModel.innerHTML = '<span class="text-purple-600">Analyst 决策大模型 (实盘复用)</span>';
-    } else {
-        if (labelMainPrompt) labelMainPrompt.innerText = 'Prompt 模板';
-        if (titleMainModel) titleMainModel.innerHTML = '决策模型 (LLM)';
+    // 如果不是 REAL 模式，确保初筛逻辑被关闭显示
+    if (!isReal) {
+        document.getElementById('edit-enable-screening').checked = false;
+        onScreenerToggle(false);
     }
 
     // 处理默认 prompt 的自动选择
-    if (isDca || isMulti) {
-        const targetPrompt = isDca ? 'dca.txt' : 'multi_agent_screener.txt';
+    if (isDca) {
+        const targetPrompt = 'dca.txt';
         const select = document.getElementById('edit-prompt-file');
         for (let i = 0; i < select.options.length; i++) {
             if (select.options[i].value === targetPrompt) {
@@ -420,6 +416,13 @@ function onModeChange(mode) {
             }
         }
     }
+}
+
+function onScreenerToggle(enabled) {
+    const options = document.getElementById('screener-options');
+    if (!options) return;
+    options.style.opacity = enabled ? '1' : '0.4';
+    options.style.pointerEvents = enabled ? 'auto' : 'none';
 }
 
 function onDcaFreqChange(freq) {
@@ -446,22 +449,23 @@ async function editSymbol(index) {
     document.getElementById('edit-bn-secret').value = '';
 
     // 运行周期与定投参数
-    document.getElementById('edit-interval').value = conf.run_interval || (mode === 'REAL' ? 15 : (mode === 'MULTI_AGENT' ? 15 : 60));
+    document.getElementById('edit-interval').value = conf.run_interval || (mode === 'REAL' ? 15 : 60);
     document.getElementById('edit-dca-freq').value = conf.dca_freq || '1d';
     document.getElementById('edit-dca-time').value = conf.dca_time || '08:00';
     document.getElementById('edit-dca-weekday').value = conf.dca_weekday || '0';
     document.getElementById('edit-dca-amount').value = conf.dca_amount || conf.dca_budget || '100';
 
-    if (mode === 'MULTI_AGENT') {
-        document.getElementById('edit-screener-model').value = conf.screener_model || 'gpt-4o-mini';
-        document.getElementById('edit-screener-api-base').value = conf.screener_api_base || '';
-        document.getElementById('edit-screener-api-key').value = '';
-        document.getElementById('edit-screener-temp').value = conf.screener_temperature || 0.2;
-        document.getElementById('edit-escalation-threshold').value = conf.escalation_threshold || 60;
-        document.getElementById('threshold-val-display').innerText = conf.escalation_threshold || 60;
-    }
+    // 初筛配置加载
+    const screeningEnabled = !!conf.enable_screening;
+    document.getElementById('edit-enable-screening').checked = screeningEnabled;
+    document.getElementById('edit-screener-model').value = conf.screener_model || 'gpt-4o-mini';
+    document.getElementById('edit-screener-api-key').value = '';
+    document.getElementById('edit-screener-temp').value = conf.screener_temperature || 0.2;
+    document.getElementById('edit-escalation-threshold').value = conf.escalation_threshold || 60;
+    document.getElementById('threshold-val-display').innerText = conf.escalation_threshold || 60;
 
     onModeChange(mode);
+    onScreenerToggle(screeningEnabled);
     onDcaFreqChange(conf.dca_freq || '1d');
 
     const sum = conf.summarizer || {};
@@ -472,7 +476,7 @@ async function editSymbol(index) {
     document.getElementById('edit-sum-base').value = sum.api_base || '';
     document.getElementById('edit-sum-key').value = '';
 
-    await refreshPromptSelect(conf.prompt_file, conf.analyst_prompt_file || 'real.txt');
+    await refreshPromptSelect(conf.prompt_file, conf.screener_prompt_file || 'screener.txt');
     document.getElementById('symbol-edit-modal').classList.remove('hidden');
 }
 
@@ -498,8 +502,8 @@ async function addNewSymbolConfig() {
     document.getElementById('edit-dca-time').value = '08:00';
     document.getElementById('edit-dca-amount').value = '100';
 
+    document.getElementById('edit-enable-screening').checked = false;
     document.getElementById('edit-screener-model').value = 'gpt-4o-mini';
-    document.getElementById('edit-screener-api-base').value = '';
     document.getElementById('edit-screener-api-key').value = '';
     document.getElementById('edit-screener-temp').value = '0.2';
     document.getElementById('edit-escalation-threshold').value = '60';
@@ -513,7 +517,7 @@ async function addNewSymbolConfig() {
     document.getElementById('edit-sum-base').value = '';
     document.getElementById('edit-sum-key').value = '';
 
-    await refreshPromptSelect('strategy.txt', 'real.txt');
+    await refreshPromptSelect('strategy.txt', 'screener.txt');
     document.getElementById('symbol-edit-modal').classList.remove('hidden');
 }
 
@@ -545,19 +549,19 @@ function applySymbolEdit() {
         }
     } else {
         newConf.run_interval = Math.max(15, parseInt(document.getElementById('edit-interval').value) || 15);
-        if (mode === 'MULTI_AGENT') {
-            newConf.screener_model = document.getElementById('edit-screener-model').value;
-            newConf.screener_api_base = document.getElementById('edit-screener-api-base').value;
-            newConf.screener_temperature = parseFloat(document.getElementById('edit-screener-temp').value) || 0.2;
-            newConf.escalation_threshold = parseInt(document.getElementById('edit-escalation-threshold').value) || 60;
-            newConf.analyst_prompt_file = document.getElementById('edit-analyst-prompt-file').value;
-            
-            const scrKey = document.getElementById('edit-screener-api-key').value;
-            if (scrKey) newConf.screener_api_key = scrKey;
-            else if (idx !== -1) newConf.screener_api_key = currentConfigs[idx].screener_api_key;
-            
-            newConf.analyst_model = newConf.model;
-            newConf.analyst_api_key = newConf.api_key;
+        if (mode === 'REAL') {
+            const screeningEnabled = document.getElementById('edit-enable-screening').checked;
+            newConf.enable_screening = screeningEnabled;
+            if (screeningEnabled) {
+                newConf.screener_model = document.getElementById('edit-screener-model').value;
+                newConf.screener_prompt_file = document.getElementById('edit-screener-prompt-file').value;
+                newConf.screener_temperature = parseFloat(document.getElementById('edit-screener-temp').value) || 0.2;
+                newConf.escalation_threshold = parseInt(document.getElementById('edit-escalation-threshold').value) || 60;
+                
+                const scrKey = document.getElementById('edit-screener-api-key').value;
+                if (scrKey) newConf.screener_api_key = scrKey;
+                else if (idx !== -1) newConf.screener_api_key = currentConfigs[idx].screener_api_key;
+            }
         }
     }
 
@@ -592,20 +596,20 @@ function applySymbolEdit() {
 
 // --- Prompt 辅助 ---
 
-async function refreshPromptSelect(selectedFile, selectedAnalystFile = '') {
+async function refreshPromptSelect(selectedFile, selectedScreenerFile = '') {
     const select = document.getElementById('edit-prompt-file');
-    const analystSelect = document.getElementById('edit-analyst-prompt-file');
+    const screenerSelect = document.getElementById('edit-screener-prompt-file');
     if (!select) return;
     
     select.innerHTML = '<option>加载中...</option>';
-    if (analystSelect) analystSelect.innerHTML = '<option>加载中...</option>';
+    if (screenerSelect) screenerSelect.innerHTML = '<option>加载中...</option>';
     
     try {
         const resp = await fetch('/api/prompts/list');
         const data = await resp.json();
         if (data.success) {
             select.innerHTML = '';
-            if (analystSelect) analystSelect.innerHTML = '';
+            if (screenerSelect) screenerSelect.innerHTML = '';
             
             data.files.forEach(f => {
                 const opt = document.createElement('option');
@@ -614,18 +618,18 @@ async function refreshPromptSelect(selectedFile, selectedAnalystFile = '') {
                 if (f === selectedFile) opt.selected = true;
                 select.appendChild(opt);
                 
-                if (analystSelect) {
-                    const aOpt = document.createElement('option');
-                    aOpt.value = f;
-                    aOpt.textContent = f;
-                    if (f === selectedAnalystFile) aOpt.selected = true;
-                    analystSelect.appendChild(aOpt);
+                if (screenerSelect) {
+                    const sOpt = document.createElement('option');
+                    sOpt.value = f;
+                    sOpt.textContent = f;
+                    if (f === selectedScreenerFile) sOpt.selected = true;
+                    screenerSelect.appendChild(sOpt);
                 }
             });
         }
     } catch (e) {
         select.innerHTML = '<option value="">加载失败</option>';
-        if (analystSelect) analystSelect.innerHTML = '<option value="">加载失败</option>';
+        if (screenerSelect) screenerSelect.innerHTML = '<option value="">加载失败</option>';
     }
 }
 

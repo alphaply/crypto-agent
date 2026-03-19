@@ -482,7 +482,6 @@
                                     <option value="STRATEGY">模拟 (STRATEGY)</option>
                                     <option value="REAL">实盘 (REAL)</option>
                                     <option value="SPOT_DCA">现货定投 (SPOT_DCA)</option>
-                                    <option value="MULTI_AGENT">多重代理 (MULTI_AGENT)</option>
                                 </select>
                             </div>
                             <div>
@@ -537,48 +536,47 @@
                             </div>
                         </div>
 
-                        <!-- 1.3 多重代理参数 (MULTI_AGENT 专用) -->
-                        <div id="section-multi-agent" class="hidden space-y-4 bg-violet-50/50 p-4 rounded-xl border border-violet-100">
-                            <div class="flex items-center gap-2 mb-2">
-                                <span class="w-1 h-4 bg-violet-600 rounded-full"></span>
-                                <h5 class="text-xs font-bold text-violet-700 uppercase">Screener 筛选模型</h5>
-                            </div>
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">模型名称</label>
-                                    <input type="text" id="edit-screener-model" class="w-full border rounded-lg p-2 text-sm" placeholder="gpt-4o-mini">
+                        <!-- 1.3 初筛配置 (仅 REAL 模式可选) -->
+                        <div id="section-screener" class="hidden space-y-4 bg-violet-50/50 p-4 rounded-xl border border-violet-100">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="flex items-center gap-2">
+                                    <span class="w-1 h-4 bg-violet-600 rounded-full"></span>
+                                    <h5 class="text-xs font-bold text-violet-700 uppercase">Screener 初筛功能</h5>
                                 </div>
-                                <div>
-                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Base</label>
-                                    <input type="text" id="edit-screener-api-base" class="w-full border rounded-lg p-2 text-sm" placeholder="https://api.openai.../v1">
-                                </div>
-                            </div>
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Key</label>
-                                    <input type="password" id="edit-screener-api-key" class="w-full border rounded-lg p-2 text-sm" placeholder="保持不变请留空...">
-                                </div>
-                                <div>
-                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">温度 (Temp)</label>
-                                    <input type="number" step="0.1" id="edit-screener-temp" class="w-full border rounded-lg p-2 text-sm" placeholder="0.2">
-                                </div>
+                                <label class="flex items-center gap-2 cursor-pointer bg-white px-2 py-1 rounded-lg border border-violet-200 shadow-sm">
+                                    <input type="checkbox" id="edit-enable-screening" onchange="onScreenerToggle(this.checked)" class="w-4 h-4 accent-violet-600">
+                                    <span class="text-[11px] text-violet-600 font-bold">启用初筛</span>
+                                </label>
                             </div>
                             
-                            <div class="pt-2 border-t border-violet-100">
-                                <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1 flex justify-between">
-                                    升级分析阈值 (0-100)
-                                    <span class="text-[9px] font-normal" id="threshold-val-display">60</span>
-                                </label>
-                                <input type="range" id="edit-escalation-threshold" min="0" max="100" class="w-full accent-violet-600" oninput="document.getElementById('threshold-val-display').innerText=this.value">
-                            </div>
-
-                            <div class="flex items-center gap-2 mb-2 pt-2 border-t border-violet-100">
-                                <span class="w-1 h-4 bg-violet-600 rounded-full"></span>
-                                <h5 class="text-xs font-bold text-violet-700 uppercase">Analyst 分析模型 (参考主配置)</h5>
-                            </div>
-                            <div>
-                                <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">Analyst Prompt (复用)</label>
-                                <select id="edit-analyst-prompt-file" class="w-full border rounded-lg p-2 text-sm"></select>
+                            <div id="screener-options" class="space-y-4 opacity-40 pointer-events-none transition-all">
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">初筛模型</label>
+                                        <input type="text" id="edit-screener-model" class="w-full border rounded-lg p-2 text-sm" placeholder="gpt-4o-mini">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">初筛 Prompt</label>
+                                        <select id="edit-screener-prompt-file" class="w-full border rounded-lg p-2 text-sm"></select>
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Key (可选)</label>
+                                        <input type="password" id="edit-screener-api-key" class="w-full border rounded-lg p-2 text-sm" placeholder="默认复用主模型 Key">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">温度 (Temp)</label>
+                                        <input type="number" step="0.1" id="edit-screener-temp" class="w-full border rounded-lg p-2 text-sm" placeholder="0.2">
+                                    </div>
+                                </div>
+                                <div class="pt-2 border-t border-violet-100">
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1 flex justify-between">
+                                        升级分析阈值 (0-100)
+                                        <span class="text-[9px] font-normal" id="threshold-val-display">60</span>
+                                    </label>
+                                    <input type="range" id="edit-escalation-threshold" min="0" max="100" class="w-full accent-violet-600" oninput="document.getElementById('threshold-val-display').innerText=this.value">
+                                </div>
                             </div>
                         </div>
 
