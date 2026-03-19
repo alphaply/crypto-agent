@@ -313,13 +313,13 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
 from langchain_core.tools import tool
 
 @tool
-def submit_screening_decision(confidence: int, market_status: str, reason: str, is_risk_high: bool = False):
+def submit_screening_decision(confidence: int, market_status: str, reason: str, should_escalate: bool = False):
     """
     提交初筛决策。
     confidence: 0-100的整数，表示机会概率。
     market_status: 简短描述当前盘面状态（用于前端展示）。
-    reason: 理由。
-    is_risk_high: 若发现账户面临高风险（大额亏损、连续止损、极端行情），请设为 True。
+    reason: 做出该判断的理由（例如：关键阻力位突破、账户回撤过大等）。
+    should_escalate: 若发现需要大模型介入（明确的交易机会、调仓需求、或账户面临风险），请设为 True 以请求最强模型分析。
     """
     pass
 
@@ -327,18 +327,92 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id", "unknown")
     agent_config = configurable.get("agent_config", {})
-    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
     
-    if trade_mode != 'REAL':
-        return state
-
     symbol = state.symbol
-    # 初筛模型优先级：screener_model -> 环境变量 -> 默认 mini
     model_name = (agent_config.get('screener_model') or 
                   os.getenv("GLOBAL_SCREENER_MODEL") or 
                   "gpt-4o-mini")
     
     logger.info(f"--- [Node] Screener: {model_name} evaluating {symbol} ---")
+
+    # 获取 Screener 专属的 Prompt 模板
+    screener_prompt_file = agent_config.get("screener_prompt_file", "screener.txt")
+    candidate = PROJECT_ROOT / "agent" / "prompts" / screener_prompt_file
+    
+    # 准备上下文数据 (复用 start_node 中的逻辑但独立渲染)
+    now_cn = datetime.now(TZ_CN)
+    now_us = datetime.now(TZ_US)
+    week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    week_map_en = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    current_time_str = (
+        f"北京: {now_cn.strftime('%Y-%m-%d %H:%M:%S')} ({week_map[now_cn.weekday()]}) | "
+        f"美东: {now_us.strftime('%Y-%m-%d %H:%M:%S')} ({week_map_en[now_us.weekday()]})"
+    )
+    
+    account_data = state.account_context
+    balance = account_data.get('balance', 0)
+    analysis_data = state.market_context.get("analysis", {}).get("15m", {})
+    current_price = analysis_data.get("price", 0)
+    atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
+    
+    # 构建市场数据摘要 (参考 start_node)
+    indicators_summary = {}
+    timeframes = ['15m', '1h', '4h', '1d']
+    raw_analysis = state.market_context.get("analysis", {})
+    for tf in timeframes:
+        if tf in raw_analysis:
+            tf_data = raw_analysis[tf]
+            indicators_summary[tf] = {
+                "price": tf_data.get("price"),
+                "trend": tf_data.get("trend", {}),
+                "ema": tf_data.get("ema"),
+                "rsi_analysis": tf_data.get("rsi_analysis", {}),
+                "macd": tf_data.get("macd"),
+                "bollinger": tf_data.get("bollinger"),
+                "vp": tf_data.get("vp", {}),
+            }
+    
+    formatted_market_data = format_market_data_to_text({
+        "current_price": current_price,
+        "technical_indicators": indicators_summary
+    })
+    
+    history_entries = []
+    if state.history_context:
+        for ds in state.history_context:
+            history_entries.append(f"  [{ds.get('date', '')}] {ds.get('summary', '')}")
+        formatted_history_text = "\n".join(history_entries)
+    else:
+        formatted_history_text = "(暂无历史记录)"
+
+    positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
+    raw_orders = account_data.get('real_open_orders', [])
+    display_orders = [{"id": o.get('order_id'), "side": o.get('side'), "price": o.get('price'), "amount": o.get('amount')} for o in raw_orders]
+    orders_text = format_orders_to_agent_friendly(display_orders)
+    leverage = global_config.get_leverage(config_id)
+    next_run_time = calculate_next_run_time(agent_config, now_cn)
+
+    # 渲染或加载默认模板
+    if candidate.exists():
+        template = candidate.read_text(encoding="utf-8").strip()
+    else:
+        # 默认后备 Prompt，指示模型只进行筛选
+        template = "请初筛以下行情和账户状态，决定是否需要大模型介入分析。行情概览：\n{formatted_market_data}\n账户持仓：\n{positions_text}"
+
+    screener_prompt = render_prompt(
+        template,
+        symbol=symbol,
+        leverage=leverage,
+        current_time=current_time_str,
+        next_run_time=next_run_time,
+        current_price=current_price,
+        atr_15m=atr_15m,
+        balance=balance,
+        positions_text=positions_text,
+        orders_text=orders_text,
+        formatted_market_data=formatted_market_data,
+        history_text=formatted_history_text
+    )
 
     llm = ChatOpenAI(
         model=model_name,
@@ -348,7 +422,12 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
     ).bind_tools([submit_screening_decision], tool_choice="submit_screening_decision")
 
     try:
-        response = llm.invoke(state.messages)
+        # 重置 Screener 的消息历史，只看当前的筛选 Prompt
+        screener_messages = [HumanMessage(content=screener_prompt)]
+        if state.human_message:
+            screener_messages.append(HumanMessage(content=state.human_message))
+
+        response = llm.invoke(screener_messages)
         tool_call = response.tool_calls[0]
         args = tool_call['args']
         
@@ -356,10 +435,9 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
             "confidence": args.get("confidence", 0),
             "market_status": args.get("market_status", "Parsed"),
             "reason": args.get("reason", ""),
-            "is_risk_high": args.get("is_risk_high", False)
+            "should_escalate": args.get("should_escalate", False)
         }
         
-        # 保存 token 使用量
         usage = response.response_metadata.get("token_usage", {})
         if usage:
             database.save_token_usage(symbol, config_id, model_name, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
@@ -367,31 +445,27 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
         return state.model_copy(update={"screener_result": result_dict, "messages": state.messages + [response]})
     except Exception as e:
         logger.error(f"❌ [Screener Error]: {e}")
-        return state.model_copy(update={"screener_result": {"confidence": 100, "is_risk_high": True, "market_status": "Error", "reason": str(e)}})
+        return state.model_copy(update={"screener_result": {"confidence": 100, "should_escalate": True, "market_status": "Error", "reason": str(e)}})
 
 def screening_router(state: AgentState, config: RunnableConfig) -> str:
-    configurable = config.get("configurable", {})
-    agent_config = configurable.get("agent_config", {})
-    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
-    
-    if trade_mode != 'REAL':
-        return "continue"
-
     res = state.screener_result
     if not res:
         return "continue"
 
     confidence = res.get("confidence", 0)
-    is_risk_high = res.get("is_risk_high", False)
+    should_escalate = res.get("should_escalate", False)
+    
+    configurable = config.get("configurable", {})
+    agent_config = configurable.get("agent_config", {})
     threshold = int(agent_config.get("escalation_threshold", 60))
     
-    # 策略：有持仓时门槛降低
+    # 动态阈值逻辑保留
     has_position = len(state.account_context.get('real_positions', [])) > 0
     current_threshold = threshold - 20 if has_position else threshold
 
-    logger.info(f"🎯 [Screening] Confidence: {confidence}, Risk: {is_risk_high}, Threshold: {current_threshold}")
+    logger.info(f"🎯 [Screening Decision] Escalate: {should_escalate}, Confidence: {confidence}, Threshold: {current_threshold}")
 
-    if is_risk_high or confidence >= current_threshold:
+    if should_escalate or confidence >= current_threshold:
         return "continue"
     
     return "skip"
