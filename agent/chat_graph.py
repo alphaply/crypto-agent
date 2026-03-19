@@ -237,6 +237,12 @@ def start_node(state: ChatState, config: RunnableConfig):
         full_analysis="",
         human_message=None,
     )
+    chat_config = {
+        "configurable": {
+            **configurable,
+            "agent_config": cfg
+        }
+    }
     # 调用底层 start_node 获取最新数据
     started = scheduler_start_node(scheduler_state, config=chat_config)
     
