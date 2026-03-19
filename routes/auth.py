@@ -54,37 +54,39 @@ def chat_auth():
     lock_until = session.get('lock_until', 0)
     if now < lock_until:
         remain = int(lock_until - now)
-        return jsonify({"success": False, "message": f"尝试次数过多，请在 {remain} 秒后再试"}), 429
+        return jsonify({"success": False, "message": f"尝试次数过多，请在 {remain} 秒后再试", "need_captcha": True}), 429
 
     data = request.json or {}
     password = data.get("password", "")
     captcha = (data.get("captcha", "")).upper()
     
-    expected_captcha = session.get('captcha_answer')
-    if not expected_captcha:
-        return jsonify({"success": False, "message": "验证码已过期，请刷新"}), 400
+    fails = session.get('failed_attempts', 0)
+    need_captcha = (fails >= 3)
     
-    if captcha != expected_captcha:
+    if need_captcha:
+        expected_captcha = session.get('captcha_answer')
+        if not expected_captcha:
+            return jsonify({"success": False, "message": "验证码已过期，请刷新", "need_captcha": True}), 400
+        if captcha != expected_captcha:
+            session.pop('captcha_answer', None)
+            return jsonify({"success": False, "message": "验证码错误", "need_captcha": True}), 403
         session.pop('captcha_answer', None)
-        return jsonify({"success": False, "message": "验证码错误"}), 403
-    
-    session.pop('captcha_answer', None)
 
     expected = _chat_password()
     if not expected:
         return jsonify({"success": False, "message": "服务端未配置密码"}), 500
         
     if password != expected:
-        fails = session.get('failed_attempts', 0) + 1
+        fails += 1
         session['failed_attempts'] = fails
         if fails >= MAX_FAILED_ATTEMPTS:
             session['lock_until'] = now + LOCKOUT_DURATION
             session['failed_attempts'] = 0
-            return jsonify({"success": False, "message": "错误次数过多，账号已锁定 15 分钟"}), 429
+            return jsonify({"success": False, "message": "错误次数过多，账号已锁定 15 分钟", "need_captcha": True}), 429
         time.sleep(fails * 0.5) 
-        return jsonify({"success": False, "message": f"密码错误 (剩余 {MAX_FAILED_ATTEMPTS - fails} 次尝试)"}), 401
+        return jsonify({"success": False, "message": f"密码错误 (剩余 {MAX_FAILED_ATTEMPTS - fails} 次尝试)", "need_captcha": fails >= 3}), 401
     
     session["chat_authed"] = True
     session['failed_attempts'] = 0
     session.pop('lock_until', None)
-    return jsonify({"success": True})
+    return jsonify({"success": True, "need_captcha": False})

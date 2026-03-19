@@ -240,10 +240,12 @@ function closeAuthModal() {
 
 async function submitAuth() {
     const pwd = document.getElementById('auth-pass').value;
+    const captchaContainer = document.getElementById('auth-captcha-container');
+    const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
     const captcha = document.getElementById('auth-captcha').value;
     
     if (!pwd) return showToast('请输入密码', 'error');
-    if (!captcha) return showToast('请输入计算结果', 'error');
+    if (isCaptchaVisible && !captcha) return showToast('请输入验证码', 'error');
 
     try {
         const resp = await fetch('/api/chat/auth', {
@@ -251,11 +253,20 @@ async function submitAuth() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 password: pwd,
-                captcha: captcha
+                captcha: isCaptchaVisible ? captcha : ''
             })
         });
         const data = await resp.json();
-        if (resp.ok) {
+        
+        if (data.need_captcha) {
+            captchaContainer.classList.remove('hidden');
+            refreshCaptcha();
+            document.getElementById('auth-captcha').value = '';
+        } else {
+            captchaContainer.classList.add('hidden');
+        }
+
+        if (resp.ok && data.success) {
             isAuthed = true;
             closeAuthModal();
             showToast('验证成功', 'success');
@@ -265,8 +276,6 @@ async function submitAuth() {
             }
         } else {
             showToast(data.message || '认证失败', 'error');
-            refreshCaptcha(); // 失败后自动刷新验证码
-            document.getElementById('auth-captcha').value = '';
         }
     } catch (e) {
         showToast('验证失败: ' + e, 'error');
@@ -747,11 +756,17 @@ function closeDeleteModal() {
 
 async function confirmDeleteAction() {
     const pwd = document.getElementById('admin-pass').value;
+    const captchaContainer = document.getElementById('delete-captcha-container');
+    const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
     const captcha = document.getElementById('delete-captcha').value;
-    const symbol = document.getElementById('symbolSelect').value;
+    let symbol = document.getElementById('symbolSelect') ? document.getElementById('symbolSelect').value : null;
+    if (!symbol) {
+        const urlParams = new URLSearchParams(window.location.search);
+        symbol = urlParams.get('symbol') || 'BTC/USDT';
+    }
     
     if (!pwd) return showToast('请输入管理员密码', 'error');
-    if (!captcha) return showToast('请输入验证码', 'error');
+    if (isCaptchaVisible && !captcha) return showToast('请输入验证码', 'error');
 
     try {
         const response = await fetch('/api/clean_history', {
@@ -760,18 +775,115 @@ async function confirmDeleteAction() {
             body: JSON.stringify({
                 symbol: symbol, 
                 password: pwd,
-                captcha: captcha
+                captcha: isCaptchaVisible ? captcha : ''
             })
         });
         const result = await response.json();
+        
+        if (result.need_captcha) {
+            captchaContainer.classList.remove('hidden');
+            refreshDeleteCaptcha();
+            document.getElementById('delete-captcha').value = '';
+        } else {
+            captchaContainer.classList.add('hidden');
+        }
+
         if (result.success) {
             closeDeleteModal();
             showToast(result.message, 'success');
             setTimeout(() => location.reload(), 1000);
         } else {
             showToast(result.message, 'error');
-            refreshDeleteCaptcha();
-            document.getElementById('delete-captcha').value = '';
+        }
+    } catch (e) {
+        showToast('网络请求失败', 'error');
+    }
+}
+
+// --- 记录编辑 (Edit Summary) ---
+
+async function refreshEditSummaryCaptcha() {
+    const img = document.getElementById('edit-summary-captcha-img');
+    if (!img) return;
+    try {
+        const resp = await fetch('/api/chat/captcha');
+        const data = await resp.json();
+        if (data.success) {
+            img.src = data.image;
+        }
+    } catch (e) {
+        console.error('加载验证码失败');
+    }
+}
+
+function openEditSummaryModal(summaryId, configId) {
+    document.getElementById('edit-summary-modal').classList.remove('hidden');
+    refreshEditSummaryCaptcha();
+    
+    document.getElementById('edit-summary-id').value = summaryId;
+    
+    const wrap = document.getElementById(`summary-content-wrap-${configId}`);
+    if (wrap) {
+        const contentBlock = wrap.querySelector('.content-block');
+        const logicBlock = wrap.querySelector('.logic-block');
+        
+        document.getElementById('edit-summary-content').value = contentBlock ? (contentBlock.getAttribute('data-raw') || contentBlock.textContent) : '';
+        document.getElementById('edit-summary-logic').value = logicBlock ? (logicBlock.getAttribute('data-raw') || logicBlock.textContent) : '';
+    } else {
+        document.getElementById('edit-summary-content').value = '';
+        document.getElementById('edit-summary-logic').value = '';
+    }
+    
+    setTimeout(() => document.getElementById('edit-summary-pass').focus(), 100);
+}
+
+function closeEditSummaryModal() {
+    document.getElementById('edit-summary-modal').classList.add('hidden');
+    document.getElementById('edit-summary-pass').value = '';
+    document.getElementById('edit-summary-captcha').value = '';
+}
+
+async function submitEditSummary() {
+    const summaryId = document.getElementById('edit-summary-id').value;
+    const content = document.getElementById('edit-summary-content').value;
+    const logic = document.getElementById('edit-summary-logic').value;
+    const pwd = document.getElementById('edit-summary-pass').value;
+    
+    const captchaContainer = document.getElementById('edit-summary-captcha-container');
+    const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
+    const captcha = document.getElementById('edit-summary-captcha').value;
+    
+    if (!pwd) return showToast('请输入管理员密码', 'error');
+    if (isCaptchaVisible && !captcha) return showToast('请输入验证码', 'error');
+
+    try {
+        const response = await fetch('/api/summary/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                id: summaryId,
+                content: content,
+                strategy_logic: logic,
+                password: pwd,
+                captcha: isCaptchaVisible ? captcha : ''
+            })
+        });
+        const result = await response.json();
+        
+        if (result.need_captcha) {
+            captchaContainer.classList.remove('hidden');
+            refreshEditSummaryCaptcha();
+            document.getElementById('edit-summary-captcha').value = '';
+        } else {
+            captchaContainer.classList.add('hidden');
+        }
+
+        if (result.success) {
+            closeEditSummaryModal();
+            showToast(result.message, 'success');
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showToast(result.message, 'error');
         }
     } catch (e) {
         showToast('网络请求失败', 'error');

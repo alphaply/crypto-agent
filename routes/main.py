@@ -2,6 +2,7 @@ import sqlite3
 import math
 from datetime import datetime, timedelta
 import pytz
+import time
 from flask import Blueprint, render_template, request, jsonify, session
 from routes.utils import (
     DB_NAME, global_config, get_scheduler_status, get_symbol_specific_status,
@@ -14,6 +15,41 @@ from database import (
 )
 
 main_bp = Blueprint('main', __name__)
+
+def verify_admin_action(password, captcha):
+    """验证管理员密码与动态验证码"""
+    now = time.time()
+    lock_until = session.get('lock_until', 0)
+    if now < lock_until:
+        remain = int(lock_until - now)
+        return False, f"尝试次数过多，请在 {remain} 秒后再试", True, 429
+
+    fails = session.get('failed_attempts', 0)
+    need_captcha = (fails >= 3)
+
+    if need_captcha:
+        expected_captcha = session.get('captcha_answer')
+        if not expected_captcha:
+            return False, "验证码已过期，请刷新", True, 400
+        if captcha != expected_captcha:
+            session.pop('captcha_answer', None)
+            return False, "验证码错误", True, 403
+        session.pop('captcha_answer', None)
+
+    if password != global_config.admin_password:
+        fails += 1
+        session['failed_attempts'] = fails
+        if fails >= 5:
+            session['lock_until'] = now + 900
+            session['failed_attempts'] = 0
+            return False, "错误次数过多，账号已锁定 15 分钟", True, 429
+        time.sleep(fails * 0.5)
+        return False, f"密码错误 (剩余 {5 - fails} 次尝试)", fails >= 3, 401
+    
+    session['failed_attempts'] = 0
+    session.pop('lock_until', None)
+    return True, "", False, 200
+
 
 def calculate_next_run(config, latest_summary=None):
     """根据配置和最后一次执行时间计算下一次预定运行时间"""
@@ -200,24 +236,41 @@ def clean_history():
     captcha = data.get('captcha', '').upper()
     symbol = data.get('symbol')
 
-    # 1. 验证码校验
-    expected_captcha = session.get('captcha_answer')
-    if not expected_captcha or captcha != expected_captcha:
-        session.pop('captcha_answer', None)
-        return jsonify({"success": False, "message": "验证码错误"}), 400
-    session.pop('captcha_answer', None)
-
-    # 2. 密码校验
-    if password != global_config.admin_password:
-        return jsonify({"success": False, "message": "密码错误"}), 401
+    ok, msg, need_captcha, status_code = verify_admin_action(password, captcha)
+    if not ok:
+        return jsonify({"success": False, "message": msg, "need_captcha": need_captcha}), status_code
 
     if not symbol:
-        return jsonify({"success": False, "message": "缺少币种参数"}), 400
+        return jsonify({"success": False, "message": "缺少币种参数", "need_captcha": False}), 400
 
     delete_summaries_by_symbol(symbol)
     # 同时清除资金统计数据，让公开看板重新开始采样
     clean_financial_data(symbol)
-    return jsonify({"success": True, "message": f"已成功重置 {symbol} 的所有历史及财务统计数据"})
+    return jsonify({"success": True, "message": f"已成功重置 {symbol} 的所有历史及财务统计数据", "need_captcha": False})
+
+@main_bp.route('/api/summary/update', methods=['POST'])
+def update_summary_api():
+    data = request.json
+    password = data.get('password')
+    captcha = data.get('captcha', '').upper()
+    summary_id = data.get('id')
+    content = data.get('content')
+    strategy_logic = data.get('strategy_logic')
+
+    ok, msg, need_captcha, status_code = verify_admin_action(password, captcha)
+    if not ok:
+        return jsonify({"success": False, "message": msg, "need_captcha": need_captcha}), status_code
+
+    if not summary_id or not content:
+        return jsonify({"success": False, "message": "参数不完整", "need_captcha": False}), 400
+
+    try:
+        from database import update_summary as db_update_summary
+        db_update_summary(summary_id, content, strategy_logic)
+        return jsonify({"success": True, "message": "分析记录已更新", "need_captcha": False})
+    except Exception as e:
+        logger.error(f"更新分析记录错误: {e}")
+        return jsonify({"success": False, "message": "数据库更新失败", "need_captcha": False}), 500
 
 @main_bp.route('/stats/public')
 def public_stats_view():

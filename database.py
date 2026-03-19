@@ -284,6 +284,17 @@ def save_summary(symbol, agent_name, content, strategy_logic, config_id=None, ag
         """, (timestamp, symbol, "15m", agent_name, config_id or agent_name, agent_type, content, strategy_logic))
         conn.commit()
 
+def update_summary(summary_id, content, strategy_logic):
+    """更新 AI 分析结果"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE summaries 
+            SET content = ?, strategy_logic = ? 
+            WHERE id = ?
+        """, (content, strategy_logic, summary_id))
+        conn.commit()
+
 def get_active_agents(symbol):
     with get_db_conn() as conn:
         c = conn.cursor()
