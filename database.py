@@ -284,17 +284,6 @@ def save_summary(symbol, agent_name, content, strategy_logic, config_id=None, ag
         """, (timestamp, symbol, "15m", agent_name, config_id or agent_name, agent_type, content, strategy_logic))
         conn.commit()
 
-def update_summary(summary_id, content, strategy_logic):
-    """更新 AI 分析结果"""
-    with get_db_conn() as conn:
-        c = conn.cursor()
-        c.execute("""
-            UPDATE summaries 
-            SET content = ?, strategy_logic = ? 
-            WHERE id = ?
-        """, (content, strategy_logic, summary_id))
-        conn.commit()
-
 def get_active_agents(symbol):
     with get_db_conn() as conn:
         c = conn.cursor()
@@ -589,6 +578,16 @@ def save_daily_summary(date_str, symbol, config_id, summary, source_count):
         except Exception as e:
             logger.error(f"❌ DB Error (save_daily_summary): {e}")
 
+def update_daily_summary(date_str, config_id, summary):
+    """更新某天某 config 的每日策略汇总文本"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            UPDATE daily_summaries
+            SET summary = ?
+            WHERE date = ? AND config_id = ?
+        ''', (summary, date_str, config_id))
+        conn.commit()
 
 def get_daily_summaries(config_id, days=7):
     """获取最近 N 天的每日策略汇总（按日期倒序）"""

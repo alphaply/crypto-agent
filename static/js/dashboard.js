@@ -800,10 +800,10 @@ async function confirmDeleteAction() {
     }
 }
 
-// --- 记录编辑 (Edit Summary) ---
+// --- 记录编辑 (Edit Daily Summary) ---
 
-async function refreshEditSummaryCaptcha() {
-    const img = document.getElementById('edit-summary-captcha-img');
+async function refreshEditDailySummaryCaptcha() {
+    const img = document.getElementById('edit-daily-summary-captcha-img');
     if (!img) return;
     try {
         const resp = await fetch('/api/chat/captcha');
@@ -816,54 +816,52 @@ async function refreshEditSummaryCaptcha() {
     }
 }
 
-function openEditSummaryModal(summaryId, configId) {
-    document.getElementById('edit-summary-modal').classList.remove('hidden');
-    refreshEditSummaryCaptcha();
+function openEditDailySummaryModal(dateStr, configId, event) {
+    if (event) event.stopPropagation();
+    document.getElementById('edit-daily-summary-modal').classList.remove('hidden');
+    refreshEditDailySummaryCaptcha();
     
-    document.getElementById('edit-summary-id').value = summaryId;
+    document.getElementById('edit-daily-summary-date').value = dateStr;
+    document.getElementById('edit-daily-summary-config').value = configId;
     
-    const wrap = document.getElementById(`summary-content-wrap-${configId}`);
+    const wrap = document.getElementById(`daily-content-wrap-${configId}-${dateStr}`);
     if (wrap) {
-        const contentBlock = wrap.querySelector('.content-block');
-        const logicBlock = wrap.querySelector('.logic-block');
-        
-        document.getElementById('edit-summary-content').value = contentBlock ? (contentBlock.getAttribute('data-raw') || contentBlock.textContent) : '';
-        document.getElementById('edit-summary-logic').value = logicBlock ? (logicBlock.getAttribute('data-raw') || logicBlock.textContent) : '';
+        const contentBlock = wrap.querySelector('.daily-content-block');
+        document.getElementById('edit-daily-summary-content').value = contentBlock ? (contentBlock.getAttribute('data-raw') || contentBlock.textContent) : '';
     } else {
-        document.getElementById('edit-summary-content').value = '';
-        document.getElementById('edit-summary-logic').value = '';
+        document.getElementById('edit-daily-summary-content').value = '';
     }
     
-    setTimeout(() => document.getElementById('edit-summary-pass').focus(), 100);
+    setTimeout(() => document.getElementById('edit-daily-summary-pass').focus(), 100);
 }
 
-function closeEditSummaryModal() {
-    document.getElementById('edit-summary-modal').classList.add('hidden');
-    document.getElementById('edit-summary-pass').value = '';
-    document.getElementById('edit-summary-captcha').value = '';
+function closeEditDailySummaryModal() {
+    document.getElementById('edit-daily-summary-modal').classList.add('hidden');
+    document.getElementById('edit-daily-summary-pass').value = '';
+    document.getElementById('edit-daily-summary-captcha').value = '';
 }
 
-async function submitEditSummary() {
-    const summaryId = document.getElementById('edit-summary-id').value;
-    const content = document.getElementById('edit-summary-content').value;
-    const logic = document.getElementById('edit-summary-logic').value;
-    const pwd = document.getElementById('edit-summary-pass').value;
+async function submitEditDailySummary() {
+    const dateStr = document.getElementById('edit-daily-summary-date').value;
+    const configId = document.getElementById('edit-daily-summary-config').value;
+    const content = document.getElementById('edit-daily-summary-content').value;
+    const pwd = document.getElementById('edit-daily-summary-pass').value;
     
-    const captchaContainer = document.getElementById('edit-summary-captcha-container');
+    const captchaContainer = document.getElementById('edit-daily-summary-captcha-container');
     const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
-    const captcha = document.getElementById('edit-summary-captcha').value;
+    const captcha = document.getElementById('edit-daily-summary-captcha').value;
     
     if (!pwd) return showToast('请输入管理员密码', 'error');
     if (isCaptchaVisible && !captcha) return showToast('请输入验证码', 'error');
 
     try {
-        const response = await fetch('/api/summary/update', {
+        const response = await fetch('/api/daily_summary/update', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                id: summaryId,
-                content: content,
-                strategy_logic: logic,
+                date: dateStr,
+                config_id: configId,
+                summary: content,
                 password: pwd,
                 captcha: isCaptchaVisible ? captcha : ''
             })
@@ -872,14 +870,14 @@ async function submitEditSummary() {
         
         if (result.need_captcha) {
             captchaContainer.classList.remove('hidden');
-            refreshEditSummaryCaptcha();
-            document.getElementById('edit-summary-captcha').value = '';
+            refreshEditDailySummaryCaptcha();
+            document.getElementById('edit-daily-summary-captcha').value = '';
         } else {
             captchaContainer.classList.add('hidden');
         }
 
         if (result.success) {
-            closeEditSummaryModal();
+            closeEditDailySummaryModal();
             showToast(result.message, 'success');
             setTimeout(() => location.reload(), 1000);
         } else {

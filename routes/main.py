@@ -248,28 +248,28 @@ def clean_history():
     clean_financial_data(symbol)
     return jsonify({"success": True, "message": f"已成功重置 {symbol} 的所有历史及财务统计数据", "need_captcha": False})
 
-@main_bp.route('/api/summary/update', methods=['POST'])
-def update_summary_api():
+@main_bp.route('/api/daily_summary/update', methods=['POST'])
+def update_daily_summary_api():
     data = request.json
     password = data.get('password')
     captcha = data.get('captcha', '').upper()
-    summary_id = data.get('id')
-    content = data.get('content')
-    strategy_logic = data.get('strategy_logic')
+    date_str = data.get('date')
+    config_id = data.get('config_id')
+    summary_content = data.get('summary')
 
     ok, msg, need_captcha, status_code = verify_admin_action(password, captcha)
     if not ok:
         return jsonify({"success": False, "message": msg, "need_captcha": need_captcha}), status_code
 
-    if not summary_id or not content:
+    if not date_str or not config_id or not summary_content:
         return jsonify({"success": False, "message": "参数不完整", "need_captcha": False}), 400
 
     try:
-        from database import update_summary as db_update_summary
-        db_update_summary(summary_id, content, strategy_logic)
-        return jsonify({"success": True, "message": "分析记录已更新", "need_captcha": False})
+        from database import update_daily_summary as db_update_ds
+        db_update_ds(date_str, config_id, summary_content)
+        return jsonify({"success": True, "message": "每日总结已更新", "need_captcha": False})
     except Exception as e:
-        logger.error(f"更新分析记录错误: {e}")
+        logger.error(f"更新每日总结错误: {e}")
         return jsonify({"success": False, "message": "数据库更新失败", "need_captcha": False}), 500
 
 @main_bp.route('/stats/public')
