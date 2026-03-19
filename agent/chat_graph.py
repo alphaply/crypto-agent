@@ -52,6 +52,8 @@ class ChatState(TypedDict):
     system_prompt: str
     q: str
     screener_result: Dict[str, Any]
+    market_context: Dict[str, Any]
+    account_context: Dict[str, Any]
 
 def screener_node_wrapper(state: ChatState, config: RunnableConfig):
     """对话模式下的初筛节点封装"""
@@ -61,12 +63,12 @@ def screener_node_wrapper(state: ChatState, config: RunnableConfig):
     config_id = configurable.get("config_id")
     cfg = global_config.get_config_by_id(config_id)
     
-    # 构造临时 AgentState
+    # 构造临时 AgentState，传入 start_node 已经获取到的上下文
     agent_state = AgentState(
         symbol=state["symbol"],
         messages=state["messages"],
-        market_context={}, # 由 screener_node 内部重新获取最新数据
-        account_context={},
+        market_context=state.get("market_context", {}), 
+        account_context=state.get("account_context", {}),
         history_context=[],
         full_analysis="",
         human_message=state["q"],
@@ -235,21 +237,17 @@ def start_node(state: ChatState, config: RunnableConfig):
         full_analysis="",
         human_message=None,
     )
-    # Pass the config to scheduler_start_node as well
-    # Crucially, include agent_config so it uses the correct prompt settings
-    chat_config = {
-        "configurable": {
-            **configurable,
-            "agent_config": cfg
-        }
-    }
+    # 调用底层 start_node 获取最新数据
     started = scheduler_start_node(scheduler_state, config=chat_config)
+    
     system_prompt = started.messages[0].content if started.messages else ""
     
     updates = {
         "system_prompt": system_prompt, 
         "symbol": symbol,
-        "q": q
+        "q": q,
+        "market_context": started.market_context,
+        "account_context": started.account_context
     }
     if q:
         updates["messages"] = [HumanMessage(content=q)]
