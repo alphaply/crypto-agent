@@ -14,8 +14,8 @@ from langchain_core.messages import (
 class ScreenerResult(BaseModel):
     """Screener 结构化输出"""
     confidence: int = Field(ge=0, le=100, description="市场出现交易机会的置信度 (0-100)")
-    should_escalate: bool = Field(description="是否建议升级到大模型进行深度分析")
-    market_status: str = Field(description="当前市场状态的简短描述")
+    is_risk_high: bool = Field(default=False, description="当前账户是否面临高风险（如巨额亏损、异常波动、回撤过大），需要大模型介入风控")
+    market_status: str = Field(description="当前市场状态的简短描述，用于前端展示")
     reason: str = Field(description="升级或不升级的理由")
 
 class OpenOrderReal(BaseModel):

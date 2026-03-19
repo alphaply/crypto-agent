@@ -240,12 +240,13 @@ def screener_start_node(state: AgentState, config: RunnableConfig) -> AgentState
 from langchain_core.tools import tool
 
 @tool
-def submit_screener_decision(confidence: int, market_status: str, reason: str):
+def submit_screener_decision(confidence: int, market_status: str, reason: str, is_risk_high: bool = False):
     """
     提交筛选决策。
-    confidence: 0-100的整数，表示机会概率（将根据外层阈值决定是否升级）。
-    market_status: 简短描述当前盘面状态。
+    confidence: 0-100的整数，表示机会概率。
+    market_status: 简短描述当前盘面状态（用于前端展示，请保持专业、精炼）。
     reason: 给出的理由。
+    is_risk_high: 若发现账户面临高风险（大额亏损、连续止损、极端行情），请设为 True 以强制大模型介入。
     """
     pass
 
@@ -275,7 +276,8 @@ def screener_agent_node(state: AgentState, config: RunnableConfig) -> AgentState
         result_dict = {
             "confidence": args.get("confidence", 0),
             "market_status": args.get("market_status", "Parsed from Tool"),
-            "reason": args.get("reason", "")
+            "reason": args.get("reason", ""),
+            "is_risk_high": args.get("is_risk_high", False)
         }
         
         # 保存 token 使用量
@@ -292,13 +294,14 @@ def screener_agent_node(state: AgentState, config: RunnableConfig) -> AgentState
         return state.model_copy(update={"screener_result": result_dict, "messages": state.messages + [response]})
     except Exception as e:
         logger.error(f"❌ [Screener Error]: {e}")
-        return state.model_copy(update={"screener_result": {"confidence": 0, "should_escalate": False, "market_status": "Error", "reason": str(e)}})
+        return state.model_copy(update={"screener_result": {"confidence": 0, "is_risk_high": False, "market_status": "Error", "reason": str(e)}})
 
 
 def escalation_router(state: AgentState, config: RunnableConfig) -> str:
     configurable = config.get("configurable", {})
     agent_config = configurable.get("agent_config", {})
-    threshold = int(agent_config.get("escalation_threshold", 60))
+    base_threshold = int(agent_config.get("escalation_threshold", 60))
+    config_id = configurable.get("config_id", "unknown")
 
     res = state.screener_result
     if not res:
@@ -306,29 +309,68 @@ def escalation_router(state: AgentState, config: RunnableConfig) -> str:
         return "skip"
 
     confidence = res.get("confidence", 0)
+    is_risk_high = res.get("is_risk_high", False)
+    
+    # 策略 1: 检查是否有持仓
+    account_data = state.account_context
+    has_position = len(account_data.get('real_positions', [])) > 0
+    
+    # 策略 2: 动态调整阈值
+    # 如果有持仓，管理仓位的优先级极高，大幅降低门槛
+    current_threshold = base_threshold - 25 if has_position else base_threshold
+    
+    # 策略 3: 检查距离上次大模型分析的时间 (兜底巡检)
+    force_periodic_check = False
+    try:
+        from database import get_last_summary_time
+        last_analyst_time = get_last_summary_time(config_id, agent_type="ANALYST")
+        if last_analyst_time:
+            # 如果超过 4 小时大模型没说话了，强制它看一眼
+            if datetime.now() - last_analyst_time > timedelta(hours=4):
+                force_periodic_check = True
+                logger.info("⏰ [Periodic Check] Analyst hasn't spoken for 4h+, forcing escalation.")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to check last analyst time: {e}")
 
-    logger.info(f"🎯 [Screener Result]: Confidence: {confidence}. Reason: {res.get('reason')}")
+    logger.info(f"🎯 [Screener Result]: Confidence: {confidence}, RiskHigh: {is_risk_high}, HasPos: {has_position}, Threshold: {current_threshold}")
 
-    if confidence >= threshold:
-        logger.info(f"🚀 Escalating to Analyst model (Threshold {threshold} met)!")
+    if is_risk_high:
+        logger.info("🚨 [Risk Alert] Forcing escalation due to high risk!")
+        return "escalate"
+
+    if force_periodic_check:
+        return "escalate"
+
+    if confidence >= current_threshold:
+        logger.info(f"🚀 Escalating (Threshold {current_threshold} met)!")
         return "escalate"
     
-    logger.info(f"💤 Skipping Analyst model (Threshold {threshold} not met).")
+    logger.info(f"💤 Skipping Analyst model (Threshold {current_threshold} not met).")
     return "skip"
 
 
 def screener_finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
-    """仅保留基础筛选记录到数据库"""
+    """仅保留基础筛选记录到数据库，并格式化输出给前端"""
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id", "unknown")
     agent_config = configurable.get("agent_config", {})
     
     res = state.screener_result
     if res:
-         # Save a very brief summary noting no action taken
          agent_name = agent_config.get('screener_model', 'Screener')
-         summary_text = f"【筛选记录】自信度: {res.get('confidence')} | 未满足阈值跳过\n盘面状态: {res.get('market_status')}\n理由: {res.get('reason')}"
-         strategy_logic = f"Screener: 波动较小或未满足阈值，不升级分析。"
+         # 格式化前端展示内容
+         status_icon = "🟢" if res.get("confidence") < 30 else "🟡" if res.get("confidence") < 60 else "🔴"
+         summary_text = f"### {status_icon} 市场筛选简报\n\n" \
+                        f"**当前盘面**: {res.get('market_status')}\n\n" \
+                        f"**分析逻辑**: {res.get('reason')}\n\n" \
+                        f"**置信评分**: {res.get('confidence')}/100 (阈值: {agent_config.get('escalation_threshold', 60)})"
+         
+         if res.get("is_risk_high"):
+             summary_text += "\n\n⚠️ **风险提示**: 检测到异常回撤或高风险信号，已移交大模型风控。"
+         else:
+             summary_text += "\n\n😴 **状态**: 波动率不足或机会不明显，维持现状。"
+
+         strategy_logic = f"Screener: {res.get('market_status')} (Confidence: {res.get('confidence')})"
          database.save_summary(state.symbol, agent_name, summary_text, strategy_logic, config_id=config_id, agent_type="SCREENER")
     
     return state
@@ -360,7 +402,8 @@ def analyst_start_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
     prompt = _get_analyst_prompt(agent_config, state)
     screener_res = state.screener_result
-    screener_msg = f"这是第一层(Screener)快速浏览市场后给你的建议备忘（仅参考，不要盲从）:\n自信度:{screener_res.get('confidence')}\n状态:{screener_res.get('market_status')}\n理由:{screener_res.get('reason')}"
+    risk_alert = "🚨 [风险预警] Screener 检测到高风险信号，请务必重点检查账户安全与回撤！" if screener_res.get("is_risk_high") else ""
+    screener_msg = f"这是第一层(Screener)快速浏览市场后给你的建议备忘（仅参考，不要盲从）:\n{risk_alert}\n自信度:{screener_res.get('confidence')}\n状态:{screener_res.get('market_status')}\n理由:{screener_res.get('reason')}"
     
     return state.model_copy(update={"messages": [HumanMessage(content=prompt), HumanMessage(content=screener_msg)]})
 
