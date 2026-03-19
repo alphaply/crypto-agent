@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Nodes for Multi Agent
 # ==========================================
 
-def _get_screener_prompt(agent_config: dict, symbol: str, current_price: float, formatted_market_data: str) -> str:
+def _get_screener_prompt(agent_config: dict, symbol: str, current_price: float, formatted_market_data: str, next_run_time: str) -> str:
     prompt_file = agent_config.get("prompt_file", "multi_agent_screener.txt")
     candidate = PROJECT_ROOT / "agent" / "prompts" / prompt_file
     if candidate.exists():
@@ -49,6 +49,7 @@ def _get_screener_prompt(agent_config: dict, symbol: str, current_price: float, 
     return render_prompt(
         template,
         current_time=current_time_str,
+        next_run_time=next_run_time,
         symbol=symbol,
         current_price=current_price,
         formatted_market_data=formatted_market_data
@@ -150,12 +151,12 @@ def screener_start_node(state: AgentState, config: RunnableConfig) -> AgentState
     config_id = configurable.get("config_id", "unknown")
     agent_config = configurable.get("agent_config", {})
     symbol = state.symbol
-    logger.info(f"--- [Node] Screener Start: Fetching basic data for {symbol} ---")
+    logger.info(f"--- [Node] Screener Start: Fetching FULL MARKET data for {symbol} ---")
 
     market_tool = MarketTool(config_id=config_id)
     try:
-        # 只获取必要几个轻量周期，省 token
-        timeframes_to_fetch = ['15m', '1h', '4h']
+        # 获取与实盘完全一致的庞大指标以满足用户需求，虽然代币消耗增加但结构统一
+        timeframes_to_fetch = ['15m', '1h', '4h', '1d', '1w']
         market_full = market_tool.get_market_analysis(symbol, mode='MULTI_AGENT', timeframes=timeframes_to_fetch)
     except Exception as e:
         logger.error(f"❌ [Screener Data Fetch Error]: {e}")
@@ -163,8 +164,8 @@ def screener_start_node(state: AgentState, config: RunnableConfig) -> AgentState
 
     analysis_data = market_full.get("analysis", {}).get("15m", {})
     current_price = analysis_data.get("price", 0)
+    atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
 
-    # 简单格式化提供给 screener
     indicators_summary = {}
     for tf in timeframes_to_fetch:
         if tf in market_full.get("analysis", {}):
@@ -172,19 +173,31 @@ def screener_start_node(state: AgentState, config: RunnableConfig) -> AgentState
             indicators_summary[tf] = {
                 "price": d.get("price"),
                 "trend": d.get("trend"),
+                "ema": d.get("ema"),
                 "rsi_analysis": d.get("rsi_analysis"),
+                "atr": d.get("atr"),
                 "macd": d.get("macd"),
                 "bollinger": d.get("bollinger"),
+                "vp": d.get("vp"),
+                "volume_analysis": d.get("volume_analysis")
             }
+            if d.get("vwap") is not None:
+                 indicators_summary[tf]["vwap"] = d["vwap"]
     
     market_context_llm = {
         "current_price": current_price,
+        "atr_base": atr_15m,
         "sentiment": market_full.get("sentiment"),
         "technical_indicators": indicators_summary
     }
 
     formatted_market_data = format_market_data_to_text(market_context_llm)
-    prompt = _get_screener_prompt(agent_config, symbol, current_price, formatted_market_data)
+    
+    from agent.agent_graph import calculate_next_run_time
+    now_cn = datetime.now(TZ_CN)
+    next_run_time = calculate_next_run_time(agent_config, now_cn)
+
+    prompt = _get_screener_prompt(agent_config, symbol, current_price, formatted_market_data, next_run_time)
 
     return state.model_copy(update={
         "market_context": market_full,
@@ -194,13 +207,12 @@ def screener_start_node(state: AgentState, config: RunnableConfig) -> AgentState
 from langchain_core.tools import tool
 
 @tool
-def submit_screener_decision(confidence: int, should_escalate: bool, market_status: str, reason: str):
+def submit_screener_decision(confidence: int, market_status: str, reason: str):
     """
     提交筛选决策。
-    confidence: 0-100的整数，表示机会概率。
-    should_escalate: 布尔值，是否建议升级到大模型。
+    confidence: 0-100的整数，表示机会概率（将根据外层阈值决定是否升级）。
     market_status: 简短描述当前盘面状态。
-    reason: 升级或不升级的理由。
+    reason: 给出的理由。
     """
     pass
 
@@ -229,7 +241,6 @@ def screener_agent_node(state: AgentState, config: RunnableConfig) -> AgentState
         
         result_dict = {
             "confidence": args.get("confidence", 0),
-            "should_escalate": args.get("should_escalate", False),
             "market_status": args.get("market_status", "Parsed from Tool"),
             "reason": args.get("reason", "")
         }
@@ -262,11 +273,10 @@ def escalation_router(state: AgentState, config: RunnableConfig) -> str:
         return "skip"
 
     confidence = res.get("confidence", 0)
-    should_escalate = res.get("should_escalate", False)
 
-    logger.info(f"🎯 [Screener Result]: Confidence: {confidence}, Escalate: {should_escalate}. Reason: {res.get('reason')}")
+    logger.info(f"🎯 [Screener Result]: Confidence: {confidence}. Reason: {res.get('reason')}")
 
-    if should_escalate and confidence >= threshold:
+    if confidence >= threshold:
         logger.info(f"🚀 Escalating to Analyst model (Threshold {threshold} met)!")
         return "escalate"
     
@@ -284,7 +294,7 @@ def screener_finalize_node(state: AgentState, config: RunnableConfig) -> AgentSt
     if res:
          # Save a very brief summary noting no action taken
          agent_name = agent_config.get('screener_model', 'Screener')
-         summary_text = f"【筛选记录】自信度: {res.get('confidence')} | 需要升级: {res.get('should_escalate')}\n盘面状态: {res.get('market_status')}\n理由: {res.get('reason')}"
+         summary_text = f"【筛选记录】自信度: {res.get('confidence')} | 未满足阈值跳过\n盘面状态: {res.get('market_status')}\n理由: {res.get('reason')}"
          strategy_logic = f"Screener: 波动较小或未满足阈值，不升级分析。"
          database.save_summary(state.symbol, agent_name, summary_text, strategy_logic, config_id=config_id, agent_type="SCREENER")
     
