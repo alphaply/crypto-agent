@@ -57,6 +57,10 @@ def screener_node_wrapper(state: ChatState, config: RunnableConfig):
     """对话模式下的初筛节点封装"""
     from agent.agent_graph import screener_node, AgentState
     
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    cfg = global_config.get_config_by_id(config_id)
+    
     # 构造临时 AgentState
     agent_state = AgentState(
         symbol=state["symbol"],
@@ -69,9 +73,14 @@ def screener_node_wrapper(state: ChatState, config: RunnableConfig):
         screener_result=None
     )
     
-    # 调用通用的 screener_node
-    # 注意：screener_node 内部会使用 agent_config 获取 market_tool 数据
-    res_state = screener_node(agent_state, config)
+    # 显式构造包含 agent_config 的配置对象
+    new_config = {
+        "configurable": {
+            **configurable,
+            "agent_config": cfg
+        }
+    }
+    res_state = screener_node(agent_state, new_config)
     
     return {
         "screener_result": res_state.screener_result
@@ -100,13 +109,21 @@ def screening_router(state: ChatState, config: RunnableConfig) -> str:
 
 def finalize_chat_node(state: ChatState, config: RunnableConfig):
     """初筛直接回答节点"""
-    res = state.get("screener_result", {})
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    cfg = global_config.get_config_by_id(config_id)
     
+    scr_cfg = cfg.get("screener", {}) if cfg else {}
+    model_name = (scr_cfg.get("model") or 
+                  os.getenv("GLOBAL_SCREENER_MODEL") or 
+                  "gpt-4o-mini")
+
+    res = state.get("screener_result", {})
     analysis = res.get("analysis", "")
     prediction = res.get("prediction", "")
     reason = res.get("reason", "")
     
-    content = f"### 🔍 初筛快速分析\n\n{analysis}\n\n### 📈 走势预测\n\n{prediction}\n\n---\n> 💡 本次回答由初筛模型完成。原因：{reason}"
+    content = f"### 🔍 初筛快速分析 ({model_name})\n\n{analysis}\n\n### 📈 走势预测\n\n{prediction}\n\n---\n> 💡 本次回答由初筛模型 **{model_name}** 完成。原因：{reason}"
     
     return {
         "messages": [AIMessage(content=content)],
@@ -247,32 +264,36 @@ def model_node(state: ChatState, config: RunnableConfig):
         raise ValueError(f"Config context lost for config_id={config_id}")
 
     symbol = cfg.get("symbol", "Chat")
+    model_name = cfg.get("model", "Unknown Model")
+    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
+    api_base = cfg.get("api_base")
+    
+    if not api_key:
+        logger.error(f"❌ [Chat Error] No API Key found for {symbol} ({config_id})")
+        return {"messages": [AIMessage(content="❌ 错误：未配置 API Key，请在设置中检查。")], "q": None}
+
     history = list(state.get("messages", []))
     system_prompt = state.get("system_prompt", "")
     trimmed = _trim_chat_messages(system_prompt, history)
     
-    has_human = any(isinstance(m, HumanMessage) for m in trimmed)
-    logger.info(f"LLM Input: {len(trimmed)} msgs (Has Human: {has_human}), model: {cfg.get('model')}")
+    logger.info(f"LLM Input: {len(trimmed)} msgs, model: {model_name}")
 
-    kwargs = {}
-    if cfg.get("extra_body"):
-        kwargs["extra_body"] = cfg.get("extra_body")
-
-    # Use invoke() with streaming=True. LangGraph's stream(stream_mode="messages") 
-    # hooks into the internal callbacks of invoke() to emit BaseMessageChunk events 
-    # in real-time. This is more robust than manual iteration within the node.
     llm = ChatOpenAI(
-        model=cfg.get("model"),
-        api_key=cfg.get("api_key"),
-        base_url=cfg.get("api_base"),
+        model=model_name,
+        api_key=api_key,
+        base_url=api_base,
         temperature=0.5,
         streaming=True,
-        model_kwargs=kwargs,
+        model_kwargs={"extra_body": cfg.get("extra_body")} if cfg.get("extra_body") else {},
     ).bind_tools(_get_chat_tools(cfg))
 
     # This call blocks until completion, but triggers streaming events externally
     response = llm.invoke(trimmed)
     
+    # 标注模型名称
+    if response.content and not response.tool_calls:
+        response.content += f"\n\n---\n> 🧠 本次回答由决策模型 **{model_name}** 完成。"
+
     # Final formatting for the state (e.g. for DeepSeek reasoning)
     reasoning = (
         response.additional_kwargs.get("reasoning_content") or 

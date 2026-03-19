@@ -640,17 +640,33 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
         else:
             full_content = main_content
     
-    # 如果没有 AI 消息（可能是因为 screener 直接跳过了 agent），则使用 screener 的结果
+    # 内容合并逻辑
     agent_type = None
-    if not full_content and state.screener_result:
+    final_full_content = ""
+    
+    # 1. 提取初筛结论 (如果有)
+    screener_prelude = ""
+    if state.screener_result:
         res = state.screener_result
-        full_content = f"### 初筛分析\n{res.get('analysis', '')}\n\n### 行情预测\n{res.get('prediction', '')}\n\n> 本轮分析由初筛模型完成，未触发大模型深度分析。判断理由：{res.get('reason', '')}"
+        screener_prelude = f"### 🔍 初筛初步研判\n- **盘面状态**: {res.get('market_status', 'N/A')}\n- **机会置信度**: {res.get('confidence', 0)}%\n- **初筛分析**: {res.get('analysis', '')}\n- **短期预测**: {res.get('prediction', '')}\n\n---\n"
+
+    # 2. 构造最终展示内容
+    if full_content:
+        # 如果触发了大模型，将初筛作为前言
+        final_full_content = screener_prelude + f"### 🧠 深度决策分析\n{full_content}"
+    elif state.screener_result:
+        # 如果跳过了大模型，仅显示初筛
+        res = state.screener_result
+        final_full_content = f"### 🔍 初筛快速分析\n{res.get('analysis', '')}\n\n### 📈 走势预测\n{res.get('prediction', '')}\n\n> 💡 本轮分析由初筛模型完成，未触发深度分析。判断理由：{res.get('reason', '')}"
         agent_name = (agent_config.get("screener", {}).get("model") or "Screener")
         agent_type = "SCREENER"
 
-    if full_content:
-        strategy_logic = summarize_content(full_content, agent_config)
-        processed_content = escape_markdown_special_chars(full_content)
+    if final_full_content:
+        # 汇总逻辑仅针对主要内容
+        logic_source = full_content if full_content else final_full_content
+        strategy_logic = summarize_content(logic_source, agent_config)
+        
+        processed_content = escape_markdown_special_chars(final_full_content)
         processed_strategy_logic = escape_markdown_special_chars(strategy_logic)
         
         try:
