@@ -398,11 +398,23 @@ function onModeChange(mode) {
     document.getElementById('section-dca').classList.toggle('hidden', !isDca);
     document.getElementById('section-multi-agent').classList.toggle('hidden', !isMulti);
     
-    // 如果是定投模式，默认加载 dca.txt
-    if (isDca) {
+    // 动态调整文案使其更明确
+    const labelMainPrompt = document.getElementById('label-main-prompt');
+    const titleMainModel = document.getElementById('title-main-model');
+    if (isMulti) {
+        if (labelMainPrompt) labelMainPrompt.innerHTML = '<span class="text-violet-500">Screener Prompt (筛选)</span>';
+        if (titleMainModel) titleMainModel.innerHTML = '<span class="text-purple-600">Analyst 决策大模型 (实盘复用)</span>';
+    } else {
+        if (labelMainPrompt) labelMainPrompt.innerText = 'Prompt 模板';
+        if (titleMainModel) titleMainModel.innerHTML = '决策模型 (LLM)';
+    }
+
+    // 处理默认 prompt 的自动选择
+    if (isDca || isMulti) {
+        const targetPrompt = isDca ? 'dca.txt' : 'multi_agent_screener.txt';
         const select = document.getElementById('edit-prompt-file');
         for (let i = 0; i < select.options.length; i++) {
-            if (select.options[i].value === 'dca.txt') {
+            if (select.options[i].value === targetPrompt) {
                 select.selectedIndex = i;
                 break;
             }

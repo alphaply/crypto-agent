@@ -191,6 +191,19 @@ def screener_start_node(state: AgentState, config: RunnableConfig) -> AgentState
         "messages": [HumanMessage(content=prompt)]
     })
 
+from langchain_core.tools import tool
+
+@tool
+def submit_screener_decision(confidence: int, should_escalate: bool, market_status: str, reason: str):
+    """
+    提交筛选决策。
+    confidence: 0-100的整数，表示机会概率。
+    should_escalate: 布尔值，是否建议升级到大模型。
+    market_status: 简短描述当前盘面状态。
+    reason: 升级或不升级的理由。
+    """
+    pass
+
 def screener_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id", "unknown")
@@ -198,7 +211,7 @@ def screener_agent_node(state: AgentState, config: RunnableConfig) -> AgentState
     symbol = state.symbol
     model_name = agent_config.get('screener_model', 'gpt-4o-mini')
 
-    logger.info(f"--- [Node] Screener Agent: {model_name} processing... ---")
+    logger.info(f"--- [Node] Screener Agent: {model_name} processing (Forced Tool) ---")
 
     llm = ChatOpenAI(
         model=model_name,
@@ -207,11 +220,32 @@ def screener_agent_node(state: AgentState, config: RunnableConfig) -> AgentState
         temperature=agent_config.get('screener_temperature', 0.2)
     )
 
-    llm_with_structured_output = llm.with_structured_output(ScreenerResult)
+    llm_with_tools = llm.bind_tools([submit_screener_decision], tool_choice="submit_screener_decision")
 
     try:
-        result: ScreenerResult = llm_with_structured_output.invoke(state.messages)
-        return state.model_copy(update={"screener_result": result.model_dump()})
+        response = llm_with_tools.invoke(state.messages)
+        tool_call = response.tool_calls[0]
+        args = tool_call['args']
+        
+        result_dict = {
+            "confidence": args.get("confidence", 0),
+            "should_escalate": args.get("should_escalate", False),
+            "market_status": args.get("market_status", "Parsed from Tool"),
+            "reason": args.get("reason", "")
+        }
+        
+        # 保存 token 使用量
+        usage = response.response_metadata.get("token_usage", {})
+        if usage:
+            database.save_token_usage(
+                symbol=symbol,
+                config_id=config_id,
+                model=model_name,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0)
+            )
+            
+        return state.model_copy(update={"screener_result": result_dict, "messages": state.messages + [response]})
     except Exception as e:
         logger.error(f"❌ [Screener Error]: {e}")
         return state.model_copy(update={"screener_result": {"confidence": 0, "should_escalate": False, "market_status": "Error", "reason": str(e)}})
