@@ -612,7 +612,7 @@ def get_pending_daily_summary_data(config_id, date_str):
         c.execute('''
             SELECT strategy_logic, timestamp
             FROM summaries
-            WHERE config_id = ? AND date(timestamp) = ?
+            WHERE config_id = ? AND date(timestamp) = ? AND (agent_type IS NULL OR agent_type != 'SCREENER')
             ORDER BY id ASC
         ''', (config_id, date_str))
         return [dict(row) for row in c.fetchall()]

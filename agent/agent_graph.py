@@ -40,7 +40,7 @@ def calculate_next_run_time(agent_config, now_cn):
     """计算该 agent 的下次运行时间（用于注入 Prompt）"""
     mode = agent_config.get('mode', 'STRATEGY').upper()
 
-    if mode in ['REAL', 'STRATEGY']:
+    if mode in ['REAL', 'STRATEGY', 'MULTI_AGENT']:
         default_interval = 60 if mode == 'STRATEGY' else 15
         interval = int(agent_config.get('run_interval', default_interval))
         if interval < 15:

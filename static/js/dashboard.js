@@ -459,14 +459,6 @@ async function editSymbol(index) {
         document.getElementById('edit-screener-temp').value = conf.screener_temperature || 0.2;
         document.getElementById('edit-escalation-threshold').value = conf.escalation_threshold || 60;
         document.getElementById('threshold-val-display').innerText = conf.escalation_threshold || 60;
-        
-        // Populate the analyst prompt select manually since refresh uses dynamic fetch
-        setTimeout(() => {
-             const analystSelect = document.getElementById('edit-analyst-prompt-file');
-             const mainSelect = document.getElementById('edit-prompt-file');
-             analystSelect.innerHTML = mainSelect.innerHTML;
-             analystSelect.value = conf.analyst_prompt_file || 'real.txt';
-        }, 300);
     }
 
     onModeChange(mode);
@@ -480,7 +472,7 @@ async function editSymbol(index) {
     document.getElementById('edit-sum-base').value = sum.api_base || '';
     document.getElementById('edit-sum-key').value = '';
 
-    await refreshPromptSelect(conf.prompt_file);
+    await refreshPromptSelect(conf.prompt_file, conf.analyst_prompt_file || 'real.txt');
     document.getElementById('symbol-edit-modal').classList.remove('hidden');
 }
 
@@ -521,7 +513,7 @@ async function addNewSymbolConfig() {
     document.getElementById('edit-sum-base').value = '';
     document.getElementById('edit-sum-key').value = '';
 
-    await refreshPromptSelect('strategy.txt');
+    await refreshPromptSelect('strategy.txt', 'real.txt');
     document.getElementById('symbol-edit-modal').classList.remove('hidden');
 }
 
@@ -600,25 +592,40 @@ function applySymbolEdit() {
 
 // --- Prompt 辅助 ---
 
-async function refreshPromptSelect(selectedFile) {
+async function refreshPromptSelect(selectedFile, selectedAnalystFile = '') {
     const select = document.getElementById('edit-prompt-file');
+    const analystSelect = document.getElementById('edit-analyst-prompt-file');
     if (!select) return;
+    
     select.innerHTML = '<option>加载中...</option>';
+    if (analystSelect) analystSelect.innerHTML = '<option>加载中...</option>';
+    
     try {
         const resp = await fetch('/api/prompts/list');
         const data = await resp.json();
         if (data.success) {
             select.innerHTML = '';
+            if (analystSelect) analystSelect.innerHTML = '';
+            
             data.files.forEach(f => {
                 const opt = document.createElement('option');
                 opt.value = f;
                 opt.textContent = f;
                 if (f === selectedFile) opt.selected = true;
                 select.appendChild(opt);
+                
+                if (analystSelect) {
+                    const aOpt = document.createElement('option');
+                    aOpt.value = f;
+                    aOpt.textContent = f;
+                    if (f === selectedAnalystFile) aOpt.selected = true;
+                    analystSelect.appendChild(aOpt);
+                }
             });
         }
     } catch (e) {
         select.innerHTML = '<option value="">加载失败</option>';
+        if (analystSelect) analystSelect.innerHTML = '<option value="">加载失败</option>';
     }
 }
 

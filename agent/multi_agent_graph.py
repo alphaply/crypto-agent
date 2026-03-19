@@ -34,17 +34,70 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Nodes for Multi Agent
 # ==========================================
 
-def _get_screener_prompt(agent_config: dict, symbol: str, current_price: float, formatted_market_data: str, next_run_time: str) -> str:
+def _get_screener_prompt(agent_config: dict, state: AgentState) -> str:
+    from agent.agent_graph import calculate_next_run_time
+    now_cn = datetime.now(TZ_CN)
+    current_time_str = now_cn.strftime('%Y-%m-%d %H:%M:%S')
+
+    market_full = state.market_context
+    account_data = state.account_context
+    daily_history = state.history_context
+    symbol = state.symbol
+    config_id = agent_config.get('config_id')
+
+    balance = account_data.get('balance', 0)
+    analysis_data = market_full.get("analysis", {}).get("15m", {})
+    current_price = analysis_data.get("price", 0)
+
+    indicators_summary = {}
+    timeframes = ['15m', '1h', '4h', '1d', '1w']
+    raw_analysis = market_full.get("analysis", {})
+    for tf in timeframes:
+        if tf in raw_analysis:
+            tf_data = raw_analysis[tf]
+            indicators_summary[tf] = {
+                "price": tf_data.get("price"),
+                "trend": tf_data.get("trend", {}),
+                "ema": tf_data.get("ema"),
+                "rsi_analysis": tf_data.get("rsi_analysis", {}),
+                "atr": tf_data.get("atr"),
+                "macd": tf_data.get("macd"),
+                "bollinger": tf_data.get("bollinger"),
+                "vp": tf_data.get("vp", {}),
+                "volume_analysis": tf_data.get("volume_analysis", {}),
+            }
+            if tf_data.get("vwap") is not None:
+                 indicators_summary[tf]["vwap"] = tf_data["vwap"]
+
+    market_context_llm = {
+        "current_price": current_price,
+        "sentiment": market_full.get("sentiment"),
+        "technical_indicators": indicators_summary
+    }
+
+    formatted_market_data = format_market_data_to_text(market_context_llm)
+    history_entries = []
+    if daily_history:
+        for ds in daily_history:
+            history_entries.append(f"  [{ds.get('date', '')}] ({ds.get('source_count', 0)}轮) {ds.get('summary', '')}")
+        formatted_history_text = "\n".join(history_entries)
+    else:
+        formatted_history_text = "(暂无历史记录)"
+
     prompt_file = agent_config.get("prompt_file", "multi_agent_screener.txt")
     candidate = PROJECT_ROOT / "agent" / "prompts" / prompt_file
     if candidate.exists():
         template = candidate.read_text(encoding="utf-8").strip()
     else:
-        template = "你是一个快速筛选市场行情的机器人，现在价格 {current_price}，分析以下数据决断是否升级给主模型：\n{formatted_market_data}\n"
-        logger.warning(f"Screener prompt file not found: {candidate}")
+        template = "分析以下数据。\n{formatted_market_data}\n"
 
-    now_cn = datetime.now(TZ_CN)
-    current_time_str = now_cn.strftime('%Y-%m-%d %H:%M:%S')
+    next_run_time = calculate_next_run_time(agent_config, now_cn)
+    positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
+    leverage = global_config.get_leverage(config_id)
+
+    raw_orders = account_data.get('real_open_orders', [])
+    display_orders = [{"id": o.get('order_id'), "side": o.get('side'), "pos_side": o.get('pos_side'), "price": o.get('price'), "amount": o.get('amount')} for o in raw_orders]
+    orders_friendly_text = format_orders_to_agent_friendly(display_orders)
 
     return render_prompt(
         template,
@@ -52,7 +105,12 @@ def _get_screener_prompt(agent_config: dict, symbol: str, current_price: float, 
         next_run_time=next_run_time,
         symbol=symbol,
         current_price=current_price,
-        formatted_market_data=formatted_market_data
+        leverage=leverage,
+        balance=balance,
+        positions_text=positions_text,
+        orders_text=orders_friendly_text,
+        formatted_market_data=formatted_market_data,
+        history_text=formatted_history_text
     )
 
 def _get_analyst_prompt(agent_config: dict, state: AgentState) -> str:
@@ -155,52 +213,27 @@ def screener_start_node(state: AgentState, config: RunnableConfig) -> AgentState
 
     market_tool = MarketTool(config_id=config_id)
     try:
-        # 获取与实盘完全一致的庞大指标以满足用户需求，虽然代币消耗增加但结构统一
+        # 获取与实盘完全一致的庞大指标和持仓账户信息以满足用户需求，虽然代币消耗增加但结构统一
         timeframes_to_fetch = ['15m', '1h', '4h', '1d', '1w']
         market_full = market_tool.get_market_analysis(symbol, mode='MULTI_AGENT', timeframes=timeframes_to_fetch)
+        account_data = market_tool.get_account_status(symbol, is_real=True, agent_name=config_id, config_id=config_id)
+        from database import get_daily_summaries
+        daily_history = get_daily_summaries(config_id, days=7)
     except Exception as e:
         logger.error(f"❌ [Screener Data Fetch Error]: {e}")
         market_full = {}
-
-    analysis_data = market_full.get("analysis", {}).get("15m", {})
-    current_price = analysis_data.get("price", 0)
-    atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
-
-    indicators_summary = {}
-    for tf in timeframes_to_fetch:
-        if tf in market_full.get("analysis", {}):
-            d = market_full["analysis"][tf]
-            indicators_summary[tf] = {
-                "price": d.get("price"),
-                "trend": d.get("trend"),
-                "ema": d.get("ema"),
-                "rsi_analysis": d.get("rsi_analysis"),
-                "atr": d.get("atr"),
-                "macd": d.get("macd"),
-                "bollinger": d.get("bollinger"),
-                "vp": d.get("vp"),
-                "volume_analysis": d.get("volume_analysis")
-            }
-            if d.get("vwap") is not None:
-                 indicators_summary[tf]["vwap"] = d["vwap"]
-    
-    market_context_llm = {
-        "current_price": current_price,
-        "atr_base": atr_15m,
-        "sentiment": market_full.get("sentiment"),
-        "technical_indicators": indicators_summary
-    }
-
-    formatted_market_data = format_market_data_to_text(market_context_llm)
-    
-    from agent.agent_graph import calculate_next_run_time
-    now_cn = datetime.now(TZ_CN)
-    next_run_time = calculate_next_run_time(agent_config, now_cn)
-
-    prompt = _get_screener_prompt(agent_config, symbol, current_price, formatted_market_data, next_run_time)
-
-    return state.model_copy(update={
+        account_data = {'balance': 0, 'real_open_orders': [], 'mock_open_orders': [], 'real_positions': []}
+        daily_history = []
+        
+    temp_state = state.model_copy(update={
         "market_context": market_full,
+        "account_context": account_data,
+        "history_context": daily_history
+    })
+
+    prompt = _get_screener_prompt(agent_config, temp_state)
+
+    return temp_state.model_copy(update={
         "messages": [HumanMessage(content=prompt)]
     })
 
@@ -302,27 +335,13 @@ def screener_finalize_node(state: AgentState, config: RunnableConfig) -> AgentSt
 
 
 def analyst_start_node(state: AgentState, config: RunnableConfig) -> AgentState:
-    """如果升级，则获取全面的数据准备给大模型"""
+    """复用 Screener 抓取的全量数据准备给大模型"""
     configurable = config.get("configurable", {})
-    config_id = configurable.get("config_id", "unknown")
     agent_config = configurable.get("agent_config", {})
     symbol = state.symbol
-    logger.info(f"--- [Node] Analyst Start: Fetching FULL data for {symbol} ---")
+    logger.info(f"--- [Node] Analyst Start: Reusing FULL data for {symbol} ---")
 
-    market_tool = MarketTool(config_id=config_id)
-    try:
-        # 全量数据
-        timeframes_to_fetch = ['15m', '1h', '4h', '1d', '1w']
-        market_full = market_tool.get_market_analysis(symbol, mode='REAL', timeframes=timeframes_to_fetch)
-        account_data = market_tool.get_account_status(symbol, is_real=True, agent_name=config_id, config_id=config_id)
-        from database import get_daily_summaries
-        daily_history = get_daily_summaries(config_id, days=7)
-    except Exception as e:
-        logger.error(f"❌ [Analyst Data Fetch Error]: {e}")
-        market_full = {}
-        account_data = {'balance': 0, 'real_open_orders': [], 'mock_open_orders': [], 'real_positions': []}
-        daily_history = []
-    
+    account_data = state.account_context
     now = datetime.now()
     try:
         balance = account_data.get('balance', 0)
@@ -332,24 +351,18 @@ def analyst_start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         if now.minute < 15:
             database.save_balance_snapshot(symbol, balance, total_unrealized_pnl)
             
+        market_tool = MarketTool(config_id=configurable.get("config_id", "unknown"))
         recent_trades = market_tool.fetch_recent_trades(symbol, limit=10)
         if recent_trades:
             database.save_trade_history(recent_trades)
     except Exception as e:
         logger.error(f"❌ Failed to save real-time stats: {e}")
 
-    # 将状态更新为包含完整数据的表示
-    updated_state = state.model_copy(update={
-        "market_context": market_full,
-        "account_context": account_data,
-        "history_context": daily_history,
-    })
-
-    prompt = _get_analyst_prompt(agent_config, updated_state)
-    screener_res = updated_state.screener_result
+    prompt = _get_analyst_prompt(agent_config, state)
+    screener_res = state.screener_result
     screener_msg = f"这是第一层(Screener)快速浏览市场后给你的建议备忘（仅参考，不要盲从）:\n自信度:{screener_res.get('confidence')}\n状态:{screener_res.get('market_status')}\n理由:{screener_res.get('reason')}"
     
-    return updated_state.model_copy(update={"messages": [HumanMessage(content=prompt), HumanMessage(content=screener_msg)]})
+    return state.model_copy(update={"messages": [HumanMessage(content=prompt), HumanMessage(content=screener_msg)]})
 
 
 def analyst_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
