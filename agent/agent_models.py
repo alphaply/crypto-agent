@@ -11,6 +11,13 @@ from langchain_core.messages import (
     BaseMessage
 )
 
+class ScreenerResult(BaseModel):
+    """Screener 结构化输出"""
+    confidence: int = Field(ge=0, le=100, description="市场出现交易机会的置信度 (0-100)")
+    should_escalate: bool = Field(description="是否建议升级到大模型进行深度分析")
+    market_status: str = Field(description="当前市场状态的简短描述")
+    reason: str = Field(description="升级或不升级的理由")
+
 class OpenOrderReal(BaseModel):
     """开单参数：仅包含限价单核心参数，不包含止盈止损（暂不支持自动带止盈止损）"""
     action: Literal["BUY_LIMIT", "SELL_LIMIT"] = Field(description="BUY_LIMIT: 限价开多, SELL_LIMIT: 限价开空")
@@ -55,3 +62,4 @@ class AgentState(BaseModel):
     history_context: List[Dict[str, Any]]
     full_analysis: str = ""
     human_message: Optional[str] = None
+    screener_result: Optional[Dict[str, Any]] = None

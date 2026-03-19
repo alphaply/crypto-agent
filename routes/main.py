@@ -56,7 +56,7 @@ def calculate_next_run(config, latest_summary=None):
     mode = config.get('mode', 'STRATEGY').upper()
     now = datetime.now(TZ_CN)
     
-    if mode in ['REAL', 'STRATEGY']:
+    if mode in ['REAL', 'STRATEGY', 'MULTI_AGENT']:
         default_interval = 60 if mode == 'STRATEGY' else 15
         interval = int(config.get('run_interval', default_interval))
         if interval < 15: interval = 15
@@ -109,8 +109,13 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                     (config_id,)
                 ).fetchone()
                 
-                model_name = config.get('model', 'Unknown')
+                
                 mode = config.get('mode', 'STRATEGY').upper()
+                if mode == 'MULTI_AGENT':
+                    model_name = config.get('analyst_model', 'Unknown')
+                else:
+                    model_name = config.get('model', 'Unknown')
+                
                 enabled = config.get('enabled', True)
 
                 latest_summary = None
@@ -130,6 +135,9 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                     }
                 
                 summary_dict['model'] = model_name
+                if mode == 'MULTI_AGENT':
+                    summary_dict['screener_model'] = config.get('screener_model', 'Unknown')
+                    summary_dict['analyst_model'] = model_name
                 summary_dict['mode'] = mode
                 summary_dict['enabled'] = enabled
                 summary_dict['next_run'] = calculate_next_run(config, latest_summary)

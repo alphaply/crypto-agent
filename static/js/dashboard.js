@@ -340,7 +340,8 @@ function renderSymbolList() {
                         <span class="font-bold text-gray-900">${conf.symbol}</span>
                         <span class="text-[10px] px-1.5 py-0.5 rounded ${
                             conf.mode === 'REAL' ? 'bg-red-100 text-red-600' : 
-                            (conf.mode === 'SPOT_DCA' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600')
+                            (conf.mode === 'SPOT_DCA' ? 'bg-emerald-100 text-emerald-600' : 
+                            (conf.mode === 'MULTI_AGENT' ? 'bg-violet-100 text-violet-600' : 'bg-blue-100 text-blue-600'))
                         } font-bold">${conf.mode}</span>
                     </div>
                     <div class="text-[10px] text-gray-400 font-mono mt-1">${conf.model}</div>
@@ -392,8 +393,10 @@ function toggleSumSection(enabled) {
 
 function onModeChange(mode) {
     const isDca = mode === 'SPOT_DCA';
+    const isMulti = mode === 'MULTI_AGENT';
     document.getElementById('section-interval').classList.toggle('hidden', isDca);
     document.getElementById('section-dca').classList.toggle('hidden', !isDca);
+    document.getElementById('section-multi-agent').classList.toggle('hidden', !isMulti);
     
     // 如果是定投模式，默认加载 dca.txt
     if (isDca) {
@@ -431,11 +434,28 @@ async function editSymbol(index) {
     document.getElementById('edit-bn-secret').value = '';
 
     // 运行周期与定投参数
-    document.getElementById('edit-interval').value = conf.run_interval || (mode === 'REAL' ? 15 : 60);
+    document.getElementById('edit-interval').value = conf.run_interval || (mode === 'REAL' ? 15 : (mode === 'MULTI_AGENT' ? 15 : 60));
     document.getElementById('edit-dca-freq').value = conf.dca_freq || '1d';
     document.getElementById('edit-dca-time').value = conf.dca_time || '08:00';
     document.getElementById('edit-dca-weekday').value = conf.dca_weekday || '0';
     document.getElementById('edit-dca-amount').value = conf.dca_amount || conf.dca_budget || '100';
+
+    if (mode === 'MULTI_AGENT') {
+        document.getElementById('edit-screener-model').value = conf.screener_model || 'gpt-4o-mini';
+        document.getElementById('edit-screener-api-base').value = conf.screener_api_base || '';
+        document.getElementById('edit-screener-api-key').value = '';
+        document.getElementById('edit-screener-temp').value = conf.screener_temperature || 0.2;
+        document.getElementById('edit-escalation-threshold').value = conf.escalation_threshold || 60;
+        document.getElementById('threshold-val-display').innerText = conf.escalation_threshold || 60;
+        
+        // Populate the analyst prompt select manually since refresh uses dynamic fetch
+        setTimeout(() => {
+             const analystSelect = document.getElementById('edit-analyst-prompt-file');
+             const mainSelect = document.getElementById('edit-prompt-file');
+             analystSelect.innerHTML = mainSelect.innerHTML;
+             analystSelect.value = conf.analyst_prompt_file || 'real.txt';
+        }, 300);
+    }
 
     onModeChange(mode);
     onDcaFreqChange(conf.dca_freq || '1d');
@@ -473,6 +493,13 @@ async function addNewSymbolConfig() {
     document.getElementById('edit-dca-freq').value = '1d';
     document.getElementById('edit-dca-time').value = '08:00';
     document.getElementById('edit-dca-amount').value = '100';
+
+    document.getElementById('edit-screener-model').value = 'gpt-4o-mini';
+    document.getElementById('edit-screener-api-base').value = '';
+    document.getElementById('edit-screener-api-key').value = '';
+    document.getElementById('edit-screener-temp').value = '0.2';
+    document.getElementById('edit-escalation-threshold').value = '60';
+    document.getElementById('threshold-val-display').innerText = '60';
     
     onModeChange('STRATEGY');
 
@@ -514,6 +541,20 @@ function applySymbolEdit() {
         }
     } else {
         newConf.run_interval = Math.max(15, parseInt(document.getElementById('edit-interval').value) || 15);
+        if (mode === 'MULTI_AGENT') {
+            newConf.screener_model = document.getElementById('edit-screener-model').value;
+            newConf.screener_api_base = document.getElementById('edit-screener-api-base').value;
+            newConf.screener_temperature = parseFloat(document.getElementById('edit-screener-temp').value) || 0.2;
+            newConf.escalation_threshold = parseInt(document.getElementById('edit-escalation-threshold').value) || 60;
+            newConf.analyst_prompt_file = document.getElementById('edit-analyst-prompt-file').value;
+            
+            const scrKey = document.getElementById('edit-screener-api-key').value;
+            if (scrKey) newConf.screener_api_key = scrKey;
+            else if (idx !== -1) newConf.screener_api_key = currentConfigs[idx].screener_api_key;
+            
+            newConf.analyst_model = newConf.model;
+            newConf.analyst_api_key = newConf.api_key;
+        }
     }
 
     const key = document.getElementById('edit-api-key').value;

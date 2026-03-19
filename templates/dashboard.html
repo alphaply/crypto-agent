@@ -38,7 +38,7 @@
               <div class="flex items-center gap-2">
                 <span class="flex items-center gap-1.5">
                     <span class="w-2 h-2 rounded-full {{ 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' if summary.enabled else 'bg-gray-400' }}"></span>
-                    {% if summary.mode == 'REAL' %}🔴{% elif summary.mode == 'SPOT_DCA' %}🟡{% else %}🔵{% endif %}
+                    {% if summary.mode == 'REAL' %}🔴{% elif summary.mode == 'SPOT_DCA' %}🟡{% elif summary.mode == 'MULTI_AGENT' %}🟣{% else %}🔵{% endif %}
                 </span>
                 {{ summary.display_name or summary.agent_name }}
               </div>
@@ -72,18 +72,24 @@
                               </h3>
                               <div class="flex items-center justify-between w-full sm:w-auto gap-3">
                                   <div class="flex flex-col items-start sm:items-end">
-                                      <span class="text-[9px] md:text-[10px] font-bold 
                                           {% if summary.mode == 'REAL' %}text-red-600
                                           {% elif summary.mode == 'SPOT_DCA' %}text-emerald-600
+                                          {% elif summary.mode == 'MULTI_AGENT' %}text-purple-600
                                           {% else %}text-blue-600{% endif %}">
                                           {% if summary.mode == 'REAL' %}🔴 实盘模式
                                           {% elif summary.mode == 'SPOT_DCA' %}🟡 定投模式
+                                          {% elif summary.mode == 'MULTI_AGENT' %}🟣 多重代理
                                           {% else %}🔵 策略模式{% endif %}
                                       </span>
                                       <span class="text-[8px] md:text-[9px] text-gray-400">{{ summary.freq }}</span>
                                   </div>
                                   <div class="flex gap-1.5 md:gap-2">
+                                      {% if summary.mode == 'MULTI_AGENT' %}
+                                      <span class="px-1.5 md:px-2 py-0.5 md:py-1 text-[9px] md:text-[10px] font-bold bg-violet-50 text-violet-600 rounded-lg border border-violet-100" title="Screener 模型">🔍 {{ summary.screener_model }}</span>
+                                      <span class="px-1.5 md:px-2 py-0.5 md:py-1 text-[9px] md:text-[10px] font-bold bg-purple-50 text-purple-600 rounded-lg border border-purple-100" title="Analyst 模型">🧠 {{ summary.analyst_model }}</span>
+                                      {% else %}
                                       <span class="px-1.5 md:px-2 py-0.5 md:py-1 text-[9px] md:text-[10px] font-bold bg-purple-50 text-purple-600 rounded-lg border border-purple-100">🧠 {{ summary.model }}</span>
+                                      {% endif %}
                                       <span class="px-1.5 md:px-2 py-0.5 md:py-1 text-[9px] md:text-[10px] font-bold bg-orange-50 text-orange-600 rounded-lg border border-orange-100">⚡ {{ summary.leverage }}x</span>
                                   </div>
                               </div>
@@ -192,6 +198,7 @@
                   <div class="bg-white border border-gray-200 rounded-3xl shadow-lg flex flex-col h-[700px] overflow-hidden border-t-4 
                       {% if summary.mode == 'REAL' %}border-t-rose-500
                       {% elif summary.mode == 'SPOT_DCA' %}border-t-emerald-500
+                      {% elif summary.mode == 'MULTI_AGENT' %}border-t-violet-500
                       {% else %}border-t-indigo-500{% endif %} 
                       {{ 'opacity-70 grayscale-[0.3]' if not summary.enabled else '' }}">
                       <!-- 头部 -->
@@ -205,12 +212,18 @@
                                   <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-md 
                                       {% if summary.mode == 'REAL' %}bg-red-50 text-red-600
                                       {% elif summary.mode == 'SPOT_DCA' %}bg-emerald-50 text-emerald-600
+                                      {% elif summary.mode == 'MULTI_AGENT' %}bg-violet-50 text-violet-600
                                       {% else %}bg-blue-50 text-blue-600{% endif %}">
                                       {% if summary.mode == 'REAL' %}REAL ({{ summary.freq }})
                                       {% elif summary.mode == 'SPOT_DCA' %}DCA ({{ summary.freq }})
+                                      {% elif summary.mode == 'MULTI_AGENT' %}MULTI ({{ summary.freq }})
                                       {% else %}STRAT ({{ summary.freq }}){% endif %}
                                   </span>
+                                  {% if summary.mode == 'MULTI_AGENT' %}
+                                  <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-sm uppercase" title="Analyst {{ summary.analyst_model }}">{{ summary.model }}</span>
+                                  {% else %}
                                   <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-sm uppercase">{{ summary.model }}</span>
+                                  {% endif %}
                                   <span class="text-[9px] font-mono text-gray-400" title="最近分析时间">{{ summary.timestamp[11:16] }}</span>
                                   {% if summary.enabled %}
                                   <span class="text-[8px] font-mono text-blue-500 bg-blue-50 px-1 rounded border border-blue-100" title="下次运行">⌛ {{ summary.next_run }}</span>
@@ -468,6 +481,7 @@
                                     <option value="STRATEGY">模拟 (STRATEGY)</option>
                                     <option value="REAL">实盘 (REAL)</option>
                                     <option value="SPOT_DCA">现货定投 (SPOT_DCA)</option>
+                                    <option value="MULTI_AGENT">多重代理 (MULTI_AGENT)</option>
                                 </select>
                             </div>
                             <div>
@@ -519,6 +533,51 @@
                                     <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">单笔金额 (USDT)</label>
                                     <input type="number" id="edit-dca-amount" class="w-full border rounded-lg p-2 text-sm" placeholder="100">
                                 </div>
+                            </div>
+                        </div>
+
+                        <!-- 1.3 多重代理参数 (MULTI_AGENT 专用) -->
+                        <div id="section-multi-agent" class="hidden space-y-4 bg-violet-50/50 p-4 rounded-xl border border-violet-100">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="w-1 h-4 bg-violet-600 rounded-full"></span>
+                                <h5 class="text-xs font-bold text-violet-700 uppercase">Screener 筛选模型</h5>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">模型名称</label>
+                                    <input type="text" id="edit-screener-model" class="w-full border rounded-lg p-2 text-sm" placeholder="gpt-4o-mini">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Base</label>
+                                    <input type="text" id="edit-screener-api-base" class="w-full border rounded-lg p-2 text-sm" placeholder="https://api.openai.../v1">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Key</label>
+                                    <input type="password" id="edit-screener-api-key" class="w-full border rounded-lg p-2 text-sm" placeholder="保持不变请留空...">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">温度 (Temp)</label>
+                                    <input type="number" step="0.1" id="edit-screener-temp" class="w-full border rounded-lg p-2 text-sm" placeholder="0.2">
+                                </div>
+                            </div>
+                            
+                            <div class="pt-2 border-t border-violet-100">
+                                <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1 flex justify-between">
+                                    升级分析阈值 (0-100)
+                                    <span class="text-[9px] font-normal" id="threshold-val-display">60</span>
+                                </label>
+                                <input type="range" id="edit-escalation-threshold" min="0" max="100" class="w-full accent-violet-600" oninput="document.getElementById('threshold-val-display').innerText=this.value">
+                            </div>
+
+                            <div class="flex items-center gap-2 mb-2 pt-2 border-t border-violet-100">
+                                <span class="w-1 h-4 bg-violet-600 rounded-full"></span>
+                                <h5 class="text-xs font-bold text-violet-700 uppercase">Analyst 分析模型 (参考主配置)</h5>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">Analyst Prompt (复用)</label>
+                                <select id="edit-analyst-prompt-file" class="w-full border rounded-lg p-2 text-sm"></select>
                             </div>
                         </div>
 

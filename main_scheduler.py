@@ -5,6 +5,7 @@ import pytz
 import os
 from dotenv import load_dotenv
 from agent.agent_graph import run_agent_for_config, summarize_content
+from agent.multi_agent_graph import run_multi_agent_for_config
 from utils.logger import setup_logger
 from config import config as global_config
 from database import init_db, get_pending_daily_summary_data, save_daily_summary
@@ -94,7 +95,7 @@ def is_time_to_run(config, now):
             
         return True
 
-    # 2. 策略模式 (STRATEGY) 或 实盘模式 (REAL)
+    # 2. 策略模式 (STRATEGY), 实盘模式 (REAL) 或 多重代理模式 (MULTI_AGENT)
     # 使用自定义运行周期 (run_interval)，单位分钟
     default_interval = 60 if mode == 'STRATEGY' else 15
     interval = int(config.get('run_interval', default_interval))
@@ -130,7 +131,10 @@ def process_single_config(config):
     _last_run_times[config_id] = now
 
     try:
-        run_agent_for_config(config)
+        if mode == 'MULTI_AGENT':
+            run_multi_agent_for_config(config)
+        else:
+            run_agent_for_config(config)
     except Exception as e:
         logger.error(f"❌ Error executing Agent [{config_id}]: {e}")
 
