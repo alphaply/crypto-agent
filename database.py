@@ -259,8 +259,6 @@ def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, tr
         valid_mode = "REAL"
     elif trade_mode == "SPOT_DCA":
         valid_mode = "SPOT_DCA"
-    elif trade_mode == "MULTI_AGENT":
-        valid_mode = "MULTI_AGENT"
     else:
         valid_mode = "STRATEGY"
     

@@ -94,7 +94,7 @@ def is_time_to_run(config, now):
             
         return True
 
-    # 2. 策略模式 (STRATEGY), 实盘模式 (REAL) 或 多重代理模式 (MULTI_AGENT)
+    # 2. 策略模式 (STRATEGY) 或 实盘模式 (REAL)
     # 使用自定义运行周期 (run_interval)，单位分钟
     default_interval = 60 if mode == 'STRATEGY' else 15
     interval = int(config.get('run_interval', default_interval))

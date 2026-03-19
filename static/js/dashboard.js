@@ -340,8 +340,7 @@ function renderSymbolList() {
                         <span class="font-bold text-gray-900">${conf.symbol}</span>
                         <span class="text-[10px] px-1.5 py-0.5 rounded ${
                             conf.mode === 'REAL' ? 'bg-red-100 text-red-600' : 
-                            (conf.mode === 'SPOT_DCA' ? 'bg-emerald-100 text-emerald-600' : 
-                            (conf.mode === 'MULTI_AGENT' ? 'bg-violet-100 text-violet-600' : 'bg-blue-100 text-blue-600'))
+                            (conf.mode === 'SPOT_DCA' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600')
                         } font-bold">${conf.mode}</span>
                     </div>
                     <div class="text-[10px] text-gray-400 font-mono mt-1">${conf.model}</div>
@@ -455,12 +454,14 @@ async function editSymbol(index) {
     document.getElementById('edit-dca-weekday').value = conf.dca_weekday || '0';
     document.getElementById('edit-dca-amount').value = conf.dca_amount || conf.dca_budget || '100';
 
-    // 初筛配置加载
+    // 初筛配置加载 (嵌套结构)
     const screeningEnabled = !!conf.enable_screening;
+    const scr = conf.screener || {};
     document.getElementById('edit-enable-screening').checked = screeningEnabled;
-    document.getElementById('edit-screener-model').value = conf.screener_model || 'gpt-4o-mini';
+    document.getElementById('edit-screener-model').value = scr.model || 'gpt-4o-mini';
+    document.getElementById('edit-screener-api-base').value = scr.api_base || '';
     document.getElementById('edit-screener-api-key').value = '';
-    document.getElementById('edit-screener-temp').value = conf.screener_temperature || 0.2;
+    document.getElementById('edit-screener-temp').value = scr.temperature || 0.2;
     document.getElementById('edit-escalation-threshold').value = conf.escalation_threshold || 60;
     document.getElementById('threshold-val-display').innerText = conf.escalation_threshold || 60;
 
@@ -476,7 +477,7 @@ async function editSymbol(index) {
     document.getElementById('edit-sum-base').value = sum.api_base || '';
     document.getElementById('edit-sum-key').value = '';
 
-    await refreshPromptSelect(conf.prompt_file, conf.screener_prompt_file || 'screener.txt');
+    await refreshPromptSelect(conf.prompt_file);
     document.getElementById('symbol-edit-modal').classList.remove('hidden');
 }
 
@@ -504,6 +505,7 @@ async function addNewSymbolConfig() {
 
     document.getElementById('edit-enable-screening').checked = false;
     document.getElementById('edit-screener-model').value = 'gpt-4o-mini';
+    document.getElementById('edit-screener-api-base').value = '';
     document.getElementById('edit-screener-api-key').value = '';
     document.getElementById('edit-screener-temp').value = '0.2';
     document.getElementById('edit-escalation-threshold').value = '60';
@@ -517,7 +519,7 @@ async function addNewSymbolConfig() {
     document.getElementById('edit-sum-base').value = '';
     document.getElementById('edit-sum-key').value = '';
 
-    await refreshPromptSelect('strategy.txt', 'screener.txt');
+    await refreshPromptSelect('strategy.txt');
     document.getElementById('symbol-edit-modal').classList.remove('hidden');
 }
 
@@ -553,14 +555,16 @@ function applySymbolEdit() {
             const screeningEnabled = document.getElementById('edit-enable-screening').checked;
             newConf.enable_screening = screeningEnabled;
             if (screeningEnabled) {
-                newConf.screener_model = document.getElementById('edit-screener-model').value;
-                newConf.screener_prompt_file = document.getElementById('edit-screener-prompt-file').value;
-                newConf.screener_temperature = parseFloat(document.getElementById('edit-screener-temp').value) || 0.2;
+                newConf.screener = {
+                    model: document.getElementById('edit-screener-model').value,
+                    api_base: document.getElementById('edit-screener-api-base').value,
+                    temperature: parseFloat(document.getElementById('edit-screener-temp').value) || 0.2
+                };
                 newConf.escalation_threshold = parseInt(document.getElementById('edit-escalation-threshold').value) || 60;
                 
                 const scrKey = document.getElementById('edit-screener-api-key').value;
-                if (scrKey) newConf.screener_api_key = scrKey;
-                else if (idx !== -1) newConf.screener_api_key = currentConfigs[idx].screener_api_key;
+                if (scrKey) newConf.screener.api_key = scrKey;
+                else if (idx !== -1 && currentConfigs[idx].screener) newConf.screener.api_key = currentConfigs[idx].screener.api_key;
             }
         }
     }
@@ -596,20 +600,17 @@ function applySymbolEdit() {
 
 // --- Prompt 辅助 ---
 
-async function refreshPromptSelect(selectedFile, selectedScreenerFile = '') {
+async function refreshPromptSelect(selectedFile) {
     const select = document.getElementById('edit-prompt-file');
-    const screenerSelect = document.getElementById('edit-screener-prompt-file');
     if (!select) return;
     
     select.innerHTML = '<option>加载中...</option>';
-    if (screenerSelect) screenerSelect.innerHTML = '<option>加载中...</option>';
     
     try {
         const resp = await fetch('/api/prompts/list');
         const data = await resp.json();
         if (data.success) {
             select.innerHTML = '';
-            if (screenerSelect) screenerSelect.innerHTML = '';
             
             data.files.forEach(f => {
                 const opt = document.createElement('option');
@@ -617,19 +618,10 @@ async function refreshPromptSelect(selectedFile, selectedScreenerFile = '') {
                 opt.textContent = f;
                 if (f === selectedFile) opt.selected = true;
                 select.appendChild(opt);
-                
-                if (screenerSelect) {
-                    const sOpt = document.createElement('option');
-                    sOpt.value = f;
-                    sOpt.textContent = f;
-                    if (f === selectedScreenerFile) sOpt.selected = true;
-                    screenerSelect.appendChild(sOpt);
-                }
             });
         }
     } catch (e) {
         select.innerHTML = '<option value="">加载失败</option>';
-        if (screenerSelect) screenerSelect.innerHTML = '<option value="">加载失败</option>';
     }
 }
 

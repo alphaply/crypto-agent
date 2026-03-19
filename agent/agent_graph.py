@@ -40,7 +40,7 @@ def calculate_next_run_time(agent_config, now_cn):
     """计算该 agent 的下次运行时间（用于注入 Prompt）"""
     mode = agent_config.get('mode', 'STRATEGY').upper()
 
-    if mode in ['REAL', 'STRATEGY', 'MULTI_AGENT']:
+    if mode in ['REAL', 'STRATEGY']:
         default_interval = 60 if mode == 'STRATEGY' else 15
         interval = int(agent_config.get('run_interval', default_interval))
         if interval < 15:
@@ -313,11 +313,13 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
 from langchain_core.tools import tool
 
 @tool
-def submit_screening_decision(confidence: int, market_status: str, reason: str, should_escalate: bool = False):
+def submit_screening_decision(confidence: int, market_status: str, analysis: str, prediction: str, reason: str, should_escalate: bool = False):
     """
     提交初筛决策。
     confidence: 0-100的整数，表示机会概率。
     market_status: 简短描述当前盘面状态（用于前端展示）。
+    analysis: 对当前行情的详细分析，包括趋势、支撑压力位等。
+    prediction: 对未来走势的预测。
     reason: 做出该判断的理由（例如：关键阻力位突破、账户回撤过大等）。
     should_escalate: 若发现需要大模型介入（明确的交易机会、调仓需求、或账户面临风险），请设为 True 以请求最强模型分析。
     """
@@ -329,17 +331,21 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent_config = configurable.get("agent_config", {})
     
     symbol = state.symbol
-    model_name = (agent_config.get('screener_model') or 
+    
+    # Screener 配置
+    screener_cfg = agent_config.get("screener", {})
+    model_name = (screener_cfg.get("model") or 
                   os.getenv("GLOBAL_SCREENER_MODEL") or 
                   "gpt-4o-mini")
+    api_key = (screener_cfg.get("api_key") or 
+               agent_config.get("api_key"))
+    api_base = (screener_cfg.get("api_base") or 
+                agent_config.get("api_base"))
+    temperature = screener_cfg.get("temperature", 0.2)
     
     logger.info(f"--- [Node] Screener: {model_name} evaluating {symbol} ---")
 
-    # 获取 Screener 专属的 Prompt 模板
-    screener_prompt_file = agent_config.get("screener_prompt_file", "screener.txt")
-    candidate = PROJECT_ROOT / "agent" / "prompts" / screener_prompt_file
-    
-    # 准备上下文数据 (复用 start_node 中的逻辑但独立渲染)
+    # 准备上下文数据
     now_cn = datetime.now(TZ_CN)
     now_us = datetime.now(TZ_US)
     week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -355,7 +361,6 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
     current_price = analysis_data.get("price", 0)
     atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
     
-    # 构建市场数据摘要 (参考 start_node)
     indicators_summary = {}
     timeframes = ['15m', '1h', '4h', '1d']
     raw_analysis = state.market_context.get("analysis", {})
@@ -392,12 +397,42 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
     leverage = global_config.get_leverage(config_id)
     next_run_time = calculate_next_run_time(agent_config, now_cn)
 
-    # 渲染或加载默认模板
-    if candidate.exists():
-        template = candidate.read_text(encoding="utf-8").strip()
-    else:
-        # 默认后备 Prompt，指示模型只进行筛选
-        template = "请初筛以下行情和账户状态，决定是否需要大模型介入分析。行情概览：\n{formatted_market_data}\n账户持仓：\n{positions_text}"
+    # 内置 Screener Prompt
+    template = """你是一个专业的加密货币交易初筛助手。
+你的任务是分析当前 {symbol} 的行情数据和账户状态，提供行情分析和未来走势预测，并决定是否需要请求更强大的agent进行深度分析决策。
+
+### 当前环境
+- 币种: {symbol}
+- 杠杆: {leverage}x
+- 当前时间: {current_time}
+- 下次运行: {next_run_time}
+- 当前价格: {current_price}
+- ATR(15m): {atr_15m}
+
+### 账户状态
+- 余额: {balance} USDT
+- 当前持仓:
+{positions_text}
+- 挂单情况:
+{orders_text}
+
+### 市场数据
+{formatted_market_data}
+
+### 历史摘要
+{history_text}
+
+### 你的任务
+1. **行情分析**: 简要分析当前趋势、支撑位、压力位及关键指标。
+2. **走势预测**: 基于当前数据对未来短期的走势给出预测。
+3. **初筛决策**:
+   - 如果发现明确的交易机会（开仓/平仓/调仓）。
+   - 如果账户面临较大风险或回撤。
+   - 如果盘面出现异常波动需要深度研判。
+   - **请务必将 should_escalate 设为 True**，以请求大模型介入。
+   - 否则，请保持 should_escalate 为 False。
+
+请调用 submit_screening_decision 提交你的分析和决策。"""
 
     screener_prompt = render_prompt(
         template,
@@ -416,13 +451,12 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
     llm = ChatOpenAI(
         model=model_name,
-        api_key=agent_config.get('api_key'),
-        base_url=agent_config.get('api_base'),
-        temperature=0.2
+        api_key=api_key,
+        base_url=api_base,
+        temperature=temperature
     ).bind_tools([submit_screening_decision], tool_choice="submit_screening_decision")
 
     try:
-        # 重置 Screener 的消息历史，只看当前的筛选 Prompt
         screener_messages = [HumanMessage(content=screener_prompt)]
         if state.human_message:
             screener_messages.append(HumanMessage(content=state.human_message))
@@ -434,6 +468,8 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
         result_dict = {
             "confidence": args.get("confidence", 0),
             "market_status": args.get("market_status", "Parsed"),
+            "analysis": args.get("analysis", ""),
+            "prediction": args.get("prediction", ""),
             "reason": args.get("reason", ""),
             "should_escalate": args.get("should_escalate", False)
         }
@@ -593,6 +629,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     
     all_ai_messages = [msg for msg in state.messages if isinstance(msg, AIMessage) and msg.content]
     
+    full_content = ""
     if all_ai_messages:
         sorted_msgs = sorted(all_ai_messages, key=lambda m: len(m.content), reverse=True)
         main_content = sorted_msgs[0].content 
@@ -602,7 +639,14 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
             full_content = main_content + "\n\n---\n\n" + "\n\n".join(other_parts)
         else:
             full_content = main_content
-        
+    
+    # 如果没有 AI 消息（可能是因为 screener 直接跳过了 agent），则使用 screener 的结果
+    if not full_content and state.screener_result:
+        res = state.screener_result
+        full_content = f"### 初筛分析\n{res.get('analysis', '')}\n\n### 行情预测\n{res.get('prediction', '')}\n\n> 本轮分析由初筛模型完成，未触发大模型深度分析。判断理由：{res.get('reason', '')}"
+        agent_name = (agent_config.get("screener", {}).get("model") or "Screener")
+
+    if full_content:
         strategy_logic = summarize_content(full_content, agent_config)
         processed_content = escape_markdown_special_chars(full_content)
         processed_strategy_logic = escape_markdown_special_chars(strategy_logic)
@@ -617,19 +661,15 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 has_dca_order = False
                 for msg in state.messages:
                     if isinstance(msg, ToolMessage):
-                        # 查找对应的 tool_call，通过 tool_call_id 匹配 AIMessage 中的 calls
-                        # 简化逻辑：直接看结果内容是否包含下单成功或失败的标记
                         if "open_position_spot_dca" in str(getattr(msg, "name", "")):
                             has_dca_order = True
                             break
-                    # 另一种检查方法：看 AIMessage 里的 tool_calls
                     if isinstance(msg, AIMessage) and msg.tool_calls:
                         if any(tc['name'] == 'open_position_spot_dca' for tc in msg.tool_calls):
                             has_dca_order = True
                             break
                 
                 if not has_dca_order:
-                    # 补录一条“观望”记录到决策流水
                     wait_reason = f"💤 本轮未触发挂单条件。逻辑摘要：{strategy_logic}"
                     database.save_order_log(
                         f"DCA-WAIT-{int(datetime.now().timestamp())}",
