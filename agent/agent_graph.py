@@ -313,15 +313,17 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
 from langchain_core.tools import tool
 
 @tool
-def submit_screening_decision(confidence: int, market_status: str, analysis: str, prediction: str, reason: str, should_escalate: bool = False):
+def submit_screening_decision(decision: Literal["MASTER", "SMALL", "SKIP"], reason: str, market_status: str, analysis: str, prediction: str):
     """
     提交初筛决策。
-    confidence: 0-100的整数，表示机会概率。
-    market_status: 简短描述当前盘面状态（用于前端展示）。
-    analysis: 对当前行情的详细分析，包括趋势、支撑压力位等。
+    decision: 
+        - "MASTER": 发现重要机会或风险，需要最强大的 Master 模型进行深度分析并执行交易。
+        - "SMALL": 盘面波动较小或逻辑简单，交给 Small 模型处理（策略模式下 Small 模型可交易，实盘下仅做记录）。
+        - "SKIP": 盘面无意义或无需任何操作，直接结束。
+    reason: 做出该决策的详细理由，用于辅助判断。
+    market_status: 简短描述当前盘面状态。
+    analysis: 对当前行情的分析。
     prediction: 对未来走势的预测。
-    reason: 做出该判断的理由（例如：关键阻力位突破、账户回撤过大等）。
-    should_escalate: 若发现需要大模型介入（明确的交易机会、调仓需求、或账户面临风险），请设为 True 以请求最强模型分析。
     """
     pass
 
@@ -331,178 +333,107 @@ def screener_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent_config = configurable.get("agent_config", {})
     
     symbol = state.symbol
-    
-    # Screener 配置
     screener_cfg = agent_config.get("screener", {})
-    model_name = (screener_cfg.get("model") or 
-                  os.getenv("GLOBAL_SCREENER_MODEL") or 
-                  "gpt-4o-mini")
-    api_key = (screener_cfg.get("api_key") or 
-               agent_config.get("api_key"))
-    api_base = (screener_cfg.get("api_base") or 
-                agent_config.get("api_base"))
-    temperature = screener_cfg.get("temperature", 0.2)
+    model_name = (screener_cfg.get("model") or os.getenv("GLOBAL_SCREENER_MODEL") or "gpt-4o-mini")
+    api_key = (screener_cfg.get("api_key") or agent_config.get("api_key"))
+    api_base = (screener_cfg.get("api_base") or agent_config.get("api_base"))
     
-    logger.info(f"--- [Node] Screener: {model_name} evaluating {symbol} ---")
+    logger.info(f"--- [Node] Router: {model_name} judging for {symbol} ---")
 
-    # 准备上下文数据
     now_cn = datetime.now(TZ_CN)
-    now_us = datetime.now(TZ_US)
-    week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    week_map_en = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    current_time_str = (
-        f"北京: {now_cn.strftime('%Y-%m-%d %H:%M:%S')} ({week_map[now_cn.weekday()]}) | "
-        f"美东: {now_us.strftime('%Y-%m-%d %H:%M:%S')} ({week_map_en[now_us.weekday()]})"
-    )
+    current_time_str = now_cn.strftime('%Y-%m-%d %H:%M:%S')
+    next_run_time = calculate_next_run_time(agent_config, now_cn)
     
     account_data = state.account_context
     balance = account_data.get('balance', 0)
-    analysis_data = state.market_context.get("analysis", {}).get("15m", {})
-    current_price = analysis_data.get("price", 0)
-    atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
-    
-    indicators_summary = {}
-    timeframes = ['15m', '1h', '4h', '1d']
+    # 获取完整行情上下文
     raw_analysis = state.market_context.get("analysis", {})
-    for tf in timeframes:
-        if tf in raw_analysis:
-            tf_data = raw_analysis[tf]
-            indicators_summary[tf] = {
-                "price": tf_data.get("price"),
-                "trend": tf_data.get("trend", {}),
-                "ema": tf_data.get("ema"),
-                "rsi_analysis": tf_data.get("rsi_analysis", {}),
-                "macd": tf_data.get("macd"),
-                "bollinger": tf_data.get("bollinger"),
-                "vp": tf_data.get("vp", {}),
-            }
-    
     formatted_market_data = format_market_data_to_text({
-        "current_price": current_price,
-        "technical_indicators": indicators_summary
+        "current_price": raw_analysis.get("15m", {}).get("price", 0),
+        "technical_indicators": {tf: data for tf, data in raw_analysis.items() if tf in ['15m', '1h', '4h', '1d']}
     })
     
-    history_entries = []
-    if state.history_context:
-        for ds in state.history_context:
-            history_entries.append(f"  [{ds.get('date', '')}] {ds.get('summary', '')}")
-        formatted_history_text = "\n".join(history_entries)
-    else:
-        formatted_history_text = "(暂无历史记录)"
-
     positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
-    raw_orders = account_data.get('real_open_orders', [])
-    display_orders = [{"id": o.get('order_id'), "side": o.get('side'), "price": o.get('price'), "amount": o.get('amount')} for o in raw_orders]
-    orders_text = format_orders_to_agent_friendly(display_orders)
-    leverage = global_config.get_leverage(config_id)
-    next_run_time = calculate_next_run_time(agent_config, now_cn)
+    orders_text = format_orders_to_agent_friendly(account_data.get('real_open_orders', []))
 
-    # 内置 Screener Prompt
-    template = """你是一个专业的加密货币交易初筛助手。
-你的任务是分析当前 {symbol} 的行情数据和账户状态，提供行情分析和未来走势预测，并决定是否需要请求更强大的agent进行深度分析决策。
+    # 强制包含所有要素的内置 Prompt
+    template = """你是一个加密货币交易路由网关（Router）。
+你的唯一职责是：根据当前【行情数据】和【持仓状态】，决定是由“大模型（MASTER）”还是“小模型（SMALL）”来处理本轮逻辑。
 
-### 当前环境
+### 核心上下文
 - 币种: {symbol}
-- 杠杆: {leverage}x
-- 当前时间: {current_time}
+- 时间: {current_time}
 - 下次运行: {next_run_time}
-- 当前价格: {current_price}
-- ATR(15m): {atr_15m}
-
-### 账户状态
-- 余额: {balance} USDT
+- 账户余额: {balance} USDT
 - 当前持仓:
 {positions_text}
 - 挂单情况:
 {orders_text}
 
-### 市场数据
+### 市场行情
 {formatted_market_data}
 
-### 历史摘要
-{history_text}
+### 决策准则
+1. **MASTER (大模型)**: 
+   - 发现明显的趋势突破、反转信号或高确定性的交易机会。
+   - 账户持仓出现风险，需要复杂的平仓或调仓逻辑。
+   - 市场出现剧烈波动。
+2. **SMALL (小模型)**: 
+   - 市场处于震荡区间，只需进行常规维护。
+   - 逻辑简单，小模型足以应对。
+   - (注意：在策略模式下，SMALL 依然可以模拟开单)。
+3. **SKIP (跳过)**:
+   - 盘面完全没有交易价值，无需任何进一步分析。
 
-### 你的任务
-1. **行情分析**: 简要分析当前趋势、支撑位、压力位及关键指标。
-2. **走势预测**: 基于当前数据对未来短期的走势给出预测。
-3. **初筛决策**:
-   - 如果发现明确的交易机会（开仓/平仓/调仓）。
-   - 如果账户面临较大风险或回撤。
-   - 如果盘面出现异常波动需要深度研判。
-   - **请务必将 should_escalate 设为 True**，以请求大模型介入。
-   - 否则，请保持 should_escalate 为 False。
-
-请调用 submit_screening_decision 提交你的分析和决策。"""
+请必须调用 submit_screening_decision 提交你的选择。"""
 
     screener_prompt = render_prompt(
         template,
         symbol=symbol,
-        leverage=leverage,
         current_time=current_time_str,
         next_run_time=next_run_time,
-        current_price=current_price,
-        atr_15m=atr_15m,
         balance=balance,
         positions_text=positions_text,
         orders_text=orders_text,
-        formatted_market_data=formatted_market_data,
-        history_text=formatted_history_text
+        formatted_market_data=formatted_market_data
     )
 
     llm = ChatOpenAI(
         model=model_name,
         api_key=api_key,
         base_url=api_base,
-        temperature=temperature
+        temperature=0.1
     ).bind_tools([submit_screening_decision], tool_choice="submit_screening_decision")
 
     try:
-        screener_messages = [HumanMessage(content=screener_prompt)]
-        if state.human_message:
-            screener_messages.append(HumanMessage(content=state.human_message))
-
-        response = llm.invoke(screener_messages)
-        tool_call = response.tool_calls[0]
-        args = tool_call['args']
-        
-        result_dict = {
-            "confidence": args.get("confidence", 0),
-            "market_status": args.get("market_status", "Parsed"),
-            "analysis": args.get("analysis", ""),
-            "prediction": args.get("prediction", ""),
-            "reason": args.get("reason", ""),
-            "should_escalate": args.get("should_escalate", False)
-        }
+        response = llm.invoke([HumanMessage(content=screener_prompt)])
+        args = response.tool_calls[0]['args']
         
         usage = response.response_metadata.get("token_usage", {})
         if usage:
             database.save_token_usage(symbol, config_id, model_name, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
-            
-        return state.model_copy(update={"screener_result": result_dict, "messages": state.messages + [response]})
+
+        return state.model_copy(update={
+            "screener_result": args, 
+            "messages": state.messages + [response]
+        })
     except Exception as e:
-        logger.error(f"❌ [Screener Error]: {e}")
-        return state.model_copy(update={"screener_result": {"confidence": 100, "should_escalate": True, "market_status": "Error", "reason": str(e)}})
+        logger.error(f"❌ [Router Error]: {e}")
+        return state.model_copy(update={"screener_result": {"decision": "MASTER", "reason": f"Router error: {e}"}})
 
 def screening_router(state: AgentState, config: RunnableConfig) -> str:
-    res = state.screener_result
-    if not res:
+    res = state.screener_result or {}
+    decision = res.get("decision", "MASTER")
+    trade_mode = config.get("configurable", {}).get("agent_config", {}).get("mode", "STRATEGY").upper()
+
+    logger.info(f"🎯 [Router Decision] Selected: {decision}, Reason: {res.get('reason')}")
+
+    if decision == "MASTER":
         return "continue"
-
-    confidence = res.get("confidence", 0)
-    should_escalate = res.get("should_escalate", False)
     
-    configurable = config.get("configurable", {})
-    agent_config = configurable.get("agent_config", {})
-    threshold = int(agent_config.get("escalation_threshold", 60))
-    
-    # 动态阈值逻辑保留
-    has_position = len(state.account_context.get('real_positions', [])) > 0
-    current_threshold = threshold - 20 if has_position else threshold
-
-    logger.info(f"🎯 [Screening Decision] Escalate: {should_escalate}, Confidence: {confidence}, Threshold: {current_threshold}")
-
-    if should_escalate or confidence >= current_threshold:
-        return "continue"
+    if decision == "SMALL":
+        # 只有在策略模式下，小模型才去执行交易节点
+        return "small_agent" if trade_mode == "STRATEGY" else "skip"
     
     return "skip"
 
@@ -568,11 +499,67 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         except Exception as usage_e:
             logger.warning(f"⚠️ [Agent] Failed to save token usage: {usage_e}")
 
-        return state.model_copy(update={"messages": state.messages + [response]})
+        return state.model_copy(update={"messages": state.messages + [response], "active_agent": "MASTER"})
 
     except Exception as e:
         logger.error(f"❌ [LLM Error] ({symbol}): {e}")
-        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")]})
+        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
+
+def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id", "unknown")
+    agent_config = configurable.get("agent_config", {})
+    
+    symbol = state.symbol
+    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
+    
+    screener_cfg = agent_config.get("screener", {})
+    model_name = (screener_cfg.get("model") or os.getenv("GLOBAL_SCREENER_MODEL") or agent_config.get("model", "gpt-4o-mini"))
+    api_key = (screener_cfg.get("api_key") or agent_config.get("api_key"))
+    api_base = (screener_cfg.get("api_base") or agent_config.get("api_base"))
+    temperature = screener_cfg.get("temperature", 0.5)
+
+    logger.info(f"--- [Node] Small Agent: {model_name} (Mode: {trade_mode}) ---")
+
+    messages = []
+    for msg in state.messages:
+        messages.append(msg)
+
+    try:
+        kwargs = {}
+        if screener_cfg.get('extra_body'):
+            kwargs["extra_body"] = screener_cfg.get('extra_body')
+
+        tools = [open_position_strategy, cancel_orders_strategy]
+        
+        llm = ChatOpenAI(
+            model=model_name,
+            api_key=api_key,
+            base_url=api_base,
+            temperature=temperature,
+            model_kwargs=kwargs
+        ).bind_tools(tools)
+
+        response = llm.invoke(messages)
+        
+        try:
+            usage = response.response_metadata.get("token_usage", {})
+            if usage:
+                database.save_token_usage(
+                    symbol=symbol,
+                    config_id=config_id,
+                    model=model_name,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0)
+                )
+        except Exception as usage_e:
+            logger.warning(f"⚠️ [Small Agent] Failed to save token usage: {usage_e}")
+
+        return state.model_copy(update={"messages": state.messages + [response], "active_agent": "SCREENER"})
+
+    except Exception as e:
+        logger.error(f"❌ [Small Agent Error] ({symbol}): {e}")
+        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "SCREENER"})
 
 def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """通用的工具执行节点。"""
@@ -652,12 +639,19 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
     # 2. 构造最终展示内容
     if full_content:
-        # 如果触发了大模型，将初筛作为前言
-        final_full_content = screener_prelude + f"### 🧠 深度决策分析\n{full_content}"
+        # 如果有 AI 消息内容，说明执行了 agent 或 small_agent
+        if getattr(state, "active_agent", "MASTER") == "SCREENER":
+            final_full_content = screener_prelude + f"### 🔍 策略模式初筛模型执行\n{full_content}\n\n> 💡 本轮由初筛小模型完成动作。"
+            agent_name = (agent_config.get("screener", {}).get("model") or "Screener")
+            agent_type = "SCREENER"
+        else:
+            final_full_content = screener_prelude + f"### 🧠 深度决策分析\n{full_content}"
+            agent_type = "MASTER"
+            agent_name = agent_config.get('model', 'Unknown')
     elif state.screener_result:
         # 如果跳过了大模型，仅显示初筛
         res = state.screener_result
-        final_full_content = f"### 🔍 初筛快速分析\n{res.get('analysis', '')}\n\n### 📈 走势预测\n{res.get('prediction', '')}\n\n> 💡 本轮分析由初筛模型完成，未触发深度分析。判断理由：{res.get('reason', '')}"
+        final_full_content = f"### 🔍 初筛快速分析\n{res.get('analysis', '')}\n\n### 📈 走势预测\n{res.get('prediction', '')}\n\n> 💡 本轮分析由初筛模型完成，未触发深度分析或动作。判断理由：{res.get('reason', '')}"
         agent_name = (agent_config.get("screener", {}).get("model") or "Screener")
         agent_type = "SCREENER"
 
@@ -718,6 +712,7 @@ workflow = StateGraph(AgentState)
 workflow.add_node("start", start_node)
 workflow.add_node("screener", screener_node)
 workflow.add_node("agent", agent_node)
+workflow.add_node("small_agent", small_agent_node)
 workflow.add_node("tools", tools_node)
 workflow.add_node("finalize", finalize_node)
 
@@ -728,8 +723,7 @@ def start_router(state: AgentState, config: RunnableConfig) -> str:
     agent_config = configurable.get("agent_config", {})
     trade_mode = agent_config.get('mode', 'STRATEGY').upper()
     
-    # 只有 REAL 模式且显示开启了 enable_screening 才会进入初筛
-    if trade_mode == 'REAL' and agent_config.get('enable_screening', False):
+    if trade_mode in ['REAL', 'STRATEGY'] and agent_config.get('enable_screening', False):
         return "screener"
     return "agent"
 
@@ -740,10 +734,12 @@ workflow.add_conditional_edges("start", start_router, {
 
 workflow.add_conditional_edges("screener", screening_router, {
     "continue": "agent",
+    "small_agent": "small_agent",
     "skip": "finalize"
 })
 
 workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "finalize": "finalize"})
+workflow.add_conditional_edges("small_agent", should_continue, {"tools": "tools", "finalize": "finalize"})
 workflow.add_edge("tools", "agent")
 workflow.add_edge("finalize", END)
 

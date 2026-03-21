@@ -65,3 +65,4 @@ class AgentState(BaseModel):
     full_analysis: str = ""
     human_message: Optional[str] = None
     screener_result: Optional[Dict[str, Any]] = None
+    active_agent: Optional[str] = "MASTER"

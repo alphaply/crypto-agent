@@ -396,10 +396,10 @@ function onModeChange(mode) {
     
     document.getElementById('section-interval').classList.toggle('hidden', isDca);
     document.getElementById('section-dca').classList.toggle('hidden', !isDca);
-    document.getElementById('section-screener').classList.toggle('hidden', !isReal);
+    document.getElementById('section-screener').classList.toggle('hidden', isDca);
     
-    // 如果不是 REAL 模式，确保初筛逻辑被关闭显示
-    if (!isReal) {
+    // 如果是 DCA 模式，确保初筛逻辑被关闭显示
+    if (isDca) {
         document.getElementById('edit-enable-screening').checked = false;
         onScreenerToggle(false);
     }
