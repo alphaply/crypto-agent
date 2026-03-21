@@ -159,15 +159,13 @@ def job():
 
 
 def run_daily_summary_job():
-    """每日 00:00 执行：汇总昨天每个 agent 的所有 strategy_logic 为一条精炼的每日总结"""
+    """每日执行：汇总昨天每个 agent 的所有 strategy_logic 为一条精炼的每日总结"""
     global _daily_summary_done_date
     now = datetime.now(TZ_CN)
-
-    # 只在 00:00 触发，且每天只执行一次
-    if now.hour != 0 or now.minute != 0:
-        return
     today_str = now.strftime('%Y-%m-%d')
-    if _daily_summary_done_date == today_str:
+
+    # 只要进入新的一天，且在凌晨 0-2 点之间（作为一个窗口），且今天还没跑过
+    if now.hour >= 2 or _daily_summary_done_date == today_str:
         return
 
     yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')

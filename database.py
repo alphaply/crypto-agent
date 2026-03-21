@@ -1,9 +1,13 @@
 import os
 import sqlite3
 import uuid
+import pytz
 from datetime import datetime
 from contextlib import contextmanager
 from utils.logger import setup_logger
+
+# 设置时区
+TZ_CN = pytz.timezone('Asia/Shanghai')
 
 # 使用绝对路径定位数据库文件
 # 强制获取项目根目录
@@ -186,7 +190,7 @@ def update_model_pricing(model, input_price, output_price, currency='USD'):
 
 def save_token_usage(symbol, config_id, model, prompt_tokens, completion_tokens):
     """记录 LLM Token 使用情况"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     total_tokens = prompt_tokens + completion_tokens
     
     with get_db_conn() as conn:
@@ -253,7 +257,7 @@ def cancel_mock_order(order_id):
 
 
 def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY", config_id=None):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     # 确保 trade_mode 格式统一
     if trade_mode == "REAL":
         valid_mode = "REAL"
@@ -274,7 +278,7 @@ def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, tr
 
 def save_summary(symbol, agent_name, content, strategy_logic, config_id=None, agent_type=None):
     """保存 AI 分析结果"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     
     with get_db_conn() as conn:
         c = conn.cursor()
@@ -385,7 +389,7 @@ def delete_summaries_by_symbol(symbol):
 
 def save_balance_snapshot(symbol, balance, unrealized_pnl):
     """记录资金快照"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     equity = balance + unrealized_pnl
     
     with get_db_conn() as conn:
@@ -483,7 +487,7 @@ def clean_financial_data(symbol):
 
 
 def create_chat_session(session_id: str, config_id: str, symbol: str, title: str):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute(
@@ -497,7 +501,7 @@ def create_chat_session(session_id: str, config_id: str, symbol: str, title: str
 
 
 def touch_chat_session(session_id: str):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute(
@@ -562,7 +566,7 @@ def delete_chat_sessions(session_ids):
 
 def save_daily_summary(date_str, symbol, config_id, summary, source_count):
     """保存或更新某天某 config 的每日策略汇总"""
-    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_at = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     with get_db_conn() as conn:
         c = conn.cursor()
         try:
