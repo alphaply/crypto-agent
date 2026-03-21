@@ -462,8 +462,6 @@ async function editSymbol(index) {
     document.getElementById('edit-screener-api-base').value = scr.api_base || '';
     document.getElementById('edit-screener-api-key').value = '';
     document.getElementById('edit-screener-temp').value = scr.temperature || 0.2;
-    document.getElementById('edit-escalation-threshold').value = conf.escalation_threshold || 60;
-    document.getElementById('threshold-val-display').innerText = conf.escalation_threshold || 60;
 
     onModeChange(mode);
     onScreenerToggle(screeningEnabled);

@@ -5,6 +5,7 @@ import os
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import pytz
 from dotenv import load_dotenv

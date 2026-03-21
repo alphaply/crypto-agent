@@ -49,6 +49,31 @@
 - **prompt_file**: 策略模板路径
 - **leverage**: 杠杆倍数（仅对 REAL/STRATEGY 模式有效）
 
+## 初筛网关配置 (Screener)
+
+当开启 `enable_screening` 时，系统会使用轻量级小模型作为 Router（网关），它会决定当前行情是否值得交给大模型分析，或者由小模型直接处理。
+
+### 配置项说明
+- **enable_screening**: 布尔值，设为 `true` 启用。
+- **screener**: 嵌套对象，包含小模型的专属参数：
+    - `model`: 初筛模型名称 (默认 `gpt-4o-mini`)
+    - `api_base`: 初筛模型的 API 地址 (可选)
+    - `api_key`: 初筛模型的 API 密钥 (可选)
+    - `temperature`: 初筛模型的温度参数 (建议较低，如 0.1-0.2)
+
+### 示例
+```json
+{
+  "symbol": "BTC/USDT",
+  "mode": "STRATEGY",
+  "enable_screening": true,
+  "screener": {
+    "model": "gpt-4o-mini",
+    "temperature": 0.1
+  }
+}
+```
+
 ## 现货定投模式 (SPOT_DCA) 专用配置
 
 当 `mode` 设置为 `SPOT_DCA` 时，以下配置项将决定 Agent 的执行逻辑和下单频率：

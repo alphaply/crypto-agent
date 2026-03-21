@@ -13,12 +13,11 @@ from langchain_core.messages import (
 
 class ScreenerResult(BaseModel):
     """Screener 结构化输出"""
-    confidence: int = Field(ge=0, le=100, description="市场出现交易机会的置信度 (0-100)")
-    should_escalate: bool = Field(default=False, description="是否请求强大的大模型进行深度分析（当发现明确机会或账户面临风险时设为 True）")
+    decision: Literal["MASTER", "SMALL", "SKIP"] = Field(description="决定该由哪个模型处理 (MASTER/SMALL/SKIP)")
     market_status: str = Field(description="当前市场状态的简短描述，用于前端展示")
     analysis: str = Field(description="对当前行情的详细分析，包括趋势、支撑压力位等")
     prediction: str = Field(description="对未来走势的预测")
-    reason: str = Field(description="做出是否接入大模型判断的理由")
+    reason: str = Field(description="做出该路由决策的详细理由")
 
 class OpenOrderReal(BaseModel):
     """开单参数：仅包含限价单核心参数，不包含止盈止损（暂不支持自动带止盈止损）"""
