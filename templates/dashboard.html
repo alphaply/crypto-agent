@@ -504,7 +504,7 @@
                                     运行周期 (分钟)
                                     <span class="text-[9px] lowercase font-normal">最低 15 分钟</span>
                                 </label>
-                                <input type="number" id="edit-interval" min="15" step="15" class="w-full border rounded-lg p-2 text-sm" placeholder="15">
+                                <input type="number" id="edit-interval" min="15" step="15" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="15">
                             </div>
                         </div>
 
@@ -513,20 +513,20 @@
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
                                     <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投频率</label>
-                                    <select id="edit-dca-freq" class="w-full border rounded-lg p-2 text-sm" onchange="onDcaFreqChange(this.value)">
+                                    <select id="edit-dca-freq" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" onchange="onDcaFreqChange(this.value)">
                                         <option value="1d">每天 (Daily)</option>
                                         <option value="1w">每周 (Weekly)</option>
                                     </select>
                                 </div>
                                 <div>
                                     <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投时间 (HH:mm)</label>
-                                    <input type="time" id="edit-dca-time" class="w-full border rounded-lg p-2 text-sm">
+                                    <input type="time" id="edit-dca-time" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                                 </div>
                             </div>
                             <div class="grid grid-cols-2 gap-4">
                                 <div id="div-dca-weekday" class="hidden">
                                     <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投周几</label>
-                                    <select id="edit-dca-weekday" class="w-full border rounded-lg p-2 text-sm">
+                                    <select id="edit-dca-weekday" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                                         <option value="0">周一</option>
                                         <option value="1">周二</option>
                                         <option value="2">周三</option>
@@ -538,7 +538,7 @@
                                 </div>
                                 <div>
                                     <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">单笔金额 (USDT)</label>
-                                    <input type="number" id="edit-dca-amount" class="w-full border rounded-lg p-2 text-sm" placeholder="100">
+                                    <input type="number" id="edit-dca-amount" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="100">
                                 </div>
                             </div>
                         </div>
@@ -560,21 +560,21 @@
                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
                                         <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">初筛模型</label>
-                                        <input type="text" id="edit-screener-model" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm" placeholder="gpt-4o-mini">
+                                        <input type="text" id="edit-screener-model" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="gpt-4o-mini">
                                     </div>
                                     <div>
                                         <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Base URL (可选)</label>
-                                        <input type="text" id="edit-screener-api-base" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm" placeholder="默认复用主模型 Base">
+                                        <input type="text" id="edit-screener-api-base" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="默认复用主模型 Base">
                                     </div>
                                 </div>
                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
                                         <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Key (可选)</label>
-                                        <input type="password" id="edit-screener-api-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm" placeholder="默认复用主模型 Key">
+                                        <input type="password" id="edit-screener-api-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="默认复用主模型 Key">
                                     </div>
                                     <div>
                                         <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">温度 (Temp)</label>
-                                        <input type="number" step="0.1" id="edit-screener-temp" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm" placeholder="0.2">
+                                        <input type="number" step="0.1" id="edit-screener-temp" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="0.2">
                                     </div>
                                 </div>
                             </div>
@@ -583,11 +583,11 @@
                         <div class="grid grid-cols-2 sm:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">杠杆倍数</label>
-                                <input type="number" id="edit-leverage" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm">
+                                <input type="number" id="edit-leverage" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">LLM 温度</label>
-                                <input type="number" step="0.1" id="edit-temp" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm">
+                                <input type="number" step="0.1" id="edit-temp" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                             </div>
                         </div>
                     </div>
@@ -601,15 +601,15 @@
                         <div class="grid grid-cols-1 gap-3">
                             <div>
                                 <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">模型名称</label>
-                                <input type="text" id="edit-model" class="w-full border rounded-lg p-2 text-sm" placeholder="gpt-4o">
+                                <input type="text" id="edit-model" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="gpt-4o">
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Base URL</label>
-                                <input type="text" id="edit-api-base" class="w-full border rounded-lg p-2 text-sm" placeholder="https://api.openai.com/v1">
+                                <input type="text" id="edit-api-base" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="https://api.openai.com/v1">
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Key</label>
-                                <input type="password" id="edit-api-key" class="w-full border rounded-lg p-2 text-sm" placeholder="保持不变请留空...">
+                                <input type="password" id="edit-api-key" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="保持不变请留空...">
                             </div>
                         </div>
                     </div>
@@ -623,9 +623,15 @@
                             </div>
                             <span class="text-[9px] text-gray-400 italic">不填则使用全局配置</span>
                         </div>
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <input type="password" id="edit-bn-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-xs" placeholder="Binance API Key">
-                            <input type="password" id="edit-bn-secret" class="w-full border rounded-lg p-2.5 sm:p-2 text-xs" placeholder="Binance API Secret">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">Binance API Key</label>
+                                <input type="password" id="edit-bn-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Binance API Key">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">Binance API Secret</label>
+                                <input type="password" id="edit-bn-secret" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Binance API Secret">
+                            </div>
                         </div>
                     </div>
 
