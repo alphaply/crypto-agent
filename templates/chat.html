@@ -61,7 +61,7 @@
         <input id="password" type="password" class="mt-6 w-full rounded-2xl border border-slate-200 bg-slate-50/50 px-4 py-3 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all text-center font-mono" placeholder="管理密码" />
         
         <!-- 图形验证码区块 -->
-        <div class="mt-4 flex gap-2 h-12">
+        <div id="captcha-container" class="mt-4 flex gap-2 h-12 hidden">
           <div class="flex-1 bg-slate-50/50 rounded-2xl border border-slate-200 overflow-hidden cursor-pointer active:opacity-70 transition-opacity" onclick="refreshCaptcha()" title="点击刷新">
             <img id="captcha-img" class="w-full h-full object-cover" alt="验证码">
           </div>
@@ -277,21 +277,33 @@
 
       async function login() {
         const password = document.getElementById('password').value;
+        const captchaContainer = document.getElementById('captcha-container');
+        const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
         const captcha = document.getElementById('captcha').value;
-        if (!password || !captcha) {
-          document.getElementById('authErr').textContent = '请输入密码和验证码';
+        
+        if (!password) {
+          document.getElementById('authErr').textContent = '请输入密码';
           return;
         }
+        if (isCaptchaVisible && !captcha) {
+          document.getElementById('authErr').textContent = '请输入验证码';
+          return;
+        }
+        
         try {
           const res = await fetch('/api/chat/auth', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({password, captcha})
+            body: JSON.stringify({password, captcha: isCaptchaVisible ? captcha : ''})
           });
           const data = await res.json();
           if (!data.success) {
+            if (data.need_captcha) {
+                captchaContainer.classList.remove('hidden');
+                refreshCaptcha();
+                document.getElementById('captcha').value = '';
+            }
             document.getElementById('authErr').textContent = data.message || '验证失败';
-            refreshCaptcha();
             return;
           }
           location.reload();

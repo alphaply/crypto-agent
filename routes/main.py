@@ -11,7 +11,8 @@ from routes.utils import (
 from database import (
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
     get_balance_history, get_trade_history, clean_financial_data,
-    get_active_agents, get_paginated_orders, get_db_conn, get_daily_summaries
+    get_active_agents, get_paginated_orders, get_db_conn, get_daily_summaries,
+    get_history_pnl_stats
 )
 
 main_bp = Blueprint('main', __name__)
@@ -210,12 +211,14 @@ def history_view():
         total_count = get_summary_count(symbol, agent_name=agent_filter)
         total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
         active_agents = get_active_agents(symbol)
+        pnl_stats = get_history_pnl_stats(symbol, config_id=agent_filter)
     except Exception as e:
         logger.error(f"Failed to load history page: symbol={symbol}, agent={agent_filter}, page={page}, error={e}")
         summaries = []
         total_count = 0
         total_pages = 1
         active_agents = []
+        pnl_stats = {"total_trades": 0, "total_pnl": 0, "win_rate": 0, "win_count": 0, "lose_count": 0}
     
     return render_template(
         'history.html',
@@ -225,7 +228,8 @@ def history_view():
         total_pages=total_pages,
         total_count=total_count,
         active_agents=active_agents,
-        current_agent=agent_filter
+        current_agent=agent_filter,
+        pnl_stats=pnl_stats
     )
 
 @main_bp.route('/chat')

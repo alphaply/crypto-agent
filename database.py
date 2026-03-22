@@ -66,13 +66,22 @@ def init_db():
                         stop_loss REAL,
                         take_profit REAL,
                         expire_at REAL,
-                        status TEXT DEFAULT 'OPEN'
+                        status TEXT DEFAULT 'OPEN',
+                        close_price REAL,
+                        realized_pnl REAL,
+                        close_time TEXT
                     )''')
         try: c.execute("ALTER TABLE mock_orders ADD COLUMN agent_name TEXT")
         except: pass
         try: c.execute("ALTER TABLE mock_orders ADD COLUMN config_id TEXT")
         except: pass
         try: c.execute("ALTER TABLE mock_orders ADD COLUMN expire_at REAL")
+        except: pass
+        try: c.execute("ALTER TABLE mock_orders ADD COLUMN close_price REAL")
+        except: pass
+        try: c.execute("ALTER TABLE mock_orders ADD COLUMN realized_pnl REAL")
+        except: pass
+        try: c.execute("ALTER TABLE mock_orders ADD COLUMN close_time TEXT")
         except: pass
 
         # 3. Orders 表
@@ -253,6 +262,20 @@ def cancel_mock_order(order_id):
         c = conn.cursor()
         c.execute("DELETE FROM mock_orders WHERE order_id = ?", (order_id,))
         c.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", (order_id,))
+        conn.commit()
+
+def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
+    """平仓模拟挂单"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        close_time = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+        c.execute('''
+            UPDATE mock_orders 
+            SET status='CLOSED', close_price=?, realized_pnl=?, close_time=? 
+            WHERE order_id=? AND status='OPEN'
+        ''', (close_price, realized_pnl, close_time, order_id))
+        
+        c.execute("UPDATE orders SET status = 'CLOSED' WHERE order_id = ?", (order_id,))
         conn.commit()
 
 
@@ -619,6 +642,47 @@ def get_pending_daily_summary_data(config_id, date_str):
         ''', (config_id, date_str))
         return [dict(row) for row in c.fetchall()]
 
+        return [dict(row) for row in c.fetchall()]
+
+def get_history_pnl_stats(symbol, config_id='ALL'):
+    """获取标的的盈亏统计，整合实盘和模拟盘数据"""
+    with get_db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        realized_pnls = []
+        
+        if config_id == 'ALL':
+            # 只按 symbol 统计：实盘所有 trades + 模拟盘所有 mock closed
+            trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol = ? AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
+            realized_pnls.extend([t['realized_pnl'] for t in trades])
+            
+            mocks = c.execute("SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND status='CLOSED' AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
+            realized_pnls.extend([m['realized_pnl'] for m in mocks])
+        else:
+            # 按 config_id 统计：因为 trade_history 目前没绑定 config_id，我们尽力而为。可以暂且只取 mock_orders？
+            # 我们就在这里统一取 mock_orders，因为实盘数据我们很难直接区分是哪个 agent 打的。
+            mocks = c.execute("SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND config_id = ? AND status='CLOSED' AND realized_pnl IS NOT NULL", (symbol, config_id)).fetchall()
+            realized_pnls.extend([m['realized_pnl'] for m in mocks])
+            
+            # 同时也检查 orders 表里有没有记账（虽然 orders 是粗粒度的）
+            # 目前实盘订单的真实 pnl 只能通过 ccxt `/stats/position` 实时获取并存在 trade_history 里。
+            # 为了简化，如果指定了 config_id，且在 trade_history 找不到他，我们至少返回 mock_orders 的数据
+            
+        total_pnl = sum(realized_pnls)
+        win_trades = [p for p in realized_pnls if p > 0]
+        lose_trades = [p for p in realized_pnls if p < 0]
+        
+        total_count = len(realized_pnls)
+        win_rate = (len(win_trades) / total_count * 100) if total_count > 0 else 0
+        
+        return {
+            "total_trades": total_count,
+            "total_pnl": total_pnl,
+            "win_rate": win_rate,
+            "win_count": len(win_trades),
+            "lose_count": len(lose_trades)
+        }
 
 # --- Agent 做单统计 ---
 

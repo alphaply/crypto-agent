@@ -48,6 +48,9 @@ class OpenStrategySchema(BaseModel):
 class CancelStrategySchema(BaseModel):
     order_ids: List[str] = Field(description="要撤销的模拟订单 ID 列表")
 
+class CloseStrategySchema(BaseModel):
+    orders: List[CloseOrder] = Field(description="平仓模拟挂单指令列表")
+
 class EventContractOrderSchema(BaseModel):
     direction: Literal["Long", "Short"] = Field(description="开仓方向，多 (Long) 或者 空 (Short)")
     duration: str = Field(description="合约时间期限，例如：30min, 1h, 1d")
@@ -219,6 +222,47 @@ def cancel_orders_strategy(order_ids: List[str], config_id: str, symbol: str):
             execution_results.append(f"✅ [Cancelled Strategy] 订单 {oid} 已撤回。")
         except Exception as e:
             execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
+    return "\n".join(execution_results)
+
+@tool(args_schema=CloseStrategySchema)
+def close_position_strategy(orders: List[CloseOrder], config_id: str, symbol: str):
+    """【策略平仓：模拟平掉已有持仓】。"""
+    agent_name = config_id
+    market_tool = MarketTool(config_id=config_id)
+    execution_results = []
+    
+    # 获取当前的模拟持仓
+    latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id)
+    open_mock_orders = latest.get('mock_open_orders', [])
+
+    for op in orders:
+        try:
+            if isinstance(op, dict): op = CloseOrder(**op)
+            # 用户传的是你要平的仓位方向，例如平多(LONG)，那意味着找到我们做多的单子(BUY)
+            target_side = "BUY" if op.pos_side == "LONG" else "SELL"
+            
+            # 找到对应的模拟单
+            matched_orders = [o for o in open_mock_orders if target_side in o.get('side', '').upper()]
+            if not matched_orders:
+                execution_results.append(f"⚠️ [跳过] 没有找到对应 {op.pos_side} 的模拟持仓可平。")
+                continue
+                
+            for matched in matched_orders:
+                order_id = matched.get('order_id')
+                entry_price = float(matched.get('price', 0))
+                amount = float(matched.get('amount', 0))
+                
+                # 计算盈亏 (如果是合约并且双向持仓)
+                if target_side == "BUY": # 做多
+                    pnl = (op.entry_price - entry_price) * amount
+                else: # 做空
+                    pnl = (entry_price - op.entry_price) * amount
+                    
+                database.close_mock_order(order_id, close_price=op.entry_price, realized_pnl=pnl)
+                database.save_order_log(order_id, symbol, agent_name, "CLOSE", op.entry_price, 0, 0, f"[Strategy Close] 盈亏: {pnl:.2f} | {op.reason}", trade_mode="STRATEGY", config_id=config_id)
+                execution_results.append(f"✅ [Closed Strategy] {op.pos_side} 仓位已平，订单: {order_id}，模拟盈亏: {pnl:.2f}")
+        except Exception as e:
+            execution_results.append(f"❌ [Error] 策略平仓失败: {str(e)}")
     return "\n".join(execution_results)
 
 # ==========================================

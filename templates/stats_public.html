@@ -121,7 +121,7 @@
                             <input type="password" id="auth-pass" class="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-3.5 outline-none focus:bg-white focus:border-blue-500 transition-all font-bold text-sm" placeholder="••••••••">
                         </div>
                         
-                        <div class="space-y-1.5">
+                        <div id="auth-captcha-container" class="space-y-1.5 hidden">
                             <label class="text-[9px] font-bold text-slate-400 uppercase ml-1">Captcha</label>
                             <div class="flex items-center gap-2">
                                 <input type="text" id="auth-captcha" class="flex-grow min-w-0 bg-slate-50 border-2 border-slate-100 rounded-2xl p-3.5 outline-none focus:bg-white focus:border-blue-500 transition-all font-black uppercase text-center text-sm" placeholder="验证码">
@@ -284,7 +284,13 @@
 
         function openPricingModal() { if (!isAuthed) return openAuthModal(); document.getElementById('pricing-modal').classList.remove('hidden'); }
         function closePricingModal() { document.getElementById('pricing-modal').classList.add('hidden'); }
-        function openAuthModal() { refreshAuthCaptcha(); document.getElementById('auth-modal').classList.remove('hidden'); }
+        function openAuthModal() { 
+            const captchaContainer = document.getElementById('auth-captcha-container');
+            captchaContainer.classList.add('hidden');
+            document.getElementById('auth-pass').value = '';
+            document.getElementById('auth-captcha').value = '';
+            document.getElementById('auth-modal').classList.remove('hidden'); 
+        }
         function closeAuthModal() { document.getElementById('auth-modal').classList.add('hidden'); }
 
         async function refreshAuthCaptcha() {
@@ -300,17 +306,32 @@
 
         async function submitAuth() {
             const pwd = document.getElementById('auth-pass').value;
+            const captchaContainer = document.getElementById('auth-captcha-container');
+            const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
             const captcha = document.getElementById('auth-captcha').value;
-            if (!pwd || !captcha) return alert('请输入密码和验证码');
+            
+            if (!pwd) return alert('请输入密码');
+            if (isCaptchaVisible && !captcha) return alert('请输入验证码');
+            
             try {
                 const res = await fetch('/api/chat/auth', { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({password: pwd, captcha: captcha}) 
+                    body: JSON.stringify({password: pwd, captcha: isCaptchaVisible ? captcha : ''}) 
                 });
                 const data = await res.json();
-                if (res.ok && data.success) { isAuthed = true; closeAuthModal(); openPricingModal(); }
-                else { alert(data.message || '验证失败'); refreshAuthCaptcha(); }
+                if (res.ok && data.success) { 
+                    isAuthed = true; 
+                    closeAuthModal(); 
+                    openPricingModal(); 
+                } else {
+                    if (data.need_captcha) {
+                        captchaContainer.classList.remove('hidden');
+                        refreshAuthCaptcha();
+                        document.getElementById('auth-captcha').value = '';
+                    }
+                    alert(data.message || '验证失败');
+                }
             } catch (e) { alert('请求错误'); }
         }
 

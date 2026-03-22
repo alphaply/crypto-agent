@@ -17,7 +17,7 @@ from langgraph.graph import StateGraph, END
 from agent.agent_models import AgentState
 from agent.agent_tools import (
     open_position_real, close_position_real, cancel_orders_real,
-    open_position_strategy, cancel_orders_strategy, open_position_spot_dca,
+    open_position_strategy, cancel_orders_strategy, close_position_strategy, open_position_spot_dca,
     analyze_event_contract, format_event_contract_order
 )
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
@@ -468,7 +468,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         elif trade_mode == 'SPOT_DCA':
             tools = [open_position_spot_dca, cancel_orders_real]
         else:
-            tools = [open_position_strategy, cancel_orders_strategy]
+            tools = [open_position_strategy, cancel_orders_strategy, close_position_strategy]
         
         # if trade_mode == 'REAL':
         #     tools += [analyze_event_contract, format_event_contract_order]
@@ -531,7 +531,7 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         if screener_cfg.get('extra_body'):
             kwargs["extra_body"] = screener_cfg.get('extra_body')
 
-        tools = [open_position_strategy, cancel_orders_strategy]
+        tools = [open_position_strategy, cancel_orders_strategy, close_position_strategy]
         
         llm = ChatOpenAI(
             model=model_name,
@@ -580,6 +580,7 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
         "cancel_orders_real": cancel_orders_real,
         "open_position_strategy": open_position_strategy,
         "cancel_orders_strategy": cancel_orders_strategy,
+        "close_position_strategy": close_position_strategy,
         "open_position_spot_dca": open_position_spot_dca,
         "analyze_event_contract": analyze_event_contract,
         "format_event_contract_order": format_event_contract_order

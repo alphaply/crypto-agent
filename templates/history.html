@@ -39,6 +39,40 @@
             </div>
         </div>
 
+        {% if pnl_stats %}
+        <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-6 mb-8 flex flex-col md:flex-row gap-6 justify-between items-center transition-all hover:shadow-md">
+            <div class="flex-1 w-full flex items-center gap-4">
+                <div class="w-12 h-12 rounded-2xl flex items-center justify-center text-xl shadow-inner
+                    {% if pnl_stats.total_pnl >= 0 %}bg-emerald-50 text-emerald-600{% else %}bg-rose-50 text-rose-600{% endif %}">
+                    {% if pnl_stats.total_pnl >= 0 %}📈{% else %}📉{% endif %}
+                </div>
+                <div>
+                    <h2 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">累计已实现盈亏</h2>
+                    <div class="text-2xl font-black tracking-tight {% if pnl_stats.total_pnl >= 0 %}text-emerald-600{% else %}text-rose-600{% endif %}" style="font-family: 'JetBrains Mono', monospace;">
+                        {% if pnl_stats.total_pnl > 0 %}+{% endif %}{{ "%.4f"|format(pnl_stats.total_pnl) }} <span class="text-sm font-bold text-slate-400 ml-1">USDT</span>
+                    </div>
+                </div>
+            </div>
+            <div class="flex-1 w-full grid grid-cols-2 gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
+                <div>
+                    <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">历史胜率</h3>
+                    <div class="text-lg font-black text-slate-800" style="font-family: 'JetBrains Mono', monospace;">{{ "%.1f"|format(pnl_stats.win_rate) }}%</div>
+                </div>
+                <div>
+                    <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">交易开/平次数</h3>
+                    <div class="text-sm font-bold text-slate-600 flex items-center gap-2 mt-1">
+                        <span class="bg-slate-100 text-slate-800 px-2 py-0.5 rounded-lg">{{ pnl_stats.total_trades }} 笔</span>
+                        <div class="flex items-center gap-1.5 text-[11px] font-black">
+                            <span class="text-emerald-500 bg-emerald-50 px-1.5 py-0.5 rounded">{{ pnl_stats.win_count }}</span>
+                            <span class="text-slate-300">/</span>
+                            <span class="text-rose-500 bg-rose-50 px-1.5 py-0.5 rounded">{{ pnl_stats.lose_count }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         <div class="mb-6 flex flex-wrap gap-2 items-center">
             <span class="text-sm text-gray-500 mr-2 font-medium">Filter by:</span>
             
@@ -60,32 +94,32 @@
         {% if summaries %}
             <div class="space-y-6">
             {% for s in summaries %}
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="bg-gray-50 px-6 py-3 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                    <div class="flex items-center gap-3">
-                        <span class="font-bold text-gray-900">🤖 {{ s.agent_name or 'Agent' }}</span>
+            <div class="bg-white rounded-[1.5rem] shadow-sm border border-gray-200 overflow-hidden">
+                <div class="bg-gray-50/80 px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                    <div class="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto">
+                        <span class="font-bold text-sm sm:text-base text-gray-900 truncate break-all max-w-[150px] sm:max-w-none">🤖 {{ s.agent_name or 'Agent' }}</span>
                         {% if s.agent_type %}
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold 
+                        <span class="px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold 
                             {% if s.agent_type == 'REAL' %}bg-red-50 text-red-600
                             {% elif s.agent_type == 'SPOT_DCA' %}bg-yellow-50 text-yellow-600
                             {% else %}bg-blue-50 text-blue-600{% endif %}">
                             {{ s.agent_type }}
                         </span>
                         {% endif %}
-                        <span class="font-mono text-xs text-gray-500 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">{{ s.timestamp }}</span>
+                        <span class="font-mono text-[10px] sm:text-xs text-gray-500 bg-white px-2 py-1 rounded-lg border border-gray-200 shadow-sm ml-auto sm:ml-0">{{ s.timestamp }}</span>
                     </div>
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] sm:text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100 self-start sm:self-auto">
                         {{ s.timeframe or '15m' }}
                     </span>
                 </div>
                 
-                <div class="p-6">
-                    <div class="markdown-content text-gray-700 text-sm leading-7 font-sans mb-4" data-markdown>{{ s.content }}</div>
+                <div class="p-4 sm:p-6">
+                    <div class="markdown-content text-gray-700 text-[13px] sm:text-sm leading-6 sm:leading-7 font-sans mb-4" data-markdown>{{ s.content }}</div>
                     
                     {% if s.strategy_logic %}
-                    <div class="mt-4 bg-blue-50/50 rounded-lg p-4 border-l-4 border-blue-500">
-                        <strong class="text-blue-900 text-sm block mb-2">💡 思维链 / 策略逻辑:</strong>
-                        <div class="markdown-content text-blue-800 text-xs leading-relaxed font-mono" data-markdown>{{ s.strategy_logic }}</div>
+                    <div class="mt-4 bg-blue-50/50 rounded-xl p-3 sm:p-4 border-l-4 border-blue-500">
+                        <strong class="text-blue-900 text-[11px] sm:text-sm block mb-1.5 sm:mb-2">💡 思维链 / 策略逻辑:</strong>
+                        <div class="markdown-content text-blue-800 text-[10px] sm:text-xs leading-relaxed font-mono overflow-x-auto" data-markdown>{{ s.strategy_logic }}</div>
                     </div>
                     {% endif %}
                 </div>
