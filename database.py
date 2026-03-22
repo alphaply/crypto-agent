@@ -620,6 +620,69 @@ def get_pending_daily_summary_data(config_id, date_str):
         return [dict(row) for row in c.fetchall()]
 
 
+# --- Agent 做单统计 ---
+
+def get_agent_trade_stats(config_id):
+    """获取指定 Agent 的做单统计 (从 orders 表聚合)"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        try:
+            # 总订单数
+            total = c.execute(
+                "SELECT COUNT(*) FROM orders WHERE config_id = ?", (config_id,)
+            ).fetchone()[0]
+
+            if total == 0:
+                return {
+                    "total_orders": 0, "buy_count": 0, "sell_count": 0,
+                    "cancel_count": 0, "close_count": 0,
+                    "long_short_ratio": "N/A", "cancel_rate": 0,
+                    "first_order_at": None, "last_order_at": None,
+                }
+
+            # 分类计数
+            rows = c.execute("""
+                SELECT 
+                    SUM(CASE WHEN LOWER(side) LIKE '%buy%' THEN 1 ELSE 0 END) as buy_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%sell%' THEN 1 ELSE 0 END) as sell_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%cancel%' THEN 1 ELSE 0 END) as cancel_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%close%' THEN 1 ELSE 0 END) as close_count,
+                    MIN(timestamp) as first_order_at,
+                    MAX(timestamp) as last_order_at
+                FROM orders WHERE config_id = ?
+            """, (config_id,)).fetchone()
+
+            buy = rows['buy_count'] or 0
+            sell = rows['sell_count'] or 0
+            cancel = rows['cancel_count'] or 0
+            close = rows['close_count'] or 0
+
+            # 有效开仓单 = buy + sell (排除 cancel 和 close)
+            open_orders = buy + sell
+            ls_ratio = "N/A"
+            if sell > 0:
+                ls_ratio = f"{round(buy / sell, 2)}"
+            elif buy > 0:
+                ls_ratio = "∞ (纯多)"
+
+            cancel_rate = round(cancel / total * 100, 1) if total > 0 else 0
+
+            return {
+                "total_orders": total,
+                "buy_count": buy,
+                "sell_count": sell,
+                "cancel_count": cancel,
+                "close_count": close,
+                "long_short_ratio": ls_ratio,
+                "cancel_rate": cancel_rate,
+                "first_order_at": rows['first_order_at'],
+                "last_order_at": rows['last_order_at'],
+            }
+        except Exception as e:
+            logger.error(f"❌ get_agent_trade_stats error: {e}")
+            return {"total_orders": 0, "error": str(e)}
+
+
 if __name__ == "__main__":
     init_db()
     logger.info("Database initialized.")

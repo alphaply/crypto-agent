@@ -53,9 +53,11 @@
       <!-- 2. Agent 视窗容器 -->
       <div id="agent-windows-container" class="relative">
           {% for summary in agent_summaries %}
-          <div id="window-{{ summary.config_id }}" class="agent-window {{ '' if loop.first else 'hidden' }} space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div id="window-{{ summary.config_id }}" class="agent-window {{ '' if loop.first else 'hidden' }} space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300" data-mode="{{ summary.mode }}" data-config-id="{{ summary.config_id }}">
               
-              <!-- Agent 头部概览卡 -->
+              <!-- 📊 Agent 做单统计卡片 (Partial) -->
+              {% include 'partials/_agent_stats.html' %}
+              
               <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 items-stretch">
                   <!-- 左侧：分析正文 -->
                   <div class="lg:col-span-2 flex flex-col">

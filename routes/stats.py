@@ -1,6 +1,6 @@
 import sqlite3
 from flask import Blueprint, jsonify, request
-from routes.utils import DB_NAME, _require_chat_auth_api
+from routes.utils import DB_NAME, _require_chat_auth_api, logger
 from database import get_all_pricing, update_model_pricing
 
 stats_bp = Blueprint('stats', __name__)
@@ -163,3 +163,125 @@ def get_financial_stats():
         })
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
+
+
+@stats_bp.route('/api/stats/agent/<config_id>', methods=['GET'])
+def get_agent_stats(config_id):
+    """获取指定 Agent 的做单统计 (通用，适用所有模式)"""
+    try:
+        from database import get_agent_trade_stats
+        stats = get_agent_trade_stats(config_id)
+        return jsonify({"success": True, "stats": stats})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+
+@stats_bp.route('/api/stats/position/<config_id>', methods=['GET'])
+def get_position_stats(config_id):
+    """获取实盘仓位 + 真实盈亏统计 (仅 REAL 模式)"""
+    try:
+        from config import config as global_config
+        from utils.market_data import MarketTool
+        from database import save_trade_history
+
+        cfg = global_config.get_config_by_id(config_id)
+        if not cfg:
+            return jsonify({"success": False, "message": f"未找到配置: {config_id}"})
+
+        mode = cfg.get('mode', 'STRATEGY').upper()
+        symbol = cfg.get('symbol')
+
+        if mode != 'REAL':
+            return jsonify({"success": True, "mode": mode, "positions": [], "summary": None,
+                            "message": "仅 REAL 模式支持实时仓位查询"})
+
+        mt = MarketTool(config_id=config_id)
+
+        # 1. 获取当前仓位
+        positions = []
+        try:
+            all_pos = mt.exchange.fetch_positions([symbol])
+            for p in all_pos:
+                contracts = float(p.get('contracts', 0))
+                if contracts > 0:
+                    entry = float(p.get('entryPrice', 0))
+                    unrealized = float(p.get('unrealizedPnl', 0))
+                    notional = float(p.get('notional', 0)) or (entry * contracts)
+                    pnl_pct = (unrealized / abs(notional) * 100) if notional != 0 else 0
+                    leverage = p.get('leverage', cfg.get('leverage', 1))
+                    positions.append({
+                        'symbol': p.get('symbol', symbol),
+                        'side': str(p.get('side', '')).upper(),
+                        'contracts': contracts,
+                        'entry_price': entry,
+                        'mark_price': float(p.get('markPrice', 0)),
+                        'unrealized_pnl': round(unrealized, 4),
+                        'pnl_pct': round(pnl_pct, 2),
+                        'leverage': leverage,
+                        'notional': round(abs(notional), 2),
+                    })
+        except Exception as e:
+            logger.warning(f"Fetch positions error: {e}")
+
+        # 2. 获取账户余额
+        balance = 0
+        try:
+            bal = mt.exchange.fetch_balance()
+            balance = float(bal.get('USDT', {}).get('total', 0) or
+                            bal.get('total', {}).get('USDT', 0) or 0)
+        except Exception as e:
+            logger.warning(f"Fetch balance error: {e}")
+
+        # 3. 获取最近成交 & 同步到数据库
+        recent_trades = []
+        trade_summary = {"total_trades": 0, "realized_pnl": 0, "win_count": 0,
+                         "lose_count": 0, "win_rate": 0}
+        try:
+            raw_trades = mt.exchange.fetch_my_trades(symbol, limit=100)
+            if raw_trades:
+                save_trade_history(raw_trades)
+
+                # 统计盈亏
+                for t in raw_trades:
+                    pnl = t.get('realizedPnl')
+                    if pnl is None and 'info' in t:
+                        pnl = t['info'].get('realizedPnl')
+                    if pnl is not None:
+                        pnl = float(pnl)
+                        if pnl > 0:
+                            trade_summary["win_count"] += 1
+                        elif pnl < 0:
+                            trade_summary["lose_count"] += 1
+                        trade_summary["realized_pnl"] += pnl
+
+                trade_summary["total_trades"] = len(raw_trades)
+                total_decided = trade_summary["win_count"] + trade_summary["lose_count"]
+                trade_summary["win_rate"] = round(
+                    trade_summary["win_count"] / total_decided * 100, 1
+                ) if total_decided > 0 else 0
+                trade_summary["realized_pnl"] = round(trade_summary["realized_pnl"], 4)
+
+                # 最近 5 笔给前端展示用
+                recent_trades = [{
+                    'time': t.get('datetime', ''),
+                    'side': t.get('side', ''),
+                    'price': float(t.get('price', 0)),
+                    'amount': float(t.get('amount', 0)),
+                    'pnl': float(t.get('info', {}).get('realizedPnl', 0) or 0),
+                } for t in raw_trades[-5:]]
+        except Exception as e:
+            logger.warning(f"Fetch trades error: {e}")
+
+        return jsonify({
+            "success": True,
+            "mode": mode,
+            "positions": positions,
+            "balance": round(balance, 2),
+            "recent_trades": recent_trades,
+            "summary": trade_summary,
+        })
+    except Exception as e:
+        import traceback
+        logger.error(f"Position stats error: {traceback.format_exc()}")
+        return jsonify({"success": False, "message": str(e)})
+

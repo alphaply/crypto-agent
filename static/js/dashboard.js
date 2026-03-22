@@ -46,6 +46,11 @@ function switchAgentTab(agentName) {
 
     // 3. 正常渲染可见视窗
     renderMarkdown();
+
+    // 4. 加载该 Agent 的统计数据
+    if (agentName !== 'COMPARE') {
+        loadAgentStats(agentName);
+    }
 }
 
 function renderMarkdown(force = false, root = document) {
@@ -70,6 +75,12 @@ function renderMarkdown(force = false, root = document) {
 
 document.addEventListener('DOMContentLoaded', function() {
     renderMarkdown();
+    // 自动加载第一个 Agent 的统计
+    const firstWindow = document.querySelector('.agent-window:not(.hidden)');
+    if (firstWindow) {
+        const configId = firstWindow.getAttribute('data-config-id');
+        if (configId) loadAgentStats(configId);
+    }
 });
 
 // --- UI 通用组件 ---
@@ -957,4 +968,117 @@ function filterOrders(agentName) {
         }
     });
     document.getElementById('orderCount').textContent = visibleCount;
+}
+
+// --- Agent 做单统计 & 实盘仓位 ---
+
+const loadedStats = new Set();
+
+async function loadAgentStats(configId) {
+    // 避免重复加载
+    if (loadedStats.has(configId)) return;
+    loadedStats.add(configId);
+
+    try {
+        const resp = await fetch(`/api/stats/agent/${configId}`);
+        const data = await resp.json();
+        if (!data.success) return;
+
+        const s = data.stats;
+        const el = (id) => document.getElementById(`${id}-${configId}`);
+
+        el('stat-total').textContent = s.total_orders;
+        el('stat-ls').textContent = s.long_short_ratio;
+        el('stat-buy').textContent = `多:${s.buy_count}`;
+        el('stat-sell').textContent = `空:${s.sell_count}`;
+
+        // 取消率颜色
+        const cancelEl = el('stat-cancel');
+        cancelEl.textContent = `${s.cancel_rate}%`;
+        cancelEl.className = `text-lg font-black ${s.cancel_rate > 30 ? 'text-red-500' : (s.cancel_rate > 10 ? 'text-amber-500' : 'text-emerald-600')}`;
+        el('stat-cancel-count').textContent = `${s.cancel_count} 次取消`;
+
+        el('stat-close').textContent = s.close_count;
+
+        // 时间跨度
+        if (s.first_order_at && s.last_order_at) {
+            el('stat-period').textContent = `${s.first_order_at.substring(5, 10)} ~ ${s.last_order_at.substring(5, 10)}`;
+        }
+    } catch (e) {
+        console.error('Load agent stats error:', e);
+    }
+
+    // 自动加载实盘仓位 (如果是 REAL 模式)
+    const win = document.getElementById(`window-${configId}`);
+    if (win && win.getAttribute('data-mode') === 'REAL') {
+        loadPositionStats(configId);
+    }
+}
+
+async function loadPositionStats(configId) {
+    const panel = document.getElementById(`position-panel-${configId}`);
+    if (!panel) return;
+    panel.classList.remove('hidden');
+
+    const container = document.getElementById(`pos-container-${configId}`);
+    container.innerHTML = '<div class="text-center text-gray-500 text-xs py-2">⏳ 加载中...</div>';
+
+    try {
+        const resp = await fetch(`/api/stats/position/${configId}`);
+        const data = await resp.json();
+        if (!data.success) {
+            container.innerHTML = `<div class="text-center text-red-400 text-xs py-2">❌ ${data.message}</div>`;
+            return;
+        }
+
+        // 余额
+        const balEl = document.getElementById(`pos-balance-${configId}`);
+        if (balEl && data.balance) balEl.textContent = `💰 ${data.balance.toFixed(2)} USDT`;
+
+        // 仓位渲染
+        if (data.positions && data.positions.length > 0) {
+            container.innerHTML = data.positions.map(p => {
+                const isLong = p.side === 'LONG';
+                const pnlColor = p.unrealized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+                const sideColor = isLong ? 'bg-emerald-500' : 'bg-red-500';
+                return `
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between bg-white/5 rounded-xl px-3 sm:px-4 py-2.5 sm:py-3 gap-1.5 sm:gap-3">
+                        <div class="flex items-center gap-2 sm:gap-3">
+                            <span class="px-1.5 sm:px-2 py-0.5 rounded-md text-[9px] sm:text-[10px] font-black text-white ${sideColor} flex-shrink-0">${p.side}</span>
+                            <div class="min-w-0">
+                                <div class="text-[11px] sm:text-xs font-bold">${p.contracts} 张</div>
+                                <div class="text-[8px] sm:text-[9px] text-gray-400 truncate">开仓: ${p.entry_price} | 标记: ${p.mark_price}</div>
+                            </div>
+                        </div>
+                        <div class="text-right sm:text-right pl-6 sm:pl-0 flex-shrink-0">
+                            <div class="text-xs sm:text-sm font-black ${pnlColor}">${p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl} USDT</div>
+                            <div class="text-[8px] sm:text-[9px] ${pnlColor}">${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct}% | ${p.leverage}x</div>
+                        </div>
+                    </div>`;
+            }).join('');
+        } else {
+            container.innerHTML = '<div class="text-center text-gray-500 text-xs py-3">暂无持仓</div>';
+        }
+
+        // 盈亏摘要
+        if (data.summary) {
+            const summaryPanel = document.getElementById(`pos-summary-${configId}`);
+            summaryPanel.classList.remove('hidden');
+
+            const pnlEl = document.getElementById(`pos-pnl-${configId}`);
+            const pnl = data.summary.realized_pnl;
+            pnlEl.textContent = `${pnl >= 0 ? '+' : ''}${pnl} USDT`;
+            pnlEl.className = `text-sm font-black ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`;
+
+            const wrEl = document.getElementById(`pos-winrate-${configId}`);
+            const wr = data.summary.win_rate;
+            wrEl.textContent = `${wr}%`;
+            wrEl.className = `text-sm font-black ${wr >= 50 ? 'text-emerald-400' : 'text-amber-400'}`;
+
+            document.getElementById(`pos-trades-${configId}`).textContent = data.summary.total_trades;
+        }
+    } catch (e) {
+        container.innerHTML = `<div class="text-center text-red-400 text-xs py-2">❌ 网络错误</div>`;
+        console.error('Load position stats error:', e);
+    }
 }
