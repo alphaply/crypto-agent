@@ -207,6 +207,20 @@ class MarketTool:
             except Exception as e:
                 logger.error(f"❌ _check_mock_orders_tp_sl error for {o.get('order_id')}: {e}")
 
+    def run_silent_sl_tp(self):
+        """[Phase 3] 仅执行盈亏检测，不运行策略。由调度器每分钟触发，实现实时止盈止损。"""
+        if not self.config_id or not self.symbol: return
+        try:
+            # 获取最近 1 分钟的 K线，用其 High/Low 进行检测
+            ohlcv = self.exchange.fetch_ohlcv(self.symbol, '1m', limit=1)
+            if ohlcv:
+                # [timestamp, open, high, low, close, volume]
+                h = float(ohlcv[0][2])
+                l = float(ohlcv[0][3])
+                self._check_mock_orders_tp_sl(self.symbol, h, l)
+        except Exception as e:
+            logger.warning(f"⚠️ [SilentMonitor] {self.config_id} 检测失败: {e}")
+
     def get_account_status(self, symbol, is_real=False, agent_name=None, config_id=None):
         status_data = {
             "balance": 0,

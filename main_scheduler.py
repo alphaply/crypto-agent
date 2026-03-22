@@ -122,6 +122,14 @@ def process_single_config(config):
     now = datetime.now(TZ_CN)
 
     if not symbol: return
+
+    # --- [Phase 3] 静默辅助监控: 每分钟检测模拟盘止盈止损 ---
+    if mode == 'STRATEGY':
+        try:
+            m_tool = MarketTool(config_id=config_id)
+            m_tool.run_silent_sl_tp()
+        except: pass
+
     if not is_time_to_run(config, now): return
 
     logger.info(f"🚀 [{config_id}] 满足触发条件 ({mode}, Interval: {config.get('run_interval','Default')})，开始执行...")
@@ -176,34 +184,8 @@ def run_daily_summary_job():
         if not config.get('enabled', True):
             continue
         config_id = config['config_id']
-        symbol = config.get('symbol', 'Unknown')
-
-        try:
-            rows = get_pending_daily_summary_data(config_id, yesterday)
-            if not rows:
-                logger.debug(f"📅 [{config_id}] {yesterday} 无数据，跳过")
-                continue
-
-            # 拼接当天所有 strategy_logic
-            combined = "\n".join(
-                f"[{r['timestamp']}] {r['strategy_logic']}"
-                for r in rows if r.get('strategy_logic')
-            )
-            if not combined.strip():
-                continue
-
-            # 使用 LLM 压缩为一段每日总结
-            daily_summary = summarize_content(
-                f"以下是 {yesterday} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾，"
-                f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}",
-                config
-            )
-
-            save_daily_summary(yesterday, symbol, config_id, daily_summary, len(rows))
-            logger.info(f"✅ [{config_id}] {yesterday} 每日汇总完成 ({len(rows)} 条来源)")
-        except Exception as e:
-            logger.error(f"❌ [{config_id}] 每日汇总失败: {e}")
-
+        generate_manual_daily_summary(config_id, yesterday)
+        
     _daily_summary_done_date = today_str
     logger.info(f"📅 [DailySummary] {yesterday} 全部汇总完成")
 

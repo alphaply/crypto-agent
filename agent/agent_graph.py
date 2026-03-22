@@ -126,6 +126,43 @@ def summarize_content(content: str, agent_config: dict) -> str:
         logger.error(f"❌ [Summarizer Error]: {e}")
         return content[:200] + "..."
 
+def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
+    """手动或通过调度器触发特定周期的每日总结汇总。"""
+    from database import get_pending_daily_summary_data, save_daily_summary
+    from config import config as global_config
+    
+    # 查找对应的 config
+    all_configs = global_config.get_all_symbol_configs()
+    target_config = next((c for c in all_configs if c['config_id'] == config_id), None)
+    if not target_config:
+        logger.error(f"Config ID {config_id} not found for manual summary.")
+        return False
+        
+    try:
+        rows = get_pending_daily_summary_data(config_id, date_str)
+        if not rows:
+            logger.info(f"No summary data found for {config_id} on {date_str}")
+            return False
+            
+        combined = "\n".join(
+            f"[{r['timestamp']}] {r['strategy_logic']}"
+            for r in rows if r.get('strategy_logic')
+        )
+        if not combined.strip():
+            return False
+            
+        summary_text = summarize_content(
+            f"以下是 {date_str} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾，"
+            f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}",
+            target_config
+        )
+        
+        save_daily_summary(date_str, target_config.get('symbol', 'Unknown'), config_id, summary_text, len(rows))
+        return True
+    except Exception as e:
+        logger.error(f"Failed to generate manual daily summary for {config_id}: {e}")
+        return False
+
 # ==========================================
 # 2. Nodes
 # ==========================================

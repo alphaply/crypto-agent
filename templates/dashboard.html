@@ -53,12 +53,12 @@
       <!-- 2. Agent 视窗容器 -->
       <div id="agent-windows-container" class="relative">
           {% for summary in agent_summaries %}
-          <div id="window-{{ summary.config_id }}" class="agent-window {{ '' if loop.first else 'hidden' }} space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300" data-mode="{{ summary.mode }}" data-config-id="{{ summary.config_id }}">
+          <div id="window-{{ summary.config_id }}" class="agent-window {{ '' if loop.first else 'hidden' }} space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300 h-auto lg:h-[calc(100vh-180px)] flex flex-col" data-mode="{{ summary.mode }}" data-config-id="{{ summary.config_id }}">
               
               <!-- 📊 Agent 做单统计卡片 (Partial) -->
               {% include 'partials/_agent_stats.html' %}
               
-              <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 items-stretch">
+              <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 items-stretch flex-grow min-h-0">
                   <!-- 左侧：分析正文 -->
                   <div class="lg:col-span-2 flex flex-col">
                       <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col h-full">
@@ -126,7 +126,7 @@
                                   </button>
                               </div>
                           </div>
-                          <div id="order-container-{{ summary.config_id }}" class="flex-grow overflow-y-auto mini-scroll p-3 md:p-4 space-y-2.5 md:space-y-3" style="max-height: calc(100vh - 400px);">
+                          <div id="order-container-{{ summary.config_id }}" class="flex-grow overflow-y-auto mini-scroll p-3 md:p-4 space-y-2.5 md:space-y-3">
                               {% if summary.all_orders %}
                                   {% for order in summary.all_orders %}
                                   <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all">
@@ -348,7 +348,10 @@
                 <div class="px-4 sm:px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-gray-50 flex-shrink-0 gap-3 sm:gap-0">
                     <div class="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 w-full sm:w-auto overflow-hidden">
                         <div class="flex justify-between items-center w-full sm:w-auto">
-                            <h3 class="text-lg font-bold text-gray-900">⚙️ 配置中心</h3>
+                            <h3 class="text-lg font-bold text-gray-900 flex items-center gap-2">
+                                <span class="p-1.5 bg-blue-100 text-blue-600 rounded-lg shadow-sm">⚙️</span>
+                                配置中心
+                            </h3>
                             <button onclick="closeConfigModal()" class="sm:hidden text-gray-400 hover:text-gray-600 text-2xl p-1 -mr-2">&times;</button>
                         </div>
                         <div class="flex bg-gray-200 p-1 rounded-lg text-[10px] sm:text-[11px] font-bold uppercase w-full sm:w-auto overflow-x-auto no-scrollbar">
@@ -453,11 +456,14 @@
         <div class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm" onclick="closeSymbolEditModal()"></div>
         <div class="fixed inset-0 flex items-center justify-center p-4">
             <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-gray-200 modal-content h-auto !max-h-[90vh]">
-                <div class="px-6 py-4 border-b bg-gray-50 flex justify-between items-center">
-                    <h4 id="symbol-modal-title" class="font-bold text-gray-900">编辑交易对</h4>
-                    <button onclick="closeSymbolEditModal()" class="text-gray-400 text-2xl">&times;</button>
+                <div class="px-6 py-5 border-b bg-gray-50/50 flex justify-between items-center">
+                    <h4 id="symbol-modal-title" class="text-lg font-black text-gray-900 flex items-center gap-2">
+                         <span class="p-1.5 bg-indigo-100 text-indigo-600 rounded-lg shadow-sm">✏️</span>
+                         编辑交易对
+                    </h4>
+                    <button onclick="closeSymbolEditModal()" class="text-gray-400 hover:text-gray-600 transition-colors text-2xl p-2">&times;</button>
                 </div>
-                <div class="p-6 space-y-6 overflow-y-auto max-h-[70vh] mini-scroll">
+                <div class="p-4 sm:p-8 space-y-6 overflow-y-auto max-h-[70vh] mini-scroll">
                     <input type="hidden" id="edit-config-index">
                     
                     <!-- 1. 核心交易配置 -->

@@ -14,6 +14,7 @@ from database import (
     get_active_agents, get_paginated_orders, get_db_conn, get_daily_summaries,
     get_history_pnl_stats, get_mock_account, get_mock_equity_history
 )
+from agent.agent_graph import generate_manual_daily_summary
 
 main_bp = Blueprint('main', __name__)
 
@@ -244,6 +245,22 @@ def history_view():
 @main_bp.route('/chat')
 def chat_view():
     return render_template('chat.html', authed=_chat_authed())
+
+@main_bp.route('/api/generate_daily_summary', methods=['POST'])
+def manual_generate_summary():
+    data = request.json
+    password = data.get('password')
+    config_id = data.get('config_id')
+    date_str = data.get('date') # YYYY-MM-DD
+    
+    if password != os.getenv("ADMIN_PASSWORD"):
+        return jsonify({"success": False, "error": "Unauthorized"})
+        
+    if not config_id or not date_str:
+        return jsonify({"success": False, "error": "Missing params"})
+        
+    success = generate_manual_daily_summary(config_id, date_str)
+    return jsonify({"success": success})
 
 @main_bp.route('/api/clean_history', methods=['POST'])
 def clean_history():

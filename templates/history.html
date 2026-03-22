@@ -102,7 +102,14 @@
             <script>
                 document.addEventListener('DOMContentLoaded', function() {
                     const ctx = document.getElementById('equityChart').getContext('2d');
-                    const rawData = {{ mock_chart_data|tojson|safe }};
+                    const rawData = {{ mock_chart_data|tojson|safe }} || [];
+                    if (rawData.length === 0) {
+                        ctx.font = '14px sans-serif';
+                        ctx.fillStyle = '#94a3b8';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('暂无盈亏历史数据', ctx.canvas.width/2, ctx.canvas.height/2);
+                        return;
+                    }
                     
                     const labels = rawData.map(d => d.date);
                     const dataPoints = rawData.map(d => d.balance);
@@ -165,27 +172,72 @@
                         }
                     });
                 });
+
+                async function triggerManualSummary() {
+                    const agent = "{{ current_agent }}";
+                    if (agent === 'ALL') {
+                        alert('请先选择一个具体的 Agent 再生成汇总。');
+                        return;
+                    }
+                    
+                    const password = prompt('请输入管理员密码以触发汇总:');
+                    if (!password) return;
+                    
+                    // 默认生成昨日的
+                    const yesterday = new Date();
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    const dateStr = yesterday.toISOString().split('T')[0];
+                    
+                    try {
+                        const resp = await fetch('/api/generate_daily_summary', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                password: password,
+                                config_id: agent,
+                                date: dateStr
+                            })
+                        });
+                        const data = await resp.json();
+                        if (data.success) {
+                            alert('汇总生成成功！3秒后刷新页面...');
+                            setTimeout(() => location.reload(), 3000);
+                        } else {
+                            alert('生成失败: ' + (data.error || '未知错误'));
+                        }
+                    } catch (e) {
+                        alert('请求出错: ' + e);
+                    }
+                }
             </script>
             {% endif %}
         </div>
         {% endif %}
 
-        <div class="mb-6 flex flex-wrap gap-2 items-center">
-            <span class="text-sm text-gray-500 mr-2 font-medium">Filter by:</span>
-            
-            <a href="?symbol={{ current_symbol }}&agent=ALL" 
-               class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border 
-               {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == 'ALL' else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
-               ALL
-            </a>
+        <div class="mb-8 flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+            <div class="flex flex-wrap gap-2 items-center">
+                <span class="text-sm text-gray-500 mr-2 font-medium">筛选 Agent:</span>
+                
+                <a href="?symbol={{ current_symbol }}&agent=ALL" 
+                   class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border 
+                   {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == 'ALL' else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
+                   ALL
+                </a>
 
-            {% for agent in active_agents %}
-            <a href="?symbol={{ current_symbol }}&agent={{ agent }}" 
-               class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border 
-               {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == agent else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
-               {{ agent }}
-            </a>
-            {% endfor %}
+                {% for agent in active_agents %}
+                <a href="?symbol={{ current_symbol }}&agent={{ agent }}" 
+                   class="px-3 py-1.5 rounded-full text-xs font-bold transition-all border 
+                   {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == agent else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
+                   {{ agent }}
+                </a>
+                {% endfor %}
+            </div>
+
+            {% if current_agent != 'ALL' %}
+            <button onclick="triggerManualSummary()" class="w-full sm:w-auto inline-flex items-center justify-center px-5 py-2.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-100 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95">
+                <span class="mr-2">📝</span> 生成昨日汇总 (需密码)
+            </button>
+            {% endif %}
         </div>
 
         {% if summaries %}
@@ -211,7 +263,11 @@
                 </div>
                 
                 <div class="p-4 sm:p-6">
-                    <div class="markdown-content text-gray-700 text-[13px] sm:text-sm leading-6 sm:leading-7 font-sans mb-4" data-markdown>{{ s.content }}</div>
+                    {% if s.content %}
+                    <div class="markdown-content text-gray-700 text-[13px] sm:text-sm leading-6 sm:leading-7 font-sans mb-4" data-markdown>{{ s.content|trim }}</div>
+                    {% else %}
+                    <div class="text-gray-400 text-xs italic mb-4">分析记录内容为空</div>
+                    {% endif %}
                     
                     {% if s.strategy_logic %}
                     <div class="mt-4 bg-blue-50/50 rounded-xl p-3 sm:p-4 border-l-4 border-blue-500">
@@ -226,8 +282,19 @@
 
             <script>
                 document.addEventListener('DOMContentLoaded', function() {
+                    if (typeof marked === 'undefined') {
+                        console.error('Marked library not loaded!');
+                        return;
+                    }
                     document.querySelectorAll('[data-markdown]').forEach(function(el) {
-                        el.innerHTML = marked.parse(el.textContent);
+                        try {
+                            const raw = el.textContent || el.innerText || '';
+                            if (raw.trim()) {
+                                el.innerHTML = marked.parse(raw);
+                            }
+                        } catch (e) {
+                            console.error('Markdown parse error:', e);
+                        }
                     });
                 });
             </script>
