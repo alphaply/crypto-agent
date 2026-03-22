@@ -73,6 +73,103 @@
         </div>
         {% endif %}
 
+        {% if current_agent != 'ALL' and mock_acc %}
+        <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-6 mb-8 transition-all hover:shadow-md">
+            <div class="flex flex-col md:flex-row gap-6 justify-between items-start md:items-center mb-6">
+                <div>
+                    <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <span class="text-xl">💰</span> 模拟资金池 (Strategy 模式)
+                    </h2>
+                    <p class="text-[11px] text-slate-400 mt-1">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的虚拟本金与历史盈亏曲线</p>
+                </div>
+                <div class="flex gap-6">
+                    <div>
+                        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">当前余额 (虚拟)</h3>
+                        <div class="text-xl font-black text-blue-600" style="font-family: 'JetBrains Mono', monospace;">{{ "%.2f"|format(mock_acc.balance) }} <span class="text-xs font-bold text-slate-400">USDT</span></div>
+                    </div>
+                    <div>
+                        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">破产重置次数 (<1000)</h3>
+                        <div class="text-xl font-black text-rose-500" style="font-family: 'JetBrains Mono', monospace;">{{ mock_acc.failures }} <span class="text-xs font-bold text-slate-400">次</span></div>
+                    </div>
+                </div>
+            </div>
+            
+            {% if mock_chart_data and mock_chart_data|length > 0 %}
+            <div class="w-full h-[200px]">
+                <canvas id="equityChart"></canvas>
+            </div>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    const ctx = document.getElementById('equityChart').getContext('2d');
+                    const rawData = {{ mock_chart_data|tojson|safe }};
+                    
+                    const labels = rawData.map(d => d.date);
+                    const dataPoints = rawData.map(d => d.balance);
+                    
+                    const gradient = ctx.createLinearGradient(0, 0, 0, 200);
+                    gradient.addColorStop(0, 'rgba(59, 130, 246, 0.2)');
+                    gradient.addColorStop(1, 'rgba(59, 130, 246, 0)');
+                    
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: '模拟账户净值',
+                                data: dataPoints,
+                                borderColor: '#3b82f6',
+                                backgroundColor: gradient,
+                                borderWidth: 2,
+                                pointBackgroundColor: '#ffffff',
+                                pointBorderColor: '#3b82f6',
+                                pointBorderWidth: 2,
+                                pointRadius: rawData.length > 20 ? 0 : 3,
+                                pointHoverRadius: 5,
+                                fill: true,
+                                tension: 0.3
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    backgroundColor: '#1e293b',
+                                    titleFont: { family: 'Inter', size: 11 },
+                                    bodyFont: { family: 'JetBrains Mono', size: 12 },
+                                    padding: 10,
+                                    displayColors: false,
+                                    callbacks: {
+                                        label: function(context) { return '$' + context.parsed.y.toFixed(2); }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { display: false },
+                                    ticks: { font: { family: 'Inter', size: 10 }, color: '#94a3b8', maxTicksLimit: 7 }
+                                },
+                                y: {
+                                    grid: { display: true, color: '#f1f5f9' },
+                                    border: { display: false },
+                                    ticks: { 
+                                        font: { family: 'JetBrains Mono', size: 10 }, 
+                                        color: '#94a3b8',
+                                        callback: function(value) { return '$' + value; }
+                                    }
+                                }
+                            },
+                            interaction: { intersect: false, mode: 'index' }
+                        }
+                    });
+                });
+            </script>
+            {% endif %}
+        </div>
+        {% endif %}
+
         <div class="mb-6 flex flex-wrap gap-2 items-center">
             <span class="text-sm text-gray-500 mr-2 font-medium">Filter by:</span>
             

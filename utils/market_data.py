@@ -167,6 +167,46 @@ class MarketTool:
     # 1. 获取数据逻辑
     # ==========================================
 
+    def _check_mock_orders_tp_sl(self, symbol, current_high, current_low):
+        """检查模拟盘订单是否触及止盈止损并自动平仓"""
+        if not self.config_id: return
+        mock_orders = database.get_mock_orders(symbol=symbol, config_id=self.config_id)
+        if not mock_orders: return
+        
+        for o in mock_orders:
+            try:
+                side = o.get('side', '').upper()
+                sl = float(o.get('stop_loss') or 0)
+                tp = float(o.get('take_profit') or 0)
+                entry = float(o.get('price') or 0)
+                amount = float(o.get('amount') or 0)
+                
+                close_price = 0
+                reason = ""
+                
+                if 'BUY' in side:
+                    if sl > 0 and current_low <= sl:
+                        close_price = sl
+                        reason = f"📉 触及止损价 {sl}"
+                    elif tp > 0 and current_high >= tp:
+                        close_price = tp
+                        reason = f"🎯 触及止盈价 {tp}"
+                elif 'SELL' in side:
+                    if sl > 0 and current_high >= sl:
+                        close_price = sl
+                        reason = f"📉 触及止损价 {sl}"
+                    elif tp > 0 and current_low <= tp:
+                        close_price = tp
+                        reason = f"🎯 触及止盈价 {tp}"
+                        
+                if close_price > 0:
+                    realized_pnl = (close_price - entry) * amount * (1 if 'BUY' in side else -1)
+                    database.close_mock_order(o['order_id'], close_price=close_price, realized_pnl=realized_pnl)
+                    logger.info(f"⚡ [Auto TP/SL] {symbol} 模拟单 {o['order_id']} 自动平仓: {reason}, PnL={realized_pnl:.4f}")
+                    database.save_order_log(o['order_id'] + "_AUTO", symbol, o['agent_name'], f"CLOSE_{side}", close_price, 0, 0, f"[智能盯盘] {reason}", trade_mode="STRATEGY", config_id=self.config_id)
+            except Exception as e:
+                logger.error(f"❌ _check_mock_orders_tp_sl error for {o.get('order_id')}: {e}")
+
     def get_account_status(self, symbol, is_real=False, agent_name=None, config_id=None):
         status_data = {
             "balance": 0,
@@ -289,7 +329,10 @@ class MarketTool:
                     logger.warning(f"Fetch real orders error: {e}")
             else:
                 # 模拟模式
-                status_data["balance"] = 10000.0 
+                # 获取策略沙盒内的资金（破产会自动重置回10000并在数据库记1笔failures）
+                mock_acc = database.get_mock_account(config_id or agent_name, symbol)
+                status_data["balance"] = mock_acc.get('balance', 10000.0)
+                
                 # 同时传入 config_id 和 agent_name 以获得最佳兼容性
                 status_data["mock_open_orders"] = database.get_mock_orders(symbol, agent_name=agent_name, config_id=config_id)
                 
@@ -359,6 +402,10 @@ class MarketTool:
             high = df['high']
             low = df['low']
             volume = df['volume']
+            
+            # ================= 新增: 模拟盘 Auto TP/SL 检查 =================
+            if self.config_id:
+                self._check_mock_orders_tp_sl(symbol, float(high.iloc[-1]), float(low.iloc[-1]))
             
             # ================= 精简指标计算 =================
             # 1. 均线 (移除 EMA100，保留 20/50/200)

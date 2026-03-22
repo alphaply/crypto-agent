@@ -170,6 +170,23 @@ def init_db():
                         UNIQUE(date, config_id)
                     )''')
 
+        # 10. 模拟账户资金表
+        c.execute('''CREATE TABLE IF NOT EXISTS mock_accounts (
+                        config_id TEXT PRIMARY KEY,
+                        symbol TEXT,
+                        balance REAL DEFAULT 10000.0,
+                        failures INTEGER DEFAULT 0
+                    )''')
+
+        # 11. 模拟账户资金流水表
+        c.execute('''CREATE TABLE IF NOT EXISTS mock_balance_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        config_id TEXT,
+                        symbol TEXT,
+                        timestamp TEXT,
+                        balance REAL
+                    )''')
+
         conn.commit()
 
 # --- 模型计价管理 ---
@@ -195,7 +212,62 @@ def update_model_pricing(model, input_price, output_price, currency='USD'):
         ''', (model, input_price, output_price, currency))
         conn.commit()
 
-# --- 模拟交易 / 挂单池功能 ---
+# --- 模拟交易资金池 / 挂单池功能 ---
+
+def get_mock_account(config_id, symbol):
+    """获取/初始化模拟账户"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM mock_accounts WHERE config_id = ?", (config_id,))
+        row = c.fetchone()
+        if not row:
+            c.execute("INSERT INTO mock_accounts (config_id, symbol, balance, failures) VALUES (?, ?, ?, ?)",
+                      (config_id, symbol, 10000.0, 0))
+            conn.commit()
+            return {"config_id": config_id, "symbol": symbol, "balance": 10000.0, "failures": 0}
+        return dict(row)
+
+def update_mock_account_balance(config_id, symbol, realized_pnl):
+    """更新模拟账户余额，处理爆仓逻辑，并记录流水"""
+    acc = get_mock_account(config_id, symbol)
+    new_balance = acc['balance'] + realized_pnl
+    failures = acc['failures']
+    
+    if new_balance < 1000:
+        new_balance = 10000.0  # 破产重置
+        failures += 1
+        
+    timestamp = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute("UPDATE mock_accounts SET balance = ?, failures = ? WHERE config_id = ?",
+                  (new_balance, failures, config_id))
+        c.execute("INSERT INTO mock_balance_history (config_id, symbol, timestamp, balance) VALUES (?, ?, ?, ?)",
+                  (config_id, symbol, timestamp, new_balance))
+        conn.commit()
+    return new_balance, failures
+
+def get_mock_equity_history(config_id, days=30):
+    """获取指定策略模拟账户的资金曲线（按天聚合的最后一条），最多保留 30 天"""
+    cutoff = (datetime.now(TZ_CN) - timedelta(days=days)).strftime('%Y-%m-%d 00:00:00')
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        # 每天取最后一条
+        c.execute('''
+            SELECT date(timestamp) as date, balance
+            FROM mock_balance_history
+            WHERE config_id = ? AND timestamp >= ?
+            GROUP BY date(timestamp)
+            ORDER BY date(timestamp) ASC
+        ''', (config_id, cutoff))
+        rows = c.fetchall()
+        
+        # 如果历史为空，至少返回当前本金点亮图表
+        if not rows:
+            acc = get_mock_account(config_id, "")
+            rows = [{"date": datetime.now(TZ_CN).strftime('%Y-%m-%d'), "balance": acc['balance']}]
+            
+        return [dict(r) for r in rows]
 
 def save_token_usage(symbol, config_id, model, prompt_tokens, completion_tokens):
     """记录 LLM Token 使用情况"""
@@ -269,6 +341,12 @@ def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
     with get_db_conn() as conn:
         c = conn.cursor()
         close_time = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 先更新虚拟账户与流水
+        row = c.execute("SELECT symbol, config_id FROM mock_orders WHERE order_id=?", (order_id,)).fetchone()
+        if row:
+            update_mock_account_balance(row['config_id'], row['symbol'], realized_pnl)
+
         c.execute('''
             UPDATE mock_orders 
             SET status='CLOSED', close_price=?, realized_pnl=?, close_time=? 
