@@ -208,8 +208,8 @@ def history_view():
     per_page = 20
 
     try:
-        summaries = get_paginated_summaries(symbol, page, per_page, agent_name=agent_filter)
-        total_count = get_summary_count(symbol, agent_name=agent_filter)
+        summaries = get_paginated_summaries(symbol, page, per_page, config_id=agent_filter)
+        total_count = get_summary_count(symbol, config_id=agent_filter)
         total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
         active_agents = get_active_agents(symbol)
         pnl_stats = get_history_pnl_stats(symbol, config_id=agent_filter)

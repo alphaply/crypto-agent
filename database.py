@@ -393,8 +393,8 @@ def get_active_agents(symbol):
     with get_db_conn() as conn:
         c = conn.cursor()
         try:
-            # 获取该币种下所有不为空的 agent_name
-            rows = c.execute("SELECT DISTINCT agent_name FROM summaries WHERE symbol = ? AND agent_name IS NOT NULL", (symbol,)).fetchall()
+            # 获取该币种下所有不为空的 config_id
+            rows = c.execute("SELECT DISTINCT config_id FROM summaries WHERE symbol = ? AND config_id IS NOT NULL", (symbol,)).fetchall()
             return [r[0] for r in rows if r[0]]
         except:
             return []
@@ -434,22 +434,22 @@ def get_recent_summaries(symbol, agent_name=None, limit=10, config_id=None, agen
             
         return [dict(row) for row in c.fetchall()]
 
-def get_summary_count(symbol, agent_name=None):
+def get_summary_count(symbol, config_id=None):
     with get_db_conn() as conn:
         c = conn.cursor()
         try:
             sql = "SELECT COUNT(*) FROM summaries WHERE symbol = ?"
             params = [symbol]
             
-            if agent_name and agent_name != 'ALL':
-                sql += " AND agent_name = ?"
-                params.append(agent_name)
+            if config_id and config_id != 'ALL':
+                sql += " AND config_id = ?"
+                params.append(config_id)
                 
             return c.execute(sql, tuple(params)).fetchone()[0]
         except:
             return 0
 
-def get_paginated_summaries(symbol, page=1, per_page=10, agent_name=None):
+def get_paginated_summaries(symbol, page=1, per_page=10, config_id=None):
     offset = (page - 1) * per_page
     with get_db_conn() as conn:
         c = conn.cursor()
@@ -458,9 +458,9 @@ def get_paginated_summaries(symbol, page=1, per_page=10, agent_name=None):
             sql = "SELECT * FROM summaries WHERE symbol = ?"
             params = [symbol]
 
-            if agent_name and agent_name != 'ALL':
-                sql += " AND agent_name = ?"
-                params.append(agent_name)
+            if config_id and config_id != 'ALL':
+                sql += " AND config_id = ?"
+                params.append(config_id)
 
             sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
             params.extend([per_page, offset])
