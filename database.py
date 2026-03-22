@@ -2,7 +2,7 @@ import os
 import sqlite3
 import uuid
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import contextmanager
 from utils.logger import setup_logger
 
@@ -468,7 +468,7 @@ def get_paginated_summaries(symbol, page=1, per_page=10, config_id=None):
             c.execute(sql, tuple(params))
             return [dict(row) for row in c.fetchall()]
         except Exception as e:
-            logger.error(f"Failed to get paginated summaries: symbol={symbol}, page={page}, per_page={per_page}, agent={agent_name}, error={e}")
+            logger.error(f"Failed to get paginated summaries: symbol={symbol}, page={page}, per_page={per_page}, config_id={config_id}, error={e}")
             return []
 
 def delete_summaries_by_symbol(symbol):
@@ -718,8 +718,6 @@ def get_pending_daily_summary_data(config_id, date_str):
             WHERE config_id = ? AND date(timestamp) = ?
             ORDER BY id ASC
         ''', (config_id, date_str))
-        return [dict(row) for row in c.fetchall()]
-
         return [dict(row) for row in c.fetchall()]
 
 def get_history_pnl_stats(symbol, config_id='ALL'):

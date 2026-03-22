@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 import pytz
 import os
 from dotenv import load_dotenv
-from agent.agent_graph import run_agent_for_config, summarize_content
+from agent.agent_graph import run_agent_for_config, summarize_content, generate_manual_daily_summary
+from utils.market_data import MarketTool
 from utils.logger import setup_logger
 from config import config as global_config
 from database import init_db, get_pending_daily_summary_data, save_daily_summary
