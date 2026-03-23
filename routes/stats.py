@@ -248,13 +248,14 @@ def _fetch_real_position_data(mt, symbol, cfg):
         if raw_trades:
             save_trade_history(raw_trades)
 
+            closed_trades = [t for t in raw_trades if float(t.get('info', {}).get('realizedPnl', 0) or 0) != 0]
             recent_trades = [{
                 'time': t.get('datetime', ''),
                 'side': t.get('side', ''),
                 'price': float(t.get('price', 0)),
                 'amount': float(t.get('amount', 0)),
                 'pnl': float(t.get('info', {}).get('realizedPnl', 0) or 0),
-            } for t in raw_trades[-5:]]
+            } for t in closed_trades[-5:]]
     except Exception as e:
         logger.warning(f"Fetch trades error: {e}")
 

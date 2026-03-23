@@ -197,14 +197,30 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
         try:
             if isinstance(op, dict): op = OpenOrderStrategy(**op)
             action, price = op.action, op.entry_price
+            
+            # --- Auto-correct LLM TP/SL swapping logic ---
+            sl = float(op.stop_loss or 0)
+            tp = float(op.take_profit or 0)
+            if 'BUY' in action:
+                if sl > 0 and tp > 0 and sl > price and tp < price:
+                    sl, tp = tp, sl
+                if sl > price: sl = 0
+                if tp > 0 and tp < price: tp = 0
+            elif 'SELL' in action:
+                if sl > 0 and tp > 0 and sl < price and tp > price:
+                    sl, tp = tp, sl
+                if sl > 0 and sl < price: sl = 0
+                if tp > price: tp = 0
+            # ---------------------------------------------
+            
             latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id)
             if _is_duplicate_real_order(action, price, latest.get('mock_open_orders', [])):
                 execution_results.append(f"⚠️ [Duplicate Strategy] {action} @ {price} 已存在。")
                 continue
             expire_at = (datetime.now() + timedelta(hours=op.valid_duration_hours)).timestamp()
             mock_id = f"ST-{uuid.uuid4().hex[:6]}"
-            database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, op.stop_loss or 0, op.take_profit or 0, agent_name=agent_name, config_id=config_id, order_id=mock_id, expire_at=expire_at)
-            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, op.take_profit or 0, op.stop_loss or 0, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=op.amount)
+            database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, sl, tp, agent_name=agent_name, config_id=config_id, order_id=mock_id, expire_at=expire_at)
+            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, tp, sl, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=op.amount)
             execution_results.append(f"✅ [Executed Strategy] {action} {symbol} @ {price}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
