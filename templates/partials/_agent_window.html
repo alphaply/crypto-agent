@@ -1,5 +1,5 @@
 <!-- 🖥️ Agent 主视窗 wrapper component -->
-<div id="window-{{ summary.config_id }}" class="agent-window {{ '' if loop.first else 'hidden' }} space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300 h-auto lg:h-[calc(100vh-180px)] flex flex-col" data-mode="{{ summary.mode }}" data-config-id="{{ summary.config_id }}">
+<div id="window-{{ summary.config_id }}" class="agent-window {{ '' if loop_first else 'hidden' }} space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300 h-auto lg:h-[calc(100vh-180px)] flex flex-col" data-mode="{{ summary.mode }}" data-config-id="{{ summary.config_id }}">
     
     <!-- 📊 Agent 做单统计卡片 -->
     {% include 'partials/_agent_stats.html' %}

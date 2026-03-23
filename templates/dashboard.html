@@ -19,6 +19,7 @@
       <!-- 🖥️ Agent 视窗容器 -->
       <div id="agent-windows-container" class="relative">
           {% for summary in agent_summaries %}
+              {% set loop_first = loop.first %}
               {% include 'partials/_agent_window.html' %}
           {% endfor %}
 
