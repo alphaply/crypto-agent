@@ -97,6 +97,107 @@ def calculate_next_run(config, latest_summary=None):
         
     return "N/A"
 
+def calculate_dca_stats(config_id, force_sync=False):
+    """
+    计算 SPOT_DCA 模式的定投统计信息。
+    完全基于 CCXT API，获取最新资产余额并通过历史成交记录倒推计算均价。
+    由于不再依赖数据库，不再需要 force_sync (参数保留以防兼容问题)。
+    """
+    try:
+        from config import config as global_config
+        from utils.market_data import MarketTool
+        
+        cfg = global_config.get_config_by_id(config_id)
+        if not cfg: return None
+        
+        symbol = cfg.get('symbol')
+        if not symbol: return None
+        
+        base_asset = symbol.split('/')[0] if '/' in symbol else symbol.replace('USDT', '')
+        
+        mt = MarketTool(config_id=config_id)
+        
+        # 1. 获取当前现货真实余额
+        balances = mt.exchange.fetch_balance()
+        current_qty = 0
+        if base_asset in balances:
+            current_qty = float(balances[base_asset].get('total', 0))
+        elif base_asset.lower() in balances:
+            current_qty = float(balances[base_asset.lower()].get('total', 0))
+        elif 'total' in balances and base_asset in balances['total']:
+            current_qty = float(balances['total'].get(base_asset, 0))
+            
+        initial_cost = float(cfg.get('initial_cost', 0))
+        initial_qty = float(cfg.get('initial_qty', 0))
+        
+        # 2. 匹配当前余额的真实成本
+        accumulated_qty = 0
+        total_cost = 0
+        matched_buy_count = 0
+        first_buy_ts = None
+        last_buy_ts = None
+        
+        target_qty_to_match = max(0, current_qty - initial_qty)
+        
+        if target_qty_to_match > 0:
+            try:
+                # 获取最新的成交记录
+                trades = mt.exchange.fetch_my_trades(symbol, limit=1000)
+                buy_trades = [t for t in trades if str(t.get('side', '')).lower() == 'buy']
+                # 倒序（最新在前），FIFO倒推剩下的持仓成本
+                buy_trades.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+                
+                for t in buy_trades:
+                    if accumulated_qty >= target_qty_to_match:
+                        break
+                        
+                    trade_qty = float(t.get('amount', 0))
+                    # 去除手续费影响的极小量（如果币安扣除到了基础币种）
+                    # 简单处理：全量计入成本计算
+                    trade_price = float(t.get('price', 0))
+                    
+                    remains = target_qty_to_match - accumulated_qty
+                    matched_qty = min(trade_qty, remains)
+                    matched_cost = matched_qty * trade_price
+                    
+                    accumulated_qty += matched_qty
+                    total_cost += matched_cost
+                    matched_buy_count += 1
+                    
+                    if not last_buy_ts:
+                        last_buy_ts = t.get('timestamp')
+                    first_buy_ts = t.get('timestamp') # 一直往下刷，最后记录的是最老的有效成交
+                        
+            except Exception as e:
+                logger.warning(f"Fetch my_trades failed for {symbol}: {e}")
+                
+        # 3. 汇总
+        final_qty = accumulated_qty + initial_qty
+        final_invested = total_cost + initial_cost
+        
+        avg_cost = (final_invested / final_qty) if final_qty > 0 else 0
+        
+        # 格式化时间
+        def fmt_ts(ts):
+            from datetime import datetime
+            return datetime.fromtimestamp(ts/1000).strftime('%Y-%m-%d %H:%M:%S') if ts else None
+            
+        return {
+            "buy_count": matched_buy_count,
+            "total_invested": round(final_invested, 2),
+            "total_qty": round(final_qty, 6),
+            "avg_cost": round(avg_cost, 4),
+            "dca_amount_per": cfg.get('dca_amount', cfg.get('dca_budget', 0)),
+            "has_legacy": initial_qty > 0,
+            "first_buy": fmt_ts(first_buy_ts),
+            "last_buy": fmt_ts(last_buy_ts),
+            "actual_balance": round(current_qty, 6)
+        }
+    except Exception as e:
+        import traceback
+        logger.error(f"Error calculating CCXT DCA stats for {config_id}: {e}\n{traceback.format_exc()}")
+        return None
+
 def get_dashboard_data(symbol, page=1, per_page=10):
     try:
         with get_db_conn() as conn:
@@ -142,6 +243,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 
                 if mode == 'SPOT_DCA':
                     summary_dict['freq'] = f"{config.get('dca_freq', '1d')} (定投)"
+                    summary_dict['dca_stats'] = calculate_dca_stats(config_id)
                 else:
                     default_int = 60 if mode == 'STRATEGY' else 15
                     interval = config.get('run_interval', default_int)
@@ -262,52 +364,7 @@ def history_view():
         # SPOT_DCA 模式统计 (成本价、累计投入、持仓数量)
         dca_stats = None
         if agent_mode == 'SPOT_DCA' and agent_filter != 'ALL':
-            try:
-                with get_db_conn() as conn:
-                    # 从 orders 表聚合定投买入数据
-                    row = conn.execute("""
-                        SELECT COUNT(*) as buy_count,
-                               SUM(entry_price * CASE WHEN entry_price > 0 THEN 1 ELSE 0 END) as total_cost_sum,
-                               SUM(CASE WHEN LOWER(side) LIKE '%buy%' AND entry_price > 0 THEN 1 ELSE 0 END) as valid_buys
-                        FROM orders
-                        WHERE config_id = ? AND trade_mode = 'SPOT_DCA'
-                    """, (agent_filter,)).fetchone()
-                    
-                    buy_count = row['buy_count'] or 0
-                    valid_buys = row['valid_buys'] or 0
-                    
-                    # 获取现货持仓详情
-                    buy_orders = conn.execute("""
-                        SELECT entry_price, reason, timestamp FROM orders
-                        WHERE config_id = ? AND trade_mode = 'SPOT_DCA' AND LOWER(side) LIKE '%buy%' AND entry_price > 0
-                        ORDER BY id DESC
-                    """, (agent_filter,)).fetchall()
-                    
-                    # 计算成本均价和累计投入
-                    cfg = global_config.get_config_by_id(agent_filter)
-                    dca_amount_per = float(cfg.get('dca_amount', cfg.get('dca_budget', 100))) if cfg else 100
-                    total_invested = valid_buys * dca_amount_per
-                    
-                    # 计算累计买入数量 (投入金额 / 买入价格)
-                    total_qty = 0
-                    for bo in buy_orders:
-                        price = float(bo['entry_price'])
-                        if price > 0:
-                            total_qty += dca_amount_per / price
-                    
-                    avg_cost = (total_invested / total_qty) if total_qty > 0 else 0
-                    
-                    dca_stats = {
-                        "buy_count": valid_buys,
-                        "total_invested": round(total_invested, 2),
-                        "total_qty": round(total_qty, 6),
-                        "avg_cost": round(avg_cost, 4),
-                        "dca_amount_per": dca_amount_per,
-                        "first_buy": buy_orders[-1]['timestamp'] if buy_orders else None,
-                        "last_buy": buy_orders[0]['timestamp'] if buy_orders else None,
-                    }
-            except Exception as e:
-                logger.warning(f"Failed to compute DCA stats: {e}")
+            dca_stats = calculate_dca_stats(agent_filter)
 
     except Exception as e:
         logger.error(f"Failed to load history page: symbol={symbol}, agent={agent_filter}, page={page}, error={e}")

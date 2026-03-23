@@ -85,7 +85,7 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
                 # 优化日志展示：增加金额和数量
                 cost = price * op.amount
                 enhanced_reason = f"💰 定投下单: {op.amount} {symbol.split('/')[0]} @ {price} (总额: ${cost:.2f}) | {op.reason}"
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, enhanced_reason, trade_mode="SPOT_DCA", config_id=config_id)
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, enhanced_reason, trade_mode="SPOT_DCA", config_id=config_id, amount=op.amount)
                 execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
             else:
                 execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")
@@ -116,7 +116,7 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
                 cost = price * op.amount
                 side_str = "多" if "BUY" in action else "空"
                 enhanced_reason = f"🚀 实盘开{side_str}: {op.amount} {symbol.split('/')[0]} @ {price} (价值: ${cost:.2f}) | {op.reason}"
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id)
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount)
                 execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
             else:
                 execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")
@@ -204,7 +204,7 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
             expire_at = (datetime.now() + timedelta(hours=op.valid_duration_hours)).timestamp()
             mock_id = f"ST-{uuid.uuid4().hex[:6]}"
             database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, op.stop_loss or 0, op.take_profit or 0, agent_name=agent_name, config_id=config_id, order_id=mock_id, expire_at=expire_at)
-            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, op.take_profit or 0, op.stop_loss or 0, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id)
+            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, op.take_profit or 0, op.stop_loss or 0, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=op.amount)
             execution_results.append(f"✅ [Executed Strategy] {action} {symbol} @ {price}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")

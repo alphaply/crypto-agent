@@ -170,9 +170,23 @@ def get_agent_stats(config_id):
     """获取指定 Agent 的做单统计 (通用，适用所有模式)"""
     try:
         from database import get_agent_trade_stats
+        from config import config as global_config
+        from routes.main import calculate_dca_stats
+        
+        # 基础成交统计 (所有模式)
         stats = get_agent_trade_stats(config_id)
+        
+        # 定投专项统计 (SPOT_DCA 模式)
+        cfg = global_config.get_config_by_id(config_id)
+        if cfg and cfg.get('mode') == 'SPOT_DCA':
+            stats['dca_stats'] = calculate_dca_stats(config_id)
+            stats['mode'] = 'SPOT_DCA'
+        else:
+            stats['mode'] = cfg.get('mode', 'STRATEGY') if cfg else 'STRATEGY'
+            
         return jsonify({"success": True, "stats": stats})
     except Exception as e:
+        logger.error(f"Failed to get agent stats for {config_id}: {e}")
         return jsonify({"success": False, "message": str(e)})
 
 

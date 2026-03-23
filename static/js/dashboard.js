@@ -975,7 +975,6 @@ function filterOrders(agentName) {
 const loadedStats = new Set();
 
 async function loadAgentStats(configId) {
-    // 避免重复加载
     if (loadedStats.has(configId)) return;
     loadedStats.add(configId);
 
@@ -987,22 +986,52 @@ async function loadAgentStats(configId) {
         const s = data.stats;
         const el = (id) => document.getElementById(`${id}-${configId}`);
 
-        el('stat-total').textContent = s.total_orders;
-        el('stat-ls').textContent = s.long_short_ratio;
-        el('stat-buy').textContent = `多:${s.buy_count}`;
-        el('stat-sell').textContent = `空:${s.sell_count}`;
+        // 基础/合约指标 (如果存在)
+        const totalEl = el('stat-total');
+        if (totalEl) totalEl.textContent = s.total_orders;
 
-        // 取消率颜色
+        const lsEl = el('stat-ls');
+        if (lsEl) lsEl.textContent = s.long_short_ratio;
+
+        const buyEl = el('stat-buy');
+        if (buyEl) buyEl.textContent = `多:${s.buy_count}`;
+
+        const sellEl = el('stat-sell');
+        if (sellEl) sellEl.textContent = `空:${s.sell_count}`;
+
         const cancelEl = el('stat-cancel');
-        cancelEl.textContent = `${s.cancel_rate}%`;
-        cancelEl.className = `text-lg font-black ${s.cancel_rate > 30 ? 'text-red-500' : (s.cancel_rate > 10 ? 'text-amber-500' : 'text-emerald-600')}`;
-        el('stat-cancel-count').textContent = `${s.cancel_count} 次取消`;
+        if (cancelEl) {
+            cancelEl.textContent = `${s.cancel_rate}%`;
+            cancelEl.className = `text-lg font-black ${s.cancel_rate > 30 ? 'text-red-500' : (s.cancel_rate > 10 ? 'text-amber-500' : 'text-emerald-600')}`;
+        }
+        
+        const cancelCountEl = el('stat-cancel-count');
+        if (cancelCountEl) cancelCountEl.textContent = `${s.cancel_count} 次取消`;
 
-        el('stat-close').textContent = s.close_count;
+        const closeEl = el('stat-close');
+        if (closeEl) closeEl.textContent = s.close_count;
 
-        // 时间跨度
-        if (s.first_order_at && s.last_order_at) {
-            el('stat-period').textContent = `${s.first_order_at.substring(5, 10)} ~ ${s.last_order_at.substring(5, 10)}`;
+        // 定投专项指标 (如果存在)
+        if (s.mode === 'SPOT_DCA' && s.dca_stats) {
+            const dcaInvEl = el('stat-dca-invested');
+            if (dcaInvEl) dcaInvEl.textContent = s.dca_stats.total_invested.toFixed(2);
+            
+            const dcaBuyEl = el('stat-dca-buy-count');
+            if (dcaBuyEl) dcaBuyEl.textContent = s.dca_stats.buy_count;
+            
+            const dcaCostEl = el('stat-dca-avg-cost');
+            if (dcaCostEl) dcaCostEl.textContent = s.dca_stats.avg_cost.toFixed(4);
+            
+            const dcaQtyEl = el('stat-dca-qty');
+            if (dcaQtyEl) dcaQtyEl.textContent = s.dca_stats.total_qty.toFixed(5);
+
+            const dcaAmtEl = el('stat-dca-amount');
+            if (dcaAmtEl) dcaAmtEl.textContent = s.dca_stats.dca_amount_per;
+        }
+
+        const periodEl = el('stat-period');
+        if (periodEl && s.first_order_at && s.last_order_at) {
+            periodEl.textContent = `${s.first_order_at.substring(5, 10)} ~ ${s.last_order_at.substring(5, 10)}`;
         }
     } catch (e) {
         console.error('Load agent stats error:', e);

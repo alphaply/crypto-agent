@@ -97,14 +97,18 @@ def init_db():
                         trade_mode TEXT,
                         side TEXT,
                         entry_price REAL,
+                        amount REAL,
                         take_profit REAL,
                         stop_loss REAL,
                         reason TEXT,
                         status TEXT DEFAULT 'OPEN'
                     )''')
+        # 自动迁移：添加缺失列
         try: c.execute("ALTER TABLE orders ADD COLUMN trade_mode TEXT")
         except: pass
         try: c.execute("ALTER TABLE orders ADD COLUMN config_id TEXT")
+        except: pass
+        try: c.execute("ALTER TABLE orders ADD COLUMN amount REAL")
         except: pass
 
         # 4. 账户净值历史 (用于画盈亏曲线)
@@ -120,6 +124,7 @@ def init_db():
         # 5. 实盘成交记录 (从交易所同步)
         c.execute('''CREATE TABLE IF NOT EXISTS trade_history (
                         trade_id TEXT PRIMARY KEY, -- 交易所的 trade id
+                        order_id TEXT,             -- 关联的订单 ID
                         timestamp TEXT,
                         symbol TEXT,
                         side TEXT,
@@ -130,6 +135,8 @@ def init_db():
                         fee_currency TEXT,
                         realized_pnl REAL          -- 部分交易所支持返回该字段
                     )''')
+        try: c.execute("ALTER TABLE trade_history ADD COLUMN order_id TEXT")
+        except: pass
 
         c.execute('''CREATE TABLE IF NOT EXISTS chat_sessions (
                         session_id TEXT PRIMARY KEY,
@@ -366,7 +373,7 @@ def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
         conn.commit()
 
 
-def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY", config_id=None):
+def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY", config_id=None, amount=0):
     timestamp = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     # 确保 trade_mode 格式统一
     if trade_mode == "REAL":
@@ -379,9 +386,9 @@ def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, tr
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute("""
-            INSERT INTO orders (order_id, timestamp, symbol, agent_name, config_id, side, entry_price, take_profit, stop_loss, reason, trade_mode) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (str(order_id), timestamp, symbol, str(agent_name), config_id or str(agent_name), side, entry, tp, sl, reason, valid_mode))
+            INSERT INTO orders (order_id, timestamp, symbol, agent_name, config_id, side, entry_price, amount, take_profit, stop_loss, reason, trade_mode) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (str(order_id), timestamp, symbol, str(agent_name), config_id or str(agent_name), side, entry, amount, tp, sl, reason, valid_mode))
         conn.commit()
 
 # --- 数据分析与记录 ---
@@ -559,10 +566,11 @@ def save_trade_history(trades):
 
                 c.execute('''
                     INSERT OR IGNORE INTO trade_history 
-                    (trade_id, timestamp, symbol, side, price, amount, cost, fee, fee_currency, realized_pnl)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (trade_id, order_id, timestamp, symbol, side, price, amount, cost, fee, fee_currency, realized_pnl)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    str(t['id']), 
+                    str(t['id']),
+                    str(t.get('order', t.get('order_id', ''))),
                     datetime.fromtimestamp(t['timestamp']/1000).strftime('%Y-%m-%d %H:%M:%S'),
                     t['symbol'],
                     t['side'],

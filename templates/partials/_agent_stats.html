@@ -2,8 +2,32 @@
 {# 使用方式: include 'partials/_agent_stats.html' (上下文需要 summary 变量) #}
 
 <div id="stats-panel-{{ summary.config_id }}" class="agent-stats-panel">
-    <!-- 通用统计卡片 (所有模式) -->
+    <!-- 统计卡片 (根据模式展示不同内容) -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+        {% if summary.mode == 'SPOT_DCA' and summary.dca_stats %}
+        <!-- SPOT_DCA 专属指标 -->
+        <div class="bg-white border border-blue-100 rounded-xl p-2.5 sm:p-3 shadow-sm relative overflow-hidden">
+            {% if summary.dca_stats.has_legacy %}
+            <div class="absolute top-0 right-0 bg-blue-500 text-white text-[7px] font-bold px-1.5 py-0.5 rounded-bl-lg uppercase tracking-tighter">Legacy</div>
+            {% endif %}
+            <div class="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">累计已投入</div>
+            <div class="text-base sm:text-lg font-black text-blue-600"><span id="stat-dca-invested-{{ summary.config_id }}">{{ "%.2f"|format(summary.dca_stats.total_invested) }}</span> <span class="text-[8px] font-bold text-gray-400">USDT</span></div>
+            <div class="text-[8px] sm:text-[9px] text-gray-400 mt-0.5">共 <span id="stat-dca-buy-count-{{ summary.config_id }}">{{ summary.dca_stats.buy_count }}</span> 次买入</div>
+        </div>
+        <div class="bg-white border border-gray-200 rounded-xl p-2.5 sm:p-3 shadow-sm">
+            <div class="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">成本均价</div>
+            <div class="text-base sm:text-lg font-black text-gray-900">$<span id="stat-dca-avg-cost-{{ summary.config_id }}">{{ "%.4f"|format(summary.dca_stats.avg_cost) }}</span></div>
+        </div>
+        <div class="bg-white border border-gray-200 rounded-xl p-2.5 sm:p-3 shadow-sm">
+            <div class="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">当前持仓</div>
+            <div class="text-base sm:text-lg font-black text-purple-600" id="stat-dca-qty-{{ summary.config_id }}">{{ "%.5f"|format(summary.dca_stats.total_qty) }}</div>
+        </div>
+        <div class="bg-white border border-gray-200 rounded-xl p-2.5 sm:p-3 shadow-sm">
+            <div class="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">单次金额</div>
+            <div class="text-base sm:text-lg font-black text-gray-900" id="stat-dca-amount-{{ summary.config_id }}">{{ summary.dca_stats.dca_amount_per }} <span class="text-[8px] font-bold text-gray-400">USDT</span></div>
+        </div>
+        {% else %}
+        <!-- 正常合约/策略指标 -->
         <div class="bg-white border border-gray-200 rounded-xl p-2.5 sm:p-3 shadow-sm">
             <div class="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">开单总数</div>
             <div class="text-base sm:text-lg font-black text-gray-900" id="stat-total-{{ summary.config_id }}">--</div>
@@ -28,6 +52,7 @@
             <div class="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">平仓次数</div>
             <div class="text-base sm:text-lg font-black text-gray-900" id="stat-close-{{ summary.config_id }}">--</div>
         </div>
+        {% endif %}
     </div>
 
     <!-- 仓位面板 (REAL / STRATEGY 模式，JS 动态渲染) -->
