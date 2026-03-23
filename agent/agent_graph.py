@@ -316,8 +316,30 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         orders_friendly_text = format_orders_to_agent_friendly(display_orders)
     else:
         raw_mock_orders = account_data.get('mock_open_orders', [])
-        display_mock_orders = [{"id": o.get('order_id'), "side": o.get('side'), "price": o.get('price'), "tp": o.get('take_profit'), "sl": o.get('stop_loss')} for o in raw_mock_orders]
+        
+        # 区分未成交的挂单和已入场的模拟持仓
+        active_mock_orders = [o for o in raw_mock_orders if not int(o.get('is_filled', 0))]
+        active_mock_positions = [o for o in raw_mock_orders if int(o.get('is_filled', 0))]
+        
+        display_mock_orders = [{"id": o.get('order_id'), "side": o.get('side'), "price": o.get('price'), "tp": o.get('take_profit'), "sl": o.get('stop_loss')} for o in active_mock_orders]
         orders_friendly_text = format_orders_to_agent_friendly(display_mock_orders)
+        
+        display_mock_positions = []
+        for o in active_mock_positions:
+            side_str = str(o.get('side')).upper()
+            pos_side = "LONG" if "BUY" in side_str else "SHORT"
+            amt = float(o.get('amount', 0))
+            entry = float(o.get('price', 0))
+            # 简单计算未实现盈亏
+            pnl = (current_price - entry) * amt if pos_side == "LONG" else (entry - current_price) * amt
+            display_mock_positions.append({
+                "symbol": o.get('symbol', symbol),
+                "side": pos_side,
+                "amount": amt,
+                "entry_price": entry,
+                "unrealized_pnl": pnl
+            })
+        positions_text = format_positions_to_agent_friendly(display_mock_positions)
 
     system_prompt = render_prompt(
         prompt_template,
