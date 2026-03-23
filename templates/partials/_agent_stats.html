@@ -90,6 +90,14 @@
                     </div>
                 </div>
             </div>
+            
+            <!-- 历史列表 -->
+            <div id="recent-trades-container-{{ summary.config_id }}" class="relative mt-3 pt-3 border-t border-slate-100 hidden">
+                <div class="text-[10px] font-bold text-gray-500 mb-2">最近平仓记录</div>
+                <div id="recent-trades-list-{{ summary.config_id }}" class="space-y-1.5">
+                    <!-- JS injected here -->
+                </div>
+            </div>
         </div>
     </div>
     {% endif %}

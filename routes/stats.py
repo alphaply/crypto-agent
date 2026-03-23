@@ -248,21 +248,6 @@ def _fetch_real_position_data(mt, symbol, cfg):
         if raw_trades:
             save_trade_history(raw_trades)
 
-            for t in raw_trades:
-                pnl = t.get('realizedPnl')
-                if pnl is None and 'info' in t:
-                    pnl = t['info'].get('realizedPnl')
-                if pnl is not None:
-                    pnl = float(pnl)
-                    if pnl > 0:
-                        trade_summary["win_count"] += 1
-                    elif pnl < 0:
-                        trade_summary["lose_count"] += 1
-                    trade_summary["realized_pnl"] += pnl
-
-            trade_summary["total_trades"] = len(raw_trades)
-            _calculate_win_rate(trade_summary)
-
             recent_trades = [{
                 'time': t.get('datetime', ''),
                 'side': t.get('side', ''),
@@ -272,6 +257,21 @@ def _fetch_real_position_data(mt, symbol, cfg):
             } for t in raw_trades[-5:]]
     except Exception as e:
         logger.warning(f"Fetch trades error: {e}")
+
+    # 4. 从数据库获取完整的历史盈亏统计
+    try:
+        from database import get_history_pnl_stats
+        config_id = cfg.get('config_id')
+        pnl_stats = get_history_pnl_stats(symbol, config_id)
+        if pnl_stats:
+            trade_summary["win_count"] = pnl_stats.get("win_count", 0)
+            trade_summary["lose_count"] = pnl_stats.get("lose_count", 0)
+            trade_summary["total_trades"] = pnl_stats.get("total_trades", 0)
+            trade_summary["realized_pnl"] = pnl_stats.get("total_pnl", 0)
+    except Exception as e:
+        logger.warning(f"Failed to load full PnL stats from DB: {e}")
+
+    trade_summary = _calculate_win_rate(trade_summary)
 
     return positions, balance, recent_trades, trade_summary
 

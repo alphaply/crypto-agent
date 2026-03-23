@@ -235,6 +235,15 @@ def close_position_strategy(orders: List[CloseOrder], config_id: str, symbol: st
     latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id)
     open_mock_orders = latest.get('mock_open_orders', [])
 
+    # 获取当前市场价格以计算真实平仓盈亏
+    current_price = 0
+    try:
+        ticker = market_tool.exchange.fetch_ticker(symbol)
+        current_price = float(ticker.get('last', 0))
+    except Exception as e:
+        execution_results.append(f"❌ [Error] 无法获取 {symbol} 当前价格进行平仓计算: {str(e)}")
+        return "\n".join(execution_results)
+
     for op in orders:
         try:
             if isinstance(op, dict): op = CloseOrder(**op)
@@ -252,14 +261,14 @@ def close_position_strategy(orders: List[CloseOrder], config_id: str, symbol: st
                 entry_price = float(matched.get('price', 0))
                 amount = float(matched.get('amount', 0))
                 
-                # 计算盈亏 (如果是合约并且双向持仓)
+                # 使用真实当前市价计算盈亏，禁止 LLM 自定平仓价
                 if target_side == "BUY": # 做多
-                    pnl = (op.entry_price - entry_price) * amount
+                    pnl = (current_price - entry_price) * amount
                 else: # 做空
-                    pnl = (entry_price - op.entry_price) * amount
+                    pnl = (entry_price - current_price) * amount
                     
-                database.close_mock_order(order_id, close_price=op.entry_price, realized_pnl=pnl)
-                database.save_order_log(order_id, symbol, agent_name, "CLOSE", op.entry_price, 0, 0, f"[Strategy Close] 盈亏: {pnl:.2f} | {op.reason}", trade_mode="STRATEGY", config_id=config_id)
+                database.close_mock_order(order_id, close_price=current_price, realized_pnl=pnl)
+                database.save_order_log(order_id + "-CLOSE", symbol, agent_name, "CLOSE", current_price, 0, 0, f"[Strategy Close] 市价平仓, 盈亏: {pnl:.2f} | {op.reason}", trade_mode="STRATEGY", config_id=config_id)
                 execution_results.append(f"✅ [Closed Strategy] {op.pos_side} 仓位已平，订单: {order_id}，模拟盈亏: {pnl:.2f}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 策略平仓失败: {str(e)}")

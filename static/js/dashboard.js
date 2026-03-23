@@ -1093,19 +1093,53 @@ async function loadPositionStats(configId) {
         // 盈亏摘要
         if (data.summary) {
             const summaryPanel = document.getElementById(`pos-summary-${configId}`);
-            summaryPanel.classList.remove('hidden');
+            if (summaryPanel) summaryPanel.classList.remove('hidden');
 
             const pnlEl = document.getElementById(`pos-pnl-${configId}`);
-            const pnl = data.summary.realized_pnl;
-            pnlEl.textContent = `${pnl >= 0 ? '+' : ''}${pnl} USDT`;
-            pnlEl.className = `text-sm font-black ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`;
+            if (pnlEl) {
+                const pnl = data.summary.realized_pnl;
+                pnlEl.textContent = `${pnl >= 0 ? '+' : ''}${pnl} USDT`;
+                pnlEl.className = `text-sm font-black ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`;
+            }
 
             const wrEl = document.getElementById(`pos-winrate-${configId}`);
-            const wr = data.summary.win_rate;
-            wrEl.textContent = `${wr}%`;
-            wrEl.className = `text-sm font-black ${wr >= 50 ? 'text-emerald-400' : 'text-amber-400'}`;
+            if (wrEl) {
+                const wr = data.summary.win_rate;
+                wrEl.textContent = `${wr}%`;
+                wrEl.className = `text-sm font-black ${wr >= 50 ? 'text-emerald-400' : 'text-amber-400'}`;
+            }
 
-            document.getElementById(`pos-trades-${configId}`).textContent = data.summary.total_trades;
+            const trEl = document.getElementById(`pos-trades-${configId}`);
+            if (trEl) trEl.textContent = data.summary.total_trades;
+        }
+
+        // 历史模拟仓位展示
+        if (data.recent_trades && data.recent_trades.length > 0) {
+            const recentContainer = document.getElementById(`recent-trades-container-${configId}`);
+            const recentList = document.getElementById(`recent-trades-list-${configId}`);
+            if (recentContainer && recentList) {
+                recentContainer.classList.remove('hidden');
+                recentList.innerHTML = data.recent_trades.map(t => {
+                    const isWin = t.pnl >= 0;
+                    const pnlColor = isWin ? 'text-emerald-500' : 'text-red-500';
+                    const sideColor = t.side.toUpperCase().includes('BUY') ? 'bg-emerald-500' : 'bg-red-500';
+                    // 仅显示HH:mm以便排版紧凑
+                    const timeStr = (t.time || '').substring(11, 16);
+                    return `
+                    <div class="flex justify-between items-center bg-gray-50 rounded px-2 py-1.5 border border-gray-100">
+                        <div class="flex items-center gap-2">
+                            <span class="px-1 py-0.5 rounded text-[8px] font-black text-white ${sideColor}">${t.side}</span>
+                            <div class="flex flex-col">
+                                <span class="text-[9px] font-mono font-bold text-gray-700">${t.amount} @ ${t.entry_price || '0'} -> ${t.price}</span>
+                                <span class="text-[8px] text-gray-400">${timeStr}</span>
+                            </div>
+                        </div>
+                        <div class="text-[10px] font-black ${pnlColor}">
+                            ${isWin ? '+' : ''}${parseFloat(t.pnl).toFixed(2)}
+                        </div>
+                    </div>`;
+                }).join('');
+            }
         }
     } catch (e) {
         container.innerHTML = `<div class="text-center text-red-400 text-xs py-2">❌ 网络错误</div>`;
