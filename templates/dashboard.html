@@ -107,6 +107,33 @@
                                   <div class="text-[9px] md:text-[10px] font-bold uppercase text-blue-400 mb-1 md:mb-2 tracking-wider">执行策略逻辑 (Strategy Logic)</div>
                                   <div class="markdown-content logic-block text-[11px] md:text-xs text-blue-900/80 leading-relaxed">{{ summary.strategy_logic|trim }}</div>
                               </div>
+
+                              <!-- 每日策略汇总面板 (移入 Analysis 内部) -->
+                              {% if summary.daily_summaries %}
+                              <div class="mt-6 md:mt-8 pt-6 border-t border-gray-100">
+                                  <h3 class="font-bold text-gray-900 flex items-center gap-2 text-sm md:text-base mb-4">
+                                      📅 每日策略汇总
+                                      <span class="text-[9px] md:text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">近 {{ summary.daily_summaries|length }} 天</span>
+                                  </h3>
+                                  <div class="space-y-3 max-w-full">
+                                      {% for ds in summary.daily_summaries %}
+                                      <details {{ 'open' if loop.first else '' }} class="group">
+                                          <summary class="flex items-center justify-between cursor-pointer select-none px-4 py-3 bg-gray-50 hover:bg-gray-100 rounded-xl border border-gray-100 transition-colors">
+                                              <div class="flex items-center gap-3 min-w-0">
+                                                  <span class="text-xs font-bold text-gray-700 flex-shrink-0">{{ ds.date }}</span>
+                                                  <span class="text-[9px] font-mono text-gray-400 bg-white px-1.5 py-0.5 rounded border border-gray-100 flex-shrink-0">{{ ds.source_count }} 轮分析</span>
+                                                  <button type="button" onclick="openEditDailySummaryModal('{{ ds.date }}', '{{ summary.config_id }}', event)" class="text-[10px] ml-1 px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded border border-blue-100 transition-colors shadow-sm font-bold flex-shrink-0" title="编辑每日总结">📝 编辑</button>
+                                              </div>
+                                              <svg class="w-4 h-4 text-gray-400 transform transition-transform group-open:rotate-180 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 9l-7 7-7-7" stroke-width="2"/></svg>
+                                          </summary>
+                                          <div class="mt-2 px-4 py-3 bg-blue-50/10 rounded-xl border border-blue-100/30 overflow-x-auto" id="daily-content-wrap-{{ summary.config_id }}-{{ ds.date }}">
+                                              <div class="markdown-content daily-content-block text-xs md:text-sm text-gray-700 leading-relaxed break-words overflow-wrap-anywhere">{{ ds.summary }}</div>
+                                          </div>
+                                      </details>
+                                      {% endfor %}
+                                  </div>
+                              </div>
+                              {% endif %}
                           </div>
                       </div>
                   </div>
@@ -165,34 +192,7 @@
                   </div>
               </div>
 
-              <!-- 每日策略汇总面板 -->
-              {% if summary.daily_summaries %}
-              <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex-shrink-0">
-                  <div class="px-4 py-3 md:px-6 md:py-4 border-b border-gray-100 bg-gray-50/50">
-                      <h3 class="font-bold text-gray-900 flex items-center gap-2 text-sm md:text-base">
-                          📅 每日策略汇总
-                          <span class="text-[9px] md:text-[10px] font-mono text-gray-400 bg-white px-2 py-1 rounded shadow-sm">近 {{ summary.daily_summaries|length }} 天</span>
-                      </h3>
-                  </div>
-                  <div class="p-4 md:p-6 space-y-3 max-w-full">
-                      {% for ds in summary.daily_summaries %}
-                      <details {{ 'open' if loop.first else '' }} class="group">
-                          <summary class="flex items-center justify-between cursor-pointer select-none px-4 py-3 bg-gray-50 hover:bg-gray-100 rounded-xl border border-gray-100 transition-colors">
-                              <div class="flex items-center gap-3 min-w-0">
-                                  <span class="text-xs font-bold text-gray-700 flex-shrink-0">{{ ds.date }}</span>
-                                  <span class="text-[9px] font-mono text-gray-400 bg-white px-1.5 py-0.5 rounded border border-gray-100 flex-shrink-0">{{ ds.source_count }} 轮分析</span>
-                                  <button type="button" onclick="openEditDailySummaryModal('{{ ds.date }}', '{{ summary.config_id }}', event)" class="text-[10px] ml-1 px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded border border-blue-100 transition-colors shadow-sm font-bold flex-shrink-0" title="编辑每日总结">📝 编辑</button>
-                              </div>
-                              <svg class="w-4 h-4 text-gray-400 transform transition-transform group-open:rotate-180 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 9l-7 7-7-7" stroke-width="2"/></svg>
-                          </summary>
-                          <div class="mt-2 px-4 py-3 bg-blue-50/30 rounded-xl border border-blue-100/50 overflow-x-auto" id="daily-content-wrap-{{ summary.config_id }}-{{ ds.date }}">
-                              <div class="markdown-content daily-content-block text-xs md:text-sm text-gray-700 leading-relaxed break-words overflow-wrap-anywhere">{{ ds.summary }}</div>
-                          </div>
-                      </details>
-                      {% endfor %}
-                  </div>
-              </div>
-              {% endif %}
+
 
           </div>
           {% endfor %}
