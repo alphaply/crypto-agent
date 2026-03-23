@@ -213,15 +213,34 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
                 if tp > price: tp = 0
             # ---------------------------------------------
             
+            # --- Balance & Stacking Checks ---
+            acc = database.get_mock_account(config_id, symbol)
+            balance = acc.get('balance', 10000.0)
+            order_value = price * op.amount
+
+            # 2. 检查是否重复叠加 (Stacking)
             latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id)
-            if _is_duplicate_real_order(action, price, latest.get('mock_open_orders', [])):
+            mock_open_orders = latest.get('mock_open_orders', [])
+            
+            # 如果已经有同方向的单子且价格接近，视为重复
+            if _is_duplicate_real_order(action, price, mock_open_orders):
                 execution_results.append(f"⚠️ [Duplicate Strategy] {action} @ {price} 已存在。")
                 continue
+            
+            # 如果已有同方向持仓，且数量已经很大，禁止叠加
+            side_str = 'BUY' if 'BUY' in action else 'SELL'
+            exist_same_side = [o for o in mock_open_orders if side_str in o.get('side', '').upper()]
+            if len(exist_same_side) >= 1:
+                # 提示已有单子，建议先撤回或等待
+                execution_results.append(f"⚠️ [Stacking Blocked] {symbol} 已有 {side_str} 挂单/持仓，禁止盲目叠加。")
+                continue
+            # ---------------------------------------------
+
             expire_at = (datetime.now() + timedelta(hours=op.valid_duration_hours)).timestamp()
             mock_id = f"ST-{uuid.uuid4().hex[:6]}"
             database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, sl, tp, agent_name=agent_name, config_id=config_id, order_id=mock_id, expire_at=expire_at)
             database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, tp, sl, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=op.amount)
-            execution_results.append(f"✅ [Executed Strategy] {action} {symbol} @ {price}")
+            execution_results.append(f"✅ [Executed Strategy] {action} {symbol} @ {price} | Val: ${order_value:.2f}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
     return "\n".join(execution_results)

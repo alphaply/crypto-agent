@@ -248,8 +248,33 @@ def _fetch_real_position_data(mt, symbol, cfg):
         if raw_trades:
             save_trade_history(raw_trades)
 
-            closed_trades = [t for t in raw_trades if float(t.get('info', {}).get('realizedPnl', 0) or 0) != 0]
-            
+            # 聚合相同 order_id 的成交 (解决分批成交导致的“乱”)
+            aggregated = {}
+            for t in raw_trades:
+                pnl = float(t.get('info', {}).get('realizedPnl', 0) or 0)
+                if pnl == 0: continue
+                
+                oid = str(t.get('order', t.get('order_id', 'unknown')))
+                if oid not in aggregated:
+                    aggregated[oid] = {
+                        'time': t.get('datetime', ''),
+                        'side': t.get('side', ''),
+                        'price': float(t.get('price', 0)),
+                        'amount': float(t.get('amount', 0)),
+                        'pnl': pnl,
+                        'count': 1
+                    }
+                else:
+                    # 累加数量和盈亏，计算均价
+                    old = aggregated[oid]
+                    new_total_amount = old['amount'] + float(t.get('amount', 0))
+                    if new_total_amount > 0:
+                        old['price'] = (old['price'] * old['amount'] + float(t.get('price', 0)) * float(t.get('amount', 0))) / new_total_amount
+                    old['amount'] = new_total_amount
+                    old['pnl'] += pnl
+                    old['count'] += 1
+                    old['time'] = t.get('datetime', old['time']) # 保留最后一次成交时间
+
             def _approximate_entry(t_side, t_price, t_amount, t_pnl):
                 if t_amount <= 0: return 0
                 if str(t_side).lower() == 'sell':
@@ -257,19 +282,29 @@ def _fetch_real_position_data(mt, symbol, cfg):
                 else:
                     return round(t_price + (t_pnl / t_amount), 4)
 
-            recent_trades = [{
-                'time': t.get('datetime', ''),
-                'side': t.get('side', ''),
-                'price': float(t.get('price', 0)),
-                'amount': float(t.get('amount', 0)),
-                'pnl': float(t.get('info', {}).get('realizedPnl', 0) or 0),
-                'entry_price': _approximate_entry(
-                    t.get('side', ''),
-                    float(t.get('price', 0)),
-                    float(t.get('amount', 0)),
-                    float(t.get('info', {}).get('realizedPnl', 0) or 0)
-                )
-            } for t in closed_trades[-5:]]
+            # 转换为前端格式
+            display_trades = []
+            for oid, data in aggregated.items():
+                side = data['side'].upper()
+                # 优化方向显示：如果卖出平仓(SELL)，通常是平多(LONG)
+                label_side = "LONG (Closed)" if side == "SELL" else "SHORT (Closed)"
+                
+                display_trades.append({
+                    'time': data['time'],
+                    'side': label_side,
+                    'price': round(data['price'], 4),
+                    'amount': round(data['amount'], 4),
+                    'pnl': round(data['pnl'], 4),
+                    'entry_price': _approximate_entry(
+                        data['side'],
+                        data['price'],
+                        data['amount'],
+                        data['pnl']
+                    )
+                })
+            
+            # 按时间倒序排列，取最近 5 个
+            recent_trades = sorted(display_trades, key=lambda x: x['time'], reverse=True)[:5]
     except Exception as e:
         logger.warning(f"Fetch trades error: {e}")
 
