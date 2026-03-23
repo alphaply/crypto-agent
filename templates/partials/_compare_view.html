@@ -1,0 +1,106 @@
+<!-- 📊 对比视图 (交互滑动版 V4) component -->
+<div id="window-COMPARE" class="hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
+        {% for summary in agent_summaries %}
+        <div class="bg-white border border-gray-200 rounded-3xl shadow-lg flex flex-col h-[700px] overflow-hidden border-t-4 
+            {% if summary.mode == 'REAL' %}border-t-rose-500
+            {% elif summary.mode == 'SPOT_DCA' %}border-t-emerald-500
+            {% else %}border-t-indigo-500{% endif %} 
+            {{ 'opacity-70 grayscale-[0.3]' if not summary.enabled else '' }}">
+            <!-- 头部 -->
+            <div class="px-6 py-4 border-b border-gray-100 bg-gray-50/30 flex justify-between items-center flex-shrink-0">
+                <div class="min-w-0">
+                    <h4 class="font-black text-gray-900 text-sm truncate uppercase tracking-tight flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full {{ 'bg-emerald-500' if summary.enabled else 'bg-gray-400' }}"></span>
+                        {{ summary.agent_name }}
+                    </h4>
+                    <div class="flex items-center gap-2 mt-1">
+                        <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-md 
+                            {% if summary.mode == 'REAL' %}bg-red-50 text-red-600
+                            {% elif summary.mode == 'SPOT_DCA' %}bg-emerald-50 text-emerald-600
+                            {% else %}bg-blue-50 text-blue-600{% endif %}">
+                            {% if summary.mode == 'REAL' %}REAL ({{ summary.freq }})
+                            {% elif summary.mode == 'SPOT_DCA' %}DCA ({{ summary.freq }})
+                            {% else %}STRAT ({{ summary.freq }}){% endif %}
+                        </span>
+                        <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-sm uppercase">{{ summary.model }}</span>
+                        <span class="text-[9px] font-mono text-gray-400" title="最近分析时间">{{ summary.timestamp[11:16] }}</span>
+                        {% if summary.enabled %}
+                        <span class="text-[8px] font-mono text-blue-500 bg-blue-50 px-1 rounded border border-blue-100" title="下次运行">⌛ {{ summary.next_run }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <button onclick="switchAgentTab('{{ summary.config_id }}')" class="p-2 text-blue-600 hover:bg-blue-50 rounded-full transition-colors">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke-width="2.5"/></svg>
+                </button>
+            </div>
+
+            <!-- 内部独立滚动区域 -->
+            <div class="flex-grow overflow-y-auto mini-scroll p-6 space-y-6">
+                <!-- 分析正文 -->
+                <div class="space-y-3">
+                    <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Market Analysis</div>
+                    <div class="text-gray-700 text-[13px] leading-relaxed antialiased"><div class="markdown-content">{{ summary.content|trim }}</div></div>
+                </div>
+                
+                <!-- 执行逻辑 -->
+                <div class="pt-4 border-t border-gray-100">
+                    <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3 italic">Core Strategy Logic</div>
+                    <div class="bg-blue-50/30 p-4 rounded-2xl border border-blue-100/50">
+                        <div class="markdown-content text-[11px] text-blue-900/80 leading-relaxed">{{ summary.strategy_logic|trim }}</div>
+                    </div>
+                </div>
+
+                <!-- 近期决策记录 -->
+                <div class="pt-4 border-t border-gray-100">
+                    <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">Latest 10 Decisions</div>
+                    <div class="space-y-3">
+                        {% if summary.all_orders %}
+                            {% for order in summary.all_orders[:10] %}
+                            <div class="flex flex-col gap-1.5 p-3 rounded-xl bg-gray-50 border border-gray-100 group hover:border-blue-200 transition-colors">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-2">
+                                        {% set s = order.side|lower %}
+                                        <span class="w-2 h-2 rounded-full 
+                                            {% if 'buy' in s %} bg-emerald-500
+                                            {% elif 'sell' in s %} bg-rose-500
+                                            {% elif 'close' in s %} bg-orange-500
+                                            {% else %} bg-gray-400 {% endif %}"></span>
+                                        <span class="text-[10px] font-black uppercase text-gray-700 w-10">{{ order.side[:4] }}</span>
+                                        <span class="text-[10px] font-mono font-bold text-blue-600 group-hover:text-blue-700">{{ order.entry_price }}</span>
+                                        <span class="text-[9px] font-mono text-gray-400 bg-gray-100 px-1 rounded ml-1" title="订单 ID">{{ order.order_id }}</span>
+                                    </div>
+                                    <div class="text-[9px] text-gray-400 font-mono">{{ order.timestamp[11:16] }}</div>
+                                </div>
+                                
+                                <!-- 止盈止损 (策略模式核心) -->
+                                {% if order.take_profit > 0 or order.stop_loss > 0 %}
+                                <div class="flex gap-3 text-[9px] font-bold">
+                                    <span class="text-emerald-600 flex items-center gap-0.5">🎯 <span class="opacity-70">TP:</span> {{ order.take_profit|int }}</span>
+                                    <span class="text-rose-500 flex items-center gap-0.5">🛡️ <span class="opacity-70">SL:</span> {{ order.stop_loss|int }}</span>
+                                </div>
+                                {% endif %}
+
+                                <!-- 简短理由 -->
+                                <div class="text-[9px] text-gray-400 leading-tight line-clamp-1 italic">
+                                    {{ order.reason }}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        {% else %}
+                            <div class="text-center py-6 text-gray-400 text-[10px] italic">No active data</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- 底部操作栏 -->
+            <div class="px-6 py-4 bg-gray-50/50 border-t border-gray-100 flex-shrink-0">
+                <a href="/chat?config_id={{ summary.config_id }}&symbol={{ current_symbol }}" class="w-full inline-flex justify-center items-center gap-2 bg-white border border-gray-200 text-gray-700 py-2.5 rounded-xl font-bold shadow-sm hover:border-blue-500 hover:text-blue-600 transition-all text-[11px]">
+                    💬 Open Detailed Chat
+                </a>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>

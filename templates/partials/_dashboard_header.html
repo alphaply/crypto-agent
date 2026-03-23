@@ -1,0 +1,19 @@
+<!-- 🌐 Dashboard 状态顶栏 component -->
+<div class="bg-amber-50 border-b border-amber-200 text-amber-900 text-sm">
+  <div class="max-w-[1600px] mx-auto px-4 py-2 sm:px-6 lg:px-8">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span class="flex items-center gap-2">
+            {% if scheduler_enabled and symbol_enabled %} 
+                <span class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-custom"></span> <span class="font-medium">调度器活跃中</span>
+            {% elif not scheduler_enabled %}
+                <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse-red"></span> <span class="font-medium text-red-500">调度器已禁用</span>
+            {% else %}
+                <span class="w-2.5 h-2.5 bg-amber-500 rounded-full"></span> <span class="font-medium text-amber-600">已暂停 (禁用中)</span>
+            {% endif %}
+        </span>
+      </div>
+      <div>风控系统: <span class="font-bold text-emerald-600">已启动</span></div>
+    </div>
+  </div>
+</div>

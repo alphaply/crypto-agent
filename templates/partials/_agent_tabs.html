@@ -1,0 +1,20 @@
+<!-- 📑 Agent Tab 切换器 component -->
+<div class="flex flex-wrap items-center gap-2 p-1.5 bg-gray-200/50 rounded-2xl w-fit mini-scroll overflow-x-auto max-w-full">
+    {% for summary in agent_summaries %}
+    <button onclick="switchAgentTab('{{ summary.config_id }}')" id="tab-btn-{{ summary.config_id }}" 
+            class="agent-tab-btn flex flex-col items-start px-4 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap
+            {{ 'bg-white shadow-sm text-blue-600' if loop.first else 'text-gray-500 hover:bg-gray-100' }} {{ 'opacity-60' if not summary.enabled else '' }}">
+        <div class="flex items-center gap-2">
+          <span class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full {{ 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' if summary.enabled else 'bg-gray-400' }}"></span>
+              {% if summary.mode == 'REAL' %}🔴{% elif summary.mode == 'SPOT_DCA' %}🟡{% else %}🔵{% endif %}
+          </span>
+          {{ summary.display_name or summary.agent_name }}
+        </div>
+        <div class="text-[9px] opacity-70 mt-0.5 ml-8">{{ summary.freq }}</div>
+    </button>
+    {% endfor %}
+    <button onclick="switchAgentTab('COMPARE')" id="tab-btn-COMPARE" class="agent-tab-btn flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-100 transition-all">
+        ⚖️ 对比视图
+    </button>
+</div>

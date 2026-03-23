@@ -1,0 +1,406 @@
+<!-- 🚪 所有 Dashboard 弹窗 component -->
+
+<!-- 删除历史数据模态框 -->
+<div id="delete-modal" class="fixed inset-0 z-[110] hidden modal-container">
+    <div class="fixed inset-0 bg-gray-900/80 backdrop-blur-md"></div>
+    <div class="fixed inset-0 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-gray-200 modal-content h-auto !max-h-fit !rounded-xl">
+            <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">🗑️ 重置交易数据</h3>
+            <p class="text-sm text-gray-500 mb-4">
+                您确定要清空 <span class="font-bold text-gray-800">{{ current_symbol }}</span> 的所有分析历史及决策流水吗？
+            </p>
+            <input type="password" id="admin-pass" class="w-full border rounded-lg p-3 mb-3 outline-none focus:ring-2 focus:ring-red-500" placeholder="请输入管理员密码...">
+            
+            <div id="delete-captcha-container" class="flex items-center gap-3 mb-4 hidden">
+                <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshDeleteCaptcha()" title="点击刷新">
+                    <img id="delete-captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
+                </div>
+                <input type="text" id="delete-captcha" class="flex-1 min-w-0 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
+            </div>
+
+            <div class="flex gap-3">
+                <button onclick="confirmDeleteAction()" class="flex-1 bg-red-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认清空</button>
+                <button onclick="closeDeleteModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 配置中心模态框 -->
+<div id="config-modal" class="fixed inset-0 z-[100] hidden modal-container">
+    <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm" onclick="closeConfigModal()"></div>
+    <div class="fixed inset-0 z-10 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-gray-200 modal-content">
+            <div class="px-4 sm:px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-gray-50 flex-shrink-0 gap-3 sm:gap-0">
+                <div class="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 w-full sm:w-auto overflow-hidden">
+                    <div class="flex justify-between items-center w-full sm:w-auto">
+                        <h3 class="text-lg font-bold text-gray-900 flex items-center gap-2">
+                            <span class="p-1.5 bg-blue-100 text-blue-600 rounded-lg shadow-sm">⚙️</span>
+                            配置中心
+                        </h3>
+                        <button onclick="closeConfigModal()" class="sm:hidden text-gray-400 hover:text-gray-600 text-2xl p-1 -mr-2">&times;</button>
+                    </div>
+                    <div class="flex bg-gray-200 p-1 rounded-lg text-[10px] sm:text-[11px] font-bold uppercase w-full sm:w-auto overflow-x-auto no-scrollbar">
+                        <button onclick="switchConfigTab('list')" id="tab-btn-list" class="flex-1 sm:flex-none whitespace-nowrap px-3 py-1.5 rounded-md bg-white shadow-sm text-blue-600">列表模式</button>
+                        <button onclick="switchConfigTab('prompt')" id="tab-btn-prompt" class="flex-1 sm:flex-none whitespace-nowrap px-3 py-1.5 rounded-md text-gray-500">Prompt 模板</button>
+                        <button onclick="switchConfigTab('raw')" id="tab-btn-raw" class="flex-1 sm:flex-none whitespace-nowrap px-3 py-1.5 rounded-md text-gray-500">JSON 模式</button>
+                    </div>
+                </div>
+                <button onclick="closeConfigModal()" class="hidden sm:block text-gray-400 hover:text-gray-600 text-2xl p-2">&times;</button>
+            </div>
+            
+            <div class="p-4 sm:p-6 overflow-y-auto modal-scroll-area mini-scroll">
+                <!-- 列表模式视图 -->
+                <div id="config-view-list" class="space-y-6">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="bg-blue-50 p-4 rounded-xl border border-blue-100">
+                            <label class="block text-xs font-bold text-blue-500 uppercase mb-2">全局运行控制</label>
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm font-medium text-blue-900">智能调度器状态</span>
+                                <label class="switch">
+                                    <input type="checkbox" id="global-scheduler">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                            <label class="block text-xs font-bold text-gray-400 uppercase mb-2">默认交易杠杆</label>
+                            <div class="flex items-center gap-3">
+                                <input type="number" id="global-leverage" class="w-20 border rounded p-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                                <span class="text-xs text-gray-400">仅用于 Prompt 提示</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between items-center mb-4">
+                            <h4 class="text-sm font-bold text-gray-700 flex items-center gap-2">
+                                🚀 交易对配置
+                                <span id="config-count-badge" class="bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full text-[10px]">0</span>
+                            </h4>
+                            <button onclick="addNewSymbolConfig()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition-all">
+                                <span>+</span> 添加新币种
+                            </button>
+                        </div>
+                        <div id="symbol-config-list" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <!-- 卡片由 JS 动态生成 -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Prompt 模板视图 -->
+                <div id="config-view-prompt" class="hidden flex flex-col md:flex-row gap-4 h-[600px]">
+                    <div class="w-full md:w-48 flex flex-col gap-2 bg-gray-50 p-2 rounded-xl border border-gray-200 overflow-y-auto mini-scroll flex-shrink-0">
+                        <div class="flex justify-between items-center px-2 py-1">
+                            <span class="text-[10px] font-bold text-gray-400 uppercase">文件列表</span>
+                            <button onclick="createNewPrompt()" class="text-blue-600 hover:text-blue-800" title="新建 Prompt">
+                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M12 4v16m8-8H4" stroke-width="2"/></svg>
+                            </button>
+                        </div>
+                        <div id="prompt-file-list" class="flex flex-col gap-1">
+                            <!-- 由 JS 渲染 -->
+                        </div>
+                    </div>
+                    <div class="flex-grow flex flex-col gap-2 overflow-hidden">
+                        <div class="flex justify-between items-center px-1">
+                            <span id="current-prompt-name" class="text-xs font-mono font-bold text-blue-600">未选择文件</span>
+                            <div class="flex gap-2">
+                                <button onclick="saveCurrentPrompt()" class="text-[10px] bg-emerald-600 text-white px-3 py-1 rounded-md font-bold shadow-sm">保存文件</button>
+                                <button onclick="deleteCurrentPrompt()" id="btn-delete-prompt" class="hidden text-[10px] bg-red-100 text-red-600 px-3 py-1 rounded-md font-bold">删除</button>
+                            </div>
+                        </div>
+                        <textarea id="prompt-editor" class="w-full flex-grow font-mono text-[11px] border rounded-xl p-4 bg-white focus:ring-2 focus:ring-blue-500 outline-none leading-relaxed mini-scroll" spellcheck="false" placeholder="点击左侧文件开始编辑..."></textarea>
+                    </div>
+                </div>
+
+                <!-- JSON 模式视图 -->
+                <div id="config-view-raw" class="hidden space-y-4">
+                    <div class="flex justify-between items-center">
+                        <p class="text-[11px] text-gray-400">直接修改底层的 SYMBOL_CONFIGS JSON 字符串。</p>
+                        <div class="flex gap-2">
+                            <button onclick="formatConfigJson()" class="text-xs text-blue-600 font-bold">格式化</button>
+                            <a href="/api/config/export" class="text-xs text-green-600 font-bold">导出备份</a>
+                        </div>
+                    </div>
+                    <textarea id="config-json" class="w-full h-[500px] font-mono text-[11px] border rounded-xl p-4 bg-gray-50 focus:bg-white transition-colors outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed" spellcheck="false"></textarea>
+                </div>
+            </div>
+
+            <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex flex-col sm:flex-row justify-between items-center gap-3 flex-shrink-0">
+                <div class="text-[10px] text-gray-400 text-center sm:text-left leading-tight">⚠️ 保存后 .env 将实时更新并触发热重载</div>
+                <div class="flex gap-3 w-full sm:w-auto">
+                    <button onclick="closeConfigModal()" class="flex-1 sm:flex-none px-6 py-2.5 rounded-lg text-sm font-bold text-gray-500 bg-white border border-gray-200">取消</button>
+                    <button onclick="saveConfigFromUI()" class="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-8 py-2.5 rounded-lg text-sm font-bold transition-all shadow-md active:scale-95">保存并应用</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 币种编辑表单 -->
+<div id="symbol-edit-modal" class="fixed inset-0 z-[120] hidden modal-container">
+    <div class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm" onclick="closeSymbolEditModal()"></div>
+    <div class="fixed inset-0 flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-gray-200 modal-content h-auto !max-h-[90vh]">
+            <div class="px-6 py-5 border-b bg-gray-50/50 flex justify-between items-center">
+                <h4 id="symbol-modal-title" class="text-lg font-black text-gray-900 flex items-center gap-2">
+                     <span class="p-1.5 bg-indigo-100 text-indigo-600 rounded-lg shadow-sm">✏️</span>
+                     编辑交易对
+                </h4>
+                <button onclick="closeSymbolEditModal()" class="text-gray-400 hover:text-gray-600 transition-colors text-2xl p-2">&times;</button>
+            </div>
+            <div class="p-4 sm:p-8 space-y-6 overflow-y-auto max-h-[70vh] mini-scroll">
+                <input type="hidden" id="edit-config-index">
+                
+                <!-- 1. 核心交易配置 -->
+                <div class="space-y-4">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-1 h-4 bg-blue-600 rounded-full"></span>
+                        <h5 class="text-xs font-bold text-gray-900 uppercase">核心交易配置</h5>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">配置 ID</label>
+                            <input type="text" id="edit-config-id" class="w-full border rounded-lg p-2.5 sm:p-2 text-xs bg-gray-50 font-mono" readonly>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">交易对 (Symbol)</label>
+                            <input type="text" id="edit-symbol" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="BTC/USDT">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">交易模式</label>
+                            <select id="edit-mode" class="w-full bg-[#1A1D24] border border-gray-700 rounded-lg p-2.5 sm:p-2 text-sm text-gray-200" onchange="onModeChange(this.value)">
+                                <option value="STRATEGY">模拟 (STRATEGY)</option>
+                                <option value="REAL">实盘 (REAL)</option>
+                                <option value="SPOT_DCA">现货定投 (SPOT_DCA)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label id="label-main-prompt" class="block text-[10px] font-bold text-gray-400 uppercase mb-1">Prompt 模板</label>
+                            <select id="edit-prompt-file" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm"></select>
+                        </div>
+                    </div>
+
+                    <div id="section-interval" class="grid grid-cols-1 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1 flex justify-between">
+                                运行周期 (分钟)
+                                <span class="text-[9px] lowercase font-normal">最低 15 分钟</span>
+                            </label>
+                            <input type="number" id="edit-interval" min="15" step="15" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="15">
+                        </div>
+                    </div>
+
+                    <div id="section-dca" class="hidden space-y-4 bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投频率</label>
+                                <select id="edit-dca-freq" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" onchange="onDcaFreqChange(this.value)">
+                                    <option value="1d">每天 (Daily)</option>
+                                    <option value="1w">每周 (Weekly)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投时间 (HH:mm)</label>
+                                <input type="time" id="edit-dca-time" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div id="div-dca-weekday" class="hidden">
+                                <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">定投周几</label>
+                                <select id="edit-dca-weekday" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <option value="0">周一</option>
+                                    <option value="1">周二</option>
+                                    <option value="2">周三</option>
+                                    <option value="3">周四</option>
+                                    <option value="4">周五</option>
+                                    <option value="5">周六</option>
+                                    <option value="6">周日</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-emerald-600 uppercase mb-1">单笔金额 (USDT)</label>
+                                <input type="number" id="edit-dca-amount" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="100">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="section-screener" class="hidden space-y-4 bg-violet-50/50 p-4 rounded-xl border border-violet-100">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                <span class="w-1 h-4 bg-violet-600 rounded-full"></span>
+                                <h5 class="text-xs font-bold text-violet-700 uppercase">Screener 初筛功能</h5>
+                            </div>
+                            <label class="flex items-center gap-2 cursor-pointer bg-white px-2 py-1 rounded-lg border border-violet-200 shadow-sm">
+                                <input type="checkbox" id="edit-enable-screening" onchange="onScreenerToggle(this.checked)" class="w-4 h-4 accent-violet-600">
+                                <span class="text-[11px] text-violet-600 font-bold">启用初筛</span>
+                            </label>
+                        </div>
+                        
+                        <div id="screener-options" class="space-y-4 opacity-40 pointer-events-none transition-all">
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">初筛模型</label>
+                                    <input type="text" id="edit-screener-model" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="gpt-4o-mini">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Base URL (可选)</label>
+                                    <input type="text" id="edit-screener-api-base" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="默认复用主模型 Base">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Key (可选)</label>
+                                    <input type="password" id="edit-screener-api-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="默认复用主模型 Key">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">温度 (Temp)</label>
+                                    <input type="number" step="0.1" id="edit-screener-temp" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="0.2">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">杠杆倍数</label>
+                            <input type="number" id="edit-leverage" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">LLM 温度</label>
+                            <input type="number" step="0.1" id="edit-temp" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. 主决策模型配置 -->
+                <div class="space-y-4 pt-4 border-t border-gray-100">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-1 h-4 bg-purple-600 rounded-full"></span>
+                        <h5 id="title-main-model" class="text-xs font-bold text-gray-900 uppercase">决策模型 (LLM)</h5>
+                    </div>
+                    <div class="grid grid-cols-1 gap-3">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">模型名称</label>
+                            <input type="text" id="edit-model" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="gpt-4o">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Base URL</label>
+                            <input type="text" id="edit-api-base" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="https://api.openai.com/v1">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Key</label>
+                            <input type="password" id="edit-api-key" class="w-full border rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="保持不变请留空...">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3. 币安专属 API (可选) -->
+                <div class="space-y-4 pt-4 border-t border-gray-100">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="w-1 h-4 bg-amber-500 rounded-full"></span>
+                            <h5 class="text-xs font-bold text-gray-900 uppercase">币安专属 API (可选)</h5>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">Binance API Key</label>
+                            <input type="password" id="edit-bn-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Binance API Key">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">Binance API Secret</label>
+                            <input type="password" id="edit-bn-secret" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Binance API Secret">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 4. 总结模型配置 (Summarizer) -->
+                <div class="space-y-4 pt-4 border-t border-gray-100">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="w-1 h-4 bg-emerald-500 rounded-full"></span>
+                            <h5 class="text-xs font-bold text-gray-900 uppercase">总结模型 (Summarizer)</h5>
+                        </div>
+                        <label class="flex items-center gap-1 cursor-pointer">
+                            <input type="checkbox" id="enable-sum-cfg" onchange="toggleSumSection(this.checked)" class="w-3 h-3">
+                            <span class="text-[10px] text-gray-500 font-bold">启用专属配置</span>
+                        </label>
+                    </div>
+                    <div id="sum-section" class="grid grid-cols-1 sm:grid-cols-2 gap-3 opacity-40 pointer-events-none transition-opacity">
+                        <input type="text" id="edit-sum-model" class="w-full border rounded-lg p-2.5 sm:p-2 text-xs" placeholder="总结模型名称 (如 gpt-4o-mini)">
+                        <input type="text" id="edit-sum-base" class="w-full border rounded-lg p-2.5 sm:p-2 text-xs" placeholder="Summarizer API Base">
+                        <input type="password" id="edit-sum-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-xs sm:col-span-2" placeholder="Summarizer API Key">
+                    </div>
+                </div>
+            </div>
+            <div class="px-6 py-4 bg-gray-50 border-t flex gap-3">
+                <button onclick="applySymbolEdit()" class="flex-1 bg-blue-600 text-white py-2 rounded-lg font-bold shadow-sm">确定</button>
+                <button onclick="closeSymbolEditModal()" class="flex-1 bg-white border text-gray-500 py-2 rounded-lg font-bold">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 授权模态框 -->
+<div id="auth-modal" class="fixed inset-0 z-[110] hidden modal-container">
+    <div class="fixed inset-0 bg-gray-900/80 backdrop-blur-md"></div>
+    <div class="fixed inset-0 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-gray-200 modal-content h-auto !max-h-fit !rounded-xl">
+            <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">🔐 身份验证</h3>
+            <p class="text-sm text-gray-500 mb-4">访问敏感功能需要管理员权限。</p>
+            <input type="password" id="auth-pass" class="w-full border rounded-lg p-3 mb-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="请输入密码...">
+            
+            <div id="auth-captcha-container" class="flex items-center gap-3 mb-4 hidden">
+                <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshCaptcha()" title="点击刷新">
+                    <img id="captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
+                </div>
+                <input type="text" id="auth-captcha" class="flex-1 min-w-0 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
+            </div>
+
+            <div class="flex gap-3">
+                <button onclick="submitAuth()" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认</button>
+                <button onclick="closeAuthModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 记录编辑模态框 -->
+<div id="edit-daily-summary-modal" class="fixed inset-0 z-[130] hidden modal-container">
+    <div class="fixed inset-0 bg-gray-900/80 backdrop-blur-md" onclick="closeEditDailySummaryModal()"></div>
+    <div class="fixed inset-0 flex items-center justify-center p-4 z-10">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden border border-gray-200 modal-content h-auto !max-h-[90vh] flex flex-col">
+            <div class="px-6 py-4 border-b bg-gray-50 flex justify-between items-center flex-shrink-0">
+                <h4 class="font-bold text-gray-900 flex items-center gap-2">📝 编辑每日策略汇总</h4>
+                <button onclick="closeEditDailySummaryModal()" class="text-gray-400 text-2xl hover:text-gray-600 transition-colors">&times;</button>
+            </div>
+            <div class="p-6 space-y-4 overflow-y-auto mini-scroll flex-grow">
+                <input type="hidden" id="edit-daily-summary-date">
+                <input type="hidden" id="edit-daily-summary-config">
+                
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold text-gray-700 uppercase">每日策略汇总 (Markdown)</label>
+                    <textarea id="edit-daily-summary-content" class="w-full border border-gray-200 rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none leading-relaxed mini-scroll" rows="12"></textarea>
+                </div>
+
+                <div class="pt-4 border-t border-gray-100">
+                    <input type="password" id="edit-daily-summary-pass" class="w-full border rounded-lg p-3 mb-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="请输入管理员密码...">
+                    
+                    <div id="edit-daily-summary-captcha-container" class="flex items-center gap-3 mb-2 hidden">
+                        <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshEditDailySummaryCaptcha()" title="点击刷新">
+                            <img id="edit-daily-summary-captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
+                        </div>
+                        <input type="text" id="edit-daily-summary-captcha" class="flex-1 min-w-0 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
+                    </div>
+                </div>
+            </div>
+            <div class="px-6 py-4 bg-gray-50 flex gap-3 border-t flex-shrink-0">
+                <button onclick="submitEditDailySummary()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-bold shadow-sm transition-all active:scale-95">保存修改</button>
+                <button onclick="closeEditDailySummaryModal()" class="flex-1 bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 py-2.5 rounded-lg font-bold transition-all">取消</button>
+            </div>
+        </div>
+    </div>
+</div>

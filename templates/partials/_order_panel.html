@@ -1,0 +1,52 @@
+<!-- 📜 专属决策流水面板 component -->
+<div class="lg:col-span-1 flex flex-col h-full">
+    <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col h-full">
+        <div class="px-4 py-3 md:px-5 md:py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center flex-shrink-0">
+            <h3 class="font-bold text-gray-900 text-xs md:text-sm flex items-center gap-2">📜 专属决策流水</h3>
+            <div class="flex items-center gap-2">
+                <button onclick="changeOrderPage('{{ summary.config_id }}', -1)" class="p-1 hover:bg-gray-200 rounded transition-colors" title="上一页">
+                    <svg class="w-3.5 h-3.5 md:w-4 md:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15 19l-7-7 7-7" stroke-width="2.5"/></svg>
+                </button>
+                <span id="page-indicator-{{ summary.config_id }}" class="text-[9px] md:text-[10px] font-bold text-blue-600">1</span>
+                <button onclick="changeOrderPage('{{ summary.config_id }}', 1)" class="p-1 hover:bg-gray-200 rounded transition-colors" title="下一页">
+                    <svg class="w-3.5 h-3.5 md:w-4 md:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 5l7 7-7 7" stroke-width="2.5"/></svg>
+                </button>
+            </div>
+        </div>
+        <div id="order-container-{{ summary.config_id }}" class="flex-grow overflow-y-auto mini-scroll p-3 md:p-4 space-y-2.5 md:space-y-3">
+            {% if summary.all_orders %}
+                {% for order in summary.all_orders %}
+                <div class="group bg-gray-50 hover:bg-white border border-gray-100 hover:border-blue-200 rounded-xl p-3 transition-all">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="flex items-center gap-2">
+                            {% set s = order.side|lower %}
+                            <span class="px-2 py-0.5 rounded-lg font-black uppercase text-[10px] shadow-sm
+                                {% if 'buy' in s %} bg-emerald-500 text-white
+                                {% elif 'sell' in s %} bg-red-500 text-white
+                                {% elif 'close' in s %} bg-orange-500 text-white
+                                {% elif 'cancel' in s %} bg-gray-400 text-white
+                                {% endif %}">
+                                {{ order.side }}
+                            </span>
+                            <span class="text-xs font-mono font-bold text-gray-700 hover:text-blue-600 transition-colors cursor-pointer" title="点击复制价格" onclick="handleCopy('{{ order.entry_price }}', event)">{{ order.entry_price }}</span>
+                            <span class="text-[9px] font-mono text-gray-400 bg-gray-100 px-1 rounded ml-1" title="订单 ID">{{ order.order_id }}</span>
+                        </div>
+                        <span class="text-[9px] font-mono text-gray-400">{{ order.timestamp[11:16] }}</span>
+                    </div>
+                    <div class="text-[10px] text-gray-500 leading-relaxed line-clamp-2 hover:line-clamp-none transition-all">
+                        {{ order.reason }}
+                    </div>
+                    {% if order.take_profit > 0 or order.stop_loss > 0 %}
+                    <div class="mt-2 flex gap-3 text-[9px] font-bold">
+                        <span class="text-emerald-600 cursor-pointer" onclick="handleCopy('{{ order.take_profit }}', event); event.stopPropagation();">🎯 TP: {{ order.take_profit|int }}</span>
+                        <span class="text-red-500 cursor-pointer" onclick="handleCopy('{{ order.stop_loss }}', event); event.stopPropagation();">🛡️ SL: {{ order.stop_loss|int }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="text-center py-10 text-gray-400 text-xs italic">暂无流水数据</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
