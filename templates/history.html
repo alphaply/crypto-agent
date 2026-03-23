@@ -267,40 +267,137 @@
         </div>
         {% endif %}
 
+        <div id="history-toast-container" class="fixed top-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none"></div>
+
+        <!-- 手动触发总结模态框 -->
+        <div id="trigger-summary-modal" class="fixed inset-0 z-[110] hidden flex items-center justify-center pointer-events-auto">
+            <div class="fixed inset-0 bg-gray-900/80 backdrop-blur-md" onclick="closeTriggerModal()"></div>
+            <div class="relative bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-gray-200">
+                <h3 class="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">📊 生成每日总结</h3>
+                <p id="trigger-agent-text" class="text-sm font-bold text-blue-600 mb-4"></p>
+                <input type="password" id="trigger-pass" class="w-full border rounded-lg p-3 mb-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="请输入管理员密码...">
+                
+                <div id="trigger-captcha-container" class="flex items-center gap-3 mb-4 hidden">
+                    <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshTriggerCaptcha()" title="点击刷新">
+                        <img id="trigger-captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
+                    </div>
+                    <input type="text" id="trigger-captcha" class="flex-1 min-w-0 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
+                </div>
+
+                <div class="flex gap-3 mt-2">
+                    <button onclick="submitManualSummary()" id="trigger-submit-btn" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认生成</button>
+                    <button onclick="closeTriggerModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold transition-all">取消</button>
+                </div>
+            </div>
+        </div>
+
         <script>
-            async function triggerManualSummary() {
+            let currentTriggerAgent = '';
+
+            function showHistoryToast(message, type = 'success') {
+                const container = document.getElementById('history-toast-container');
+                if (!container) return alert(message);
+                
+                const toast = document.createElement('div');
+                toast.className = `pointer-events-auto transform rounded-lg px-4 py-3 shadow-lg flex items-center gap-3 min-w-[250px] transition-all duration-300 ${
+                    type === 'success' ? 'bg-white border-l-4 border-emerald-500 text-gray-800' : 'bg-white border-l-4 border-red-500 text-gray-800'
+                }`;
+                
+                const icon = type === 'success' 
+                    ? `<svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`
+                    : `<svg class="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`;
+
+                toast.innerHTML = `${icon}<span class="text-sm font-medium flex-1">${message}</span>`;
+                container.appendChild(toast);
+                
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    toast.style.transform = 'translateY(-10px)';
+                    setTimeout(() => toast.remove(), 300);
+                }, 3000);
+            }
+
+            async function refreshTriggerCaptcha() {
+                try {
+                    const resp = await fetch('/api/chat/captcha');
+                    const data = await resp.json();
+                    if (data.success) {
+                        document.getElementById('trigger-captcha-img').src = data.image;
+                    }
+                } catch (e) { console.error(e); }
+            }
+
+            function triggerManualSummary() {
                 const agent = "{{ current_agent }}";
                 if (agent === 'ALL') {
-                    alert('请先选择一个具体的 Agent 再生成汇总。');
+                    showHistoryToast('请先选择一个具体的 Agent', 'error');
                     return;
                 }
+                currentTriggerAgent = agent;
+                document.getElementById('trigger-agent-text').innerText = `目标 Agent: ${agent}`;
+                document.getElementById('trigger-summary-modal').classList.remove('hidden');
+                document.getElementById('trigger-pass').value = '';
+                document.getElementById('trigger-captcha').value = '';
+                refreshTriggerCaptcha();
+                setTimeout(() => document.getElementById('trigger-pass').focus(), 100);
+            }
+
+            function closeTriggerModal() {
+                document.getElementById('trigger-summary-modal').classList.add('hidden');
+            }
+
+            async function submitManualSummary() {
+                const password = document.getElementById('trigger-pass').value;
+                const captchaContainer = document.getElementById('trigger-captcha-container');
+                const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
+                const captcha = document.getElementById('trigger-captcha').value;
                 
-                const password = prompt('请输入管理员密码以触发汇总:');
-                if (!password) return;
+                if (!password) return showHistoryToast('请输入密码', 'error');
+                if (isCaptchaVisible && !captcha) return showHistoryToast('请输入验证码', 'error');
                 
                 const yesterday = new Date();
                 yesterday.setDate(yesterday.getDate() - 1);
                 const dateStr = yesterday.toISOString().split('T')[0];
                 
+                const btn = document.getElementById('trigger-submit-btn');
+                btn.innerText = '生成中...';
+                btn.disabled = true;
+
                 try {
                     const resp = await fetch('/api/generate_daily_summary', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             password: password,
-                            config_id: agent,
+                            captcha: isCaptchaVisible ? captcha : '',
+                            config_id: currentTriggerAgent,
                             date: dateStr
                         })
                     });
                     const data = await resp.json();
-                    if (data.success) {
-                        alert('汇总生成成功！3秒后刷新页面...');
-                        setTimeout(() => location.reload(), 3000);
+                    
+                    btn.innerText = '确认生成';
+                    btn.disabled = false;
+
+                    if (data.need_captcha) {
+                        captchaContainer.classList.remove('hidden');
+                        refreshTriggerCaptcha();
+                        document.getElementById('trigger-captcha').value = '';
                     } else {
-                        alert('生成失败: ' + (data.error || '未知错误'));
+                        captchaContainer.classList.add('hidden');
+                    }
+
+                    if (data.success) {
+                        closeTriggerModal();
+                        showHistoryToast('汇总生成成功！即将刷新...', 'success');
+                        setTimeout(() => location.reload(), 2000);
+                    } else {
+                        showHistoryToast(data.error || '验证或生成失败', 'error');
                     }
                 } catch (e) {
-                    alert('请求出错: ' + e);
+                    btn.innerText = '确认生成';
+                    btn.disabled = false;
+                    showHistoryToast('网络请求失败', 'error');
                 }
             }
         </script>

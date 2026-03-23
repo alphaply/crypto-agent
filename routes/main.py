@@ -283,17 +283,19 @@ def chat_view():
 def manual_generate_summary():
     data = request.json
     password = data.get('password')
+    captcha = data.get('captcha', '').upper()
     config_id = data.get('config_id')
     date_str = data.get('date') # YYYY-MM-DD
     
-    if password != os.getenv("ADMIN_PASSWORD"):
-        return jsonify({"success": False, "error": "Unauthorized"})
+    ok, msg, need_captcha, status_code = verify_admin_action(password, captcha)
+    if not ok:
+        return jsonify({"success": False, "error": msg, "need_captcha": need_captcha}), status_code
         
     if not config_id or not date_str:
-        return jsonify({"success": False, "error": "Missing params"})
+        return jsonify({"success": False, "error": "Missing params", "need_captcha": False}), 400
         
     success = generate_manual_daily_summary(config_id, date_str)
-    return jsonify({"success": success})
+    return jsonify({"success": success, "need_captcha": False})
 
 @main_bp.route('/api/clean_history', methods=['POST'])
 def clean_history():
