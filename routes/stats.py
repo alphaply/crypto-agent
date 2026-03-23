@@ -249,12 +249,26 @@ def _fetch_real_position_data(mt, symbol, cfg):
             save_trade_history(raw_trades)
 
             closed_trades = [t for t in raw_trades if float(t.get('info', {}).get('realizedPnl', 0) or 0) != 0]
+            
+            def _approximate_entry(t_side, t_price, t_amount, t_pnl):
+                if t_amount <= 0: return 0
+                if str(t_side).lower() == 'sell':
+                    return round(t_price - (t_pnl / t_amount), 4)
+                else:
+                    return round(t_price + (t_pnl / t_amount), 4)
+
             recent_trades = [{
                 'time': t.get('datetime', ''),
                 'side': t.get('side', ''),
                 'price': float(t.get('price', 0)),
                 'amount': float(t.get('amount', 0)),
                 'pnl': float(t.get('info', {}).get('realizedPnl', 0) or 0),
+                'entry_price': _approximate_entry(
+                    t.get('side', ''),
+                    float(t.get('price', 0)),
+                    float(t.get('amount', 0)),
+                    float(t.get('info', {}).get('realizedPnl', 0) or 0)
+                )
             } for t in closed_trades[-5:]]
     except Exception as e:
         logger.warning(f"Fetch trades error: {e}")
@@ -356,6 +370,7 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
         recent_trades = [{
             'time': t['close_time'] or t['timestamp'],
             'side': t['side'],
+            'entry_price': float(t['price'] or 0),
             'price': float(t['close_price'] or 0),
             'amount': float(t['amount']),
             'pnl': float(t['realized_pnl'] or 0)
