@@ -4,6 +4,10 @@
 .markdown-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.75rem; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight: bold; margin-top: 1rem; margin-bottom: 0.5rem; }
 .markdown-body code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-family: monospace; }
+.markdown-content { overflow-wrap: break-word; word-wrap: break-word; word-break: break-word; }
+.markdown-content table { display: block; overflow-x: auto; white-space: nowrap; }
+.markdown-content pre { overflow-x: auto; }
+.overflow-wrap-anywhere { overflow-wrap: anywhere; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
 @keyframes pulse-custom { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }

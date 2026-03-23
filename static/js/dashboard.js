@@ -1008,9 +1008,10 @@ async function loadAgentStats(configId) {
         console.error('Load agent stats error:', e);
     }
 
-    // 自动加载实盘仓位 (如果是 REAL 模式)
+    // 自动加载仓位面板 (REAL 和 STRATEGY 模式)
     const win = document.getElementById(`window-${configId}`);
-    if (win && win.getAttribute('data-mode') === 'REAL') {
+    const mode = win ? win.getAttribute('data-mode') : '';
+    if (mode === 'REAL' || mode === 'STRATEGY') {
         loadPositionStats(configId);
     }
 }

@@ -738,7 +738,7 @@ def get_history_pnl_stats(symbol, config_id='ALL'):
         realized_pnls = []
         
         if config_id == 'ALL':
-            trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol = ? AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
+            trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol = ? AND realized_pnl IS NOT NULL AND realized_pnl != 0", (symbol,)).fetchall()
             realized_pnls.extend([t['realized_pnl'] for t in trades])
             
             mocks = c.execute("SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND status='CLOSED' AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
@@ -753,7 +753,7 @@ def get_history_pnl_stats(symbol, config_id='ALL'):
                 from config import config as global_config
                 cfg = global_config.get_config_by_id(config_id)
                 if cfg and cfg.get('mode', '').upper() == 'REAL':
-                    trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol = ? AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
+                    trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol = ? AND realized_pnl IS NOT NULL AND realized_pnl != 0", (symbol,)).fetchall()
                     realized_pnls.extend([t['realized_pnl'] for t in trades])
             except Exception:
                 pass

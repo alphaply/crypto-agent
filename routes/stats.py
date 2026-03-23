@@ -176,13 +176,185 @@ def get_agent_stats(config_id):
         return jsonify({"success": False, "message": str(e)})
 
 
+def _calculate_win_rate(trade_summary):
+    """计算胜率并格式化 trade_summary"""
+    total_decided = trade_summary["win_count"] + trade_summary["lose_count"]
+    trade_summary["win_rate"] = round(
+        trade_summary["win_count"] / total_decided * 100, 1
+    ) if total_decided > 0 else 0
+    trade_summary["realized_pnl"] = round(trade_summary["realized_pnl"], 4)
+    return trade_summary
+
+
+def _fetch_real_position_data(mt, symbol, cfg):
+    """获取实盘仓位、余额和最近成交"""
+    from database import save_trade_history
+
+    positions = []
+    balance = 0
+    recent_trades = []
+    trade_summary = {"total_trades": 0, "realized_pnl": 0, "win_count": 0,
+                     "lose_count": 0, "win_rate": 0}
+
+    # 1. 获取当前仓位
+    try:
+        all_pos = mt.exchange.fetch_positions([symbol])
+        for p in all_pos:
+            contracts = float(p.get('contracts', 0))
+            if contracts > 0:
+                entry = float(p.get('entryPrice', 0))
+                unrealized = float(p.get('unrealizedPnl', 0))
+                notional = float(p.get('notional', 0)) or (entry * contracts)
+                pnl_pct = (unrealized / abs(notional) * 100) if notional != 0 else 0
+                positions.append({
+                    'symbol': p.get('symbol', symbol),
+                    'side': str(p.get('side', '')).upper(),
+                    'contracts': contracts,
+                    'entry_price': entry,
+                    'mark_price': float(p.get('markPrice', 0)),
+                    'unrealized_pnl': round(unrealized, 4),
+                    'pnl_pct': round(pnl_pct, 2),
+                    'leverage': p.get('leverage', cfg.get('leverage', 1)),
+                    'notional': round(abs(notional), 2),
+                })
+    except Exception as e:
+        logger.warning(f"Fetch positions error: {e}")
+
+    # 2. 获取账户余额
+    try:
+        bal = mt.exchange.fetch_balance()
+        balance = float(bal.get('USDT', {}).get('total', 0) or
+                        bal.get('total', {}).get('USDT', 0) or 0)
+    except Exception as e:
+        logger.warning(f"Fetch balance error: {e}")
+
+    # 3. 获取最近成交 & 同步到数据库
+    try:
+        raw_trades = mt.exchange.fetch_my_trades(symbol, limit=100)
+        if raw_trades:
+            save_trade_history(raw_trades)
+
+            for t in raw_trades:
+                pnl = t.get('realizedPnl')
+                if pnl is None and 'info' in t:
+                    pnl = t['info'].get('realizedPnl')
+                if pnl is not None:
+                    pnl = float(pnl)
+                    if pnl > 0:
+                        trade_summary["win_count"] += 1
+                    elif pnl < 0:
+                        trade_summary["lose_count"] += 1
+                    trade_summary["realized_pnl"] += pnl
+
+            trade_summary["total_trades"] = len(raw_trades)
+            _calculate_win_rate(trade_summary)
+
+            recent_trades = [{
+                'time': t.get('datetime', ''),
+                'side': t.get('side', ''),
+                'price': float(t.get('price', 0)),
+                'amount': float(t.get('amount', 0)),
+                'pnl': float(t.get('info', {}).get('realizedPnl', 0) or 0),
+            } for t in raw_trades[-5:]]
+    except Exception as e:
+        logger.warning(f"Fetch trades error: {e}")
+
+    return positions, balance, recent_trades, trade_summary
+
+
+def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
+    """获取策略模式的模拟仓位和盈亏统计"""
+    from database import get_mock_account, get_db_conn
+
+    positions = []
+    recent_trades = []
+    trade_summary = {"total_trades": 0, "realized_pnl": 0, "win_count": 0,
+                     "lose_count": 0, "win_rate": 0}
+
+    # 获取当前市场价格
+    current_price = 0
+    try:
+        ticker = mt.exchange.fetch_ticker(symbol)
+        current_price = float(ticker.get('last', 0))
+    except Exception as e:
+        logger.warning(f"Fetch ticker error in STRATEGY mode: {e}")
+
+    # 1. 模拟余额
+    mock_acc = get_mock_account(config_id, symbol)
+    balance = mock_acc.get('balance', 10000.0)
+
+    # 2. 模拟持仓
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        open_mocks = c.execute(
+            "SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN'",
+            (config_id, symbol)
+        ).fetchall()
+
+        for om in open_mocks:
+            if not int(om['is_filled'] or 0):
+                continue  # 只显示已入场的
+
+            entry = float(om['price'])
+            amount = float(om['amount'])
+            side = str(om['side']).upper()
+
+            unrealized = 0
+            if current_price > 0:
+                if 'BUY' in side:
+                    unrealized = (current_price - entry) * amount
+                else:
+                    unrealized = (entry - current_price) * amount
+
+            notional = entry * amount
+            pnl_pct = (unrealized / notional * 100) if notional > 0 else 0
+
+            positions.append({
+                'symbol': symbol,
+                'side': 'LONG' if 'BUY' in side else 'SHORT',
+                'contracts': amount,
+                'entry_price': entry,
+                'mark_price': current_price,
+                'unrealized_pnl': round(unrealized, 4),
+                'pnl_pct': round(pnl_pct, 2),
+                'leverage': cfg.get('leverage', 1),
+                'notional': round(notional, 2),
+            })
+
+        # 3. 模拟历史胜率
+        closed_mocks = c.execute(
+            "SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='CLOSED' AND realized_pnl IS NOT NULL",
+            (config_id, symbol)
+        ).fetchall()
+
+        for cm in closed_mocks:
+            pnl = float(cm['realized_pnl'] or 0)
+            trade_summary["realized_pnl"] += pnl
+            if pnl > 0:
+                trade_summary["win_count"] += 1
+            elif pnl < 0:
+                trade_summary["lose_count"] += 1
+
+        trade_summary["total_trades"] = len(closed_mocks)
+        _calculate_win_rate(trade_summary)
+
+        recent_trades = [{
+            'time': t['close_time'] or t['timestamp'],
+            'side': t['side'],
+            'price': float(t['close_price'] or 0),
+            'amount': float(t['amount']),
+            'pnl': float(t['realized_pnl'] or 0)
+        } for t in closed_mocks[-5:]]
+
+    return positions, balance, recent_trades, trade_summary
+
+
 @stats_bp.route('/api/stats/position/<config_id>', methods=['GET'])
 def get_position_stats(config_id):
     """获取仓位 + 真实盈亏统计 (支持 REAL 和 STRATEGY 模式)"""
     try:
         from config import config as global_config
         from utils.market_data import MarketTool
-        from database import save_trade_history, get_mock_account, get_db_conn
 
         cfg = global_config.get_config_by_id(config_id)
         if not cfg:
@@ -195,157 +367,12 @@ def get_position_stats(config_id):
             return jsonify({"success": True, "mode": mode, "positions": [], "summary": None,
                             "message": "仅 REAL/STRATEGY 模式支持实时仓位查询"})
 
-        positions = []
-        balance = 0
-        recent_trades = []
-        trade_summary = {"total_trades": 0, "realized_pnl": 0, "win_count": 0,
-                         "lose_count": 0, "win_rate": 0}
-
         mt = MarketTool(config_id=config_id)
 
         if mode == 'REAL':
-            # 1. 获取当前仓位
-            try:
-                all_pos = mt.exchange.fetch_positions([symbol])
-                for p in all_pos:
-                    contracts = float(p.get('contracts', 0))
-                    if contracts > 0:
-                        entry = float(p.get('entryPrice', 0))
-                        unrealized = float(p.get('unrealizedPnl', 0))
-                        notional = float(p.get('notional', 0)) or (entry * contracts)
-                        pnl_pct = (unrealized / abs(notional) * 100) if notional != 0 else 0
-                        leverage = p.get('leverage', cfg.get('leverage', 1))
-                        positions.append({
-                            'symbol': p.get('symbol', symbol),
-                            'side': str(p.get('side', '')).upper(),
-                            'contracts': contracts,
-                            'entry_price': entry,
-                            'mark_price': float(p.get('markPrice', 0)),
-                            'unrealized_pnl': round(unrealized, 4),
-                            'pnl_pct': round(pnl_pct, 2),
-                            'leverage': leverage,
-                            'notional': round(abs(notional), 2),
-                        })
-            except Exception as e:
-                logger.warning(f"Fetch positions error: {e}")
-
-            # 2. 获取账户余额
-            try:
-                bal = mt.exchange.fetch_balance()
-                balance = float(bal.get('USDT', {}).get('total', 0) or
-                                bal.get('total', {}).get('USDT', 0) or 0)
-            except Exception as e:
-                logger.warning(f"Fetch balance error: {e}")
-
-            # 3. 获取最近成交 & 同步到数据库
-            try:
-                raw_trades = mt.exchange.fetch_my_trades(symbol, limit=100)
-                if raw_trades:
-                    save_trade_history(raw_trades)
-
-                    for t in raw_trades:
-                        pnl = t.get('realizedPnl')
-                        if pnl is None and 'info' in t:
-                            pnl = t['info'].get('realizedPnl')
-                        if pnl is not None:
-                            pnl = float(pnl)
-                            if pnl > 0:
-                                trade_summary["win_count"] += 1
-                            elif pnl < 0:
-                                trade_summary["lose_count"] += 1
-                            trade_summary["realized_pnl"] += pnl
-
-                    trade_summary["total_trades"] = len(raw_trades)
-                    total_decided = trade_summary["win_count"] + trade_summary["lose_count"]
-                    trade_summary["win_rate"] = round(
-                        trade_summary["win_count"] / total_decided * 100, 1
-                    ) if total_decided > 0 else 0
-                    trade_summary["realized_pnl"] = round(trade_summary["realized_pnl"], 4)
-
-                    recent_trades = [{
-                        'time': t.get('datetime', ''),
-                        'side': t.get('side', ''),
-                        'price': float(t.get('price', 0)),
-                        'amount': float(t.get('amount', 0)),
-                        'pnl': float(t.get('info', {}).get('realizedPnl', 0) or 0),
-                    } for t in raw_trades[-5:]]
-            except Exception as e:
-                logger.warning(f"Fetch trades error: {e}")
-
+            positions, balance, recent_trades, trade_summary = _fetch_real_position_data(mt, symbol, cfg)
         else:
-            # STRATEGY 模式
-            # 获取当前市场价格
-            current_price = 0
-            try:
-                ticker = mt.exchange.fetch_ticker(symbol)
-                current_price = float(ticker.get('last', 0))
-            except Exception as e:
-                logger.warning(f"Fetch ticker error in STRATEGY mode: {e}")
-
-            # 1. 模拟余额
-            mock_acc = get_mock_account(config_id, symbol)
-            balance = mock_acc.get('balance', 10000.0)
-
-            # 2. 模拟持仓 (即 status='OPEN' 的 mock_orders，如果是 limit 但未触发，则不应算作持仓，但暂统一显示并标注)
-            with get_db_conn() as conn:
-                c = conn.cursor()
-                open_mocks = c.execute("SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN'", (config_id, symbol)).fetchall()
-                for om in open_mocks:
-                    is_filled = int(om['is_filled'] or 0)
-                    if not is_filled: continue # 只显示已入场的
-                    
-                    entry = float(om['price'])
-                    amount = float(om['amount'])
-                    side = str(om['side']).upper()
-                    
-                    unrealized = 0
-                    if current_price > 0:
-                        if 'BUY' in side:
-                            unrealized = (current_price - entry) * amount
-                        else:
-                            unrealized = (entry - current_price) * amount
-                            
-                    notional = entry * amount
-                    pnl_pct = (unrealized / notional * 100) if notional > 0 else 0
-                    
-                    positions.append({
-                        'symbol': symbol,
-                        'side': 'LONG' if 'BUY' in side else 'SHORT',
-                        'contracts': amount,
-                        'entry_price': entry,
-                        'mark_price': current_price,
-                        'unrealized_pnl': round(unrealized, 4),
-                        'pnl_pct': round(pnl_pct, 2),
-                        'leverage': cfg.get('leverage', 1),
-                        'notional': round(notional, 2),
-                    })
-
-                # 3. 模拟历史胜率
-                closed_mocks = c.execute("SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='CLOSED' AND realized_pnl IS NOT NULL", (config_id, symbol)).fetchall()
-                for cm in closed_mocks:
-                    pnl = float(cm['realized_pnl'] or 0)
-                    trade_summary["realized_pnl"] += pnl
-                    if pnl > 0:
-                        trade_summary["win_count"] += 1
-                    elif pnl < 0:
-                        trade_summary["lose_count"] += 1
-
-                trade_summary["total_trades"] = len(closed_mocks)
-                total_decided = trade_summary["win_count"] + trade_summary["lose_count"]
-                trade_summary["win_rate"] = round(
-                    trade_summary["win_count"] / total_decided * 100, 1
-                ) if total_decided > 0 else 0
-                trade_summary["realized_pnl"] = round(trade_summary["realized_pnl"], 4)
-
-                recent_closed = closed_mocks[-5:]
-                for t in recent_closed:
-                    recent_trades.append({
-                        'time': t['close_time'] or t['timestamp'],
-                        'side': t['side'],
-                        'price': float(t['close_price'] or 0),
-                        'amount': float(t['amount']),
-                        'pnl': float(t['realized_pnl'] or 0)
-                    })
+            positions, balance, recent_trades, trade_summary = _fetch_strategy_position_data(mt, config_id, symbol, cfg)
 
         return jsonify({
             "success": True,
@@ -359,4 +386,5 @@ def get_position_stats(config_id):
         import traceback
         logger.error(f"Position stats error: {traceback.format_exc()}")
         return jsonify({"success": False, "message": str(e)})
+
 

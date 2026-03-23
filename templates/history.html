@@ -73,6 +73,8 @@
         </div>
         {% endif %}
 
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
         {% if current_agent != 'ALL' and mock_acc and agent_mode == 'STRATEGY' %}
         <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-6 mb-8 transition-all hover:shadow-md">
             <div class="flex flex-col md:flex-row gap-6 justify-between items-start md:items-center mb-6">
@@ -98,18 +100,11 @@
             <div class="w-full h-[200px]">
                 <canvas id="equityChart"></canvas>
             </div>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
             <script>
                 document.addEventListener('DOMContentLoaded', function() {
                     const ctx = document.getElementById('equityChart').getContext('2d');
                     const rawData = {{ mock_chart_data|tojson|safe }} || [];
-                    if (rawData.length === 0) {
-                        ctx.font = '14px sans-serif';
-                        ctx.fillStyle = '#94a3b8';
-                        ctx.textAlign = 'center';
-                        ctx.fillText('暂无盈亏历史数据', ctx.canvas.width/2, ctx.canvas.height/2);
-                        return;
-                    }
+                    if (rawData.length === 0) return;
                     
                     const labels = rawData.map(d => d.date);
                     const dataPoints = rawData.map(d => d.balance);
@@ -172,47 +167,143 @@
                         }
                     });
                 });
-
-                async function triggerManualSummary() {
-                    const agent = "{{ current_agent }}";
-                    if (agent === 'ALL') {
-                        alert('请先选择一个具体的 Agent 再生成汇总。');
-                        return;
-                    }
-                    
-                    const password = prompt('请输入管理员密码以触发汇总:');
-                    if (!password) return;
-                    
-                    // 默认生成昨日的
-                    const yesterday = new Date();
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    const dateStr = yesterday.toISOString().split('T')[0];
-                    
-                    try {
-                        const resp = await fetch('/api/generate_daily_summary', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                password: password,
-                                config_id: agent,
-                                date: dateStr
-                            })
-                        });
-                        const data = await resp.json();
-                        if (data.success) {
-                            alert('汇总生成成功！3秒后刷新页面...');
-                            setTimeout(() => location.reload(), 3000);
-                        } else {
-                            alert('生成失败: ' + (data.error || '未知错误'));
-                        }
-                    } catch (e) {
-                        alert('请求出错: ' + e);
-                    }
-                }
             </script>
             {% endif %}
         </div>
         {% endif %}
+
+        {% if current_agent != 'ALL' and agent_mode == 'REAL' and real_chart_data and real_chart_data|length > 0 %}
+        <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-6 mb-8 transition-all hover:shadow-md">
+            <div class="flex flex-col md:flex-row gap-6 justify-between items-start md:items-center mb-6">
+                <div>
+                    <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <span class="text-xl">📊</span> 实盘资金曲线 (Real 模式)
+                    </h2>
+                    <p class="text-[11px] text-slate-400 mt-1">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的真实账户每日净值变化</p>
+                </div>
+                <div class="flex gap-6">
+                    <div>
+                        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">最新净值</h3>
+                        <div class="text-xl font-black text-rose-600" style="font-family: 'JetBrains Mono', monospace;">{{ "%.2f"|format(real_chart_data[-1].equity) }} <span class="text-xs font-bold text-slate-400">USDT</span></div>
+                    </div>
+                    <div>
+                        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">记录天数</h3>
+                        <div class="text-xl font-black text-slate-700" style="font-family: 'JetBrains Mono', monospace;">{{ real_chart_data|length }} <span class="text-xs font-bold text-slate-400">天</span></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="w-full h-[200px]">
+                <canvas id="realEquityChart"></canvas>
+            </div>
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    const ctx = document.getElementById('realEquityChart').getContext('2d');
+                    const rawData = {{ real_chart_data|tojson|safe }} || [];
+                    if (rawData.length === 0) return;
+                    
+                    const labels = rawData.map(d => d.date);
+                    const dataPoints = rawData.map(d => d.equity);
+                    
+                    const gradient = ctx.createLinearGradient(0, 0, 0, 200);
+                    gradient.addColorStop(0, 'rgba(225, 29, 72, 0.15)');
+                    gradient.addColorStop(1, 'rgba(225, 29, 72, 0)');
+                    
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: '实盘账户净值',
+                                data: dataPoints,
+                                borderColor: '#e11d48',
+                                backgroundColor: gradient,
+                                borderWidth: 2,
+                                pointBackgroundColor: '#ffffff',
+                                pointBorderColor: '#e11d48',
+                                pointBorderWidth: 2,
+                                pointRadius: rawData.length > 20 ? 0 : 3,
+                                pointHoverRadius: 5,
+                                fill: true,
+                                tension: 0.3
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    backgroundColor: '#1e293b',
+                                    titleFont: { family: 'Inter', size: 11 },
+                                    bodyFont: { family: 'JetBrains Mono', size: 12 },
+                                    padding: 10,
+                                    displayColors: false,
+                                    callbacks: {
+                                        label: function(context) { return '$' + context.parsed.y.toFixed(2); }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { display: false },
+                                    ticks: { font: { family: 'Inter', size: 10 }, color: '#94a3b8', maxTicksLimit: 7 }
+                                },
+                                y: {
+                                    grid: { display: true, color: '#f1f5f9' },
+                                    border: { display: false },
+                                    ticks: { 
+                                        font: { family: 'JetBrains Mono', size: 10 }, 
+                                        color: '#94a3b8',
+                                        callback: function(value) { return '$' + value; }
+                                    }
+                                }
+                            },
+                            interaction: { intersect: false, mode: 'index' }
+                        }
+                    });
+                });
+            </script>
+        </div>
+        {% endif %}
+
+        <script>
+            async function triggerManualSummary() {
+                const agent = "{{ current_agent }}";
+                if (agent === 'ALL') {
+                    alert('请先选择一个具体的 Agent 再生成汇总。');
+                    return;
+                }
+                
+                const password = prompt('请输入管理员密码以触发汇总:');
+                if (!password) return;
+                
+                const yesterday = new Date();
+                yesterday.setDate(yesterday.getDate() - 1);
+                const dateStr = yesterday.toISOString().split('T')[0];
+                
+                try {
+                    const resp = await fetch('/api/generate_daily_summary', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            password: password,
+                            config_id: agent,
+                            date: dateStr
+                        })
+                    });
+                    const data = await resp.json();
+                    if (data.success) {
+                        alert('汇总生成成功！3秒后刷新页面...');
+                        setTimeout(() => location.reload(), 3000);
+                    } else {
+                        alert('生成失败: ' + (data.error || '未知错误'));
+                    }
+                } catch (e) {
+                    alert('请求出错: ' + e);
+                }
+            }
+        </script>
 
         <div class="mb-8 flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
             <div class="flex flex-wrap gap-2 items-center">

@@ -232,6 +232,22 @@ def history_view():
             mock_acc = None
             mock_chart_data = []
 
+        # 实盘模式资金曲线 (从 balance_history 按天聚合)
+        real_chart_data = []
+        if agent_mode == 'REAL' and agent_filter != 'ALL':
+            try:
+                with get_db_conn() as conn:
+                    rows = conn.execute("""
+                        SELECT day, total_equity FROM (
+                            SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
+                                   row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
+                            FROM balance_history WHERE symbol = ?
+                        ) WHERE rn = 1 ORDER BY day ASC
+                    """, (symbol,)).fetchall()
+                    real_chart_data = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
+            except Exception as e:
+                logger.warning(f"Failed to load real chart data: {e}")
+
     except Exception as e:
         logger.error(f"Failed to load history page: symbol={symbol}, agent={agent_filter}, page={page}, error={e}")
         summaries = []
@@ -242,6 +258,7 @@ def history_view():
         mock_acc = None
         mock_chart_data = []
         agent_mode = 'STRATEGY'
+        real_chart_data = []
 
     return render_template(
         'history.html',
@@ -255,7 +272,8 @@ def history_view():
         pnl_stats=pnl_stats,
         mock_acc=mock_acc,
         mock_chart_data=mock_chart_data,
-        agent_mode=agent_mode
+        agent_mode=agent_mode,
+        real_chart_data=real_chart_data
     )
 @main_bp.route('/chat')
 def chat_view():
