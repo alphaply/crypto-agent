@@ -217,9 +217,21 @@ def history_view():
         
         # 获取模拟账本信息与资金曲线
         mock_config_id = agent_filter if agent_filter != 'ALL' else ""
-        mock_acc = get_mock_account(mock_config_id, symbol)
-        mock_chart_data = get_mock_equity_history(mock_config_id)
-        
+
+        agent_mode = 'STRATEGY'
+        if agent_filter != 'ALL':
+            cfg = global_config.get_config_by_id(agent_filter)
+            if cfg:
+                agent_mode = cfg.get('mode', 'STRATEGY').upper()
+
+        # 只有在策略模式或全部查看时，才展示模拟盘的图表
+        if agent_mode == 'STRATEGY' or agent_filter == 'ALL':
+            mock_acc = get_mock_account(mock_config_id, symbol)
+            mock_chart_data = get_mock_equity_history(mock_config_id)
+        else:
+            mock_acc = None
+            mock_chart_data = []
+
     except Exception as e:
         logger.error(f"Failed to load history page: symbol={symbol}, agent={agent_filter}, page={page}, error={e}")
         summaries = []
@@ -227,8 +239,10 @@ def history_view():
         total_pages = 1
         active_agents = []
         pnl_stats = {"total_trades": 0, "total_pnl": 0, "win_rate": 0, "win_count": 0, "lose_count": 0}
-        mock_acc = {"balance": 10000.0, "failures": 0}
+        mock_acc = None
         mock_chart_data = []
+        agent_mode = 'STRATEGY'
+
     return render_template(
         'history.html',
         summaries=summaries,
@@ -240,9 +254,9 @@ def history_view():
         current_agent=agent_filter,
         pnl_stats=pnl_stats,
         mock_acc=mock_acc,
-        mock_chart_data=mock_chart_data
+        mock_chart_data=mock_chart_data,
+        agent_mode=agent_mode
     )
-
 @main_bp.route('/chat')
 def chat_view():
     return render_template('chat.html', authed=_chat_authed())

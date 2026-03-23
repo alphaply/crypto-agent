@@ -30,8 +30,8 @@
         </div>
     </div>
 
-    <!-- 实盘仓位面板 (仅 REAL 模式，JS 动态渲染) -->
-    {% if summary.mode == 'REAL' %}
+    <!-- 仓位面板 (REAL / STRATEGY 模式，JS 动态渲染) -->
+    {% if summary.mode in ['REAL', 'STRATEGY'] %}
     <div id="position-panel-{{ summary.config_id }}" class="mt-3 hidden">
         <div class="bg-white border border-blue-100 rounded-2xl p-3 sm:p-4 text-gray-800 shadow-sm relative overflow-hidden">
             <!-- 装饰性背景 -->
@@ -40,7 +40,7 @@
             <div class="relative flex flex-col sm:flex-row sm:items-center justify-between mb-3 gap-1">
                 <h4 class="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2">
                     <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
-                    实时仓位 & 盈亏
+                    {% if summary.mode == 'REAL' %}实时仓位 & 盈亏{% else %}模拟仓位 & 盈亏{% endif %}
                     <button onclick="loadPositionStats('{{ summary.config_id }}')" class="text-[9px] bg-blue-50 hover:bg-blue-100 text-blue-600 px-2 py-0.5 rounded-md transition-colors font-bold border border-blue-100">🔄 刷新</button>
                 </h4>
                 <span class="text-[9px] sm:text-[10px] font-mono text-slate-400 font-bold" id="pos-balance-{{ summary.config_id }}"></span>

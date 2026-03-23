@@ -14,7 +14,7 @@
         .markdown-content pre { background-color: #111827; color: #f9fafb; padding: 1rem; border-radius: 0.75rem; overflow-x: auto; margin-bottom: 1rem; }
         .markdown-content pre code { background: transparent; padding: 0; color: #f9fafb; }
         .markdown-content blockquote { border-left: 4px solid #d1d5db; padding-left: 1rem; font-style: italic; margin-bottom: 1rem; }
-        .markdown-content table { width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
+        .markdown-content table { display: block; overflow-x: auto; white-space: nowrap; width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
         .markdown-content th, .markdown-content td { border: 1px solid #d1d5db; padding: 0.5rem 1rem; }
     </style>
 {% endblock %}
@@ -73,7 +73,7 @@
         </div>
         {% endif %}
 
-        {% if current_agent != 'ALL' and mock_acc %}
+        {% if current_agent != 'ALL' and mock_acc and agent_mode == 'STRATEGY' %}
         <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-6 mb-8 transition-all hover:shadow-md">
             <div class="flex flex-col md:flex-row gap-6 justify-between items-start md:items-center mb-6">
                 <div>

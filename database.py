@@ -83,6 +83,8 @@ def init_db():
         except: pass
         try: c.execute("ALTER TABLE mock_orders ADD COLUMN close_time TEXT")
         except: pass
+        try: c.execute("ALTER TABLE mock_orders ADD COLUMN is_filled INTEGER DEFAULT 0")
+        except: pass
 
         # 3. Orders 表
         c.execute('''CREATE TABLE IF NOT EXISTS orders (
@@ -334,6 +336,13 @@ def cancel_mock_order(order_id):
         c = conn.cursor()
         c.execute("DELETE FROM mock_orders WHERE order_id = ?", (order_id,))
         c.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", (order_id,))
+        conn.commit()
+
+def update_mock_order_filled(order_id):
+    """标记模拟挂单已成交 (入场)"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute("UPDATE mock_orders SET is_filled = 1 WHERE order_id = ?", (order_id,))
         conn.commit()
 
 def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
@@ -729,21 +738,25 @@ def get_history_pnl_stats(symbol, config_id='ALL'):
         realized_pnls = []
         
         if config_id == 'ALL':
-            # 只按 symbol 统计：实盘所有 trades + 模拟盘所有 mock closed
             trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol = ? AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
             realized_pnls.extend([t['realized_pnl'] for t in trades])
             
             mocks = c.execute("SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND status='CLOSED' AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
             realized_pnls.extend([m['realized_pnl'] for m in mocks])
         else:
-            # 按 config_id 统计：因为 trade_history 目前没绑定 config_id，我们尽力而为。可以暂且只取 mock_orders？
-            # 我们就在这里统一取 mock_orders，因为实盘数据我们很难直接区分是哪个 agent 打的。
             mocks = c.execute("SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND config_id = ? AND status='CLOSED' AND realized_pnl IS NOT NULL", (symbol, config_id)).fetchall()
             realized_pnls.extend([m['realized_pnl'] for m in mocks])
             
-            # 同时也检查 orders 表里有没有记账（虽然 orders 是粗粒度的）
-            # 目前实盘订单的真实 pnl 只能通过 ccxt `/stats/position` 实时获取并存在 trade_history 里。
-            # 为了简化，如果指定了 config_id，且在 trade_history 找不到他，我们至少返回 mock_orders 的数据
+            # 如果是 REAL 模式，把 trade_history 也加上 (因为目前 trade_history 没有 config_id 字段)
+            # 先查一下这个 config_id 的模式
+            try:
+                from config import config as global_config
+                cfg = global_config.get_config_by_id(config_id)
+                if cfg and cfg.get('mode', '').upper() == 'REAL':
+                    trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol = ? AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
+                    realized_pnls.extend([t['realized_pnl'] for t in trades])
+            except Exception:
+                pass
             
         total_pnl = sum(realized_pnls)
         win_trades = [p for p in realized_pnls if p > 0]

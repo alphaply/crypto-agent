@@ -167,7 +167,7 @@ class MarketTool:
     # 1. 获取数据逻辑
     # ==========================================
 
-    def _check_mock_orders_tp_sl(self, symbol, current_high, current_low):
+    def _check_mock_orders_tp_sl(self, symbol, current_high, current_low, candle_ts_ms=0):
         """检查模拟盘订单是否触及止盈止损并自动平仓"""
         if not self.config_id: return
         mock_orders = database.get_mock_orders(symbol=symbol, config_id=self.config_id)
@@ -175,11 +175,31 @@ class MarketTool:
         
         for o in mock_orders:
             try:
+                # 确保检查的K线晚于订单创建时间
+                if candle_ts_ms > 0:
+                    order_time_ms = datetime.strptime(o['timestamp'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=database.TZ_CN).timestamp() * 1000
+                    if candle_ts_ms <= order_time_ms:
+                        continue
+
                 side = o.get('side', '').upper()
                 sl = float(o.get('stop_loss') or 0)
                 tp = float(o.get('take_profit') or 0)
                 entry = float(o.get('price') or 0)
                 amount = float(o.get('amount') or 0)
+                is_filled = int(o.get('is_filled') or 0)
+                
+                # 入场检测
+                if not is_filled:
+                    if 'BUY' in side and current_low <= entry:
+                        is_filled = 1
+                        database.update_mock_order_filled(o['order_id'])
+                    elif 'SELL' in side and current_high >= entry:
+                        is_filled = 1
+                        database.update_mock_order_filled(o['order_id'])
+                        
+                # 只有入场后才检测止盈止损
+                if not is_filled:
+                    continue
                 
                 close_price = 0
                 reason = ""
@@ -215,9 +235,10 @@ class MarketTool:
             ohlcv = self.exchange.fetch_ohlcv(self.symbol, '1m', limit=1)
             if ohlcv:
                 # [timestamp, open, high, low, close, volume]
+                candle_ts_ms = int(ohlcv[0][0])
                 h = float(ohlcv[0][2])
                 l = float(ohlcv[0][3])
-                self._check_mock_orders_tp_sl(self.symbol, h, l)
+                self._check_mock_orders_tp_sl(self.symbol, h, l, candle_ts_ms)
         except Exception as e:
             logger.warning(f"⚠️ [SilentMonitor] {self.config_id} 检测失败: {e}")
 
