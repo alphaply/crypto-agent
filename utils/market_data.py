@@ -222,8 +222,8 @@ class MarketTool:
                 if close_price > 0:
                     realized_pnl = (close_price - entry) * amount * (1 if 'BUY' in side else -1)
                     database.close_mock_order(o['order_id'], close_price=close_price, realized_pnl=realized_pnl)
-                    logger.info(f"⚡ [Auto TP/SL] {symbol} 模拟单 {o['order_id']} 自动平仓: {reason}, PnL={realized_pnl:.4f}")
-                    database.save_order_log(o['order_id'] + "_AUTO", symbol, o['agent_name'], f"CLOSE_{side}", close_price, 0, 0, f"[智能盯盘] {reason}", trade_mode="STRATEGY", config_id=self.config_id)
+                    logger.info(f"⚡ [Auto TP/SL] {symbol} 模拟单 {o['order_id']} 自动平仓: {reason}, PnL={realized_pnl:.4f}, candle_ts={candle_ts_ms}")
+                    database.save_order_log(o['order_id'] + "_AUTO", symbol, o['agent_name'], f"CLOSE_{side}", close_price, tp, sl, f"[智能盯盘] {reason} (CandleTS: {candle_ts_ms})", trade_mode="STRATEGY", config_id=self.config_id, amount=amount)
             except Exception as e:
                 logger.error(f"❌ _check_mock_orders_tp_sl error for {o.get('order_id')}: {e}")
 
@@ -438,9 +438,10 @@ class MarketTool:
             low = df['low']
             volume = df['volume']
             
-            # ================= 新增: 模拟盘 Auto TP/SL 检查 =================
-            if self.config_id:
-                self._check_mock_orders_tp_sl(symbol, float(high.iloc[-1]), float(low.iloc[-1]))
+            # Note: Removed redundant _check_mock_orders_tp_sl call here because it was using 
+            # the entire timeframe's high/low (e.g. 1d high/low) which is incorrect for 
+            # real-time monitoring. Monitoring is now handled by run_silent_sl_tp() 
+            # in main_scheduler.py on a 1-minute basis.
             
             # ================= 精简指标计算 =================
             # 1. 均线 (移除 EMA100，保留 20/50/200)
