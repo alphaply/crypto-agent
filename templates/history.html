@@ -29,44 +29,79 @@
             </a>
             
             <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto">
-                <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
-                    📜 历史回溯: <span class="text-blue-600">{{ current_symbol }}</span>
+                <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2 truncate">
+                    📜 历史回溯: <span class="text-blue-600 truncate">{{ current_symbol }}</span>
                 </h1>
                 
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto flex-shrink-0">
                     Total: {{ total_count }} Records
                 </span>
             </div>
         </div>
 
-        {% if pnl_stats %}
-        <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-6 mb-8 flex flex-col md:flex-row gap-6 justify-between items-center transition-all hover:shadow-md">
-            <div class="flex-1 w-full flex items-center gap-4">
-                <div class="w-12 h-12 rounded-2xl flex items-center justify-center text-xl shadow-inner
+        {% if pnl_stats and agent_mode != 'SPOT_DCA' %}
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 items-center transition-all hover:shadow-md">
+            <div class="w-full flex items-center gap-3 sm:gap-4">
+                <div class="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center text-lg sm:text-xl shadow-inner flex-shrink-0
                     {% if pnl_stats.total_pnl >= 0 %}bg-emerald-50 text-emerald-600{% else %}bg-rose-50 text-rose-600{% endif %}">
                     {% if pnl_stats.total_pnl >= 0 %}📈{% else %}📉{% endif %}
                 </div>
-                <div>
-                    <h2 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">累计已实现盈亏</h2>
-                    <div class="text-2xl font-black tracking-tight {% if pnl_stats.total_pnl >= 0 %}text-emerald-600{% else %}text-rose-600{% endif %}" style="font-family: 'JetBrains Mono', monospace;">
-                        {% if pnl_stats.total_pnl > 0 %}+{% endif %}{{ "%.4f"|format(pnl_stats.total_pnl) }} <span class="text-sm font-bold text-slate-400 ml-1">USDT</span>
+                <div class="min-w-0">
+                    <h2 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1 truncate">累计已实现盈亏</h2>
+                    <div class="text-xl sm:text-2xl font-black tracking-tight truncate {% if pnl_stats.total_pnl >= 0 %}text-emerald-600{% else %}text-rose-600{% endif %}" style="font-family: 'JetBrains Mono', monospace;">
+                        {% if pnl_stats.total_pnl > 0 %}+{% endif %}{{ "%.4f"|format(pnl_stats.total_pnl) }} <span class="text-xs sm:text-sm font-bold text-slate-400 ml-0.5 sm:ml-1">USDT</span>
                     </div>
                 </div>
             </div>
-            <div class="flex-1 w-full grid grid-cols-2 gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6">
+            <div class="w-full grid grid-cols-2 gap-3 sm:gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-3 md:pt-0 md:pl-6">
                 <div>
-                    <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">历史胜率</h3>
-                    <div class="text-lg font-black text-slate-800" style="font-family: 'JetBrains Mono', monospace;">{{ "%.1f"|format(pnl_stats.win_rate) }}%</div>
+                    <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1 truncate">历史胜率</h3>
+                    <div class="text-base sm:text-lg font-black text-slate-800" style="font-family: 'JetBrains Mono', monospace;">{{ "%.1f"|format(pnl_stats.win_rate) }}%</div>
                 </div>
                 <div>
-                    <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">交易开/平次数</h3>
-                    <div class="text-sm font-bold text-slate-600 flex items-center gap-2 mt-1">
-                        <span class="bg-slate-100 text-slate-800 px-2 py-0.5 rounded-lg">{{ pnl_stats.total_trades }} 笔</span>
-                        <div class="flex items-center gap-1.5 text-[11px] font-black">
-                            <span class="text-emerald-500 bg-emerald-50 px-1.5 py-0.5 rounded">{{ pnl_stats.win_count }}</span>
+                    <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1">开/平次数</h3>
+                    <div class="text-xs sm:text-sm font-bold text-slate-600 flex items-center gap-1.5 sm:gap-2 mt-0.5 sm:mt-1 flex-wrap">
+                        <span class="bg-slate-100 text-slate-800 px-1.5 sm:px-2 py-0.5 rounded-md sm:rounded-lg">{{ pnl_stats.total_trades }}笔</span>
+                        <div class="flex items-center gap-1 sm:gap-1.5 text-[10px] sm:text-[11px] font-black">
+                            <span class="text-emerald-500 bg-emerald-50 px-1 sm:px-1.5 py-0.5 rounded">{{ pnl_stats.win_count }}</span>
                             <span class="text-slate-300">/</span>
-                            <span class="text-rose-500 bg-rose-50 px-1.5 py-0.5 rounded">{{ pnl_stats.lose_count }}</span>
+                            <span class="text-rose-500 bg-rose-50 px-1 sm:px-1.5 py-0.5 rounded">{{ pnl_stats.lose_count }}</span>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% elif agent_mode == 'SPOT_DCA' and dca_stats %}
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 items-center transition-all hover:shadow-md">
+            <div class="w-full flex items-center gap-3 sm:gap-4">
+                <div class="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center text-lg sm:text-xl shadow-inner flex-shrink-0 bg-blue-50 text-blue-600">
+                    💰
+                </div>
+                <div class="min-w-0">
+                    <h2 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1 truncate">累计投入 (定投)</h2>
+                    <div class="text-xl sm:text-2xl font-black tracking-tight text-blue-600 truncate" style="font-family: 'JetBrains Mono', monospace;">
+                        {{ "%.2f"|format(dca_stats.total_invested) }} <span class="text-xs sm:text-sm font-bold text-slate-400 ml-0.5 sm:ml-1">USDT</span>
+                    </div>
+                </div>
+            </div>
+            <div class="w-full grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-3 md:pt-0 md:pl-6">
+                <div>
+                    <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1 truncate">成本均价</h3>
+                    <div class="text-sm sm:text-base font-black text-slate-800 truncate" style="font-family: 'JetBrains Mono', monospace;">
+                        ${{ "%.4f"|format(dca_stats.avg_cost) }}
+                    </div>
+                </div>
+                <div>
+                    <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1 truncate">持仓数量</h3>
+                    <div class="text-sm sm:text-base font-black text-purple-600 truncate" style="font-family: 'JetBrains Mono', monospace;">
+                        {{ "%.5f"|format(dca_stats.total_qty) }}
+                    </div>
+                </div>
+                <!-- 移动端隐藏或在下方展示买入数 -->
+                <div class="hidden sm:block">
+                    <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1 truncate">买入次数</h3>
+                    <div class="text-sm sm:text-base font-black text-slate-600 truncate" style="font-family: 'JetBrains Mono', monospace;">
+                        {{ dca_stats.buy_count }} <span class="text-xs font-bold text-slate-400">次</span>
                     </div>
                 </div>
             </div>
@@ -76,28 +111,28 @@
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
         {% if current_agent != 'ALL' and mock_acc and agent_mode == 'STRATEGY' %}
-        <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-6 mb-8 transition-all hover:shadow-md">
-            <div class="flex flex-col md:flex-row gap-6 justify-between items-start md:items-center mb-6">
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
+            <div class="flex flex-col md:flex-row gap-4 sm:gap-6 justify-between items-start md:items-center mb-4 sm:mb-6">
                 <div>
-                    <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
-                        <span class="text-xl">💰</span> 模拟资金池 (Strategy 模式)
+                    <h2 class="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <span class="text-lg sm:text-xl">💰</span> 模拟资金池 (Strategy 模式)
                     </h2>
-                    <p class="text-[11px] text-slate-400 mt-1">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的虚拟本金与历史盈亏曲线</p>
+                    <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 sm:mt-1">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的虚拟本金与历史盈亏曲线</p>
                 </div>
-                <div class="flex gap-6">
+                <div class="grid grid-cols-2 gap-4 sm:gap-6 w-full md:w-auto">
                     <div>
-                        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">当前余额 (虚拟)</h3>
-                        <div class="text-xl font-black text-blue-600" style="font-family: 'JetBrains Mono', monospace;">{{ "%.2f"|format(mock_acc.balance) }} <span class="text-xs font-bold text-slate-400">USDT</span></div>
+                        <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1">当前余额 (虚拟)</h3>
+                        <div class="text-lg sm:text-xl font-black text-blue-600 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ "%.2f"|format(mock_acc.balance) }} <span class="text-[10px] sm:text-xs font-bold text-slate-400">USDT</span></div>
                     </div>
                     <div>
-                        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">破产重置次数 (<1000)</h3>
-                        <div class="text-xl font-black text-rose-500" style="font-family: 'JetBrains Mono', monospace;">{{ mock_acc.failures }} <span class="text-xs font-bold text-slate-400">次</span></div>
+                        <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1">破产重置次数</h3>
+                        <div class="text-lg sm:text-xl font-black text-rose-500 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ mock_acc.failures }} <span class="text-[10px] sm:text-xs font-bold text-slate-400">次</span></div>
                     </div>
                 </div>
             </div>
             
             {% if mock_chart_data and mock_chart_data|length > 0 %}
-            <div class="w-full h-[200px]">
+            <div class="w-full h-[180px] sm:h-[200px]">
                 <canvas id="equityChart"></canvas>
             </div>
             <script>
@@ -172,28 +207,31 @@
         </div>
         {% endif %}
 
-        {% if current_agent != 'ALL' and agent_mode == 'REAL' and real_chart_data and real_chart_data|length > 0 %}
-        <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 p-6 mb-8 transition-all hover:shadow-md">
-            <div class="flex flex-col md:flex-row gap-6 justify-between items-start md:items-center mb-6">
+        {% if current_agent != 'ALL' and agent_mode == 'REAL' %}
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
+            <div class="flex flex-col md:flex-row gap-4 sm:gap-6 justify-between items-start md:items-center mb-4 sm:mb-6">
                 <div>
-                    <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
-                        <span class="text-xl">📊</span> 实盘资金曲线 (Real 模式)
+                    <h2 class="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <span class="text-lg sm:text-xl">📊</span> 实盘资金曲线 (Real 模式)
                     </h2>
-                    <p class="text-[11px] text-slate-400 mt-1">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的真实账户每日净值变化</p>
+                    <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 sm:mt-1">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的真实账户净值变化</p>
                 </div>
-                <div class="flex gap-6">
+                <div class="grid grid-cols-2 gap-4 sm:gap-6 w-full md:w-auto">
                     <div>
-                        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">最新净值</h3>
-                        <div class="text-xl font-black text-rose-600" style="font-family: 'JetBrains Mono', monospace;">{{ "%.2f"|format(real_chart_data[-1].equity) }} <span class="text-xs font-bold text-slate-400">USDT</span></div>
+                        <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1">账户余额 (实时)</h3>
+                        <div class="text-lg sm:text-xl font-black text-rose-600 truncate" style="font-family: 'JetBrains Mono', monospace;">
+                            {{ "%.2f"|format(real_balance) if real_balance is not none else "--" }} <span class="text-[10px] sm:text-xs font-bold text-slate-400">USDT</span>
+                        </div>
                     </div>
                     <div>
-                        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">记录天数</h3>
-                        <div class="text-xl font-black text-slate-700" style="font-family: 'JetBrains Mono', monospace;">{{ real_chart_data|length }} <span class="text-xs font-bold text-slate-400">天</span></div>
+                        <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1">资金曲线数据点</h3>
+                        <div class="text-lg sm:text-xl font-black text-slate-700 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ real_chart_data|length }} <span class="text-[10px] sm:text-xs font-bold text-slate-400">天</span></div>
                     </div>
                 </div>
             </div>
             
-            <div class="w-full h-[200px]">
+            {% if real_chart_data and real_chart_data|length > 0 %}
+            <div class="w-full h-[180px] sm:h-[200px]">
                 <canvas id="realEquityChart"></canvas>
             </div>
             <script>
@@ -264,6 +302,7 @@
                     });
                 });
             </script>
+            {% endif %}
         </div>
         {% endif %}
 

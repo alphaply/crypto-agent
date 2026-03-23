@@ -234,6 +234,7 @@ def history_view():
 
         # 实盘模式资金曲线 (从 balance_history 按天聚合)
         real_chart_data = []
+        real_balance = None
         if agent_mode == 'REAL' and agent_filter != 'ALL':
             try:
                 with get_db_conn() as conn:
@@ -248,6 +249,66 @@ def history_view():
             except Exception as e:
                 logger.warning(f"Failed to load real chart data: {e}")
 
+            # 实时获取交易所余额 (与 Dashboard 仓位卡片逻辑一致)
+            try:
+                from utils.market_data import MarketTool
+                mt = MarketTool(config_id=agent_filter)
+                bal = mt.exchange.fetch_balance()
+                real_balance = float(bal.get('USDT', {}).get('total', 0) or
+                                    bal.get('total', {}).get('USDT', 0) or 0)
+            except Exception as e:
+                logger.warning(f"Failed to fetch live balance for REAL mode: {e}")
+
+        # SPOT_DCA 模式统计 (成本价、累计投入、持仓数量)
+        dca_stats = None
+        if agent_mode == 'SPOT_DCA' and agent_filter != 'ALL':
+            try:
+                with get_db_conn() as conn:
+                    # 从 orders 表聚合定投买入数据
+                    row = conn.execute("""
+                        SELECT COUNT(*) as buy_count,
+                               SUM(entry_price * CASE WHEN entry_price > 0 THEN 1 ELSE 0 END) as total_cost_sum,
+                               SUM(CASE WHEN LOWER(side) LIKE '%buy%' AND entry_price > 0 THEN 1 ELSE 0 END) as valid_buys
+                        FROM orders
+                        WHERE config_id = ? AND trade_mode = 'SPOT_DCA'
+                    """, (agent_filter,)).fetchone()
+                    
+                    buy_count = row['buy_count'] or 0
+                    valid_buys = row['valid_buys'] or 0
+                    
+                    # 获取现货持仓详情
+                    buy_orders = conn.execute("""
+                        SELECT entry_price, reason, timestamp FROM orders
+                        WHERE config_id = ? AND trade_mode = 'SPOT_DCA' AND LOWER(side) LIKE '%buy%' AND entry_price > 0
+                        ORDER BY id DESC
+                    """, (agent_filter,)).fetchall()
+                    
+                    # 计算成本均价和累计投入
+                    cfg = global_config.get_config_by_id(agent_filter)
+                    dca_amount_per = float(cfg.get('dca_amount', cfg.get('dca_budget', 100))) if cfg else 100
+                    total_invested = valid_buys * dca_amount_per
+                    
+                    # 计算累计买入数量 (投入金额 / 买入价格)
+                    total_qty = 0
+                    for bo in buy_orders:
+                        price = float(bo['entry_price'])
+                        if price > 0:
+                            total_qty += dca_amount_per / price
+                    
+                    avg_cost = (total_invested / total_qty) if total_qty > 0 else 0
+                    
+                    dca_stats = {
+                        "buy_count": valid_buys,
+                        "total_invested": round(total_invested, 2),
+                        "total_qty": round(total_qty, 6),
+                        "avg_cost": round(avg_cost, 4),
+                        "dca_amount_per": dca_amount_per,
+                        "first_buy": buy_orders[-1]['timestamp'] if buy_orders else None,
+                        "last_buy": buy_orders[0]['timestamp'] if buy_orders else None,
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to compute DCA stats: {e}")
+
     except Exception as e:
         logger.error(f"Failed to load history page: symbol={symbol}, agent={agent_filter}, page={page}, error={e}")
         summaries = []
@@ -259,6 +320,8 @@ def history_view():
         mock_chart_data = []
         agent_mode = 'STRATEGY'
         real_chart_data = []
+        real_balance = None
+        dca_stats = None
 
     return render_template(
         'history.html',
@@ -273,7 +336,9 @@ def history_view():
         mock_acc=mock_acc,
         mock_chart_data=mock_chart_data,
         agent_mode=agent_mode,
-        real_chart_data=real_chart_data
+        real_chart_data=real_chart_data,
+        real_balance=real_balance,
+        dca_stats=dca_stats
     )
 @main_bp.route('/chat')
 def chat_view():
