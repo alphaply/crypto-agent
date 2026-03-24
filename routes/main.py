@@ -253,7 +253,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict['display_name'] = f"{model_name} ({mode})"
                 
                 # 默认获取第一页订单
-                orders, total = get_paginated_orders(config_id, page=1, per_page=10)
+                orders, total = get_paginated_orders(config_id, page=1, per_page=20)
                 summary_dict['all_orders'] = orders
                 summary_dict['order_total'] = total
                 summary_dict['order_page'] = 1
@@ -479,7 +479,7 @@ def public_stats_view():
 def get_orders_api():
     config_id = request.args.get('config_id')
     page = int(request.args.get('page', 1))
-    per_page = int(request.args.get('per_page', 10))
+    per_page = int(request.args.get('per_page', 20))
     if not config_id:
         return jsonify({"success": False, "message": "Missing config_id"})
     
