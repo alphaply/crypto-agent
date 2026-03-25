@@ -256,16 +256,17 @@ class MarketTool:
                 
                 # 兼容性处理：尝试从不同可能的路径获取 USDT 余额
                 # ccxt 在 fetch_balance() 中通常会统一化结构，但在某些交易所 API 变动时可能失效
-                usdt_free = 0
+                # 账户余额获取逻辑：实盘使用 total (包含持仓保证金和未实现盈亏的一部分，即钱包余额)
+                # 总权益 = total + unrealized_pnl (标准合约计算公式)
+                usdt_total = 0
                 if 'USDT' in balance_info:
-                    usdt_free = float(balance_info['USDT'].get('free', 0))
+                    usdt_total = float(balance_info['USDT'].get('total', 0))
                 elif 'usdt' in balance_info:
-                    usdt_free = float(balance_info['usdt'].get('free', 0))
+                    usdt_total = float(balance_info['usdt'].get('total', 0))
                 elif 'total' in balance_info and 'USDT' in balance_info['total']:
-                    # 某些版本或模式下可能在 total 字段中
-                    usdt_free = float(balance_info['free'].get('USDT', 0))
+                    usdt_total = float(balance_info['total'].get('USDT', 0))
                 
-                status_data["balance"] = usdt_free
+                status_data["balance"] = usdt_total
                 
                 # 实盘持仓
                 try:

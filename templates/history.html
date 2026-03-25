@@ -4,8 +4,9 @@
 
 {% block head %}
     <style>
-        .history-card { width: 100%; max-width: 100%; min-width: 0; }
+        .history-card { width: 100%; max-width: 100%; min-width: 0; overflow: hidden; }
         .history-card * { min-width: 0; }
+        
         .markdown-content { overflow-wrap: anywhere; word-break: break-word; }
         .markdown-content,
         .markdown-content * { max-width: 100%; }
@@ -16,20 +17,26 @@
         .markdown-content ul { list-style: disc; padding-left: 1.25rem; margin-bottom: 1rem; }
         .markdown-content ol { list-style: decimal; padding-left: 1.25rem; margin-bottom: 1rem; }
         .markdown-content code { background-color: #f3f4f6; padding: 0 0.25rem; border-radius: 0.25rem; color: #dc2626; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.875rem; }
-        .markdown-content pre { background-color: #111827; color: #f9fafb; padding: 1rem; border-radius: 0.75rem; overflow-x: auto; margin-bottom: 1rem; max-width: 100%; }
+        .markdown-content pre { background-color: #111827; color: #f9fafb; padding: 1rem; border-radius: 0.75rem; overflow-x: auto; margin-bottom: 1rem; max-width: 100%; white-space: pre-wrap; word-break: break-all; }
         .markdown-content pre code { background: transparent; padding: 0; color: #f9fafb; }
         .markdown-content blockquote { border-left: 4px solid #d1d5db; padding-left: 1rem; font-style: italic; margin-bottom: 1rem; }
-        .markdown-content table { display: block; overflow-x: auto; white-space: nowrap; width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
+        .markdown-content table { display: block; overflow-x: auto; width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
         .markdown-content th, .markdown-content td { border: 1px solid #d1d5db; padding: 0.5rem 1rem; }
+        
+        /* 图表容器自适应 */
+        .chart-container { position: relative; width: 100%; height: 220px; overflow: hidden; }
+
         @media (max-width: 640px) {
-            #history-toast-container { width: calc(100vw - 1.5rem); }
+            #history-toast-container { width: calc(100% - 1.5rem) !important; right: 0.75rem !important; left: 0.75rem !important; }
             #history-toast-container > div { width: 100%; min-width: 0; }
             .agent-chip {
                 display: inline-flex;
                 max-width: 100%;
                 white-space: normal;
                 word-break: break-all;
+                flex-shrink: 0;
             }
+            .chart-container { height: 180px; }
         }
     </style>
 {% endblock %}
@@ -108,7 +115,7 @@
             </div>
             
             {% if mock_chart_data and mock_chart_data|length > 0 %}
-            <div class="w-full h-[180px] sm:h-[220px]">
+            <div class="chart-container">
                 <canvas id="equityChart"></canvas>
             </div>
             <script>
@@ -207,7 +214,7 @@
             </div>
             
             {% if real_chart_data and real_chart_data|length > 0 %}
-            <div class="w-full h-[180px] sm:h-[220px]">
+            <div class="chart-container">
                 <canvas id="realEquityChart"></canvas>
             </div>
             <script>
@@ -451,7 +458,7 @@
                     <div class="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto min-w-0">
                         <span class="font-bold text-sm sm:text-base text-gray-900 break-all min-w-0 max-w-full">🤖 {{ s.agent_name or 'Agent' }}</span>
                         {% if s.agent_type %}
-                        <span class="px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold 
+                        <span class="px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold shrink-0
                             {% if s.agent_type == 'REAL' %}bg-red-50 text-red-600
                             {% elif s.agent_type == 'SPOT_DCA' %}bg-yellow-50 text-yellow-600
                             {% else %}bg-blue-50 text-blue-600{% endif %}">
