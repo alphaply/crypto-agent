@@ -6,6 +6,9 @@
 let isAuthed = false;
 let currentConfigs = [];
 let currentPromptFile = '';
+const markdownRenderQueue = new WeakSet();
+let markdownObserver = null;
+const statsRequests = new Map();
 
 // --- 多 Agent Tab 切换逻辑 ---
 
@@ -37,31 +40,40 @@ function switchAgentTab(agentName) {
     if (compareWin) {
         if (agentName === 'COMPARE') {
             compareWin.classList.remove('hidden');
-            // 切换到对比视图时，强制对内部所有内容重新渲染 Markdown
             renderMarkdown(true, compareWin);
+            observeMarkdown(compareWin);
         } else {
             compareWin.classList.add('hidden');
         }
     }
 
-    // 3. 正常渲染可见视窗
-    renderMarkdown();
+    const activeWindow = document.getElementById(`window-${agentName}`);
+    if (activeWindow) {
+        renderMarkdown(false, activeWindow);
+        observeMarkdown(activeWindow);
+    }
 
-    // 4. 加载该 Agent 的统计数据
     if (agentName !== 'COMPARE') {
         loadAgentStats(agentName);
     }
 }
 
-function renderMarkdown(force = false, root = document) {
-    const containers = root.querySelectorAll('.markdown-content');
-    containers.forEach(div => {
-        if (!force && div.getAttribute('data-rendered') === 'true') return;
-        
-        // 如果是强制重绘，且已经渲染过，我们需要从原始备份或文本中恢复
-        let rawContent = div.getAttribute('data-raw') || div.textContent;
-        
-        // 首次渲染时备份原始文本
+function scheduleIdleRender(task) {
+    if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(task, { timeout: 200 });
+        return;
+    }
+    window.setTimeout(task, 16);
+}
+
+function renderMarkdownNode(div, force = false) {
+    if (!div || !window.marked) return;
+    if (!force && div.getAttribute('data-rendered') === 'true') return;
+    if (!force && markdownRenderQueue.has(div)) return;
+
+    markdownRenderQueue.add(div);
+    scheduleIdleRender(() => {
+        const rawContent = div.getAttribute('data-raw') || div.textContent;
         if (!div.getAttribute('data-raw')) {
             div.setAttribute('data-raw', rawContent);
         }
@@ -70,17 +82,62 @@ function renderMarkdown(force = false, root = document) {
         div.classList.add('markdown-body');
         div.innerHTML = marked.parse(rawContent);
         div.setAttribute('data-rendered', 'true');
+        markdownRenderQueue.delete(div);
+    });
+}
+
+function renderMarkdown(force = false, root = document) {
+    const containers = root.querySelectorAll('.markdown-content');
+    containers.forEach(div => {
+        if (force || div.dataset.markdownLazy === 'off') {
+            renderMarkdownNode(div, force);
+            return;
+        }
+
+        if (div.closest('details') && !div.closest('details').open) return;
+        renderMarkdownNode(div, false);
+    });
+}
+
+function observeMarkdown(root = document) {
+    if (!('IntersectionObserver' in window)) {
+        renderMarkdown(false, root);
+        return;
+    }
+
+    if (!markdownObserver) {
+        markdownObserver = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting) return;
+                renderMarkdownNode(entry.target);
+                markdownObserver.unobserve(entry.target);
+            });
+        }, { rootMargin: '120px 0px' });
+    }
+
+    const containers = root.querySelectorAll('.markdown-content');
+    containers.forEach(div => {
+        if (div.getAttribute('data-rendered') === 'true') return;
+        if (div.closest('details') && !div.closest('details').open) return;
+        markdownObserver.observe(div);
     });
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    renderMarkdown();
-    // 自动加载第一个 Agent 的统计
     const firstWindow = document.querySelector('.agent-window:not(.hidden)');
     if (firstWindow) {
+        renderMarkdown(false, firstWindow);
+        observeMarkdown(firstWindow);
         const configId = firstWindow.getAttribute('data-config-id');
         if (configId) loadAgentStats(configId);
     }
+
+    document.addEventListener('toggle', event => {
+        const target = event.target;
+        if (!(target instanceof HTMLDetailsElement) || !target.open) return;
+        observeMarkdown(target);
+        renderMarkdown(false, target);
+    }, true);
 });
 
 // --- UI 通用组件 ---
@@ -976,8 +1033,10 @@ const loadedStats = new Set();
 
 async function loadAgentStats(configId) {
     if (loadedStats.has(configId)) return;
+    if (statsRequests.has(configId)) return statsRequests.get(configId);
     loadedStats.add(configId);
 
+    const request = (async () => {
     try {
         const resp = await fetch(`/api/stats/agent/${configId}`);
         const data = await resp.json();
@@ -1043,6 +1102,12 @@ async function loadAgentStats(configId) {
     if (mode === 'REAL' || mode === 'STRATEGY') {
         loadPositionStats(configId);
     }
+    })().finally(() => {
+        statsRequests.delete(configId);
+    });
+
+    statsRequests.set(configId, request);
+    return request;
 }
 
 async function loadPositionStats(configId) {

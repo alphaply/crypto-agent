@@ -19,6 +19,9 @@ from agent.agent_graph import generate_manual_daily_summary
 
 main_bp = Blueprint('main', __name__)
 
+DCA_STATS_CACHE = {}
+DCA_STATS_CACHE_TTL = 300
+
 def verify_admin_action(password, captcha):
     """验证管理员密码与动态验证码"""
     now = time.time()
@@ -104,6 +107,13 @@ def calculate_dca_stats(config_id, force_sync=False):
     由于不再依赖数据库，不再需要 force_sync (参数保留以防兼容问题)。
     """
     try:
+        cache_key = str(config_id)
+        now_ts = time.time()
+        if not force_sync:
+            cached = DCA_STATS_CACHE.get(cache_key)
+            if cached and now_ts - cached['timestamp'] < DCA_STATS_CACHE_TTL:
+                return cached['data']
+
         from config import config as global_config
         from utils.market_data import MarketTool
         
@@ -182,7 +192,7 @@ def calculate_dca_stats(config_id, force_sync=False):
             from datetime import datetime
             return datetime.fromtimestamp(ts/1000).strftime('%Y-%m-%d %H:%M:%S') if ts else None
             
-        return {
+        result = {
             "buy_count": matched_buy_count,
             "total_invested": round(final_invested, 2),
             "total_qty": round(final_qty, 6),
@@ -193,6 +203,11 @@ def calculate_dca_stats(config_id, force_sync=False):
             "last_buy": fmt_ts(last_buy_ts),
             "actual_balance": round(current_qty, 6)
         }
+        DCA_STATS_CACHE[cache_key] = {
+            'timestamp': now_ts,
+            'data': result
+        }
+        return result
     except Exception as e:
         import traceback
         logger.error(f"Error calculating CCXT DCA stats for {config_id}: {e}\n{traceback.format_exc()}")

@@ -5,9 +5,8 @@
 {% block body_class %}bg-[#f8fafc] text-slate-900 font-sans antialiased{% endblock %}
 
 {% block head %}
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
         .font-mono { font-family: 'JetBrains Mono', monospace; }
         .mini-scroll::-webkit-scrollbar { width: 4px; }
         .mini-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -15,6 +14,29 @@
         .glass-card { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(226, 232, 240, 0.8); }
         .captcha-container img { filter: contrast(1.1) brightness(0.95); transition: all 0.3s; }
         .captcha-container:hover img { filter: contrast(1.2) brightness(1); transform: scale(1.02); }
+
+        @media (max-width: 640px) {
+            nav .max-w-6xl {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.75rem;
+            }
+            nav .max-w-6xl > div:last-child {
+                width: 100%;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+            }
+            nav button,
+            nav a {
+                min-height: 44px;
+                justify-content: center;
+                display: inline-flex;
+                align-items: center;
+            }
+            .glass-card {
+                border-radius: 1.4rem;
+            }
+        }
     </style>
 {% endblock %}
 

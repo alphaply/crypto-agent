@@ -3,6 +3,7 @@
 {% block title %}分析历史 - {{ current_symbol }}{% endblock %}
 
 {% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
     <style>
         .history-card { width: 100%; max-width: 100%; min-width: 0; overflow: hidden; }
         .history-card * { min-width: 0; }
@@ -37,6 +38,10 @@
                 flex-shrink: 0;
             }
             .chart-container { height: 180px; }
+            .history-card {
+                border-radius: 1.25rem;
+                box-shadow: 0 18px 40px -28px rgba(15, 23, 42, 0.35);
+            }
         }
     </style>
 {% endblock %}
@@ -91,7 +96,7 @@
         </div>
         {% endif %}
 
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
 
         {% if current_agent != 'ALL' and mock_acc and agent_mode == 'STRATEGY' %}
         <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
