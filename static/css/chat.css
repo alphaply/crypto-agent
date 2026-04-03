@@ -14,6 +14,111 @@ body {
   color: var(--text-main);
 }
 
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex-shrink: 0;
+}
+
+.icon-svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.toolbar-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.9rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 0.6875rem;
+  line-height: 1;
+  transition: all 0.2s ease;
+}
+
+.toolbar-pill-danger {
+  background: #ffe4e6;
+  color: #e11d48;
+}
+
+.toolbar-pill-danger:hover {
+  background: #fecdd3;
+}
+
+.toolbar-pill-neutral {
+  background: #f1f5f9;
+  color: #475569;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.toolbar-pill-neutral:hover {
+  background: #2563eb;
+  color: #fff;
+}
+
+.toolbar-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+}
+
+.toolbar-label {
+  white-space: nowrap;
+}
+
+.floating-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.8rem;
+  height: 2.8rem;
+}
+
+.floating-icon-svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.status-icon {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+.send-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+}
+
+.send-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.modal-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex-shrink: 0;
+}
+
+.modal-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
 #input {
   transition: height 0.12s ease-out, background-color 0.2s ease, box-shadow 0.2s ease;
   overflow-y: hidden;
@@ -129,6 +234,53 @@ body {
   #sessionSidebar {
     width: min(88vw, 320px);
   }
+  .icon-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+  .icon-svg {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+  .toolbar-pill {
+    min-width: 2.75rem;
+    padding: 0.65rem 0.8rem;
+  }
+  .toolbar-label {
+    display: none;
+  }
+  .toolbar-icon {
+    width: 1.05rem;
+    height: 1.05rem;
+  }
+  .floating-icon-button {
+    width: 3rem;
+    height: 3rem;
+  }
+  .floating-icon-svg {
+    width: 1.2rem;
+    height: 1.2rem;
+  }
+  .status-icon {
+    width: 1.05rem;
+    height: 1.05rem;
+  }
+  .send-button {
+    width: 2.9rem;
+    height: 2.9rem;
+  }
+  .send-icon {
+    width: 1.2rem;
+    height: 1.2rem;
+  }
+  .modal-icon-wrap {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+  .modal-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
   .chat-bubble {
     padding: 0.9rem 1rem;
     border-radius: 1.1rem;
@@ -145,6 +297,9 @@ body {
   aside button,
   aside a {
     min-height: 44px;
+  }
+  header {
+    align-items: flex-start;
   }
 }
 
