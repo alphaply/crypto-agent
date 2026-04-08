@@ -47,7 +47,7 @@ An automated cryptocurrency trading system powered by Large Language Models (LLM
 
 ### Data Persistence
 - **Mode Isolation**: Strictly separate `REAL`, `STRATEGY`, and `SPOT_DCA` execution paths using the `config_id` as the primary key for isolation.
-- **Token Tracking**: All LLM calls save token usage to `token_usage` table for cost analysis.
+  - **Token Tracking**: All LLM calls save token usage to `token_usage` table. Pricing is managed via `pricing.json` in the root directory, which is synced to the database on system startup.
 
 ---
-*Note: This GEMINI.md is updated for Gemini CLI to reflect the 2026.03.23 system state.*
+*Note: This GEMINI.md is updated for Gemini CLI to reflect the 2026.04.08 system state.*

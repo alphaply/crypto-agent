@@ -12,3 +12,5 @@ wheels/
 agent/prompts/*
 # Local runtime database
 trading_data.db
+chat_checkpoints.sqlite
+app.log

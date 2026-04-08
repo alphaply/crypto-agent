@@ -3,6 +3,7 @@ import sqlite3
 import uuid
 import pytz
 from datetime import datetime, timedelta
+import json
 from contextlib import contextmanager
 from utils.logger import setup_logger
 
@@ -198,7 +199,31 @@ def init_db():
 
         conn.commit()
 
+    # 初始化完成后，从文件同步计价配置
+    load_model_pricing_from_file()
+
 # --- 模型计价管理 ---
+
+def load_model_pricing_from_file():
+    """从 pricing.json 加载模型计价并同步到数据库"""
+    pricing_file = os.path.join(BASE_DIR, "pricing.json")
+    if not os.path.exists(pricing_file):
+        logger.warning(f"⚠️ pricing.json 不存在，跳过初始化计价。")
+        return
+
+    try:
+        with open(pricing_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        for model, info in data.items():
+            input_price = info.get('input_price_per_m', 0)
+            output_price = info.get('output_price_per_m', 0)
+            currency = info.get('currency', 'USD')
+            update_model_pricing(model, input_price, output_price, currency)
+        
+        logger.info(f"✅ 已从 pricing.json 同步 {len(data)} 个模型的计价信息。")
+    except Exception as e:
+        logger.error(f"❌ 加载 pricing.json 失败: {e}")
 
 def get_all_pricing():
     """获取所有模型的计价信息"""
