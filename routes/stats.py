@@ -249,6 +249,46 @@ def _calculate_win_rate(trade_summary):
     return trade_summary
 
 
+def _safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _resolve_leverage(position, cfg, fallback_leverage):
+    """多路径解析杠杆，避免交易所字段差异导致误显示 1x。"""
+    info = position.get('info', {}) or {}
+
+    candidates = [
+        position.get('leverage'),
+        position.get('info', {}).get('leverage') if isinstance(position.get('info'), dict) else None,
+        info.get('leverage'),
+        info.get('bracketLeverage'),
+    ]
+
+    for item in candidates:
+        val = _safe_float(item, 0)
+        if val > 0:
+            return val
+
+    notional = abs(_safe_float(position.get('notional'), 0))
+    initial_margin = abs(_safe_float(position.get('initialMargin'), 0))
+    if notional > 0 and initial_margin > 0:
+        inferred = notional / initial_margin
+        if inferred > 0:
+            return inferred
+
+    cfg_lev = _safe_float(cfg.get('leverage') if isinstance(cfg, dict) else None, 0)
+    if cfg_lev > 0:
+        return cfg_lev
+
+    fb = _safe_float(fallback_leverage, 1)
+    return fb if fb > 0 else 1
+
+
 def _fetch_real_position_data(mt, symbol, cfg):
     """获取实盘仓位、余额和最近成交"""
     from database import save_trade_history
@@ -258,6 +298,8 @@ def _fetch_real_position_data(mt, symbol, cfg):
     recent_trades = []
     trade_summary = {"total_trades": 0, "realized_pnl": 0, "win_count": 0,
                      "lose_count": 0, "win_rate": 0}
+    from config import config as global_config
+    fallback_leverage = global_config.get_leverage(cfg.get('config_id') if isinstance(cfg, dict) else None)
 
     # 1. 获取当前仓位
     try:
@@ -268,9 +310,7 @@ def _fetch_real_position_data(mt, symbol, cfg):
                 entry = float(p.get('entryPrice', 0))
                 unrealized = float(p.get('unrealizedPnl', 0))
                 notional = float(p.get('notional', 0)) or (entry * contracts)
-                leverage = float(p.get('leverage', cfg.get('leverage', 1)) or 1)
-                if leverage <= 0:
-                    leverage = 1
+                leverage = _resolve_leverage(p, cfg, fallback_leverage)
                 pnl_pct = (unrealized / abs(notional) * 100) if notional != 0 else 0
                 roi_pct = pnl_pct * leverage
                 margin_used = abs(notional) / leverage if leverage > 0 else abs(notional)
@@ -391,6 +431,8 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
     recent_trades = []
     trade_summary = {"total_trades": 0, "realized_pnl": 0, "win_count": 0,
                      "lose_count": 0, "win_rate": 0}
+    from config import config as global_config
+    fallback_leverage = global_config.get_leverage(config_id)
 
     # 获取当前市场价格
     current_price = 0
@@ -428,7 +470,9 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
                     unrealized = (entry - current_price) * amount
 
             notional = entry * amount
-            leverage = float(cfg.get('leverage', 1) or 1)
+            leverage = _safe_float(cfg.get('leverage'), 0)
+            if leverage <= 0:
+                leverage = _safe_float(fallback_leverage, 1)
             if leverage <= 0:
                 leverage = 1
             pnl_pct = (unrealized / notional * 100) if notional > 0 else 0
