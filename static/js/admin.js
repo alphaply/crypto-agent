@@ -62,7 +62,7 @@ function initPromptEditor() {
     },
   });
 
-  promptEditor.setSize('100%', 380);
+  promptEditor.setSize('100%', 440);
   promptEditor.on('change', () => updatePromptMeta());
   applyEditorTheme();
 }

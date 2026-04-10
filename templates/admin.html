@@ -247,26 +247,26 @@
     </div>
   </section>
 
-  <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <section class="grid grid-cols-1 gap-6">
     <div class="admin-panel bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-      <div class="flex items-center justify-between mb-3">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
         <h3 class="admin-title text-lg font-bold text-slate-900">Prompt 模板管理</h3>
         <div class="flex items-center gap-2">
           <span id="prompt-count" class="text-[11px] px-2 py-1 rounded-lg bg-slate-100 text-slate-600">0</span>
           <button onclick="loadPrompts()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
         </div>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4">
-        <div>
+      <div class="grid grid-cols-1 lg:grid-cols-[minmax(240px,300px)_minmax(0,1fr)] gap-4">
+        <div class="min-w-0">
           <input id="prompt-search" placeholder="搜索模板文件..." class="w-full border border-slate-200 rounded-lg p-2 text-xs mb-2">
           <div id="prompt-list" class="space-y-1 max-h-[360px] overflow-y-auto border border-slate-200 rounded-xl p-2"></div>
-          <div class="mt-2 flex gap-2">
-            <input id="new-prompt-name" placeholder="new_prompt.txt" class="flex-1 border border-slate-200 rounded-lg p-2 text-xs">
-            <button onclick="createPrompt()" class="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-xs font-bold whitespace-nowrap">新建 TXT</button>
+          <div class="mt-2 flex items-center gap-2">
+            <input id="new-prompt-name" placeholder="new_prompt.txt" class="min-w-0 flex-1 border border-slate-200 rounded-lg p-2 text-xs">
+            <button onclick="createPrompt()" class="shrink-0 px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-xs font-bold whitespace-nowrap">新建 TXT</button>
           </div>
           <div class="admin-muted mt-2 text-[11px]">文件名支持 a-z、0-9、._-，自动补全 .txt</div>
         </div>
-        <div>
+        <div class="min-w-0">
           <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
             <div class="flex items-center gap-2">
               <div id="current-prompt" class="admin-title text-sm font-bold text-slate-700">未选择</div>
@@ -277,7 +277,7 @@
               <button onclick="deletePrompt()" class="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-600">删除</button>
             </div>
           </div>
-          <textarea id="prompt-editor" class="w-full h-[380px] border border-slate-200 rounded-xl p-3 font-mono text-xs"></textarea>
+          <textarea id="prompt-editor" class="w-full h-[440px] border border-slate-200 rounded-xl p-3 font-mono text-xs"></textarea>
           <div class="mt-2 flex items-center justify-between gap-2">
             <div class="admin-muted text-[11px]">快捷键: Ctrl/Cmd + S 保存模板</div>
             <div id="prompt-status" class="text-[11px] text-emerald-600"></div>
@@ -286,7 +286,7 @@
       </div>
     </div>
 
-    <div class="space-y-6">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div class="admin-panel bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
         <h3 class="admin-title text-lg font-bold text-slate-900 mb-3">模型定价维护</h3>
         <div class="flex flex-wrap gap-2 mb-3">
