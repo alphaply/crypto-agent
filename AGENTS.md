@@ -38,5 +38,9 @@ PRs should include:
 
 ## Security & Configuration Tips
 - Do not commit real API keys or secrets; use `.env.template` as the baseline.  
-- Model pricing is managed via `pricing.json` in the project root; ensure this file is updated when adding new models.
+- Model pricing runtime file `pricing.json` is local-only and ignored by git; keep example defaults in templates/docs instead of committing private pricing changes.
 - Prefer per-agent credentials in `SYMBOL_CONFIGS` only when required, and keep `ADMIN_PASSWORD` strong in non-local environments.
+
+## Documentation Maintenance
+- For release-level changes, keep `README.md` and all files under `docs/` synchronized with actual code behavior.
+- Remove deprecated feature docs promptly (for example, old screener references after v1.0 cleanup).

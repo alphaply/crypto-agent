@@ -1,5 +1,4 @@
 from typing import Any, Dict, List, Literal, Optional
-from typing import List, Literal, Optional, Any, Dict
 from pydantic import BaseModel, Field
 from langchain_core.messages import (
     BaseMessageChunk,
@@ -10,14 +9,6 @@ from langchain_core.messages import (
     trim_messages,
     BaseMessage
 )
-
-class ScreenerResult(BaseModel):
-    """Screener 结构化输出"""
-    decision: Literal["MASTER", "SMALL", "SKIP"] = Field(description="决定该由哪个模型处理 (MASTER/SMALL/SKIP)")
-    market_status: str = Field(description="当前市场状态的简短描述，用于前端展示")
-    analysis: str = Field(description="对当前行情的详细分析，包括趋势、支撑压力位等")
-    prediction: str = Field(description="对未来走势的预测")
-    reason: str = Field(description="做出该路由决策的详细理由")
 
 class OpenOrderReal(BaseModel):
     """开单参数：仅包含限价单核心参数，不包含止盈止损（暂不支持自动带止盈止损）"""
@@ -63,5 +54,4 @@ class AgentState(BaseModel):
     history_context: List[Dict[str, Any]]
     full_analysis: str = ""
     human_message: Optional[str] = None
-    screener_result: Optional[Dict[str, Any]] = None
     active_agent: Optional[str] = "MASTER"

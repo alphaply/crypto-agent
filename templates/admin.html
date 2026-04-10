@@ -189,13 +189,14 @@
         <h3 class="text-lg font-bold text-slate-900">Prompt 模板管理</h3>
         <button onclick="loadPrompts()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
         <div>
-          <div id="prompt-list" class="space-y-1 max-h-[240px] overflow-y-auto"></div>
+          <div id="prompt-list" class="space-y-1 max-h-[340px] overflow-y-auto"></div>
           <div class="mt-2 flex gap-2">
             <input id="new-prompt-name" placeholder="new_prompt.txt" class="flex-1 border border-slate-200 rounded-lg p-2 text-xs">
-            <button onclick="createPrompt()" class="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs">新建</button>
+            <button onclick="createPrompt()" class="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-xs font-bold whitespace-nowrap">新建 TXT</button>
           </div>
+          <div class="mt-2 text-[11px] text-slate-500">文件名支持 a-z、0-9、._-，自动补全 .txt</div>
         </div>
         <div>
           <div class="flex items-center justify-between mb-2">
@@ -205,7 +206,8 @@
               <button onclick="deletePrompt()" class="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-600">删除</button>
             </div>
           </div>
-          <textarea id="prompt-editor" class="w-full h-[220px] border border-slate-200 rounded-xl p-3 font-mono text-xs"></textarea>
+          <textarea id="prompt-editor" class="w-full h-[380px] border border-slate-200 rounded-xl p-3 font-mono text-xs"></textarea>
+          <div class="mt-2 text-[11px] text-slate-500">快捷键: Ctrl/Cmd + S 保存模板</div>
         </div>
       </div>
     </div>
@@ -254,5 +256,11 @@
 {% endblock %}
 
 {% block scripts %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/search/searchcursor.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/search/search.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/dialog/dialog.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/dialog/dialog.min.css">
 <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
 {% endblock %}

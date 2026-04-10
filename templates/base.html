@@ -16,20 +16,20 @@
       <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
     </noscript>
 
+    <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
         theme: {
           extend: {
             colors: {
-              'buy': '#059669',      // 买入绿
-              'sell': '#dc2626',     // 卖出红
-              'cancel': '#94a3b8',   // 撤单灰
+              'buy': '#059669',
+              'sell': '#dc2626',
+              'cancel': '#94a3b8',
             }
           }
         }
       }
     </script>
-    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
     <style>
       .nav-icon-link {
@@ -132,7 +132,7 @@
           </div>
           {% if symbols %}
           <div class="flex w-full md:w-auto items-center gap-2 flex-wrap md:flex-nowrap">
-             <select id="globalSymbolSelect" onchange="window.location.href = '?symbol=' + this.value" class="form-select bg-white/90 border border-slate-200 text-gray-900 text-xs md:text-sm rounded-xl focus:ring-blue-500 focus:border-blue-500 block p-2 md:p-2.5 outline-none flex-grow md:w-44 shadow-sm min-h-11">
+             <select id="globalSymbolSelect" onchange="window.location.href = this.value ? ('?symbol=' + encodeURIComponent(this.value)) : window.location.pathname" class="form-select bg-white/90 border border-slate-200 text-gray-900 text-xs md:text-sm rounded-xl focus:ring-blue-500 focus:border-blue-500 block p-2 md:p-2.5 outline-none flex-grow md:w-44 shadow-sm min-h-11">
               {% for sym in symbols %} 
                 <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
               {% endfor %}
@@ -155,10 +155,7 @@
                       <svg viewBox="0 0 24 24" class="nav-quick-icon" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
                       <span class="nav-quick-text">历史</span>
                     </a>
-                    <a href="/admin#danger-zone" title="清除历史" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium text-red-600 bg-white/90 border border-l-0 border-slate-200 rounded-r-xl hover:bg-white hover:text-red-700" aria-label="清除历史">
-                      <svg viewBox="0 0 24 24" class="nav-quick-icon" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 7"/><path stroke-linecap="round" stroke-linejoin="round" d="M10 11v6M14 11v6M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3M4 7h16"/></svg>
-                      <span class="nav-quick-text">清理</span>
-                    </a>
+                    
                 </div>
                 <button onclick="location.reload()" title="刷新" class="nav-icon-link hidden md:inline-flex" aria-label="刷新">
                   <svg viewBox="0 0 24 24" class="nav-icon-svg" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 10-2.34 5.66"/><path d="M20 4v7h-7"/></svg>

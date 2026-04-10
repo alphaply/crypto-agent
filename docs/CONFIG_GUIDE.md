@@ -1,115 +1,88 @@
-# 配置指南
+# 配置指南（v1.0）
 
-本项目使用多 Agent 架构，所有交易逻辑由 `.env` 文件中的 `SYMBOL_CONFIGS` 字段驱动。
+本系统由 `.env` 的 `SYMBOL_CONFIGS` 驱动。每个配置对象就是一个独立 Agent。
 
-## 核心配置结构 (SYMBOL_CONFIGS)
-
-`SYMBOL_CONFIGS` 是一个 JSON 数组，每个对象代表一个独立的交易 Agent。
-
-### 示例配置
+## 1. SYMBOL_CONFIGS 结构
 
 ```json
 [
   {
-    "config_id": "eth-claude-real",
-    "symbol": "ETH/USDT",
+    "config_id": "btc-strategy-a",
+    "symbol": "BTC/USDT",
     "enabled": true,
-    "mode": "REAL",
-    "leverage": 10,
-    "model": "claude-opus-4-6",
-    "api_base": "https://xxxx",
-    "api_key": "sk-...",
+    "mode": "STRATEGY",
+    "model": "qwen3-max",
+    "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-xxx",
     "temperature": 0.3,
-    "prompt_file": "real.txt",
-    "binance_api_key": "71qOCCX...",
-    "binance_secret": "71s1jgF...",
-    "summarizer": {
-      "model": "qwen-plus",
-      "api_base": "https://dashscope.aliyuncs.com/...",
-      "api_key": "sk-..."
-    }
+    "prompt_file": "strategy.txt",
+    "run_interval": 60,
+    "leverage": 10
   }
 ]
 ```
 
-### 配置项说明
-- **config_id**: 唯一标识符，用于区分不同配置
-- **symbol**: 交易对名称，如 `BTC/USDT`
-- **enabled**: 开关，设为 `false` 则 Agent 停止运行
-- **mode**: 运行模式
-    - `REAL`: 实盘合约模式，每15分钟执行一次
-    - `STRATEGY`: 策略模拟模式，每1小时执行一次
-    - `SPOT_DCA`: 现货定投模式，按设定的周期定时执行
+## 2. 通用字段说明
 
-### 主要配置项
-- **model**: 主决策模型名称
-- **api_base**: API 接口地址
-- **api_key**: API 密钥
-- **temperature**: 随机性参数（推荐0.3）
-- **prompt_file**: 策略模板路径
-- **leverage**: 杠杆倍数（仅对 REAL/STRATEGY 模式有效）
+- `config_id`：配置唯一 ID，必须唯一。
+- `symbol`：交易对，如 `BTC/USDT`。
+- `enabled`：是否启用。
+- `mode`：运行模式，支持 `REAL` / `STRATEGY` / `SPOT_DCA`。
+- `model`：主决策模型名。
+- `api_base` / `api_key`：模型接口配置。
+- `temperature`：推理温度。
+- `prompt_file`：提示词模板文件名（位于 `agent/prompts/`）。
 
-## 初筛网关配置 (Screener)
+## 3. 模式专属字段
 
-当开启 `enable_screening` 时，系统会使用轻量级小模型作为 Router（网关），它会决定当前行情是否值得交给大模型分析，或者由小模型直接处理。
+### REAL（实盘）
 
-### 配置项说明
-- **enable_screening**: 布尔值，设为 `true` 启用。
-- **screener**: 嵌套对象，包含小模型的专属参数：
-    - `model`: 初筛模型名称 (默认 `gpt-4o-mini`)
-    - `api_base`: 初筛模型的 API 地址 (可选)
-    - `api_key`: 初筛模型的 API 密钥 (可选)
-    - `temperature`: 初筛模型的温度参数 (建议较低，如 0.1-0.2)
+- `run_interval`：执行间隔（分钟，建议 15）。
+- `leverage`：杠杆倍数。
+- `binance_api_key` / `binance_secret`：可选，配置级交易密钥；若为空可回退全局。
 
-### 示例
+示例：
+
 ```json
 {
-  "symbol": "BTC/USDT",
-  "mode": "STRATEGY",
-  "enable_screening": true,
-  "screener": {
-    "model": "gpt-4o-mini",
-    "temperature": 0.1
-  }
-}
-```
-
-## 现货定投模式 (SPOT_DCA) 专用配置
-
-当 `mode` 设置为 `SPOT_DCA` 时，以下配置项将决定 Agent 的执行逻辑和下单频率：
-
-- **dca_amount**: 每次定投的预算金额 (单位: USDT)。AI 会根据此金额和当前价格自动计算买入数量 `amount`。
-- **dca_freq**: 定投频率。可选值：
-    - `1d`: 每天执行。
-    - `1w`: 每周执行。
-- **dca_time**: 定投触发的小时 (24小时制)，例如 `08:00` 表示每天早上 8 点。
-- **dca_weekday**: 仅在 `dca_freq` 为 `1w` 时有效。`0` 表示周一，`6` 表示周日。
-
-### 执行逻辑说明
-1. **定时唤醒**: 系统后台调度器每轮扫描时会检查时间。如果当前小时符合 `dca_time` 且日期符合 `dca_freq` 的设定，Agent 将被唤醒。
-2. **防重复执行**: 系统会在当个周期内记录触发状态，防止由于调度误差导致同一小时内重复定投。
-3. **AI 决策**: Agent 会收到包含当前市场深度、趋势分析及 `dca_amount` 的 Prompt。AI 将生成一个限价单（通常在当前价附近）以执行定投买入。
-
-### 配置案例
-
-#### 1. 每日定投 (适合高频摊低成本)
-每天早上 8 点准时定投 10 USDT。
-```json
-{
-  "symbol": "BTC/USDT",
-  "mode": "SPOT_DCA",
-  "dca_amount": 10,
-  "dca_freq": "1d",
-  "dca_time": "08:00"
-}
-```
-
-#### 2. 每周定投 (适合大额定投)
-每周一早上 8 点定投 100 USDT。
-```json
-{
+  "config_id": "eth-real",
   "symbol": "ETH/USDT",
+  "enabled": true,
+  "mode": "REAL",
+  "model": "claude-sonnet-4-6",
+  "api_base": "https://example.com/v1",
+  "api_key": "sk-xxx",
+  "prompt_file": "real.txt",
+  "run_interval": 15,
+  "leverage": 5
+}
+```
+
+### STRATEGY（策略模拟）
+
+- `run_interval`：执行间隔（分钟，建议 60）。
+- `leverage`：用于策略计算的杠杆参数。
+
+### SPOT_DCA（现货定投）
+
+- `dca_amount`：每轮预算（USDT）。
+- `dca_freq`：`1d`（每日）或 `1w`（每周）。
+- `dca_time`：触发时间，格式 `HH:MM`。
+- `dca_weekday`：仅 `1w` 生效，`0=周一 ... 6=周日`。
+- `initial_cost` / `initial_qty`：可选，已有仓位的成本基线。
+
+示例：
+
+```json
+{
+  "config_id": "btc-dca",
+  "symbol": "BTC/USDT",
+  "enabled": true,
   "mode": "SPOT_DCA",
+  "model": "qwen3-max",
+  "api_base": "https://example.com/v1",
+  "api_key": "sk-xxx",
+  "prompt_file": "dca.txt",
   "dca_amount": 100,
   "dca_freq": "1w",
   "dca_weekday": 0,
@@ -117,22 +90,31 @@
 }
 ```
 
-### 注意事项
-- **最小下单限制**: 币安现货交易通常要求单笔订单总额不低于 **5 USDT** 或 **10 USDT**。如果您的 `dca_amount` 设置过低，会导致下单失败并报错 `Minimum notional filter failed`。
-- **实盘权限**: 确保您的币安 API Key 已开启“现货交易”权限（Spot Trading），定投模式不使用合约权限。
+## 4. Summarizer 配置（可选）
 
-### 高级配置
-- **binance_api_key / binance_secret**: 专属交易密钥
-- **summarizer**: 总结模型配置
+可以给每个配置单独指定总结模型：
 
-## 配置模式
+```json
+"summarizer": {
+  "model": "qwen-plus",
+  "api_base": "https://example.com/v1",
+  "api_key": "sk-xxx"
+}
+```
 
-### 对比
-为同一币种配置多个 Agent（使用不同模型），比较它们的表现。
+若未配置，则回退全局：
 
-### 混合策略
-为一个币种配置一个实盘模式和一个模拟模式，实现风险控制。
+- `GLOBAL_SUMMARIZER_MODEL`
+- `GLOBAL_SUMMARIZER_API_BASE`
+- `GLOBAL_SUMMARIZER_API_KEY`
 
-## 管理建议
+## 5. v1.0 兼容说明
 
-使用仪表盘的配置中心进行可视化修改，保存后系统会自动应用新配置。
+- 旧字段 `enable_screening` / `screener` 已下线，不再生效。
+- 建议从 `.env.template` 重新拷贝后迁移你的配置字段。
+
+## 6. 配置建议
+
+- 同一标的多策略时，务必使用不同 `config_id`。
+- 先用 `STRATEGY` 验证，再切换 `REAL`。
+- `REAL` 模式建议低杠杆、小资金起步。

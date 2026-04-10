@@ -227,42 +227,6 @@
                         </div>
                     </div>
 
-                    <div id="section-screener" class="hidden space-y-4 bg-violet-50/50 p-4 rounded-xl border border-violet-100">
-                        <div class="flex items-center justify-between mb-2">
-                            <div class="flex items-center gap-2">
-                                <span class="w-1 h-4 bg-violet-600 rounded-full"></span>
-                                <h5 class="text-xs font-bold text-violet-700 uppercase">Screener 初筛功能</h5>
-                            </div>
-                            <label class="flex items-center gap-2 cursor-pointer bg-white px-2 py-1 rounded-lg border border-violet-200 shadow-sm">
-                                <input type="checkbox" id="edit-enable-screening" onchange="onScreenerToggle(this.checked)" class="w-4 h-4 accent-violet-600">
-                                <span class="text-[11px] text-violet-600 font-bold">启用初筛</span>
-                            </label>
-                        </div>
-                        
-                        <div id="screener-options" class="space-y-4 opacity-40 pointer-events-none transition-all">
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">初筛模型</label>
-                                    <input type="text" id="edit-screener-model" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="gpt-4o-mini">
-                                </div>
-                                <div>
-                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Base URL (可选)</label>
-                                    <input type="text" id="edit-screener-api-base" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="默认复用主模型 Base">
-                                </div>
-                            </div>
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">API Key (可选)</label>
-                                    <input type="password" id="edit-screener-api-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="默认复用主模型 Key">
-                                </div>
-                                <div>
-                                    <label class="block text-[10px] font-bold text-violet-600 uppercase mb-1">温度 (Temp)</label>
-                                    <input type="number" step="0.1" id="edit-screener-temp" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="0.2">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
                     <div class="grid grid-cols-2 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">杠杆倍数</label>
@@ -275,11 +239,11 @@
                     </div>
                 </div>
 
-                <!-- 2. 主决策模型配置 -->
+                <!-- 2. 模型配置 -->
                 <div class="space-y-4 pt-4 border-t border-gray-100">
                     <div class="flex items-center gap-2 mb-2">
                         <span class="w-1 h-4 bg-purple-600 rounded-full"></span>
-                        <h5 id="title-main-model" class="text-xs font-bold text-gray-900 uppercase">决策模型 (LLM)</h5>
+                        <h5 id="title-main-model" class="text-xs font-bold text-gray-900 uppercase">模型配置 (LLM)</h5>
                     </div>
                     <div class="grid grid-cols-1 gap-3">
                         <div>

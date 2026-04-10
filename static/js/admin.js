@@ -3,6 +3,43 @@ let promptFiles = [];
 let currentPrompt = '';
 let editingConfigId = null;
 let pricingRows = [];
+let promptEditor = null;
+
+function initPromptEditor() {
+  const textarea = document.getElementById('prompt-editor');
+  if (!textarea || typeof window.CodeMirror === 'undefined') return;
+
+  promptEditor = window.CodeMirror.fromTextArea(textarea, {
+    mode: 'text/plain',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 2,
+    tabSize: 2,
+    autofocus: false,
+    extraKeys: {
+      'Ctrl-S': () => savePrompt(),
+      'Cmd-S': () => savePrompt(),
+      'Ctrl-F': 'findPersistent',
+      'Cmd-F': 'findPersistent',
+    },
+  });
+
+  promptEditor.setSize('100%', 380);
+}
+
+function setPromptEditorValue(content) {
+  if (promptEditor) {
+    promptEditor.setValue(content || '');
+    return;
+  }
+  const editor = document.getElementById('prompt-editor');
+  if (editor) editor.value = content || '';
+}
+
+function getPromptEditorValue() {
+  if (promptEditor) return promptEditor.getValue();
+  return document.getElementById('prompt-editor')?.value || '';
+}
 
 function toast(message, type = 'ok') {
   const box = document.getElementById('admin-toast');
@@ -392,8 +429,7 @@ async function openPrompt(name) {
     return;
   }
 
-  const editor = document.getElementById('prompt-editor');
-  if (editor) editor.value = data.content || '';
+  setPromptEditorValue(data.content || '');
 }
 
 function normalizePromptName(rawName) {
@@ -425,8 +461,7 @@ async function createPrompt() {
   const title = document.getElementById('current-prompt');
   if (title) title.textContent = name;
 
-  const editor = document.getElementById('prompt-editor');
-  if (editor) editor.value = '# New prompt\n';
+  setPromptEditorValue('# Prompt template\n');
 
   await savePrompt();
   await loadPrompts();
@@ -440,7 +475,7 @@ async function savePrompt() {
     return;
   }
 
-  const content = document.getElementById('prompt-editor')?.value || '';
+  const content = getPromptEditorValue();
   const resp = await fetch('/api/prompts/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -473,8 +508,7 @@ async function deletePrompt() {
   currentPrompt = '';
   const title = document.getElementById('current-prompt');
   if (title) title.textContent = '未选择';
-  const editor = document.getElementById('prompt-editor');
-  if (editor) editor.value = '';
+  setPromptEditorValue('');
 
   toast('模板已删除');
   await loadPrompts();
@@ -496,7 +530,10 @@ function renderPricingTable() {
         <input data-role="output" data-idx="${idx}" type="number" step="0.000001" value="${row.output_price_per_m ?? 0}" class="w-full border border-slate-200 rounded-lg p-1.5 text-xs">
       </td>
       <td class="px-3 py-2">
-        <button onclick="savePricingRow(${idx})" class="px-2 py-1 rounded border border-slate-200 text-xs hover:bg-slate-100">保存</button>
+        <div class="flex gap-2">
+          <button onclick="savePricingRow(${idx})" class="px-2 py-1 rounded border border-slate-200 text-xs hover:bg-slate-100">保存</button>
+          <button onclick="deletePricingRow(${idx})" class="px-2 py-1 rounded border border-red-200 text-red-600 text-xs hover:bg-red-50">删除</button>
+        </div>
       </td>
     </tr>
   `).join('');
@@ -578,6 +615,31 @@ async function saveAllPricingRows() {
   }
 }
 
+async function deletePricingRow(index) {
+  const row = pricingRows[index];
+  if (!row || !row.model) {
+    toast('无效的模型行', 'err');
+    return;
+  }
+
+  if (!confirm(`确认删除模型定价: ${row.model} ?`)) return;
+
+  const resp = await fetch('/api/stats/pricing', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: row.model }),
+  });
+  const data = await resp.json();
+  if (!data.success) {
+    toast(data.message || '删除定价失败', 'err');
+    return;
+  }
+
+  pricingRows.splice(index, 1);
+  renderPricingTable();
+  toast(`定价已删除: ${row.model}`);
+}
+
 async function cleanHistory() {
   const symbol = document.getElementById('clean-symbol')?.value || '';
   if (!symbol) return;
@@ -598,6 +660,17 @@ async function cleanHistory() {
 
 window.addEventListener('DOMContentLoaded', async () => {
   if (!document.getElementById('config-list')) return;
+
+  initPromptEditor();
+  const nameInput = document.getElementById('new-prompt-name');
+  if (nameInput) {
+    nameInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        createPrompt();
+      }
+    });
+  }
 
   await loadConfigs();
   await loadPrompts();
@@ -621,6 +694,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.addPricingRow = addPricingRow;
   window.savePricingRow = savePricingRow;
   window.saveAllPricingRows = saveAllPricingRows;
+  window.deletePricingRow = deletePricingRow;
 
   window.cleanHistory = cleanHistory;
   window.refreshCaptcha = refreshCaptcha;

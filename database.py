@@ -219,7 +219,7 @@ def load_model_pricing_from_file():
             input_price = info.get('input_price_per_m', 0)
             output_price = info.get('output_price_per_m', 0)
             currency = info.get('currency', 'USD')
-            update_model_pricing(model, input_price, output_price, currency)
+            update_model_pricing(model, input_price, output_price, currency, persist_file=False)
         
         logger.info(f"✅ 已从 pricing.json 同步 {len(data)} 个模型的计价信息。")
     except Exception as e:
@@ -232,7 +232,30 @@ def get_all_pricing():
         rows = c.execute("SELECT * FROM model_pricing").fetchall()
         return {r['model']: dict(r) for r in rows}
 
-def update_model_pricing(model, input_price, output_price, currency='USD'):
+
+def _write_pricing_file_from_db():
+    """将当前数据库中的定价信息同步写入 pricing.json。"""
+    pricing_file = os.path.join(BASE_DIR, "pricing.json")
+    pricing = get_all_pricing()
+    serialized = {
+        model: {
+            "input_price_per_m": row.get("input_price_per_m", 0),
+            "output_price_per_m": row.get("output_price_per_m", 0),
+            "currency": row.get("currency", "USD"),
+        }
+        for model, row in sorted(pricing.items(), key=lambda item: item[0])
+    }
+    with open(pricing_file, 'w', encoding='utf-8') as f:
+        json.dump(serialized, f, ensure_ascii=False, indent=2)
+
+
+def _sync_pricing_file_safe():
+    try:
+        _write_pricing_file_from_db()
+    except Exception as e:
+        logger.error(f"❌ 同步 pricing.json 失败: {e}")
+
+def update_model_pricing(model, input_price, output_price, currency='USD', persist_file=True):
     """更新或插入模型计价"""
     with get_db_conn() as conn:
         c = conn.cursor()
@@ -245,6 +268,22 @@ def update_model_pricing(model, input_price, output_price, currency='USD'):
                 currency=excluded.currency
         ''', (model, input_price, output_price, currency))
         conn.commit()
+
+    if persist_file:
+        _sync_pricing_file_safe()
+
+
+def delete_model_pricing(model, persist_file=True):
+    """删除模型计价。"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM model_pricing WHERE model = ?", (model,))
+        deleted = c.rowcount
+        conn.commit()
+
+    if deleted and persist_file:
+        _sync_pricing_file_safe()
+    return deleted
 
 # --- 模拟交易资金池 / 挂单池功能 ---
 

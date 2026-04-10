@@ -1,7 +1,7 @@
 import sqlite3
 from flask import Blueprint, jsonify, request
 from routes.utils import DB_NAME, _require_chat_auth_api, logger
-from database import get_all_pricing, update_model_pricing
+from database import get_all_pricing, update_model_pricing, delete_model_pricing
 from config import config as global_config
 
 stats_bp = Blueprint('stats', __name__)
@@ -128,6 +128,28 @@ def list_pricing():
         items.sort(key=lambda x: x['model'])
         return jsonify({"success": True, "pricing": items})
     except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+
+@stats_bp.route('/api/stats/pricing', methods=['DELETE'])
+def delete_pricing():
+    """删除模型计价配置 (需要认证)"""
+    auth_err = _require_chat_auth_api()
+    if auth_err:
+        return auth_err
+
+    data = request.json or {}
+    model = (data.get('model') or '').strip()
+    if not model:
+        return jsonify({"success": False, "message": "Missing model name"}), 400
+
+    try:
+        deleted = delete_model_pricing(model)
+        if not deleted:
+            return jsonify({"success": False, "message": "模型不存在"}), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Failed to delete pricing for {model}: {e}")
         return jsonify({"success": False, "message": str(e)})
 
 @stats_bp.route('/api/stats/financial', methods=['GET'])

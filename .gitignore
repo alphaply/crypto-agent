@@ -14,3 +14,4 @@ agent/prompts/*
 trading_data.db
 chat_checkpoints.sqlite
 app.log
+pricing.json

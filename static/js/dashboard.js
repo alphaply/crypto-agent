@@ -555,17 +555,9 @@ function toggleSumSection(enabled) {
 
 function onModeChange(mode) {
     const isDca = mode === 'SPOT_DCA';
-    const isReal = mode === 'REAL';
     
     document.getElementById('section-interval').classList.toggle('hidden', isDca);
     document.getElementById('section-dca').classList.toggle('hidden', !isDca);
-    document.getElementById('section-screener').classList.toggle('hidden', isDca);
-    
-    // 如果是 DCA 模式，确保初筛逻辑被关闭显示
-    if (isDca) {
-        document.getElementById('edit-enable-screening').checked = false;
-        onScreenerToggle(false);
-    }
 
     // 处理默认 prompt 的自动选择
     if (isDca) {
@@ -578,13 +570,6 @@ function onModeChange(mode) {
             }
         }
     }
-}
-
-function onScreenerToggle(enabled) {
-    const options = document.getElementById('screener-options');
-    if (!options) return;
-    options.style.opacity = enabled ? '1' : '0.4';
-    options.style.pointerEvents = enabled ? 'auto' : 'none';
 }
 
 function onDcaFreqChange(freq) {
@@ -617,17 +602,7 @@ async function editSymbol(index) {
     document.getElementById('edit-dca-weekday').value = conf.dca_weekday || '0';
     document.getElementById('edit-dca-amount').value = conf.dca_amount || conf.dca_budget || '100';
 
-    // 初筛配置加载 (嵌套结构)
-    const screeningEnabled = !!conf.enable_screening;
-    const scr = conf.screener || {};
-    document.getElementById('edit-enable-screening').checked = screeningEnabled;
-    document.getElementById('edit-screener-model').value = scr.model || 'gpt-4o-mini';
-    document.getElementById('edit-screener-api-base').value = scr.api_base || '';
-    document.getElementById('edit-screener-api-key').value = '';
-    document.getElementById('edit-screener-temp').value = scr.temperature || 0.2;
-
     onModeChange(mode);
-    onScreenerToggle(screeningEnabled);
     onDcaFreqChange(conf.dca_freq || '1d');
 
     const sum = conf.summarizer || {};
@@ -664,14 +639,6 @@ async function addNewSymbolConfig() {
     document.getElementById('edit-dca-time').value = '08:00';
     document.getElementById('edit-dca-amount').value = '100';
 
-    document.getElementById('edit-enable-screening').checked = false;
-    document.getElementById('edit-screener-model').value = 'gpt-4o-mini';
-    document.getElementById('edit-screener-api-base').value = '';
-    document.getElementById('edit-screener-api-key').value = '';
-    document.getElementById('edit-screener-temp').value = '0.2';
-    document.getElementById('edit-escalation-threshold').value = '60';
-    document.getElementById('threshold-val-display').innerText = '60';
-    
     onModeChange('STRATEGY');
 
     document.getElementById('enable-sum-cfg').checked = false;
@@ -712,22 +679,6 @@ function applySymbolEdit() {
         }
     } else {
         newConf.run_interval = Math.max(15, parseInt(document.getElementById('edit-interval').value) || 15);
-        if (mode === 'REAL') {
-            const screeningEnabled = document.getElementById('edit-enable-screening').checked;
-            newConf.enable_screening = screeningEnabled;
-            if (screeningEnabled) {
-                newConf.screener = {
-                    model: document.getElementById('edit-screener-model').value,
-                    api_base: document.getElementById('edit-screener-api-base').value,
-                    temperature: parseFloat(document.getElementById('edit-screener-temp').value) || 0.2
-                };
-                newConf.escalation_threshold = parseInt(document.getElementById('edit-escalation-threshold').value) || 60;
-                
-                const scrKey = document.getElementById('edit-screener-api-key').value;
-                if (scrKey) newConf.screener.api_key = scrKey;
-                else if (idx !== -1 && currentConfigs[idx].screener) newConf.screener.api_key = currentConfigs[idx].screener.api_key;
-            }
-        }
     }
 
     const key = document.getElementById('edit-api-key').value;

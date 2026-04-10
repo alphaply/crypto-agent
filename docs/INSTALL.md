@@ -1,58 +1,94 @@
-# 安装说明
+# 安装与运行（v1.0）
 
-## 环境要求
+## 1. 环境要求
 
-- **Python 3.10+** (推荐 3.11)
-- **操作系统**: Windows, Linux 或 macOS
-- **网络**: 能访问币安 API 和 LLM API
+- Python `3.10+`（推荐 `3.10.x` 或 `3.11.x`）
+- 操作系统：Windows / macOS / Linux
+- 可访问交易所 API 与 LLM API
 
-## 安装步骤
+## 2. 获取项目
 
-### 1. 准备环境
-```bash
-# 安装 uv (推荐)
-# Windows
-powershell -c "irm https://astral-sh.net/uv/install.ps1 | iex"
-
-# Linux/macOS
-curl -LsSf https://astral-sh.net/uv/install.sh | sh
-```
-
-### 2. 克隆并安装
 ```bash
 git clone https://github.com/alphaply/crypto-agent.git
 cd crypto-agent
+```
 
-# 使用 uv (推荐)
+## 3. 安装依赖
+
+推荐使用 `uv`：
+
+```bash
 uv sync
+```
 
-# 或使用 pip
+如果未安装 `uv`：
+
+```bash
+# Windows PowerShell
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+备用方案（pip + venv）：
+
+```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# Windows
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-### 3. 配置环境
-复制模板文件并编辑：
+## 4. 初始化配置
+
+复制模板并编辑（建议使用后台UI进行编辑管理，但必须手动创建.env文件！）：
+
 ```bash
+# Windows PowerShell
+Copy-Item .env.template .env
+
+# macOS / Linux
 cp .env.template .env
 ```
-填入 API Key 和管理密码。
 
-## 运行项目
+至少配置以下字段：
+
+- `ADMIN_PASSWORD`
+- `SYMBOL_CONFIGS`（至少一条配置）
+- 每个配置对应的 `api_key` / `api_base`
+- 实盘模式时：`binance_api_key` / `binance_secret`
+
+## 5. 启动方式
+
+启动 Web 控制台（默认包含调度线程）：
 
 ```bash
-# 使用 uv
 uv run dashboard.py
-
-# 或直接运行
-python dashboard.py
 ```
 
-访问地址: `http://localhost:7860`
+仅启动调度器（不推荐）：
 
-## 问题排查
+```bash
+uv run main_scheduler.py
+```
 
-- **连接失败**: 检查 api_base 是否正确，确认网络代理设置
-- **数据库错误**: 首次运行会自动创建 trading_data.db，如有冲突可删除后重建
-- **调度器未启动**: 检查 .env 中 ENABLE_SCHEDULER 是否为 true
+访问地址：`http://localhost:7860`
+
+## 6. 健康检查
+
+```bash
+uv run utils/test_agent_connection.py
+```
+
+## 7. 常见问题
+
+- 依赖安装慢：优先使用 `uv sync`，并检查网络代理。
+- 启动后无数据：确认 `.env` 的 `SYMBOL_CONFIGS` 非空且 `enabled=true`。
+- 页面能开但不下单：检查 mode 是否为 `REAL`，以及币安 API 权限。
+- 定价不生效：确认 `pricing.json` 可写；系统会在定价修改后自动回写。

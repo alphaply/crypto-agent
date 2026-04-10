@@ -4,7 +4,7 @@ import math
 from datetime import datetime, timedelta
 import pytz
 import time
-from flask import Blueprint, render_template, request, jsonify, session
+from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
 from routes.utils import (
     DB_NAME, global_config, get_scheduler_status, get_symbol_specific_status,
     _chat_authed, _require_admin_auth_api, logger, TZ_CN
@@ -21,6 +21,22 @@ main_bp = Blueprint('main', __name__)
 
 DCA_STATS_CACHE = {}
 DCA_STATS_CACHE_TTL = 300
+
+
+def _resolve_symbol(default_symbol='BTC/USDT'):
+    raw = (request.args.get('symbol') or '').strip()
+    return raw or default_symbol
+
+
+def _redirect_if_empty_symbol(endpoint):
+    if 'symbol' not in request.args:
+        return None
+    if (request.args.get('symbol') or '').strip():
+        return None
+
+    args = request.args.to_dict(flat=True)
+    args.pop('symbol', None)
+    return redirect(url_for(endpoint, **args))
 
 def verify_admin_action(password, captcha):
     """验证管理员密码与动态验证码"""
@@ -285,6 +301,10 @@ def get_dashboard_data(symbol, page=1, per_page=10):
 
 @main_bp.route('/')
 def index():
+    symbol_redirect = _redirect_if_empty_symbol('main.index')
+    if symbol_redirect:
+        return symbol_redirect
+
     # ... (rest of the route logic)
     # 获取配置的币种列表
     configs = global_config.get_all_symbol_configs()
@@ -296,7 +316,7 @@ def index():
             symbols.append(s)
             seen.add(s)
     
-    current_symbol = request.args.get('symbol', symbols[0] if symbols else 'BTC/USDT')
+    current_symbol = _resolve_symbol(symbols[0] if symbols else 'BTC/USDT')
     page = int(request.args.get('page', 1))
     
     agent_summaries, _, _ = get_dashboard_data(current_symbol, page)
@@ -316,7 +336,11 @@ def index():
 
 @main_bp.route('/history')
 def history_view():
-    symbol = request.args.get('symbol', 'BTC/USDT')
+    symbol_redirect = _redirect_if_empty_symbol('main.history_view')
+    if symbol_redirect:
+        return symbol_redirect
+
+    symbol = _resolve_symbol('BTC/USDT')
     agent_filter = request.args.get('agent', 'ALL')
     try:
         page = int(request.args.get('page', 1))
@@ -408,7 +432,12 @@ def history_view():
                         """, (symbol,)).fetchall()
                         points = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
                     else:
-                        points = get_mock_equity_history(config_id)
+                        strategy_points = get_mock_equity_history(config_id)
+                        points = [
+                            {"date": p.get("date"), "equity": p.get("balance")}
+                            for p in strategy_points
+                            if p.get("date") is not None and p.get("balance") is not None
+                        ]
 
                     if points:
                         history_compare_series.append({
@@ -532,6 +561,10 @@ def update_daily_summary_api():
 
 @main_bp.route('/stats/public')
 def public_stats_view():
+    symbol_redirect = _redirect_if_empty_symbol('main.public_stats_view')
+    if symbol_redirect:
+        return symbol_redirect
+
     configs = global_config.get_all_symbol_configs()
     seen = set()
     symbols = []
@@ -540,7 +573,7 @@ def public_stats_view():
         if s and s not in seen:
             symbols.append(s)
             seen.add(s)
-    current_symbol = request.args.get('symbol', symbols[0] if symbols else 'BTC/USDT')
+    current_symbol = _resolve_symbol(symbols[0] if symbols else 'BTC/USDT')
     return render_template('stats_public.html', symbols=symbols, current_symbol=current_symbol)
 
 @main_bp.route('/api/orders')

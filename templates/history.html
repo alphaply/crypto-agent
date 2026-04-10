@@ -123,7 +123,10 @@
                     const palette = ['#2563eb', '#059669', '#dc2626', '#d97706', '#7c3aed', '#0f766e', '#0891b2', '#be123c'];
 
                     const datasets = rawSeries.map((series, idx) => {
-                        const m = new Map((series.points || []).map(point => [point.date, Number(point.equity)]));
+                        const m = new Map((series.points || []).map(point => {
+                            const v = point.equity ?? point.balance;
+                            return [point.date, v == null ? null : Number(v)];
+                        }));
                         return {
                             label: series.label || series.config_id,
                             data: labels.map(day => (m.has(day) ? m.get(day) : null)),
@@ -173,7 +176,7 @@
                         <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 cursor-pointer">
                             <input type="checkbox" data-ds-index="${idx}" checked class="history-ds-toggle w-3.5 h-3.5">
                             <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${ds.borderColor}"></span>
-                            <span>${ds.label}</span>
+                            <span class="break-all">${ds.label}</span>
                         </label>
                     `).join('');
 
@@ -386,101 +389,7 @@
         </div>
         {% endif %}
 
-        <div id="history-toast-container" class="fixed top-3 left-1/2 -translate-x-1/2 sm:top-4 sm:right-4 sm:left-auto sm:translate-x-0 z-[200] flex flex-col gap-2 pointer-events-none max-w-sm"></div>
-
-        <!-- 手动触发总结模态框 -->
-        <div id="trigger-summary-modal" class="fixed inset-0 z-[110] hidden flex items-center justify-center pointer-events-auto">
-            <div class="fixed inset-0 bg-gray-900/80 backdrop-blur-md" onclick="closeTriggerModal()"></div>
-            <div class="relative bg-white rounded-xl shadow-2xl w-full max-w-sm mx-3 sm:mx-0 p-4 sm:p-6 border border-gray-200">
-                <h3 class="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">📊 生成每日总结</h3>
-                <p id="trigger-agent-text" class="text-sm font-bold text-blue-600 mb-4"></p>
-                <p class="text-xs text-gray-500 mb-4">使用统一后台会话执行，无需重复输入密码。</p>
-
-                <div class="flex gap-3 mt-2">
-                    <button onclick="submitManualSummary()" id="trigger-submit-btn" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认生成</button>
-                    <button onclick="closeTriggerModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold transition-all">取消</button>
-                </div>
-            </div>
-        </div>
-
-        <script>
-            let currentTriggerAgent = '';
-
-            function showHistoryToast(message, type = 'success') {
-                const container = document.getElementById('history-toast-container');
-                if (!container) return alert(message);
-                
-                const toast = document.createElement('div');
-                toast.className = `pointer-events-auto transform rounded-lg px-4 py-3 shadow-lg flex items-center gap-3 w-full sm:min-w-[250px] transition-all duration-300 ${
-                    type === 'success' ? 'bg-white border-l-4 border-emerald-500 text-gray-800' : 'bg-white border-l-4 border-red-500 text-gray-800'
-                }`;
-                
-                const icon = type === 'success' 
-                    ? `<svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`
-                    : `<svg class="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`;
-
-                toast.innerHTML = `${icon}<span class="text-sm font-medium flex-1">${message}</span>`;
-                container.appendChild(toast);
-                
-                setTimeout(() => {
-                    toast.style.opacity = '0';
-                    toast.style.transform = 'translateY(-10px)';
-                    setTimeout(() => toast.remove(), 300);
-                }, 3000);
-            }
-
-            function triggerManualSummary() {
-                const agent = "{{ current_agent }}";
-                if (agent === 'ALL') {
-                    showHistoryToast('请先选择一个具体的 Agent', 'error');
-                    return;
-                }
-                currentTriggerAgent = agent;
-                document.getElementById('trigger-agent-text').innerText = `目标 Agent: ${agent}`;
-                document.getElementById('trigger-summary-modal').classList.remove('hidden');
-            }
-
-            function closeTriggerModal() {
-                document.getElementById('trigger-summary-modal').classList.add('hidden');
-            }
-
-            async function submitManualSummary() {
-                const yesterday = new Date();
-                yesterday.setDate(yesterday.getDate() - 1);
-                const dateStr = yesterday.toISOString().split('T')[0];
-                
-                const btn = document.getElementById('trigger-submit-btn');
-                btn.innerText = '生成中...';
-                btn.disabled = true;
-
-                try {
-                    const resp = await fetch('/api/generate_daily_summary', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            config_id: currentTriggerAgent,
-                            date: dateStr
-                        })
-                    });
-                    const data = await resp.json();
-                    
-                    btn.innerText = '确认生成';
-                    btn.disabled = false;
-
-                    if (data.success) {
-                        closeTriggerModal();
-                        showHistoryToast('汇总生成成功！即将刷新...', 'success');
-                        setTimeout(() => location.reload(), 2000);
-                    } else {
-                        showHistoryToast(data.error || '验证或生成失败', 'error');
-                    }
-                } catch (e) {
-                    btn.innerText = '确认生成';
-                    btn.disabled = false;
-                    showHistoryToast('网络请求失败', 'error');
-                }
-            }
-        </script>
+        
 
         <div class="mb-8 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
             <div class="flex flex-wrap gap-2 items-center w-full sm:w-auto">
@@ -501,11 +410,7 @@
                 {% endfor %}
             </div>
 
-            {% if current_agent != 'ALL' %}
-            <button onclick="triggerManualSummary()" class="w-full sm:w-auto inline-flex items-center justify-center px-5 py-2.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-100 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95">
-                <span class="mr-2">📝</span> 生成昨日汇总
-            </button>
-            {% endif %}
+            
         </div>
 
         {% if summaries %}

@@ -1,53 +1,49 @@
-# Crypto Agent (自动亏钱 Agent)
+# GEMINI Notes (v1.0)
 
-An automated cryptocurrency trading system powered by Large Language Models (LLMs) and LangGraph. It manages multiple independent trading agents (configurations) across different symbols, timeframes, and strategies with robust risk management and performance tracking.
+This file summarizes current architecture and coding expectations for AI-assisted development.
 
-## Project Overview
+## Product State
 
-- **Purpose**: Automate diverse crypto trading strategies (Futures REAL, Strategy Simulation, and Spot DCA) using AI-driven logic.
-- **Key Features**:
-  - **Isolated Configuration (`config_id`)**: Supports running multiple independent agents on the same symbol (e.g., BTC/USDT 15m Scalping vs BTC/USDT 1h Swing) by isolating state, balance, and history via unique IDs.
-  - **Trading Modes**: 
-    - `REAL`: Professional futures execution (Long/Short) with automated Stop-Loss/Take-Profit management.
-    - `STRATEGY`: High-fidelity simulation for testing risk/reward ratios.
-    - `SPOT_DCA`: Flexible Spot market Dollar Cost Averaging with intelligent timing (Daily/Weekly).
-  - **Smart Router System (v3)**: 
-    - **Deterministic Routing**: Uses a lightweight model (e.g., GPT-4o-mini) as an intelligent gateway. It makes a definitive `decision` via tool-calling: `MASTER` (escalate), `SMALL` (process locally), or `SKIP` (no action).
-    - **Small Model Execution**: In `STRATEGY` mode, the "Small Model" is empowered to execute trading tools directly if it handles the logic, saving costs of larger models.
-    - **Context Richness**: Routers receive full account context (positions, balance, orders) and multi-timeframe market indicators to ensure accurate routing.
-  - **Performance Analytics**: Real-time tracking of account equity, trade history, LLM token usage, and daily strategy summaries.
-  - **Enhanced Indicator System (v2)**: Optimized signal set with MACD momentum labeling, RSI divergence detection, and adaptive Volume Profile (VP/POC).
+- Version target: `v1.0`
+- Active execution chain: single main decision model flow.
+- Removed in v1.0: screener routing and related UI/config fields.
 
-## Architecture
+## Runtime Entry Points
 
-- **`main_scheduler.py`**: A 1-minute heartbeat engine that triggers agents based on individual timeframes or DCA schedules. 
-  - **Silent Monitoring**: Executes a 1-minute check for Stop-Loss/Take-Profit hits in `STRATEGY` mode.
-  - **Daily Recaps**: Features a resilient 2-hour window (00:00-02:00) for aggregating previous day's logic into a single summary.
-- **`agent/`**: 
-  - `agent_graph.py`: Core LangGraph state machine (Start -> Router -> Master Agent / Small Agent / Skip -> Tools -> Finalize).
-  - `summarizer_pipeline`: A dedicated LLM task that compresses complex analysis into a 150-word "Strategy Logic" for history and daily recaps.
-  - `agent_tools.py`: Unified toolset for order execution, including special **Event Contract** analysis tools.
-- **`database.py`**: Centralized SQLite persistence with WAL mode enabled. **All timestamps are normalized to Beijing Time (`Asia/Shanghai`)**.
-- **`utils/`**:
-  - `market_data.py`: `MarketTool` wrapper for standardized OHLCV, derivatives (Funding, Open Interest, LS Ratio), and account status.
-  - `indicators.py`: Professional TA indicator implementations (EMA, RSI, MACD, ADX, VWAP, Bollinger, Volume Profile).
+- `dashboard.py`: Flask app + optional scheduler thread.
+- `main_scheduler.py`: scheduler-only process.
 
-## Development Standards & Conventions
+## Core Modules
 
-### Router & Logic (v3)
-- **Tool-Driven Routing**: Gateway decisions must be performed via `submit_screening_decision` tool call.
-- **Decision Matrix**:
-  - `MASTER`: High-stakes or complex scenarios (Default for `REAL` mode actions).
-  - `SMALL`: Routine maintenance or simple logic (Trades allowed in `STRATEGY` mode).
-  - `SKIP`: Market noise, no further processing needed.
+- `agent/agent_graph.py`: main LangGraph flow (`start -> agent -> tools/finalize`).
+- `agent/agent_tools.py`: REAL / STRATEGY / SPOT_DCA execution tools.
+- `database.py`: SQLite persistence, pricing sync, history and summary storage.
+- `routes/`: web APIs and page routes.
+- `templates/` + `static/`: web UI.
 
-### UI & Display
-- **Analysis Source**: The dashboard explicitly labels whether a result came from "🔍 初筛模型" (Small Agent) or "🧠 决策模型" (Master Agent).
-- **Time Consistency**: All UI elements display and filter data based on the unified Beijing time zone.
+## Trading Modes
 
-### Data Persistence
-- **Mode Isolation**: Strictly separate `REAL`, `STRATEGY`, and `SPOT_DCA` execution paths using the `config_id` as the primary key for isolation.
-  - **Token Tracking**: All LLM calls save token usage to `token_usage` table. Pricing is managed via `pricing.json` in the root directory, which is synced to the database on system startup.
+- `REAL`: real exchange execution.
+- `STRATEGY`: mock strategy execution.
+- `SPOT_DCA`: periodic spot DCA execution.
 
----
-*Note: This GEMINI.md is updated for Gemini CLI to reflect the 2026.04.08 system state.*
+## Data and Cost Tracking
+
+- Token usage stored in `token_usage`.
+- Pricing source is `pricing.json` and DB table `model_pricing`.
+- Pricing updates/deletes should keep file and DB in sync.
+
+## Guardrails
+
+- Keep `config_id` as the isolation key across history, orders, and stats.
+- Avoid destructive resets without explicit user request.
+- Keep frontend and backend behavior aligned for symbol/query fallback.
+
+## Documentation Rule
+
+When architecture or behavior changes, update at least:
+
+1. `README.md`
+2. `docs/CONFIG_GUIDE.md`
+3. `docs/FAQ.md`
+4. relevant release notes

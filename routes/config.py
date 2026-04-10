@@ -27,7 +27,7 @@ def _write_symbol_configs_to_env(new_configs):
 config_bp = Blueprint('config', __name__)
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agent", "prompts")
-BLOCKED_PROMPT_FILES = {"multi_agent_screener.txt"}
+BLOCKED_PROMPT_FILES = set()
 
 @config_bp.route('/api/config/raw', methods=['GET'])
 def get_raw_config():
