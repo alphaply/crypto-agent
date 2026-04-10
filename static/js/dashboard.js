@@ -1182,18 +1182,22 @@ async function loadPositionStats(configId) {
                 const isLong = p.side === 'LONG';
                 const pnlColor = p.unrealized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
                 const sideColor = isLong ? 'bg-emerald-500' : 'bg-red-500';
+                const notional = Number(p.notional || 0);
+                const qty = Number(p.qty || p.contracts || 0);
+                const roiPct = Number(p.roi_pct ?? p.pnl_pct ?? 0);
+                const lev = Number(p.leverage || 1);
                 return `
                     <div class="flex flex-col sm:flex-row sm:items-center justify-between bg-white/5 rounded-xl px-3 sm:px-4 py-2.5 sm:py-3 gap-1.5 sm:gap-3">
                         <div class="flex items-center gap-2 sm:gap-3">
                             <span class="px-1.5 sm:px-2 py-0.5 rounded-md text-[9px] sm:text-[10px] font-black text-white ${sideColor} flex-shrink-0">${p.side}</span>
                             <div class="min-w-0">
-                                <div class="text-[11px] sm:text-xs font-bold">${p.contracts} 张</div>
-                                <div class="text-[8px] sm:text-[9px] text-gray-400 truncate">开仓: ${p.entry_price} | 标记: ${p.mark_price}</div>
+                                <div class="text-[11px] sm:text-xs font-bold">仓位: ${notional.toFixed(2)} USDT</div>
+                                <div class="text-[8px] sm:text-[9px] text-gray-400 truncate">数量: ${qty.toFixed(4)} | 开仓: ${p.entry_price} | 标记: ${p.mark_price}</div>
                             </div>
                         </div>
                         <div class="text-right sm:text-right pl-6 sm:pl-0 flex-shrink-0">
                             <div class="text-xs sm:text-sm font-black ${pnlColor}">${p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl} USDT</div>
-                            <div class="text-[8px] sm:text-[9px] ${pnlColor}">${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct}% | ${p.leverage}x</div>
+                            <div class="text-[8px] sm:text-[9px] ${pnlColor}">ROI: ${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(2)}% | ${lev.toFixed(2)}x</div>
                         </div>
                     </div>`;
             }).join('');

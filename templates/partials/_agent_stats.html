@@ -26,6 +26,15 @@
             <div class="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">单次金额</div>
             <div class="text-base sm:text-lg font-black text-gray-900" id="stat-dca-amount-{{ summary.config_id }}">{{ summary.dca_stats.dca_amount_per }} <span class="text-[8px] font-bold text-gray-400">USDT</span></div>
         </div>
+        <div class="col-span-2 sm:col-span-4 mt-0.5 text-[9px] text-slate-500 flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 font-semibold">
+                成交同步: {{ summary.dca_stats.sync_status or 'synced' }}
+            </span>
+            <span>待成交挂单: {{ summary.dca_stats.pending_orders or 0 }}</span>
+            {% if summary.dca_stats.last_sync %}
+            <span class="text-slate-400">最后同步: {{ summary.dca_stats.last_sync }}</span>
+            {% endif %}
+        </div>
         {% else %}
         <!-- 正常合约/策略指标 -->
         <div class="bg-white border border-gray-200 rounded-xl p-2.5 sm:p-3 shadow-sm">

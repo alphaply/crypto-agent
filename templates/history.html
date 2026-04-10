@@ -389,6 +389,91 @@
         </div>
         {% endif %}
 
+        {% if current_agent != 'ALL' and agent_mode == 'SPOT_DCA' and dca_stats %}
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
+            <div class="flex flex-col gap-4 sm:gap-5">
+                <div>
+                    <h2 class="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <span class="text-lg sm:text-xl">🟡</span> 现货定投统计
+                    </h2>
+                    <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 sm:mt-1">按真实成交自动累计，未成交挂单不会计入成本与持仓。</p>
+                </div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div class="rounded-xl border border-slate-200 p-3 bg-slate-50/70">
+                        <div class="text-[9px] text-slate-400 font-bold uppercase">累计投入</div>
+                        <div class="text-lg font-black text-blue-600">{{ "%.2f"|format(dca_stats.total_invested) }} <span class="text-[10px] text-slate-400">USDT</span></div>
+                    </div>
+                    <div class="rounded-xl border border-slate-200 p-3 bg-slate-50/70">
+                        <div class="text-[9px] text-slate-400 font-bold uppercase">成本均价</div>
+                        <div class="text-lg font-black text-slate-800">{{ "%.4f"|format(dca_stats.avg_cost) }}</div>
+                    </div>
+                    <div class="rounded-xl border border-slate-200 p-3 bg-slate-50/70">
+                        <div class="text-[9px] text-slate-400 font-bold uppercase">当前持仓</div>
+                        <div class="text-lg font-black text-purple-600">{{ "%.6f"|format(dca_stats.total_qty) }}</div>
+                    </div>
+                    <div class="rounded-xl border border-slate-200 p-3 bg-slate-50/70">
+                        <div class="text-[9px] text-slate-400 font-bold uppercase">待成交挂单</div>
+                        <div class="text-lg font-black text-amber-600">{{ dca_stats.pending_orders or 0 }}</div>
+                    </div>
+                </div>
+
+                <div class="text-[10px] text-slate-500 flex flex-wrap gap-3">
+                    <span>成交笔数: {{ dca_stats.buy_count }}</span>
+                    {% if dca_stats.first_buy %}<span>首笔: {{ dca_stats.first_buy }}</span>{% endif %}
+                    {% if dca_stats.last_buy %}<span>末笔: {{ dca_stats.last_buy }}</span>{% endif %}
+                    {% if dca_stats.last_sync %}<span class="text-slate-400">最后同步: {{ dca_stats.last_sync }}</span>{% endif %}
+                </div>
+            </div>
+
+            {% if dca_chart_data and dca_chart_data|length > 0 %}
+            <div class="mt-5 sm:mt-6">
+                <div class="text-[10px] sm:text-[11px] text-slate-500 mb-2">最近 30 天定投累计投入曲线</div>
+                <div class="chart-container">
+                    <canvas id="dcaSnapshotChart"></canvas>
+                </div>
+                <script>
+                    (function() {
+                        const raw = {{ dca_chart_data|tojson|safe }} || [];
+                        if (!raw.length) return;
+                        const ctx = document.getElementById('dcaSnapshotChart').getContext('2d');
+                        const labels = raw.map(r => r.snapshot_date);
+                        const invested = raw.map(r => Number(r.total_invested || 0));
+
+                        new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels,
+                                datasets: [{
+                                    label: '累计投入 (USDT)',
+                                    data: invested,
+                                    borderColor: '#2563eb',
+                                    backgroundColor: 'rgba(37, 99, 235, 0.14)',
+                                    borderWidth: 2,
+                                    pointRadius: raw.length > 20 ? 0 : 2,
+                                    pointHoverRadius: 4,
+                                    fill: true,
+                                    tension: 0.25,
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: { legend: { display: false } },
+                                scales: {
+                                    x: { ticks: { maxTicksLimit: 8 } },
+                                    y: { ticks: { callback: function(v) { return Number(v).toFixed(0); } } }
+                                },
+                                interaction: { intersect: false, mode: 'index' }
+                            }
+                        });
+                    })();
+                </script>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+
         
 
         <div class="mb-8 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">

@@ -111,6 +111,14 @@ def init_db():
         except: pass
         try: c.execute("ALTER TABLE orders ADD COLUMN amount REAL")
         except: pass
+        try: c.execute("ALTER TABLE orders ADD COLUMN filled_amount REAL DEFAULT 0")
+        except: pass
+        try: c.execute("ALTER TABLE orders ADD COLUMN filled_cost REAL DEFAULT 0")
+        except: pass
+        try: c.execute("ALTER TABLE orders ADD COLUMN avg_fill_price REAL DEFAULT 0")
+        except: pass
+        try: c.execute("ALTER TABLE orders ADD COLUMN filled_at TEXT")
+        except: pass
 
         # 4. 账户净值历史 (用于画盈亏曲线)
         c.execute('''CREATE TABLE IF NOT EXISTS balance_history (
@@ -195,6 +203,36 @@ def init_db():
                         symbol TEXT,
                         timestamp TEXT,
                         balance REAL
+                    )''')
+
+        # 12. SPOT_DCA 成交同步状态表（每个订单一行）
+        c.execute('''CREATE TABLE IF NOT EXISTS spot_order_fills (
+                        order_id TEXT PRIMARY KEY,
+                        config_id TEXT,
+                        symbol TEXT,
+                        status TEXT,
+                        filled_qty REAL DEFAULT 0,
+                        filled_cost REAL DEFAULT 0,
+                        avg_fill_price REAL DEFAULT 0,
+                        filled_at TEXT,
+                        last_sync_at TEXT
+                    )''')
+
+        # 13. SPOT_DCA 每日统计快照（支持 History 曲线）
+        c.execute('''CREATE TABLE IF NOT EXISTS dca_daily_snapshots (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        snapshot_date TEXT,
+                        config_id TEXT,
+                        symbol TEXT,
+                        total_invested REAL,
+                        total_qty REAL,
+                        avg_cost REAL,
+                        buy_count INTEGER,
+                        first_buy TEXT,
+                        last_buy TEXT,
+                        actual_balance REAL,
+                        updated_at TEXT,
+                        UNIQUE(snapshot_date, config_id)
                     )''')
 
         conn.commit()
@@ -454,6 +492,116 @@ def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, tr
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (str(order_id), timestamp, symbol, str(agent_name), config_id or str(agent_name), side, entry, amount, tp, sl, reason, valid_mode))
         conn.commit()
+
+
+def update_order_fill_status(order_id, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None):
+    """更新 orders 表的成交状态信息（主要用于 SPOT_DCA）。"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            UPDATE orders
+            SET status = ?,
+                filled_amount = ?,
+                filled_cost = ?,
+                avg_fill_price = ?,
+                filled_at = ?
+            WHERE order_id = ?
+            ''',
+            (status, float(filled_qty or 0), float(filled_cost or 0), float(avg_fill_price or 0), filled_at, str(order_id)),
+        )
+        conn.commit()
+
+
+def upsert_spot_order_fill(order_id, config_id, symbol, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None):
+    """写入或更新现货订单成交同步状态。"""
+    last_sync_at = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO spot_order_fills (order_id, config_id, symbol, status, filled_qty, filled_cost, avg_fill_price, filled_at, last_sync_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(order_id) DO UPDATE SET
+                config_id = excluded.config_id,
+                symbol = excluded.symbol,
+                status = excluded.status,
+                filled_qty = excluded.filled_qty,
+                filled_cost = excluded.filled_cost,
+                avg_fill_price = excluded.avg_fill_price,
+                filled_at = excluded.filled_at,
+                last_sync_at = excluded.last_sync_at
+            ''',
+            (
+                str(order_id),
+                str(config_id),
+                str(symbol),
+                str(status),
+                float(filled_qty or 0),
+                float(filled_cost or 0),
+                float(avg_fill_price or 0),
+                filled_at,
+                last_sync_at,
+            ),
+        )
+        conn.commit()
+
+
+def save_dca_daily_snapshot(config_id, symbol, stats):
+    """按天保存 DCA 统计快照（同一天覆盖更新）。"""
+    snapshot_date = datetime.now(TZ_CN).strftime("%Y-%m-%d")
+    updated_at = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO dca_daily_snapshots (
+                snapshot_date, config_id, symbol, total_invested, total_qty, avg_cost,
+                buy_count, first_buy, last_buy, actual_balance, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(snapshot_date, config_id) DO UPDATE SET
+                symbol = excluded.symbol,
+                total_invested = excluded.total_invested,
+                total_qty = excluded.total_qty,
+                avg_cost = excluded.avg_cost,
+                buy_count = excluded.buy_count,
+                first_buy = excluded.first_buy,
+                last_buy = excluded.last_buy,
+                actual_balance = excluded.actual_balance,
+                updated_at = excluded.updated_at
+            ''',
+            (
+                snapshot_date,
+                str(config_id),
+                str(symbol),
+                float(stats.get("total_invested", 0) or 0),
+                float(stats.get("total_qty", 0) or 0),
+                float(stats.get("avg_cost", 0) or 0),
+                int(stats.get("buy_count", 0) or 0),
+                stats.get("first_buy"),
+                stats.get("last_buy"),
+                float(stats.get("actual_balance", 0) or 0),
+                updated_at,
+            ),
+        )
+        conn.commit()
+
+
+def get_dca_daily_snapshot_history(config_id, days=30):
+    """获取最近 N 天 DCA 快照曲线。"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        rows = c.execute(
+            '''
+            SELECT snapshot_date, total_invested, total_qty, avg_cost, buy_count, actual_balance, updated_at
+            FROM dca_daily_snapshots
+            WHERE config_id = ?
+            ORDER BY snapshot_date ASC
+            LIMIT ?
+            ''',
+            (str(config_id), int(days)),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 # --- 数据分析与记录 ---
 

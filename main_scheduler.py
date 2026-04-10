@@ -24,6 +24,32 @@ _last_run_times = {}
 # 防止每日汇总任务在同一天重复执行
 _daily_summary_done_date = None
 
+
+def normalize_dca_freq(raw_freq):
+    """将不同写法归一到 1d / 1w。"""
+    freq = str(raw_freq or '1d').strip().lower()
+    if freq in {'1w', 'weekly', 'week', 'w'}:
+        return '1w'
+    return '1d'
+
+
+def parse_dca_time(raw_time):
+    """兼容 HH / HH:MM / HH:MM:SS 等格式。"""
+    text = str(raw_time or '08:00').strip()
+    if not text:
+        return 8, 0
+
+    try:
+        parts = text.split(':')
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except Exception:
+        return 8, 0
+
+    hour = min(max(hour, 0), 23)
+    minute = min(max(minute, 0), 59)
+    return hour, minute
+
 # ==========================================
 # 1. 频率与触发逻辑优化
 # ==========================================
@@ -34,7 +60,8 @@ def check_dca_executed(config_id, now, freq='1d'):
     """
     from database import get_db_conn
     try:
-        if freq == '1w':
+        normalized_freq = normalize_dca_freq(freq)
+        if normalized_freq == '1w':
             start_of_week = (now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')
             query_time = f"{start_of_week} 00:00:00"
         else:
@@ -42,12 +69,14 @@ def check_dca_executed(config_id, now, freq='1d'):
 
         with get_db_conn() as conn:
             c = conn.cursor()
-            # 检查 orders 表（买入/观望）或 summaries 表（分析结果）
+            # 仅检查 DCA 执行记录，避免 chat/其它场景写入 summaries 造成误判。
             c.execute('''
-                SELECT 
-                    (SELECT count(*) FROM orders WHERE config_id = ? AND timestamp >= ?) +
-                    (SELECT count(*) FROM summaries WHERE config_id = ? AND timestamp >= ?) as cnt
-            ''', (config_id, query_time, config_id, query_time))
+                SELECT count(*) as cnt
+                FROM orders
+                WHERE config_id = ?
+                  AND trade_mode = 'SPOT_DCA'
+                  AND timestamp >= ?
+            ''', (config_id, query_time))
             row = c.fetchone()
             return row[0] > 0
     except Exception as e:
@@ -63,13 +92,8 @@ def is_time_to_run(config, now):
     
     # 1. 现货定投模式 (SPOT_DCA)
     if mode == 'SPOT_DCA':
-        freq = config.get('dca_freq', '1d').lower() # '1d' or '1w'
-        dca_time = config.get('dca_time', '08:00')
-        try:
-            target_hour = int(str(dca_time).split(':')[0])
-            target_minute = int(str(dca_time).split(':')[1])
-        except:
-            target_hour, target_minute = 8, 0
+        freq = normalize_dca_freq(config.get('dca_freq', '1d'))
+        target_hour, target_minute = parse_dca_time(config.get('dca_time', '08:00'))
         
         # 放宽触发条件：只要到达或超过设定的时间，即可触发（避免错过精确心跳而漏执行）
         if now.hour < target_hour or (now.hour == target_hour and now.minute < target_minute):

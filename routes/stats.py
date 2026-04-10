@@ -268,17 +268,25 @@ def _fetch_real_position_data(mt, symbol, cfg):
                 entry = float(p.get('entryPrice', 0))
                 unrealized = float(p.get('unrealizedPnl', 0))
                 notional = float(p.get('notional', 0)) or (entry * contracts)
+                leverage = float(p.get('leverage', cfg.get('leverage', 1)) or 1)
+                if leverage <= 0:
+                    leverage = 1
                 pnl_pct = (unrealized / abs(notional) * 100) if notional != 0 else 0
+                roi_pct = pnl_pct * leverage
+                margin_used = abs(notional) / leverage if leverage > 0 else abs(notional)
                 positions.append({
                     'symbol': p.get('symbol', symbol),
                     'side': str(p.get('side', '')).upper(),
                     'contracts': contracts,
+                    'qty': contracts,
                     'entry_price': entry,
                     'mark_price': float(p.get('markPrice', 0)),
                     'unrealized_pnl': round(unrealized, 4),
                     'pnl_pct': round(pnl_pct, 2),
-                    'leverage': p.get('leverage', cfg.get('leverage', 1)),
+                    'roi_pct': round(roi_pct, 2),
+                    'leverage': leverage,
                     'notional': round(abs(notional), 2),
+                    'margin_used': round(margin_used, 2),
                 })
     except Exception as e:
         logger.warning(f"Fetch positions error: {e}")
@@ -420,18 +428,26 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
                     unrealized = (entry - current_price) * amount
 
             notional = entry * amount
+            leverage = float(cfg.get('leverage', 1) or 1)
+            if leverage <= 0:
+                leverage = 1
             pnl_pct = (unrealized / notional * 100) if notional > 0 else 0
+            roi_pct = pnl_pct * leverage
+            margin_used = notional / leverage if leverage > 0 else notional
 
             positions.append({
                 'symbol': symbol,
                 'side': 'LONG' if 'BUY' in side else 'SHORT',
                 'contracts': amount,
+                'qty': amount,
                 'entry_price': entry,
                 'mark_price': current_price,
                 'unrealized_pnl': round(unrealized, 4),
                 'pnl_pct': round(pnl_pct, 2),
-                'leverage': cfg.get('leverage', 1),
+                'roi_pct': round(roi_pct, 2),
+                'leverage': leverage,
                 'notional': round(notional, 2),
+                'margin_used': round(margin_used, 2),
             })
 
         # 3. 模拟历史胜率

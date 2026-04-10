@@ -3,6 +3,7 @@ let sessions = [];
 let configs = [];
 let pendingApproval = null;
 let currentMessages = [];
+let approvalStreamIdx = -1;
 let multiSelectMode = false;
 let selectedSessionIds = new Set();
 let mobileSidebarOpen = false;
@@ -652,6 +653,7 @@ async function respondApproval(approved) {
   setApprovalLoading(true);
 
   const streamIdx = currentMessages.length;
+  approvalStreamIdx = streamIdx;
   currentMessages.push({
     role: 'assistant',
     content: '正在执行工具...',
@@ -666,13 +668,16 @@ async function respondApproval(approved) {
   eventSource.onmessage = event => {
     const payload = JSON.parse(event.data);
     if (payload.type === 'tool_result') {
-      currentMessages[streamIdx] = {
+      if (approvalStreamIdx < 0 || !currentMessages[approvalStreamIdx]) {
+        approvalStreamIdx = streamIdx;
+      }
+      currentMessages[approvalStreamIdx] = {
         role: 'tool',
         content: payload.content,
         tool_call_id: payload.tool_call_id,
         __thinking_open: false
       };
-      if (currentMessages.length === streamIdx + 1) {
+      if (currentMessages.length === approvalStreamIdx + 1) {
         currentMessages.push({
           role: 'assistant',
           content: '',
@@ -681,42 +686,43 @@ async function respondApproval(approved) {
           __streaming: true,
           __thinking_open: true
         });
+        approvalStreamIdx = currentMessages.length - 1;
       }
       renderMessages(currentMessages);
     } else if (payload.type === 'token' || payload.type === 'reasoning_token' || payload.type === 'tool_calls') {
-      let lastAiIdx = -1;
-      for (let index = currentMessages.length - 1; index >= 0; index -= 1) {
-        if (currentMessages[index].role === 'assistant') {
-          lastAiIdx = index;
-          break;
-        }
+      let targetAiIdx = approvalStreamIdx;
+      if (targetAiIdx < 0 || !currentMessages[targetAiIdx] || currentMessages[targetAiIdx].role !== 'assistant') {
+        targetAiIdx = currentMessages.findLastIndex(message => message && message.role === 'assistant' && message.__streaming);
       }
-      if (lastAiIdx !== -1) {
-        const message = currentMessages[lastAiIdx];
+      if (targetAiIdx !== -1) {
+        const message = currentMessages[targetAiIdx];
         if (message.__loading) {
           message.content = '';
           delete message.__loading;
         }
-        if (payload.type === 'token') appendStreamDelta(lastAiIdx, { content: payload.token || '' });
-        if (payload.type === 'reasoning_token') appendStreamDelta(lastAiIdx, { reasoning: payload.token || '' });
-        if (payload.type === 'tool_calls') appendStreamDelta(lastAiIdx, { tool_calls: payload.tool_calls });
+        if (payload.type === 'token') appendStreamDelta(targetAiIdx, { content: payload.token || '' });
+        if (payload.type === 'reasoning_token') appendStreamDelta(targetAiIdx, { reasoning: payload.token || '' });
+        if (payload.type === 'tool_calls') appendStreamDelta(targetAiIdx, { tool_calls: payload.tool_calls });
       }
     } else if (payload.type === 'done') {
       flushAllStreamBuffers();
       currentMessages = normalizeMessages(payload.messages || []);
       pendingApproval = payload.pending_approval;
+      approvalStreamIdx = -1;
       renderMessages(currentMessages);
       showApproval();
       setApprovalLoading(false);
       eventSource.close();
     } else if (payload.type === 'error') {
       console.error('Stream error:', payload.message);
+      approvalStreamIdx = -1;
       setApprovalLoading(false);
       eventSource.close();
     }
   };
   eventSource.onerror = error => {
     console.error('EventSource failed:', error);
+    approvalStreamIdx = -1;
     setApprovalLoading(false);
     eventSource.close();
   };

@@ -13,7 +13,9 @@ from database import (
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
     get_balance_history, get_trade_history, clean_financial_data,
     get_active_agents, get_paginated_orders, get_db_conn, get_daily_summaries,
-    get_history_pnl_stats, get_mock_account, get_mock_equity_history
+    get_history_pnl_stats, get_mock_account, get_mock_equity_history,
+    save_trade_history, update_order_fill_status, upsert_spot_order_fill,
+    save_dca_daily_snapshot, get_dca_daily_snapshot_history
 )
 from agent.agent_graph import generate_manual_daily_summary
 
@@ -132,93 +134,142 @@ def calculate_dca_stats(config_id, force_sync=False):
 
         from config import config as global_config
         from utils.market_data import MarketTool
-        
+
         cfg = global_config.get_config_by_id(config_id)
-        if not cfg: return None
-        
+        if not cfg:
+            return None
+
         symbol = cfg.get('symbol')
-        if not symbol: return None
-        
+        if not symbol:
+            return None
+
         base_asset = symbol.split('/')[0] if '/' in symbol else symbol.replace('USDT', '')
-        
+        initial_cost = float(cfg.get('initial_cost', 0) or 0)
+        initial_qty = float(cfg.get('initial_qty', 0) or 0)
         mt = MarketTool(config_id=config_id)
-        
-        # 1. 获取当前现货真实余额
+
+        # 1) 先同步 OPEN 订单状态，确保系统自动识别已成交/部分成交/撤单
+        try:
+            with get_db_conn() as conn:
+                open_rows = conn.execute(
+                    '''
+                    SELECT order_id
+                    FROM orders
+                    WHERE config_id = ?
+                      AND trade_mode = 'SPOT_DCA'
+                      AND status = 'OPEN'
+                    ORDER BY id DESC
+                    LIMIT 100
+                    ''',
+                    (config_id,),
+                ).fetchall()
+
+            for row in open_rows:
+                order_id = str(row['order_id'])
+                try:
+                    od = mt.exchange.fetch_order(order_id, symbol)
+                    exch_status = str(od.get('status', '') or '').lower()
+                    filled_qty = float(od.get('filled', 0) or 0)
+                    filled_cost = float(od.get('cost', 0) or 0)
+                    avg_price = float(od.get('average', 0) or 0)
+
+                    if filled_qty > 0 and filled_cost <= 0 and avg_price > 0:
+                        filled_cost = filled_qty * avg_price
+                    if avg_price <= 0 and filled_qty > 0 and filled_cost > 0:
+                        avg_price = filled_cost / filled_qty
+
+                    fill_ts = od.get('lastTradeTimestamp') or od.get('timestamp')
+                    filled_at = None
+                    if fill_ts:
+                        filled_at = datetime.fromtimestamp(float(fill_ts) / 1000).strftime('%Y-%m-%d %H:%M:%S')
+
+                    local_status = 'OPEN'
+                    if exch_status in ('closed', 'filled'):
+                        local_status = 'FILLED'
+                    elif exch_status in ('canceled', 'cancelled', 'expired', 'rejected'):
+                        local_status = 'CANCELLED'
+                    elif filled_qty > 0:
+                        local_status = 'PARTIAL'
+
+                    update_order_fill_status(order_id, local_status, filled_qty, filled_cost, avg_price, filled_at)
+                    upsert_spot_order_fill(order_id, config_id, symbol, local_status, filled_qty, filled_cost, avg_price, filled_at)
+                except Exception as one_error:
+                    logger.debug(f"Skip spot order sync: {order_id} => {one_error}")
+        except Exception as sync_error:
+            logger.warning(f"DCA order sync failed for {config_id}: {sync_error}")
+
+        # 2) 拉取成交并落库，统计只看已成交 BUY
+        try:
+            trades = mt.exchange.fetch_my_trades(symbol, limit=1000)
+            if trades:
+                save_trade_history(trades)
+        except Exception as trade_error:
+            logger.warning(f"Fetch my_trades failed for {symbol}: {trade_error}")
+
+        with get_db_conn() as conn:
+            agg = conn.execute(
+                '''
+                SELECT
+                    COALESCE(SUM(t.cost), 0) AS traded_cost,
+                    COALESCE(SUM(t.amount), 0) AS traded_qty,
+                    COUNT(DISTINCT t.order_id) AS buy_count,
+                    MIN(t.timestamp) AS first_buy,
+                    MAX(t.timestamp) AS last_buy
+                FROM trade_history t
+                INNER JOIN orders o ON o.order_id = t.order_id
+                WHERE o.config_id = ?
+                  AND o.trade_mode = 'SPOT_DCA'
+                  AND LOWER(t.side) = 'buy'
+                ''',
+                (config_id,),
+            ).fetchone()
+
+            pending = conn.execute(
+                '''
+                SELECT COUNT(*) AS pending_count
+                FROM orders
+                WHERE config_id = ?
+                  AND trade_mode = 'SPOT_DCA'
+                  AND status IN ('OPEN', 'PARTIAL')
+                ''',
+                (config_id,),
+            ).fetchone()
+
+        traded_cost = float(agg['traded_cost'] or 0)
+        traded_qty = float(agg['traded_qty'] or 0)
+        buy_count = int(agg['buy_count'] or 0)
+
+        # 3) 读取真实余额用于展示持仓
         balances = mt.exchange.fetch_balance()
         current_qty = 0
         if base_asset in balances:
-            current_qty = float(balances[base_asset].get('total', 0))
+            current_qty = float(balances[base_asset].get('total', 0) or 0)
         elif base_asset.lower() in balances:
-            current_qty = float(balances[base_asset.lower()].get('total', 0))
+            current_qty = float(balances[base_asset.lower()].get('total', 0) or 0)
         elif 'total' in balances and base_asset in balances['total']:
-            current_qty = float(balances['total'].get(base_asset, 0))
-            
-        initial_cost = float(cfg.get('initial_cost', 0))
-        initial_qty = float(cfg.get('initial_qty', 0))
-        
-        # 2. 匹配当前余额的真实成本
-        accumulated_qty = 0
-        total_cost = 0
-        matched_buy_count = 0
-        first_buy_ts = None
-        last_buy_ts = None
-        
-        target_qty_to_match = max(0, current_qty - initial_qty)
-        
-        if target_qty_to_match > 0:
-            try:
-                # 获取最新的成交记录
-                trades = mt.exchange.fetch_my_trades(symbol, limit=1000)
-                buy_trades = [t for t in trades if str(t.get('side', '')).lower() == 'buy']
-                # 倒序（最新在前），FIFO倒推剩下的持仓成本
-                buy_trades.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
-                
-                for t in buy_trades:
-                    if accumulated_qty >= target_qty_to_match:
-                        break
-                        
-                    trade_qty = float(t.get('amount', 0))
-                    # 去除手续费影响的极小量（如果币安扣除到了基础币种）
-                    # 简单处理：全量计入成本计算
-                    trade_price = float(t.get('price', 0))
-                    
-                    remains = target_qty_to_match - accumulated_qty
-                    matched_qty = min(trade_qty, remains)
-                    matched_cost = matched_qty * trade_price
-                    
-                    accumulated_qty += matched_qty
-                    total_cost += matched_cost
-                    matched_buy_count += 1
-                    
-                    if not last_buy_ts:
-                        last_buy_ts = t.get('timestamp')
-                    first_buy_ts = t.get('timestamp') # 一直往下刷，最后记录的是最老的有效成交
-                        
-            except Exception as e:
-                logger.warning(f"Fetch my_trades failed for {symbol}: {e}")
-                
-        # 3. 汇总
-        final_qty = accumulated_qty + initial_qty
-        final_invested = total_cost + initial_cost
-        
+            current_qty = float(balances['total'].get(base_asset, 0) or 0)
+
+        final_qty = traded_qty + initial_qty
+        final_invested = traded_cost + initial_cost
         avg_cost = (final_invested / final_qty) if final_qty > 0 else 0
-        
-        # 格式化时间
-        def fmt_ts(ts):
-            from datetime import datetime
-            return datetime.fromtimestamp(ts/1000).strftime('%Y-%m-%d %H:%M:%S') if ts else None
-            
+
         result = {
-            "buy_count": matched_buy_count,
+            "buy_count": buy_count,
             "total_invested": round(final_invested, 2),
             "total_qty": round(final_qty, 6),
             "avg_cost": round(avg_cost, 4),
             "dca_amount_per": cfg.get('dca_amount', cfg.get('dca_budget', 0)),
             "has_legacy": initial_qty > 0,
-            "first_buy": fmt_ts(first_buy_ts),
-            "last_buy": fmt_ts(last_buy_ts),
-            "actual_balance": round(current_qty, 6)
+            "first_buy": agg['first_buy'],
+            "last_buy": agg['last_buy'],
+            "actual_balance": round(current_qty, 6),
+            "pending_orders": int(pending['pending_count'] or 0),
+            "sync_status": "synced",
+            "last_sync": datetime.now(TZ_CN).strftime('%Y-%m-%d %H:%M:%S')
         }
+
+        save_dca_daily_snapshot(config_id, symbol, result)
+
         DCA_STATS_CACHE[cache_key] = {
             'timestamp': now_ts,
             'data': result
@@ -410,8 +461,10 @@ def history_view():
 
         # SPOT_DCA 模式统计 (成本价、累计投入、持仓数量)
         dca_stats = None
+        dca_chart_data = []
         if agent_mode == 'SPOT_DCA' and agent_filter != 'ALL':
             dca_stats = calculate_dca_stats(agent_filter)
+            dca_chart_data = get_dca_daily_snapshot_history(agent_filter, days=30)
 
         history_compare_series = []
         if agent_filter == 'ALL':
@@ -460,6 +513,7 @@ def history_view():
         real_chart_data = []
         real_balance = None
         dca_stats = None
+        dca_chart_data = []
         history_compare_series = []
 
     return render_template(
@@ -478,6 +532,7 @@ def history_view():
         real_chart_data=real_chart_data,
         real_balance=real_balance,
         dca_stats=dca_stats,
+        dca_chart_data=dca_chart_data,
         history_compare_series=history_compare_series,
     )
 @main_bp.route('/chat')
