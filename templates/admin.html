@@ -13,33 +13,33 @@
   }
 
   #admin-page .admin-muted {
-    color: #64748b;
+    color: var(--text-muted);
   }
 
-  #admin-page.admin-dark {
+  :root[data-theme='dark'] #admin-page {
     color: #dbeafe;
   }
 
-  #admin-page.admin-dark .admin-panel {
-    background: #0f172a;
-    border-color: #334155;
+  :root[data-theme='dark'] #admin-page .admin-panel {
+    background: var(--surface-1);
+    border-color: var(--border-soft);
     box-shadow: none;
   }
 
-  #admin-page.admin-dark .admin-muted {
-    color: #94a3b8;
+  :root[data-theme='dark'] #admin-page .admin-muted {
+    color: var(--text-muted);
   }
 
-  #admin-page.admin-dark .admin-title {
-    color: #f8fafc;
+  :root[data-theme='dark'] #admin-page .admin-title {
+    color: var(--text-primary);
   }
 
-  #admin-page.admin-dark input,
-  #admin-page.admin-dark select,
-  #admin-page.admin-dark textarea {
-    background: #020617;
-    border-color: #334155;
-    color: #e2e8f0;
+  :root[data-theme='dark'] #admin-page input,
+  :root[data-theme='dark'] #admin-page select,
+  :root[data-theme='dark'] #admin-page textarea {
+    background: var(--surface-0);
+    border-color: var(--border-soft);
+    color: var(--text-primary);
   }
 
   #admin-page .CodeMirror {
@@ -49,7 +49,7 @@
     height: auto;
   }
 
-  #admin-page.admin-dark .CodeMirror {
+  :root[data-theme='dark'] #admin-page .CodeMirror {
     border-color: #334155;
   }
 
@@ -57,7 +57,7 @@
     border-right: 1px solid #e2e8f0;
   }
 
-  #admin-page.admin-dark .CodeMirror-gutters {
+  :root[data-theme='dark'] #admin-page .CodeMirror-gutters {
     border-right-color: #334155;
   }
 </style>
@@ -84,7 +84,6 @@
       <p class="admin-muted text-sm text-slate-500">配置管理、Config ID 删除、提示词维护、价格配置与历史维护。</p>
     </div>
     <div class="flex gap-2">
-      <button id="admin-theme-toggle" onclick="toggleAdminTheme()" class="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-bold">切换暗色</button>
       <a href="/" class="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-bold">返回控制台</a>
       <button onclick="logoutAdmin()" class="px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-700 text-sm font-bold">退出后台</button>
     </div>

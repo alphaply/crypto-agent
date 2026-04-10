@@ -1,11 +1,11 @@
 /* Chat 现代美化版 */
 :root {
-  --primary: #2563eb;
-  --bg-main: #f8fafc;
-  --bubble-user: #2563eb;
-  --bubble-agent: #ffffff;
-  --text-main: #1e293b;
-  --chat-shell: linear-gradient(180deg, rgba(255,255,255,0.88), rgba(248,250,252,0.96));
+  --primary: var(--accent-500);
+  --bg-main: var(--surface-0);
+  --bubble-user: var(--accent-500);
+  --bubble-agent: var(--surface-1);
+  --text-main: var(--text-primary);
+  --chat-shell: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 88%, transparent), color-mix(in srgb, var(--surface-2) 96%, transparent));
 }
 
 body {
@@ -131,7 +131,7 @@ body {
 /* 滚动条美化 */
 .scroll-thin::-webkit-scrollbar { width: 5px; height: 5px; }
 .scroll-thin::-webkit-scrollbar-track { background: transparent; }
-.scroll-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 10px; }
 
 /* 聊天气泡核心样式 */
 .chat-bubble {
@@ -160,14 +160,14 @@ body {
 .chat-bubble[data-role="assistant"] {
   background-color: var(--bubble-agent);
   color: var(--text-main);
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-soft);
   border-bottom-left-radius: 0.25rem;
 }
 
 .chat-bubble[data-role="tool"] {
-  background-color: #f1f5f9;
-  color: #475569;
-  border: 1px dashed #cbd5e1;
+  background-color: var(--surface-2);
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-strong);
   font-size: 0.8rem;
   padding: 0.75rem 1rem;
 }
@@ -187,24 +187,24 @@ body {
 }
 
 #sessionList > div.bg-blue-50\/70 {
-  background-color: #eff6ff !important;
-  box-shadow: inset 0 0 0 1px #dbeafe;
+  background-color: var(--accent-050) !important;
+  box-shadow: inset 0 0 0 1px var(--accent-100);
 }
 
 /* 工具调用卡片 */
 .tool-call-card {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
   border-radius: 0.75rem;
   margin-top: 0.5rem;
   overflow: hidden;
 }
 
 .tool-call-head {
-  background: #f1f5f9;
+  background: var(--surface-3);
   padding: 0.5rem 0.75rem;
   display: flex;
-  items-center: center;
+  align-items: center;
   gap: 0.5rem;
   font-family: monospace;
   font-weight: bold;
@@ -213,19 +213,19 @@ body {
 .tool-arg-row {
   display: flex;
   padding: 0.25rem 0.75rem;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--border-soft);
   font-size: 0.75rem;
 }
 
 .tool-arg-key {
-  color: #64748b;
+  color: var(--text-muted);
   width: 80px;
   flex-shrink: 0;
 }
 
 .tool-arg-val {
   word-break: break-word;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 /* 移动端特殊适配 */
@@ -334,16 +334,16 @@ body {
 .md-content p { margin-bottom: 0.75rem; }
 .md-content p:last-child { margin-bottom: 0; }
 .md-content pre {
-  background-color: #f1f5f9;
+  background-color: var(--code-bg);
   padding: 0.75rem;
   border-radius: 0.5rem;
   overflow-x: auto;
   margin: 0.5rem 0 0.75rem 0;
   font-size: 0.8125rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-soft);
 }
 .md-content code {
-  background-color: rgba(0,0,0,0.05);
+  background-color: var(--code-inline-bg);
   padding: 0.15rem 0.3rem;
   border-radius: 0.25rem;
   font-family: 'JetBrains Mono', monospace;
@@ -373,15 +373,15 @@ body {
   overflow-x: auto;
 }
 .md-content th, .md-content td {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-soft);
   padding: 0.5rem;
 }
-.md-content th { background-color: #f8fafc; font-weight: 600; }
-.md-content a { color: #2563eb; text-decoration: underline; }
+.md-content th { background-color: var(--surface-2); font-weight: 600; }
+.md-content a { color: var(--accent-500); text-decoration: underline; }
 .md-content blockquote {
-  border-left: 4px solid #cbd5e1;
+  border-left: 4px solid var(--border-strong);
   padding-left: 1rem;
-  color: #64748b;
+  color: var(--text-muted);
   margin-left: 0;
   margin-right: 0;
   font-style: italic;
@@ -404,5 +404,44 @@ body {
     padding-top: 0.65rem;
     padding-bottom: 0.65rem;
   }
+}
+
+:root[data-theme='dark'] #chatView,
+:root[data-theme='dark'] #composerBar,
+:root[data-theme='dark'] #messages,
+:root[data-theme='dark'] #approvalBar,
+:root[data-theme='dark'] #sessionSidebar,
+:root[data-theme='dark'] #chatView section,
+:root[data-theme='dark'] #authView > div,
+:root[data-theme='dark'] #newSessionModal > div {
+  color: var(--text-primary);
+}
+
+:root[data-theme='dark'] #chatView section,
+:root[data-theme='dark'] #sessionSidebar,
+:root[data-theme='dark'] #authView > div,
+:root[data-theme='dark'] #newSessionModal > div,
+:root[data-theme='dark'] #composerBar,
+:root[data-theme='dark'] #approvalBar {
+  background: color-mix(in srgb, var(--surface-1) 92%, transparent) !important;
+  border-color: var(--border-soft) !important;
+}
+
+:root[data-theme='dark'] #messages {
+  background: color-mix(in srgb, var(--surface-0) 65%, transparent) !important;
+}
+
+:root[data-theme='dark'] .toolbar-pill-neutral {
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+
+:root[data-theme='dark'] .toolbar-pill-danger {
+  background: color-mix(in srgb, var(--danger-500) 25%, transparent);
+  color: #fecdd3;
+}
+
+:root[data-theme='dark'] .chat-bubble[data-role='assistant'] {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 

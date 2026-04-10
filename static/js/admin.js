@@ -7,40 +7,23 @@ let promptEditor = null;
 let configJsonEditor = null;
 let adminTheme = 'light';
 
-function getAdminRoot() {
-  return document.getElementById('admin-page');
+function getResolvedTheme() {
+  if (window.AppTheme && typeof window.AppTheme.getResolvedTheme === 'function') {
+    return window.AppTheme.getResolvedTheme();
+  }
+  return document.documentElement.getAttribute('data-theme') || 'light';
 }
 
 function applyEditorTheme() {
+  adminTheme = getResolvedTheme();
   const themeName = adminTheme === 'dark' ? 'material-darker' : 'default';
   if (promptEditor) promptEditor.setOption('theme', themeName);
   if (configJsonEditor) configJsonEditor.setOption('theme', themeName);
 }
 
-function applyAdminTheme(theme) {
-  adminTheme = theme === 'dark' ? 'dark' : 'light';
-  const root = getAdminRoot();
-  if (root) {
-    root.classList.toggle('admin-dark', adminTheme === 'dark');
-  }
-
-  const toggleBtn = document.getElementById('admin-theme-toggle');
-  if (toggleBtn) {
-    toggleBtn.textContent = adminTheme === 'dark' ? '切换亮色' : '切换暗色';
-  }
-
-  localStorage.setItem('admin_theme', adminTheme);
-  applyEditorTheme();
-}
-
 function initAdminTheme() {
-  const savedTheme = localStorage.getItem('admin_theme');
-  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  applyAdminTheme(savedTheme || (prefersDark ? 'dark' : 'light'));
-}
-
-function toggleAdminTheme() {
-  applyAdminTheme(adminTheme === 'dark' ? 'light' : 'dark');
+  applyEditorTheme();
+  window.addEventListener('app-theme-change', () => applyEditorTheme());
 }
 
 function initPromptEditor() {
@@ -807,7 +790,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.startCreateConfig = startCreateConfig;
   window.selectConfig = selectConfig;
   window.upsertConfig = upsertConfig;
-  window.toggleAdminTheme = toggleAdminTheme;
   window.syncFormToJson = syncFormToJson;
   window.formatConfigJson = formatConfigJson;
   window.saveRawConfigs = saveRawConfigs;

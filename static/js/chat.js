@@ -40,6 +40,21 @@ function enhanceMarkdown(root = document) {
   });
 }
 
+function syncHighlightTheme() {
+  const link = document.getElementById('hljs-theme');
+  if (!link) return;
+  const resolved = window.AppTheme && typeof window.AppTheme.getResolvedTheme === 'function'
+    ? window.AppTheme.getResolvedTheme()
+    : (document.documentElement.getAttribute('data-theme') || 'light');
+  const isDark = resolved === 'dark';
+  const href = isDark
+    ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css'
+    : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+  if (link.getAttribute('href') !== href) {
+    link.setAttribute('href', href);
+  }
+}
+
 function ensureMessagesScrollListener() {
   const container = document.getElementById('messages');
   if (!container || container.dataset.scrollBound === 'true') return container;
@@ -841,6 +856,11 @@ function bindInputEvents() {
 
 function initChatApp() {
   bindInputEvents();
+  syncHighlightTheme();
+  window.addEventListener('app-theme-change', () => {
+    syncHighlightTheme();
+    scheduleUiTask(() => enhanceMarkdown(document.getElementById('messages') || document));
+  });
   window.addEventListener('resize', () => {
     if (window.innerWidth >= 1024) closeMobileSidebar();
   });

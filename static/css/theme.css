@@ -1,0 +1,115 @@
+:root {
+  --surface-0: #f4f7fb;
+  --surface-1: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #eef2f7;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --border-soft: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --shadow-soft: 0 14px 30px -24px rgba(15, 23, 42, 0.3);
+  --selection: rgba(59, 130, 246, 0.25);
+
+  --accent-500: #2563eb;
+  --accent-600: #1d4ed8;
+  --accent-100: #dbeafe;
+  --accent-050: #eff6ff;
+
+  --success-500: #059669;
+  --danger-500: #dc2626;
+  --warning-500: #d97706;
+
+  --app-bg-gradient: radial-gradient(circle at top, #eff6ff, #f8fafc 38%, #f1f5f9 100%);
+  --code-bg: #f1f5f9;
+  --code-inline-bg: rgba(15, 23, 42, 0.06);
+  --scrollbar-thumb: #cbd5e1;
+}
+
+:root[data-theme='dark'] {
+  --surface-0: #020617;
+  --surface-1: #0f172a;
+  --surface-2: #111827;
+  --surface-3: #1e293b;
+  --text-primary: #e2e8f0;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --border-soft: #334155;
+  --border-strong: #475569;
+  --shadow-soft: 0 20px 36px -26px rgba(2, 6, 23, 0.8);
+  --selection: rgba(37, 99, 235, 0.35);
+
+  --app-bg-gradient: radial-gradient(circle at top, #111827, #0b1220 38%, #020617 100%);
+  --code-bg: #0b1220;
+  --code-inline-bg: rgba(148, 163, 184, 0.22);
+  --scrollbar-thumb: #475569;
+}
+
+:root[data-accent='emerald'] {
+  --accent-500: #059669;
+  --accent-600: #047857;
+  --accent-100: #a7f3d0;
+  --accent-050: #ecfdf5;
+}
+
+:root[data-accent='amber'] {
+  --accent-500: #d97706;
+  --accent-600: #b45309;
+  --accent-100: #fde68a;
+  --accent-050: #fffbeb;
+}
+
+:root[data-accent='rose'] {
+  --accent-500: #e11d48;
+  --accent-600: #be123c;
+  --accent-100: #fecdd3;
+  --accent-050: #fff1f2;
+}
+
+:root[data-accent='indigo'] {
+  --accent-500: #4f46e5;
+  --accent-600: #4338ca;
+  --accent-100: #c7d2fe;
+  --accent-050: #eef2ff;
+}
+
+:root[data-accent='cyan'] {
+  --accent-500: #0891b2;
+  --accent-600: #0e7490;
+  --accent-100: #a5f3fc;
+  --accent-050: #ecfeff;
+}
+
+html,
+body {
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+body {
+  background: var(--app-bg-gradient) !important;
+  color: var(--text-primary) !important;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+.theme-surface {
+  background: var(--surface-1);
+  border-color: var(--border-soft);
+  color: var(--text-primary);
+}
+
+.theme-muted {
+  color: var(--text-muted);
+}
+
+.theme-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.theme-scroll::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 10px;
+}

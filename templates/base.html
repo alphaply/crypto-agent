@@ -4,6 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>{% block title %}Crypto Agent{% endblock %}</title>
+    <script>
+      (function preloadThemeState() {
+        try {
+          const mode = localStorage.getItem('crypto-agent-theme-mode') || 'auto';
+          const accent = localStorage.getItem('crypto-agent-theme-accent') || 'blue';
+          const resolved = mode === 'auto'
+            ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : mode;
+          const root = document.documentElement;
+          root.setAttribute('data-theme-mode', mode);
+          root.setAttribute('data-theme', resolved);
+          root.setAttribute('data-accent', accent);
+        } catch (error) {
+          document.documentElement.setAttribute('data-theme', 'light');
+          document.documentElement.setAttribute('data-theme-mode', 'auto');
+          document.documentElement.setAttribute('data-accent', 'blue');
+        }
+      })();
+    </script>
     
     <!-- 网站图标 -->
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
@@ -31,6 +50,7 @@
       }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
     <style>
       .nav-icon-link {
         display: inline-flex;
@@ -39,17 +59,17 @@
         width: 2.75rem;
         height: 2.75rem;
         border-radius: 0.75rem;
-        border: 1px solid #e2e8f0;
-        background: rgba(255, 255, 255, 0.9);
-        color: #64748b;
+        border: 1px solid var(--border-soft);
+        background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+        color: var(--text-muted);
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
         transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
         flex-shrink: 0;
       }
 
       .nav-icon-link:hover {
-        color: #0f172a;
-        background: #ffffff;
+        color: var(--text-primary);
+        background: var(--surface-1);
       }
 
       .nav-icon-svg {
@@ -82,6 +102,26 @@
         letter-spacing: 0.01em;
       }
 
+      .theme-control {
+        border: 1px solid var(--border-soft);
+        background: color-mix(in srgb, var(--surface-1) 92%, transparent);
+        color: var(--text-secondary);
+        border-radius: 0.75rem;
+        height: 2.45rem;
+        font-size: 0.72rem;
+        font-weight: 700;
+        padding: 0 0.7rem;
+      }
+
+      .theme-control:hover {
+        border-color: var(--accent-500);
+        color: var(--text-primary);
+      }
+
+      .theme-control-select {
+        min-width: 6.5rem;
+      }
+
       @media (min-width: 768px) {
         .nav-icon-link {
           width: 2.5rem;
@@ -101,21 +141,25 @@
         .nav-quick-text {
           font-size: 0.75rem;
         }
+
+        .theme-control {
+          font-size: 0.75rem;
+        }
       }
     </style>
     
     {% block head %}{% endblock %}
   </head>
-  <body class="{% block body_class %}bg-[radial-gradient(circle_at_top,_#eff6ff,_#f8fafc_38%,_#f1f5f9_100%)] text-slate-800 font-sans antialiased overflow-x-hidden selection:bg-blue-100 min-h-screen flex flex-col{% endblock %}">
+  <body class="{% block body_class %}font-sans antialiased overflow-x-hidden min-h-screen flex flex-col{% endblock %}">
 
     {% block navbar %}
-    <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-xl shadow-sm border-b border-white/60">
+    <nav class="sticky top-0 z-50 backdrop-blur-xl shadow-sm border-b" style="background: color-mix(in srgb, var(--surface-1) 84%, transparent); border-color: var(--border-soft);">
       <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8"> 
         <div class="flex flex-col md:flex-row justify-between items-center py-2 md:py-3 gap-2 md:gap-3">
-          <div class="font-bold text-base md:text-lg tracking-tight text-gray-900 flex items-center justify-between w-full md:w-auto gap-2">
+          <div class="font-bold text-base md:text-lg tracking-tight flex items-center justify-between w-full md:w-auto gap-2" style="color: var(--text-primary);">
             <span class="flex items-center gap-1.5">
                 <a href="/" class="flex items-center gap-1.5 hover:opacity-80 transition-opacity">
-                    💸 <span class="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">Crypto Agent</span>
+                    💸 <span class="bg-clip-text text-transparent" style="background-image: linear-gradient(90deg, var(--accent-500), var(--accent-600));">Crypto Agent</span>
                 </a>
             </span>
             <div class="flex items-center gap-2">
@@ -128,30 +172,52 @@
                 <button onclick="location.reload()" title="刷新" class="nav-icon-link md:hidden" aria-label="刷新">
                   <svg viewBox="0 0 24 24" class="nav-icon-svg" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 10-2.34 5.66"/><path d="M20 4v7h-7"/></svg>
                 </button>
+                <button data-theme-toggle class="theme-control hidden md:inline-flex items-center"></button>
+                <select data-theme-accent-select class="theme-control theme-control-select hidden lg:inline-flex">
+                  <option value="blue">海蓝</option>
+                  <option value="emerald">翡翠</option>
+                  <option value="amber">琥珀</option>
+                  <option value="rose">玫瑰</option>
+                  <option value="indigo">靛蓝</option>
+                  <option value="cyan">青蓝</option>
+                </select>
             </div>
           </div>
           {% if symbols %}
           <div class="flex w-full md:w-auto items-center gap-2 flex-wrap md:flex-nowrap">
-             <select id="globalSymbolSelect" onchange="window.location.href = this.value ? ('?symbol=' + encodeURIComponent(this.value)) : window.location.pathname" class="form-select bg-white/90 border border-slate-200 text-gray-900 text-xs md:text-sm rounded-xl focus:ring-blue-500 focus:border-blue-500 block p-2 md:p-2.5 outline-none flex-grow md:w-44 shadow-sm min-h-11">
+             <select id="globalSymbolSelect" onchange="window.location.href = this.value ? ('?symbol=' + encodeURIComponent(this.value)) : window.location.pathname" class="form-select text-xs md:text-sm rounded-xl block p-2 md:p-2.5 outline-none flex-grow md:w-44 shadow-sm min-h-11" style="background: color-mix(in srgb, var(--surface-1) 90%, transparent); border: 1px solid var(--border-soft); color: var(--text-primary);">
               {% for sym in symbols %} 
                 <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
               {% endfor %}
             </select>
+            <select data-theme-mode-select class="theme-control theme-control-select">
+              <option value="light">亮色</option>
+              <option value="dark">暗色</option>
+              <option value="auto">跟随系统</option>
+            </select>
+            <select data-theme-accent-select class="theme-control theme-control-select">
+              <option value="blue">海蓝</option>
+              <option value="emerald">翡翠</option>
+              <option value="amber">琥珀</option>
+              <option value="rose">玫瑰</option>
+              <option value="indigo">靛蓝</option>
+              <option value="cyan">青蓝</option>
+            </select>
             <div class="flex gap-1 w-full md:w-auto overflow-x-auto no-scrollbar pb-1 md:pb-0">
                 <div class="inline-flex rounded-xl shadow-sm min-w-max" role="group">
-                    <a href="/chat" title="Chat" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium text-teal-700 bg-white/90 border border-slate-200 rounded-l-xl hover:bg-white" aria-label="Chat">
+                    <a href="/chat" title="Chat" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium rounded-l-xl" style="color: var(--text-secondary); background: color-mix(in srgb, var(--surface-1) 90%, transparent); border: 1px solid var(--border-soft);" aria-label="Chat">
                       <svg viewBox="0 0 24 24" class="nav-quick-icon" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h8M8 14h5m-8 6l3.5-3.5H19a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h.5L5 20z"/></svg>
                       <span class="nav-quick-text">聊天</span>
                     </a>
-                    <a href="/admin" title="后台管理" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium text-indigo-600 bg-white/90 border border-l-0 border-slate-200 hover:bg-white" aria-label="后台管理">
+                    <a href="/admin" title="后台管理" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium" style="color: var(--text-secondary); background: color-mix(in srgb, var(--surface-1) 90%, transparent); border: 1px solid var(--border-soft); border-left: 0;" aria-label="后台管理">
                       <svg viewBox="0 0 24 24" class="nav-quick-icon" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c-.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/></svg>
                       <span class="nav-quick-text">后台</span>
                     </a>
-                    <a href="/stats/public?symbol={{ current_symbol }}" title="公开统计" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium text-cyan-700 bg-white/90 border border-l-0 border-slate-200 hover:bg-white" aria-label="公开统计">
+                    <a href="/stats/public?symbol={{ current_symbol }}" title="公开统计" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium" style="color: var(--text-secondary); background: color-mix(in srgb, var(--surface-1) 90%, transparent); border: 1px solid var(--border-soft); border-left: 0;" aria-label="公开统计">
                       <svg viewBox="0 0 24 24" class="nav-quick-icon" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3v18h18"/><path stroke-linecap="round" stroke-linejoin="round" d="M7 14l4-4 3 3 5-6"/></svg>
                       <span class="nav-quick-text">统计</span>
                     </a>
-                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium text-blue-600 bg-white/90 border border-l-0 border-slate-200 hover:bg-white" aria-label="历史回溯">
+                    <a href="/history?symbol={{ current_symbol }}" title="历史回溯" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium" style="color: var(--text-secondary); background: color-mix(in srgb, var(--surface-1) 90%, transparent); border: 1px solid var(--border-soft); border-left: 0;" aria-label="历史回溯">
                       <svg viewBox="0 0 24 24" class="nav-quick-icon" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
                       <span class="nav-quick-text">历史</span>
                     </a>
@@ -170,6 +236,7 @@
 
     {% block content %}{% endblock %}
 
+    <script src="{{ url_for('static', filename='js/theme.js') }}" defer></script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

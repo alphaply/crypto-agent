@@ -17,15 +17,47 @@
         .markdown-content p { margin-bottom: 1rem; }
         .markdown-content ul { list-style: disc; padding-left: 1.25rem; margin-bottom: 1rem; }
         .markdown-content ol { list-style: decimal; padding-left: 1.25rem; margin-bottom: 1rem; }
-        .markdown-content code { background-color: #f3f4f6; padding: 0 0.25rem; border-radius: 0.25rem; color: #dc2626; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.875rem; }
-        .markdown-content pre { background-color: #111827; color: #f9fafb; padding: 1rem; border-radius: 0.75rem; overflow-x: auto; margin-bottom: 1rem; max-width: 100%; white-space: pre-wrap; word-break: break-all; }
-        .markdown-content pre code { background: transparent; padding: 0; color: #f9fafb; }
-        .markdown-content blockquote { border-left: 4px solid #d1d5db; padding-left: 1rem; font-style: italic; margin-bottom: 1rem; }
+        .markdown-content code { background-color: var(--code-inline-bg); padding: 0 0.25rem; border-radius: 0.25rem; color: var(--danger-500); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.875rem; }
+        .markdown-content pre { background-color: var(--surface-3); color: var(--text-primary); padding: 1rem; border-radius: 0.75rem; overflow-x: auto; margin-bottom: 1rem; max-width: 100%; white-space: pre-wrap; word-break: break-all; border: 1px solid var(--border-soft); }
+        .markdown-content pre code { background: transparent; padding: 0; color: var(--text-primary); }
+        .markdown-content blockquote { border-left: 4px solid var(--border-strong); padding-left: 1rem; font-style: italic; margin-bottom: 1rem; }
         .markdown-content table { display: block; overflow-x: auto; width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
-        .markdown-content th, .markdown-content td { border: 1px solid #d1d5db; padding: 0.5rem 1rem; }
+        .markdown-content th, .markdown-content td { border: 1px solid var(--border-soft); padding: 0.5rem 1rem; }
         
         /* 图表容器自适应 */
         .chart-container { position: relative; width: 100%; height: 220px; overflow: hidden; }
+
+        :root[data-theme='dark'] .history-card,
+        :root[data-theme='dark'] .chart-panel,
+        :root[data-theme='dark'] .history-panel,
+        :root[data-theme='dark'] [class*='bg-white'] {
+            background-color: color-mix(in srgb, var(--surface-1) 94%, transparent) !important;
+            border-color: var(--border-soft) !important;
+            color: var(--text-primary) !important;
+        }
+
+        :root[data-theme='dark'] [class*='bg-gray-50'],
+        :root[data-theme='dark'] [class*='bg-slate-50'],
+        :root[data-theme='dark'] [class*='bg-gray-100'],
+        :root[data-theme='dark'] [class*='bg-slate-100'] {
+            background-color: color-mix(in srgb, var(--surface-2) 88%, transparent) !important;
+        }
+
+        :root[data-theme='dark'] [class*='text-gray-'],
+        :root[data-theme='dark'] [class*='text-slate-'] {
+            color: var(--text-secondary) !important;
+        }
+
+        :root[data-theme='dark'] [class*='border-gray-'],
+        :root[data-theme='dark'] [class*='border-slate-'] {
+            border-color: var(--border-soft) !important;
+        }
+
+        :root[data-theme='dark'] .text-blue-600,
+        :root[data-theme='dark'] .text-blue-700,
+        :root[data-theme='dark'] .text-blue-500 {
+            color: var(--accent-500) !important;
+        }
 
         @media (max-width: 640px) {
             #history-toast-container { width: calc(100% - 1.5rem) !important; right: 0.75rem !important; left: 0.75rem !important; }
@@ -40,7 +72,7 @@
             .chart-container { height: 180px; }
             .history-card {
                 border-radius: 1.25rem;
-                box-shadow: 0 18px 40px -28px rgba(15, 23, 42, 0.35);
+                box-shadow: var(--shadow-soft);
             }
         }
     </style>
@@ -117,76 +149,131 @@
                     const rawSeries = {{ history_compare_series|tojson|safe }} || [];
                     if (!rawSeries.length) return;
 
-                    const labelsSet = new Set();
-                    rawSeries.forEach(series => (series.points || []).forEach(point => labelsSet.add(point.date)));
-                    const labels = Array.from(labelsSet).sort();
-                    const palette = ['#2563eb', '#059669', '#dc2626', '#d97706', '#7c3aed', '#0f766e', '#0891b2', '#be123c'];
+                    function getTheme() {
+                        return document.documentElement.getAttribute('data-theme') || 'light';
+                    }
 
-                    const datasets = rawSeries.map((series, idx) => {
-                        const m = new Map((series.points || []).map(point => {
-                            const v = point.equity ?? point.balance;
-                            return [point.date, v == null ? null : Number(v)];
-                        }));
-                        return {
-                            label: series.label || series.config_id,
-                            data: labels.map(day => (m.has(day) ? m.get(day) : null)),
-                            borderColor: palette[idx % palette.length],
-                            backgroundColor: palette[idx % palette.length],
-                            borderWidth: 2,
-                            pointRadius: 0,
-                            spanGaps: true,
-                            tension: 0.2,
-                            hidden: false,
-                        };
-                    });
+                    function getToken(name, fallback) {
+                        const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+                        return value || fallback;
+                    }
 
-                    const ctx = document.getElementById('historyCompareChart').getContext('2d');
-                    const chart = new Chart(ctx, {
-                        type: 'line',
-                        data: { labels, datasets },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            interaction: { mode: 'index', intersect: false },
-                            plugins: {
-                                legend: { display: false },
-                                tooltip: {
-                                    callbacks: {
-                                        label: function(context) {
-                                            const val = context.raw;
-                                            return `${context.dataset.label}: ${val == null ? '-' : Number(val).toFixed(2)}`;
+                    function toRgba(hex, alpha) {
+                        const normalized = String(hex || '').trim().replace('#', '');
+                        if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
+                            return `rgba(59,130,246,${alpha})`;
+                        }
+                        const r = parseInt(normalized.slice(0, 2), 16);
+                        const g = parseInt(normalized.slice(2, 4), 16);
+                        const b = parseInt(normalized.slice(4, 6), 16);
+                        return `rgba(${r},${g},${b},${alpha})`;
+                    }
+
+                    function getPalette() {
+                        if (getTheme() === 'dark') {
+                            return ['#60a5fa', '#34d399', '#f87171', '#fbbf24', '#a78bfa', '#22d3ee', '#fb7185', '#4ade80'];
+                        }
+                        return ['#2563eb', '#059669', '#dc2626', '#d97706', '#7c3aed', '#0f766e', '#0891b2', '#be123c'];
+                    }
+
+                    let chart = null;
+
+                    function buildChart() {
+                        const labelsSet = new Set();
+                        rawSeries.forEach(series => (series.points || []).forEach(point => labelsSet.add(point.date)));
+                        const labels = Array.from(labelsSet).sort();
+                        const palette = getPalette();
+
+                        const datasets = rawSeries.map((series, idx) => {
+                            const m = new Map((series.points || []).map(point => {
+                                const v = point.equity ?? point.balance;
+                                return [point.date, v == null ? null : Number(v)];
+                            }));
+                            return {
+                                label: series.label || series.config_id,
+                                data: labels.map(day => (m.has(day) ? m.get(day) : null)),
+                                borderColor: palette[idx % palette.length],
+                                backgroundColor: palette[idx % palette.length],
+                                borderWidth: 2,
+                                pointRadius: 0,
+                                spanGaps: true,
+                                tension: 0.2,
+                                hidden: false,
+                            };
+                        });
+
+                        const ctx = document.getElementById('historyCompareChart').getContext('2d');
+                        if (chart) chart.destroy();
+                        chart = new Chart(ctx, {
+                            type: 'line',
+                            data: { labels, datasets },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                interaction: { mode: 'index', intersect: false },
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        backgroundColor: getToken('--surface-3', '#1e293b'),
+                                        borderColor: getToken('--border-soft', '#334155'),
+                                        borderWidth: 1,
+                                        titleColor: getToken('--text-primary', '#f8fafc'),
+                                        bodyColor: getToken('--text-secondary', '#cbd5e1'),
+                                        callbacks: {
+                                            label: function(context) {
+                                                const val = context.raw;
+                                                return `${context.dataset.label}: ${val == null ? '-' : Number(val).toFixed(2)}`;
+                                            }
                                         }
                                     }
-                                }
-                            },
-                            scales: {
-                                x: { ticks: { maxTicksLimit: 8 } },
-                                y: {
-                                    ticks: {
-                                        callback: function(v) { return Number(v).toFixed(0); }
+                                },
+                                scales: {
+                                    x: {
+                                        ticks: { maxTicksLimit: 8, color: getToken('--text-muted', '#94a3b8') },
+                                        grid: { color: getToken('--border-soft', '#e2e8f0') }
+                                    },
+                                    y: {
+                                        ticks: {
+                                            color: getToken('--text-muted', '#94a3b8'),
+                                            callback: function(v) { return Number(v).toFixed(0); }
+                                        },
+                                        grid: { color: getToken('--border-soft', '#e2e8f0') }
                                     }
                                 }
                             }
-                        }
-                    });
+                        });
+
+                        return datasets;
+                    }
+
+                    let datasets = buildChart();
 
                     const legend = document.getElementById('history-compare-legend');
                     if (!legend) return;
-                    legend.innerHTML = datasets.map((ds, idx) => `
-                        <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 cursor-pointer">
-                            <input type="checkbox" data-ds-index="${idx}" checked class="history-ds-toggle w-3.5 h-3.5">
-                            <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${ds.borderColor}"></span>
-                            <span class="break-all">${ds.label}</span>
-                        </label>
-                    `).join('');
 
-                    legend.querySelectorAll('.history-ds-toggle').forEach(box => {
-                        box.addEventListener('change', function() {
-                            const dsIndex = Number(this.getAttribute('data-ds-index'));
-                            if (Number.isNaN(dsIndex)) return;
-                            chart.setDatasetVisibility(dsIndex, this.checked);
-                            chart.update();
+                    function renderLegend() {
+                        legend.innerHTML = datasets.map((ds, idx) => `
+                            <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 cursor-pointer">
+                                <input type="checkbox" data-ds-index="${idx}" checked class="history-ds-toggle w-3.5 h-3.5">
+                                <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${ds.borderColor}"></span>
+                                <span class="break-all">${ds.label}</span>
+                            </label>
+                        `).join('');
+
+                        legend.querySelectorAll('.history-ds-toggle').forEach(box => {
+                            box.addEventListener('change', function() {
+                                const dsIndex = Number(this.getAttribute('data-ds-index'));
+                                if (Number.isNaN(dsIndex) || !chart) return;
+                                chart.setDatasetVisibility(dsIndex, this.checked);
+                                chart.update();
+                            });
                         });
+                    }
+
+                    renderLegend();
+                    window.addEventListener('app-theme-change', () => {
+                        datasets = buildChart();
+                        renderLegend();
                     });
                 })();
             </script>
@@ -220,70 +307,87 @@
             </div>
             <script>
                 (function() {
-                    const ctx = document.getElementById('equityChart').getContext('2d');
                     const rawData = {{ mock_chart_data|tojson|safe }} || [];
                     if (rawData.length === 0) return;
-                    
+
                     const labels = rawData.map(d => d.date);
                     const dataPoints = rawData.map(d => d.balance);
-                    
-                    const gradient = ctx.createLinearGradient(0, 0, 0, 200);
-                    gradient.addColorStop(0, 'rgba(59, 130, 246, 0.2)');
-                    gradient.addColorStop(1, 'rgba(59, 130, 246, 0)');
-                    
-                    new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: labels,
-                            datasets: [{
-                                label: '模拟账户净值',
-                                data: dataPoints,
-                                borderColor: '#3b82f6',
-                                backgroundColor: gradient,
-                                borderWidth: 2,
-                                pointBackgroundColor: '#ffffff',
-                                pointBorderColor: '#3b82f6',
-                                pointBorderWidth: 2,
-                                pointRadius: rawData.length > 20 ? 0 : 3,
-                                pointHoverRadius: 5,
-                                fill: true,
-                                tension: 0.3
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: { display: false },
-                                tooltip: {
-                                    backgroundColor: '#1e293b',
-                                    titleFont: { family: 'Inter', size: 11 },
-                                    bodyFont: { family: 'JetBrains Mono', size: 12 },
-                                    padding: 10,
-                                    displayColors: false,
-                                    callbacks: {
-                                        label: function(context) { return '$' + context.parsed.y.toFixed(2); }
-                                    }
-                                }
+                    let chart = null;
+
+                    function getToken(name, fallback) {
+                        const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+                        return value || fallback;
+                    }
+
+                    function renderChart() {
+                        const ctx = document.getElementById('equityChart').getContext('2d');
+                        const accent = getToken('--accent-500', '#3b82f6');
+                        const gradient = ctx.createLinearGradient(0, 0, 0, 200);
+                        gradient.addColorStop(0, toRgba(accent, 0.24));
+                        gradient.addColorStop(1, 'rgba(0,0,0,0)');
+
+                        if (chart) chart.destroy();
+                        chart = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: '模拟账户净值',
+                                    data: dataPoints,
+                                    borderColor: accent,
+                                    backgroundColor: gradient,
+                                    borderWidth: 2,
+                                    pointBackgroundColor: getToken('--surface-1', '#ffffff'),
+                                    pointBorderColor: accent,
+                                    pointBorderWidth: 2,
+                                    pointRadius: rawData.length > 20 ? 0 : 3,
+                                    pointHoverRadius: 5,
+                                    fill: true,
+                                    tension: 0.3
+                                }]
                             },
-                            scales: {
-                                x: {
-                                    grid: { display: false },
-                                    ticks: { font: { family: 'Inter', size: 10 }, color: '#94a3b8', maxTicksLimit: 7 }
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        backgroundColor: getToken('--surface-3', '#1e293b'),
+                                        titleColor: getToken('--text-primary', '#f8fafc'),
+                                        bodyColor: getToken('--text-secondary', '#cbd5e1'),
+                                        borderColor: getToken('--border-soft', '#334155'),
+                                        borderWidth: 1,
+                                        titleFont: { family: 'Inter', size: 11 },
+                                        bodyFont: { family: 'JetBrains Mono', size: 12 },
+                                        padding: 10,
+                                        displayColors: false,
+                                        callbacks: {
+                                            label: function(context) { return '$' + context.parsed.y.toFixed(2); }
+                                        }
+                                    }
                                 },
-                                y: {
-                                    grid: { display: true, color: '#f1f5f9' },
-                                    border: { display: false },
-                                    ticks: { 
-                                        font: { family: 'JetBrains Mono', size: 10 }, 
-                                        color: '#94a3b8',
-                                        callback: function(value) { return '$' + value; }
+                                scales: {
+                                    x: {
+                                        grid: { display: false },
+                                        ticks: { font: { family: 'Inter', size: 10 }, color: getToken('--text-muted', '#94a3b8'), maxTicksLimit: 7 }
+                                    },
+                                    y: {
+                                        grid: { display: true, color: getToken('--border-soft', '#e2e8f0') },
+                                        border: { display: false },
+                                        ticks: {
+                                            font: { family: 'JetBrains Mono', size: 10 },
+                                            color: getToken('--text-muted', '#94a3b8'),
+                                            callback: function(value) { return '$' + value; }
+                                        }
                                     }
-                                }
-                            },
-                            interaction: { intersect: false, mode: 'index' }
-                        }
-                    });
+                                },
+                                interaction: { intersect: false, mode: 'index' }
+                            }
+                        });
+                    }
+
+                    renderChart();
+                    window.addEventListener('app-theme-change', renderChart);
                 })();
             </script>
             {% endif %}
@@ -319,70 +423,99 @@
             </div>
             <script>
                 (function() {
-                    const ctx = document.getElementById('realEquityChart').getContext('2d');
                     const rawData = {{ real_chart_data|tojson|safe }} || [];
                     if (rawData.length === 0) return;
-                    
+
                     const labels = rawData.map(d => d.date);
                     const dataPoints = rawData.map(d => d.equity);
-                    
-                    const gradient = ctx.createLinearGradient(0, 0, 0, 200);
-                    gradient.addColorStop(0, 'rgba(225, 29, 72, 0.15)');
-                    gradient.addColorStop(1, 'rgba(225, 29, 72, 0)');
-                    
-                    new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: labels,
-                            datasets: [{
-                                label: '实盘账户净值',
-                                data: dataPoints,
-                                borderColor: '#e11d48',
-                                backgroundColor: gradient,
-                                borderWidth: 2,
-                                pointBackgroundColor: '#ffffff',
-                                pointBorderColor: '#e11d48',
-                                pointBorderWidth: 2,
-                                pointRadius: rawData.length > 20 ? 0 : 3,
-                                pointHoverRadius: 5,
-                                fill: true,
-                                tension: 0.3
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: { display: false },
-                                tooltip: {
-                                    backgroundColor: '#1e293b',
-                                    titleFont: { family: 'Inter', size: 11 },
-                                    bodyFont: { family: 'JetBrains Mono', size: 12 },
-                                    padding: 10,
-                                    displayColors: false,
-                                    callbacks: {
-                                        label: function(context) { return '$' + context.parsed.y.toFixed(2); }
-                                    }
-                                }
-                            },
-                            scales: {
-                                x: {
-                                    grid: { display: false },
-                                    ticks: { font: { family: 'Inter', size: 10 }, color: '#94a3b8', maxTicksLimit: 7 }
-                                },
-                                y: {
-                                    grid: { display: true, color: '#f1f5f9' },
-                                    border: { display: false },
-                                    ticks: { 
-                                        font: { family: 'JetBrains Mono', size: 10 }, 
-                                        color: '#94a3b8',
-                                        callback: function(value) { return '$' + value; }
-                                    }
-                                }
-                            },
-                            interaction: { intersect: false, mode: 'index' }
+
+                    let chart = null;
+
+                    function getToken(name, fallback) {
+                        const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+                        return value || fallback;
+                    }
+
+                    function toRgba(hex, alpha) {
+                        const normalized = String(hex || '').trim().replace('#', '');
+                        if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
+                            return `rgba(225,29,72,${alpha})`;
                         }
-                    });
+                        const r = parseInt(normalized.slice(0, 2), 16);
+                        const g = parseInt(normalized.slice(2, 4), 16);
+                        const b = parseInt(normalized.slice(4, 6), 16);
+                        return `rgba(${r},${g},${b},${alpha})`;
+                    }
+
+                    function renderChart() {
+                        const ctx = document.getElementById('realEquityChart').getContext('2d');
+                        const danger = getToken('--danger-500', '#e11d48');
+                        const gradient = ctx.createLinearGradient(0, 0, 0, 200);
+                        gradient.addColorStop(0, toRgba(danger, 0.18));
+                        gradient.addColorStop(1, 'rgba(0,0,0,0)');
+
+                        if (chart) chart.destroy();
+                        chart = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: '实盘账户净值',
+                                    data: dataPoints,
+                                    borderColor: danger,
+                                    backgroundColor: gradient,
+                                    borderWidth: 2,
+                                    pointBackgroundColor: getToken('--surface-1', '#ffffff'),
+                                    pointBorderColor: danger,
+                                    pointBorderWidth: 2,
+                                    pointRadius: rawData.length > 20 ? 0 : 3,
+                                    pointHoverRadius: 5,
+                                    fill: true,
+                                    tension: 0.3
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        backgroundColor: getToken('--surface-3', '#1e293b'),
+                                        titleColor: getToken('--text-primary', '#f8fafc'),
+                                        bodyColor: getToken('--text-secondary', '#cbd5e1'),
+                                        borderColor: getToken('--border-soft', '#334155'),
+                                        borderWidth: 1,
+                                        titleFont: { family: 'Inter', size: 11 },
+                                        bodyFont: { family: 'JetBrains Mono', size: 12 },
+                                        padding: 10,
+                                        displayColors: false,
+                                        callbacks: {
+                                            label: function(context) { return '$' + context.parsed.y.toFixed(2); }
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    x: {
+                                        grid: { display: false },
+                                        ticks: { font: { family: 'Inter', size: 10 }, color: getToken('--text-muted', '#94a3b8'), maxTicksLimit: 7 }
+                                    },
+                                    y: {
+                                        grid: { display: true, color: getToken('--border-soft', '#e2e8f0') },
+                                        border: { display: false },
+                                        ticks: {
+                                            font: { family: 'JetBrains Mono', size: 10 },
+                                            color: getToken('--text-muted', '#94a3b8'),
+                                            callback: function(value) { return '$' + value; }
+                                        }
+                                    }
+                                },
+                                interaction: { intersect: false, mode: 'index' }
+                            }
+                        });
+                    }
+
+                    renderChart();
+                    window.addEventListener('app-theme-change', renderChart);
                 })();
             </script>
             {% endif %}
@@ -436,37 +569,65 @@
                     (function() {
                         const raw = {{ dca_chart_data|tojson|safe }} || [];
                         if (!raw.length) return;
-                        const ctx = document.getElementById('dcaSnapshotChart').getContext('2d');
                         const labels = raw.map(r => r.snapshot_date);
                         const invested = raw.map(r => Number(r.total_invested || 0));
+                        let chart = null;
 
-                        new Chart(ctx, {
-                            type: 'line',
-                            data: {
-                                labels,
-                                datasets: [{
-                                    label: '累计投入 (USDT)',
-                                    data: invested,
-                                    borderColor: '#2563eb',
-                                    backgroundColor: 'rgba(37, 99, 235, 0.14)',
-                                    borderWidth: 2,
-                                    pointRadius: raw.length > 20 ? 0 : 2,
-                                    pointHoverRadius: 4,
-                                    fill: true,
-                                    tension: 0.25,
-                                }]
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                plugins: { legend: { display: false } },
-                                scales: {
-                                    x: { ticks: { maxTicksLimit: 8 } },
-                                    y: { ticks: { callback: function(v) { return Number(v).toFixed(0); } } }
+                        function getToken(name, fallback) {
+                            const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+                            return value || fallback;
+                        }
+
+                        function renderChart() {
+                            const ctx = document.getElementById('dcaSnapshotChart').getContext('2d');
+                            if (chart) chart.destroy();
+
+                            chart = new Chart(ctx, {
+                                type: 'line',
+                                data: {
+                                    labels,
+                                    datasets: [{
+                                        label: '累计投入 (USDT)',
+                                        data: invested,
+                                        borderColor: getToken('--accent-500', '#2563eb'),
+                                        backgroundColor: getToken('--accent-100', '#dbeafe'),
+                                        borderWidth: 2,
+                                        pointRadius: raw.length > 20 ? 0 : 2,
+                                        pointHoverRadius: 4,
+                                        fill: true,
+                                        tension: 0.25,
+                                    }]
                                 },
-                                interaction: { intersect: false, mode: 'index' }
-                            }
-                        });
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    plugins: {
+                                        legend: { display: false },
+                                        tooltip: {
+                                            backgroundColor: getToken('--surface-3', '#1e293b'),
+                                            titleColor: getToken('--text-primary', '#f8fafc'),
+                                            bodyColor: getToken('--text-secondary', '#cbd5e1'),
+                                            borderColor: getToken('--border-soft', '#334155'),
+                                            borderWidth: 1
+                                        }
+                                    },
+                                    scales: {
+                                        x: { ticks: { maxTicksLimit: 8, color: getToken('--text-muted', '#94a3b8') }, grid: { color: getToken('--border-soft', '#e2e8f0') } },
+                                        y: {
+                                            ticks: {
+                                                color: getToken('--text-muted', '#94a3b8'),
+                                                callback: function(v) { return Number(v).toFixed(0); }
+                                            },
+                                            grid: { color: getToken('--border-soft', '#e2e8f0') }
+                                        }
+                                    },
+                                    interaction: { intersect: false, mode: 'index' }
+                                }
+                            });
+                        }
+
+                        renderChart();
+                        window.addEventListener('app-theme-change', renderChart);
                     })();
                 </script>
             </div>

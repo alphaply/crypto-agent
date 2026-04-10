@@ -11,6 +11,25 @@ let markdownObserver = null;
 const statsRequests = new Map();
 let compareEquityChart = null;
 
+function getResolvedTheme() {
+    if (window.AppTheme && typeof window.AppTheme.getResolvedTheme === 'function') {
+        return window.AppTheme.getResolvedTheme();
+    }
+    return document.documentElement.getAttribute('data-theme') || 'light';
+}
+
+function getComparePalette() {
+    const isDark = getResolvedTheme() === 'dark';
+    return isDark
+        ? ['#60a5fa', '#34d399', '#f87171', '#a78bfa', '#fbbf24', '#22d3ee', '#fb7185', '#4ade80', '#c4b5fd', '#38bdf8']
+        : ['#2563eb', '#059669', '#dc2626', '#7c3aed', '#d97706', '#0f766e', '#0891b2', '#4338ca', '#be123c', '#65a30d'];
+}
+
+function getChartToken(name) {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || '#94a3b8';
+}
+
 // --- 多 Agent Tab 切换逻辑 ---
 
 function switchAgentTab(agentName) {
@@ -102,7 +121,7 @@ async function loadCompareEquityChart() {
         data.series.forEach(s => (s.points || []).forEach(p => labelSet.add(p.date)));
         const labels = Array.from(labelSet).sort();
 
-        const palette = ['#2563eb', '#059669', '#dc2626', '#7c3aed', '#d97706', '#0f766e', '#0891b2', '#4338ca', '#be123c', '#65a30d'];
+        const palette = getComparePalette();
         const datasets = data.series.map((s, i) => {
             const map = new Map((s.points || []).map(p => [p.date, Number(p.equity)]));
             return {
@@ -126,8 +145,18 @@ async function loadCompareEquityChart() {
                 maintainAspectRatio: false,
                 interaction: { mode: 'index', intersect: false },
                 plugins: {
-                    legend: { position: 'bottom' },
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            color: getChartToken('--text-secondary')
+                        }
+                    },
                     tooltip: {
+                        backgroundColor: getChartToken('--surface-3'),
+                        borderColor: getChartToken('--border-soft'),
+                        borderWidth: 1,
+                        titleColor: getChartToken('--text-primary'),
+                        bodyColor: getChartToken('--text-secondary'),
                         callbacks: {
                             label: function(ctx) {
                                 const v = ctx.raw;
@@ -138,11 +167,21 @@ async function loadCompareEquityChart() {
                 },
                 scales: {
                     x: {
-                        ticks: { maxTicksLimit: 8 }
+                        ticks: {
+                            maxTicksLimit: 8,
+                            color: getChartToken('--text-muted')
+                        },
+                        grid: {
+                            color: getChartToken('--border-soft')
+                        }
                     },
                     y: {
                         ticks: {
+                            color: getChartToken('--text-muted'),
                             callback: function(value) { return Number(value).toFixed(0); }
+                        },
+                        grid: {
+                            color: getChartToken('--border-soft')
                         }
                     }
                 }
@@ -233,6 +272,12 @@ document.addEventListener('DOMContentLoaded', function() {
         observeMarkdown(target);
         renderMarkdown(false, target);
     }, true);
+
+    window.addEventListener('app-theme-change', () => {
+        if (document.getElementById('window-COMPARE') && !document.getElementById('window-COMPARE').classList.contains('hidden')) {
+            loadCompareEquityChart();
+        }
+    });
 });
 
 // --- UI 通用组件 ---

@@ -2,10 +2,10 @@
 
 {% block title %}Chat - Crypto Agent{% endblock %}
 
-{% block body_class %}h-screen overflow-hidden bg-slate-50{% endblock %}
+{% block body_class %}h-screen overflow-hidden{% endblock %}
 
 {% block head %}
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+    <link id="hljs-theme" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js" defer></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}">
@@ -68,7 +68,13 @@
                   <div id="chatSubHeader" class="text-[9px] md:text-[10px] text-slate-400 font-mono mt-0.5 truncate uppercase tracking-widest">Crypto Agent v1.0</div>
                 </div>
             </div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 items-center">
+                <button data-theme-toggle class="inline-flex px-3 py-2 rounded-xl border border-slate-200 bg-white/80 text-slate-600 text-xs font-bold hover:bg-slate-50"></button>
+                <select data-theme-mode-select class="hidden md:inline-flex px-2 py-2 rounded-xl border border-slate-200 bg-white/80 text-slate-600 text-xs font-bold">
+                  <option value="light">亮色</option>
+                  <option value="dark">暗色</option>
+                  <option value="auto">跟随</option>
+                </select>
                 <button onclick="clearCurrentChat()" class="toolbar-pill toolbar-pill-danger">
                   <svg class="toolbar-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                   <span class="toolbar-label">清空记录</span>
