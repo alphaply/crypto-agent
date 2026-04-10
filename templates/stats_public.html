@@ -53,9 +53,9 @@
                 </div>
             </div>
             <div class="flex items-center gap-3">
-                <button onclick="openPricingModal()" class="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-all shadow-sm">
-                    ⚙️ 计价配置
-                </button>
+                <a href="/admin" class="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-all shadow-sm">
+                    后台管理
+                </a>
                 <a href="/" class="px-4 py-2 text-xs font-bold text-white bg-slate-900 rounded-xl hover:bg-slate-800 transition-all shadow-md">
                     返回控制台
                 </a>
@@ -110,71 +110,14 @@
         </div>
     </main>
 
-    <div id="pricing-modal" class="fixed inset-0 z-50 hidden">
-        <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onclick="closePricingModal()"></div>
-        <div class="absolute inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl flex flex-col">
-            <div class="p-8 border-b flex justify-between items-center">
-                <h2 class="text-xl font-black text-slate-800">计价策略配置 (¥)</h2>
-                <button onclick="closePricingModal()" class="text-slate-400 text-2xl">&times;</button>
-            </div>
-            <div id="pricing-list" class="flex-grow overflow-y-auto p-8 space-y-6 mini-scroll"></div>
-            <div class="p-8 bg-slate-50 border-t">
-                <button onclick="saveAllPricing()" class="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg shadow-blue-200">保存配置并应用</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="auth-modal" class="fixed inset-0 z-[60] hidden">
-        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onclick="closeAuthModal()"></div>
-        <div class="absolute inset-0 flex items-center justify-center p-4">
-            <div class="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-[360px] overflow-hidden border border-slate-200">
-                <div class="p-8">
-                    <div class="text-center mb-8">
-                        <div class="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-100 text-2xl">
-                            🔐
-                        </div>
-                        <h3 class="text-xl font-black text-slate-900 uppercase tracking-tight">Admin Auth</h3>
-                        <p class="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">Access Protected Settings</p>
-                    </div>
-
-                    <div class="space-y-5">
-                        <div class="space-y-1.5">
-                            <label class="text-[9px] font-bold text-slate-400 uppercase ml-1">Password</label>
-                            <input type="password" id="auth-pass" class="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-3.5 outline-none focus:bg-white focus:border-blue-500 transition-all font-bold text-sm" placeholder="••••••••">
-                        </div>
-                        
-                        <div id="auth-captcha-container" class="space-y-1.5 hidden">
-                            <label class="text-[9px] font-bold text-slate-400 uppercase ml-1">Captcha</label>
-                            <div class="flex items-center gap-2">
-                                <input type="text" id="auth-captcha" class="flex-grow min-w-0 bg-slate-50 border-2 border-slate-100 rounded-2xl p-3.5 outline-none focus:bg-white focus:border-blue-500 transition-all font-black uppercase text-center text-sm" placeholder="验证码">
-                                <div class="w-28 h-[48px] flex-shrink-0 cursor-pointer captcha-container overflow-hidden rounded-xl border-2 border-slate-100 bg-slate-50" onclick="refreshAuthCaptcha()" title="点击刷新">
-                                    <img id="auth-captcha-img" class="w-full h-full object-cover" alt="验证码">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <button onclick="submitAuth()" class="w-full bg-slate-900 text-white py-4 rounded-2xl font-black mt-8 shadow-xl hover:bg-slate-800 transition-all active:scale-[0.98] text-sm uppercase tracking-widest">
-                        Verify & Enter
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script>
         let tokenChart = null;
-        let isAuthed = false;
-        let currentModels = [];
 
         async function initTokenStats() {
             try {
                 const res = await fetch(`/api/stats/tokens`);
                 const data = await res.json();
                 if (!data.success) return;
-
-                const pricing = data.pricing || {};
-                currentModels = data.models.map(m => m.model);
 
                 renderTokenChart(data.daily);
 
@@ -249,25 +192,6 @@
                     </div>
                 `).join('');
 
-                const pricingList = document.getElementById('pricing-list');
-                pricingList.innerHTML = currentModels.map(m => {
-                    const p = pricing[m] || {input_price_per_m: 0, output_price_per_m: 0};
-                    return `
-                        <div class="p-6 bg-slate-50 rounded-3xl space-y-4 border border-slate-100/50">
-                            <h4 class="text-xs font-black text-slate-800 uppercase tracking-tight ml-1">${m}</h4>
-                            <div class="grid grid-cols-2 gap-4">
-                                <div class="space-y-1.5">
-                                    <label class="text-[9px] font-bold text-slate-400 uppercase ml-1 block">Input / 1M (¥)</label>
-                                    <input type="number" step="0.001" value="${p.input_price_per_m}" id="price-in-${m}" class="w-full bg-white border-2 border-transparent rounded-2xl py-3 px-4 text-xs font-bold focus:border-blue-500 outline-none transition-all">
-                                </div>
-                                <div class="space-y-1.5">
-                                    <label class="text-[9px] font-bold text-slate-400 uppercase ml-1 block">Output / 1M (¥)</label>
-                                    <input type="number" step="0.001" value="${p.output_price_per_m}" id="price-out-${m}" class="w-full bg-white border-2 border-transparent rounded-2xl py-3 px-4 text-xs font-bold focus:border-blue-500 outline-none transition-all">
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
             } catch (e) { console.error(e); }
         }
 
@@ -302,68 +226,6 @@
                     }
                 }
             });
-        }
-
-        function openPricingModal() { if (!isAuthed) return openAuthModal(); document.getElementById('pricing-modal').classList.remove('hidden'); }
-        function closePricingModal() { document.getElementById('pricing-modal').classList.add('hidden'); }
-        function openAuthModal() { 
-            const captchaContainer = document.getElementById('auth-captcha-container');
-            captchaContainer.classList.add('hidden');
-            document.getElementById('auth-pass').value = '';
-            document.getElementById('auth-captcha').value = '';
-            document.getElementById('auth-modal').classList.remove('hidden'); 
-        }
-        function closeAuthModal() { document.getElementById('auth-modal').classList.add('hidden'); }
-
-        async function refreshAuthCaptcha() {
-            try {
-                const res = await fetch('/api/chat/captcha');
-                const data = await res.json();
-                if (data.success) {
-                    document.getElementById('auth-captcha-img').src = data.image;
-                    document.getElementById('auth-captcha').value = '';
-                }
-            } catch (e) { console.error('Captcha refresh error', e); }
-        }
-
-        async function submitAuth() {
-            const pwd = document.getElementById('auth-pass').value;
-            const captchaContainer = document.getElementById('auth-captcha-container');
-            const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
-            const captcha = document.getElementById('auth-captcha').value;
-            
-            if (!pwd) return alert('请输入密码');
-            if (isCaptchaVisible && !captcha) return alert('请输入验证码');
-            
-            try {
-                const res = await fetch('/api/chat/auth', { 
-                    method: 'POST', 
-                    headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({password: pwd, captcha: isCaptchaVisible ? captcha : ''}) 
-                });
-                const data = await res.json();
-                if (res.ok && data.success) { 
-                    isAuthed = true; 
-                    closeAuthModal(); 
-                    openPricingModal(); 
-                } else {
-                    if (data.need_captcha) {
-                        captchaContainer.classList.remove('hidden');
-                        refreshAuthCaptcha();
-                        document.getElementById('auth-captcha').value = '';
-                    }
-                    alert(data.message || '验证失败');
-                }
-            } catch (e) { alert('请求错误'); }
-        }
-
-        async function saveAllPricing() {
-            for (const m of currentModels) {
-                const inP = document.getElementById(`price-in-${m}`).value;
-                const outP = document.getElementById(`price-out-${m}`).value;
-                await fetch('/api/stats/pricing', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model: m, input_price: inP, output_price: outP}) });
-            }
-            closePricingModal(); initTokenStats();
         }
 
         initTokenStats();

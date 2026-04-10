@@ -2,6 +2,58 @@ let configs = [];
 let promptFiles = [];
 let currentPrompt = '';
 
+function buildConfigFromForm() {
+  const config_id = (document.getElementById('new-config-id')?.value || '').trim();
+  const symbol = (document.getElementById('new-config-symbol')?.value || '').trim().toUpperCase();
+  const mode = (document.getElementById('new-config-mode')?.value || 'STRATEGY').trim().toUpperCase();
+  const model = (document.getElementById('new-config-model')?.value || '').trim();
+  const runIntervalRaw = (document.getElementById('new-config-interval')?.value || '').trim();
+  const leverageRaw = (document.getElementById('new-config-leverage')?.value || '').trim();
+
+  if (!config_id || !symbol || !model) {
+    throw new Error('config_id / symbol / model 为必填项');
+  }
+  if (configs.some(item => item.config_id === config_id)) {
+    throw new Error(`config_id 已存在: ${config_id}`);
+  }
+
+  const item = {
+    config_id,
+    symbol,
+    mode,
+    model,
+    enabled: true,
+  };
+
+  if (mode === 'SPOT_DCA') {
+    item.dca_freq = '1d';
+    item.dca_time = '08:00';
+    item.dca_amount = 50;
+    item.initial_cost = 0;
+    item.initial_qty = 0;
+  } else {
+    const interval = Number(runIntervalRaw || (mode === 'REAL' ? 15 : 60));
+    item.run_interval = Number.isFinite(interval) && interval > 0 ? interval : (mode === 'REAL' ? 15 : 60);
+    const leverage = Number(leverageRaw || 1);
+    item.leverage = Number.isFinite(leverage) && leverage > 0 ? leverage : 1;
+  }
+
+  return item;
+}
+
+function appendConfigFromForm() {
+  try {
+    const item = buildConfigFromForm();
+    configs = [...configs, item];
+    renderConfigList();
+    const raw = document.getElementById('config-json');
+    if (raw) raw.value = JSON.stringify(configs, null, 2);
+    toast(`已追加配置: ${item.config_id}`);
+  } catch (error) {
+    toast(error.message || '新增配置失败', 'err');
+  }
+}
+
 function toast(message, type = 'ok') {
   const box = document.getElementById('admin-toast');
   if (!box) {
@@ -250,5 +302,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (document.getElementById('config-list')) {
     await loadConfigs();
     await loadPrompts();
+    window.appendConfigFromForm = appendConfigFromForm;
   }
 });

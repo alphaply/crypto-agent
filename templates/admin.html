@@ -34,6 +34,25 @@
         <h3 class="text-lg font-bold text-slate-900">Config ID 管理</h3>
         <button onclick="loadConfigs()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
       </div>
+      <div class="mb-4 p-3 rounded-xl border border-slate-200 bg-slate-50/70">
+        <div class="text-xs font-bold text-slate-700 mb-2">辅助新增 Config</div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <input id="new-config-id" placeholder="config_id (如 btc_strategy_1)" class="border border-slate-200 rounded-lg p-2 text-xs">
+          <input id="new-config-symbol" placeholder="symbol (如 BTC/USDT)" class="border border-slate-200 rounded-lg p-2 text-xs">
+          <select id="new-config-mode" class="border border-slate-200 rounded-lg p-2 text-xs">
+            <option value="STRATEGY">STRATEGY</option>
+            <option value="REAL">REAL</option>
+            <option value="SPOT_DCA">SPOT_DCA</option>
+          </select>
+          <input id="new-config-model" placeholder="model (如 gemini-2.5-pro)" class="border border-slate-200 rounded-lg p-2 text-xs">
+          <input id="new-config-interval" placeholder="run_interval(分钟)" type="number" min="1" class="border border-slate-200 rounded-lg p-2 text-xs">
+          <input id="new-config-leverage" placeholder="leverage (默认1)" type="number" min="1" class="border border-slate-200 rounded-lg p-2 text-xs">
+        </div>
+        <div class="mt-2 flex gap-2">
+          <button onclick="appendConfigFromForm()" class="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700">追加到 JSON</button>
+          <button onclick="saveRawConfigs()" class="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold hover:bg-slate-100">追加并保存</button>
+        </div>
+      </div>
       <div id="config-list" class="space-y-2 max-h-[360px] overflow-y-auto"></div>
     </div>
 

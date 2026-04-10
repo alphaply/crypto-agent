@@ -944,6 +944,50 @@ def soft_delete_config_runtime_data(config_id: str):
         }
 
 
+def purge_config_all_data(config_id: str):
+    """彻底删除指定 config_id 的历史与运行数据，避免历史页残留。"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+
+        cleanup = {
+            "chat_sessions_deleted": c.execute(
+                "DELETE FROM chat_sessions WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "mock_accounts_deleted": c.execute(
+                "DELETE FROM mock_accounts WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "mock_balance_history_deleted": c.execute(
+                "DELETE FROM mock_balance_history WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "mock_orders_deleted": c.execute(
+                "DELETE FROM mock_orders WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "orders_deleted": c.execute(
+                "DELETE FROM orders WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "summaries_deleted": c.execute(
+                "DELETE FROM summaries WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "token_usage_deleted": c.execute(
+                "DELETE FROM token_usage WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "daily_summaries_deleted": c.execute(
+                "DELETE FROM daily_summaries WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+        }
+
+        conn.commit()
+        return cleanup
+
+
 if __name__ == "__main__":
     init_db()
     logger.info("Database initialized.")

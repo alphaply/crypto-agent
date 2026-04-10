@@ -98,6 +98,98 @@
 
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
+        {% if current_agent == 'ALL' and history_compare_series and history_compare_series|length > 0 %}
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
+            <div class="flex flex-col gap-3 sm:gap-4 mb-4 sm:mb-5">
+                <div>
+                    <h2 class="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <span class="text-lg sm:text-xl">📉</span> 多 Config 资金曲线 (ALL)
+                    </h2>
+                    <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 sm:mt-1">已自动排除 SPOT_DCA，仅展示可比较的策略/实盘净值曲线。</p>
+                </div>
+                <div id="history-compare-legend" class="flex flex-wrap gap-2"></div>
+            </div>
+            <div class="chart-container">
+                <canvas id="historyCompareChart"></canvas>
+            </div>
+            <script>
+                (function() {
+                    const rawSeries = {{ history_compare_series|tojson|safe }} || [];
+                    if (!rawSeries.length) return;
+
+                    const labelsSet = new Set();
+                    rawSeries.forEach(series => (series.points || []).forEach(point => labelsSet.add(point.date)));
+                    const labels = Array.from(labelsSet).sort();
+                    const palette = ['#2563eb', '#059669', '#dc2626', '#d97706', '#7c3aed', '#0f766e', '#0891b2', '#be123c'];
+
+                    const datasets = rawSeries.map((series, idx) => {
+                        const m = new Map((series.points || []).map(point => [point.date, Number(point.equity)]));
+                        return {
+                            label: series.label || series.config_id,
+                            data: labels.map(day => (m.has(day) ? m.get(day) : null)),
+                            borderColor: palette[idx % palette.length],
+                            backgroundColor: palette[idx % palette.length],
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            spanGaps: true,
+                            tension: 0.2,
+                            hidden: false,
+                        };
+                    });
+
+                    const ctx = document.getElementById('historyCompareChart').getContext('2d');
+                    const chart = new Chart(ctx, {
+                        type: 'line',
+                        data: { labels, datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            const val = context.raw;
+                                            return `${context.dataset.label}: ${val == null ? '-' : Number(val).toFixed(2)}`;
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: { ticks: { maxTicksLimit: 8 } },
+                                y: {
+                                    ticks: {
+                                        callback: function(v) { return Number(v).toFixed(0); }
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    const legend = document.getElementById('history-compare-legend');
+                    if (!legend) return;
+                    legend.innerHTML = datasets.map((ds, idx) => `
+                        <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 cursor-pointer">
+                            <input type="checkbox" data-ds-index="${idx}" checked class="history-ds-toggle w-3.5 h-3.5">
+                            <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${ds.borderColor}"></span>
+                            <span>${ds.label}</span>
+                        </label>
+                    `).join('');
+
+                    legend.querySelectorAll('.history-ds-toggle').forEach(box => {
+                        box.addEventListener('change', function() {
+                            const dsIndex = Number(this.getAttribute('data-ds-index'));
+                            if (Number.isNaN(dsIndex)) return;
+                            chart.setDatasetVisibility(dsIndex, this.checked);
+                            chart.update();
+                        });
+                    });
+                })();
+            </script>
+        </div>
+        {% endif %}
+
         {% if current_agent != 'ALL' and mock_acc and agent_mode == 'STRATEGY' %}
         <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
             <div class="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center mb-4 sm:mb-6">
@@ -302,14 +394,7 @@
             <div class="relative bg-white rounded-xl shadow-2xl w-full max-w-sm mx-3 sm:mx-0 p-4 sm:p-6 border border-gray-200">
                 <h3 class="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">📊 生成每日总结</h3>
                 <p id="trigger-agent-text" class="text-sm font-bold text-blue-600 mb-4"></p>
-                <input type="password" id="trigger-pass" class="w-full border rounded-lg p-3 mb-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="请输入管理员密码...">
-                
-                <div id="trigger-captcha-container" class="flex items-center gap-3 mb-4 hidden">
-                    <div class="bg-gray-100 rounded-lg overflow-hidden cursor-pointer flex-shrink-0" onclick="refreshTriggerCaptcha()" title="点击刷新">
-                        <img id="trigger-captcha-img" class="w-[120px] h-[40px] block" alt="验证码">
-                    </div>
-                    <input type="text" id="trigger-captcha" class="flex-1 min-w-0 border rounded-lg p-2 h-[40px] outline-none focus:ring-2 focus:ring-blue-500 text-center font-bold uppercase" placeholder="验证码">
-                </div>
+                <p class="text-xs text-gray-500 mb-4">使用统一后台会话执行，无需重复输入密码。</p>
 
                 <div class="flex gap-3 mt-2">
                     <button onclick="submitManualSummary()" id="trigger-submit-btn" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认生成</button>
@@ -344,16 +429,6 @@
                 }, 3000);
             }
 
-            async function refreshTriggerCaptcha() {
-                try {
-                    const resp = await fetch('/api/chat/captcha');
-                    const data = await resp.json();
-                    if (data.success) {
-                        document.getElementById('trigger-captcha-img').src = data.image;
-                    }
-                } catch (e) { console.error(e); }
-            }
-
             function triggerManualSummary() {
                 const agent = "{{ current_agent }}";
                 if (agent === 'ALL') {
@@ -363,10 +438,6 @@
                 currentTriggerAgent = agent;
                 document.getElementById('trigger-agent-text').innerText = `目标 Agent: ${agent}`;
                 document.getElementById('trigger-summary-modal').classList.remove('hidden');
-                document.getElementById('trigger-pass').value = '';
-                document.getElementById('trigger-captcha').value = '';
-                refreshTriggerCaptcha();
-                setTimeout(() => document.getElementById('trigger-pass').focus(), 100);
             }
 
             function closeTriggerModal() {
@@ -374,14 +445,6 @@
             }
 
             async function submitManualSummary() {
-                const password = document.getElementById('trigger-pass').value;
-                const captchaContainer = document.getElementById('trigger-captcha-container');
-                const isCaptchaVisible = !captchaContainer.classList.contains('hidden');
-                const captcha = document.getElementById('trigger-captcha').value;
-                
-                if (!password) return showHistoryToast('请输入密码', 'error');
-                if (isCaptchaVisible && !captcha) return showHistoryToast('请输入验证码', 'error');
-                
                 const yesterday = new Date();
                 yesterday.setDate(yesterday.getDate() - 1);
                 const dateStr = yesterday.toISOString().split('T')[0];
@@ -395,8 +458,6 @@
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            password: password,
-                            captcha: isCaptchaVisible ? captcha : '',
                             config_id: currentTriggerAgent,
                             date: dateStr
                         })
@@ -405,14 +466,6 @@
                     
                     btn.innerText = '确认生成';
                     btn.disabled = false;
-
-                    if (data.need_captcha) {
-                        captchaContainer.classList.remove('hidden');
-                        refreshTriggerCaptcha();
-                        document.getElementById('trigger-captcha').value = '';
-                    } else {
-                        captchaContainer.classList.add('hidden');
-                    }
 
                     if (data.success) {
                         closeTriggerModal();
@@ -450,7 +503,7 @@
 
             {% if current_agent != 'ALL' %}
             <button onclick="triggerManualSummary()" class="w-full sm:w-auto inline-flex items-center justify-center px-5 py-2.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-100 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95">
-                <span class="mr-2">📝</span> 生成昨日汇总 (需密码)
+                <span class="mr-2">📝</span> 生成昨日汇总
             </button>
             {% endif %}
         </div>

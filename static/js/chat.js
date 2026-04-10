@@ -9,6 +9,8 @@ let mobileSidebarOpen = false;
 let approvalLoading = false;
 let autoScrollEnabled = true;
 let pendingStreamUpdate = false;
+const streamBuffers = new Map();
+let streamFlushTimer = null;
 const AUTO_SCROLL_THRESHOLD = 56;
 
 function scheduleUiTask(callback) {
@@ -392,7 +394,7 @@ function queueStreamingUpdate() {
   scheduleUiTask(flushStreamingUpdate);
 }
 
-function appendStreamDelta(streamIdx, delta) {
+function applyBufferedDelta(streamIdx, delta) {
   const message = currentMessages[streamIdx];
   if (!message) return;
 
@@ -429,7 +431,49 @@ function appendStreamDelta(streamIdx, delta) {
     });
   }
   message.__streaming = true;
+}
+
+function flushAllStreamBuffers() {
+  if (streamFlushTimer) {
+    window.clearInterval(streamFlushTimer);
+    streamFlushTimer = null;
+  }
+  if (!streamBuffers.size) return;
+
+  streamBuffers.forEach((buffer, streamIdx) => {
+    applyBufferedDelta(streamIdx, buffer);
+  });
+  streamBuffers.clear();
   queueStreamingUpdate();
+}
+
+function ensureStreamFlushTimer() {
+  if (streamFlushTimer) return;
+  streamFlushTimer = window.setInterval(() => {
+    if (!streamBuffers.size) {
+      window.clearInterval(streamFlushTimer);
+      streamFlushTimer = null;
+      return;
+    }
+
+    streamBuffers.forEach((buffer, streamIdx) => {
+      applyBufferedDelta(streamIdx, buffer);
+    });
+    streamBuffers.clear();
+    queueStreamingUpdate();
+  }, 36);
+}
+
+function appendStreamDelta(streamIdx, delta) {
+  const message = currentMessages[streamIdx];
+  if (!message) return;
+
+  const prev = streamBuffers.get(streamIdx) || { content: '', reasoning: '', tool_calls: [] };
+  if (delta.content) prev.content += delta.content;
+  if (delta.reasoning) prev.reasoning += delta.reasoning;
+  if (delta.tool_calls && delta.tool_calls.length) prev.tool_calls.push(...delta.tool_calls);
+  streamBuffers.set(streamIdx, prev);
+  ensureStreamFlushTimer();
 }
 
 function showApproval() {
@@ -581,6 +625,7 @@ async function sendMessage() {
     } else if (payload.type === 'tool_calls') {
       appendStreamDelta(streamIdx, { tool_calls: payload.tool_calls });
     } else if (payload.type === 'done') {
+      flushAllStreamBuffers();
       currentMessages = normalizeMessages(payload.messages || []);
       pendingApproval = payload.pending_approval;
       renderMessages(currentMessages);
@@ -657,6 +702,7 @@ async function respondApproval(approved) {
         if (payload.type === 'tool_calls') appendStreamDelta(lastAiIdx, { tool_calls: payload.tool_calls });
       }
     } else if (payload.type === 'done') {
+      flushAllStreamBuffers();
       currentMessages = normalizeMessages(payload.messages || []);
       pendingApproval = payload.pending_approval;
       renderMessages(currentMessages);

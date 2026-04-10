@@ -285,7 +285,7 @@ async function changeOrderPage(configId, delta) {
     container.style.opacity = '0.5';
 
     try {
-        const resp = await fetch(`/api/orders?config_id=${configId}&page=${newPage}&per_page=20`);
+        const resp = await fetch(`/api/orders?config_id=${configId}&page=${newPage}&per_page=10`);
         const data = await resp.json();
         
         if (data.success && data.orders.length > 0) {

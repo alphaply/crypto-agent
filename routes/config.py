@@ -6,7 +6,7 @@ from routes.utils import (
     global_config, _require_chat_auth_api, logger
 )
 from datetime import datetime
-from database import get_config_dependency_counts, soft_delete_config_runtime_data
+from database import get_config_dependency_counts, purge_config_all_data
 
 
 def _write_symbol_configs_to_env(new_configs):
@@ -194,14 +194,14 @@ def delete_config(config_id):
             return jsonify({"success": False, "message": f"配置不存在: {config_id}"}), 404
 
         dependencies_before = get_config_dependency_counts(config_id)
-        cleanup_result = soft_delete_config_runtime_data(config_id)
+        cleanup_result = purge_config_all_data(config_id)
 
         _write_symbol_configs_to_env(remaining)
         global_config.reload_config()
 
         return jsonify({
             "success": True,
-            "message": f"配置 {config_id} 已删除（软删除）",
+            "message": f"配置 {config_id} 已删除（已清理关联历史数据）",
             "removed_config": {
                 "config_id": target.get('config_id'),
                 "symbol": target.get('symbol'),

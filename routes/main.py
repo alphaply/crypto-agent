@@ -267,8 +267,8 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict['leverage'] = global_config.get_leverage(config_id)
                 summary_dict['display_name'] = f"{model_name} ({mode})"
                 
-                # 默认获取第一页订单
-                orders, total = get_paginated_orders(config_id, page=1, per_page=20)
+                # 默认获取第一页订单（首页决策流水固定 10 条）
+                orders, total = get_paginated_orders(config_id, page=1, per_page=10)
                 summary_dict['all_orders'] = orders
                 summary_dict['order_total'] = total
                 summary_dict['order_page'] = 1
@@ -326,10 +326,18 @@ def history_view():
     per_page = 20
 
     try:
+        symbol_configs = [
+            cfg for cfg in global_config.get_all_symbol_configs()
+            if cfg.get('symbol') == symbol and cfg.get('config_id')
+        ]
+        config_map = {cfg.get('config_id'): cfg for cfg in symbol_configs}
+        if agent_filter != 'ALL' and agent_filter not in config_map:
+            agent_filter = 'ALL'
+
         summaries = get_paginated_summaries(symbol, page, per_page, config_id=agent_filter)
         total_count = get_summary_count(symbol, config_id=agent_filter)
         total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
-        active_agents = get_active_agents(symbol)
+        active_agents = [aid for aid in get_active_agents(symbol) if aid in config_map]
         pnl_stats = get_history_pnl_stats(symbol, config_id=agent_filter)
         
         # 获取模拟账本信息与资金曲线
@@ -381,6 +389,35 @@ def history_view():
         if agent_mode == 'SPOT_DCA' and agent_filter != 'ALL':
             dca_stats = calculate_dca_stats(agent_filter)
 
+        history_compare_series = []
+        if agent_filter == 'ALL':
+            with get_db_conn() as conn:
+                for cfg in symbol_configs:
+                    config_id = cfg.get('config_id')
+                    mode = str(cfg.get('mode', 'STRATEGY')).upper()
+                    if not config_id or mode == 'SPOT_DCA':
+                        continue
+
+                    if mode == 'REAL':
+                        rows = conn.execute("""
+                            SELECT day, total_equity FROM (
+                                SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
+                                       row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
+                                FROM balance_history WHERE symbol = ?
+                            ) WHERE rn = 1 ORDER BY day ASC
+                        """, (symbol,)).fetchall()
+                        points = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
+                    else:
+                        points = get_mock_equity_history(config_id)
+
+                    if points:
+                        history_compare_series.append({
+                            "config_id": config_id,
+                            "mode": mode,
+                            "label": f"{config_id} ({mode})",
+                            "points": points,
+                        })
+
     except Exception as e:
         logger.error(f"Failed to load history page: symbol={symbol}, agent={agent_filter}, page={page}, error={e}")
         summaries = []
@@ -394,6 +431,7 @@ def history_view():
         real_chart_data = []
         real_balance = None
         dca_stats = None
+        history_compare_series = []
 
     return render_template(
         'history.html',
@@ -410,7 +448,8 @@ def history_view():
         agent_mode=agent_mode,
         real_chart_data=real_chart_data,
         real_balance=real_balance,
-        dca_stats=dca_stats
+        dca_stats=dca_stats,
+        history_compare_series=history_compare_series,
     )
 @main_bp.route('/chat')
 def chat_view():

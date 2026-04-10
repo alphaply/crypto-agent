@@ -328,6 +328,8 @@ body {
   line-height: 1.6;
   word-wrap: break-word;
   overflow-wrap: break-word;
+  transition: opacity 0.14s ease;
+  animation: stream-fade 0.18s ease;
 }
 .md-content p { margin-bottom: 0.75rem; }
 .md-content p:last-child { margin-bottom: 0; }
@@ -358,6 +360,11 @@ body {
 }
 .md-content ul { list-style-type: disc; }
 .md-content ol { list-style-type: decimal; }
+
+@keyframes stream-fade {
+  from { opacity: 0.78; }
+  to { opacity: 1; }
+}
 .md-content table {
   width: 100%;
   border-collapse: collapse;
