@@ -92,8 +92,11 @@ def save_pricing():
     
     data = request.json
     model = data.get('model')
-    input_p = float(data.get('input_price', 0))
-    output_p = float(data.get('output_price', 0))
+    try:
+        input_p = float(data.get('input_price', 0))
+        output_p = float(data.get('output_price', 0))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "价格参数格式错误"}), 400
     
     if not model:
         return jsonify({"success": False, "message": "Missing model name"})
@@ -101,6 +104,29 @@ def save_pricing():
     try:
         update_model_pricing(model, input_p, output_p)
         return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+
+@stats_bp.route('/api/stats/pricing', methods=['GET'])
+def list_pricing():
+    """获取模型计价列表 (需要认证)"""
+    auth_err = _require_chat_auth_api()
+    if auth_err:
+        return auth_err
+
+    try:
+        pricing = get_all_pricing()
+        items = []
+        for model, row in pricing.items():
+            items.append({
+                "model": model,
+                "input_price_per_m": row.get('input_price_per_m', 0),
+                "output_price_per_m": row.get('output_price_per_m', 0),
+                "currency": row.get('currency', 'USD'),
+            })
+        items.sort(key=lambda x: x['model'])
+        return jsonify({"success": True, "pricing": items})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
 

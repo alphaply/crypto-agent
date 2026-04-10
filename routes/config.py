@@ -27,6 +27,7 @@ def _write_symbol_configs_to_env(new_configs):
 config_bp = Blueprint('config', __name__)
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agent", "prompts")
+BLOCKED_PROMPT_FILES = {"multi_agent_screener.txt"}
 
 @config_bp.route('/api/config/raw', methods=['GET'])
 def get_raw_config():
@@ -102,7 +103,10 @@ def list_prompts():
     if auth_err: return auth_err
     try:
         if not os.path.exists(PROMPT_DIR): os.makedirs(PROMPT_DIR)
-        files = [f for f in os.listdir(PROMPT_DIR) if f.endswith('.txt')]
+        files = [
+            f for f in os.listdir(PROMPT_DIR)
+            if f.endswith('.txt') and f not in BLOCKED_PROMPT_FILES
+        ]
         return jsonify({"success": True, "files": files})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -113,6 +117,8 @@ def read_prompt():
     if auth_err: return auth_err
     name = request.args.get('name')
     if not name or '..' in name: return jsonify({"success": False, "message": "无效文件名"}), 400
+    if name in BLOCKED_PROMPT_FILES:
+        return jsonify({"success": False, "message": "该模板已下线"}), 403
     try:
         path = os.path.join(PROMPT_DIR, name)
         with open(path, 'r', encoding='utf-8') as f:
@@ -127,9 +133,11 @@ def save_prompt():
     if auth_err: return auth_err
     data = request.json
     name = data.get('name')
-    content = data.get('content')
+    content = data.get('content') or ''
     if not name or '..' in name or not name.endswith('.txt'):
         return jsonify({"success": False, "message": "格式非法"}), 400
+    if name in BLOCKED_PROMPT_FILES:
+        return jsonify({"success": False, "message": "该模板已下线"}), 403
     try:
         path = os.path.join(PROMPT_DIR, name)
         with open(path, 'w', encoding='utf-8') as f:
@@ -143,6 +151,8 @@ def delete_prompt():
     auth_err = _require_chat_auth_api()
     if auth_err: return auth_err
     name = request.json.get('name')
+    if name in BLOCKED_PROMPT_FILES:
+        return jsonify({"success": False, "message": "该模板已下线"}), 403
     if not name or name in ['real.txt', 'strategy.txt']:
         return jsonify({"success": False, "message": "受保护文件"}), 400
     try:
