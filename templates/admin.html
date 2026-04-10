@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}后台管理 - Crypto Agent{% endblock %}
+
+{% block content %}
+<main class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+  {% if not authed %}
+  <section class="max-w-md mx-auto bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+    <h2 class="text-xl font-bold text-slate-900">后台登录</h2>
+    <p class="text-sm text-slate-500 mt-1">登录后可统一执行所有后台管理操作。</p>
+    <input id="admin-password" type="password" class="mt-4 w-full border border-slate-200 rounded-xl p-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="管理员密码">
+    <div id="captcha-wrap" class="mt-3 hidden flex items-center gap-3">
+      <img id="captcha-img" class="w-[120px] h-[40px] bg-slate-100 rounded-lg cursor-pointer" onclick="refreshCaptcha()" alt="验证码">
+      <input id="captcha-input" type="text" class="flex-1 border border-slate-200 rounded-xl p-2 uppercase text-center" placeholder="验证码">
+    </div>
+    <button onclick="loginAdmin()" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 font-bold">登录后台</button>
+    <p id="login-error" class="mt-3 text-sm text-red-500"></p>
+  </section>
+  {% else %}
+  <header class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div>
+      <h1 class="text-xl sm:text-2xl font-black text-slate-900">统一后台管理</h1>
+      <p class="text-sm text-slate-500">配置管理、Config ID 删除、提示词维护、价格配置与历史维护。</p>
+    </div>
+    <div class="flex gap-2">
+      <a href="/" class="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-bold">返回控制台</a>
+      <button onclick="logoutAdmin()" class="px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-700 text-sm font-bold">退出后台</button>
+    </div>
+  </header>
+
+  <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-lg font-bold text-slate-900">Config ID 管理</h3>
+        <button onclick="loadConfigs()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
+      </div>
+      <div id="config-list" class="space-y-2 max-h-[360px] overflow-y-auto"></div>
+    </div>
+
+    <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-lg font-bold text-slate-900">配置 JSON 编辑</h3>
+        <div class="flex gap-2">
+          <a href="/api/config/export" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">导出</a>
+          <button onclick="saveRawConfigs()" class="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700">保存</button>
+        </div>
+      </div>
+      <textarea id="config-json" class="w-full h-[300px] border border-slate-200 rounded-xl p-3 font-mono text-xs"></textarea>
+      <p class="text-xs text-slate-500 mt-2">删除 Config ID 推荐使用左侧删除按钮，JSON 编辑适合批量调整。</p>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-lg font-bold text-slate-900">Prompt 模板管理</h3>
+        <button onclick="loadPrompts()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-3">
+        <div>
+          <div id="prompt-list" class="space-y-1 max-h-[240px] overflow-y-auto"></div>
+          <div class="mt-2 flex gap-2">
+            <input id="new-prompt-name" placeholder="new_prompt.txt" class="flex-1 border border-slate-200 rounded-lg p-2 text-xs">
+            <button onclick="createPrompt()" class="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs">新建</button>
+          </div>
+        </div>
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <div id="current-prompt" class="text-sm font-bold text-slate-700">未选择</div>
+            <div class="flex gap-2">
+              <button onclick="savePrompt()" class="text-xs px-2 py-1 rounded-lg bg-blue-600 text-white">保存</button>
+              <button onclick="deletePrompt()" class="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-600">删除</button>
+            </div>
+          </div>
+          <textarea id="prompt-editor" class="w-full h-[220px] border border-slate-200 rounded-xl p-3 font-mono text-xs"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="space-y-6">
+      <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+        <h3 class="text-lg font-bold text-slate-900 mb-3">模型定价维护</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <input id="pricing-model" placeholder="model name" class="border border-slate-200 rounded-lg p-2 text-sm">
+          <input id="pricing-input" placeholder="input price / M" class="border border-slate-200 rounded-lg p-2 text-sm" type="number" step="0.000001">
+          <input id="pricing-output" placeholder="output price / M" class="border border-slate-200 rounded-lg p-2 text-sm" type="number" step="0.000001">
+        </div>
+        <button onclick="savePricing()" class="mt-3 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-bold">保存定价</button>
+      </div>
+
+      <div id="danger-zone" class="bg-white border border-red-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+        <h3 class="text-lg font-bold text-red-700 mb-3">危险操作</h3>
+        <p class="text-sm text-slate-500">后台已登录后可直接执行，不再单独输入密码。</p>
+        <div class="mt-3 flex flex-col sm:flex-row gap-2">
+          <select id="clean-symbol" class="border border-slate-200 rounded-lg p-2 text-sm flex-1">
+            {% for sym in symbols %}
+            <option value="{{ sym }}">{{ sym }}</option>
+            {% endfor %}
+          </select>
+          <button onclick="cleanHistory()" class="px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-bold">清空该币种历史</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div id="admin-toast" class="fixed right-4 top-4 z-[200] space-y-2"></div>
+  {% endif %}
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+{% endblock %}

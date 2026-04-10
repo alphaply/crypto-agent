@@ -7,7 +7,7 @@ import time
 from flask import Blueprint, render_template, request, jsonify, session
 from routes.utils import (
     DB_NAME, global_config, get_scheduler_status, get_symbol_specific_status,
-    _chat_authed, logger, TZ_CN
+    _chat_authed, _require_admin_auth_api, logger, TZ_CN
 )
 from database import (
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
@@ -416,17 +416,35 @@ def history_view():
 def chat_view():
     return render_template('chat.html', authed=_chat_authed())
 
+
+@main_bp.route('/admin')
+def admin_view():
+    configs = global_config.get_all_symbol_configs()
+    seen = set()
+    symbols = []
+    for c in configs:
+        s = c.get('symbol')
+        if s and s not in seen:
+            symbols.append(s)
+            seen.add(s)
+    return render_template('admin.html', authed=_chat_authed(), symbols=symbols)
+
+
+@main_bp.route('/api/admin/logout', methods=['POST'])
+def admin_logout():
+    session.pop('chat_authed', None)
+    session.pop('admin_authed', None)
+    return jsonify({"success": True})
+
 @main_bp.route('/api/generate_daily_summary', methods=['POST'])
 def manual_generate_summary():
+    auth_err = _require_admin_auth_api()
+    if auth_err:
+        return auth_err
+
     data = request.json
-    password = data.get('password')
-    captcha = data.get('captcha', '').upper()
     config_id = data.get('config_id')
     date_str = data.get('date') # YYYY-MM-DD
-    
-    ok, msg, need_captcha, status_code = verify_admin_action(password, captcha)
-    if not ok:
-        return jsonify({"success": False, "error": msg, "need_captcha": need_captcha}), status_code
         
     if not config_id or not date_str:
         return jsonify({"success": False, "error": "Missing params", "need_captcha": False}), 400
@@ -436,14 +454,12 @@ def manual_generate_summary():
 
 @main_bp.route('/api/clean_history', methods=['POST'])
 def clean_history():
-    data = request.json
-    password = data.get('password')
-    captcha = data.get('captcha', '').upper()
-    symbol = data.get('symbol')
+    auth_err = _require_admin_auth_api()
+    if auth_err:
+        return auth_err
 
-    ok, msg, need_captcha, status_code = verify_admin_action(password, captcha)
-    if not ok:
-        return jsonify({"success": False, "message": msg, "need_captcha": need_captcha}), status_code
+    data = request.json
+    symbol = data.get('symbol')
 
     if not symbol:
         return jsonify({"success": False, "message": "缺少币种参数", "need_captcha": False}), 400
@@ -455,16 +471,14 @@ def clean_history():
 
 @main_bp.route('/api/daily_summary/update', methods=['POST'])
 def update_daily_summary_api():
+    auth_err = _require_admin_auth_api()
+    if auth_err:
+        return auth_err
+
     data = request.json
-    password = data.get('password')
-    captcha = data.get('captcha', '').upper()
     date_str = data.get('date')
     config_id = data.get('config_id')
     summary_content = data.get('summary')
-
-    ok, msg, need_captcha, status_code = verify_admin_action(password, captcha)
-    if not ok:
-        return jsonify({"success": False, "message": msg, "need_captcha": need_captcha}), status_code
 
     if not date_str or not config_id or not summary_content:
         return jsonify({"success": False, "message": "参数不完整", "need_captcha": False}), 400

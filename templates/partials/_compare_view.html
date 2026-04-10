@@ -1,5 +1,32 @@
 <!-- 📊 对比视图 (交互滑动版 V4) component -->
 <div id="window-COMPARE" class="hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
+    <div class="bg-white border border-slate-200 rounded-3xl p-4 sm:p-6 mb-6 shadow-sm">
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+            <div>
+                <h3 class="text-lg font-black text-slate-900">多 Config 净值对比</h3>
+                <p class="text-xs text-slate-500">支持同时展示多个 Config ID 的净值曲线（同图叠加）。</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <button onclick="toggleCompareAll(true)" class="px-3 py-1.5 text-xs rounded-lg border border-slate-200 hover:bg-slate-50">全选</button>
+                <button onclick="toggleCompareAll(false)" class="px-3 py-1.5 text-xs rounded-lg border border-slate-200 hover:bg-slate-50">清空</button>
+                <button onclick="loadCompareEquityChart()" class="px-3 py-1.5 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700">刷新图表</button>
+            </div>
+        </div>
+
+        <div class="flex flex-wrap gap-2 mb-4">
+            {% for summary in agent_summaries %}
+            <label class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-slate-200 text-xs text-slate-700">
+                <input type="checkbox" class="compare-config-check" value="{{ summary.config_id }}" checked onchange="loadCompareEquityChart()">
+                <span class="font-mono">{{ summary.config_id }}</span>
+            </label>
+            {% endfor %}
+        </div>
+
+        <div class="h-[340px] sm:h-[420px]">
+            <canvas id="compare-equity-chart"></canvas>
+        </div>
+    </div>
+
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
         {% for summary in agent_summaries %}
         <div class="bg-white border border-gray-200 rounded-3xl shadow-lg flex flex-col h-[700px] overflow-hidden border-t-4 

@@ -21,13 +21,19 @@ TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
 def _chat_password():
     return os.getenv("CHAT_PASSWORD") or os.getenv("ADMIN_PASSWORD")
 
+def _admin_authed() -> bool:
+    return bool(session.get("admin_authed", False) or session.get("chat_authed", False))
+
 def _chat_authed() -> bool:
-    return bool(session.get("chat_authed", False))
+    return _admin_authed()
 
 def _require_chat_auth_api():
-    if not _chat_authed():
+    if not _admin_authed():
         return jsonify({"success": False, "message": "未授权，请先输入密码"}), 401
     return None
+
+def _require_admin_auth_api():
+    return _require_chat_auth_api()
 
 # --- 消息序列化辅助 ---
 

@@ -6,6 +6,23 @@ from routes.utils import (
     global_config, _require_chat_auth_api, logger
 )
 from datetime import datetime
+from database import get_config_dependency_counts, soft_delete_config_runtime_data
+
+
+def _write_symbol_configs_to_env(new_configs):
+    with open('.env', 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    val = json.dumps(new_configs, ensure_ascii=False)
+    pattern = re.compile(r'^SYMBOL_CONFIGS=.*?(?=\n\w+=|\n#|$)', re.MULTILINE | re.DOTALL)
+    new_entry = f"SYMBOL_CONFIGS='{val}'"
+    if pattern.search(content):
+        content = pattern.sub(new_entry, content)
+    else:
+        content += f"\n{new_entry}\n"
+
+    with open('.env', 'w', encoding='utf-8') as f:
+        f.write(content.strip() + '\n')
 
 config_bp = Blueprint('config', __name__)
 
@@ -134,3 +151,65 @@ def delete_prompt():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
+
+
+@config_bp.route('/api/config/dependencies/<config_id>', methods=['GET'])
+def config_dependencies(config_id):
+    auth_err = _require_chat_auth_api()
+    if auth_err:
+        return auth_err
+    try:
+        cfg = global_config.get_config_by_id(config_id)
+        if not cfg:
+            return jsonify({"success": False, "message": f"配置不存在: {config_id}"}), 404
+
+        counts = get_config_dependency_counts(config_id)
+        return jsonify({
+            "success": True,
+            "config_id": config_id,
+            "counts": counts,
+        })
+    except Exception as e:
+        logger.error(f"❌ 获取配置依赖失败: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@config_bp.route('/api/config/delete/<config_id>', methods=['POST'])
+def delete_config(config_id):
+    auth_err = _require_chat_auth_api()
+    if auth_err:
+        return auth_err
+
+    try:
+        configs = global_config.get_all_symbol_configs()
+        target = None
+        remaining = []
+        for cfg in configs:
+            if cfg.get('config_id') == config_id:
+                target = cfg
+            else:
+                remaining.append(cfg)
+
+        if not target:
+            return jsonify({"success": False, "message": f"配置不存在: {config_id}"}), 404
+
+        dependencies_before = get_config_dependency_counts(config_id)
+        cleanup_result = soft_delete_config_runtime_data(config_id)
+
+        _write_symbol_configs_to_env(remaining)
+        global_config.reload_config()
+
+        return jsonify({
+            "success": True,
+            "message": f"配置 {config_id} 已删除（软删除）",
+            "removed_config": {
+                "config_id": target.get('config_id'),
+                "symbol": target.get('symbol'),
+                "mode": target.get('mode'),
+            },
+            "dependencies_before": dependencies_before,
+            "cleanup": cleanup_result,
+        })
+    except Exception as e:
+        logger.error(f"❌ 删除配置失败: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500

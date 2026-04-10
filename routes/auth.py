@@ -87,6 +87,7 @@ def chat_auth():
         return jsonify({"success": False, "message": f"密码错误 (剩余 {MAX_FAILED_ATTEMPTS - fails} 次尝试)", "need_captcha": fails >= 3}), 401
     
     session["chat_authed"] = True
+    session["admin_authed"] = True
     session['failed_attempts'] = 0
     session.pop('lock_until', None)
     return jsonify({"success": True, "need_captcha": False})

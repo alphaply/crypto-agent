@@ -2,6 +2,7 @@ import sqlite3
 from flask import Blueprint, jsonify, request
 from routes.utils import DB_NAME, _require_chat_auth_api, logger
 from database import get_all_pricing, update_model_pricing
+from config import config as global_config
 
 stats_bp = Blueprint('stats', __name__)
 
@@ -451,5 +452,75 @@ def get_position_stats(config_id):
         import traceback
         logger.error(f"Position stats error: {traceback.format_exc()}")
         return jsonify({"success": False, "message": str(e)})
+
+
+@stats_bp.route('/api/stats/equity_compare', methods=['GET'])
+def get_equity_compare():
+    """多 config 净值对比接口，返回按 config_id 分组的时间序列。"""
+    symbol = request.args.get('symbol', 'BTC/USDT')
+    raw_ids = request.args.get('config_ids', '').strip()
+
+    configs = [c for c in global_config.get_all_symbol_configs() if c.get('symbol') == symbol]
+    if raw_ids:
+        wanted = {x.strip() for x in raw_ids.split(',') if x.strip()}
+        configs = [c for c in configs if c.get('config_id') in wanted]
+
+    # 防止一次请求过大
+    configs = configs[:12]
+
+    series = []
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        for cfg in configs:
+            config_id = cfg.get('config_id')
+            mode = (cfg.get('mode') or 'STRATEGY').upper()
+            label = f"{config_id} ({mode})"
+            points = []
+
+            if mode == 'REAL':
+                rows = c.execute(
+                    """
+                    SELECT day, total_equity FROM (
+                        SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
+                               row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
+                        FROM balance_history WHERE symbol = ?
+                    ) WHERE rn = 1 ORDER BY day ASC
+                    """,
+                    (symbol,),
+                ).fetchall()
+                points = [{"date": r['day'], "equity": r['total_equity']} for r in rows]
+            else:
+                rows = c.execute(
+                    """
+                    SELECT date(timestamp) as day, MAX(balance) as equity
+                    FROM mock_balance_history
+                    WHERE config_id = ?
+                    GROUP BY date(timestamp)
+                    ORDER BY day ASC
+                    """,
+                    (config_id,),
+                ).fetchall()
+                points = [{"date": r['day'], "equity": r['equity']} for r in rows]
+
+            if points:
+                series.append({
+                    "config_id": config_id,
+                    "label": label,
+                    "mode": mode,
+                    "points": points,
+                })
+
+        conn.close()
+        return jsonify({
+            "success": True,
+            "symbol": symbol,
+            "series": series,
+        })
+    except Exception as e:
+        logger.error(f"Failed to load equity compare data: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 

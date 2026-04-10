@@ -869,6 +869,81 @@ def get_agent_trade_stats(config_id):
             return {"total_orders": 0, "error": str(e)}
 
 
+def get_config_dependency_counts(config_id: str):
+    """统计指定 config_id 在各表中的依赖数量。"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        tables = [
+            "chat_sessions",
+            "mock_accounts",
+            "mock_balance_history",
+            "mock_orders",
+            "orders",
+            "summaries",
+            "token_usage",
+            "daily_summaries",
+        ]
+        counts = {}
+        for table in tables:
+            counts[table] = c.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE config_id = ?",
+                (config_id,),
+            ).fetchone()[0]
+
+        counts["open_mock_orders"] = c.execute(
+            "SELECT COUNT(*) FROM mock_orders WHERE config_id = ? AND status = 'OPEN'",
+            (config_id,),
+        ).fetchone()[0]
+        counts["open_orders"] = c.execute(
+            "SELECT COUNT(*) FROM orders WHERE config_id = ? AND status = 'OPEN'",
+            (config_id,),
+        ).fetchone()[0]
+        return counts
+
+
+def soft_delete_config_runtime_data(config_id: str):
+    """
+    软删除策略对应的数据清理：
+    - 清理强绑定运行态数据（会话、模拟账户、模拟余额）
+    - 关闭仍处于 OPEN 的模拟单/决策单
+    - 保留历史审计数据（orders/summaries/token_usage/daily_summaries）
+    """
+    with get_db_conn() as conn:
+        c = conn.cursor()
+
+        deleted_chat_sessions = c.execute(
+            "DELETE FROM chat_sessions WHERE config_id = ?",
+            (config_id,),
+        ).rowcount
+        deleted_mock_accounts = c.execute(
+            "DELETE FROM mock_accounts WHERE config_id = ?",
+            (config_id,),
+        ).rowcount
+        deleted_mock_balance_history = c.execute(
+            "DELETE FROM mock_balance_history WHERE config_id = ?",
+            (config_id,),
+        ).rowcount
+
+        closed_open_mock_orders = c.execute(
+            "UPDATE mock_orders SET status = 'CLOSED', close_time = ? WHERE config_id = ? AND status = 'OPEN'",
+            (datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S"), config_id),
+        ).rowcount
+        cancelled_open_orders = c.execute(
+            "UPDATE orders SET status = 'CANCELLED' WHERE config_id = ? AND status = 'OPEN'",
+            (config_id,),
+        ).rowcount
+
+        conn.commit()
+
+        return {
+            "chat_sessions_deleted": deleted_chat_sessions,
+            "mock_accounts_deleted": deleted_mock_accounts,
+            "mock_balance_history_deleted": deleted_mock_balance_history,
+            "open_mock_orders_closed": closed_open_mock_orders,
+            "open_orders_cancelled": cancelled_open_orders,
+        }
+
+
 if __name__ == "__main__":
     init_db()
     logger.info("Database initialized.")

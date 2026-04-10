@@ -9,6 +9,7 @@ let currentPromptFile = '';
 const markdownRenderQueue = new WeakSet();
 let markdownObserver = null;
 const statsRequests = new Map();
+let compareEquityChart = null;
 
 // --- 多 Agent Tab 切换逻辑 ---
 
@@ -42,6 +43,7 @@ function switchAgentTab(agentName) {
             compareWin.classList.remove('hidden');
             renderMarkdown(true, compareWin);
             observeMarkdown(compareWin);
+            loadCompareEquityChart();
         } else {
             compareWin.classList.add('hidden');
         }
@@ -55,6 +57,99 @@ function switchAgentTab(agentName) {
 
     if (agentName !== 'COMPARE') {
         loadAgentStats(agentName);
+    }
+}
+
+function getCurrentSymbol() {
+    const sel = document.getElementById('globalSymbolSelect');
+    if (sel && sel.value) return sel.value;
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get('symbol') || 'BTC/USDT';
+}
+
+function toggleCompareAll(checked) {
+    const checks = document.querySelectorAll('.compare-config-check');
+    checks.forEach(c => {
+        c.checked = checked;
+    });
+    loadCompareEquityChart();
+}
+
+async function loadCompareEquityChart() {
+    const canvas = document.getElementById('compare-equity-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+
+    const selected = Array.from(document.querySelectorAll('.compare-config-check:checked')).map(x => x.value);
+    if (selected.length === 0) {
+        if (compareEquityChart) {
+            compareEquityChart.destroy();
+            compareEquityChart = null;
+        }
+        return;
+    }
+
+    const symbol = encodeURIComponent(getCurrentSymbol());
+    const ids = encodeURIComponent(selected.join(','));
+
+    try {
+        const resp = await fetch(`/api/stats/equity_compare?symbol=${symbol}&config_ids=${ids}`);
+        const data = await resp.json();
+        if (!data.success || !data.series || data.series.length === 0) {
+            return;
+        }
+
+        const labelSet = new Set();
+        data.series.forEach(s => (s.points || []).forEach(p => labelSet.add(p.date)));
+        const labels = Array.from(labelSet).sort();
+
+        const palette = ['#2563eb', '#059669', '#dc2626', '#7c3aed', '#d97706', '#0f766e', '#0891b2', '#4338ca', '#be123c', '#65a30d'];
+        const datasets = data.series.map((s, i) => {
+            const map = new Map((s.points || []).map(p => [p.date, Number(p.equity)]));
+            return {
+                label: s.label || s.config_id,
+                data: labels.map(d => map.has(d) ? map.get(d) : null),
+                borderColor: palette[i % palette.length],
+                backgroundColor: palette[i % palette.length],
+                borderWidth: 2,
+                spanGaps: true,
+                tension: 0.2,
+                pointRadius: 0,
+            };
+        });
+
+        if (compareEquityChart) compareEquityChart.destroy();
+        compareEquityChart = new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: { labels, datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { position: 'bottom' },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const v = ctx.raw;
+                                return `${ctx.dataset.label}: ${v == null ? '-' : Number(v).toFixed(2)}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: { maxTicksLimit: 8 }
+                    },
+                    y: {
+                        ticks: {
+                            callback: function(value) { return Number(value).toFixed(0); }
+                        }
+                    }
+                }
+            }
+        });
+    } catch (e) {
+        console.error('Load compare equity chart error:', e);
     }
 }
 
