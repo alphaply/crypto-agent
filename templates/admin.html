@@ -2,8 +2,69 @@
 
 {% block title %}后台管理 - Crypto Agent{% endblock %}
 
+{% block head %}
+<style>
+  #admin-page {
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  #admin-page .admin-panel {
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  }
+
+  #admin-page .admin-muted {
+    color: #64748b;
+  }
+
+  #admin-page.admin-dark {
+    color: #dbeafe;
+  }
+
+  #admin-page.admin-dark .admin-panel {
+    background: #0f172a;
+    border-color: #334155;
+    box-shadow: none;
+  }
+
+  #admin-page.admin-dark .admin-muted {
+    color: #94a3b8;
+  }
+
+  #admin-page.admin-dark .admin-title {
+    color: #f8fafc;
+  }
+
+  #admin-page.admin-dark input,
+  #admin-page.admin-dark select,
+  #admin-page.admin-dark textarea {
+    background: #020617;
+    border-color: #334155;
+    color: #e2e8f0;
+  }
+
+  #admin-page .CodeMirror {
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    font-size: 12px;
+    height: auto;
+  }
+
+  #admin-page.admin-dark .CodeMirror {
+    border-color: #334155;
+  }
+
+  #admin-page .CodeMirror-gutters {
+    border-right: 1px solid #e2e8f0;
+  }
+
+  #admin-page.admin-dark .CodeMirror-gutters {
+    border-right-color: #334155;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<main class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+<main id="admin-page" class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
   {% if not authed %}
   <section class="max-w-md mx-auto bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
     <h2 class="text-xl font-bold text-slate-900">后台登录</h2>
@@ -17,21 +78,22 @@
     <p id="login-error" class="mt-3 text-sm text-red-500"></p>
   </section>
   {% else %}
-  <header class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+  <header class="admin-panel bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
     <div>
-      <h1 class="text-xl sm:text-2xl font-black text-slate-900">统一后台管理</h1>
-      <p class="text-sm text-slate-500">配置管理、Config ID 删除、提示词维护、价格配置与历史维护。</p>
+      <h1 class="admin-title text-xl sm:text-2xl font-black text-slate-900">统一后台管理</h1>
+      <p class="admin-muted text-sm text-slate-500">配置管理、Config ID 删除、提示词维护、价格配置与历史维护。</p>
     </div>
     <div class="flex gap-2">
+      <button id="admin-theme-toggle" onclick="toggleAdminTheme()" class="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-bold">切换暗色</button>
       <a href="/" class="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-bold">返回控制台</a>
       <button onclick="logoutAdmin()" class="px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-700 text-sm font-bold">退出后台</button>
     </div>
   </header>
 
   <section class="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">
-    <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+    <div class="admin-panel bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
       <div class="flex items-center justify-between mb-3">
-        <h3 class="text-lg font-bold text-slate-900">Config ID 管理</h3>
+        <h3 class="admin-title text-lg font-bold text-slate-900">Config ID 管理</h3>
         <div class="flex gap-2">
           <button onclick="startCreateConfig()" class="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700">新建</button>
           <button onclick="loadConfigs()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
@@ -40,9 +102,9 @@
       <div id="config-list" class="space-y-2 max-h-[620px] overflow-y-auto"></div>
     </div>
 
-    <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
+    <div class="admin-panel bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
       <div class="flex items-center justify-between">
-        <h3 class="text-lg font-bold text-slate-900">可视化配置编辑</h3>
+        <h3 class="admin-title text-lg font-bold text-slate-900">可视化配置编辑</h3>
         <span id="config-form-badge" class="text-xs px-2 py-1 rounded-lg bg-slate-100 text-slate-600 font-semibold">未选择</span>
       </div>
 
@@ -115,7 +177,7 @@
       </div>
 
       <div class="p-3 rounded-xl border border-slate-200 bg-slate-50/60 space-y-3">
-        <div class="text-xs font-bold text-slate-700">总结模型配置 (summarizer)</div>
+        <div class="admin-title text-xs font-bold text-slate-700">总结模型配置 (summarizer)</div>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <input id="cfg-sum-model" class="border border-slate-200 rounded-lg p-2 text-sm" placeholder="model">
           <input id="cfg-sum-api_base" class="border border-slate-200 rounded-lg p-2 text-sm" placeholder="api_base">
@@ -124,7 +186,7 @@
       </div>
 
       <div class="p-3 rounded-xl border border-slate-200 bg-blue-50/40 space-y-3 mode-dca-only">
-        <div class="text-xs font-bold text-slate-700">SPOT_DCA 配置</div>
+        <div class="admin-title text-xs font-bold text-slate-700">SPOT_DCA 配置</div>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <label class="text-xs text-slate-500">dca_amount</label>
@@ -165,56 +227,68 @@
       </div>
 
       <div class="flex flex-wrap gap-2">
-        <button onclick="upsertConfig(false)" class="text-sm px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-bold">保存到列表</button>
-        <button onclick="upsertConfig(true)" class="text-sm px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-100 font-bold">保存并写入 .env</button>
+        <button onclick="upsertConfig()" class="text-sm px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-bold">保存配置并写入 .env</button>
         <button onclick="syncFormToJson()" class="text-sm px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-100">同步到 JSON</button>
       </div>
+      <div class="admin-muted text-[11px]">保存后会同时更新列表与 .env，减少重复操作。</div>
 
-      <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+      <div class="admin-panel bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-lg font-bold text-slate-900">配置 JSON 编辑</h3>
+          <h3 class="admin-title text-lg font-bold text-slate-900">配置 JSON 编辑</h3>
           <div class="flex gap-2">
             <a href="/api/config/export" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">导出</a>
+            <button onclick="formatConfigJson()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">格式化 JSON</button>
             <button onclick="saveRawConfigs()" class="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700">保存 JSON</button>
           </div>
         </div>
         <textarea id="config-json" class="w-full h-[220px] border border-slate-200 rounded-xl p-3 font-mono text-xs"></textarea>
+        <div class="admin-muted mt-2 text-[11px]">支持行号、搜索与 Ctrl/Cmd + S 快捷保存。</div>
       </div>
     </div>
   </section>
 
   <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-    <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+    <div class="admin-panel bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
       <div class="flex items-center justify-between mb-3">
-        <h3 class="text-lg font-bold text-slate-900">Prompt 模板管理</h3>
-        <button onclick="loadPrompts()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
+        <h3 class="admin-title text-lg font-bold text-slate-900">Prompt 模板管理</h3>
+        <div class="flex items-center gap-2">
+          <span id="prompt-count" class="text-[11px] px-2 py-1 rounded-lg bg-slate-100 text-slate-600">0</span>
+          <button onclick="loadPrompts()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
+        </div>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4">
         <div>
-          <div id="prompt-list" class="space-y-1 max-h-[340px] overflow-y-auto"></div>
+          <input id="prompt-search" placeholder="搜索模板文件..." class="w-full border border-slate-200 rounded-lg p-2 text-xs mb-2">
+          <div id="prompt-list" class="space-y-1 max-h-[360px] overflow-y-auto border border-slate-200 rounded-xl p-2"></div>
           <div class="mt-2 flex gap-2">
             <input id="new-prompt-name" placeholder="new_prompt.txt" class="flex-1 border border-slate-200 rounded-lg p-2 text-xs">
             <button onclick="createPrompt()" class="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-xs font-bold whitespace-nowrap">新建 TXT</button>
           </div>
-          <div class="mt-2 text-[11px] text-slate-500">文件名支持 a-z、0-9、._-，自动补全 .txt</div>
+          <div class="admin-muted mt-2 text-[11px]">文件名支持 a-z、0-9、._-，自动补全 .txt</div>
         </div>
         <div>
-          <div class="flex items-center justify-between mb-2">
-            <div id="current-prompt" class="text-sm font-bold text-slate-700">未选择</div>
+          <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+            <div class="flex items-center gap-2">
+              <div id="current-prompt" class="admin-title text-sm font-bold text-slate-700">未选择</div>
+              <span id="prompt-meta" class="text-[11px] px-2 py-1 rounded bg-slate-100 text-slate-600">0 行 · 0 字符</span>
+            </div>
             <div class="flex gap-2">
               <button onclick="savePrompt()" class="text-xs px-2 py-1 rounded-lg bg-blue-600 text-white">保存</button>
               <button onclick="deletePrompt()" class="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-600">删除</button>
             </div>
           </div>
           <textarea id="prompt-editor" class="w-full h-[380px] border border-slate-200 rounded-xl p-3 font-mono text-xs"></textarea>
-          <div class="mt-2 text-[11px] text-slate-500">快捷键: Ctrl/Cmd + S 保存模板</div>
+          <div class="mt-2 flex items-center justify-between gap-2">
+            <div class="admin-muted text-[11px]">快捷键: Ctrl/Cmd + S 保存模板</div>
+            <div id="prompt-status" class="text-[11px] text-emerald-600"></div>
+          </div>
         </div>
       </div>
     </div>
 
     <div class="space-y-6">
-      <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-        <h3 class="text-lg font-bold text-slate-900 mb-3">模型定价维护</h3>
+      <div class="admin-panel bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+        <h3 class="admin-title text-lg font-bold text-slate-900 mb-3">模型定价维护</h3>
         <div class="flex flex-wrap gap-2 mb-3">
           <input id="pricing-new-model" placeholder="新增模型名，如 qwen3-max" class="border border-slate-200 rounded-lg p-2 text-sm flex-1 min-w-[220px]">
           <button onclick="addPricingRow()" class="px-3 py-2 rounded-lg border border-slate-200 text-sm font-bold hover:bg-slate-100">新增行</button>
@@ -235,9 +309,9 @@
         </div>
       </div>
 
-      <div id="danger-zone" class="bg-white border border-red-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+      <div id="danger-zone" class="admin-panel bg-white border border-red-200 rounded-2xl p-4 sm:p-5 shadow-sm">
         <h3 class="text-lg font-bold text-red-700 mb-3">危险操作</h3>
-        <p class="text-sm text-slate-500">后台已登录后可直接执行，不再单独输入密码。</p>
+        <p class="admin-muted text-sm text-slate-500">后台已登录后可直接执行，不再单独输入密码。</p>
         <div class="mt-3 flex flex-col sm:flex-row gap-2">
           <select id="clean-symbol" class="border border-slate-200 rounded-lg p-2 text-sm flex-1">
             {% for sym in symbols %}
@@ -257,7 +331,9 @@
 
 {% block scripts %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/search/searchcursor.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/search/search.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/dialog/dialog.min.js"></script>

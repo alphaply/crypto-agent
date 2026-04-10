@@ -4,6 +4,44 @@ let currentPrompt = '';
 let editingConfigId = null;
 let pricingRows = [];
 let promptEditor = null;
+let configJsonEditor = null;
+let adminTheme = 'light';
+
+function getAdminRoot() {
+  return document.getElementById('admin-page');
+}
+
+function applyEditorTheme() {
+  const themeName = adminTheme === 'dark' ? 'material-darker' : 'default';
+  if (promptEditor) promptEditor.setOption('theme', themeName);
+  if (configJsonEditor) configJsonEditor.setOption('theme', themeName);
+}
+
+function applyAdminTheme(theme) {
+  adminTheme = theme === 'dark' ? 'dark' : 'light';
+  const root = getAdminRoot();
+  if (root) {
+    root.classList.toggle('admin-dark', adminTheme === 'dark');
+  }
+
+  const toggleBtn = document.getElementById('admin-theme-toggle');
+  if (toggleBtn) {
+    toggleBtn.textContent = adminTheme === 'dark' ? '切换亮色' : '切换暗色';
+  }
+
+  localStorage.setItem('admin_theme', adminTheme);
+  applyEditorTheme();
+}
+
+function initAdminTheme() {
+  const savedTheme = localStorage.getItem('admin_theme');
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  applyAdminTheme(savedTheme || (prefersDark ? 'dark' : 'light'));
+}
+
+function toggleAdminTheme() {
+  applyAdminTheme(adminTheme === 'dark' ? 'light' : 'dark');
+}
 
 function initPromptEditor() {
   const textarea = document.getElementById('prompt-editor');
@@ -25,6 +63,31 @@ function initPromptEditor() {
   });
 
   promptEditor.setSize('100%', 380);
+  promptEditor.on('change', () => updatePromptMeta());
+  applyEditorTheme();
+}
+
+function initConfigJsonEditor() {
+  const textarea = document.getElementById('config-json');
+  if (!textarea || typeof window.CodeMirror === 'undefined') return;
+
+  configJsonEditor = window.CodeMirror.fromTextArea(textarea, {
+    mode: 'application/json',
+    lineNumbers: true,
+    lineWrapping: false,
+    indentUnit: 2,
+    tabSize: 2,
+    autofocus: false,
+    extraKeys: {
+      'Ctrl-S': () => saveRawConfigs(),
+      'Cmd-S': () => saveRawConfigs(),
+      'Ctrl-F': 'findPersistent',
+      'Cmd-F': 'findPersistent',
+    },
+  });
+
+  configJsonEditor.setSize('100%', 220);
+  applyEditorTheme();
 }
 
 function setPromptEditorValue(content) {
@@ -39,6 +102,43 @@ function setPromptEditorValue(content) {
 function getPromptEditorValue() {
   if (promptEditor) return promptEditor.getValue();
   return document.getElementById('prompt-editor')?.value || '';
+}
+
+function setConfigJsonValue(content) {
+  if (configJsonEditor) {
+    configJsonEditor.setValue(content || '');
+    return;
+  }
+  const editor = document.getElementById('config-json');
+  if (editor) editor.value = content || '';
+}
+
+function getConfigJsonValue() {
+  if (configJsonEditor) return configJsonEditor.getValue();
+  return document.getElementById('config-json')?.value || '';
+}
+
+function setPromptStatus(text, isError = false) {
+  const statusEl = document.getElementById('prompt-status');
+  if (!statusEl) return;
+  statusEl.classList.toggle('text-emerald-600', !isError);
+  statusEl.classList.toggle('text-red-500', isError);
+  statusEl.textContent = text || '';
+}
+
+function updatePromptMeta() {
+  const metaEl = document.getElementById('prompt-meta');
+  if (!metaEl) return;
+
+  const text = getPromptEditorValue();
+  const lineCount = text ? text.split('\n').length : 0;
+  metaEl.textContent = `${lineCount} 行 · ${text.length} 字符`;
+}
+
+function updatePromptCount(visible, total) {
+  const countEl = document.getElementById('prompt-count');
+  if (!countEl) return;
+  countEl.textContent = `${visible}/${total}`;
 }
 
 function toast(message, type = 'ok') {
@@ -247,8 +347,7 @@ function renderConfigList() {
     `;
   }).join('');
 
-  const raw = document.getElementById('config-json');
-  if (raw) raw.value = JSON.stringify(configs, null, 2);
+  setConfigJsonValue(JSON.stringify(configs, null, 2));
 }
 
 function selectConfig(configId) {
@@ -304,7 +403,7 @@ function syncFormToJson() {
   }
 }
 
-async function upsertConfig(saveToEnv) {
+async function upsertConfig() {
   let normalized;
   try {
     normalized = normalizeConfigFromForm();
@@ -325,11 +424,6 @@ async function upsertConfig(saveToEnv) {
   editingConfigId = normalized.config_id;
   renderConfigList();
 
-  if (!saveToEnv) {
-    toast('已保存到本地配置列表，点击“保存 JSON”可写入 .env');
-    return;
-  }
-
   const resp = await fetch('/api/config/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -341,7 +435,7 @@ async function upsertConfig(saveToEnv) {
     return;
   }
 
-  toast('配置已写入 .env');
+  toast('配置已保存并写入 .env');
   await loadConfigs();
 }
 
@@ -370,12 +464,9 @@ async function deleteConfig(configId) {
 }
 
 async function saveRawConfigs() {
-  const raw = document.getElementById('config-json');
-  if (!raw) return;
-
   let parsed;
   try {
-    parsed = JSON.parse(raw.value);
+    parsed = JSON.parse(getConfigJsonValue());
   } catch (e) {
     toast('JSON 格式错误', 'err');
     return;
@@ -397,10 +488,30 @@ async function saveRawConfigs() {
   await loadConfigs();
 }
 
+function formatConfigJson() {
+  try {
+    const parsed = JSON.parse(getConfigJsonValue());
+    setConfigJsonValue(JSON.stringify(parsed, null, 2));
+    toast('JSON 已格式化');
+  } catch (e) {
+    toast('JSON 格式错误，无法格式化', 'err');
+  }
+}
+
 function renderPromptList() {
   const el = document.getElementById('prompt-list');
   if (!el) return;
-  el.innerHTML = promptFiles.map(name => `
+
+  const keyword = (document.getElementById('prompt-search')?.value || '').trim().toLowerCase();
+  const filtered = promptFiles.filter(name => name.toLowerCase().includes(keyword));
+  updatePromptCount(filtered.length, promptFiles.length);
+
+  if (filtered.length === 0) {
+    el.innerHTML = '<div class="text-xs text-slate-500 px-2 py-2">没有匹配的模板</div>';
+    return;
+  }
+
+  el.innerHTML = filtered.map(name => `
     <button onclick="openPrompt('${escapeHtml(name)}')" class="w-full text-left px-2 py-1.5 rounded ${name === currentPrompt ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 text-slate-700'} text-xs font-mono">${escapeHtml(name)}</button>
   `).join('');
 }
@@ -430,6 +541,8 @@ async function openPrompt(name) {
   }
 
   setPromptEditorValue(data.content || '');
+  updatePromptMeta();
+  setPromptStatus(`已加载: ${name}`);
 }
 
 function normalizePromptName(rawName) {
@@ -462,6 +575,7 @@ async function createPrompt() {
   if (title) title.textContent = name;
 
   setPromptEditorValue('# Prompt template\n');
+  updatePromptMeta();
 
   await savePrompt();
   await loadPrompts();
@@ -484,10 +598,12 @@ async function savePrompt() {
   const data = await resp.json();
   if (!data.success) {
     toast(data.message || '保存失败', 'err');
+    setPromptStatus('保存失败', true);
     return;
   }
 
   toast('模板保存成功');
+  setPromptStatus(`已保存: ${currentPrompt}`);
 }
 
 async function deletePrompt() {
@@ -509,6 +625,8 @@ async function deletePrompt() {
   const title = document.getElementById('current-prompt');
   if (title) title.textContent = '未选择';
   setPromptEditorValue('');
+  updatePromptMeta();
+  setPromptStatus('');
 
   toast('模板已删除');
   await loadPrompts();
@@ -661,7 +779,15 @@ async function cleanHistory() {
 window.addEventListener('DOMContentLoaded', async () => {
   if (!document.getElementById('config-list')) return;
 
+  initAdminTheme();
   initPromptEditor();
+  initConfigJsonEditor();
+
+  const promptSearch = document.getElementById('prompt-search');
+  if (promptSearch) {
+    promptSearch.addEventListener('input', () => renderPromptList());
+  }
+
   const nameInput = document.getElementById('new-prompt-name');
   if (nameInput) {
     nameInput.addEventListener('keydown', (event) => {
@@ -681,7 +807,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.startCreateConfig = startCreateConfig;
   window.selectConfig = selectConfig;
   window.upsertConfig = upsertConfig;
+  window.toggleAdminTheme = toggleAdminTheme;
   window.syncFormToJson = syncFormToJson;
+  window.formatConfigJson = formatConfigJson;
   window.saveRawConfigs = saveRawConfigs;
   window.deleteConfig = deleteConfig;
 
