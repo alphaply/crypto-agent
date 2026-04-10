@@ -15,7 +15,7 @@
 
         <div class="flex flex-wrap gap-2 mb-4">
             {% for summary in agent_summaries %}
-            <label class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-slate-200 text-xs text-slate-700">
+            <label class="compare-chip inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-slate-200 text-xs text-slate-700">
                 <input type="checkbox" class="compare-config-check" value="{{ summary.config_id }}" checked onchange="loadCompareEquityChart()">
                 <span class="font-mono">{{ summary.config_id }}</span>
             </label>
