@@ -1,19 +1,11 @@
 (function initAppTheme() {
   const MODE_KEY = 'crypto-agent-theme-mode';
-  const ACCENT_KEY = 'crypto-agent-theme-accent';
   const DEFAULT_MODE = 'auto';
-  const DEFAULT_ACCENT = 'blue';
   const allowedModes = new Set(['light', 'dark', 'auto']);
-  const allowedAccents = new Set(['blue', 'emerald', 'amber', 'rose', 'indigo', 'cyan']);
 
   function getStoredMode() {
     const mode = localStorage.getItem(MODE_KEY) || DEFAULT_MODE;
     return allowedModes.has(mode) ? mode : DEFAULT_MODE;
-  }
-
-  function getStoredAccent() {
-    const accent = localStorage.getItem(ACCENT_KEY) || DEFAULT_ACCENT;
-    return allowedAccents.has(accent) ? accent : DEFAULT_ACCENT;
   }
 
   function getSystemTheme() {
@@ -38,26 +30,7 @@
     window.dispatchEvent(new CustomEvent('app-theme-change', {
       detail: {
         mode: nextMode,
-        theme: resolved,
-        accent: getStoredAccent()
-      }
-    }));
-
-    updateThemeControls();
-  }
-
-  function applyAccent(accent, persist) {
-    const nextAccent = allowedAccents.has(accent) ? accent : DEFAULT_ACCENT;
-    document.documentElement.setAttribute('data-accent', nextAccent);
-    if (persist) {
-      localStorage.setItem(ACCENT_KEY, nextAccent);
-    }
-
-    window.dispatchEvent(new CustomEvent('app-theme-accent-change', {
-      detail: {
-        mode: getStoredMode(),
-        theme: resolveTheme(getStoredMode()),
-        accent: nextAccent
+        theme: resolved
       }
     }));
 
@@ -66,15 +39,10 @@
 
   function updateThemeControls() {
     const mode = getStoredMode();
-    const accent = getStoredAccent();
     const resolved = resolveTheme(mode);
 
     document.querySelectorAll('[data-theme-mode-select]').forEach(select => {
       if (select.value !== mode) select.value = mode;
-    });
-
-    document.querySelectorAll('[data-theme-accent-select]').forEach(select => {
-      if (select.value !== accent) select.value = accent;
     });
 
     document.querySelectorAll('[data-theme-toggle]').forEach(button => {
@@ -99,15 +67,10 @@
       select.addEventListener('change', () => applyTheme(select.value, true));
     });
 
-    document.querySelectorAll('[data-theme-accent-select]').forEach(select => {
-      select.addEventListener('change', () => applyAccent(select.value, true));
-    });
-
     updateThemeControls();
   }
 
   function init() {
-    applyAccent(getStoredAccent(), false);
     applyTheme(getStoredMode(), false);
 
     const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
@@ -125,10 +88,8 @@
   window.AppTheme = {
     init,
     applyTheme,
-    applyAccent,
     toggleMode,
     getMode: getStoredMode,
-    getAccent: getStoredAccent,
     getResolvedTheme: () => resolveTheme(getStoredMode())
   };
 

@@ -427,6 +427,19 @@ body {
   border-color: var(--border-soft) !important;
 }
 
+:root[data-theme='dark'] #authView input,
+:root[data-theme='dark'] #newSessionModal input,
+:root[data-theme='dark'] #newSessionModal select {
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent) !important;
+  border-color: var(--border-soft) !important;
+  color: var(--text-primary) !important;
+}
+
+:root[data-theme='dark'] #authView input::placeholder,
+:root[data-theme='dark'] #newSessionModal input::placeholder {
+  color: var(--text-muted) !important;
+}
+
 :root[data-theme='dark'] #messages {
   background: color-mix(in srgb, var(--surface-0) 65%, transparent) !important;
 }
@@ -439,6 +452,18 @@ body {
 :root[data-theme='dark'] .toolbar-pill-danger {
   background: color-mix(in srgb, var(--danger-500) 25%, transparent);
   color: #fecdd3;
+}
+
+:root[data-theme='dark'] #chatView header [data-theme-toggle],
+:root[data-theme='dark'] #chatView header [data-theme-mode-select] {
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent) !important;
+  border-color: var(--border-soft) !important;
+  color: var(--text-secondary) !important;
+}
+
+:root[data-theme='dark'] #chatView header [data-theme-toggle]:hover,
+:root[data-theme='dark'] #chatView header [data-theme-mode-select]:hover {
+  color: var(--text-primary) !important;
 }
 
 :root[data-theme='dark'] .chat-bubble[data-role='assistant'] {
