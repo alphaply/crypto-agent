@@ -64,8 +64,11 @@
             #history-toast-container > div { width: 100%; min-width: 0; }
             .agent-chip {
                 display: inline-flex;
+                min-width: 0;
                 max-width: 100%;
+                flex: 0 1 auto;
                 white-space: normal;
+                overflow-wrap: anywhere;
                 word-break: break-word;
             }
             .chart-container { height: 180px; }
@@ -78,7 +81,7 @@
 {% endblock %}
 
 {% block content %}
-    <div class="max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-8 mb-12">
+    <div class="max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-8 mb-12 overflow-x-hidden">
         
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
             <a href="/?symbol={{ current_symbol }}" class="inline-flex items-center text-gray-600 hover:text-gray-900 font-medium transition-colors">
@@ -395,12 +398,12 @@
 
         {% if current_agent != 'ALL' and agent_mode == 'REAL' %}
         <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
-            <div class="flex flex-col md:flex-row gap-4 sm:gap-6 justify-between items-start md:items-center mb-4 sm:mb-6">
-                <div>
+            <div class="flex flex-col md:flex-row gap-4 sm:gap-6 justify-between items-start md:items-center mb-4 sm:mb-6 min-w-0">
+                <div class="min-w-0 w-full md:w-auto">
                     <h2 class="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
                         <span class="text-lg sm:text-xl">📊</span> 实盘资金曲线 (Real 模式)
                     </h2>
-                    <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 sm:mt-1">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的真实账户净值变化</p>
+                    <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 sm:mt-1 break-all">记录 <span class="font-bold text-slate-500 break-all">{{ current_agent }}</span> 的真实账户净值变化</p>
                 </div>
                 <div class="grid grid-cols-2 gap-2 sm:gap-4 md:gap-6 w-full md:w-auto min-w-0">
                     <div class="min-w-0">
@@ -637,18 +640,18 @@
         
 
         <div class="mb-8 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
-            <div class="flex flex-wrap gap-2 items-center w-full sm:w-auto min-w-0">
+            <div class="flex flex-wrap gap-2 items-center w-full sm:w-auto min-w-0 overflow-hidden">
                 <span class="text-sm text-gray-500 mr-2 font-medium w-full sm:w-auto">筛选 Agent:</span>
                 
                 <a href="?symbol={{ current_symbol }}&agent=ALL" 
-                   class="agent-chip px-3 py-1.5 rounded-full text-xs font-bold transition-all border max-w-full break-words
+                   class="agent-chip px-3 py-1.5 rounded-full text-xs font-bold transition-all border max-w-full break-all
                    {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == 'ALL' else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
                    ALL
                 </a>
 
                 {% for agent in active_agents %}
                 <a href="?symbol={{ current_symbol }}&agent={{ agent }}" 
-                   class="agent-chip px-3 py-1.5 rounded-full text-xs font-bold transition-all border max-w-full break-words
+                   class="agent-chip px-3 py-1.5 rounded-full text-xs font-bold transition-all border max-w-full break-all
                    {{ 'bg-blue-600 text-white border-blue-600 shadow-md' if current_agent == agent else 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50' }}">
                    {{ agent }}
                 </a>
