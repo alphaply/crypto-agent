@@ -210,6 +210,7 @@ function normalizeConfigFromForm() {
     model,
     enabled: getFieldValue('cfg-enabled') !== 'false',
     prompt_file: getFieldValue('cfg-prompt_file') || (mode === 'SPOT_DCA' ? 'dca.txt' : mode === 'REAL' ? 'real.txt' : 'strategy.txt'),
+    exchange: getFieldValue('cfg-exchange') || 'binance',
     api_base: getFieldValue('cfg-api_base'),
     api_key: getFieldValue('cfg-api_key'),
   };
@@ -238,11 +239,13 @@ function normalizeConfigFromForm() {
     const interval = Number(getFieldValue('cfg-run_interval'));
     cfg.run_interval = Number.isFinite(interval) && interval > 0 ? interval : (mode === 'REAL' ? 15 : 60);
 
-    if (mode === 'REAL') {
-      const binanceApiKey = getFieldValue('cfg-binance_api_key');
-      const binanceSecret = getFieldValue('cfg-binance_secret');
-      if (binanceApiKey) cfg.binance_api_key = binanceApiKey;
-      if (binanceSecret) cfg.binance_secret = binanceSecret;
+    if (mode === 'REAL' || mode === 'SPOT_DCA') {
+      const exApiKey = getFieldValue('cfg-ex_api_key');
+      const exSecret = getFieldValue('cfg-ex_secret');
+      const exPass = getFieldValue('cfg-ex_passphrase');
+      if (exApiKey) cfg.api_key = exApiKey;
+      if (exSecret) cfg.secret = exSecret;
+      if (exPass) cfg.passphrase = exPass;
     }
   }
 
@@ -272,8 +275,10 @@ function setConfigForm(cfg) {
 
   setFieldValue('cfg-leverage', cfg?.leverage ?? 1);
   setFieldValue('cfg-run_interval', cfg?.run_interval ?? '');
-  setFieldValue('cfg-binance_api_key', cfg?.binance_api_key || '');
-  setFieldValue('cfg-binance_secret', cfg?.binance_secret || '');
+  setFieldValue('cfg-exchange', cfg?.exchange || 'binance');
+  setFieldValue('cfg-ex_api_key', cfg?.api_key || cfg?.binance_api_key || '');
+  setFieldValue('cfg-ex_secret', cfg?.secret || cfg?.binance_secret || '');
+  setFieldValue('cfg-ex_passphrase', cfg?.passphrase || '');
 
   setFieldValue('cfg-dca_amount', cfg?.dca_amount ?? 50);
   setFieldValue('cfg-dca_freq', cfg?.dca_freq || '1d');
@@ -302,7 +307,15 @@ function onModeChange() {
     el.classList.toggle('hidden', mode === 'SPOT_DCA');
   });
   document.querySelectorAll('.mode-real-only').forEach(el => {
-    el.classList.toggle('hidden', mode !== 'REAL');
+    el.classList.toggle('hidden', (mode !== 'REAL' && mode !== 'SPOT_DCA'));
+  });
+  onExchangeChange();
+}
+
+function onExchangeChange() {
+  const exchange = getFieldValue('cfg-exchange') || 'binance';
+  document.querySelectorAll('.exchange-okx-only').forEach(el => {
+    el.classList.toggle('hidden', exchange !== 'okx');
   });
 }
 
@@ -786,6 +799,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadPricing();
 
   window.onModeChange = onModeChange;
+  window.onExchangeChange = onExchangeChange;
   window.onDcaFreqChange = onDcaFreqChange;
   window.startCreateConfig = startCreateConfig;
   window.selectConfig = selectConfig;

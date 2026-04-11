@@ -143,6 +143,13 @@
           <label class="text-xs text-slate-500">prompt_file</label>
           <input id="cfg-prompt_file" class="w-full border border-slate-200 rounded-lg p-2 text-sm" placeholder="strategy.txt">
         </div>
+        <div>
+          <label class="text-xs text-slate-500">exchange</label>
+          <select id="cfg-exchange" onchange="onExchangeChange()" class="w-full border border-slate-200 rounded-lg p-2 text-sm">
+            <option value="binance">Binance</option>
+            <option value="okx">OKX</option>
+          </select>
+        </div>
         <div class="mode-common">
           <label class="text-xs text-slate-500">leverage</label>
           <input id="cfg-leverage" type="number" min="1" class="w-full border border-slate-200 rounded-lg p-2 text-sm" placeholder="10">
@@ -164,14 +171,18 @@
         </div>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mode-real-only">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mode-real-only">
         <div>
-          <label class="text-xs text-slate-500">binance_api_key (REAL)</label>
-          <input id="cfg-binance_api_key" class="w-full border border-slate-200 rounded-lg p-2 text-sm" placeholder="可选覆盖全局">
+          <label class="text-xs text-slate-500">Exchange API Key</label>
+          <input id="cfg-ex_api_key" class="w-full border border-slate-200 rounded-lg p-2 text-sm" placeholder="可选覆盖全局">
         </div>
         <div>
-          <label class="text-xs text-slate-500">binance_secret (REAL)</label>
-          <input id="cfg-binance_secret" class="w-full border border-slate-200 rounded-lg p-2 text-sm" placeholder="可选覆盖全局">
+          <label class="text-xs text-slate-500">Exchange Secret</label>
+          <input id="cfg-ex_secret" class="w-full border border-slate-200 rounded-lg p-2 text-sm" placeholder="可选覆盖全局">
+        </div>
+        <div class="exchange-okx-only hidden">
+          <label class="text-xs text-slate-500">Exchange Passphrase</label>
+          <input id="cfg-ex_passphrase" class="w-full border border-slate-200 rounded-lg p-2 text-sm" placeholder="OKX 必填">
         </div>
       </div>
 

@@ -598,6 +598,11 @@ function toggleSumSection(enabled) {
     section.style.pointerEvents = enabled ? 'auto' : 'none';
 }
 
+function onExChangeChange(ex) {
+    const div = document.getElementById('div-ex-passphrase');
+    if (div) div.classList.toggle('hidden', ex !== 'okx');
+}
+
 function onModeChange(mode) {
     const isDca = mode === 'SPOT_DCA';
     
@@ -637,8 +642,13 @@ async function editSymbol(index) {
     document.getElementById('edit-model').value = conf.model || '';
     document.getElementById('edit-api-base').value = conf.api_base || '';
     document.getElementById('edit-api-key').value = '';
-    document.getElementById('edit-bn-key').value = '';
-    document.getElementById('edit-bn-secret').value = '';
+    
+    const ex = conf.exchange || 'binance';
+    document.getElementById('edit-exchange').value = ex;
+    document.getElementById('edit-ex-key').value = '';
+    document.getElementById('edit-ex-secret').value = '';
+    document.getElementById('edit-ex-passphrase').value = '';
+    onExChangeChange(ex);
 
     // 运行周期与定投参数
     document.getElementById('edit-interval').value = conf.run_interval || (mode === 'REAL' ? 15 : 60);
@@ -675,8 +685,11 @@ async function addNewSymbolConfig() {
     document.getElementById('edit-model').value = 'gpt-4o-mini';
     document.getElementById('edit-api-base').value = '';
     document.getElementById('edit-api-key').value = '';
-    document.getElementById('edit-bn-key').value = '';
-    document.getElementById('edit-bn-secret').value = '';
+    document.getElementById('edit-exchange').value = 'binance';
+    document.getElementById('edit-ex-key').value = '';
+    document.getElementById('edit-ex-secret').value = '';
+    document.getElementById('edit-ex-passphrase').value = '';
+    onExChangeChange('binance');
 
     // 默认值
     document.getElementById('edit-interval').value = 60;
@@ -730,12 +743,31 @@ function applySymbolEdit() {
     if (key) newConf.api_key = key;
     else if (idx !== -1) newConf.api_key = currentConfigs[idx].api_key;
 
-    const bnKey = document.getElementById('edit-bn-key').value;
-    const bnSec = document.getElementById('edit-bn-secret').value;
-    if (bnKey) newConf.binance_api_key = bnKey;
-    else if (idx !== -1) newConf.binance_api_key = currentConfigs[idx].binance_api_key;
-    if (bnSec) newConf.binance_secret = bnSec;
-    else if (idx !== -1) newConf.binance_secret = currentConfigs[idx].binance_secret;
+    const ex = document.getElementById('edit-exchange').value;
+    newConf.exchange = ex;
+    
+    const exKey = document.getElementById('edit-ex-key').value;
+    const exSec = document.getElementById('edit-ex-secret').value;
+    const exPass = document.getElementById('edit-ex-passphrase').value;
+
+    if (exKey) {
+        if (ex === 'binance') newConf.binance_api_key = exKey;
+        else newConf.api_key = exKey; // OKX or generic
+    } else if (idx !== -1) {
+        if (ex === 'binance') newConf.binance_api_key = currentConfigs[idx].binance_api_key || currentConfigs[idx].api_key;
+        else newConf.api_key = currentConfigs[idx].api_key;
+    }
+
+    if (exSec) {
+        if (ex === 'binance') newConf.binance_secret = exSec;
+        else newConf.secret = exSec;
+    } else if (idx !== -1) {
+        if (ex === 'binance') newConf.binance_secret = currentConfigs[idx].binance_secret || currentConfigs[idx].secret;
+        else newConf.secret = currentConfigs[idx].secret;
+    }
+
+    if (exPass) newConf.passphrase = exPass;
+    else if (idx !== -1) newConf.passphrase = currentConfigs[idx].passphrase;
 
     if (document.getElementById('enable-sum-cfg').checked) {
         newConf.summarizer = {

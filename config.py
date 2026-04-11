@@ -26,6 +26,9 @@ class Config:
     enable_scheduler = True
     global_binance_api_key = None
     global_binance_secret = None
+    global_okx_api_key = None
+    global_okx_secret = None
+    global_okx_passphrase = None
     langchain_tracing = False
     langchain_api_key = ''
     langchain_project = 'crypto-agent'
@@ -44,6 +47,11 @@ class Config:
         # 币安API配置
         self.global_binance_api_key = os.getenv('BINANCE_API_KEY')
         self.global_binance_secret = os.getenv('BINANCE_SECRET')
+
+        # 欧易API配置
+        self.global_okx_api_key = os.getenv('OKX_API_KEY')
+        self.global_okx_secret = os.getenv('OKX_SECRET')
+        self.global_okx_passphrase = os.getenv('OKX_PASSPHRASE')
 
         # 系统配置
         self.admin_password = os.getenv('ADMIN_PASSWORD', '123456')
@@ -98,15 +106,25 @@ class Config:
         """验证配置完整性"""
         errors = []
 
-        # 检查是否至少有一个有效的币安API配置
-        has_global_api = bool(self.global_binance_api_key and self.global_binance_secret)
+        # 检查是否至少有一个有效的交易所API配置
+        has_binance = bool(self.global_binance_api_key and self.global_binance_secret)
+        has_okx = bool(self.global_okx_api_key and self.global_okx_secret and self.global_okx_passphrase)
 
-        if not has_global_api:
+        if not has_binance and not has_okx:
             # 如果没有全局配置，检查是否所有交易对都有专属配置
             for cfg in self.symbol_configs:
                 symbol = cfg.get('symbol')
-                if not cfg.get('binance_api_key') or not cfg.get('binance_secret'):
-                    errors.append(f"交易对 {symbol} 缺少币安API配置，且未配置全局API")
+                exchange = cfg.get('exchange', 'binance').lower()
+                
+                if exchange == 'okx':
+                    if not cfg.get('api_key') or not cfg.get('secret') or not cfg.get('passphrase'):
+                         errors.append(f"交易对 {symbol} (OKX) 缺少API配置，且未配置全局OKX API")
+                else: # binance
+                    # 兼容老的 key 名 (binance_api_key) 和新的通用名 (api_key)
+                    b_key = cfg.get('binance_api_key') or cfg.get('api_key')
+                    b_secret = cfg.get('binance_secret') or cfg.get('secret')
+                    if not b_key or not b_secret:
+                        errors.append(f"交易对 {symbol} (Binance) 缺少币安API配置，且未配置全局API")
 
         if errors:
             error_msg = "配置验证失败:\n" + "\n".join(errors)
@@ -115,41 +133,60 @@ class Config:
 
         logger.info("✅ 配置验证通过")
 
-    def get_binance_credentials(self, config_id: Optional[str] = None, symbol: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    def get_exchange_credentials(self, config_id: Optional[str] = None, symbol: Optional[str] = None) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
         """
-        获取币安API凭证
+        获取交易所凭证
         优先级：config_id专属配置 > symbol专属配置 > 全局默认配置
 
-        Args:
-            config_id: 配置ID（推荐使用）
-            symbol: 交易对符号（向后兼容，不推荐）
-
         Returns:
-            (api_key, secret) 元组
+            (exchange, api_key, secret, passphrase) 元组
         """
-        # 优先使用 config_id 查询
+        config = None
         if config_id:
             config = self.configs_by_id.get(config_id)
-            if config:
-                api_key = config.get('binance_api_key')
-                secret = config.get('binance_secret')
-                if api_key and secret:
-                    logger.debug(f"使用配置 {config_id} 的专属币安API")
-                    return (api_key, secret)
+        elif symbol:
+            for cfg in self.symbol_configs:
+                if cfg.get('symbol') == symbol:
+                    config = cfg
+                    break
 
-        # 向后兼容：使用 symbol 查询（返回第一个匹配）
-        if symbol:
-            for config in self.symbol_configs:
-                if config.get('symbol') == symbol:
-                    api_key = config.get('binance_api_key')
-                    secret = config.get('binance_secret')
-                    if api_key and secret:
-                        logger.debug(f"使用交易对 {symbol} 的专属币安API配置")
-                        return (api_key, secret)
+        if config:
+            exchange = config.get('exchange', 'binance').lower()
+            # 优先检查通用命名的 api_key/secret/passphrase
+            api_key = config.get('api_key')
+            secret = config.get('secret')
+            passphrase = config.get('passphrase')
+            
+            # 兼容币安旧命名
+            if exchange == 'binance':
+                api_key = api_key or config.get('binance_api_key')
+                secret = secret or config.get('binance_secret')
+            
+            if api_key and secret:
+                if exchange == 'okx' and not passphrase:
+                    # 如果是OKX但没专属passphrase，尝试用全局的
+                    passphrase = self.global_okx_passphrase
+                
+                logger.debug(f"使用配置 {config.get('config_id', symbol)} 的专属{exchange} API")
+                return (exchange, api_key, secret, passphrase)
 
-        # 返回全局默认配置
-        logger.debug("使用全局币安API配置")
-        return (self.global_binance_api_key, self.global_binance_secret)
+            # 如果 config 存在但没写 API，则回退到该 exchange 的全局配置
+            if exchange == 'okx':
+                return ('okx', self.global_okx_api_key, self.global_okx_secret, self.global_okx_passphrase)
+            else:
+                return ('binance', self.global_binance_api_key, self.global_binance_secret, None)
+
+        # 全局默认回退 (默认 Binance)
+        return ('binance', self.global_binance_api_key, self.global_binance_secret, None)
+
+    def get_binance_credentials(self, config_id: Optional[str] = None, symbol: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+        """
+        获取币安API凭证（向后兼容）
+        """
+        exch, key, secret, _ = self.get_exchange_credentials(config_id, symbol)
+        if exch == 'binance':
+            return (key, secret)
+        return (None, None)
 
     def get_config_by_id(self, config_id: str) -> Optional[Dict]:
         """

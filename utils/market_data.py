@@ -39,7 +39,7 @@ class MarketTool:
                 raise ValueError(f"未找到配置ID: {config_id}")
             self.config_id = config_id
             self.symbol = cfg.get('symbol')
-            api_key, secret = global_config.get_binance_credentials(config_id=config_id)
+            exchange_name, api_key, secret, passphrase = global_config.get_exchange_credentials(config_id=config_id)
             mode = cfg.get('mode', 'STRATEGY').upper()
             market_type = cfg.get('market_type', 'swap')
             if mode == 'SPOT_DCA':
@@ -49,14 +49,14 @@ class MarketTool:
             logger.warning(f"⚠️ 使用 symbol 初始化已过时，建议使用 config_id")
             self.config_id = None
             self.symbol = symbol
-            api_key, secret = global_config.get_binance_credentials(symbol=symbol)
+            exchange_name, api_key, secret, passphrase = global_config.get_exchange_credentials(symbol=symbol)
             cfg = None
             market_type = 'swap'
         else:
             raise ValueError("必须提供 config_id 或 symbol")
 
         if not api_key or not secret:
-            raise ValueError(f"未找到币安API配置 (config_id={config_id}, symbol={symbol})")
+            raise ValueError(f"未找到{exchange_name} API配置 (config_id={config_id}, symbol={symbol})")
 
         config = {
             'apiKey': api_key,
@@ -68,6 +68,10 @@ class MarketTool:
                 'recvWindow': global_config.DEFAULT_RECVWINDOW,
             }
         }
+        
+        # OKX 额外需要密码 (Passphrase)
+        if exchange_name == 'okx' and passphrase:
+            config['password'] = passphrase
 
         if proxy_port:
             config['proxies'] = {
@@ -75,7 +79,9 @@ class MarketTool:
                 'https': f'http://127.0.0.1:{proxy_port}',
             }
 
-        if market_type == 'spot':
+        if exchange_name == 'okx':
+            self.exchange = ccxt.okx(config)
+        elif market_type == 'spot':
             self.exchange = ccxt.binance(config)
         else:
             self.exchange = ccxt.binanceusdm(config)
@@ -133,8 +139,8 @@ class MarketTool:
             "liquidations_24h": "N/A"
         }
         
-        # 仅限于 USDM 合约
-        if self.exchange.id != 'binanceusdm':
+        # 仅限于 Binance USDM 合约
+        if self.exchange.id != 'binanceusdm' and self.exchange.id != 'binance':
             return sentiment
 
         try:
@@ -645,7 +651,11 @@ class MarketTool:
                         final_amt = raw_close_amount if (0 < raw_close_amount < amt) else amt
                         formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
 
-                        params = {'positionSide': current_pos_side_str}
+                        params = {}
+                        if self.exchange.id == 'okx':
+                            params['posSide'] = side # long or short
+                        else:
+                            params['positionSide'] = current_pos_side_str
                         
                         order = None
                         if raw_close_price > 0:
@@ -663,7 +673,10 @@ class MarketTool:
                                 
                                 # 方案 A: 止损市价单 (推荐，保证止损触发后立刻跑路)
                                 order_type = 'STOP_MARKET' # STOP / STOP_LIMIT
-                                params['stopPrice'] = float(formatted_price) # 触发价格
+                                if self.exchange.id == 'okx':
+                                    params['triggerPrice'] = float(formatted_price)
+                                else:
+                                    params['stopPrice'] = float(formatted_price) # 触发价格
                                 params['closePosition'] = True # 某些交易所支持直接平仓标志
                                 
                                 # 注意：STOP_MARKET 通常不需要传 price 参数 (传 None)，但需要 stopPrice
@@ -701,7 +714,10 @@ class MarketTool:
                 is_spot = (self.exchange.options.get('defaultType') == 'spot')
                 if not is_spot:
                     pos_side = 'LONG' if side == 'buy' else 'SHORT'
-                    params['positionSide'] = pos_side
+                    if self.exchange.id == 'okx':
+                         params['posSide'] = pos_side.lower()
+                    else:
+                         params['positionSide'] = pos_side
                     logger.info(f"🚀 [OPEN-LIMIT] 开仓挂单: {pos_side} {side} {amount} @ {price}")
                 else:
                     logger.info(f"🚀 [SPOT-LIMIT] 现货挂单: {side} {amount} @ {price}")
