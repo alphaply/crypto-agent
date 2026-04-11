@@ -1241,17 +1241,39 @@ async function loadPositionStats(configId) {
     const container = document.getElementById(`pos-container-${configId}`);
     container.innerHTML = '<div class="text-center text-gray-500 text-xs py-2">⏳ 加载中...</div>';
 
+    const renderLoadError = (msg) => {
+        container.innerHTML = `
+            <div class="text-center text-red-400 text-xs py-2">
+                ❌ ${msg}
+                <button onclick="loadPositionStats('${configId}')" class="ml-2 underline text-red-300 hover:text-red-200">重试</button>
+            </div>`;
+    };
+
     try {
         const resp = await fetch(`/api/stats/position/${configId}`);
-        const data = await resp.json();
+        let data = null;
+        try {
+            data = await resp.json();
+        } catch {
+            data = null;
+        }
+
+        if (!resp.ok) {
+            const msg = data?.message || `HTTP ${resp.status}`;
+            renderLoadError(msg);
+            return;
+        }
+
         if (!data.success) {
-            container.innerHTML = `<div class="text-center text-red-400 text-xs py-2">❌ ${data.message}</div>`;
+            renderLoadError(data.message || '获取仓位失败');
             return;
         }
 
         // 余额
         const balEl = document.getElementById(`pos-balance-${configId}`);
-        if (balEl && data.balance) balEl.textContent = `💰 ${data.balance.toFixed(2)} USDT`;
+        if (balEl && Number.isFinite(Number(data.balance))) {
+            balEl.textContent = `💰 ${Number(data.balance).toFixed(2)} USDT`;
+        }
 
         // 仓位渲染
         if (data.positions && data.positions.length > 0) {
@@ -1334,7 +1356,7 @@ async function loadPositionStats(configId) {
             }
         }
     } catch (e) {
-        container.innerHTML = `<div class="text-center text-red-400 text-xs py-2">❌ 网络错误</div>`;
+        renderLoadError(e?.message || '网络错误');
         console.error('Load position stats error:', e);
     }
 }

@@ -152,15 +152,16 @@ class Config:
 
         if config:
             exchange = config.get('exchange', 'binance').lower()
-            # 优先检查通用命名的 api_key/secret/passphrase
-            api_key = config.get('api_key')
-            secret = config.get('secret')
             passphrase = config.get('passphrase')
-            
-            # 兼容币安旧命名
+
             if exchange == 'binance':
-                api_key = api_key or config.get('binance_api_key')
-                secret = secret or config.get('binance_secret')
+                # Binance 场景优先读取 binance_* 字段，避免误用 LLM 的 api_key。
+                api_key = config.get('binance_api_key') or config.get('api_key')
+                secret = config.get('binance_secret') or config.get('secret')
+            else:
+                # 其他交易所仍按通用字段读取。
+                api_key = config.get('api_key')
+                secret = config.get('secret')
             
             if api_key and secret:
                 if exchange == 'okx' and not passphrase:
