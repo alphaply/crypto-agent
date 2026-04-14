@@ -2,7 +2,6 @@
 
 基于 LLM + LangGraph 的自动化加密交易系统，支持实盘、策略模拟、现货定投三种模式，并提供完整的 Web 控制台与历史统计能力。
 
-本版本为 v1.0 正式版文档入口。
 
 ## 核心能力
 
@@ -25,14 +24,22 @@
 
 ## 快速开始
 
+使用uv快速准备环境
+
 ```bash
 uv sync
 uv run dashboard.py
 ```
 
+复制.env.template，并且重命名成.env文件。
+
+唯一在这个文件修改的只有后台的密码。其他配置均可以在web界面中进行配置！
+
 浏览器访问：`http://localhost:7860`
 
 ## 文档导航
+
+图文说明文档：https://my.feishu.cn/wiki/FfYkwTigTiFzIZkvgE4cW2oLnvd?from=from_copylink
 
 - 安装与运行：`docs/INSTALL.md`
 - 配置指南：`docs/CONFIG_GUIDE.md`

@@ -393,6 +393,7 @@ def history_view():
 
     symbol = _resolve_symbol('BTC/USDT')
     agent_filter = request.args.get('agent', 'ALL')
+    compare_ids_raw = request.args.get('agents', '').strip()  # 多选对比模式：逗号分隔的 config_id 列表
     try:
         page = int(request.args.get('page', 1))
     except (TypeError, ValueError):
@@ -432,7 +433,7 @@ def history_view():
             mock_acc = None
             mock_chart_data = []
 
-        # 实盘模式资金曲线 (从 balance_history 按天聚合)
+        # 实盘模式资金曲线 (从 balance_history 按天聚合，过滤 0 值异常点)
         real_chart_data = []
         real_balance = None
         if agent_mode == 'REAL' and agent_filter != 'ALL':
@@ -442,7 +443,7 @@ def history_view():
                         SELECT day, total_equity FROM (
                             SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
                                    row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                            FROM balance_history WHERE symbol = ?
+                            FROM balance_history WHERE symbol = ? AND total_equity > 0
                         ) WHERE rn = 1 ORDER BY day ASC
                     """, (symbol,)).fetchall()
                     real_chart_data = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
@@ -466,10 +467,21 @@ def history_view():
             dca_stats = calculate_dca_stats(agent_filter)
             dca_chart_data = get_dca_daily_snapshot_history(agent_filter, days=30)
 
+        # 解析多选对比参数
+        compare_ids = []
+        if compare_ids_raw:
+            compare_ids = [a.strip() for a in compare_ids_raw.split(',')
+                           if a.strip() and a.strip() in config_map]
+
         history_compare_series = []
-        if agent_filter == 'ALL':
+        if agent_filter == 'ALL' or compare_ids:
+            target_cfgs = (
+                [config_map[cid] for cid in compare_ids if cid in config_map]
+                if compare_ids
+                else symbol_configs
+            )
             with get_db_conn() as conn:
-                for cfg in symbol_configs:
+                for cfg in target_cfgs:
                     config_id = cfg.get('config_id')
                     mode = str(cfg.get('mode', 'STRATEGY')).upper()
                     if not config_id or mode == 'SPOT_DCA':
@@ -480,7 +492,7 @@ def history_view():
                             SELECT day, total_equity FROM (
                                 SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
                                        row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                                FROM balance_history WHERE symbol = ?
+                                FROM balance_history WHERE symbol = ? AND total_equity > 0
                             ) WHERE rn = 1 ORDER BY day ASC
                         """, (symbol,)).fetchall()
                         points = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
@@ -515,6 +527,7 @@ def history_view():
         dca_stats = None
         dca_chart_data = []
         history_compare_series = []
+        compare_ids = []
 
     return render_template(
         'history.html',
@@ -534,6 +547,7 @@ def history_view():
         dca_stats=dca_stats,
         dca_chart_data=dca_chart_data,
         history_compare_series=history_compare_series,
+        compare_ids=compare_ids,
     )
 @main_bp.route('/chat')
 def chat_view():
