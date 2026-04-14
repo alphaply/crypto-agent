@@ -1,28 +1,21 @@
 (function initAppTheme() {
   const MODE_KEY = 'crypto-agent-theme-mode';
-  const ACCENT_KEY = 'crypto-agent-theme-accent';
-  const DEFAULT_MODE = 'auto';
-  const DEFAULT_ACCENT = 'blue';
-  const allowedModes = new Set(['light', 'dark', 'auto']);
-  const allowedAccents = new Set(['blue', 'emerald', 'amber', 'rose', 'indigo', 'cyan']);
+  const DEFAULT_MODE = 'light';
+  const allowedModes = new Set(['light', 'dark']);
 
   function getStoredMode() {
-    const mode = localStorage.getItem(MODE_KEY) || DEFAULT_MODE;
+    const mode = localStorage.getItem(MODE_KEY);
+    if (mode === 'auto') {
+      return getSystemTheme();
+    }
     return allowedModes.has(mode) ? mode : DEFAULT_MODE;
-  }
-
-  function getStoredAccent() {
-    const accent = localStorage.getItem(ACCENT_KEY) || DEFAULT_ACCENT;
-    return allowedAccents.has(accent) ? accent : DEFAULT_ACCENT;
   }
 
   function getSystemTheme() {
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
 
-  function resolveTheme(mode) {
-    return mode === 'auto' ? getSystemTheme() : mode;
-  }
+  function resolveTheme(mode) { return mode; }
 
   function applyTheme(mode, persist) {
     const nextMode = allowedModes.has(mode) ? mode : DEFAULT_MODE;
@@ -38,26 +31,7 @@
     window.dispatchEvent(new CustomEvent('app-theme-change', {
       detail: {
         mode: nextMode,
-        theme: resolved,
-        accent: getStoredAccent()
-      }
-    }));
-
-    updateThemeControls();
-  }
-
-  function applyAccent(accent, persist) {
-    const nextAccent = allowedAccents.has(accent) ? accent : DEFAULT_ACCENT;
-    document.documentElement.setAttribute('data-accent', nextAccent);
-    if (persist) {
-      localStorage.setItem(ACCENT_KEY, nextAccent);
-    }
-
-    window.dispatchEvent(new CustomEvent('app-theme-accent-change', {
-      detail: {
-        mode: getStoredMode(),
-        theme: resolveTheme(getStoredMode()),
-        accent: nextAccent
+        theme: resolved
       }
     }));
 
@@ -65,28 +39,22 @@
   }
 
   function updateThemeControls() {
-    const mode = getStoredMode();
-    const accent = getStoredAccent();
-    const resolved = resolveTheme(mode);
-
-    document.querySelectorAll('[data-theme-mode-select]').forEach(select => {
-      if (select.value !== mode) select.value = mode;
-    });
-
-    document.querySelectorAll('[data-theme-accent-select]').forEach(select => {
-      if (select.value !== accent) select.value = accent;
-    });
+    const resolved = resolveTheme(getStoredMode());
+    const icon = resolved === 'dark'
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"></path></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>';
 
     document.querySelectorAll('[data-theme-toggle]').forEach(button => {
-      const label = mode === 'auto' ? `主题: 跟随系统(${resolved === 'dark' ? '暗' : '亮'})` : `主题: ${resolved === 'dark' ? '暗色' : '亮色'}`;
-      button.textContent = label;
+      const label = resolved === 'dark' ? '切换到亮色模式' : '切换到暗色模式';
+      button.innerHTML = icon;
       button.setAttribute('aria-label', label);
+      button.setAttribute('title', label);
     });
   }
 
   function toggleMode() {
     const mode = getStoredMode();
-    const next = mode === 'light' ? 'dark' : (mode === 'dark' ? 'auto' : 'light');
+    const next = mode === 'dark' ? 'light' : 'dark';
     applyTheme(next, true);
   }
 
@@ -95,29 +63,11 @@
       button.addEventListener('click', () => toggleMode());
     });
 
-    document.querySelectorAll('[data-theme-mode-select]').forEach(select => {
-      select.addEventListener('change', () => applyTheme(select.value, true));
-    });
-
-    document.querySelectorAll('[data-theme-accent-select]').forEach(select => {
-      select.addEventListener('change', () => applyAccent(select.value, true));
-    });
-
     updateThemeControls();
   }
 
   function init() {
-    applyAccent(getStoredAccent(), false);
     applyTheme(getStoredMode(), false);
-
-    const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-    if (media && typeof media.addEventListener === 'function') {
-      media.addEventListener('change', () => {
-        if (getStoredMode() === 'auto') {
-          applyTheme('auto', false);
-        }
-      });
-    }
 
     initThemeControls();
   }
@@ -125,10 +75,8 @@
   window.AppTheme = {
     init,
     applyTheme,
-    applyAccent,
     toggleMode,
     getMode: getStoredMode,
-    getAccent: getStoredAccent,
     getResolvedTheme: () => resolveTheme(getStoredMode())
   };
 

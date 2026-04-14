@@ -296,6 +296,7 @@ def _fetch_real_position_data(mt, symbol, cfg):
     positions = []
     balance = 0
     recent_trades = []
+    fetch_errors = []
     trade_summary = {"total_trades": 0, "realized_pnl": 0, "win_count": 0,
                      "lose_count": 0, "win_rate": 0}
     from config import config as global_config
@@ -329,15 +330,31 @@ def _fetch_real_position_data(mt, symbol, cfg):
                     'margin_used': round(margin_used, 2),
                 })
     except Exception as e:
-        logger.warning(f"Fetch positions error: {e}")
+        err = f"fetch_positions_failed({type(e).__name__}): {e}"
+        fetch_errors.append(err)
+        logger.error(
+            f"REAL 持仓获取失败 config_id={cfg.get('config_id')} symbol={symbol} "
+            f"exchange={getattr(mt.exchange, 'id', 'unknown')}: {e}",
+            exc_info=True,
+        )
 
     # 2. 获取账户余额
     try:
         bal = mt.exchange.fetch_balance()
-        balance = float(bal.get('USDT', {}).get('total', 0) or
-                        bal.get('total', {}).get('USDT', 0) or 0)
+        balance = float(
+            bal.get('USDT', {}).get('total', 0)
+            or bal.get('USDT', {}).get('free', 0)
+            or bal.get('total', {}).get('USDT', 0)
+            or 0
+        )
     except Exception as e:
-        logger.warning(f"Fetch balance error: {e}")
+        err = f"fetch_balance_failed({type(e).__name__}): {e}"
+        fetch_errors.append(err)
+        logger.error(
+            f"REAL 余额获取失败 config_id={cfg.get('config_id')} symbol={symbol} "
+            f"exchange={getattr(mt.exchange, 'id', 'unknown')}: {e}",
+            exc_info=True,
+        )
 
     # 3. 获取最近成交 & 同步到数据库
     try:
@@ -403,7 +420,10 @@ def _fetch_real_position_data(mt, symbol, cfg):
             # 按时间倒序排列，取最近 5 个
             recent_trades = sorted(display_trades, key=lambda x: x['time'], reverse=True)[:5]
     except Exception as e:
-        logger.warning(f"Fetch trades error: {e}")
+        logger.warning(
+            f"Fetch trades error config_id={cfg.get('config_id')} symbol={symbol} "
+            f"exchange={getattr(mt.exchange, 'id', 'unknown')}: {e}"
+        )
 
     # 4. 从数据库获取完整的历史盈亏统计
     try:
@@ -420,7 +440,7 @@ def _fetch_real_position_data(mt, symbol, cfg):
 
     trade_summary = _calculate_win_rate(trade_summary)
 
-    return positions, balance, recent_trades, trade_summary
+    return positions, balance, recent_trades, trade_summary, fetch_errors
 
 
 def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
@@ -537,16 +557,35 @@ def get_position_stats(config_id):
         mode = cfg.get('mode', 'STRATEGY').upper()
         symbol = cfg.get('symbol')
 
+        if not symbol:
+            return jsonify({"success": False, "message": f"配置 {config_id} 缺少 symbol"}), 400
+
         if mode not in ['REAL', 'STRATEGY']:
             return jsonify({"success": True, "mode": mode, "positions": [], "summary": None,
                             "message": "仅 REAL/STRATEGY 模式支持实时仓位查询"})
 
-        mt = MarketTool(config_id=config_id)
+        try:
+            mt = MarketTool(config_id=config_id)
+        except ValueError as e:
+            logger.error(f"初始化交易所失败 config_id={config_id}: {e}")
+            return jsonify({"success": False, "message": str(e)}), 400
 
         if mode == 'REAL':
-            positions, balance, recent_trades, trade_summary = _fetch_real_position_data(mt, symbol, cfg)
+            positions, balance, recent_trades, trade_summary, fetch_errors = _fetch_real_position_data(mt, symbol, cfg)
+            if fetch_errors and not positions:
+                return jsonify({
+                    "success": False,
+                    "mode": mode,
+                    "positions": [],
+                    "balance": round(balance, 2),
+                    "recent_trades": recent_trades,
+                    "summary": trade_summary,
+                    "message": "实盘仓位获取失败，请检查交易所凭证与权限",
+                    "errors": fetch_errors,
+                }), 502
         else:
             positions, balance, recent_trades, trade_summary = _fetch_strategy_position_data(mt, config_id, symbol, cfg)
+            fetch_errors = []
 
         return jsonify({
             "success": True,
@@ -555,6 +594,7 @@ def get_position_stats(config_id):
             "balance": round(balance, 2),
             "recent_trades": recent_trades,
             "summary": trade_summary,
+            "errors": fetch_errors,
         })
     except Exception as e:
         import traceback

@@ -261,22 +261,35 @@
                     </div>
                 </div>
 
-                <!-- 3. 币安专属 API (可选) -->
+                <!-- 3. 交易所 API 配置 (可选) -->
                 <div class="space-y-4 pt-4 border-t border-gray-100">
                     <div class="flex items-center justify-between mb-2">
                         <div class="flex items-center gap-2">
                             <span class="w-1 h-4 bg-amber-500 rounded-full"></span>
-                            <h5 class="text-xs font-bold text-gray-900 uppercase">币安专属 API (可选)</h5>
+                            <h5 class="text-xs font-bold text-gray-900 uppercase">交易所 API 配置 (可选)</h5>
                         </div>
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">Binance API Key</label>
-                            <input type="password" id="edit-bn-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Binance API Key">
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">交易所</label>
+                            <select id="edit-exchange" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" onchange="onExChangeChange(this.value)">
+                                <option value="binance">Binance</option>
+                                <option value="okx">OKX</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Key</label>
+                            <input type="password" id="edit-ex-key" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="API Key (留空不修改)">
                         </div>
                         <div>
-                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">Binance API Secret</label>
-                            <input type="password" id="edit-bn-secret" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Binance API Secret">
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Secret</label>
+                            <input type="password" id="edit-ex-secret" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="API Secret (留空不修改)">
+                        </div>
+                        <div id="div-ex-passphrase" class="hidden sm:col-span-2">
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">API Passphrase (仅 OKX)</label>
+                            <input type="password" id="edit-ex-passphrase" class="w-full border rounded-lg p-2.5 sm:p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="OKX Passphrase (留空不修改)">
                         </div>
                     </div>
                 </div>

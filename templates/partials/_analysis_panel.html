@@ -1,5 +1,5 @@
 <!-- 🧠 分析与决策逻辑面板 component -->
-<div class="lg:col-span-2 flex flex-col">
+<div class="analysis-panel lg:col-span-2 flex flex-col">
     <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col h-full">
         <!-- 头部标题与标签 -->
         <div class="px-4 py-3 md:px-6 md:py-4 border-b border-gray-100 bg-gray-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 flex-shrink-0">
@@ -41,8 +41,8 @@
         <div class="p-4 md:p-6 flex-grow overflow-y-auto mini-scroll" id="summary-content-wrap-{{ summary.config_id }}">
             <div class="markdown-content content-block text-gray-700 text-xs md:text-sm leading-relaxed antialiased">{{ summary.content|trim }}</div>
             
-            <div class="mt-4 md:mt-6 bg-blue-50/50 border-l-4 border-blue-500 p-3 md:p-4 rounded-r-xl">
-                <div class="text-[9px] md:text-[10px] font-bold uppercase text-blue-400 mb-1 md:mb-2 tracking-wider">执行策略逻辑 (Strategy Logic)</div>
+            <div class="strategy-logic-box mt-4 md:mt-6 bg-blue-50/50 border-l-4 border-blue-500 p-3 md:p-4 rounded-r-xl">
+                <div class="strategy-logic-title text-[9px] md:text-[10px] font-bold uppercase text-blue-400 mb-1 md:mb-2 tracking-wider">执行策略逻辑 (Strategy Logic)</div>
                 <div class="markdown-content logic-block text-[11px] md:text-xs text-blue-900/80 leading-relaxed">{{ summary.strategy_logic|trim }}</div>
             </div>
 

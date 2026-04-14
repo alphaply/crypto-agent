@@ -6,7 +6,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
     <style>
         .history-card { width: 100%; max-width: 100%; min-width: 0; overflow: hidden; }
-        .history-card * { min-width: 0; }
+        .history-card > * { min-width: 0; }
         
         .markdown-content { overflow-wrap: anywhere; word-break: break-word; }
         .markdown-content,
@@ -26,6 +26,29 @@
         
         /* 图表容器自适应 */
         .chart-container { position: relative; width: 100%; height: 220px; overflow: hidden; }
+        .chart-container canvas {
+            display: block;
+            width: 100% !important;
+            max-width: 100% !important;
+            height: 100% !important;
+        }
+
+        #history-compare-legend {
+            min-width: 0;
+            max-width: 100%;
+            overflow: hidden;
+        }
+
+        #history-compare-legend .compare-chip {
+            min-width: 0;
+            max-width: 100%;
+        }
+
+        #history-compare-legend .compare-chip-text {
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
 
         :root[data-theme='dark'] .history-card,
         :root[data-theme='dark'] .chart-panel,
@@ -59,15 +82,23 @@
             color: var(--accent-500) !important;
         }
 
+        :root[data-theme='dark'] .history-total-badge {
+            background-color: color-mix(in srgb, var(--surface-3) 88%, transparent) !important;
+            color: var(--text-secondary) !important;
+            border: 1px solid var(--border-soft) !important;
+        }
+
         @media (max-width: 640px) {
             #history-toast-container { width: calc(100% - 1.5rem) !important; right: 0.75rem !important; left: 0.75rem !important; }
             #history-toast-container > div { width: 100%; min-width: 0; }
             .agent-chip {
                 display: inline-flex;
+                min-width: 0;
                 max-width: 100%;
+                flex: 0 1 auto;
                 white-space: normal;
-                word-break: break-all;
-                flex-shrink: 0;
+                overflow-wrap: anywhere;
+                word-break: break-word;
             }
             .chart-container { height: 180px; }
             .history-card {
@@ -79,28 +110,28 @@
 {% endblock %}
 
 {% block content %}
-    <div class="max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-8 mb-12">
+    <div class="w-full min-w-0 max-w-full md:max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-8 mb-12">
         
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
-            <a href="/?symbol={{ current_symbol }}" class="inline-flex items-center text-gray-600 hover:text-gray-900 font-medium transition-colors">
+        <div class="flex flex-col md:flex-row md:justify-between md:items-center mb-6 gap-3 sm:gap-4 min-w-0">
+            <a href="/?symbol={{ current_symbol }}" class="inline-flex items-center text-gray-600 hover:text-gray-900 font-medium transition-colors shrink-0">
                 <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
                 返回控制台
             </a>
             
-            <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto min-w-0">
-                <h1 class="text-base sm:text-xl font-bold text-gray-900 flex items-start sm:items-center gap-2 leading-tight min-w-0">
+            <div class="flex flex-wrap items-center gap-2 sm:gap-3 w-full md:w-auto min-w-0">
+                <h1 class="text-base sm:text-xl font-bold text-gray-900 flex items-start sm:items-center gap-2 leading-tight min-w-0 flex-1 md:flex-none">
                     <span class="shrink-0">📜 历史回溯:</span> <span class="text-blue-600 break-all min-w-0">{{ current_symbol }}</span>
                 </h1>
                 
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto flex-shrink-0">
+                <span class="history-total-badge inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-800 self-start sm:self-auto shrink-0">
                     Total: {{ total_count }} Records
                 </span>
             </div>
         </div>
 
         {% if pnl_stats and agent_mode != 'SPOT_DCA' %}
-        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-5 mb-6 sm:mb-8 flex flex-col sm:flex-row gap-4 sm:gap-6 items-center transition-all hover:shadow-md">
-            <div class="flex-shrink-0 flex items-center gap-3 sm:gap-4 border-b sm:border-b-0 sm:border-r border-slate-100 pb-3 sm:pb-0 sm:pr-6 w-full sm:w-auto">
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-5 mb-6 sm:mb-8 flex flex-col md:flex-row gap-4 sm:gap-6 items-center transition-all hover:shadow-md">
+            <div class="flex-shrink-0 flex items-center gap-3 sm:gap-4 border-b md:border-b-0 md:border-r border-slate-100 pb-3 md:pb-0 md:pr-6 w-full md:w-auto">
                 <div class="w-10 h-10 rounded-xl flex items-center justify-center text-lg shadow-inner
                     {% if pnl_stats.total_pnl >= 0 %}bg-emerald-50 text-emerald-600{% else %}bg-rose-50 text-rose-600{% endif %}">
                     {% if pnl_stats.total_pnl >= 0 %}📈{% else %}📉{% endif %}
@@ -113,7 +144,7 @@
                 </div>
             </div>
             
-            <div class="flex-grow grid grid-cols-2 gap-4 w-full sm:w-auto">
+            <div class="flex-1 grid grid-cols-2 gap-3 sm:gap-4 w-full min-w-0">
                 <div>
                     <h3 class="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">胜率</h3>
                     <div class="text-base font-black text-slate-800" style="font-family: 'JetBrains Mono', monospace;">{{ "%.1f"|format(pnl_stats.win_rate) }}%</div>
@@ -131,7 +162,7 @@
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
         {% if current_agent == 'ALL' and history_compare_series and history_compare_series|length > 0 %}
-        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md min-w-0">
             <div class="flex flex-col gap-3 sm:gap-4 mb-4 sm:mb-5">
                 <div>
                     <h2 class="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
@@ -141,7 +172,7 @@
                 </div>
                 <div id="history-compare-legend" class="flex flex-wrap gap-2"></div>
             </div>
-            <div class="chart-container">
+            <div class="chart-container min-w-0">
                 <canvas id="historyCompareChart"></canvas>
             </div>
             <script>
@@ -253,10 +284,10 @@
 
                     function renderLegend() {
                         legend.innerHTML = datasets.map((ds, idx) => `
-                            <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 cursor-pointer">
+                            <label class="compare-chip inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 cursor-pointer max-w-full">
                                 <input type="checkbox" data-ds-index="${idx}" checked class="history-ds-toggle w-3.5 h-3.5">
                                 <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${ds.borderColor}"></span>
-                                <span class="break-all">${ds.label}</span>
+                                <span class="compare-chip-text">${ds.label}</span>
                             </label>
                         `).join('');
 
@@ -281,7 +312,7 @@
         {% endif %}
 
         {% if current_agent != 'ALL' and mock_acc and agent_mode == 'STRATEGY' %}
-        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md min-w-0">
             <div class="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center mb-4 sm:mb-6">
                 <div>
                     <h2 class="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
@@ -289,20 +320,20 @@
                     </h2>
                     <p class="text-[10px] text-slate-400 mt-0.5">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的虚拟净值趋势</p>
                 </div>
-                <div class="grid grid-cols-2 gap-4 w-full md:w-auto">
-                    <div>
+                <div class="grid grid-cols-2 gap-2 sm:gap-4 md:gap-6 w-full md:w-auto min-w-0">
+                    <div class="min-w-0">
                         <h3 class="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">虚拟余额</h3>
-                        <div class="text-lg font-black text-blue-600 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ "%.2f"|format(mock_acc.balance) }} <span class="text-[10px] font-bold text-slate-400">USDT</span></div>
+                        <div class="text-sm sm:text-lg font-black text-blue-600 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ "%.2f"|format(mock_acc.balance) }} <span class="text-[10px] font-bold text-slate-400">USDT</span></div>
                     </div>
-                    <div>
+                    <div class="min-w-0">
                         <h3 class="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">破产重置</h3>
-                        <div class="text-lg font-black text-rose-500 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ mock_acc.failures }} <span class="text-[10px] font-bold text-slate-400">次</span></div>
+                        <div class="text-sm sm:text-lg font-black text-rose-500 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ mock_acc.failures }} <span class="text-[10px] font-bold text-slate-400">次</span></div>
                     </div>
                 </div>
             </div>
             
             {% if mock_chart_data and mock_chart_data|length > 0 %}
-            <div class="chart-container">
+            <div class="chart-container min-w-0">
                 <canvas id="equityChart"></canvas>
             </div>
             <script>
@@ -395,30 +426,30 @@
         {% endif %}
 
         {% if current_agent != 'ALL' and agent_mode == 'REAL' %}
-        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md">
-            <div class="flex flex-col md:flex-row gap-4 sm:gap-6 justify-between items-start md:items-center mb-4 sm:mb-6">
-                <div>
+        <div class="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-slate-200 p-4 sm:p-6 mb-6 sm:mb-8 transition-all hover:shadow-md min-w-0">
+            <div class="flex flex-col md:flex-row gap-4 sm:gap-6 justify-between items-start md:items-center mb-4 sm:mb-6 min-w-0">
+                <div class="min-w-0 w-full md:w-auto">
                     <h2 class="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
                         <span class="text-lg sm:text-xl">📊</span> 实盘资金曲线 (Real 模式)
                     </h2>
-                    <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 sm:mt-1">记录 <span class="font-bold text-slate-500">{{ current_agent }}</span> 的真实账户净值变化</p>
+                    <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 sm:mt-1 break-all">记录 <span class="font-bold text-slate-500 break-all">{{ current_agent }}</span> 的真实账户净值变化</p>
                 </div>
-                <div class="grid grid-cols-2 gap-4 sm:gap-6 w-full md:w-auto">
-                    <div>
+                <div class="grid grid-cols-2 gap-2 sm:gap-4 md:gap-6 w-full md:w-auto min-w-0">
+                    <div class="min-w-0">
                         <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1">账户余额 (实时)</h3>
-                        <div class="text-lg sm:text-xl font-black text-rose-600 truncate" style="font-family: 'JetBrains Mono', monospace;">
+                        <div class="text-sm sm:text-lg md:text-xl font-black text-rose-600 truncate" style="font-family: 'JetBrains Mono', monospace;">
                             {{ "%.2f"|format(real_balance) if real_balance is not none else "--" }} <span class="text-[10px] sm:text-xs font-bold text-slate-400">USDT</span>
                         </div>
                     </div>
-                    <div>
+                    <div class="min-w-0">
                         <h3 class="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5 sm:mb-1">资金曲线数据点</h3>
-                        <div class="text-lg sm:text-xl font-black text-slate-700 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ real_chart_data|length }} <span class="text-[10px] sm:text-xs font-bold text-slate-400">天</span></div>
+                        <div class="text-sm sm:text-lg md:text-xl font-black text-slate-700 truncate" style="font-family: 'JetBrains Mono', monospace;">{{ real_chart_data|length }} <span class="text-[10px] sm:text-xs font-bold text-slate-400">天</span></div>
                     </div>
                 </div>
             </div>
             
             {% if real_chart_data and real_chart_data|length > 0 %}
-            <div class="chart-container">
+            <div class="chart-container min-w-0">
                 <canvas id="realEquityChart"></canvas>
             </div>
             <script>
@@ -562,7 +593,7 @@
             {% if dca_chart_data and dca_chart_data|length > 0 %}
             <div class="mt-5 sm:mt-6">
                 <div class="text-[10px] sm:text-[11px] text-slate-500 mb-2">最近 30 天定投累计投入曲线</div>
-                <div class="chart-container">
+                <div class="chart-container min-w-0">
                     <canvas id="dcaSnapshotChart"></canvas>
                 </div>
                 <script>
@@ -638,7 +669,7 @@
         
 
         <div class="mb-8 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
-            <div class="flex flex-wrap gap-2 items-center w-full sm:w-auto">
+            <div class="flex flex-wrap gap-2 items-center w-full sm:w-auto min-w-0 overflow-hidden">
                 <span class="text-sm text-gray-500 mr-2 font-medium w-full sm:w-auto">筛选 Agent:</span>
                 
                 <a href="?symbol={{ current_symbol }}&agent=ALL" 

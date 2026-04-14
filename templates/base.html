@@ -8,18 +8,15 @@
       (function preloadThemeState() {
         try {
           const mode = localStorage.getItem('crypto-agent-theme-mode') || 'auto';
-          const accent = localStorage.getItem('crypto-agent-theme-accent') || 'blue';
           const resolved = mode === 'auto'
             ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
             : mode;
           const root = document.documentElement;
           root.setAttribute('data-theme-mode', mode);
           root.setAttribute('data-theme', resolved);
-          root.setAttribute('data-accent', accent);
         } catch (error) {
           document.documentElement.setAttribute('data-theme', 'light');
           document.documentElement.setAttribute('data-theme-mode', 'auto');
-          document.documentElement.setAttribute('data-accent', 'blue');
         }
       })();
     </script>
@@ -172,15 +169,7 @@
                 <button onclick="location.reload()" title="刷新" class="nav-icon-link md:hidden" aria-label="刷新">
                   <svg viewBox="0 0 24 24" class="nav-icon-svg" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 10-2.34 5.66"/><path d="M20 4v7h-7"/></svg>
                 </button>
-                <button data-theme-toggle class="theme-control hidden md:inline-flex items-center"></button>
-                <select data-theme-accent-select class="theme-control theme-control-select hidden lg:inline-flex">
-                  <option value="blue">海蓝</option>
-                  <option value="emerald">翡翠</option>
-                  <option value="amber">琥珀</option>
-                  <option value="rose">玫瑰</option>
-                  <option value="indigo">靛蓝</option>
-                  <option value="cyan">青蓝</option>
-                </select>
+                <button data-theme-toggle class="theme-control hidden md:inline-flex items-center justify-center" style="width: 2.5rem; padding: 0;"></button>
             </div>
           </div>
           {% if symbols %}
@@ -190,19 +179,7 @@
                 <option value="{{ sym }}" {% if sym == current_symbol %}selected{% endif %}>{{ sym }}</option>
               {% endfor %}
             </select>
-            <select data-theme-mode-select class="theme-control theme-control-select">
-              <option value="light">亮色</option>
-              <option value="dark">暗色</option>
-              <option value="auto">跟随系统</option>
-            </select>
-            <select data-theme-accent-select class="theme-control theme-control-select">
-              <option value="blue">海蓝</option>
-              <option value="emerald">翡翠</option>
-              <option value="amber">琥珀</option>
-              <option value="rose">玫瑰</option>
-              <option value="indigo">靛蓝</option>
-              <option value="cyan">青蓝</option>
-            </select>
+            <button data-theme-toggle class="theme-control inline-flex items-center justify-center md:hidden" style="width: 2.75rem; padding: 0;"></button>
             <div class="flex gap-1 w-full md:w-auto overflow-x-auto no-scrollbar pb-1 md:pb-0">
                 <div class="inline-flex rounded-xl shadow-sm min-w-max" role="group">
                     <a href="/chat" title="Chat" class="nav-quick-action min-h-11 px-3 md:px-3.5 py-2 font-medium rounded-l-xl" style="color: var(--text-secondary); background: color-mix(in srgb, var(--surface-1) 90%, transparent); border: 1px solid var(--border-soft);" aria-label="Chat">

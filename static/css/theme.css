@@ -45,41 +45,6 @@
   --scrollbar-thumb: #475569;
 }
 
-:root[data-accent='emerald'] {
-  --accent-500: #059669;
-  --accent-600: #047857;
-  --accent-100: #a7f3d0;
-  --accent-050: #ecfdf5;
-}
-
-:root[data-accent='amber'] {
-  --accent-500: #d97706;
-  --accent-600: #b45309;
-  --accent-100: #fde68a;
-  --accent-050: #fffbeb;
-}
-
-:root[data-accent='rose'] {
-  --accent-500: #e11d48;
-  --accent-600: #be123c;
-  --accent-100: #fecdd3;
-  --accent-050: #fff1f2;
-}
-
-:root[data-accent='indigo'] {
-  --accent-500: #4f46e5;
-  --accent-600: #4338ca;
-  --accent-100: #c7d2fe;
-  --accent-050: #eef2ff;
-}
-
-:root[data-accent='cyan'] {
-  --accent-500: #0891b2;
-  --accent-600: #0e7490;
-  --accent-100: #a5f3fc;
-  --accent-050: #ecfeff;
-}
-
 html,
 body {
   transition: background-color 0.2s ease, color 0.2s ease;

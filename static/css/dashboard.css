@@ -113,6 +113,155 @@ input:checked + .slider:before { transform: translateX(20px); }
 .config-card:hover { border-color: var(--accent-500); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
 .config-card.disabled { opacity: 0.6; background-color: var(--surface-2); }
 
+.dashboard-status-bar {
+  background: color-mix(in srgb, #f59e0b 12%, var(--surface-1));
+  border-bottom: 1px solid color-mix(in srgb, #f59e0b 32%, var(--border-soft));
+  color: color-mix(in srgb, #92400e 78%, var(--text-primary));
+}
+
+.agent-tabs-wrap {
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent) !important;
+  border: 1px solid var(--border-soft);
+}
+
+.agent-tabs-wrap .agent-tab-btn {
+  color: var(--text-secondary) !important;
+}
+
+.agent-tabs-wrap .agent-tab-btn[id^='tab-btn-'][class*='bg-white'] {
+  background: var(--surface-1) !important;
+  color: var(--accent-500) !important;
+  border: 1px solid var(--border-soft);
+}
+
+.agent-tabs-wrap .agent-tab-btn:hover {
+  background: color-mix(in srgb, var(--surface-3) 72%, transparent) !important;
+}
+
+.agent-stats-panel [class*='bg-white'],
+.analysis-panel [class*='bg-white'],
+#window-COMPARE [class*='bg-white'] {
+  background: color-mix(in srgb, var(--surface-1) 94%, transparent) !important;
+}
+
+.agent-stats-panel [class*='bg-gray-50'],
+.agent-stats-panel [class*='bg-slate-50'],
+.analysis-panel [class*='bg-gray-50'],
+.analysis-panel [class*='bg-slate-50'],
+#window-COMPARE [class*='bg-gray-50'],
+#window-COMPARE [class*='bg-slate-50'],
+#window-COMPARE [class*='bg-gray-100'],
+#window-COMPARE [class*='bg-slate-100'] {
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent) !important;
+}
+
+.agent-stats-panel [class*='border-gray-'],
+.agent-stats-panel [class*='border-slate-'],
+.analysis-panel [class*='border-gray-'],
+.analysis-panel [class*='border-slate-'],
+#window-COMPARE [class*='border-gray-'],
+#window-COMPARE [class*='border-slate-'] {
+  border-color: var(--border-soft) !important;
+}
+
+.agent-stats-panel [class*='text-gray-'],
+.agent-stats-panel [class*='text-slate-'],
+.analysis-panel [class*='text-gray-'],
+.analysis-panel [class*='text-slate-'],
+#window-COMPARE [class*='text-gray-'],
+#window-COMPARE [class*='text-slate-'] {
+  color: var(--text-secondary) !important;
+}
+
+.agent-stats-panel [class*='text-gray-900'],
+.agent-stats-panel [class*='text-slate-900'],
+.analysis-panel [class*='text-gray-900'],
+.analysis-panel [class*='text-slate-900'],
+#window-COMPARE [class*='text-gray-900'],
+#window-COMPARE [class*='text-slate-900'] {
+  color: var(--text-primary) !important;
+}
+
+.analysis-panel .markdown-content,
+#window-COMPARE .markdown-content {
+  color: var(--text-secondary);
+}
+
+.strategy-logic-box {
+  background: color-mix(in srgb, var(--accent-050) 72%, var(--surface-1));
+  border-left-color: var(--accent-500);
+}
+
+.strategy-logic-title {
+  color: color-mix(in srgb, var(--accent-600) 74%, var(--text-primary));
+}
+
+.compare-chip {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+:root[data-theme='dark'] .compare-chip {
+  background: color-mix(in srgb, var(--surface-2) 94%, transparent) !important;
+  border-color: var(--border-soft) !important;
+  color: var(--text-secondary) !important;
+}
+
+:root[data-theme='dark'] .compare-chip:has(.compare-config-check:checked) {
+  background: color-mix(in srgb, var(--accent-500) 24%, var(--surface-2)) !important;
+  border-color: color-mix(in srgb, var(--accent-500) 62%, var(--border-soft)) !important;
+  color: var(--text-primary) !important;
+}
+
+:root[data-theme='dark'] .analysis-panel .strategy-logic-box {
+  background: color-mix(in srgb, var(--accent-500) 16%, var(--surface-2)) !important;
+  border-left-color: color-mix(in srgb, var(--accent-500) 84%, #93c5fd) !important;
+}
+
+:root[data-theme='dark'] .analysis-panel .strategy-logic-title {
+  color: #bfdbfe !important;
+}
+
+:root[data-theme='dark'] .analysis-panel .logic-block {
+  color: #e2e8f0 !important;
+}
+
+:root[data-theme='dark'] .agent-window [class*='text-gray-400'],
+:root[data-theme='dark'] .agent-window [class*='text-slate-400'],
+:root[data-theme='dark'] #window-COMPARE [class*='text-gray-400'],
+:root[data-theme='dark'] #window-COMPARE [class*='text-slate-400'] {
+  color: #cbd5e1 !important;
+}
+
+:root[data-theme='dark'] .agent-window [class*='bg-gray-100'],
+:root[data-theme='dark'] .agent-window [class*='bg-slate-100'],
+:root[data-theme='dark'] #window-COMPARE [class*='bg-gray-100'],
+:root[data-theme='dark'] #window-COMPARE [class*='bg-slate-100'] {
+  background-color: color-mix(in srgb, var(--surface-3) 86%, transparent) !important;
+}
+
+:root[data-theme='dark'] .agent-window [class*='bg-gray-50'],
+:root[data-theme='dark'] .agent-window [class*='bg-slate-50'] {
+  background-color: color-mix(in srgb, var(--surface-2) 92%, transparent) !important;
+}
+
+:root[data-theme='dark'] .agent-window [class*='hover:bg-white']:hover,
+:root[data-theme='dark'] .agent-window [class*='hover:bg-gray-100']:hover,
+:root[data-theme='dark'] .agent-window [class*='hover:bg-slate-100']:hover {
+  background-color: color-mix(in srgb, var(--surface-3) 74%, transparent) !important;
+}
+
+:root[data-theme='dark'] #config-modal [id^='tab-btn-'],
+:root[data-theme='dark'] #config-modal [id^='tab-btn-'].text-gray-500 {
+  color: var(--text-secondary) !important;
+  background: transparent;
+}
+
+:root[data-theme='dark'] #config-modal [id^='tab-btn-'][class*='bg-white'] {
+  background: color-mix(in srgb, var(--surface-1) 94%, transparent) !important;
+  color: var(--text-primary) !important;
+  box-shadow: 0 0 0 1px var(--border-soft) inset;
+}
+
 :root[data-theme='dark'] .markdown-body,
 :root[data-theme='dark'] .markdown-content {
   color: var(--text-secondary);
@@ -131,12 +280,28 @@ input:checked + .slider:before { transform: translateX(20px); }
   background-color: color-mix(in srgb, var(--surface-1) 92%, transparent) !important;
 }
 
+:root[data-theme='dark'] main [class*='bg-white'],
+:root[data-theme='dark'] main [class*='bg-gray-50'],
+:root[data-theme='dark'] main [class*='bg-slate-50'] {
+  background-color: color-mix(in srgb, var(--surface-1) 92%, transparent) !important;
+}
+
 :root[data-theme='dark'] .agent-window [class*='text-slate-'],
 :root[data-theme='dark'] .agent-window [class*='text-gray-'] {
   color: var(--text-secondary) !important;
 }
 
+:root[data-theme='dark'] main [class*='text-slate-'],
+:root[data-theme='dark'] main [class*='text-gray-'] {
+  color: var(--text-secondary) !important;
+}
+
 :root[data-theme='dark'] .agent-window [class*='border-slate-'],
 :root[data-theme='dark'] .agent-window [class*='border-gray-'] {
+  border-color: var(--border-soft) !important;
+}
+
+:root[data-theme='dark'] main [class*='border-slate-'],
+:root[data-theme='dark'] main [class*='border-gray-'] {
   border-color: var(--border-soft) !important;
 }
