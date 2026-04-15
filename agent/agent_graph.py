@@ -224,7 +224,13 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         import traceback
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         market_full = {}
-        account_data = {'balance': 0, 'real_open_orders': [], 'mock_open_orders': [], 'real_positions': []}
+        account_data = {
+            'balance': 0,
+            'available_balance': 0,
+            'real_open_orders': [],
+            'mock_open_orders': [],
+            'real_positions': []
+        }
         daily_history = []
 
     if is_real_exec:
@@ -233,8 +239,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
             positions = account_data.get('real_positions', [])
             total_unrealized_pnl = sum([float(p.get('unrealized_pnl', 0)) for p in positions])
             
-            # 仅在余额有效时写入快照，避免 API 异常时写入 0 污染曲线
-            if now.minute < 15 and balance > 0:
+            if now.minute < 15:
                 database.save_balance_snapshot(symbol, balance, total_unrealized_pnl)
                 
             recent_trades = market_tool.fetch_recent_trades(symbol, limit=10)
@@ -243,34 +248,14 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         except Exception as e:
             logger.error(f"❌ Failed to save real-time stats: {e}")
 
-    # STRATEGY 模式：每天首次运行时写一条模拟余额快照，保证无成交日也有数据点
-    if trade_mode == 'STRATEGY':
-        try:
-            if now.minute < 15:
-                acc = database.get_mock_account(config_id, symbol)
-                mock_balance = float(acc.get('balance', 0) or 0)
-                if mock_balance > 0:
-                    today_str = now.strftime('%Y-%m-%d')
-                    with database.get_db_conn() as _conn:
-                        has_today = _conn.execute(
-                            "SELECT 1 FROM mock_balance_history WHERE config_id=? AND date(timestamp)=? LIMIT 1",
-                            (config_id, today_str)
-                        ).fetchone()
-                        if not has_today:
-                            _conn.execute(
-                                "INSERT INTO mock_balance_history (config_id, symbol, timestamp, balance) VALUES (?, ?, ?, ?)",
-                                (config_id, symbol, now.strftime('%Y-%m-%d %H:%M:%S'), mock_balance)
-                            )
-                            _conn.commit()
-        except Exception as e:
-            logger.error(f"❌ Failed to snapshot mock balance for STRATEGY: {e}")
-
     balance = account_data.get('balance', 0)
+    prompt_balance = account_data.get('available_balance', balance)
     analysis_data = market_full.get("analysis", {}).get("15m", {})
     current_price = analysis_data.get("price", 0)
     atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
 
     logger.debug(f"📈 Extracted from 15m: price={current_price}, atr={atr_15m}")
+    logger.debug(f"💳 Prompt balance (available): {prompt_balance} USDT | Snapshot balance (total): {balance} USDT")
 
     indicators_summary = {}
     if trade_mode == 'STRATEGY':
@@ -373,7 +358,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         next_run_time=next_run_time,
         current_price=current_price,
         atr_15m=atr_15m,
-        balance=balance,
+        balance=prompt_balance,
         positions_text=positions_text,
         orders_text=orders_friendly_text,
         formatted_market_data=formatted_market_data,

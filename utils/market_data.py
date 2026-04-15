@@ -39,7 +39,7 @@ class MarketTool:
                 raise ValueError(f"未找到配置ID: {config_id}")
             self.config_id = config_id
             self.symbol = cfg.get('symbol')
-            exchange_name, api_key, secret, passphrase = global_config.get_exchange_credentials(config_id=config_id)
+            api_key, secret = global_config.get_binance_credentials(config_id=config_id)
             mode = cfg.get('mode', 'STRATEGY').upper()
             market_type = cfg.get('market_type', 'swap')
             if mode == 'SPOT_DCA':
@@ -49,14 +49,14 @@ class MarketTool:
             logger.warning(f"⚠️ 使用 symbol 初始化已过时，建议使用 config_id")
             self.config_id = None
             self.symbol = symbol
-            exchange_name, api_key, secret, passphrase = global_config.get_exchange_credentials(symbol=symbol)
+            api_key, secret = global_config.get_binance_credentials(symbol=symbol)
             cfg = None
             market_type = 'swap'
         else:
             raise ValueError("必须提供 config_id 或 symbol")
 
         if not api_key or not secret:
-            raise ValueError(f"未找到{exchange_name} API配置 (config_id={config_id}, symbol={symbol})")
+            raise ValueError(f"未找到币安API配置 (config_id={config_id}, symbol={symbol})")
 
         config = {
             'apiKey': api_key,
@@ -68,10 +68,6 @@ class MarketTool:
                 'recvWindow': global_config.DEFAULT_RECVWINDOW,
             }
         }
-        
-        # OKX 额外需要密码 (Passphrase)
-        if exchange_name == 'okx' and passphrase:
-            config['password'] = passphrase
 
         if proxy_port:
             config['proxies'] = {
@@ -79,9 +75,7 @@ class MarketTool:
                 'https': f'http://127.0.0.1:{proxy_port}',
             }
 
-        if exchange_name == 'okx':
-            self.exchange = ccxt.okx(config)
-        elif market_type == 'spot':
+        if market_type == 'spot':
             self.exchange = ccxt.binance(config)
         else:
             self.exchange = ccxt.binanceusdm(config)
@@ -139,8 +133,8 @@ class MarketTool:
             "liquidations_24h": "N/A"
         }
         
-        # 仅限于 Binance USDM 合约
-        if self.exchange.id != 'binanceusdm' and self.exchange.id != 'binance':
+        # 仅限于 USDM 合约
+        if self.exchange.id != 'binanceusdm':
             return sentiment
 
         try:
@@ -251,6 +245,7 @@ class MarketTool:
     def get_account_status(self, symbol, is_real=False, agent_name=None, config_id=None):
         status_data = {
             "balance": 0,
+            "available_balance": 0,
             "real_positions": [],
             "real_open_orders": [],
             "mock_open_orders": [],
@@ -271,8 +266,19 @@ class MarketTool:
                     usdt_total = float(balance_info['usdt'].get('total', 0))
                 elif 'total' in balance_info and 'USDT' in balance_info['total']:
                     usdt_total = float(balance_info['total'].get('USDT', 0))
+
+                # Prompt 专用可用余额（free），用于交易决策资金约束。
+                usdt_available = 0
+                if 'USDT' in balance_info:
+                    usdt_available = float(balance_info['USDT'].get('free', 0))
+                elif 'usdt' in balance_info:
+                    usdt_available = float(balance_info['usdt'].get('free', 0))
+                elif 'free' in balance_info and 'USDT' in balance_info['free']:
+                    usdt_available = float(balance_info['free'].get('USDT', 0))
                 
                 status_data["balance"] = usdt_total
+                status_data["available_balance"] = usdt_available
+                logger.debug(f"[{symbol}] Balance(total)={usdt_total:.4f}, Balance(available)={usdt_available:.4f}")
                 
                 # 实盘持仓
                 try:
@@ -374,6 +380,7 @@ class MarketTool:
                 # 获取策略沙盒内的资金（破产会自动重置回10000并在数据库记1笔failures）
                 mock_acc = database.get_mock_account(config_id or agent_name, symbol)
                 status_data["balance"] = mock_acc.get('balance', 10000.0)
+                status_data["available_balance"] = status_data["balance"]
                 
                 # 同时传入 config_id 和 agent_name 以获得最佳兼容性
                 status_data["mock_open_orders"] = database.get_mock_orders(symbol, agent_name=agent_name, config_id=config_id)
@@ -651,11 +658,7 @@ class MarketTool:
                         final_amt = raw_close_amount if (0 < raw_close_amount < amt) else amt
                         formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
 
-                        params = {}
-                        if self.exchange.id == 'okx':
-                            params['posSide'] = side # long or short
-                        else:
-                            params['positionSide'] = current_pos_side_str
+                        params = {'positionSide': current_pos_side_str}
                         
                         order = None
                         if raw_close_price > 0:
@@ -673,10 +676,7 @@ class MarketTool:
                                 
                                 # 方案 A: 止损市价单 (推荐，保证止损触发后立刻跑路)
                                 order_type = 'STOP_MARKET' # STOP / STOP_LIMIT
-                                if self.exchange.id == 'okx':
-                                    params['triggerPrice'] = float(formatted_price)
-                                else:
-                                    params['stopPrice'] = float(formatted_price) # 触发价格
+                                params['stopPrice'] = float(formatted_price) # 触发价格
                                 params['closePosition'] = True # 某些交易所支持直接平仓标志
                                 
                                 # 注意：STOP_MARKET 通常不需要传 price 参数 (传 None)，但需要 stopPrice
@@ -714,10 +714,7 @@ class MarketTool:
                 is_spot = (self.exchange.options.get('defaultType') == 'spot')
                 if not is_spot:
                     pos_side = 'LONG' if side == 'buy' else 'SHORT'
-                    if self.exchange.id == 'okx':
-                         params['posSide'] = pos_side.lower()
-                    else:
-                         params['positionSide'] = pos_side
+                    params['positionSide'] = pos_side
                     logger.info(f"🚀 [OPEN-LIMIT] 开仓挂单: {pos_side} {side} {amount} @ {price}")
                 else:
                     logger.info(f"🚀 [SPOT-LIMIT] 现货挂单: {side} {amount} @ {price}")
