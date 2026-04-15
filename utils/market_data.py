@@ -380,10 +380,18 @@ class MarketTool:
                 # 获取策略沙盒内的资金（破产会自动重置回10000并在数据库记1笔failures）
                 mock_acc = database.get_mock_account(config_id or agent_name, symbol)
                 status_data["balance"] = mock_acc.get('balance', 10000.0)
-                status_data["available_balance"] = status_data["balance"]
                 
                 # 同时传入 config_id 和 agent_name 以获得最佳兼容性
                 status_data["mock_open_orders"] = database.get_mock_orders(symbol, agent_name=agent_name, config_id=config_id)
+                active_pending_orders = [
+                    o for o in status_data["mock_open_orders"]
+                    if not int(o.get('is_filled', 0))
+                ]
+                reserved_value = sum(
+                    float(o.get('price', 0) or 0) * float(o.get('amount', 0) or 0)
+                    for o in active_pending_orders
+                )
+                status_data["available_balance"] = max(float(status_data["balance"] or 0) - reserved_value, 0.0)
                 
         except Exception as e:
             logger.error(f"Account Status Error: {e}")

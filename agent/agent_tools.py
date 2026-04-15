@@ -192,6 +192,8 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
+    latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id, config_id=config_id)
+    remaining_available = float(latest.get('available_balance', 0) or 0)
 
     for op in orders:
         try:
@@ -214,12 +216,14 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
             # ---------------------------------------------
             
             # --- Balance & Stacking Checks ---
-            acc = database.get_mock_account(config_id, symbol)
-            balance = acc.get('balance', 10000.0)
             order_value = price * op.amount
+            if order_value > remaining_available:
+                execution_results.append(
+                    f"⚠️ [Insufficient Strategy Balance] 订单价值 ${order_value:.2f} 超过可用余额 ${remaining_available:.2f}。"
+                )
+                continue
 
             # 2. 检查是否重复叠加 (Stacking)
-            latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id)
             mock_open_orders = latest.get('mock_open_orders', [])
             
             # 如果已经有同方向的单子且价格接近，视为重复
@@ -240,6 +244,14 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
             mock_id = f"ST-{uuid.uuid4().hex[:6]}"
             database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, sl, tp, agent_name=agent_name, config_id=config_id, order_id=mock_id, expire_at=expire_at)
             database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, tp, sl, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=op.amount)
+            latest.setdefault('mock_open_orders', []).append({
+                'order_id': mock_id,
+                'side': 'BUY' if 'BUY' in action else 'SELL',
+                'price': price,
+                'amount': op.amount,
+                'is_filled': 0,
+            })
+            remaining_available = max(remaining_available - order_value, 0.0)
             execution_results.append(f"✅ [Executed Strategy] {action} {symbol} @ {price} | Val: ${order_value:.2f}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
