@@ -1611,32 +1611,45 @@ async function loadKlineChart(configId, tf) {
     const container = document.getElementById(`kline-chart-${configId}`);
     if (!container) { klineLoading.delete(configId); return; }
 
-    // 检查 lightweight-charts 是否已加载
+    const loadingEl = document.getElementById(`kline-loading-${configId}`);
+
+    // 检查 lightweight-charts 是否已加载，稍后重试（不破坏 loading 状态）
     if (typeof LightweightCharts === 'undefined') {
-        container.innerHTML = '<div class="text-center text-gray-400 text-xs py-10">图表库加载中…</div>';
         setTimeout(() => { klineLoading.delete(configId); loadKlineChart(configId, tf); }, 500);
         return;
     }
+
+    // 显示 loading 遮罩
+    if (loadingEl) loadingEl.classList.remove('hidden');
 
     try {
         const resp = await fetch(`/api/kline/${configId}?timeframe=${tf}`);
         const data = await resp.json();
         if (!data.success) {
-            container.innerHTML = `<div class="text-center text-red-400 text-xs py-10">❌ ${data.message || '加载失败'}</div>`;
+            if (loadingEl) loadingEl.classList.add('hidden');
+            container.innerHTML = `<div class="flex items-center justify-center h-full text-red-400 text-xs py-10">❌ ${data.message || '加载失败'}</div>`;
+            container.classList.remove('kline-skeleton');
             return;
         }
         if (!data.candles || data.candles.length === 0) {
-            container.innerHTML = '<div class="text-center text-gray-400 text-xs py-10">暂无K线数据</div>';
+            if (loadingEl) loadingEl.classList.add('hidden');
+            container.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400 text-xs py-10">暂无K线数据</div>';
+            container.classList.remove('kline-skeleton');
             return;
         }
 
         _renderKlineChart(configId, tf, data);
         _renderKlineInfo(configId, data);
+        container.classList.remove('kline-skeleton');
     } catch (e) {
-        container.innerHTML = `<div class="text-center text-red-400 text-xs py-10">❌ ${e.message || '网络错误'}</div>`;
+        if (loadingEl) loadingEl.classList.add('hidden');
+        container.innerHTML = `<div class="flex items-center justify-center h-full text-red-400 text-xs py-10">❌ ${e.message || '网络错误'}</div>`;
+        container.classList.remove('kline-skeleton');
         console.error('loadKlineChart error:', e);
     } finally {
         klineLoading.delete(configId);
+        // 成功渲染后统一隐藏 loading（_renderKlineChart 同步完成后）
+        if (loadingEl) loadingEl.classList.add('hidden');
     }
 }
 
@@ -1887,3 +1900,36 @@ window.addEventListener('resize', () => {
         ensureKlineDefaultState(configId);
     }
 });
+
+// ── K 线懒加载：IntersectionObserver ──
+// 当 kline-chart-box 进入视口且图表尚未加载时，自动触发加载
+(function initKlineLazyLoad() {
+    if (!('IntersectionObserver' in window)) return;
+
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (!entry.isIntersecting) return;
+            const box = entry.target;
+            const configId = box.id.replace('kline-chart-', '');
+            // 面板已折叠则跳过
+            const body = document.getElementById(`kline-body-${configId}`);
+            if (body && body.classList.contains('hidden')) return;
+            // 已有图表实例则跳过
+            if (klineCharts.has(configId)) return;
+            loadKlineChart(configId);
+        });
+    }, { rootMargin: '80px 0px', threshold: 0.05 });
+
+    // 观察所有现有 chart box（含页面初始化后动态渲染的）
+    function observeAll() {
+        document.querySelectorAll('[id^="kline-chart-"]').forEach(el => {
+            observer.observe(el);
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', observeAll);
+    } else {
+        observeAll();
+    }
+})();

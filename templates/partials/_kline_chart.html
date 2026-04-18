@@ -24,9 +24,13 @@
     <div id="kline-body-{{ summary.config_id }}" class="kline-panel-body">
         <!-- K 线图容器 -->
         <div class="kline-chart-stage rounded-xl overflow-hidden">
+            <div id="kline-loading-{{ summary.config_id }}" class="kline-loading-overlay" aria-label="加载中">
+                <div class="kline-spinner"></div>
+                <span class="kline-loading-text">K 线加载中…</span>
+            </div>
             <div id="kline-ema-legend-{{ summary.config_id }}" class="kline-ema-legend" aria-hidden="true"></div>
             <div id="kline-hover-{{ summary.config_id }}" class="kline-hover-card" aria-live="polite"></div>
-            <div id="kline-chart-{{ summary.config_id }}" class="kline-chart-box"></div>
+            <div id="kline-chart-{{ summary.config_id }}" class="kline-chart-box kline-skeleton"></div>
         </div>
 
         <!-- 挂单 & 持仓信息面板 -->
