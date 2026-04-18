@@ -1481,6 +1481,66 @@ function findCandleByTime(candles, time) {
     return candles.find(candle => Number(candle.time) === Number(time)) || null;
 }
 
+function getVisibleCandles(candles, logicalRange) {
+    if (!Array.isArray(candles) || candles.length === 0) return [];
+    if (!logicalRange || !Number.isFinite(logicalRange.from) || !Number.isFinite(logicalRange.to)) {
+        return candles;
+    }
+    const from = Math.max(0, Math.floor(logicalRange.from));
+    const to = Math.min(candles.length - 1, Math.ceil(logicalRange.to));
+    if (to < from) return candles;
+    return candles.slice(from, to + 1);
+}
+
+function updateVisibleRangePriceLines(configId, candles) {
+    const state = klineCharts.get(configId);
+    if (!state || !state.candleSeries) return;
+
+    if (state.visibleRangeLines) {
+        state.visibleRangeLines.forEach(line => {
+            try {
+                state.candleSeries.removePriceLine(line);
+            } catch {
+                // ignore stale line refs
+            }
+        });
+    }
+
+    const visibleRange = state.chart.timeScale().getVisibleLogicalRange();
+    const visibleCandles = getVisibleCandles(candles, visibleRange);
+    if (!visibleCandles.length) {
+        state.visibleRangeLines = [];
+        return;
+    }
+
+    const highest = visibleCandles.reduce((max, candle) => Math.max(max, Number(candle.high || 0)), Number.NEGATIVE_INFINITY);
+    const lowest = visibleCandles.reduce((min, candle) => Math.min(min, Number(candle.low || 0)), Number.POSITIVE_INFINITY);
+    const lines = [];
+
+    if (Number.isFinite(highest)) {
+        lines.push(state.candleSeries.createPriceLine({
+            price: highest,
+            color: 'rgba(168, 85, 247, 0.82)',
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.SparseDotted,
+            axisLabelVisible: true,
+            title: '最高价',
+        }));
+    }
+    if (Number.isFinite(lowest)) {
+        lines.push(state.candleSeries.createPriceLine({
+            price: lowest,
+            color: 'rgba(14, 165, 233, 0.82)',
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.SparseDotted,
+            axisLabelVisible: true,
+            title: '最低价',
+        }));
+    }
+
+    state.visibleRangeLines = lines;
+}
+
 function toggleKlinePanel(configId) {
     const body = document.getElementById(`kline-body-${configId}`);
     if (!body) return;
@@ -1641,30 +1701,6 @@ function _renderKlineChart(configId, tf, data) {
         }
     }
 
-    // --- 当前周期最高/最低价 ---
-    const highest = data.candles.reduce((max, candle) => Math.max(max, Number(candle.high || 0)), Number.NEGATIVE_INFINITY);
-    const lowest = data.candles.reduce((min, candle) => Math.min(min, Number(candle.low || 0)), Number.POSITIVE_INFINITY);
-    if (Number.isFinite(highest)) {
-        candleSeries.createPriceLine({
-            price: highest,
-            color: 'rgba(168, 85, 247, 0.82)',
-            lineWidth: 1,
-            lineStyle: LightweightCharts.LineStyle.SparseDotted,
-            axisLabelVisible: true,
-            title: '最高价',
-        });
-    }
-    if (Number.isFinite(lowest)) {
-        candleSeries.createPriceLine({
-            price: lowest,
-            color: 'rgba(14, 165, 233, 0.82)',
-            lineWidth: 1,
-            lineStyle: LightweightCharts.LineStyle.SparseDotted,
-            axisLabelVisible: true,
-            title: '最低价',
-        });
-    }
-
     // --- 当前持仓入场线（支持多持仓） ---
     if (data.positions && data.positions.length > 0) {
         data.positions.forEach((position, index) => {
@@ -1721,6 +1757,13 @@ function _renderKlineChart(configId, tf, data) {
     });
     resizeObserver.observe(container);
 
+    klineCharts.set(configId, { chart, candleSeries, volumeSeries, emaLines, tf, resizeObserver, visibleRangeLines: [] });
+    updateVisibleRangePriceLines(configId, data.candles);
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+        updateVisibleRangePriceLines(configId, data.candles);
+    });
+
     chart.subscribeCrosshairMove(param => {
         if (!param || !param.time) return;
         const candleData = param.seriesData.get(candleSeries);
@@ -1747,8 +1790,6 @@ function _renderKlineChart(configId, tf, data) {
             renderKlineHoverCard(configId, matched);
         }
     });
-
-    klineCharts.set(configId, { chart, candleSeries, volumeSeries, emaLines, tf, resizeObserver });
 }
 
 function _renderKlineInfo(configId, data) {

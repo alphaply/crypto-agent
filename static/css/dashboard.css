@@ -352,8 +352,8 @@ input:checked + .slider:before { transform: translateX(20px); }
 
 .kline-hover-card {
   position: absolute;
-  right: 0.75rem;
-  top: 0.65rem;
+  left: 0.75rem;
+  top: 2.35rem;
   z-index: 2;
   min-width: 13rem;
   max-width: min(18rem, calc(100% - 1.5rem));
@@ -582,9 +582,9 @@ input:checked + .slider:before { transform: translateX(20px); }
   }
 
   .kline-hover-card {
-    right: 0.55rem;
-    top: auto;
-    bottom: 0.55rem;
+    left: 0.55rem;
+    top: 2rem;
+    bottom: auto;
     min-width: 10.5rem;
     max-width: calc(100% - 1.1rem);
     padding: 0.4rem 0.5rem;
