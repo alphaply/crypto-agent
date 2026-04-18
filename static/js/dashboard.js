@@ -1449,6 +1449,38 @@ function renderKlineLegend(configId) {
     `).join('');
 }
 
+function formatKlineTime(unixSeconds) {
+    if (!unixSeconds) return '--';
+    const date = new Date(unixSeconds * 1000);
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    const hour = `${date.getHours()}`.padStart(2, '0');
+    const minute = `${date.getMinutes()}`.padStart(2, '0');
+    return `${month}-${day} ${hour}:${minute}`;
+}
+
+function renderKlineHoverCard(configId, candle) {
+    const card = document.getElementById(`kline-hover-${configId}`);
+    if (!card || !candle) return;
+    const isUp = Number(candle.close) >= Number(candle.open);
+    card.innerHTML = `
+        <div class="kline-hover-head">
+            <span>${formatKlineTime(candle.time)}</span>
+            <span class="${isUp ? 'text-emerald-600' : 'text-rose-600'}">${isUp ? '上涨' : '下跌'}</span>
+        </div>
+        <div class="kline-hover-grid">
+            <div class="kline-hover-item"><span class="kline-hover-label">开</span><span class="kline-hover-value">${candle.open}</span></div>
+            <div class="kline-hover-item"><span class="kline-hover-label">收</span><span class="kline-hover-value">${candle.close}</span></div>
+            <div class="kline-hover-item"><span class="kline-hover-label">高</span><span class="kline-hover-value">${candle.high}</span></div>
+            <div class="kline-hover-item"><span class="kline-hover-label">低</span><span class="kline-hover-value">${candle.low}</span></div>
+        </div>`;
+}
+
+function findCandleByTime(candles, time) {
+    if (!Array.isArray(candles) || !candles.length || !time) return null;
+    return candles.find(candle => Number(candle.time) === Number(time)) || null;
+}
+
 function toggleKlinePanel(configId) {
     const body = document.getElementById(`kline-body-${configId}`);
     if (!body) return;
@@ -1580,6 +1612,7 @@ function _renderKlineChart(configId, tf, data) {
         wickDownColor: '#ef5350',
     });
     candleSeries.setData(data.candles);
+    renderKlineHoverCard(configId, data.candles[data.candles.length - 1]);
 
     // --- 成交量 ---
     const volumeSeries = chart.addHistogramSeries({
@@ -1606,6 +1639,30 @@ function _renderKlineChart(configId, tf, data) {
             lineSeries.setData(emaData);
             emaLines[span] = lineSeries;
         }
+    }
+
+    // --- 当前周期最高/最低价 ---
+    const highest = data.candles.reduce((max, candle) => Math.max(max, Number(candle.high || 0)), Number.NEGATIVE_INFINITY);
+    const lowest = data.candles.reduce((min, candle) => Math.min(min, Number(candle.low || 0)), Number.POSITIVE_INFINITY);
+    if (Number.isFinite(highest)) {
+        candleSeries.createPriceLine({
+            price: highest,
+            color: 'rgba(168, 85, 247, 0.82)',
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.SparseDotted,
+            axisLabelVisible: true,
+            title: '最高价',
+        });
+    }
+    if (Number.isFinite(lowest)) {
+        candleSeries.createPriceLine({
+            price: lowest,
+            color: 'rgba(14, 165, 233, 0.82)',
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.SparseDotted,
+            axisLabelVisible: true,
+            title: '最低价',
+        });
     }
 
     // --- 当前持仓入场线（支持多持仓） ---
@@ -1663,6 +1720,33 @@ function _renderKlineChart(configId, tf, data) {
         chart.applyOptions({ width: container.clientWidth, height: container.clientHeight || 420 });
     });
     resizeObserver.observe(container);
+
+    chart.subscribeCrosshairMove(param => {
+        if (!param || !param.time) return;
+        const candleData = param.seriesData.get(candleSeries);
+        if (candleData && typeof candleData === 'object') {
+            renderKlineHoverCard(configId, {
+                time: param.time,
+                open: candleData.open,
+                high: candleData.high,
+                low: candleData.low,
+                close: candleData.close,
+            });
+            return;
+        }
+        const matched = findCandleByTime(data.candles, param.time);
+        if (matched) {
+            renderKlineHoverCard(configId, matched);
+        }
+    });
+
+    chart.subscribeClick(param => {
+        if (!param || !param.time) return;
+        const matched = findCandleByTime(data.candles, param.time);
+        if (matched) {
+            renderKlineHoverCard(configId, matched);
+        }
+    });
 
     klineCharts.set(configId, { chart, candleSeries, volumeSeries, emaLines, tf, resizeObserver });
 }
