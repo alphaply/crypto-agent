@@ -305,3 +305,79 @@ input:checked + .slider:before { transform: translateX(20px); }
 :root[data-theme='dark'] main [class*='border-gray-'] {
   border-color: var(--border-soft) !important;
 }
+
+
+/* ==========================================================================
+   📈 K 线图面板
+   ========================================================================== */
+
+.kline-chart-container {
+  background: var(--panel-bg, #ffffff);
+  border: 1px solid var(--panel-border, #e5e7eb);
+  border-radius: 1rem;
+  padding: 0.75rem 1rem;
+  box-shadow: var(--panel-shadow, 0 1px 3px rgba(0,0,0,0.06));
+  flex-shrink: 0;
+}
+
+.kline-chart-box {
+  width: 100%;
+  height: clamp(300px, 42vh, 450px);
+}
+
+/* 时间周期按钮组 */
+.kline-tf-group {
+  display: flex;
+}
+
+.kline-tf-btn {
+  background: transparent;
+  color: var(--text-secondary, #6b7280);
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.kline-tf-btn:hover {
+  background: rgba(59,130,246,0.08);
+  color: #3b82f6;
+}
+
+.kline-tf-btn.active {
+  background: #3b82f6;
+  color: #ffffff;
+  font-weight: 800;
+}
+
+/* 暗色主题适配 */
+:root[data-theme='dark'] .kline-chart-container {
+  background: var(--surface-1, #1e1e2e);
+  border-color: var(--border-soft, #2e2e3e);
+}
+
+:root[data-theme='dark'] .kline-tf-group {
+  border-color: var(--border-soft, #3f3f50);
+}
+
+:root[data-theme='dark'] .kline-tf-btn {
+  color: var(--text-secondary, #a1a1aa);
+}
+
+:root[data-theme='dark'] .kline-tf-btn:hover {
+  background: rgba(59,130,246,0.15);
+}
+
+:root[data-theme='dark'] .kline-tf-btn.active {
+  background: #3b82f6;
+  color: #ffffff;
+}
+
+/* 响应式 */
+@media (max-width: 640px) {
+  .kline-chart-box {
+    height: 280px;
+  }
+  .kline-chart-container {
+    padding: 0.5rem 0.75rem;
+  }
+}

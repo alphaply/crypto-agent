@@ -1,8 +1,10 @@
 import sqlite3
+import pandas as pd
 from flask import Blueprint, jsonify, request
 from routes.utils import DB_NAME, _require_chat_auth_api, logger
 from database import get_all_pricing, update_model_pricing, delete_model_pricing
 from config import config as global_config
+from utils.indicators import calc_ema
 
 stats_bp = Blueprint('stats', __name__)
 
@@ -672,3 +674,215 @@ def get_equity_compare():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+#  K 线图数据 API
+# ---------------------------------------------------------------------------
+
+_KLINE_ALLOWED_TF = {'15m', '1h', '4h', '1d'}
+
+
+@stats_bp.route('/api/kline/<config_id>', methods=['GET'])
+def get_kline_data(config_id):
+    """获取 K 线 + EMA + 订单标记 + 仓位/挂单 (需要认证)"""
+    auth_err = _require_chat_auth_api()
+    if auth_err:
+        return auth_err
+
+    timeframe = request.args.get('timeframe', '1h')
+    if timeframe not in _KLINE_ALLOWED_TF:
+        return jsonify({"success": False, "message": f"不支持的周期: {timeframe}"}), 400
+
+    cfg = global_config.get_config_by_id(config_id)
+    if not cfg:
+        return jsonify({"success": False, "message": f"未找到配置: {config_id}"}), 404
+
+    symbol = cfg.get('symbol')
+    mode = (cfg.get('mode') or 'STRATEGY').upper()
+
+    try:
+        from utils.market_data import MarketTool
+        mt = MarketTool(config_id=config_id)
+    except Exception as e:
+        logger.error(f"Kline: 初始化交易所失败 config_id={config_id}: {e}")
+        return jsonify({"success": False, "message": str(e)}), 400
+
+    # --- 1. OHLCV ---
+    try:
+        raw = mt.exchange.fetch_ohlcv(symbol, timeframe, limit=300)
+    except Exception as e:
+        logger.error(f"Kline: fetch_ohlcv 失败: {e}")
+        return jsonify({"success": False, "message": f"获取K线失败: {e}"}), 502
+
+    if not raw:
+        return jsonify({"success": True, "candles": [], "volume": [], "emas": {},
+                        "orders": [], "position": None, "pending_orders": []})
+
+    candles = []
+    volumes = []
+    closes = []
+    for r in raw:
+        ts = int(r[0] / 1000)  # lightweight-charts 使用秒级 UTC 时间戳
+        o, h, l, c, v = float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])
+        candles.append({"time": ts, "open": o, "high": h, "low": l, "close": c})
+        color = "rgba(38,166,154,0.5)" if c >= o else "rgba(239,83,80,0.5)"
+        volumes.append({"time": ts, "value": v, "color": color})
+        closes.append(c)
+
+    # --- 2. EMA 20/50/100/200 ---
+    close_series = pd.Series(closes)
+    emas = {}
+    for span in (20, 50, 100, 200):
+        ema_vals = calc_ema(close_series, span)
+        ema_data = []
+        for i, val in enumerate(ema_vals):
+            if pd.notna(val) and i >= span - 1:
+                ema_data.append({"time": candles[i]["time"], "value": round(float(val), 6)})
+        emas[str(span)] = ema_data
+
+    # --- 3. 历史订单标记 ---
+    first_ts = raw[0][0]  # 毫秒
+    orders_markers = []
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        rows = c.execute(
+            """SELECT order_id, timestamp, side, entry_price, amount, reason
+               FROM orders
+               WHERE config_id = ? AND timestamp >= datetime(?, 'unixepoch')
+               ORDER BY timestamp ASC""",
+            (config_id, first_ts / 1000),
+        ).fetchall()
+        conn.close()
+
+        for row in rows:
+            side = (row['side'] or '').upper()
+            price = float(row['entry_price'] or 0)
+            if price <= 0:
+                continue
+            # 解析订单类型
+            if 'CANCEL' in side:
+                otype = 'cancel'
+            elif 'CLOSE' in side:
+                otype = 'close_long' if 'LONG' in side or 'SHORT' not in side else 'close_short'
+            elif 'BUY' in side:
+                otype = 'open_long'
+            elif 'SELL' in side:
+                otype = 'open_short'
+            else:
+                otype = 'unknown'
+
+            orders_markers.append({
+                "time": row['timestamp'],
+                "price": price,
+                "side": side,
+                "amount": float(row['amount'] or 0),
+                "type": otype,
+                "order_id": row['order_id'],
+                "reason": (row['reason'] or '')[:120],
+            })
+    except Exception as e:
+        logger.warning(f"Kline: 查询订单标记失败: {e}")
+
+    # --- 4. 当前持仓 ---
+    position = None
+    try:
+        if mode == 'REAL':
+            all_pos = mt.exchange.fetch_positions([symbol])
+            for p in all_pos:
+                if float(p.get('contracts', 0)) > 0:
+                    position = {
+                        "side": str(p.get('side', '')).upper(),
+                        "entry_price": float(p.get('entryPrice', 0)),
+                        "amount": float(p.get('contracts', 0)),
+                    }
+                    break
+        elif mode == 'STRATEGY':
+            conn = sqlite3.connect(DB_NAME)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT side, price, amount FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=1 LIMIT 1",
+                (config_id, symbol),
+            ).fetchone()
+            conn.close()
+            if row:
+                side_raw = str(row['side']).upper()
+                position = {
+                    "side": "LONG" if 'BUY' in side_raw else "SHORT",
+                    "entry_price": float(row['price']),
+                    "amount": float(row['amount']),
+                }
+        elif mode == 'SPOT_DCA':
+            from routes.main import calculate_dca_stats
+            dca = calculate_dca_stats(config_id)
+            if dca and dca.get('avg_cost', 0) > 0:
+                position = {
+                    "side": "LONG",
+                    "entry_price": dca['avg_cost'],
+                    "amount": dca.get('total_qty', 0),
+                }
+    except Exception as e:
+        logger.warning(f"Kline: 获取持仓失败: {e}")
+
+    # --- 5. 当前挂单 ---
+    pending_orders = []
+    try:
+        if mode == 'REAL':
+            open_orders = mt.exchange.fetch_open_orders(symbol)
+            for o in open_orders:
+                s = str(o.get('side', '')).upper()
+                pending_orders.append({
+                    "price": float(o.get('price', 0)),
+                    "side": s,
+                    "amount": float(o.get('amount', 0)),
+                    "order_id": o.get('id', ''),
+                    "type": 'open_long' if s == 'BUY' else 'open_short',
+                })
+        elif mode == 'STRATEGY':
+            conn = sqlite3.connect(DB_NAME)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT order_id, side, price, amount FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=0",
+                (config_id, symbol),
+            ).fetchall()
+            conn.close()
+            for row in rows:
+                s = str(row['side']).upper()
+                pending_orders.append({
+                    "price": float(row['price']),
+                    "side": s,
+                    "amount": float(row['amount']),
+                    "order_id": row['order_id'],
+                    "type": 'open_long' if 'BUY' in s else 'open_short',
+                })
+        elif mode == 'SPOT_DCA':
+            conn = sqlite3.connect(DB_NAME)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT o.order_id, o.side, o.entry_price, o.amount
+                   FROM orders o LEFT JOIN spot_order_fills f ON o.order_id = f.order_id
+                   WHERE o.config_id=? AND o.trade_mode='SPOT_DCA' AND o.status='OPEN'
+                     AND (f.status IS NULL OR f.status NOT IN ('FILLED','CANCELED'))""",
+                (config_id,),
+            ).fetchall()
+            conn.close()
+            for row in rows:
+                pending_orders.append({
+                    "price": float(row['entry_price'] or 0),
+                    "side": "BUY",
+                    "amount": float(row['amount'] or 0),
+                    "order_id": row['order_id'],
+                    "type": "open_long",
+                })
+    except Exception as e:
+        logger.warning(f"Kline: 获取挂单失败: {e}")
+
+    return jsonify({
+        "success": True,
+        "candles": candles,
+        "volume": volumes,
+        "emas": emas,
+        "orders": orders_markers,
+        "position": position,
+        "pending_orders": pending_orders,
+    })

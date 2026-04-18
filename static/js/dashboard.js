@@ -76,6 +76,7 @@ function switchAgentTab(agentName) {
 
     if (agentName !== 'COMPARE') {
         loadAgentStats(agentName);
+        loadKlineChart(agentName);
     }
 }
 
@@ -264,6 +265,7 @@ document.addEventListener('DOMContentLoaded', function() {
         observeMarkdown(firstWindow);
         const configId = firstWindow.getAttribute('data-config-id');
         if (configId) loadAgentStats(configId);
+        if (configId) loadKlineChart(configId);
     }
 
     document.addEventListener('toggle', event => {
@@ -1360,3 +1362,315 @@ async function loadPositionStats(configId) {
         console.error('Load position stats error:', e);
     }
 }
+
+
+// ==========================================================================
+//  📈 K 线图 (lightweight-charts) + EMA + 订单标记 + 挂单/持仓
+// ==========================================================================
+
+const klineCharts = new Map();   // configId → { chart, candleSeries, volumeSeries, emaLines, tf }
+const klineLoading = new Set();
+
+const EMA_COLORS = {
+    '20':  '#EAB308', // 黄
+    '50':  '#F97316', // 橙
+    '100': '#EC4899', // 粉
+    '200': '#8B5CF6', // 紫
+};
+
+function _klineThemeOptions() {
+    const isDark = getResolvedTheme() === 'dark';
+    return {
+        layout: {
+            background: { color: isDark ? '#1e1e2e' : '#ffffff' },
+            textColor:  isDark ? '#a1a1aa' : '#71717a',
+            fontSize: 11,
+        },
+        grid: {
+            vertLines: { color: isDark ? '#2e2e3e' : '#f1f5f9' },
+            horzLines: { color: isDark ? '#2e2e3e' : '#f1f5f9' },
+        },
+        crosshair: { mode: 0 },
+        rightPriceScale: { borderColor: isDark ? '#3f3f50' : '#e2e8f0' },
+        timeScale: {
+            borderColor: isDark ? '#3f3f50' : '#e2e8f0',
+            timeVisible: true,
+            secondsVisible: false,
+        },
+    };
+}
+
+function _getActiveKlineTf(configId) {
+    const group = document.getElementById(`kline-tf-group-${configId}`);
+    if (!group) return '1h';
+    const active = group.querySelector('.kline-tf-btn.active');
+    return active ? active.textContent.trim() : '1h';
+}
+
+function switchKlineTimeframe(configId, tf) {
+    const group = document.getElementById(`kline-tf-group-${configId}`);
+    if (group) {
+        group.querySelectorAll('.kline-tf-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.textContent.trim() === tf);
+        });
+    }
+    loadKlineChart(configId, tf);
+}
+
+async function loadKlineChart(configId, tf) {
+    if (!tf) tf = _getActiveKlineTf(configId);
+    if (klineLoading.has(configId)) return;
+    klineLoading.add(configId);
+
+    const container = document.getElementById(`kline-chart-${configId}`);
+    if (!container) { klineLoading.delete(configId); return; }
+
+    // 检查 lightweight-charts 是否已加载
+    if (typeof LightweightCharts === 'undefined') {
+        container.innerHTML = '<div class="text-center text-gray-400 text-xs py-10">图表库加载中…</div>';
+        setTimeout(() => { klineLoading.delete(configId); loadKlineChart(configId, tf); }, 500);
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/api/kline/${configId}?timeframe=${tf}`);
+        const data = await resp.json();
+        if (!data.success) {
+            container.innerHTML = `<div class="text-center text-red-400 text-xs py-10">❌ ${data.message || '加载失败'}</div>`;
+            return;
+        }
+        if (!data.candles || data.candles.length === 0) {
+            container.innerHTML = '<div class="text-center text-gray-400 text-xs py-10">暂无K线数据</div>';
+            return;
+        }
+
+        _renderKlineChart(configId, tf, data);
+        _renderKlineInfo(configId, data);
+    } catch (e) {
+        container.innerHTML = `<div class="text-center text-red-400 text-xs py-10">❌ ${e.message || '网络错误'}</div>`;
+        console.error('loadKlineChart error:', e);
+    } finally {
+        klineLoading.delete(configId);
+    }
+}
+
+function _renderKlineChart(configId, tf, data) {
+    const container = document.getElementById(`kline-chart-${configId}`);
+    const existing = klineCharts.get(configId);
+
+    // 如果已有图表实例，移除重建（timeframe 变化数据完全不同）
+    if (existing && existing.chart) {
+        existing.chart.remove();
+        klineCharts.delete(configId);
+    }
+    container.innerHTML = '';
+
+    const themeOpts = _klineThemeOptions();
+    const chart = LightweightCharts.createChart(container, {
+        ...themeOpts,
+        width: container.clientWidth,
+        height: 420,
+        handleScroll: true,
+        handleScale: true,
+    });
+
+    // --- 蜡烛图 ---
+    const isDark = getResolvedTheme() === 'dark';
+    const candleSeries = chart.addCandlestickSeries({
+        upColor: '#26a69a',
+        downColor: '#ef5350',
+        borderUpColor: '#26a69a',
+        borderDownColor: '#ef5350',
+        wickUpColor: '#26a69a',
+        wickDownColor: '#ef5350',
+    });
+    candleSeries.setData(data.candles);
+
+    // --- 成交量 ---
+    const volumeSeries = chart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume',
+    });
+    chart.priceScale('volume').applyOptions({
+        scaleMargins: { top: 0.85, bottom: 0 },
+    });
+    volumeSeries.setData(data.volume);
+
+    // --- EMA 均线 ---
+    const emaLines = {};
+    if (data.emas) {
+        for (const [span, emaData] of Object.entries(data.emas)) {
+            if (!emaData || emaData.length === 0) continue;
+            const lineSeries = chart.addLineSeries({
+                color: EMA_COLORS[span] || '#94a3b8',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+                title: `EMA${span}`,
+            });
+            lineSeries.setData(emaData);
+            emaLines[span] = lineSeries;
+        }
+    }
+
+    // --- 订单标记 (markers) ---
+    if (data.orders && data.orders.length > 0) {
+        const markers = [];
+        for (const o of data.orders) {
+            // 将 timestamp 字符串转为秒级 UTC 时间戳，对齐到最近的 candle
+            let ts = _orderTimeToChartTime(o.time, data.candles);
+            if (!ts) continue;
+
+            const t = o.type || '';
+            let position, color, shape, text;
+            if (t === 'open_long') {
+                position = 'belowBar'; color = '#26a69a'; shape = 'arrowUp'; text = 'B';
+            } else if (t === 'open_short') {
+                position = 'aboveBar'; color = '#ef5350'; shape = 'arrowDown'; text = 'S';
+            } else if (t.startsWith('close')) {
+                position = t === 'close_short' ? 'belowBar' : 'aboveBar';
+                color = '#f59e0b'; shape = t === 'close_short' ? 'arrowUp' : 'arrowDown'; text = 'C';
+            } else if (t === 'cancel') {
+                position = 'aboveBar'; color = '#94a3b8'; shape = 'circle'; text = 'X';
+            } else {
+                continue;
+            }
+
+            markers.push({ time: ts, position, color, shape, text, size: 1 });
+        }
+        // lightweight-charts 要求 markers 按 time 排序
+        markers.sort((a, b) => a.time - b.time);
+        if (markers.length > 0) candleSeries.setMarkers(markers);
+    }
+
+    // --- 持仓入场价水平线 ---
+    if (data.position && data.position.entry_price > 0) {
+        const posColor = data.position.side === 'LONG' ? '#3b82f6' : '#f43f5e';
+        candleSeries.createPriceLine({
+            price: data.position.entry_price,
+            color: posColor,
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `${data.position.side} 入场 ${data.position.entry_price}`,
+        });
+    }
+
+    // --- 挂单价格线 ---
+    if (data.pending_orders && data.pending_orders.length > 0) {
+        for (const po of data.pending_orders) {
+            if (po.price <= 0) continue;
+            const isLong = po.type === 'open_long' || po.side === 'BUY';
+            candleSeries.createPriceLine({
+                price: po.price,
+                color: isLong ? 'rgba(38,166,154,0.7)' : 'rgba(239,83,80,0.7)',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dotted,
+                axisLabelVisible: true,
+                title: `挂单 ${po.side} ${po.amount}`,
+            });
+        }
+    }
+
+    // 自适应时间轴
+    chart.timeScale().fitContent();
+
+    // 响应式
+    const resizeObserver = new ResizeObserver(() => {
+        chart.applyOptions({ width: container.clientWidth });
+    });
+    resizeObserver.observe(container);
+
+    klineCharts.set(configId, { chart, candleSeries, volumeSeries, emaLines, tf, resizeObserver });
+}
+
+function _orderTimeToChartTime(timestamp, candles) {
+    // 将 "2026-04-18 08:30:00" 格式的时间转为秒级 UTC 时间戳
+    // 然后对齐到最近的 candle time
+    if (!timestamp || candles.length === 0) return null;
+    let ts;
+    if (typeof timestamp === 'number') {
+        ts = timestamp;
+    } else {
+        const d = new Date(timestamp.replace(' ', 'T') + 'Z');
+        ts = Math.floor(d.getTime() / 1000);
+    }
+    if (isNaN(ts)) return null;
+
+    // 找到最近的 candle 时间
+    let closest = candles[0].time;
+    let minDiff = Math.abs(ts - closest);
+    for (const c of candles) {
+        const diff = Math.abs(ts - c.time);
+        if (diff < minDiff) { minDiff = diff; closest = c.time; }
+    }
+    return closest;
+}
+
+function _renderKlineInfo(configId, data) {
+    const infoPanel = document.getElementById(`kline-info-${configId}`);
+    if (!infoPanel) return;
+
+    const hasPosition = data.position && data.position.entry_price > 0;
+    const hasPending = data.pending_orders && data.pending_orders.length > 0;
+
+    if (!hasPosition && !hasPending) {
+        infoPanel.classList.add('hidden');
+        return;
+    }
+    infoPanel.classList.remove('hidden');
+
+    // 持仓信息
+    const posPanel = document.getElementById(`kline-position-${configId}`);
+    const posDetail = document.getElementById(`kline-position-detail-${configId}`);
+    if (posPanel && posDetail) {
+        if (hasPosition) {
+            posPanel.classList.remove('hidden');
+            const p = data.position;
+            const sideColor = p.side === 'LONG' ? 'bg-emerald-500' : 'bg-red-500';
+            posDetail.innerHTML = `
+                <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5 border border-gray-100">
+                    <span class="px-1.5 py-0.5 rounded text-[9px] font-black text-white ${sideColor}">${p.side}</span>
+                    <span class="font-mono font-bold text-gray-700">入场: ${p.entry_price}</span>
+                    <span class="text-gray-400">|</span>
+                    <span class="font-mono text-gray-600">数量: ${p.amount}</span>
+                </div>`;
+        } else {
+            posPanel.classList.add('hidden');
+        }
+    }
+
+    // 挂单列表
+    const pendPanel = document.getElementById(`kline-pending-${configId}`);
+    const pendList = document.getElementById(`kline-pending-list-${configId}`);
+    if (pendPanel && pendList) {
+        if (hasPending) {
+            pendPanel.classList.remove('hidden');
+            pendList.innerHTML = data.pending_orders.map(po => {
+                const isLong = po.type === 'open_long' || po.side === 'BUY';
+                const typeLabel = isLong ? '开多' : '开空';
+                const badgeColor = isLong ? 'bg-emerald-500' : 'bg-red-500';
+                return `
+                    <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5 border border-gray-100">
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-black text-white ${badgeColor}">${typeLabel}</span>
+                        <span class="font-mono font-bold text-gray-700">${po.price}</span>
+                        <span class="text-gray-400">|</span>
+                        <span class="font-mono text-gray-600">数量: ${po.amount}</span>
+                        <span class="text-[8px] text-gray-400 ml-auto">${po.order_id || ''}</span>
+                    </div>`;
+            }).join('');
+        } else {
+            pendPanel.classList.add('hidden');
+        }
+    }
+}
+
+// 主题切换时更新 K 线图
+window.addEventListener('app-theme-change', () => {
+    for (const [configId, state] of klineCharts) {
+        if (state.chart) {
+            state.chart.applyOptions(_klineThemeOptions());
+        }
+    }
+});
