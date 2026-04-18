@@ -320,6 +320,14 @@ input:checked + .slider:before { transform: translateX(20px); }
   flex-shrink: 0;
 }
 
+.kline-panel-body {
+  display: block;
+}
+
+.kline-toggle-btn {
+  min-width: 3rem;
+}
+
 .kline-chart-box {
   width: 100%;
   height: clamp(300px, 42vh, 450px);
@@ -372,11 +380,41 @@ input:checked + .slider:before { transform: translateX(20px); }
   color: #ffffff;
 }
 
+:root[data-theme='dark'] .kline-toggle-btn {
+  background: color-mix(in srgb, var(--surface-1) 92%, transparent);
+  color: var(--text-secondary, #a1a1aa);
+  border-color: var(--border-soft, #3f3f50);
+}
+
+:root[data-theme='dark'] .kline-toggle-btn:hover {
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+}
+
 /* 响应式 */
 @media (max-width: 640px) {
+  .kline-chart-container > .flex {
+    align-items: stretch;
+  }
+
+  .kline-chart-container .kline-tf-group {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .kline-chart-container .kline-tf-btn {
+    flex: 1 1 0;
+    min-height: 2rem;
+  }
+
+  .kline-toggle-btn {
+    flex: 1 1 auto;
+    min-height: 2rem;
+  }
+
   .kline-chart-box {
     height: 280px;
   }
+
   .kline-chart-container {
     padding: 0.5rem 0.75rem;
   }

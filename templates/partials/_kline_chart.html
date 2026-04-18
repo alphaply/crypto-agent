@@ -7,31 +7,36 @@
             <span class="w-2 h-2 rounded-full bg-blue-500"></span>
             📈 K 线图 & 挂单
         </h4>
-        <div class="flex items-center gap-1.5">
+        <div class="flex items-center flex-wrap gap-1.5">
             <div class="kline-tf-group flex rounded-lg overflow-hidden border border-gray-200" id="kline-tf-group-{{ summary.config_id }}">
                 <button onclick="switchKlineTimeframe('{{ summary.config_id }}', '15m')" class="kline-tf-btn text-[10px] font-bold px-2.5 py-1 transition-colors">15m</button>
                 <button onclick="switchKlineTimeframe('{{ summary.config_id }}', '1h')" class="kline-tf-btn active text-[10px] font-bold px-2.5 py-1 transition-colors">1h</button>
                 <button onclick="switchKlineTimeframe('{{ summary.config_id }}', '4h')" class="kline-tf-btn text-[10px] font-bold px-2.5 py-1 transition-colors">4h</button>
                 <button onclick="switchKlineTimeframe('{{ summary.config_id }}', '1d')" class="kline-tf-btn text-[10px] font-bold px-2.5 py-1 transition-colors">1d</button>
             </div>
+            <button id="kline-toggle-{{ summary.config_id }}" onclick="toggleKlinePanel('{{ summary.config_id }}')" class="kline-toggle-btn text-[9px] bg-gray-50 hover:bg-gray-100 text-gray-600 px-2 py-1 rounded-md transition-colors font-bold border border-gray-200" aria-expanded="true">
+                收起
+            </button>
             <button onclick="loadKlineChart('{{ summary.config_id }}')" class="text-[9px] bg-blue-50 hover:bg-blue-100 text-blue-600 px-2 py-1 rounded-md transition-colors font-bold border border-blue-100">🔄</button>
         </div>
     </div>
 
-    <!-- K 线图容器 -->
-    <div id="kline-chart-{{ summary.config_id }}" class="kline-chart-box rounded-xl overflow-hidden"></div>
+    <div id="kline-body-{{ summary.config_id }}" class="kline-panel-body">
+        <!-- K 线图容器 -->
+        <div id="kline-chart-{{ summary.config_id }}" class="kline-chart-box rounded-xl overflow-hidden"></div>
 
-    <!-- 挂单 & 持仓信息面板 -->
-    <div id="kline-info-{{ summary.config_id }}" class="mt-2.5 hidden">
-        <!-- 当前持仓 -->
-        <div id="kline-position-{{ summary.config_id }}" class="hidden mb-2">
-            <div class="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">当前持仓</div>
-            <div id="kline-position-detail-{{ summary.config_id }}" class="text-[10px]"></div>
-        </div>
-        <!-- 挂单列表 -->
-        <div id="kline-pending-{{ summary.config_id }}" class="hidden">
-            <div class="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">待成交挂单</div>
-            <div id="kline-pending-list-{{ summary.config_id }}" class="space-y-1"></div>
+        <!-- 挂单 & 持仓信息面板 -->
+        <div id="kline-info-{{ summary.config_id }}" class="mt-2.5 hidden">
+            <!-- 当前持仓 -->
+            <div id="kline-position-{{ summary.config_id }}" class="hidden mb-2">
+                <div class="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">当前持仓</div>
+                <div id="kline-position-detail-{{ summary.config_id }}" class="text-[10px]"></div>
+            </div>
+            <!-- 挂单列表 -->
+            <div id="kline-pending-{{ summary.config_id }}" class="hidden">
+                <div class="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">待成交挂单</div>
+                <div id="kline-pending-list-{{ summary.config_id }}" class="space-y-1"></div>
+            </div>
         </div>
     </div>
 </div>

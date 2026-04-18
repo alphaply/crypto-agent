@@ -1370,6 +1370,7 @@ async function loadPositionStats(configId) {
 
 const klineCharts = new Map();   // configId → { chart, candleSeries, volumeSeries, emaLines, tf }
 const klineLoading = new Set();
+const klineCollapsed = new Set();
 
 const EMA_COLORS = {
     '20':  '#EAB308', // 黄
@@ -1397,6 +1398,40 @@ function getPendingLineColor(orderType, side) {
     if (orderType === 'close_long' || orderType === 'close_short') return 'rgba(245,158,11,0.78)';
     if (orderType === 'buy_spot') return 'rgba(59,130,246,0.78)';
     return (orderType === 'open_long' || side === 'BUY') ? 'rgba(38,166,154,0.7)' : 'rgba(239,83,80,0.7)';
+}
+
+function getRiskLineColor(lineType) {
+    if (lineType === 'take_profit') return 'rgba(34,197,94,0.82)';
+    if (lineType === 'stop_loss') return 'rgba(244,63,94,0.82)';
+    return 'rgba(148,163,184,0.82)';
+}
+
+function toggleKlinePanel(configId) {
+    const body = document.getElementById(`kline-body-${configId}`);
+    const toggle = document.getElementById(`kline-toggle-${configId}`);
+    if (!body || !toggle) return;
+
+    const collapsed = body.classList.toggle('hidden');
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.textContent = collapsed ? '展开' : '收起';
+
+    if (collapsed) {
+        klineCollapsed.add(configId);
+        return;
+    }
+
+    klineCollapsed.delete(configId);
+    const state = klineCharts.get(configId);
+    if (state && state.chart) {
+        requestAnimationFrame(() => {
+            const container = document.getElementById(`kline-chart-${configId}`);
+            if (!container) return;
+            state.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight || 420 });
+            state.chart.timeScale().fitContent();
+        });
+    } else {
+        loadKlineChart(configId);
+    }
 }
 
 function _klineThemeOptions() {
@@ -1548,6 +1583,21 @@ function _renderKlineChart(configId, tf, data) {
         });
     }
 
+    // --- 策略模式止盈止损线 ---
+    if (data.risk_lines && data.risk_lines.length > 0) {
+        for (const line of data.risk_lines) {
+            if (!line || !Number.isFinite(Number(line.price)) || Number(line.price) <= 0) continue;
+            candleSeries.createPriceLine({
+                price: Number(line.price),
+                color: getRiskLineColor(line.type),
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${line.label} ${line.amount || ''}`.trim(),
+            });
+        }
+    }
+
     // --- 挂单价格线 ---
     if (data.pending_orders && data.pending_orders.length > 0) {
         for (const po of data.pending_orders) {
@@ -1568,7 +1618,8 @@ function _renderKlineChart(configId, tf, data) {
 
     // 响应式
     const resizeObserver = new ResizeObserver(() => {
-        chart.applyOptions({ width: container.clientWidth });
+        if (klineCollapsed.has(configId)) return;
+        chart.applyOptions({ width: container.clientWidth, height: container.clientHeight || 420 });
     });
     resizeObserver.observe(container);
 
@@ -1596,12 +1647,16 @@ function _renderKlineInfo(configId, data) {
             posPanel.classList.remove('hidden');
             const p = data.position;
             const sideColor = p.side === 'LONG' ? 'bg-emerald-500' : 'bg-red-500';
+            const tpText = Number(p.take_profit || 0) > 0 ? `<span class="font-mono text-emerald-600">止盈: ${p.take_profit}</span>` : '';
+            const slText = Number(p.stop_loss || 0) > 0 ? `<span class="font-mono text-rose-600">止损: ${p.stop_loss}</span>` : '';
             posDetail.innerHTML = `
-                <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5 border border-gray-100">
+                <div class="flex flex-wrap items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5 border border-gray-100">
                     <span class="px-1.5 py-0.5 rounded text-[9px] font-black text-white ${sideColor}">${p.side}</span>
                     <span class="font-mono font-bold text-gray-700">入场: ${p.entry_price}</span>
                     <span class="text-gray-400">|</span>
                     <span class="font-mono text-gray-600">数量: ${p.amount}</span>
+                    ${tpText ? '<span class="text-gray-400">|</span>' + tpText : ''}
+                    ${slText ? '<span class="text-gray-400">|</span>' + slText : ''}
                 </div>`;
         } else {
             posPanel.classList.add('hidden');
