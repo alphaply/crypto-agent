@@ -1378,6 +1378,27 @@ const EMA_COLORS = {
     '200': '#8B5CF6', // 紫
 };
 
+function getPendingOrderLabel(orderType, side) {
+    if (orderType === 'close_long') return '平多';
+    if (orderType === 'close_short') return '平空';
+    if (orderType === 'open_long') return '开多';
+    if (orderType === 'open_short') return '开空';
+    if (orderType === 'buy_spot') return '买入';
+    return side === 'BUY' ? '开多' : '开空';
+}
+
+function getPendingOrderColor(orderType, side) {
+    if (orderType === 'close_long' || orderType === 'close_short') return 'bg-amber-500';
+    if (orderType === 'buy_spot') return 'bg-blue-500';
+    return (orderType === 'open_long' || side === 'BUY') ? 'bg-emerald-500' : 'bg-red-500';
+}
+
+function getPendingLineColor(orderType, side) {
+    if (orderType === 'close_long' || orderType === 'close_short') return 'rgba(245,158,11,0.78)';
+    if (orderType === 'buy_spot') return 'rgba(59,130,246,0.78)';
+    return (orderType === 'open_long' || side === 'BUY') ? 'rgba(38,166,154,0.7)' : 'rgba(239,83,80,0.7)';
+}
+
 function _klineThemeOptions() {
     const isDark = getResolvedTheme() === 'dark';
     return {
@@ -1514,36 +1535,6 @@ function _renderKlineChart(configId, tf, data) {
         }
     }
 
-    // --- 订单标记 (markers) ---
-    if (data.orders && data.orders.length > 0) {
-        const markers = [];
-        for (const o of data.orders) {
-            // 将 timestamp 字符串转为秒级 UTC 时间戳，对齐到最近的 candle
-            let ts = _orderTimeToChartTime(o.time, data.candles);
-            if (!ts) continue;
-
-            const t = o.type || '';
-            let position, color, shape, text;
-            if (t === 'open_long') {
-                position = 'belowBar'; color = '#26a69a'; shape = 'arrowUp'; text = 'B';
-            } else if (t === 'open_short') {
-                position = 'aboveBar'; color = '#ef5350'; shape = 'arrowDown'; text = 'S';
-            } else if (t.startsWith('close')) {
-                position = t === 'close_short' ? 'belowBar' : 'aboveBar';
-                color = '#f59e0b'; shape = t === 'close_short' ? 'arrowUp' : 'arrowDown'; text = 'C';
-            } else if (t === 'cancel') {
-                position = 'aboveBar'; color = '#94a3b8'; shape = 'circle'; text = 'X';
-            } else {
-                continue;
-            }
-
-            markers.push({ time: ts, position, color, shape, text, size: 1 });
-        }
-        // lightweight-charts 要求 markers 按 time 排序
-        markers.sort((a, b) => a.time - b.time);
-        if (markers.length > 0) candleSeries.setMarkers(markers);
-    }
-
     // --- 持仓入场价水平线 ---
     if (data.position && data.position.entry_price > 0) {
         const posColor = data.position.side === 'LONG' ? '#3b82f6' : '#f43f5e';
@@ -1561,14 +1552,13 @@ function _renderKlineChart(configId, tf, data) {
     if (data.pending_orders && data.pending_orders.length > 0) {
         for (const po of data.pending_orders) {
             if (po.price <= 0) continue;
-            const isLong = po.type === 'open_long' || po.side === 'BUY';
             candleSeries.createPriceLine({
                 price: po.price,
-                color: isLong ? 'rgba(38,166,154,0.7)' : 'rgba(239,83,80,0.7)',
+                color: getPendingLineColor(po.type, po.side),
                 lineWidth: 1,
                 lineStyle: LightweightCharts.LineStyle.Dotted,
                 axisLabelVisible: true,
-                title: `挂单 ${po.side} ${po.amount}`,
+                title: `${getPendingOrderLabel(po.type, po.side)} ${po.amount}`,
             });
         }
     }
@@ -1583,29 +1573,6 @@ function _renderKlineChart(configId, tf, data) {
     resizeObserver.observe(container);
 
     klineCharts.set(configId, { chart, candleSeries, volumeSeries, emaLines, tf, resizeObserver });
-}
-
-function _orderTimeToChartTime(timestamp, candles) {
-    // 将 "2026-04-18 08:30:00" 格式的时间转为秒级 UTC 时间戳
-    // 然后对齐到最近的 candle time
-    if (!timestamp || candles.length === 0) return null;
-    let ts;
-    if (typeof timestamp === 'number') {
-        ts = timestamp;
-    } else {
-        const d = new Date(timestamp.replace(' ', 'T') + 'Z');
-        ts = Math.floor(d.getTime() / 1000);
-    }
-    if (isNaN(ts)) return null;
-
-    // 找到最近的 candle 时间
-    let closest = candles[0].time;
-    let minDiff = Math.abs(ts - closest);
-    for (const c of candles) {
-        const diff = Math.abs(ts - c.time);
-        if (diff < minDiff) { minDiff = diff; closest = c.time; }
-    }
-    return closest;
 }
 
 function _renderKlineInfo(configId, data) {
@@ -1648,9 +1615,8 @@ function _renderKlineInfo(configId, data) {
         if (hasPending) {
             pendPanel.classList.remove('hidden');
             pendList.innerHTML = data.pending_orders.map(po => {
-                const isLong = po.type === 'open_long' || po.side === 'BUY';
-                const typeLabel = isLong ? '开多' : '开空';
-                const badgeColor = isLong ? 'bg-emerald-500' : 'bg-red-500';
+                const typeLabel = getPendingOrderLabel(po.type, po.side);
+                const badgeColor = getPendingOrderColor(po.type, po.side);
                 return `
                     <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5 border border-gray-100">
                         <span class="px-1.5 py-0.5 rounded text-[9px] font-black text-white ${badgeColor}">${typeLabel}</span>
