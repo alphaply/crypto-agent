@@ -76,7 +76,10 @@ function switchAgentTab(agentName) {
 
     if (agentName !== 'COMPARE') {
         loadAgentStats(agentName);
-        loadKlineChart(agentName);
+        ensureKlineDefaultState(agentName);
+        if (!klineCollapsed.has(agentName)) {
+            loadKlineChart(agentName);
+        }
     }
 }
 
@@ -265,7 +268,12 @@ document.addEventListener('DOMContentLoaded', function() {
         observeMarkdown(firstWindow);
         const configId = firstWindow.getAttribute('data-config-id');
         if (configId) loadAgentStats(configId);
-        if (configId) loadKlineChart(configId);
+        if (configId) {
+            ensureKlineDefaultState(configId);
+            if (!klineCollapsed.has(configId)) {
+                loadKlineChart(configId);
+            }
+        }
     }
 
     document.addEventListener('toggle', event => {
@@ -1406,21 +1414,51 @@ function getRiskLineColor(lineType) {
     return 'rgba(148,163,184,0.82)';
 }
 
-function toggleKlinePanel(configId) {
+function isMobileKlineView() {
+    return window.matchMedia('(max-width: 640px)').matches;
+}
+
+function setKlinePanelState(configId, collapsed) {
     const body = document.getElementById(`kline-body-${configId}`);
     const toggle = document.getElementById(`kline-toggle-${configId}`);
     if (!body || !toggle) return;
 
-    const collapsed = body.classList.toggle('hidden');
+    body.classList.toggle('hidden', collapsed);
     toggle.setAttribute('aria-expanded', String(!collapsed));
     toggle.textContent = collapsed ? '展开' : '收起';
 
     if (collapsed) {
         klineCollapsed.add(configId);
+    } else {
+        klineCollapsed.delete(configId);
+    }
+}
+
+function ensureKlineDefaultState(configId) {
+    const panel = document.getElementById(`kline-panel-${configId}`);
+    if (!panel || panel.dataset.klineStateReady === '1') return;
+    setKlinePanelState(configId, isMobileKlineView());
+    panel.dataset.klineStateReady = '1';
+}
+
+function renderKlineLegend(configId) {
+    const legend = document.getElementById(`kline-ema-legend-${configId}`);
+    if (!legend) return;
+    legend.innerHTML = ['20', '50', '100', '200'].map(span => `
+        <span class="kline-ema-chip" style="--ema-color:${EMA_COLORS[span] || '#94a3b8'}">EMA(${span})</span>
+    `).join('');
+}
+
+function toggleKlinePanel(configId) {
+    const body = document.getElementById(`kline-body-${configId}`);
+    if (!body) return;
+    const collapsed = !body.classList.contains('hidden');
+    setKlinePanelState(configId, collapsed);
+
+    if (collapsed) {
         return;
     }
 
-    klineCollapsed.delete(configId);
     const state = klineCharts.get(configId);
     if (state && state.chart) {
         requestAnimationFrame(() => {
@@ -1525,10 +1563,11 @@ function _renderKlineChart(configId, tf, data) {
     const chart = LightweightCharts.createChart(container, {
         ...themeOpts,
         width: container.clientWidth,
-        height: 420,
+        height: container.clientHeight || 420,
         handleScroll: true,
         handleScale: true,
     });
+    renderKlineLegend(configId);
 
     // --- 蜡烛图 ---
     const isDark = getResolvedTheme() === 'dark';
@@ -1563,23 +1602,25 @@ function _renderKlineChart(configId, tf, data) {
                 priceLineVisible: false,
                 lastValueVisible: false,
                 crosshairMarkerVisible: false,
-                title: `EMA${span}`,
             });
             lineSeries.setData(emaData);
             emaLines[span] = lineSeries;
         }
     }
 
-    // --- 持仓入场价水平线 ---
-    if (data.position && data.position.entry_price > 0) {
-        const posColor = data.position.side === 'LONG' ? '#3b82f6' : '#f43f5e';
-        candleSeries.createPriceLine({
-            price: data.position.entry_price,
-            color: posColor,
-            lineWidth: 2,
-            lineStyle: LightweightCharts.LineStyle.Dashed,
-            axisLabelVisible: true,
-            title: `${data.position.side} 入场 ${data.position.entry_price}`,
+    // --- 当前持仓入场线（支持多持仓） ---
+    if (data.positions && data.positions.length > 0) {
+        data.positions.forEach((position, index) => {
+            if (!position || Number(position.entry_price) <= 0) return;
+            const posColor = position.side === 'LONG' ? '#3b82f6' : '#f43f5e';
+            candleSeries.createPriceLine({
+                price: Number(position.entry_price),
+                color: posColor,
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${position.side} 入场${data.positions.length > 1 ? `#${index + 1}` : ''}`,
+            });
         });
     }
 
@@ -1630,10 +1671,12 @@ function _renderKlineInfo(configId, data) {
     const infoPanel = document.getElementById(`kline-info-${configId}`);
     if (!infoPanel) return;
 
-    const hasPosition = data.position && data.position.entry_price > 0;
+    const positions = Array.isArray(data.positions) ? data.positions.filter(position => Number(position.entry_price || 0) > 0) : [];
+    const hasPosition = positions.length > 0;
     const hasPending = data.pending_orders && data.pending_orders.length > 0;
+    const hasRisk = data.risk_lines && data.risk_lines.length > 0;
 
-    if (!hasPosition && !hasPending) {
+    if (!hasPosition && !hasPending && !hasRisk) {
         infoPanel.classList.add('hidden');
         return;
     }
@@ -1645,21 +1688,38 @@ function _renderKlineInfo(configId, data) {
     if (posPanel && posDetail) {
         if (hasPosition) {
             posPanel.classList.remove('hidden');
-            const p = data.position;
-            const sideColor = p.side === 'LONG' ? 'bg-emerald-500' : 'bg-red-500';
-            const tpText = Number(p.take_profit || 0) > 0 ? `<span class="font-mono text-emerald-600">止盈: ${p.take_profit}</span>` : '';
-            const slText = Number(p.stop_loss || 0) > 0 ? `<span class="font-mono text-rose-600">止损: ${p.stop_loss}</span>` : '';
-            posDetail.innerHTML = `
+            posDetail.innerHTML = positions.map((position, index) => {
+                const sideColor = position.side === 'LONG' ? 'bg-emerald-500' : 'bg-red-500';
+                return `
                 <div class="flex flex-wrap items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5 border border-gray-100">
-                    <span class="px-1.5 py-0.5 rounded text-[9px] font-black text-white ${sideColor}">${p.side}</span>
-                    <span class="font-mono font-bold text-gray-700">入场: ${p.entry_price}</span>
+                    <span class="px-1.5 py-0.5 rounded text-[9px] font-black text-white ${sideColor}">${position.side}${positions.length > 1 ? `#${index + 1}` : ''}</span>
+                    <span class="font-mono font-bold text-gray-700">入场: ${position.entry_price}</span>
                     <span class="text-gray-400">|</span>
-                    <span class="font-mono text-gray-600">数量: ${p.amount}</span>
-                    ${tpText ? '<span class="text-gray-400">|</span>' + tpText : ''}
-                    ${slText ? '<span class="text-gray-400">|</span>' + slText : ''}
+                    <span class="font-mono text-gray-600">数量: ${position.amount}</span>
+                    ${position.order_id ? `<span class="text-gray-400">|</span><span class="text-[8px] text-gray-400">${position.order_id}</span>` : ''}
                 </div>`;
+            }).join('');
         } else {
             posPanel.classList.add('hidden');
+        }
+    }
+
+    const riskPanel = document.getElementById(`kline-risk-${configId}`);
+    const riskList = document.getElementById(`kline-risk-list-${configId}`);
+    if (riskPanel && riskList) {
+        if (hasRisk) {
+            riskPanel.classList.remove('hidden');
+            riskList.innerHTML = data.risk_lines.map(line => {
+                const badgeClass = line.type === 'take_profit' ? 'kline-risk-badge tp' : 'kline-risk-badge sl';
+                return `
+                    <div class="${badgeClass}">
+                        <span class="kline-risk-label">${line.label}</span>
+                        <span class="kline-risk-value">${line.price}</span>
+                        <span class="kline-risk-meta">${line.side || ''} ${line.amount || ''}</span>
+                    </div>`;
+            }).join('');
+        } else {
+            riskPanel.classList.add('hidden');
         }
     }
 
@@ -1693,5 +1753,12 @@ window.addEventListener('app-theme-change', () => {
         if (state.chart) {
             state.chart.applyOptions(_klineThemeOptions());
         }
+    }
+});
+
+window.addEventListener('resize', () => {
+    for (const panel of document.querySelectorAll('[id^="kline-panel-"]')) {
+        const configId = panel.id.replace('kline-panel-', '');
+        ensureKlineDefaultState(configId);
     }
 });

@@ -12,14 +12,14 @@
     <!-- 🌐 Dashboard 状态顶栏 -->
     {% include 'partials/_dashboard_header.html' %}
 
-    <main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <main class="max-w-[1360px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       
       {% if agent_summaries %}
       <!-- 📑 Agent Tab 切换器 -->
       {% include 'partials/_agent_tabs.html' %}
 
       <!-- 🖥️ Agent 视窗容器 -->
-      <div id="agent-windows-container" class="relative">
+    <div id="agent-windows-container" class="relative max-w-[1180px] mx-auto w-full">
           {% for summary in agent_summaries %}
               {% set loop_first = loop.first %}
               {% include 'partials/_agent_window.html' %}

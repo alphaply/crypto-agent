@@ -712,7 +712,7 @@ def get_kline_data(config_id):
 
     if not raw:
         return jsonify({"success": True, "candles": [], "volume": [], "emas": {},
-                        "orders": [], "position": None, "pending_orders": [], "risk_lines": []})
+                        "orders": [], "position": None, "positions": [], "pending_orders": [], "risk_lines": []})
 
     candles = []
     volumes = []
@@ -737,6 +737,7 @@ def get_kline_data(config_id):
         emas[str(span)] = ema_data
 
     # --- 3. 当前持仓 ---
+    positions = []
     position = None
     risk_lines = []
     try:
@@ -744,23 +745,25 @@ def get_kline_data(config_id):
             all_pos = mt.exchange.fetch_positions([symbol])
             for p in all_pos:
                 if float(p.get('contracts', 0)) > 0:
-                    position = {
+                    current_position = {
                         "side": str(p.get('side', '')).upper(),
                         "entry_price": float(p.get('entryPrice', 0)),
                         "amount": float(p.get('contracts', 0)),
                     }
-                    break
+                    positions.append(current_position)
+            if positions:
+                position = positions[0]
         elif mode == 'STRATEGY':
             conn = sqlite3.connect(DB_NAME)
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT side, price, amount, stop_loss, take_profit, order_id FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=1 LIMIT 1",
+            rows = conn.execute(
+                "SELECT side, price, amount, stop_loss, take_profit, order_id FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=1 ORDER BY timestamp ASC",
                 (config_id, symbol),
-            ).fetchone()
+            ).fetchall()
             conn.close()
-            if row:
+            for row in rows:
                 side_raw = str(row['side']).upper()
-                position = {
+                current_position = {
                     "side": "LONG" if 'BUY' in side_raw else "SHORT",
                     "entry_price": float(row['price']),
                     "amount": float(row['amount']),
@@ -768,12 +771,15 @@ def get_kline_data(config_id):
                     "stop_loss": float(row['stop_loss'] or 0),
                     "take_profit": float(row['take_profit'] or 0),
                 }
+                positions.append(current_position)
                 if float(row['take_profit'] or 0) > 0:
                     risk_lines.append({
                         "price": float(row['take_profit']),
                         "type": "take_profit",
                         "label": "止盈",
                         "amount": float(row['amount']),
+                        "side": current_position['side'],
+                        "order_id": row['order_id'],
                     })
                 if float(row['stop_loss'] or 0) > 0:
                     risk_lines.append({
@@ -781,7 +787,11 @@ def get_kline_data(config_id):
                         "type": "stop_loss",
                         "label": "止损",
                         "amount": float(row['amount']),
+                        "side": current_position['side'],
+                        "order_id": row['order_id'],
                     })
+            if positions:
+                position = positions[0]
         elif mode == 'SPOT_DCA':
             from routes.main import calculate_dca_stats
             dca = calculate_dca_stats(config_id)
@@ -791,6 +801,7 @@ def get_kline_data(config_id):
                     "entry_price": dca['avg_cost'],
                     "amount": dca.get('total_qty', 0),
                 }
+                positions.append(position)
     except Exception as e:
         logger.warning(f"Kline: 获取持仓失败: {e}")
 
@@ -870,6 +881,7 @@ def get_kline_data(config_id):
         "emas": emas,
         "orders": [],
         "position": position,
+        "positions": positions,
         "pending_orders": pending_orders,
         "risk_lines": risk_lines,
     })

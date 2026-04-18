@@ -1,7 +1,7 @@
 {# 📈 K 线图组件 (partial) #}
 {# 使用方式: include 'partials/_kline_chart.html' (上下文需要 summary 变量) #}
 
-<div id="kline-panel-{{ summary.config_id }}" class="kline-chart-container">
+<div id="kline-panel-{{ summary.config_id }}" class="kline-chart-container" data-kline-default-state="desktop-open">
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
         <h4 class="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2">
             <span class="w-2 h-2 rounded-full bg-blue-500"></span>
@@ -23,14 +23,22 @@
 
     <div id="kline-body-{{ summary.config_id }}" class="kline-panel-body">
         <!-- K 线图容器 -->
-        <div id="kline-chart-{{ summary.config_id }}" class="kline-chart-box rounded-xl overflow-hidden"></div>
+        <div class="kline-chart-stage rounded-xl overflow-hidden">
+            <div id="kline-ema-legend-{{ summary.config_id }}" class="kline-ema-legend" aria-hidden="true"></div>
+            <div id="kline-chart-{{ summary.config_id }}" class="kline-chart-box"></div>
+        </div>
 
         <!-- 挂单 & 持仓信息面板 -->
-        <div id="kline-info-{{ summary.config_id }}" class="mt-2.5 hidden">
+        <div id="kline-info-{{ summary.config_id }}" class="mt-2.5 hidden space-y-2">
             <!-- 当前持仓 -->
             <div id="kline-position-{{ summary.config_id }}" class="hidden mb-2">
                 <div class="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">当前持仓</div>
                 <div id="kline-position-detail-{{ summary.config_id }}" class="text-[10px]"></div>
+            </div>
+            <!-- 止盈止损 -->
+            <div id="kline-risk-{{ summary.config_id }}" class="hidden">
+                <div class="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">止盈 / 止损</div>
+                <div id="kline-risk-list-{{ summary.config_id }}" class="flex flex-wrap gap-1.5"></div>
             </div>
             <!-- 挂单列表 -->
             <div id="kline-pending-{{ summary.config_id }}" class="hidden">
