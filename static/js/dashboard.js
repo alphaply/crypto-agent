@@ -30,6 +30,25 @@ function getChartToken(name) {
     return value || '#94a3b8';
 }
 
+// ── 通用 Loading 工具 ──────────────────────────────────────────────────────
+
+/**
+ * 给按钮加/去 loading 状态
+ * @param {string|HTMLElement} id - 按钮 ID 字符串或直接传入元素
+ * @param {boolean} loading
+ */
+function _btnLoad(id, loading) {
+    const el = typeof id === 'string' ? document.getElementById(id) : id;
+    if (!el) return;
+    if (loading) {
+        el.setAttribute('data-loading', 'true');
+        el.disabled = true;
+    } else {
+        el.removeAttribute('data-loading');
+        el.disabled = false;
+    }
+}
+
 // --- 多 Agent Tab 切换逻辑 ---
 
 function switchAgentTab(agentName) {
@@ -114,6 +133,22 @@ async function loadCompareEquityChart() {
     const symbol = encodeURIComponent(getCurrentSymbol());
     const ids = encodeURIComponent(selected.join(','));
 
+    // 显示 loading 占位
+    const wrapper = document.getElementById('compare-chart-wrapper');
+    let loadingEl = null;
+    if (wrapper) {
+        canvas.style.opacity = '0';
+        loadingEl = document.getElementById('compare-chart-loading');
+        if (!loadingEl) {
+            loadingEl = document.createElement('div');
+            loadingEl.id = 'compare-chart-loading';
+            loadingEl.className = 'chart-loading-placeholder';
+            loadingEl.textContent = '数据加载中…';
+            wrapper.appendChild(loadingEl);
+        }
+        loadingEl.classList.remove('hidden');
+    }
+
     try {
         const resp = await fetch(`/api/stats/equity_compare?symbol=${symbol}&config_ids=${ids}`);
         const data = await resp.json();
@@ -193,6 +228,9 @@ async function loadCompareEquityChart() {
         });
     } catch (e) {
         console.error('Load compare equity chart error:', e);
+    } finally {
+        if (loadingEl) loadingEl.classList.add('hidden');
+        if (canvas) canvas.style.opacity = '';
     }
 }
 
@@ -336,8 +374,8 @@ async function changeOrderPage(configId, delta) {
     const container = document.getElementById(`order-container-${configId}`);
     const indicator = document.getElementById(`page-indicator-${configId}`);
     
-    // 视觉反馈：半透明加载感
-    container.style.opacity = '0.5';
+    // 视觉反馈：淡出 + 模糊过渡
+    container.classList.add('order-paging', 'loading');
 
     try {
         const resp = await fetch(`/api/orders?config_id=${configId}&page=${newPage}&per_page=10`);
@@ -353,7 +391,7 @@ async function changeOrderPage(configId, delta) {
     } catch (e) {
         showToast('加载订单失败', 'error');
     } finally {
-        container.style.opacity = '1';
+        container.classList.remove('loading');
     }
 }
 
@@ -465,6 +503,7 @@ async function submitAuth() {
     if (!pwd) return showToast('请输入密码', 'error');
     if (isCaptchaVisible && !captcha) return showToast('请输入验证码', 'error');
 
+    _btnLoad('btn-submit-auth', true);
     try {
         const resp = await fetch('/api/chat/auth', {
             method: 'POST',
@@ -497,6 +536,8 @@ async function submitAuth() {
         }
     } catch (e) {
         showToast('验证失败: ' + e, 'error');
+    } finally {
+        _btnLoad('btn-submit-auth', false);
     }
 }
 
@@ -849,6 +890,7 @@ async function saveConfigFromUI() {
         leverage: parseInt(document.getElementById('global-leverage').value) || 10,
         enable_scheduler: document.getElementById('global-scheduler').checked
     };
+    _btnLoad('btn-save-config', true);
     try {
         const resp = await fetch('/api/config/save', {
             method: 'POST',
@@ -864,6 +906,8 @@ async function saveConfigFromUI() {
         }
     } catch (e) {
         showToast('网络请求失败', 'error');
+    } finally {
+        _btnLoad('btn-save-config', false);
     }
 }
 
@@ -915,6 +959,7 @@ async function openPrompt(name) {
 async function saveCurrentPrompt() {
     if (!currentPromptFile) return showToast('请先选择或创建文件', 'error');
     const content = document.getElementById('prompt-editor').value;
+    _btnLoad('btn-save-prompt', true);
     try {
         const resp = await fetch('/api/prompts/save', {
             method: 'POST',
@@ -929,6 +974,8 @@ async function saveCurrentPrompt() {
         }
     } catch (e) {
         showToast('保存失败', 'error');
+    } finally {
+        _btnLoad('btn-save-prompt', false);
     }
 }
 
@@ -1023,6 +1070,7 @@ async function confirmDeleteAction() {
     if (!pwd) return showToast('请输入管理员密码', 'error');
     if (isCaptchaVisible && !captcha) return showToast('请输入验证码', 'error');
 
+    _btnLoad('btn-confirm-delete', true);
     try {
         const response = await fetch('/api/clean_history', {
             method: 'POST',
@@ -1052,6 +1100,8 @@ async function confirmDeleteAction() {
         }
     } catch (e) {
         showToast('网络请求失败', 'error');
+    } finally {
+        _btnLoad('btn-confirm-delete', false);
     }
 }
 
@@ -1109,6 +1159,7 @@ async function submitEditDailySummary() {
     if (!pwd) return showToast('请输入管理员密码', 'error');
     if (isCaptchaVisible && !captcha) return showToast('请输入验证码', 'error');
 
+    _btnLoad('btn-submit-edit-daily', true);
     try {
         const response = await fetch('/api/daily_summary/update', {
             method: 'POST',
@@ -1140,6 +1191,8 @@ async function submitEditDailySummary() {
         }
     } catch (e) {
         showToast('网络请求失败', 'error');
+    } finally {
+        _btnLoad('btn-submit-edit-daily', false);
     }
 }
 
@@ -1170,6 +1223,12 @@ async function loadAgentStats(configId) {
     loadedStats.add(configId);
 
     const request = (async () => {
+    // 统计数字显示骨架屏
+    const _skeletonIds = ['stat-total', 'stat-ls', 'stat-cancel', 'stat-close'];
+    _skeletonIds.forEach(id => {
+        const el = document.getElementById(`${id}-${configId}`);
+        if (el) el.classList.add('stat-skeleton');
+    });
     try {
         const resp = await fetch(`/api/stats/agent/${configId}`);
         const data = await resp.json();
@@ -1227,6 +1286,11 @@ async function loadAgentStats(configId) {
         }
     } catch (e) {
         console.error('Load agent stats error:', e);
+    } finally {
+        _skeletonIds.forEach(id => {
+            const el = document.getElementById(`${id}-${configId}`);
+            if (el) el.classList.remove('stat-skeleton');
+        });
     }
 
     // 自动加载仓位面板 (REAL 和 STRATEGY 模式)

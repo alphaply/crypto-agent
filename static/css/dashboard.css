@@ -704,3 +704,102 @@ input:checked + .slider:before { transform: translateX(20px); }
     display: none;
   }
 }
+
+
+/* ==========================================================================
+   🔄 通用 Loading / Skeleton 工具类
+   ========================================================================== */
+
+/* ── 按钮 loading 状态（通过 data-loading="true" 属性驱动）── */
+button[data-loading="true"] {
+  opacity: 0.78;
+  pointer-events: none;
+  cursor: default;
+}
+
+button[data-loading="true"]::after {
+  content: '';
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: kline-spin 0.65s linear infinite;
+  margin-left: 0.45rem;
+  vertical-align: middle;
+}
+
+/* 深色背景按钮（白字）：spinner 用白色 */
+button.bg-blue-600[data-loading="true"]::after,
+button.bg-red-600[data-loading="true"]::after,
+button.bg-emerald-600[data-loading="true"]::after,
+button.bg-blue-700[data-loading="true"]::after {
+  border-color: rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+}
+
+/* ── 统计数字骨架屏 ── */
+.stat-skeleton {
+  display: inline-block !important;
+  background: linear-gradient(
+    90deg,
+    #e2e8f0 25%,
+    #f8fafc 50%,
+    #e2e8f0 75%
+  ) !important;
+  background-size: 200% 100% !important;
+  animation: kline-shimmer 1.2s infinite !important;
+  border-radius: 0.3rem !important;
+  color: transparent !important;
+  min-width: 2rem;
+  min-height: 1em;
+  vertical-align: middle;
+}
+
+:root[data-theme='dark'] .stat-skeleton {
+  background: linear-gradient(
+    90deg,
+    #2e2e3e 25%,
+    #3f3f50 50%,
+    #2e2e3e 75%
+  ) !important;
+  background-size: 200% 100% !important;
+}
+
+/* ── 图表 / 区域占位加载动画 ── */
+.chart-loading-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, #64748b);
+  height: 100%;
+  min-height: 100px;
+}
+
+.chart-loading-placeholder::before {
+  content: '';
+  display: inline-block;
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 2px solid rgba(59, 130, 246, 0.2);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: kline-spin 0.75s linear infinite;
+}
+
+/* ── 订单翻页淡出过渡 ── */
+.order-paging {
+  transition: opacity 0.15s ease, filter 0.15s ease;
+}
+
+.order-paging.loading {
+  opacity: 0.4;
+  filter: blur(0.5px);
+  pointer-events: none;
+}
+

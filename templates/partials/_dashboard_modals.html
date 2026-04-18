@@ -19,7 +19,7 @@
             </div>
 
             <div class="flex gap-3">
-                <button onclick="confirmDeleteAction()" class="flex-1 bg-red-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认清空</button>
+                <button id="btn-confirm-delete" onclick="confirmDeleteAction()" class="flex-1 bg-red-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认清空</button>
                 <button onclick="closeDeleteModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold">取消</button>
             </div>
         </div>
@@ -105,7 +105,7 @@
                         <div class="flex justify-between items-center px-1">
                             <span id="current-prompt-name" class="text-xs font-mono font-bold text-blue-600">未选择文件</span>
                             <div class="flex gap-2">
-                                <button onclick="saveCurrentPrompt()" class="text-[10px] bg-emerald-600 text-white px-3 py-1 rounded-md font-bold shadow-sm">保存文件</button>
+                                <button id="btn-save-prompt" onclick="saveCurrentPrompt()" class="text-[10px] bg-emerald-600 text-white px-3 py-1 rounded-md font-bold shadow-sm">保存文件</button>
                                 <button onclick="deleteCurrentPrompt()" id="btn-delete-prompt" class="hidden text-[10px] bg-red-100 text-red-600 px-3 py-1 rounded-md font-bold">删除</button>
                             </div>
                         </div>
@@ -130,7 +130,7 @@
                 <div class="text-[10px] text-gray-400 text-center sm:text-left leading-tight">⚠️ 保存后 .env 将实时更新并触发热重载</div>
                 <div class="flex gap-3 w-full sm:w-auto">
                     <button onclick="closeConfigModal()" class="flex-1 sm:flex-none px-6 py-2.5 rounded-lg text-sm font-bold text-gray-500 bg-white border border-gray-200">取消</button>
-                    <button onclick="saveConfigFromUI()" class="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-8 py-2.5 rounded-lg text-sm font-bold transition-all shadow-md active:scale-95">保存并应用</button>
+                    <button id="btn-save-config" onclick="saveConfigFromUI()" class="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-8 py-2.5 rounded-lg text-sm font-bold transition-all shadow-md active:scale-95">保存并应用</button>
                 </div>
             </div>
         </div>
@@ -338,7 +338,7 @@
             </div>
 
             <div class="flex gap-3">
-                <button onclick="submitAuth()" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认</button>
+                <button id="btn-submit-auth" onclick="submitAuth()" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg font-bold shadow-sm active:scale-95 transition-all">确认</button>
                 <button onclick="closeAuthModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg font-bold">取消</button>
             </div>
         </div>
@@ -375,7 +375,7 @@
                 </div>
             </div>
             <div class="px-6 py-4 bg-gray-50 flex gap-3 border-t flex-shrink-0">
-                <button onclick="submitEditDailySummary()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-bold shadow-sm transition-all active:scale-95">保存修改</button>
+                <button id="btn-submit-edit-daily" onclick="submitEditDailySummary()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-bold shadow-sm transition-all active:scale-95">保存修改</button>
                 <button onclick="closeEditDailySummaryModal()" class="flex-1 bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 py-2.5 rounded-lg font-bold transition-all">取消</button>
             </div>
         </div>
