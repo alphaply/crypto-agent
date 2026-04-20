@@ -492,6 +492,34 @@ function appendStreamDelta(streamIdx, delta) {
   ensureStreamFlushTimer();
 }
 
+function updateStreamingPlaceholder(streamIdx, text) {
+  const message = currentMessages[streamIdx];
+  if (!message) return;
+  message.content = String(text || '');
+  message.__loading = true;
+  message.__streaming = true;
+  queueStreamingUpdate();
+}
+
+function finalizeStreamingError(streamIdx, payload) {
+  flushAllStreamBuffers();
+  const message = currentMessages[streamIdx];
+  if (!message) return;
+
+  const reason = payload && payload.message ? String(payload.message) : '请求失败，请稍后重试。';
+  const retryable = !!(payload && payload.retryable);
+  const code = payload && payload.error_code ? `\n\n错误类型: ${payload.error_code}` : '';
+  const retryHint = retryable ? '\n\n这是临时错误，可以重新发送本轮消息。' : '';
+
+  message.content = `请求未完成。\n\n${reason}${code}${retryHint}`;
+  message.reasoning_content = '';
+  delete message.tool_calls;
+  delete message.__loading;
+  message.__streaming = false;
+  message.__thinking_open = false;
+  renderMessages(currentMessages);
+}
+
 function showApproval() {
   const bar = document.getElementById('approvalBar');
   if (!bar) return;
@@ -628,18 +656,39 @@ async function sendMessage() {
   const isFirstMessage = currentMessages.length === 0;
   currentMessages.push({ role: 'user', content: message });
   const streamIdx = currentMessages.length;
-  currentMessages.push({ role: 'assistant', content: '', reasoning_content: '', __streaming: true, __thinking_open: true });
+  currentMessages.push({
+    role: 'assistant',
+    content: '正在整理市场与账户数据...',
+    reasoning_content: '',
+    __loading: true,
+    __streaming: true,
+    __thinking_open: true
+  });
   renderMessages(currentMessages);
 
   const eventSource = new EventSource(`/api/chat/sessions/${currentSessionId}/stream?message=${encodeURIComponent(message)}`);
   eventSource.onmessage = event => {
     const payload = JSON.parse(event.data);
     if (payload.type === 'token') {
+      if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
+        currentMessages[streamIdx].content = '';
+        delete currentMessages[streamIdx].__loading;
+      }
       appendStreamDelta(streamIdx, { content: payload.token || '' });
     } else if (payload.type === 'reasoning_token') {
+      if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
+        currentMessages[streamIdx].content = '';
+        delete currentMessages[streamIdx].__loading;
+      }
       appendStreamDelta(streamIdx, { reasoning: payload.token || '' });
     } else if (payload.type === 'tool_calls') {
+      if (currentMessages[streamIdx] && currentMessages[streamIdx].__loading) {
+        currentMessages[streamIdx].content = '';
+        delete currentMessages[streamIdx].__loading;
+      }
       appendStreamDelta(streamIdx, { tool_calls: payload.tool_calls });
+    } else if (payload.type === 'status') {
+      updateStreamingPlaceholder(streamIdx, payload.message || '模型处理中...');
     } else if (payload.type === 'done') {
       flushAllStreamBuffers();
       currentMessages = normalizeMessages(payload.messages || []);
@@ -655,11 +704,14 @@ async function sendMessage() {
           });
       }
     } else if (payload.type === 'error') {
-      window.alert(`Streaming error: ${payload.message}`);
+      finalizeStreamingError(streamIdx, payload);
       eventSource.close();
     }
   };
-  eventSource.onerror = () => eventSource.close();
+  eventSource.onerror = () => {
+    finalizeStreamingError(streamIdx, { message: 'SSE 连接意外中断，请稍后重试。', error_code: 'stream_disconnected', retryable: true });
+    eventSource.close();
+  };
 }
 
 async function respondApproval(approved) {
@@ -719,6 +771,10 @@ async function respondApproval(approved) {
         if (payload.type === 'reasoning_token') appendStreamDelta(targetAiIdx, { reasoning: payload.token || '' });
         if (payload.type === 'tool_calls') appendStreamDelta(targetAiIdx, { tool_calls: payload.tool_calls });
       }
+    } else if (payload.type === 'status') {
+      if (approvalStreamIdx >= 0 && currentMessages[approvalStreamIdx] && currentMessages[approvalStreamIdx].role === 'assistant') {
+        updateStreamingPlaceholder(approvalStreamIdx, payload.message || '模型处理中...');
+      }
     } else if (payload.type === 'done') {
       flushAllStreamBuffers();
       currentMessages = normalizeMessages(payload.messages || []);
@@ -730,6 +786,7 @@ async function respondApproval(approved) {
       eventSource.close();
     } else if (payload.type === 'error') {
       console.error('Stream error:', payload.message);
+      if (approvalStreamIdx >= 0) finalizeStreamingError(approvalStreamIdx, payload);
       approvalStreamIdx = -1;
       setApprovalLoading(false);
       eventSource.close();
@@ -737,6 +794,9 @@ async function respondApproval(approved) {
   };
   eventSource.onerror = error => {
     console.error('EventSource failed:', error);
+    if (approvalStreamIdx >= 0) {
+      finalizeStreamingError(approvalStreamIdx, { message: 'SSE 连接意外中断，请稍后重试。', error_code: 'stream_disconnected', retryable: true });
+    }
     approvalStreamIdx = -1;
     setApprovalLoading(false);
     eventSource.close();

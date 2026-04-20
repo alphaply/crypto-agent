@@ -22,7 +22,7 @@ from routes.utils import global_config, _require_chat_auth_api, _serialize_messa
 
 # 导入LangChain的消息类和模型类
 from langchain_core.messages import HumanMessage, ChatMessage
-from langchain_openai import ChatOpenAI
+from utils.llm_utils import build_chat_openai, invoke_with_retry
 
 
 chat_bp = Blueprint("chat", __name__)
@@ -136,6 +136,7 @@ def stream_chat_api(session_id):
 
     def generate():
         try:
+            has_error = False
             if approval:
                 gen = stream_resume_chat(session_id, approval == "true", config_id=sess["config_id"])
             else:
@@ -144,10 +145,15 @@ def stream_chat_api(session_id):
 
             for event in gen:
                 if isinstance(event, dict):
+                    if event.get("type") == "error":
+                        has_error = True
                     yield f"data: {json.dumps(event)}\n\n"
                 else:
                     # Backward compatibility for old string token events
                     yield f"data: {json.dumps({'type': 'token', 'token': event})}\n\n"
+
+            if has_error:
+                return
 
             touch_chat_session(session_id)
             state = get_chat_state(session_id, config_id=sess["config_id"])
@@ -196,7 +202,7 @@ def summarize_session_title_api(session_id):
 
     try:
         cfg = global_config.get_config_by_id(sess["config_id"])
-        llm = ChatOpenAI(
+        llm = build_chat_openai(
             model=cfg.get("model"),
             api_key=cfg.get("api_key"),
             base_url=cfg.get("api_base"),
@@ -207,7 +213,11 @@ def summarize_session_title_api(session_id):
         
         try:
             # 简化调用流程，直接获取文本输出，避免 Pydantic 校验导致的报错与双倍 API 消耗
-            res = llm.invoke([HumanMessage(content=summary_prompt)])
+            res = invoke_with_retry(
+                lambda: llm.invoke([HumanMessage(content=summary_prompt)]),
+                logger=logger,
+                context=f"title-summary session={session_id} config_id={sess['config_id']} model={cfg.get('model')}",
+            )
             new_title = res.content.strip()
             # 基础清洗：去掉引号和多余的前缀
             new_title = new_title.replace("\"", "").replace("'", "").replace("标题", "").replace("：", "").replace(":", "")
