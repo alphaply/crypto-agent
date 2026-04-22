@@ -11,7 +11,6 @@ import pytz
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
 from agent.agent_models import AgentState
@@ -22,6 +21,7 @@ from agent.agent_tools import (
 )
 from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text, escape_markdown_special_chars
+from utils.llm_utils import LLMInvocationError, build_chat_openai, invoke_with_retry
 from utils.logger import setup_logger
 from utils.prompt_utils import resolve_prompt_template, render_prompt
 
@@ -94,18 +94,22 @@ def summarize_content(content: str, agent_config: dict) -> str:
     logger.info(f"--- [Pipeline] Summarizing content for history using {model} ---")
     
     try:
-        llm = ChatOpenAI(
+        llm = build_chat_openai(
             model=model,
             api_key=api_key,
             base_url=api_base,
-            temperature=temperature
+            temperature=temperature,
         )
         prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑思路”（150字以内），保留趋势情况、关键点位(支持阻力)和操作意图等等。
 直接输出压缩后的文字，不要有任何前缀。
 内容：
 {content}
 """
-        response = llm.invoke([SystemMessage(content=prompt)])
+        response = invoke_with_retry(
+            lambda: llm.invoke([SystemMessage(content=prompt)]),
+            logger=logger,
+            context=f"summarizer model={model} config_id={agent_config.get('config_id', 'summarizer')}",
+        )
         
         # 记录 Token 使用情况
         try:
@@ -415,15 +419,19 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         # if trade_mode == 'REAL':
         #     tools += [analyze_event_contract, format_event_contract_order]
 
-        llm = ChatOpenAI(
+        llm = build_chat_openai(
             model=agent_config.get('model'),
             api_key=agent_config.get('api_key'),
             base_url=agent_config.get('api_base'),
             temperature=agent_config.get('temperature', 0.5),
-            model_kwargs=kwargs
+            extra_body=kwargs.get("extra_body"),
         ).bind_tools(tools)
 
-        response = llm.invoke(messages)
+        response = invoke_with_retry(
+            lambda: llm.invoke(messages),
+            logger=logger,
+            context=f"agent symbol={symbol} config_id={config_id} model={agent_config.get('model')}",
+        )
         
         reasoning = response.additional_kwargs.get("reasoning_content") or response.response_metadata.get("reasoning_content")
         if reasoning and "<thinking>" not in response.content:
@@ -444,6 +452,9 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
         return state.model_copy(update={"messages": state.messages + [response], "active_agent": "MASTER"})
 
+    except LLMInvocationError as e:
+        logger.error(f"[LLM Error] ({symbol}) type={e.error_type}: {e}")
+        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
     except Exception as e:
         logger.error(f"❌ [LLM Error] ({symbol}): {e}")
         return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
@@ -474,15 +485,19 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
         tools = [open_position_strategy, cancel_orders_strategy, close_position_strategy]
         
-        llm = ChatOpenAI(
+        llm = build_chat_openai(
             model=model_name,
             api_key=api_key,
             base_url=api_base,
             temperature=temperature,
-            model_kwargs=kwargs
+            extra_body=kwargs.get("extra_body"),
         ).bind_tools(tools)
 
-        response = llm.invoke(messages)
+        response = invoke_with_retry(
+            lambda: llm.invoke(messages),
+            logger=logger,
+            context=f"small-agent symbol={symbol} config_id={config_id} model={model_name}",
+        )
         
         try:
             usage = response.response_metadata.get("token_usage", {})
@@ -499,6 +514,9 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
         return state.model_copy(update={"messages": state.messages + [response], "active_agent": "MASTER"})
 
+    except LLMInvocationError as e:
+        logger.error(f"[Small Agent Error] ({symbol}) type={e.error_type}: {e}")
+        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
     except Exception as e:
         logger.error(f"❌ [Small Agent Error] ({symbol}): {e}")
         return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})

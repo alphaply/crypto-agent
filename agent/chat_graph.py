@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import atexit
 import os
+import queue
 import sqlite3
+import threading
+import time
 from typing import Annotated, Any, Dict, TypedDict
 
 from dotenv import load_dotenv
@@ -16,7 +19,6 @@ from langchain_core.messages import (
     BaseMessage
 )
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -36,6 +38,12 @@ from agent.agent_tools import (
 )
 from config import config as global_config
 import database
+from utils.llm_utils import (
+    LLMInvocationError,
+    build_chat_openai,
+    format_llm_error_message,
+    invoke_with_retry,
+)
 from utils.logger import setup_logger
 
 load_dotenv()
@@ -138,6 +146,32 @@ def _trim_chat_messages(system_prompt: str, history: list):
     return final_messages
 
 
+def _emit_stream_status(configurable: Dict[str, Any], stage: str, message: str, attempt: int | None = None):
+    event_queue = configurable.get("event_queue")
+    if not event_queue:
+        return
+    payload = {"type": "status", "stage": stage, "message": message}
+    if attempt is not None:
+        payload["attempt"] = attempt
+    event_queue.put(payload)
+
+
+def _chat_error_payload(exc: BaseException) -> Dict[str, Any]:
+    if isinstance(exc, LLMInvocationError):
+        return {
+            "type": "error",
+            "message": str(exc),
+            "error_code": exc.error_type,
+            "retryable": exc.retryable,
+        }
+    return {
+        "type": "error",
+        "message": format_llm_error_message("unknown_error"),
+        "error_code": "unknown_error",
+        "retryable": False,
+    }
+
+
 def start_node(state: ChatState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id")
@@ -201,19 +235,33 @@ def model_node(state: ChatState, config: RunnableConfig):
     system_prompt = state.get("system_prompt", "")
     trimmed = _trim_chat_messages(system_prompt, history)
     
-    logger.info(f"LLM Input: {len(trimmed)} msgs, model: {model_name}")
+    logger.info(
+        f"[Chat] start session={configurable.get('thread_id')} config_id={config_id} "
+        f"symbol={symbol} model={model_name} messages={len(trimmed)}"
+    )
+    _emit_stream_status(configurable, "waiting_model", "正在等待模型响应")
 
-    llm = ChatOpenAI(
+    llm = build_chat_openai(
         model=model_name,
         api_key=api_key,
         base_url=api_base,
         temperature=0.5,
         streaming=True,
-        model_kwargs={"extra_body": cfg.get("extra_body")} if cfg.get("extra_body") else {},
+        extra_body=cfg.get("extra_body"),
     ).bind_tools(_get_chat_tools(cfg))
 
-    # This call blocks until completion, but triggers streaming events externally
-    response = llm.invoke(trimmed)
+    started_at = time.time()
+    response = invoke_with_retry(
+        lambda: llm.invoke(trimmed),
+        logger=logger,
+        context=f"chat session={configurable.get('thread_id')} config_id={config_id} symbol={symbol} model={model_name}",
+        on_retry=lambda next_attempt, total_attempts, error_type, exc: _emit_stream_status(
+            configurable,
+            "retrying",
+            f"模型响应较慢，正在自动重试（第 {next_attempt}/{total_attempts} 次）",
+            next_attempt,
+        ),
+    )
     
     # 标注模型名称
     if response.content and not response.tool_calls:
@@ -226,6 +274,11 @@ def model_node(state: ChatState, config: RunnableConfig):
     )
     if reasoning and not response.tool_calls and "<thinking>" not in response.content:
         response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
+
+    logger.info(
+        f"[Chat] success session={configurable.get('thread_id')} config_id={config_id} "
+        f"symbol={symbol} model={model_name} duration={time.time() - started_at:.2f}s"
+    )
 
     return {
         "messages": [response], 
@@ -396,38 +449,64 @@ def _extract_tool_calls(chunk: BaseMessageChunk | Any) -> list:
     return res
 
 
-def stream_chat(session_id: str, payload: Dict[str, Any]):
-    config_id = payload.pop("config_id", None)
-    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
-    for item in chat_app.stream(payload, config=config, stream_mode="messages"):
+def _stream_worker(run_callable, event_queue):
+    try:
+        for item in run_callable():
+            event_queue.put(item)
+    except Exception as exc:
+        event_queue.put(exc)
+    finally:
+        event_queue.put(None)
+
+
+def _yield_stream_events(run_callable, event_queue, initial_status: str):
+    worker = threading.Thread(target=_stream_worker, args=(run_callable, event_queue), daemon=True)
+
+    yield {"type": "status", "stage": "preparing_context", "message": initial_status}
+    worker.start()
+
+    while True:
+        item = event_queue.get()
+        if item is None:
+            break
+
+        if isinstance(item, BaseException):
+            payload = _chat_error_payload(item)
+            logger.error(
+                f"[Chat Stream] failed type={payload['error_code']} retryable={payload['retryable']}: {item}"
+            )
+            yield payload
+            break
+
+        if isinstance(item, dict):
+            yield item
+
+
+def _chat_stream_items(request_payload, config):
+    for item in chat_app.stream(request_payload, config=config, stream_mode="messages"):
         if not isinstance(item, tuple) or len(item) != 2:
             continue
         chunk, metadata = item
         if not metadata or metadata.get("langgraph_node") != "model":
             continue
-            
-        # 仅处理增量块 (BaseMessageChunk)，忽略节点结束时返回的完整消息 (AIMessage)
-        # 这样可以防止内容重复。
+
         if not isinstance(chunk, BaseMessageChunk):
             continue
 
         reasoning_token = _chunk_reasoning_text(chunk)
         if reasoning_token:
             yield {"type": "reasoning_token", "token": reasoning_token}
-            
+
         token = _chunk_to_text(chunk)
         if token:
             yield {"type": "token", "token": token}
-            
+
         tool_calls = _extract_tool_calls(chunk)
         if tool_calls:
             yield {"type": "tool_calls", "tool_calls": tool_calls}
 
 
-def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
-    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
-    
-    command = Command(resume={"approved": approved})
+def _resume_stream_items(command, config):
     for item in chat_app.stream(command, config=config, stream_mode="messages"):
         if not isinstance(item, tuple) or len(item) != 2:
             continue
@@ -435,23 +514,21 @@ def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
         node = metadata.get("langgraph_node", "")
         if node not in ["model", "tools"]:
             continue
-        
-        # 处理工具调用结果 (ToolMessage)
+
         if node == "tools" and isinstance(chunk, ToolMessage):
             yield {
-                "type": "tool_result", 
+                "type": "tool_result",
                 "tool_call_id": chunk.tool_call_id,
                 "content": chunk.content,
                 "role": "tool"
             }
             continue
 
-        # 处理模型输出 (BaseMessageChunk)
         if isinstance(chunk, BaseMessageChunk):
             reasoning_token = _chunk_reasoning_text(chunk)
             if reasoning_token:
                 yield {"type": "reasoning_token", "token": reasoning_token}
-                
+
             token = _chunk_to_text(chunk)
             if token:
                 yield {"type": "token", "token": token}
@@ -459,6 +536,28 @@ def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
             tool_calls = _extract_tool_calls(chunk)
             if tool_calls:
                 yield {"type": "tool_calls", "tool_calls": tool_calls}
+
+
+def stream_chat(session_id: str, payload: Dict[str, Any]):
+    config_id = payload.pop("config_id", None)
+    event_queue = queue.Queue()
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id, "event_queue": event_queue}}
+
+    def run():
+        yield from _chat_stream_items(payload, config)
+
+    yield from _yield_stream_events(run, event_queue, "正在整理市场与账户数据")
+
+
+def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
+    event_queue = queue.Queue()
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id, "event_queue": event_queue}}
+    command = Command(resume={"approved": approved})
+
+    def run():
+        yield from _resume_stream_items(command, config)
+
+    yield from _yield_stream_events(run, event_queue, "正在继续执行工具审批后的对话")
 
 
 def invoke_chat(session_id: str, payload: Dict[str, Any]):
