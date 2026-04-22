@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -40,6 +42,7 @@ def health():
 
 
 if DIST_DIR.exists():
+
     @app.get("/")
     def serve_root():
         return FileResponse(DIST_DIR / "index.html")
@@ -53,3 +56,12 @@ if DIST_DIR.exists():
         if target.exists() and target.is_file():
             return FileResponse(target)
         return FileResponse(DIST_DIR / "index.html")
+
+
+def main() -> None:
+    port = int(os.getenv("PORT", "7860"))
+    uvicorn.run("backend.app.main:app", host="0.0.0.0", port=port, reload=False)
+
+
+if __name__ == "__main__":
+    main()

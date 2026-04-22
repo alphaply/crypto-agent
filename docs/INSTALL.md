@@ -5,14 +5,6 @@
 - Python `3.10+`
 - Node.js `18+`
 - npm `9+`
-- 可访问交易所 API 和模型 API
-
-## 获取项目
-
-```bash
-git clone https://github.com/alphaply/crypto-agent.git
-cd crypto-agent
-```
 
 ## 安装依赖
 
@@ -21,7 +13,7 @@ uv sync
 npm install --prefix frontend
 ```
 
-如果没有安装 `uv`：
+如果本机还没有安装 `uv`：
 
 ```bash
 # Windows PowerShell
@@ -46,21 +38,20 @@ cp .env.template .env
 - `ADMIN_PASSWORD` 或 `CHAT_PASSWORD`
 - `SYMBOL_CONFIGS`
 - 每个配置对应的 `model`、`api_key`、`api_base`
-- 实盘模式下需要交易所 API 凭证
+- 如果使用实盘，还需要交易所 API 凭证
 
 ## 启动方式
 
-启动 Web 服务：
+后端统一启动命令：
 
 ```bash
-uv run dashboard.py
+uv run python -m backend.app
 ```
 
-单独启动调度器：
+这个命令会同时启动：
 
-```bash
-uv run main_scheduler.py
-```
+- FastAPI API 服务
+- 后台 scheduler 线程
 
 前端开发模式：
 
@@ -77,10 +68,5 @@ npm run dev --prefix frontend
 
 ```bash
 uv run backend/utils/test_agent_connection.py
-```
-
-如需验证前端是否可打包：
-
-```bash
 npm run build --prefix frontend
 ```

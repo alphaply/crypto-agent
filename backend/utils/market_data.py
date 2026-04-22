@@ -463,7 +463,7 @@ class MarketTool:
             # Note: Removed redundant _check_mock_orders_tp_sl call here because it was using 
             # the entire timeframe's high/low (e.g. 1d high/low) which is incorrect for 
             # real-time monitoring. Monitoring is now handled by run_silent_sl_tp() 
-            # in main_scheduler.py on a 1-minute basis.
+            # in the unified backend scheduler on a 1-minute basis.
             
             # ================= 精简指标计算 =================
             # 1. 均线 (移除 EMA100，保留 20/50/200)
