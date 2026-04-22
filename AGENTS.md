@@ -1,46 +1,57 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Core backend logic is in `agent/` (LLM graph, tool wiring) and `utils/` (market data, indicators, logging, prompts).  
-Web routes live in `routes/`, with Jinja templates in `templates/` and frontend assets in `static/` (`css/`, `js/`).  
-Runtime entrypoints are `dashboard.py` (Flask app + optional scheduler thread) and `main_scheduler.py` (standalone scheduler loop).  
-Operational docs are in `docs/`. Local runtime state includes `.env` and `trading_data.db`.
+Core trading logic lives in `agent/` and `utils/`.
+
+- `backend/app/`: FastAPI app, JWT auth, routers, service layer
+- `frontend/`: React + Vite frontend
+- `dashboard.py`: web entrypoint that runs the FastAPI server
+- `main_scheduler.py`: standalone scheduler loop
+- `docs/`: operational and product docs
+- runtime state: `.env`, `trading_data.db`
 
 ## Build, Test, and Development Commands
-- `uv sync`: install and lock dependencies from `pyproject.toml` / `uv.lock`.
-- `uv run dashboard.py`: start the web dashboard at `http://localhost:7860`.
-- `uv run main_scheduler.py`: run scheduler only (no web UI).
-- `uv run utils/test_agent_connection.py`: smoke test model/API connectivity.
-- `python dashboard.py` / `python main_scheduler.py`: fallback if `uv` is unavailable.
+- `uv sync`: install Python dependencies from `pyproject.toml` / `uv.lock`
+- `npm install --prefix frontend`: install frontend dependencies
+- `uv run dashboard.py`: start FastAPI on `http://localhost:7860`
+- `npm run dev --prefix frontend`: start the React dev server on `http://localhost:5173`
+- `uv run main_scheduler.py`: run scheduler only
+- `uv run utils/test_agent_connection.py`: smoke test model/API connectivity
+- `npm run build --prefix frontend`: build the frontend for FastAPI static serving
 
 ## Coding Style & Naming Conventions
-Follow Python 3.10+ conventions with 4-space indentation and PEP 8 style.  
-Use `snake_case` for functions/variables, `PascalCase` for classes, and short, explicit module names (for example, `market_data.py`, `agent_graph.py`).  
-Keep route handlers thin; move reusable logic into `utils/` or `agent/`.  
-Prefer typed function signatures and `pydantic` models where structured output is required.
+Follow Python 3.10+ conventions with 4-space indentation and PEP 8 style.
+Use `snake_case` for functions and variables, `PascalCase` for classes, and short module names.
+Keep FastAPI route handlers thin and move reusable logic into `backend/app/services/`.
+Prefer typed function signatures and `pydantic` models for structured API payloads.
+
+Frontend should use modern React patterns with function components and hooks.
 
 ## Testing Guidelines
-There is no fully enforced automated test suite yet. Current validation is script-based and manual:
-- run `uv run utils/test_agent_connection.py` for LLM/output schema checks,
-- run `uv run verify_fix.py` or targeted debug scripts for regressions,
-- verify key UI flows in dashboard pages after backend changes.
+There is no fully enforced automated suite yet. Current validation is:
 
-When adding tests, place them under `tests/` with `test_*.py` names and prioritize deterministic unit tests for indicator, formatter, and config logic.
+- `uv run utils/test_agent_connection.py`
+- `uv run verify_fix.py` when relevant
+- `npm run build --prefix frontend`
+- manual verification of key routes and chat/dashboard/admin flows
+
+When adding tests, place them under `tests/` with `test_*.py` names.
 
 ## Commit & Pull Request Guidelines
-Use concise, prefix-based commit messages consistent with history: `feat: ...`, `fix: ...`, `refactor: ...`.  
-Keep each commit focused on one change set (for example, scheduler timing, route API, or prompt handling).  
+Use focused prefix-based messages such as `feat: ...`, `fix: ...`, `refactor: ...`.
+
 PRs should include:
-- purpose and scope,
-- affected configs/routes/modules,
-- manual verification steps (commands run),
-- screenshots for `templates/` or `static/` UI changes.
+- purpose and scope
+- affected modules or APIs
+- manual verification steps
+- screenshots for React UI changes when useful
 
 ## Security & Configuration Tips
-- Do not commit real API keys or secrets; use `.env.template` as the baseline.  
-- Model pricing runtime file `pricing.json` is local-only and ignored by git; keep example defaults in templates/docs instead of committing private pricing changes.
-- Prefer per-agent credentials in `SYMBOL_CONFIGS` only when required, and keep `ADMIN_PASSWORD` strong in non-local environments.
+- Never commit real API keys or secrets
+- Keep `pricing.json` local-only
+- Use a strong `ADMIN_PASSWORD` in non-local environments
+- JWT signing uses `JWT_SECRET`, falling back to existing local secrets if needed
 
 ## Documentation Maintenance
-- For release-level changes, keep `README.md` and all files under `docs/` synchronized with actual code behavior.
-- Remove deprecated feature docs promptly (for example, old screener references after v1.0 cleanup).
+- Keep `README.md` and `docs/` in sync with actual FastAPI/React behavior
+- Remove references to deleted Flask/Jinja flows when they are no longer present

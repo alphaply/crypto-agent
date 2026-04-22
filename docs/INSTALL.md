@@ -1,27 +1,27 @@
-# 安装与运行（v1.0）
+# 安装与运行
 
-## 1. 环境要求
+## 环境要求
 
-- Python `3.10+`（推荐 `3.10.x` 或 `3.11.x`）
-- 操作系统：Windows / macOS / Linux
-- 可访问交易所 API 与 LLM API
+- Python `3.10+`
+- Node.js `18+`
+- npm `9+`
+- 可访问交易所 API 和模型 API
 
-## 2. 获取项目
+## 获取项目
 
 ```bash
 git clone https://github.com/alphaply/crypto-agent.git
 cd crypto-agent
 ```
 
-## 3. 安装依赖
-
-推荐使用 `uv`：
+## 安装依赖
 
 ```bash
 uv sync
+npm install --prefix frontend
 ```
 
-如果未安装 `uv`：
+如果没有安装 `uv`：
 
 ```bash
 # Windows PowerShell
@@ -31,23 +31,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-备用方案（pip + venv）：
-
-```bash
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
-```
-
-## 4. 初始化配置
-
-复制模板并编辑（建议使用后台UI进行编辑管理，但必须手动创建.env文件！）：
+## 初始化配置
 
 ```bash
 # Windows PowerShell
@@ -57,38 +41,46 @@ Copy-Item .env.template .env
 cp .env.template .env
 ```
 
-至少配置以下字段：
+至少需要配置：
 
-- `ADMIN_PASSWORD`
-- `SYMBOL_CONFIGS`（至少一条配置）
-- 每个配置对应的 `api_key` / `api_base`
-- 实盘模式时：`binance_api_key` / `binance_secret`
+- `ADMIN_PASSWORD` 或 `CHAT_PASSWORD`
+- `SYMBOL_CONFIGS`
+- 每个配置对应的 `model`、`api_key`、`api_base`
+- 实盘模式下需要交易所 API 凭证
 
-## 5. 启动方式
+## 启动方式
 
-启动 Web 控制台（默认包含调度线程）：
+启动 Web 服务：
 
 ```bash
 uv run dashboard.py
 ```
 
-仅启动调度器（不推荐）：
+单独启动调度器：
 
 ```bash
 uv run main_scheduler.py
 ```
 
-访问地址：`http://localhost:7860`
+前端开发模式：
 
-## 6. 健康检查
+```bash
+npm run dev --prefix frontend
+```
+
+访问地址：
+
+- 生产构建 / API：`http://localhost:7860`
+- 前端开发：`http://localhost:5173`
+
+## 验证
 
 ```bash
 uv run utils/test_agent_connection.py
 ```
 
-## 7. 常见问题
+如需验证前端是否可打包：
 
-- 依赖安装慢：优先使用 `uv sync`，并检查网络代理。
-- 启动后无数据：确认 `.env` 的 `SYMBOL_CONFIGS` 非空且 `enabled=true`。
-- 页面能开但不下单：检查 mode 是否为 `REAL`，以及币安 API 权限。
-- 定价不生效：确认 `pricing.json` 可写；系统会在定价修改后自动回写。
+```bash
+npm run build --prefix frontend
+```

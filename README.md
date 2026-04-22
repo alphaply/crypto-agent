@@ -1,52 +1,56 @@
-# Crypto Agent v1.0
+# Crypto Agent v2
 
-基于 LLM + LangGraph 的自动化加密交易系统，支持实盘、策略模拟、现货定投三种模式，并提供完整的 Web 控制台与历史统计能力。
+基于 LLM + LangGraph 的加密交易系统，当前分支已经完成 Web 层前后分离：
 
+- 后端：FastAPI + JWT
+- 前端：React + Vite + Ant Design
+- 核心交易与调度：沿用现有 `agent/`、`utils/`、`database.py`、`main_scheduler.py`
 
-## 核心能力
+## 项目结构
 
-- 多配置隔离：基于 `config_id` 隔离同币种多策略运行。
-- 三种交易模式：
-    - `REAL`：实盘合约交易。
-    - `STRATEGY`：模拟挂单与回溯验证。
-    - `SPOT_DCA`：现货定投（按日/按周）。
-- 可视化控制台：Dashboard / History / Stats / Admin。
-- 成本追踪：记录 Token 使用量并按模型定价估算成本。
-- 每日总结：按配置生成日级策略汇总，增强长期上下文。
-
-## v1.0 关键变化
-
-- 移除 screener 双模型分流链路，统一主决策执行链。
-- History 页面修复多配置曲线渲染、移动端溢出与空 symbol 参数回退。
-- 后台 Prompt 模板编辑体验升级：支持高级编辑器（行号、搜索、快捷保存）。
-- 模型定价支持删除，并同步回写 `pricing.json`。
-- 导航与历史页面无效入口清理（移除“清理”快捷入口、移除历史手动触发每日总结按钮）。
+- `backend/app/`: FastAPI 应用、JWT、路由、service 层
+- `frontend/`: React 前端
+- `agent/`: Agent graph、chat graph、tool wiring
+- `utils/`: 市场数据、指标、日志、LLM 工具
+- `dashboard.py`: 新 Web 启动入口，运行 FastAPI 服务
+- `main_scheduler.py`: 独立调度器入口
 
 ## 快速开始
 
-使用uv快速准备环境
-
 ```bash
 uv sync
+npm install --prefix frontend
 uv run dashboard.py
 ```
 
-复制.env.template，并且重命名成.env文件。
+开发前端时可单独启动 Vite：
 
-唯一在这个文件修改的只有后台的密码。其他配置均可以在web界面中进行配置！
+```bash
+npm run dev --prefix frontend
+```
 
-浏览器访问：`http://localhost:7860`
+默认访问：
 
-## 文档导航
+- API / 生产构建页面：`http://localhost:7860`
+- 前端开发服务器：`http://localhost:5173`
 
-图文说明文档：https://my.feishu.cn/wiki/FfYkwTigTiFzIZkvgE4cW2oLnvd?from=from_copylink
+## 鉴权
 
-- 安装与运行：`docs/INSTALL.md`
-- 配置指南：`docs/CONFIG_GUIDE.md`
-- 成本估算：`docs/COST_ESTIMATION.md`
-- 常见问题：`docs/FAQ.md`
-- 发布说明：`docs/RELEASE_NOTES_v1.0.md`
+- 管理端、聊天端、历史页、配置页使用 JWT 鉴权
+- 登录密码读取 `.env` 中的 `CHAT_PASSWORD` 或 `ADMIN_PASSWORD`
+- 公开统计页 `/public` 可直接访问
 
-## 风险提示
+## 常用命令
 
-本项目仅供学习与研究。数字资产交易风险极高，请务必小仓位、低杠杆、先模拟后实盘。
+```bash
+uv run dashboard.py
+uv run main_scheduler.py
+uv run utils/test_agent_connection.py
+npm run build --prefix frontend
+```
+
+## 说明
+
+- `.env` 仍然是运行时配置源，`SYMBOL_CONFIGS` 继续由后端读写
+- `trading_data.db` 仍然是主数据库
+- 这个分支已经移除旧 Flask/Jinja Web 层，新的页面全部来自 `frontend/`
