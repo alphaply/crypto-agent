@@ -13,22 +13,22 @@ from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, Human
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 
-from agent.agent_models import AgentState
-from agent.agent_tools import (
+from backend.agent.agent_models import AgentState
+from backend.agent.agent_tools import (
     open_position_real, close_position_real, cancel_orders_real,
     open_position_strategy, cancel_orders_strategy, close_position_strategy, open_position_spot_dca,
     analyze_event_contract, format_event_contract_order
 )
-from utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
+from backend.utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text, escape_markdown_special_chars
-from utils.llm_utils import LLMInvocationError, build_chat_openai, invoke_with_retry
-from utils.logger import setup_logger
-from utils.prompt_utils import resolve_prompt_template, render_prompt
+from backend.utils.llm_utils import LLMInvocationError, build_chat_openai, invoke_with_retry
+from backend.utils.logger import setup_logger
+from backend.utils.prompt_utils import resolve_prompt_template, render_prompt
 
-import database
-from database import get_daily_summaries
-from utils.market_data import MarketTool
-from config import config as global_config
+import backend.database as database
+from backend.database import get_daily_summaries
+from backend.utils.market_data import MarketTool
+from backend.config import config as global_config
 
 TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
 TZ_US = pytz.timezone('America/New_York')
@@ -132,8 +132,8 @@ def summarize_content(content: str, agent_config: dict) -> str:
 
 def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
     """手动或通过调度器触发特定周期的每日总结汇总。"""
-    from database import get_pending_daily_summary_data, save_daily_summary
-    from config import config as global_config
+    from backend.database import get_pending_daily_summary_data, save_daily_summary
+    from backend.config import config as global_config
     
     # 查找对应的 config
     all_configs = global_config.get_all_symbol_configs()

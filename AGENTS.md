@@ -1,12 +1,17 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Core trading logic lives in `agent/` and `utils/`.
+Core trading logic lives under `backend/`.
 
 - `backend/app/`: FastAPI app, JWT auth, routers, service layer
+- `backend/agent/`: agent graphs, tools, prompt templates
+- `backend/utils/`: market data, indicators, logging, LLM helpers
+- `backend/config.py`: runtime config loader
+- `backend/database.py`: database access layer
+- `backend/main_scheduler.py`: scheduler implementation
 - `frontend/`: React + Vite frontend
 - `dashboard.py`: web entrypoint that runs the FastAPI server
-- `main_scheduler.py`: standalone scheduler loop
+- `main_scheduler.py`: compatibility wrapper for the scheduler loop
 - `docs/`: operational and product docs
 - runtime state: `.env`, `trading_data.db`
 
@@ -16,7 +21,7 @@ Core trading logic lives in `agent/` and `utils/`.
 - `uv run dashboard.py`: start FastAPI on `http://localhost:7860`
 - `npm run dev --prefix frontend`: start the React dev server on `http://localhost:5173`
 - `uv run main_scheduler.py`: run scheduler only
-- `uv run utils/test_agent_connection.py`: smoke test model/API connectivity
+- `uv run backend/utils/test_agent_connection.py`: smoke test model/API connectivity
 - `npm run build --prefix frontend`: build the frontend for FastAPI static serving
 
 ## Coding Style & Naming Conventions
@@ -30,8 +35,7 @@ Frontend should use modern React patterns with function components and hooks.
 ## Testing Guidelines
 There is no fully enforced automated suite yet. Current validation is:
 
-- `uv run utils/test_agent_connection.py`
-- `uv run verify_fix.py` when relevant
+- `uv run backend/utils/test_agent_connection.py`
 - `npm run build --prefix frontend`
 - manual verification of key routes and chat/dashboard/admin flows
 

@@ -76,7 +76,7 @@ npm run dev --prefix frontend
 ## 验证
 
 ```bash
-uv run utils/test_agent_connection.py
+uv run backend/utils/test_agent_connection.py
 ```
 
 如需验证前端是否可打包：

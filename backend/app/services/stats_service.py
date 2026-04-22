@@ -2,10 +2,10 @@ import sqlite3
 
 import pandas as pd
 
-from config import config as global_config
-from database import DB_NAME, delete_model_pricing, get_all_pricing, get_history_pnl_stats, save_trade_history, update_model_pricing
-from utils.indicators import calc_ema
-from utils.market_data import MarketTool
+from backend.config import config as global_config
+from backend.database import DB_NAME, delete_model_pricing, get_all_pricing, get_history_pnl_stats, save_trade_history, update_model_pricing
+from backend.utils.indicators import calc_ema
+from backend.utils.market_data import MarketTool
 
 from backend.app.services.common import logger
 from backend.app.services.dashboard_service import calculate_dca_stats
@@ -160,7 +160,7 @@ def get_financial_stats_payload(symbol: str):
 
 
 def get_agent_stats_payload(config_id: str):
-    from database import get_agent_trade_stats
+    from backend.database import get_agent_trade_stats
 
     stats = get_agent_trade_stats(config_id)
     cfg = global_config.get_config_by_id(config_id)
@@ -335,7 +335,7 @@ def _fetch_real_position_data(mt, symbol, cfg):
 
 
 def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
-    from database import get_db_conn, get_mock_account
+    from backend.database import get_db_conn, get_mock_account
 
     positions = []
     recent_trades = []

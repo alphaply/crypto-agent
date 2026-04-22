@@ -5,10 +5,10 @@ import os
 from dotenv import load_dotenv
 import time
 import warnings
-import database
+import backend.database as database
 from datetime import datetime
-from utils.logger import setup_logger
-from utils.indicators import (
+from backend.utils.logger import setup_logger
+from backend.utils.indicators import (
     smart_fmt, calc_ema, calc_rsi, calc_atr,
     calc_macd, calc_adx, calc_vwap,
     calc_bollinger_bands, calculate_vp,
@@ -29,7 +29,7 @@ class MarketTool:
         :param symbol: 交易对符号（向后兼容，不推荐）
         :param proxy_port: 本地代理端口 (例如 7890 或 10809), None 为直连
         """
-        from config import config as global_config
+        from backend.config import config as global_config
 
         # 优先使用 config_id，如果没有则使用 symbol（向后兼容）
         if config_id:

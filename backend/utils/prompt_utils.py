@@ -2,7 +2,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict
 
-from utils.prompts import PROMPT_MAP
+from backend.utils.prompts import PROMPT_MAP
 
 
 def resolve_prompt_template(
@@ -21,7 +21,7 @@ def resolve_prompt_template(
                 candidate = project_root / file_path
                 if not candidate.exists():
                     # Then try in the dedicated prompts directory
-                    candidate = project_root / "agent" / "prompts" / file_path
+                    candidate = project_root / "backend" / "agent" / "prompts" / file_path
                 file_path = candidate
 
             if file_path.exists():

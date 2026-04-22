@@ -7,8 +7,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
 from pydantic import BaseModel, Field
 import sys
-sys.path.insert(0, '..')
-from utils.logger import setup_logger
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from backend.utils.logger import setup_logger
 
 load_dotenv()
 

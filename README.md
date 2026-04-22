@@ -4,16 +4,19 @@
 
 - 后端：FastAPI + JWT
 - 前端：React + Vite + Ant Design
-- 核心交易与调度：沿用现有 `agent/`、`utils/`、`database.py`、`main_scheduler.py`
+- 核心交易与调度：统一收拢到 `backend/`
 
 ## 项目结构
 
 - `backend/app/`: FastAPI 应用、JWT、路由、service 层
+- `backend/agent/`: Agent graph、chat graph、tool wiring、prompt 模板
+- `backend/utils/`: 市场数据、指标、日志、LLM 工具
+- `backend/config.py`: 配置加载与 `SYMBOL_CONFIGS` 管理
+- `backend/database.py`: SQLite 数据访问与迁移
+- `backend/main_scheduler.py`: 调度器主实现
 - `frontend/`: React 前端
-- `agent/`: Agent graph、chat graph、tool wiring
-- `utils/`: 市场数据、指标、日志、LLM 工具
 - `dashboard.py`: 新 Web 启动入口，运行 FastAPI 服务
-- `main_scheduler.py`: 独立调度器入口
+- `main_scheduler.py`: 根目录兼容入口，转发到 `backend.main_scheduler`
 
 ## 快速开始
 
@@ -45,7 +48,7 @@ npm run dev --prefix frontend
 ```bash
 uv run dashboard.py
 uv run main_scheduler.py
-uv run utils/test_agent_connection.py
+uv run backend/utils/test_agent_connection.py
 npm run build --prefix frontend
 ```
 

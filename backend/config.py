@@ -6,7 +6,7 @@ import os
 import json
 from typing import Optional, Tuple, List, Dict
 from dotenv import load_dotenv
-from utils.logger import setup_logger
+from backend.utils.logger import setup_logger
 
 logger = setup_logger("Config")
 

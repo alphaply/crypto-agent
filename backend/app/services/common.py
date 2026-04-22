@@ -4,9 +4,9 @@ import pytz
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from config import config as global_config
-from database import DB_NAME
-from utils.logger import setup_logger
+from backend.config import config as global_config
+from backend.database import DB_NAME
+from backend.utils.logger import setup_logger
 
 
 load_dotenv(dotenv_path=".env", override=True)
@@ -90,4 +90,9 @@ def serialize_message(msg):
 
 
 def prompt_dir() -> str:
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "agent", "prompts")
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+        "backend",
+        "agent",
+        "prompts",
+    )

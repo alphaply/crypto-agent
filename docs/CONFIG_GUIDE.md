@@ -31,7 +31,7 @@
 - `model`：主决策模型名。
 - `api_base` / `api_key`：模型接口配置。
 - `temperature`：推理温度。
-- `prompt_file`：提示词模板文件名（位于 `agent/prompts/`）。
+- `prompt_file`：提示词模板文件名（位于 `backend/agent/prompts/`）。
 
 ## 3. 模式专属字段
 

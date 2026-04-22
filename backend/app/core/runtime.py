@@ -4,9 +4,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from database import init_db
-from main_scheduler import run_smart_scheduler
-from utils.logger import setup_logger
+from backend.database import init_db
+from backend.main_scheduler import run_smart_scheduler
+from backend.utils.logger import setup_logger
 
 
 logger = setup_logger("FastAPI")

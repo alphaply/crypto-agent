@@ -3,10 +3,10 @@ import os
 from dotenv import load_dotenv
 
 # Ensure we can import from parent directory
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from utils.market_data import MarketTool
-from utils.logger import setup_logger
+from backend.utils.market_data import MarketTool
+from backend.utils.logger import setup_logger
 
 logger = setup_logger("TestExchange")
 

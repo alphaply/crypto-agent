@@ -6,10 +6,10 @@ from typing import List, Literal, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from agent.agent_models import OpenOrderReal, OpenOrderSpotDCA, OpenOrderStrategy, CloseOrder
-import database
-from utils.market_data import MarketTool
-from utils.logger import setup_logger
+from backend.agent.agent_models import OpenOrderReal, OpenOrderSpotDCA, OpenOrderStrategy, CloseOrder
+import backend.database as database
+from backend.utils.market_data import MarketTool
+from backend.utils.logger import setup_logger
 
 logger = setup_logger("AgentTools")
 
@@ -66,7 +66,7 @@ class AnalyzeEventContractSchema(BaseModel):
 @tool(args_schema=OpenSpotDCASchema)
 def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbol: str):
     """【开仓：现货限价定投买入】仅在执行 BUY_LIMIT (买入) 时调用。"""
-    from config import config as global_config
+    from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id)
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
@@ -96,7 +96,7 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
 @tool(args_schema=OpenRealSchema)
 def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str):
     """【开仓：限价做多或做空】仅在执行 BUY_LIMIT (做多) 或 SELL_LIMIT (做空) 时调用。"""
-    from config import config as global_config
+    from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id)
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
@@ -127,7 +127,7 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
 @tool(args_schema=CloseRealSchema)
 def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     """【平仓：挂单平掉现有持仓】。"""
-    from config import config as global_config
+    from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id)
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
@@ -171,7 +171,7 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
 @tool(args_schema=CancelRealSchema)
 def cancel_orders_real(order_ids: List[str], config_id: str, symbol: str):
     """【撤单：撤销现有挂单】。"""
-    from config import config as global_config
+    from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id)
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
@@ -336,7 +336,7 @@ def analyze_event_contract(*args, **kwargs) -> str:
     3. 输出包含：趋势状态、VWAP 偏离、RSI、布林带宽度、成交量状态、筹码分布(POC)及支撑压力位。
     4. 适用于：当你需要快速了解多周期市场概况，或用户询问“现在行情如何”、“给我一些指标数据”时。
     """
-    from utils.market_data import MarketTool
+    from backend.utils.market_data import MarketTool
     # 动态获取当前的注入参数
     symbol = kwargs.get("symbol", "Unknown")
     config_id = kwargs.get("config_id", "Unknown")

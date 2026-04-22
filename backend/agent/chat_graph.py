@@ -24,9 +24,9 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 
-from agent.agent_graph import start_node as scheduler_start_node
-from agent.agent_models import AgentState
-from agent.agent_tools import (
+from backend.agent.agent_graph import start_node as scheduler_start_node
+from backend.agent.agent_models import AgentState
+from backend.agent.agent_tools import (
     cancel_orders_real,
     cancel_orders_strategy,
     close_position_real,
@@ -36,15 +36,15 @@ from agent.agent_tools import (
     analyze_event_contract,
     format_event_contract_order
 )
-from config import config as global_config
-import database
-from utils.llm_utils import (
+from backend.config import config as global_config
+import backend.database as database
+from backend.utils.llm_utils import (
     LLMInvocationError,
     build_chat_openai,
     format_llm_error_message,
     invoke_with_retry,
 )
-from utils.logger import setup_logger
+from backend.utils.logger import setup_logger
 
 load_dotenv()
 logger = setup_logger("ChatGraph")

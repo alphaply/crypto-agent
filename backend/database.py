@@ -5,14 +5,14 @@ import pytz
 from datetime import datetime, timedelta
 import json
 from contextlib import contextmanager
-from utils.logger import setup_logger
+from backend.utils.logger import setup_logger
 
 # 设置时区
 TZ_CN = pytz.timezone('Asia/Shanghai')
 
 # 使用绝对路径定位数据库文件
 # 强制获取项目根目录
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_NAME = os.path.join(BASE_DIR, "trading_data.db")
 logger = setup_logger("Database")
 
@@ -970,7 +970,7 @@ def get_history_pnl_stats(symbol, config_id='ALL'):
             # 如果是 REAL 模式，把 trade_history 也加上 (因为目前 trade_history 没有 config_id 字段)
             # 先查一下这个 config_id 的模式
             try:
-                from config import config as global_config
+                from backend.config import config as global_config
                 cfg = global_config.get_config_by_id(config_id)
                 if cfg and cfg.get('mode', '').upper() == 'REAL':
                     trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol LIKE ? AND realized_pnl IS NOT NULL AND realized_pnl != 0", (symbol + '%',)).fetchall()

@@ -3,8 +3,8 @@ import os
 import re
 from datetime import datetime
 
-from config import config as global_config
-from database import get_config_dependency_counts, purge_config_all_data
+from backend.config import config as global_config
+from backend.database import get_config_dependency_counts, purge_config_all_data
 
 from backend.app.services.common import logger, prompt_dir
 

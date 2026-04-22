@@ -3,15 +3,15 @@ import uuid
 
 from langchain_core.messages import HumanMessage
 
-from agent.chat_graph import (
+from backend.agent.chat_graph import (
     delete_chat_threads,
     get_chat_interrupt,
     get_chat_state,
     stream_chat,
     stream_resume_chat,
 )
-from config import config as global_config
-from database import (
+from backend.config import config as global_config
+from backend.database import (
     create_chat_session,
     delete_chat_session,
     delete_chat_sessions,
@@ -20,7 +20,7 @@ from database import (
     touch_chat_session,
     update_chat_session_title,
 )
-from utils.llm_utils import build_chat_openai, invoke_with_retry
+from backend.utils.llm_utils import build_chat_openai, invoke_with_retry
 
 from backend.app.services.common import logger, serialize_message
 
