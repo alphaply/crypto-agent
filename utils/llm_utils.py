@@ -1,8 +1,9 @@
 import os
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from openai import APIError, APITimeoutError, AuthenticationError, BadRequestError, RateLimitError
 
@@ -32,6 +33,35 @@ class LLMInvocationError(Exception):
         self.original = original
 
 
+class DeepSeekChatOpenAI(ChatOpenAI):
+    """ChatOpenAI subclass that injects DeepSeek reasoning_content into the API payload.
+
+    DeepSeek Thinking mode requires that any assistant message which originally contained
+    a `reasoning_content` field (especially tool-call messages) must have that field passed
+    back verbatim in subsequent turns. LangChain's _convert_message_to_dict does not
+    serialise reasoning_content, so we inject it here after the parent builds the payload.
+    """
+
+    def _get_request_payload(self, input_: Any, *, stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        try:
+            original_messages = self._convert_input(input_).to_messages()
+            payload_messages: List[Dict[str, Any]] = payload.get("messages", [])
+            for i, msg in enumerate(original_messages):
+                if i >= len(payload_messages):
+                    break
+                if isinstance(msg, AIMessage):
+                    rc = (
+                        msg.additional_kwargs.get("reasoning_content")
+                        or msg.response_metadata.get("reasoning_content")
+                    )
+                    if rc:
+                        payload_messages[i]["reasoning_content"] = rc
+        except Exception:
+            pass  # never break inference due to injection failure
+        return payload
+
+
 def build_chat_openai(
     *,
     model: str,
@@ -45,7 +75,12 @@ def build_chat_openai(
     if extra_body:
         model_kwargs["extra_body"] = extra_body
 
-    return ChatOpenAI(
+    # DeepSeek Thinking models require reasoning_content to be echoed back in multi-turn
+    # conversations. Use a custom subclass that injects it into the request payload.
+    model_lower = (model or "").lower()
+    cls = DeepSeekChatOpenAI if ("deepseek" in model_lower or "-r1" in model_lower) else ChatOpenAI
+
+    return cls(
         model=model,
         api_key=api_key,
         base_url=base_url,

@@ -394,17 +394,9 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     trade_mode = agent_config.get('mode', 'STRATEGY').upper()
     logger.info(f"--- [Node] Agent: {agent_config.get('model')} (Mode: {trade_mode}) ---")
 
-    messages = []
-    is_deepseek = "deepseek" in model_name or "r1" in model_name
-    
-    for msg in state.messages:
-        if isinstance(msg, AIMessage) and is_deepseek:
-            if getattr(msg, "tool_calls", None):
-                # tool_call 消息不携带思考链，彻底移除避免 payload 污染
-                msg.additional_kwargs.pop("reasoning_content", None)
-            # 普通 AI 消息保留 reasoning_content 原值：
-            # DeepSeek Thinking 模式要求历史消息必须原样传回该字段，设为 null 会触发 400
-        messages.append(msg)
+    # Pass history messages as-is; DeepSeekChatOpenAI (used via build_chat_openai for
+    # deepseek/r1 models) will inject reasoning_content into the payload automatically.
+    messages = list(state.messages)
 
     try:
         kwargs = {}
