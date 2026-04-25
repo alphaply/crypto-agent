@@ -269,7 +269,7 @@ function setConfigForm(cfg) {
   setFieldValue('cfg-enabled', String(cfg?.enabled !== false));
   setFieldValue('cfg-model', cfg?.model || '');
   setFieldValue('cfg-temperature', cfg?.temperature ?? '');
-  setFieldValue('cfg-prompt_file', cfg?.prompt_file || '');
+  populatePromptFileSelect(cfg?.prompt_file || '');
   setFieldValue('cfg-api_base', cfg?.api_base || '');
   setFieldValue('cfg-api_key', cfg?.api_key || '');
 
@@ -521,6 +521,25 @@ async function loadPrompts() {
   }
   promptFiles = data.files || [];
   renderPromptList();
+  populatePromptFileSelect();
+}
+
+function populatePromptFileSelect(selectedValue) {
+  const select = document.getElementById('cfg-prompt_file');
+  if (!select) return;
+  const current = selectedValue !== undefined ? selectedValue : select.value;
+  select.innerHTML = '';
+  promptFiles.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = f;
+    select.appendChild(opt);
+  });
+  if (current && promptFiles.includes(current)) {
+    select.value = current;
+  } else if (promptFiles.length > 0) {
+    select.value = promptFiles[0];
+  }
 }
 
 async function openPrompt(name) {
@@ -576,6 +595,7 @@ async function createPrompt() {
   await savePrompt();
   await loadPrompts();
   await openPrompt(name);
+  populatePromptFileSelect();
   toast(`模板已创建: ${name}`);
 }
 
@@ -626,6 +646,7 @@ async function deletePrompt() {
 
   toast('模板已删除');
   await loadPrompts();
+  populatePromptFileSelect();
 }
 
 function renderPricingTable() {
@@ -794,8 +815,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  await loadConfigs();
   await loadPrompts();
+  await loadConfigs();
   await loadPricing();
 
   window.onModeChange = onModeChange;
@@ -814,6 +835,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.savePrompt = savePrompt;
   window.deletePrompt = deletePrompt;
   window.loadPrompts = loadPrompts;
+  window.populatePromptFileSelect = populatePromptFileSelect;
 
   window.addPricingRow = addPricingRow;
   window.savePricingRow = savePricingRow;
