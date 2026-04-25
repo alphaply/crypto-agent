@@ -399,8 +399,11 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     
     for msg in state.messages:
         if isinstance(msg, AIMessage) and is_deepseek:
-            if getattr(msg, "tool_calls", None) or "reasoning_content" in msg.additional_kwargs or msg.response_metadata.get("reasoning_content"):
-                msg.additional_kwargs["reasoning_content"] = None
+            if getattr(msg, "tool_calls", None):
+                # tool_call 消息不携带思考链，彻底移除避免 payload 污染
+                msg.additional_kwargs.pop("reasoning_content", None)
+            # 普通 AI 消息保留 reasoning_content 原值：
+            # DeepSeek Thinking 模式要求历史消息必须原样传回该字段，设为 null 会触发 400
         messages.append(msg)
 
     try:
