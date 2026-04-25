@@ -26,7 +26,7 @@ def list_symbols() -> list[str]:
 
 
 def get_scheduler_status() -> bool:
-    return os.getenv("ENABLE_SCHEDULER", "true").lower() == "true"
+    return bool(getattr(global_config, "enable_scheduler", True))
 
 
 def get_symbol_specific_status(symbol: str):

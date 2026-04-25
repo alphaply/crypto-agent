@@ -1,8 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Card, Empty, Input, List, Modal, Select, Space, Spin, Typography } from 'antd';
+import {
+  Alert,
+  Button,
+  Card,
+  Collapse,
+  Empty,
+  Input,
+  List,
+  Modal,
+  Select,
+  Space,
+  Spin,
+  Typography,
+} from 'antd';
+import MarkdownBlock from '../components/MarkdownBlock';
 import { api, streamSse } from '../lib/api';
+import { usePreferences } from '../app/preferences';
 
 const { TextArea } = Input;
+const { Title, Paragraph, Text } = Typography;
 
 function normalizeAssistantDraft(draft) {
   return {
@@ -12,7 +28,35 @@ function normalizeAssistantDraft(draft) {
   };
 }
 
+function MessageBubble({ message }) {
+  const { t } = usePreferences();
+
+  return (
+    <div className={`chat-bubble ${message.role}`}>
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <Text strong className="chat-role">
+          {message.role}
+        </Text>
+        <MarkdownBlock content={message.content || '(empty)'} />
+        {message.reasoning_content ? (
+          <Collapse
+            ghost
+            items={[
+              {
+                key: 'reasoning',
+                label: t('strategyLogic'),
+                children: <MarkdownBlock content={message.reasoning_content} />,
+              },
+            ]}
+          />
+        ) : null}
+      </Space>
+    </div>
+  );
+}
+
 export default function ChatPage({ token }) {
+  const { t } = usePreferences();
   const [bootstrap, setBootstrap] = useState(null);
   const [currentSessionId, setCurrentSessionId] = useState('');
   const [currentConfigId, setCurrentConfigId] = useState('');
@@ -115,7 +159,7 @@ export default function ChatPage({ token }) {
     setCurrentSessionId(sessionId);
     setBootstrap((prev) => ({
       ...prev,
-      sessions: [{ session_id: sessionId, title: '新会话', config_id: configId }, ...(prev?.sessions || [])],
+      sessions: [{ session_id: sessionId, title: 'New chat', config_id: configId }, ...(prev?.sessions || [])],
     }));
     return sessionId;
   };
@@ -171,7 +215,7 @@ export default function ChatPage({ token }) {
     const sessionId = response.data.session_id;
     setBootstrap((prev) => ({
       ...prev,
-      sessions: [{ session_id: sessionId, title: '新会话', config_id: creatingConfigId }, ...(prev?.sessions || [])],
+      sessions: [{ session_id: sessionId, title: 'New chat', config_id: creatingConfigId }, ...(prev?.sessions || [])],
     }));
     setCurrentSessionId(sessionId);
     setCurrentConfigId(creatingConfigId);
@@ -202,27 +246,29 @@ export default function ChatPage({ token }) {
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Card className="glass-card">
+      <Card className="hero-card">
         <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
           <div>
-            <Typography.Title level={3} style={{ margin: 0 }}>
-              Chat
-            </Typography.Title>
-            <Typography.Text type="secondary">流式对话、工具审批和会话管理。</Typography.Text>
+            <Title level={2} style={{ margin: 0 }}>
+              {t('chat')}
+            </Title>
+            <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              Streamed tool-aware chat with markdown rendering and approval checkpoints.
+            </Paragraph>
           </div>
           <Space wrap>
             <Select
-              style={{ minWidth: 220 }}
+              style={{ minWidth: 240 }}
               value={currentConfigId || undefined}
               options={configOptions.map((item) => ({ label: `${item.symbol} / ${item.mode}`, value: item.config_id }))}
               onChange={setCurrentConfigId}
             />
-            <Button onClick={() => setCreateModalOpen(true)}>新建会话</Button>
+            <Button onClick={() => setCreateModalOpen(true)}>{t('createSession')}</Button>
             <Button onClick={summarizeTitle} disabled={!currentSessionId}>
-              生成标题
+              {t('generateTitle')}
             </Button>
             <Button onClick={clearSession} disabled={!currentSessionId}>
-              清空消息
+              {t('clearMessages')}
             </Button>
           </Space>
         </Space>
@@ -231,23 +277,18 @@ export default function ChatPage({ token }) {
       {error ? <Alert type="error" message={error} showIcon /> : null}
 
       {loading ? (
-        <Card className="glass-card">
+        <Card className="panel-card loading-card">
           <Spin />
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16 }}>
-          <Card className="glass-card" title="Sessions">
+        <div className="chat-layout">
+          <Card className="panel-card session-panel" title={t('history')}>
             <List
               dataSource={sessionItems}
-              locale={{ emptyText: <Empty description="No sessions yet" /> }}
+              locale={{ emptyText: <Empty description={t('emptySessions')} /> }}
               renderItem={(item) => (
                 <List.Item
-                  style={{
-                    cursor: 'pointer',
-                    borderRadius: 12,
-                    padding: '10px 12px',
-                    background: item.session_id === currentSessionId ? '#eff6ff' : 'transparent',
-                  }}
+                  className={`session-row ${item.session_id === currentSessionId ? 'active' : ''}`}
                   onClick={() => setCurrentSessionId(item.session_id)}
                 >
                   <List.Item.Meta title={item.title || item.session_id} description={item.symbol || item.config_id} />
@@ -256,24 +297,18 @@ export default function ChatPage({ token }) {
             />
           </Card>
 
-          <Card className="glass-card" title={currentSessionId ? `Session ${currentSessionId.slice(0, 8)}` : 'Chat'}>
-            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Card
+            className="panel-card"
+            title={currentSessionId ? `Session ${currentSessionId.slice(0, 8)}` : t('chat')}
+          >
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               <div className="chat-window">
                 {messages.length ? (
                   messages.map((message, index) => (
-                    <div key={`${message.role}-${index}`} className={`chat-bubble ${message.role}`}>
-                      <Typography.Text strong>{message.role}</Typography.Text>
-                      <div>{message.content || '(empty)'}</div>
-                      {message.reasoning_content ? (
-                        <div className="chat-reasoning">
-                          <Typography.Text strong>Reasoning</Typography.Text>
-                          <div>{message.reasoning_content}</div>
-                        </div>
-                      ) : null}
-                    </div>
+                    <MessageBubble key={`${message.role}-${index}`} message={message} />
                   ))
                 ) : (
-                  <Empty description="Create or select a session to start chatting" />
+                  <Empty description={t('emptySessions')} />
                 )}
               </div>
 
@@ -281,15 +316,22 @@ export default function ChatPage({ token }) {
                 <Alert
                   type="warning"
                   showIcon
-                  message={`Tool approval required: ${pendingApproval.value?.tool_name || 'Unknown tool'}`}
-                  description={JSON.stringify(pendingApproval.value?.tool_args || {}, null, 2)}
+                  message={t('toolApproval')}
+                  description={
+                    <div>
+                      <Text strong>{pendingApproval.value?.tool_name || 'Unknown tool'}</Text>
+                      <pre className="approval-json">
+                        {JSON.stringify(pendingApproval.value?.tool_args || {}, null, 2)}
+                      </pre>
+                    </div>
+                  }
                   action={
                     <Space>
                       <Button size="small" type="primary" onClick={() => handleApproval(true)} loading={streaming}>
-                        Approve
+                        {t('approve')}
                       </Button>
                       <Button size="small" danger onClick={() => handleApproval(false)} loading={streaming}>
-                        Reject
+                        {t('reject')}
                       </Button>
                     </Space>
                   }
@@ -300,17 +342,17 @@ export default function ChatPage({ token }) {
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 rows={5}
-                placeholder="输入问题或交易指令"
+                placeholder="Ask the agent about the selected config..."
               />
               <Button type="primary" onClick={handleSend} loading={streaming}>
-                发送
+                {t('send')}
               </Button>
             </Space>
           </Card>
         </div>
       )}
 
-      <Modal title="新建会话" open={createModalOpen} onOk={createSession} onCancel={() => setCreateModalOpen(false)}>
+      <Modal title={t('createSession')} open={createModalOpen} onOk={createSession} onCancel={() => setCreateModalOpen(false)}>
         <Select
           style={{ width: '100%' }}
           value={creatingConfigId || undefined}

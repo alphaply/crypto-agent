@@ -8,11 +8,21 @@ from openai import APIError, APITimeoutError, AuthenticationError, BadRequestErr
 
 
 def get_llm_timeout_seconds() -> float:
-    return float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
+    try:
+        from backend.config import config as global_config
+
+        return float(getattr(global_config, "llm_timeout_seconds", 120))
+    except Exception:
+        return float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 
 
 def get_llm_max_retries() -> int:
-    return int(os.getenv("LLM_MAX_RETRIES", "2"))
+    try:
+        from backend.config import config as global_config
+
+        return int(getattr(global_config, "llm_max_retries", 2))
+    except Exception:
+        return int(os.getenv("LLM_MAX_RETRIES", "2"))
 
 
 class LLMInvocationError(Exception):

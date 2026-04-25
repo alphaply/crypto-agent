@@ -1,11 +1,13 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, Button, Card, Form, Input, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, Skeleton, Typography } from 'antd';
+import { usePreferences } from '../app/preferences';
 
 const { Title, Paragraph } = Typography;
 
 export default function AuthGate({ authenticated, loading, onLogin, children }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const { t } = usePreferences();
 
   const formInitialValues = useMemo(() => ({ password: '' }), []);
 
@@ -22,7 +24,13 @@ export default function AuthGate({ authenticated, loading, onLogin, children }) 
   };
 
   if (loading) {
-    return null;
+    return (
+      <div className="login-screen">
+        <Card className="panel-card login-panel">
+          <Skeleton active paragraph={{ rows: 5 }} />
+        </Card>
+      </div>
+    );
   }
 
   if (authenticated) {
@@ -31,20 +39,18 @@ export default function AuthGate({ authenticated, loading, onLogin, children }) 
 
   return (
     <div className="login-screen">
-      <Card className="glass-card login-panel">
+      <Card className="panel-card login-panel">
         <Title level={2} style={{ marginTop: 0 }}>
-          Crypto Agent Console
+          {t('consoleHeadline')}
         </Title>
-        <Paragraph type="secondary">
-          新前后分离版本使用 JWT 登录。输入当前项目的管理密码后即可访问管理端、历史、聊天和配置页面。
-        </Paragraph>
+        <Paragraph type="secondary">{t('loginDescription')}</Paragraph>
         {error ? <Alert style={{ marginBottom: 16 }} type="error" message={error} showIcon /> : null}
         <Form layout="vertical" initialValues={formInitialValues} onFinish={handleSubmit}>
-          <Form.Item label="Password" name="password" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password placeholder="ADMIN_PASSWORD / CHAT_PASSWORD" />
+          <Form.Item label={t('password')} name="password" rules={[{ required: true, message: t('password') }]}>
+            <Input.Password placeholder="CHAT_PASSWORD (preferred) / ADMIN_PASSWORD" />
           </Form.Item>
           <Button type="primary" htmlType="submit" block loading={submitting}>
-            登录
+            {t('login')}
           </Button>
         </Form>
       </Card>

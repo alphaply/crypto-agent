@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Card, Empty, Select, Space, Spin, Statistic, Typography } from 'antd';
-import { api } from '../lib/api';
+import { Alert, Card, Empty, Space, Spin, Statistic, Table, Typography } from 'antd';
 import LineChart from '../components/LineChart';
+import { api } from '../lib/api';
+import { usePreferences } from '../app/preferences';
+
+const { Title, Paragraph } = Typography;
 
 export default function PublicPage() {
-  const [symbols, setSymbols] = useState([]);
-  const [symbol, setSymbol] = useState('');
+  const { t } = usePreferences();
   const [payload, setPayload] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -15,18 +17,13 @@ export default function PublicPage() {
     async function load() {
       setLoading(true);
       try {
-        const bootstrap = await api.get('/public/bootstrap');
-        const nextSymbol = symbol || bootstrap.data.current_symbol;
-        const stats = await api.get('/stats/financial', { params: { symbol: nextSymbol } });
-        if (!mounted) {
-          return;
+        const response = await api.get('/public/usage');
+        if (mounted) {
+          setPayload(response.data);
         }
-        setSymbols(bootstrap.data.symbols || []);
-        setSymbol(nextSymbol);
-        setPayload(stats.data);
       } catch (err) {
         if (mounted) {
-          setError(err.message || 'Failed to load public stats');
+          setError(err.message || 'Failed to load usage');
         }
       } finally {
         if (mounted) {
@@ -38,41 +35,49 @@ export default function PublicPage() {
     return () => {
       mounted = false;
     };
-  }, [symbol]);
+  }, []);
 
-  const series = useMemo(
+  const dailyTokensSeries = useMemo(
     () => [
       {
-        name: 'Daily Equity',
-        data: (payload?.daily_equity || []).map((item) => ({ name: item.day, value: item.total_equity })),
+        name: t('dailyTokens'),
+        data: [...(payload?.daily || [])]
+          .reverse()
+          .map((item) => ({ name: item.day, value: item.total })),
       },
     ],
-    [payload],
+    [payload, t],
   );
+
+  const dailyCostSeries = useMemo(
+    () => [
+      {
+        name: t('dailyCost'),
+        data: [...(payload?.daily || [])]
+          .reverse()
+          .map((item) => ({ name: item.day, value: item.cost })),
+      },
+    ],
+    [payload, t],
+  );
+
+  const summary = payload?.summary || {};
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Card className="glass-card">
-        <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
-          <div>
-            <Typography.Title level={3} style={{ margin: 0 }}>
-              Public Stats
-            </Typography.Title>
-            <Typography.Text type="secondary">公开查看累计权益与交易统计。</Typography.Text>
-          </div>
-          <Select
-            style={{ minWidth: 220 }}
-            value={symbol || undefined}
-            options={symbols.map((item) => ({ label: item, value: item }))}
-            onChange={setSymbol}
-          />
-        </Space>
+      <Card className="hero-card">
+        <Title level={2} style={{ margin: 0 }}>
+          {t('usageHeadline')}
+        </Title>
+        <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          {t('usageSubhead')}
+        </Paragraph>
       </Card>
 
       {error ? <Alert type="error" message={error} showIcon /> : null}
 
       {loading ? (
-        <Card className="glass-card">
+        <Card className="panel-card loading-card">
           <Spin />
         </Card>
       ) : null}
@@ -80,23 +85,63 @@ export default function PublicPage() {
       {!loading && payload ? (
         <>
           <div className="metric-grid">
-            <Card className="glass-card">
-              <Statistic title="Total Trades" value={payload.summary?.total_trades || 0} />
+            <Card className="panel-card metric-card">
+              <Statistic title={t('totalTokens')} value={summary.total_tokens_14d || 0} />
             </Card>
-            <Card className="glass-card">
-              <Statistic title="Total PnL" value={payload.summary?.total_pnl || 0} />
+            <Card className="panel-card metric-card">
+              <Statistic title={t('totalCost')} value={summary.total_cost || 0} precision={4} />
             </Card>
-            <Card className="glass-card">
-              <Statistic title="Win Rate" suffix="%" value={payload.summary?.win_rate || 0} />
+            <Card className="panel-card metric-card">
+              <Statistic title={t('trackedModels')} value={summary.tracked_models || 0} />
             </Card>
-            <Card className="glass-card">
-              <Statistic title="Latest Equity" value={payload.summary?.latest_equity || 0} />
+            <Card className="panel-card metric-card">
+              <Statistic title={t('trackedAgents')} value={summary.tracked_agents || 0} />
             </Card>
           </div>
-          <Card className="glass-card" title="Daily Equity Curve">
-            <div className="chart-wrap">
-              {payload.daily_equity?.length ? <LineChart series={series} yName="Equity" /> : <Empty description="No public data yet" />}
-            </div>
+
+          <div className="split-grid">
+            <Card className="panel-card" title={t('dailyTokens')}>
+              <div className="chart-wrap">
+                {payload.daily?.length ? <LineChart series={dailyTokensSeries} yName="Tokens" /> : <Empty description={t('noData')} />}
+              </div>
+            </Card>
+            <Card className="panel-card" title={t('dailyCost')}>
+              <div className="chart-wrap">
+                {payload.daily?.length ? <LineChart series={dailyCostSeries} yName="USD" area /> : <Empty description={t('noData')} />}
+              </div>
+            </Card>
+          </div>
+
+          <Card className="panel-card" title={t('modelUsage')}>
+            <Table
+              rowKey={(row) => row.model}
+              dataSource={payload.models || []}
+              pagination={false}
+              scroll={{ x: 900 }}
+              columns={[
+                { title: 'Model', dataIndex: 'model' },
+                { title: 'Prompt', dataIndex: 'prompt' },
+                { title: 'Completion', dataIndex: 'completion' },
+                { title: 'Total', dataIndex: 'total' },
+                { title: 'Cost', dataIndex: 'cost' },
+              ]}
+            />
+          </Card>
+
+          <Card className="panel-card" title={t('agentUsage')}>
+            <Table
+              rowKey={(row) => row.config_id}
+              dataSource={payload.agents || []}
+              pagination={false}
+              scroll={{ x: 900 }}
+              columns={[
+                { title: 'Config ID', dataIndex: 'config_id' },
+                { title: 'Symbol', dataIndex: 'symbol' },
+                { title: 'Prompt', dataIndex: 'prompt' },
+                { title: 'Completion', dataIndex: 'completion' },
+                { title: 'Total', dataIndex: 'total' },
+              ]}
+            />
           </Card>
         </>
       ) : null}

@@ -1,84 +1,105 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Button, Layout, Menu, Space, Typography } from 'antd';
-import { BarChartOutlined, CommentOutlined, DashboardOutlined, SettingOutlined, UnlockOutlined } from '@ant-design/icons';
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import { Button, Space, Spin } from 'antd';
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { usePreferences } from './app/preferences';
+import AppTopBar from './components/AppTopBar';
 import AuthGate from './components/AuthGate';
-import DashboardPage from './pages/DashboardPage';
-import HistoryPage from './pages/HistoryPage';
-import ChatPage from './pages/ChatPage';
-import AdminPage from './pages/AdminPage';
-import PublicPage from './pages/PublicPage';
 import { api, setApiToken } from './lib/api';
 
-const { Header, Content, Sider } = Layout;
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const PublicUsagePage = lazy(() => import('./pages/PublicPage'));
+const HistoryPage = lazy(() => import('./pages/HistoryPage'));
+const ChatPage = lazy(() => import('./pages/ChatPage'));
+const AdminPage = lazy(() => import('./pages/AdminPage'));
 
-const APP_ROUTES = [
-  { key: '/', label: 'Dashboard', icon: <DashboardOutlined /> },
-  { key: '/history', label: 'History', icon: <BarChartOutlined /> },
-  { key: '/chat', label: 'Chat', icon: <CommentOutlined /> },
-  { key: '/admin', label: 'Admin', icon: <SettingOutlined /> },
-  { key: '/public', label: 'Public', icon: <UnlockOutlined /> },
-];
-
-function ProtectedRoutes({ token }) {
+function SuspenseFallback() {
   return (
-    <Routes>
-      <Route path="/" element={<DashboardPage />} />
-      <Route path="/history" element={<HistoryPage />} />
-      <Route path="/chat" element={<ChatPage token={token} />} />
-      <Route path="/admin" element={<AdminPage />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <div className="page-wrap">
+      <div className="panel-card loading-card">
+        <Spin />
+      </div>
+    </div>
   );
 }
 
-function ProtectedShell({ token, bootstrapping, onLogin, onLogout }) {
-  const location = useLocation();
-  const navigate = useNavigate();
+function ShellFrame({ children }) {
+  return (
+    <div className="app-shell">
+      {children}
+    </div>
+  );
+}
 
-  const selectedKey = useMemo(() => {
-    const match = APP_ROUTES.filter((item) => item.key !== '/public').find(
-      (item) => location.pathname === item.key || location.pathname.startsWith(`${item.key}/`),
-    );
-    return match?.key || '/';
-  }, [location.pathname]);
+function PublicShell({ authenticated, onLogout }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { t } = usePreferences();
+
+  const items = useMemo(
+    () => [
+      { key: '/', label: t('publicDashboard') },
+      { key: '/usage', label: t('usage') },
+    ],
+    [t],
+  );
+
+  const activeKey = location.pathname === '/usage' ? '/usage' : '/';
+
+  const actions = (
+    <Space wrap>
+      <Button onClick={() => navigate('/console/chat')}>{t('openConsole')}</Button>
+      {authenticated ? <Button onClick={onLogout}>{t('logout')}</Button> : null}
+    </Space>
+  );
+
+  return (
+    <ShellFrame>
+      <AppTopBar items={items} activeKey={activeKey} onNavigate={navigate} actions={actions} />
+      <main className="page-wrap">
+        <Suspense fallback={<SuspenseFallback />}>
+          <Outlet />
+        </Suspense>
+      </main>
+    </ShellFrame>
+  );
+}
+
+function ConsoleShell({ token, bootstrapping, onLogin, onLogout }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { t } = usePreferences();
+
+  const items = useMemo(
+    () => [
+      { key: '/console/chat', label: t('chat') },
+      { key: '/console/config', label: t('config') },
+      { key: '/console/history', label: t('history') },
+    ],
+    [t],
+  );
+
+  const activeKey = useMemo(() => {
+    const match = items.find((item) => location.pathname.startsWith(item.key));
+    return match?.key || '/console/chat';
+  }, [items, location.pathname]);
+
+  const actions = (
+    <Space wrap>
+      <Button onClick={() => navigate('/')}>{t('backToDashboard')}</Button>
+      <Button onClick={onLogout}>{t('logout')}</Button>
+    </Space>
+  );
 
   return (
     <AuthGate authenticated={Boolean(token)} loading={bootstrapping} onLogin={onLogin}>
-      <Layout className="app-shell">
-        <Sider width={240} theme="light" breakpoint="lg" collapsedWidth="0">
-          <div style={{ padding: 24 }}>
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              Crypto Agent
-            </Typography.Title>
-            <Typography.Text type="secondary">FastAPI + React</Typography.Text>
-          </div>
-          <Menu
-            mode="inline"
-            selectedKeys={[selectedKey]}
-            items={APP_ROUTES.filter((item) => item.key !== '/public').map((item) => ({
-              ...item,
-              onClick: () => navigate(item.key),
-            }))}
-          />
-        </Sider>
-        <Layout>
-          <Header style={{ background: 'transparent', padding: '0 24px' }}>
-            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-              <Typography.Title level={3} style={{ margin: 0 }}>
-                Web Console
-              </Typography.Title>
-              <Space>
-                <Button onClick={() => navigate('/public')}>Public</Button>
-                <Button onClick={onLogout}>Logout</Button>
-              </Space>
-            </Space>
-          </Header>
-          <Content className="page-wrap">
-            <ProtectedRoutes token={token} />
-          </Content>
-        </Layout>
-      </Layout>
+      <ShellFrame>
+        <AppTopBar items={items} activeKey={activeKey} onNavigate={navigate} actions={actions} />
+        <main className="page-wrap">
+          <Suspense fallback={<SuspenseFallback />}>
+            <Outlet />
+          </Suspense>
+        </main>
+      </ShellFrame>
     </AuthGate>
   );
 }
@@ -125,7 +146,7 @@ export default function App() {
   const handleLogin = async (password) => {
     const response = await api.post('/auth/login', { password });
     setToken(response.data.token);
-    navigate('/');
+    navigate('/console/chat');
   };
 
   const handleLogout = () => {
@@ -135,25 +156,28 @@ export default function App() {
 
   return (
     <Routes>
+      <Route path="/public" element={<Navigate to="/" replace />} />
+      <Route element={<PublicShell authenticated={Boolean(token)} onLogout={handleLogout} />}>
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/usage" element={<PublicUsagePage />} />
+      </Route>
       <Route
-        path="/public"
+        path="/console"
         element={
-          <div className="page-wrap">
-            <PublicPage />
-          </div>
-        }
-      />
-      <Route
-        path="*"
-        element={
-          <ProtectedShell
+          <ConsoleShell
             token={token}
             bootstrapping={bootstrapping}
             onLogin={handleLogin}
             onLogout={handleLogout}
           />
         }
-      />
+      >
+        <Route index element={<Navigate to="/console/chat" replace />} />
+        <Route path="chat" element={<ChatPage token={token} />} />
+        <Route path="config" element={<AdminPage />} />
+        <Route path="history" element={<HistoryPage />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

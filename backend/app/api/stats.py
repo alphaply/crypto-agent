@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 
 @router.get("/tokens")
-def token_stats():
+def token_stats(_: dict = Depends(get_current_user)):
     return {"success": True, **get_token_stats_payload()}
 
 
@@ -43,7 +43,7 @@ def delete_pricing(payload: PricingDeleteRequest, _: dict = Depends(get_current_
 
 
 @router.get("/financial")
-def financial(symbol: str = "BTC/USDT"):
+def financial(symbol: str = "BTC/USDT", _: dict = Depends(get_current_user)):
     return {"success": True, **get_financial_stats_payload(symbol)}
 
 
@@ -64,7 +64,7 @@ def position_stats(config_id: str, _: dict = Depends(get_current_user)):
 
 
 @router.get("/equity-compare")
-def equity_compare(symbol: str = "BTC/USDT", config_ids: str = ""):
+def equity_compare(symbol: str = "BTC/USDT", config_ids: str = "", _: dict = Depends(get_current_user)):
     return {"success": True, **get_equity_compare_payload(symbol, config_ids)}
 
 

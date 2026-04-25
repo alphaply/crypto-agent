@@ -232,4 +232,4 @@ def run_scheduler_forever():
 
 
 def scheduler_should_run() -> bool:
-    return os.getenv("ENABLE_SCHEDULER", "true").lower() == "true"
+    return bool(getattr(global_config, "enable_scheduler", True))

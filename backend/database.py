@@ -156,6 +156,40 @@ def init_db():
                         updated_at TEXT NOT NULL
                     )''')
 
+        c.execute('''CREATE TABLE IF NOT EXISTS app_settings (
+                        key TEXT PRIMARY KEY,
+                        value_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS agent_configs (
+                        config_id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        mode TEXT NOT NULL,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )''')
+        try: c.execute("ALTER TABLE agent_configs ADD COLUMN symbol TEXT NOT NULL DEFAULT ''")
+        except: pass
+        try: c.execute("ALTER TABLE agent_configs ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+        except: pass
+        try: c.execute("ALTER TABLE agent_configs ADD COLUMN mode TEXT NOT NULL DEFAULT 'STRATEGY'")
+        except: pass
+        try: c.execute("ALTER TABLE agent_configs ADD COLUMN data_json TEXT NOT NULL DEFAULT '{}'")
+        except: pass
+        try: c.execute("ALTER TABLE agent_configs ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+        except: pass
+
+        c.execute('''CREATE TABLE IF NOT EXISTS secret_store (
+                        scope TEXT NOT NULL,
+                        scope_id TEXT NOT NULL,
+                        secret_key TEXT NOT NULL,
+                        encrypted_value TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(scope, scope_id, secret_key)
+                    )''')
+
         # 7. LLM Token 使用统计
         c.execute('''CREATE TABLE IF NOT EXISTS token_usage (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,6 +273,19 @@ def init_db():
 
     # 初始化完成后，从文件同步计价配置
     load_model_pricing_from_file()
+    try:
+        from backend.config_store import ensure_runtime_config_initialized
+
+        ensure_runtime_config_initialized()
+    except Exception as e:
+        logger.error(f"❌ 初始化 SQLite 运行配置失败: {e}")
+
+    try:
+        from backend.config import config as runtime_config
+
+        runtime_config.reload_config()
+    except Exception as e:
+        logger.error(f"❌ 重新加载运行配置失败: {e}")
 
 # --- 模型计价管理 ---
 

@@ -1,39 +1,72 @@
 # FAQ
 
-## 1. 本地怎么启动？
+## 1. 现在到底还需不需要 `.env`？
 
-```bash
-uv run python -m backend.app
-```
+需要“环境变量”，但不一定非得是 `.env` 这个文件本体。
 
-这个命令会同时启动 FastAPI 和后台 scheduler。
+你可以：
 
-## 2. 前端开发时怎么调试？
+- 本地开发时使用 `.env`
+- 部署时改为系统环境变量、容器环境变量或 CI/CD 注入
 
-```bash
-npm run dev --prefix frontend
-```
+不过当前仍然需要一小组启动级变量，例如：
 
-Vite 会把 `/api` 请求代理到 `http://localhost:7860`。
+- `CHAT_PASSWORD` / `ADMIN_PASSWORD`
+- `JWT_SECRET`
+- `CONFIG_MASTER_KEY`
 
-## 3. 现在还是 Flask 吗？
+## 2. 为什么看起来很多配置已经不走 `.env` 了？
 
-不是。
+因为运行期配置已经迁移到 SQLite 了。
 
-当前 Web 层已经迁移为：
+现在下面这些内容都应该在 `/console/config` 中编辑：
 
-- FastAPI
-- React + Vite
-- JWT 鉴权
+- 交易对与 Agent 配置
+- LLM 配置
+- 交易所密钥
+- Prompt
+- 定价
 
-旧的 Flask/Jinja 页面和对应入口已经移除。
+`.env` 只保留启动级和安全级配置。
 
-## 4. 调度器还保留吗？
+## 3. 初始登录密码怎么设置？
 
-保留，但不再提供独立启动文件。
+优先读取 `CHAT_PASSWORD`，如果它为空，则回退到 `ADMIN_PASSWORD`。
 
-统一使用 `uv run python -m backend.app`，后端启动时会一起拉起调度线程。
+本地第一次启动时，直接在 `.env` 里设置即可。
 
-## 5. 为什么有些实盘接口会报交易所鉴权错误？
+## 4. 控制台密码怎么修改？
 
-通常是 `.env` 中的交易所凭证、IP 白名单或权限配置问题，不是前后分离改造本身导致的。
+1. 编辑 `.env`
+2. 修改 `CHAT_PASSWORD`，或同步修改 `CHAT_PASSWORD` 与 `ADMIN_PASSWORD`
+3. 重启后端
+
+如果希望当前已登录会话马上失效，再额外更换 `JWT_SECRET`。
+
+## 5. 为什么我改了 `.env` 里的 `SYMBOL_CONFIGS` 或交易所密钥却没生效？
+
+这是现在最常见的误解。
+
+新版本里，运行期配置以 SQLite 为准。旧 `.env` 字段只会在首次兼容导入时尝试导入一次，不会持续和数据库双向同步。
+
+也就是说：
+
+- 首次迁移后，请改 `/console/config`
+- 不要把 `.env` 当成运行期配置中心继续维护
+
+## 6. 配置最终存在哪里？
+
+- 启动级配置：环境变量
+- 运行期配置：`trading_data.db`
+- 敏感字段：写入 SQLite 前会使用 `CONFIG_MASTER_KEY` 加密
+
+## 7. 交易所或模型密钥应该放哪里？
+
+放在 `/console/config` 表单里。
+
+当前推荐流程是：
+
+1. 先在 `.env` 配好登录密码、JWT 和加密主密钥
+2. 启动服务
+3. 登录 `/console/chat`
+4. 到 `/console/config` 录入 Agent、交易所和模型配置

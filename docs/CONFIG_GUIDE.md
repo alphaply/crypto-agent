@@ -1,120 +1,90 @@
-# 配置指南（v1.0）
+# 配置指南
 
-本系统由 `.env` 的 `SYMBOL_CONFIGS` 驱动。每个配置对象就是一个独立 Agent。
+## 1. 先分清两类配置
 
-## 1. SYMBOL_CONFIGS 结构
+当前项目不是“完全不用环境变量”，而是把配置拆成了两层：
 
-```json
-[
-  {
-    "config_id": "btc-strategy-a",
-    "symbol": "BTC/USDT",
-    "enabled": true,
-    "mode": "STRATEGY",
-    "model": "qwen3-max",
-    "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "api_key": "sk-xxx",
-    "temperature": 0.3,
-    "prompt_file": "strategy.txt",
-    "run_interval": 60,
-    "leverage": 10
-  }
-]
-```
+- 启动级 / 安全级配置：放在 `.env` 或系统环境变量里
+- 运行期配置：放在 `trading_data.db`，通过 `/console/config` 的表单维护
 
-## 2. 通用字段说明
+如果你把交易参数继续写回 `.env`，通常只会在“首次兼容导入”阶段生效，不再是日常维护入口。
 
-- `config_id`：配置唯一 ID，必须唯一。
-- `symbol`：交易对，如 `BTC/USDT`。
-- `enabled`：是否启用。
-- `mode`：运行模式，支持 `REAL` / `STRATEGY` / `SPOT_DCA`。
-- `model`：主决策模型名。
-- `api_base` / `api_key`：模型接口配置。
-- `temperature`：推理温度。
-- `prompt_file`：提示词模板文件名（位于 `backend/agent/prompts/`）。
+## 2. `.env` 应该放什么
 
-## 3. 模式专属字段
+推荐只保留这些：
 
-### REAL（实盘）
+- `CHAT_PASSWORD`
+- `ADMIN_PASSWORD`
+- `JWT_SECRET`
+- `JWT_EXPIRE_HOURS`
+- `CONFIG_MASTER_KEY`
+- `PORT`
+- `RUN_SCHEDULER_IN_WEB`
+- `TIMEZONE`
 
-- `run_interval`：执行间隔（分钟，建议 15）。
-- `leverage`：杠杆倍数。
-- `binance_api_key` / `binance_secret`：可选，配置级交易密钥；若为空可回退全局。
+它们分别负责：
 
-示例：
+- 控制台登录口令
+- JWT 签名与过期时间
+- SQLite 中敏感字段的加密
+- Web 服务端口
+- 是否随着 Web 进程启动调度器
+- 时区
 
-```json
-{
-  "config_id": "eth-real",
-  "symbol": "ETH/USDT",
-  "enabled": true,
-  "mode": "REAL",
-  "model": "claude-sonnet-4-6",
-  "api_base": "https://example.com/v1",
-  "api_key": "sk-xxx",
-  "prompt_file": "real.txt",
-  "run_interval": 15,
-  "leverage": 5
-}
-```
+## 3. `/console/config` 里维护什么
 
-### STRATEGY（策略模拟）
+运行期配置统一在 WebUI 中编辑，主要包括：
 
-- `run_interval`：执行间隔（分钟，建议 60）。
-- `leverage`：用于策略计算的杠杆参数。
+- 全局参数：默认杠杆、调度开关、LLM 超时、重试次数、全局 summarizer
+- Agent 参数：`config_id`、`symbol`、`mode`、`prompt_file`、`run_interval`、DCA 参数等
+- 模型配置：`model`、`api_base`、`temperature`
+- 交易所配置：交易所类型、市场类型、Agent 级密钥
+- 高级覆盖：`extra_body`
+- Prompt 内容
+- 模型定价
 
-### SPOT_DCA（现货定投）
+这些内容会保存到 `trading_data.db`，不是 `.env`。
 
-- `dca_amount`：每轮预算（USDT）。
-- `dca_freq`：`1d`（每日）或 `1w`（每周）。
-- `dca_time`：触发时间，格式 `HH:MM`。
-- `dca_weekday`：仅 `1w` 生效，`0=周一 ... 6=周日`。
-- `initial_cost` / `initial_qty`：可选，已有仓位的成本基线。
+## 4. 密钥放在哪里
 
-示例：
+- 交易所 API Key / Secret / Passphrase
+- LLM API Key
+- Summarizer API Key
 
-```json
-{
-  "config_id": "btc-dca",
-  "symbol": "BTC/USDT",
-  "enabled": true,
-  "mode": "SPOT_DCA",
-  "model": "qwen3-max",
-  "api_base": "https://example.com/v1",
-  "api_key": "sk-xxx",
-  "prompt_file": "dca.txt",
-  "dca_amount": 100,
-  "dca_freq": "1w",
-  "dca_weekday": 0,
-  "dca_time": "08:00"
-}
-```
+这些都通过 `/console/config` 表单录入，最终保存在 SQLite 的 `secret_store` 表中，并使用 `CONFIG_MASTER_KEY` 加密后落库。
 
-## 4. Summarizer 配置（可选）
+## 5. 初始密码与改密码
 
-可以给每个配置单独指定总结模型：
+控制台登录密码不在 `/console/config` 里改。
 
-```json
-"summarizer": {
-  "model": "qwen-plus",
-  "api_base": "https://example.com/v1",
-  "api_key": "sk-xxx"
-}
-```
+- 初始密码优先读取 `CHAT_PASSWORD`
+- 如果 `CHAT_PASSWORD` 为空，则回退到 `ADMIN_PASSWORD`
+- 修改密码时，编辑 `.env` 后重启后端
 
-若未配置，则回退全局：
+如果你想让所有已登录用户立即重新登录，再额外更换 `JWT_SECRET`。
 
-- `GLOBAL_SUMMARIZER_MODEL`
-- `GLOBAL_SUMMARIZER_API_BASE`
-- `GLOBAL_SUMMARIZER_API_KEY`
+## 6. 旧版 `.env` 怎么迁移
 
-## 5. v1.0 兼容说明
+为了兼容老版本，系统保留了一次性导入逻辑：
 
-- 旧字段 `enable_screening` / `screener` 已下线，不再生效。
-- 建议从 `.env.template` 重新拷贝后迁移你的配置字段。
+- 如果 SQLite 里的配置表还是空的
+- 且旧 `.env` 中仍然存在 `SYMBOL_CONFIGS`、旧版交易所密钥、旧版 LLM 配置
 
-## 6. 配置建议
+那么首次启动时会尝试导入一次。
 
-- 同一标的多策略时，务必使用不同 `config_id`。
-- 先用 `STRATEGY` 验证，再切换 `REAL`。
-- `REAL` 模式建议低杠杆、小资金起步。
+注意：
+
+- 这只是迁移，不是双向同步
+- 一旦导入完成，后续运行期配置以数据库为准
+- 后面再改 `.env` 里的旧运行期字段，通常不会再覆盖数据库
+
+## 7. 常见误区
+
+- “我把 `SYMBOL_CONFIGS` 改了，为什么前台没变？”
+  现在应该去 `/console/config` 改，而不是继续改 `.env`
+
+- “交易所密钥是不是还要写 `.env`？”
+  新流程下不需要，直接走 WebUI 表单即可
+
+- “密码为什么不能在配置页里改？”
+  因为它属于启动级和安全级配置，当前仍由环境变量控制

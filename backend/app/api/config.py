@@ -27,9 +27,13 @@ def get_config(_: dict = Depends(get_current_user)):
 
 @router.put("")
 def save_config(payload: SaveConfigRequest, _: dict = Depends(get_current_user)):
-    if payload.configs is None:
-        raise HTTPException(status_code=400, detail="Configs cannot be empty")
-    return {"success": True, **save_config_payload(payload.configs, payload.global_settings)}
+    return {
+        "success": True,
+        **save_config_payload(
+            payload.globals.model_dump(mode="json"),
+            [item.model_dump(mode="json", exclude_none=True) for item in payload.agents],
+        ),
+    }
 
 
 @router.get("/export")

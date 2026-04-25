@@ -20,7 +20,7 @@ from backend.agent.agent_tools import (
     analyze_event_contract, format_event_contract_order
 )
 from backend.utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
-    format_market_data_to_text, escape_markdown_special_chars
+    format_market_data_to_text
 from backend.utils.llm_utils import LLMInvocationError, build_chat_openai, invoke_with_retry
 from backend.utils.logger import setup_logger
 from backend.utils.prompt_utils import resolve_prompt_template, render_prompt
@@ -596,11 +596,15 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
         logic_source = full_content if full_content else final_full_content
         strategy_logic = summarize_content(logic_source, agent_config)
         
-        processed_content = escape_markdown_special_chars(final_full_content)
-        processed_strategy_logic = escape_markdown_special_chars(strategy_logic)
-        
         try:
-            database.save_summary(symbol, agent_name, processed_content, processed_strategy_logic, config_id=config_id, agent_type=agent_type)
+            database.save_summary(
+                symbol,
+                agent_name,
+                final_full_content,
+                strategy_logic,
+                config_id=config_id,
+                agent_type=agent_type,
+            )
             
             # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
             trade_mode = agent_config.get('mode', 'STRATEGY').upper()
