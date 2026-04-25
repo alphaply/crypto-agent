@@ -587,7 +587,18 @@ function renderSymbolList() {
     listDiv.innerHTML = '';
     badge.textContent = currentConfigs.length;
 
-    currentConfigs.forEach((conf, index) => {
+    // 排序规则：先按 symbol 字母升序，同 symbol 内按模式优先级 REAL→STRATEGY→SPOT_DCA
+    const MODE_DISPLAY_ORDER = { REAL: 0, STRATEGY: 1, SPOT_DCA: 2 };
+    const sorted = currentConfigs
+        .map((conf, index) => ({ conf, index }))
+        .sort((a, b) => {
+            const sa = (a.conf.symbol || '').toUpperCase();
+            const sb = (b.conf.symbol || '').toUpperCase();
+            if (sa !== sb) return sa < sb ? -1 : 1;
+            return (MODE_DISPLAY_ORDER[a.conf.mode] ?? 99) - (MODE_DISPLAY_ORDER[b.conf.mode] ?? 99);
+        });
+
+    sorted.forEach(({ conf, index }) => {
         const isEnabled = conf.enabled !== false;
         const card = document.createElement('div');
         card.className = `config-card bg-white p-4 rounded-xl shadow-sm border ${isEnabled ? 'border-gray-200' : 'border-gray-100 opacity-60 bg-gray-50'}`;

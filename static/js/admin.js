@@ -330,7 +330,16 @@ function renderConfigList() {
   const el = document.getElementById('config-list');
   if (!el) return;
 
-  el.innerHTML = configs.map(cfg => {
+  // 排序规则：先按 symbol 字母升序，同 symbol 内按模式优先级 REAL→STRATEGY→SPOT_DCA
+  const MODE_DISPLAY_ORDER = { REAL: 0, STRATEGY: 1, SPOT_DCA: 2 };
+  const sorted = [...configs].sort((a, b) => {
+    const sa = (a.symbol || '').toUpperCase();
+    const sb = (b.symbol || '').toUpperCase();
+    if (sa !== sb) return sa < sb ? -1 : 1;
+    return (MODE_DISPLAY_ORDER[a.mode] ?? 99) - (MODE_DISPLAY_ORDER[b.mode] ?? 99);
+  });
+
+  el.innerHTML = sorted.map(cfg => {
     const active = editingConfigId === cfg.config_id;
     return `
       <div class="border ${active ? 'border-blue-300 bg-blue-50/50' : 'border-slate-200'} rounded-xl p-3 flex items-center justify-between gap-3">
