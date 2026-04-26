@@ -403,7 +403,7 @@ class MarketTool:
         全量获取市场数据的主入口
         """
         if timeframes is None:
-            timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
+            timeframes = ['5m', '15m', '1h', '4h', '1d', '1w', '1M']
 
         final_output = {
             "symbol": symbol,
@@ -434,6 +434,7 @@ class MarketTool:
         '4h': 180,   # ~30 天
         '1d': 120,   # ~4 个月
         '1w': 52,    # ~1 年
+        '1M': 24,    # ~2 年
     }
 
     # VWAP 仅在日内周期有效
@@ -446,9 +447,11 @@ class MarketTool:
         """
         try:
             logger.debug(f"    🔍 [{tf}] Fetching OHLCV data for {symbol}...")
-            ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=1000)
-            if not ohlcv or len(ohlcv) < 200:
-                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles (need >= 200)")
+            fetch_limit = 60 if tf == '1M' else 1000
+            min_bars = 12 if tf == '1M' else (52 if tf == '1w' else 200)
+            ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=fetch_limit)
+            if not ohlcv or len(ohlcv) < min_bars:
+                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles (need >= {min_bars})")
                 return None
 
             logger.debug(f"    ✅ [{tf}] Got {len(ohlcv)} candles, calculating indicators...")
