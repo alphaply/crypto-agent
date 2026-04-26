@@ -33,52 +33,47 @@ class LLMInvocationError(Exception):
         self.original = original
 
 
-def _patch_langchain_deepseek_reasoning() -> None:
-    """Patch LangChain to pass DeepSeek reasoning_content in multi-turn tool-call messages.
-
-    DeepSeek Thinking mode requires that assistant messages which triggered tool calls
-    MUST have their `reasoning_content` field passed back verbatim in ALL subsequent
-    API calls (official docs: https://api-docs.deepseek.com/guides/reasoning_model).
-
-    LangChain's _convert_message_to_dict does not serialize this field — it only knows
-    about standard OpenAI fields. We monkey-patch it at module load time so the injection
-    happens at the exact point the payload dict is assembled, independent of LangChain
-    version or internal call paths (invoke / stream / bind_tools all use this function).
-    """
-    try:
-        import langchain_openai.chat_models.base as _lc_base
-
-        _original = getattr(_lc_base, "_convert_message_to_dict", None)
-        if _original is None or getattr(_original, "_deepseek_patched", False):
-            return  # not present, or already patched
-
-        def _patched(message: Any, **kwargs: Any) -> Dict[str, Any]:
-            result = _original(message, **kwargs)
-            if isinstance(message, AIMessage):
-                rc = (
-                    message.additional_kwargs.get("reasoning_content")
-                    or message.response_metadata.get("reasoning_content")
-                )
-                if rc:
-                    result["reasoning_content"] = rc
-            return result
-
-        _patched._deepseek_patched = True  # type: ignore[attr-defined]
-        _lc_base._convert_message_to_dict = _patched
-    except Exception:
-        pass  # never break startup due to patch failure
-
-
-_patch_langchain_deepseek_reasoning()
-
-
 class DeepSeekChatOpenAI(ChatOpenAI):
-    """ChatOpenAI subclass for DeepSeek models.
+    """ChatOpenAI subclass for DeepSeek thinking mode with tool calls.
 
-    reasoning_content passthrough is handled by _patch_langchain_deepseek_reasoning()
-    which patches _convert_message_to_dict at module load time. This subclass exists
-    so build_chat_openai can clearly distinguish DeepSeek vs standard OpenAI models.
+    DeepSeek requires that assistant messages containing `reasoning_content`
+    (produced during tool-call turns) must be echoed back verbatim in all
+    subsequent requests, otherwise the API returns 400.
+
+    Two overrides are needed:
+    1. _create_chat_result  — captures reasoning_content from raw API response
+                              into additional_kwargs so it survives in state.
+    2. _get_request_payload — injects reasoning_content back when building the
+                              next request, since LangChain drops it by default.
     """
+
+    def _create_chat_result(self, response: Any, generation_info: Optional[Dict[str, Any]] = None) -> Any:
+        result = super()._create_chat_result(response, generation_info)
+        try:
+            resp_dict = response if isinstance(response, dict) else response.model_dump()
+            for i, choice in enumerate(resp_dict.get("choices", [])):
+                rc = (choice.get("message") or {}).get("reasoning_content")
+                if rc and i < len(result.generations):
+                    result.generations[i].message.additional_kwargs["reasoning_content"] = rc
+        except Exception:
+            pass
+        return result
+
+    def _get_request_payload(self, input_: Any, *, stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        try:
+            original_messages = self._convert_input(input_).to_messages()
+            payload_messages: List[Dict[str, Any]] = payload.get("messages", [])
+            for i, msg in enumerate(original_messages):
+                if i >= len(payload_messages):
+                    break
+                if isinstance(msg, AIMessage):
+                    rc = msg.additional_kwargs.get("reasoning_content")
+                    if rc:
+                        payload_messages[i]["reasoning_content"] = rc
+        except Exception:
+            pass
+        return payload
 
 
 def build_chat_openai(
