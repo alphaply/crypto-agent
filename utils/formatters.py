@@ -118,8 +118,27 @@ def format_market_data_to_text(data: dict) -> str:
 
     # ========== 按周期组织技术指标 ==========
     indicators = data.get("technical_indicators") or {}
-    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
     available_tfs = [tf for tf in tf_order if tf in indicators]
+
+    # ========== 宏观趋势概览 (1M + 1w) ==========
+    _ind_1M = indicators.get('1M', {})
+    _ind_1w = indicators.get('1w', {})
+    if _ind_1M and _ind_1w:
+        _1M_status = _ind_1M.get('trend', {}).get('status', '')
+        _1w_status = _ind_1w.get('trend', {}).get('status', '')
+        _1M_adx = _ind_1M.get('trend', {}).get('adx', 0)
+        _1w_adx = _ind_1w.get('trend', {}).get('adx', 0)
+        if 'Downtrend' in _1M_status and 'Downtrend' in _1w_status:
+            macro_label = "⚠️ 宏观空头结构：月线+周线均处于趋势下行，严禁扛多，优先考虑空单或空仓"
+        elif 'Uptrend' in _1M_status and 'Uptrend' in _1w_status:
+            macro_label = "✅ 宏观多头结构：月线+周线排列向好，顺势做多为优先方向"
+        else:
+            macro_label = f"⚡ 宏观趋势分歧：月线({_1M_status}) 与 周线({_1w_status}) 信号不一致，方向不明，提高警惕"
+        output.append("【宏观趋势概览】")
+        output.append(f"• 1M={_1M_status}(ADX={_1M_adx}) | 1w={_1w_status}(ADX={_1w_adx})")
+        output.append(f"• {macro_label}")
+        output.append("")
     
     if not available_tfs:
         output.append("【技术指标】")
@@ -218,7 +237,7 @@ def format_market_data_to_markdown(data: dict) -> str:
     
     rows = []
     indicators = data.get("technical_indicators", {})
-    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
     available_tfs = [tf for tf in tf_order if tf in indicators]
     
     for tf in available_tfs:
