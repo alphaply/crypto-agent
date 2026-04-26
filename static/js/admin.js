@@ -238,20 +238,21 @@ function normalizeConfigFromForm() {
 
     const interval = Number(getFieldValue('cfg-run_interval'));
     cfg.run_interval = Number.isFinite(interval) && interval > 0 ? interval : (mode === 'REAL' ? 15 : 60);
+  }
 
-    if (mode === 'REAL' || mode === 'SPOT_DCA') {
-      const exApiKey = getFieldValue('cfg-ex_api_key');
-      const exSecret = getFieldValue('cfg-ex_secret');
-      const exPass = getFieldValue('cfg-ex_passphrase');
-      const exch = cfg.exchange || 'binance';
-      if (exch === 'okx') {
-        if (exApiKey) cfg.okx_api_key = exApiKey;
-        if (exSecret) cfg.okx_secret = exSecret;
-        if (exPass) cfg.passphrase = exPass;
-      } else {
-        if (exApiKey) cfg.binance_api_key = exApiKey;
-        if (exSecret) cfg.binance_secret = exSecret;
-      }
+  // 交易所 key：REAL 和 SPOT_DCA 模式均适用（移至 if/else 块外部，修复 SPOT_DCA 无法保存 key 的 bug）
+  if (mode === 'REAL' || mode === 'SPOT_DCA') {
+    const exApiKey = getFieldValue('cfg-ex_api_key');
+    const exSecret = getFieldValue('cfg-ex_secret');
+    const exPass = getFieldValue('cfg-ex_passphrase');
+    const exch = cfg.exchange || 'binance';
+    if (exch === 'okx') {
+      if (exApiKey) cfg.okx_api_key = exApiKey;
+      if (exSecret) cfg.okx_secret = exSecret;
+      if (exPass) cfg.passphrase = exPass;
+    } else {
+      if (exApiKey) cfg.binance_api_key = exApiKey;
+      if (exSecret) cfg.binance_secret = exSecret;
     }
   }
 
