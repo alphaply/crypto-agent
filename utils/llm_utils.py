@@ -34,13 +34,30 @@ class LLMInvocationError(Exception):
 
 
 class DeepSeekChatOpenAI(ChatOpenAI):
-    """ChatOpenAI subclass that injects DeepSeek reasoning_content into the API payload.
+    """ChatOpenAI subclass for DeepSeek thinking mode with tool calls.
 
-    DeepSeek Thinking mode requires that any assistant message which originally contained
-    a `reasoning_content` field (especially tool-call messages) must have that field passed
-    back verbatim in subsequent turns. LangChain's _convert_message_to_dict does not
-    serialise reasoning_content, so we inject it here after the parent builds the payload.
+    DeepSeek requires that assistant messages containing `reasoning_content`
+    (produced during tool-call turns) must be echoed back verbatim in all
+    subsequent requests, otherwise the API returns 400.
+
+    Two overrides are needed:
+    1. _create_chat_result  — captures reasoning_content from raw API response
+                              into additional_kwargs so it survives in state.
+    2. _get_request_payload — injects reasoning_content back when building the
+                              next request, since LangChain drops it by default.
     """
+
+    def _create_chat_result(self, response: Any, generation_info: Optional[Dict[str, Any]] = None) -> Any:
+        result = super()._create_chat_result(response, generation_info)
+        try:
+            resp_dict = response if isinstance(response, dict) else response.model_dump()
+            for i, choice in enumerate(resp_dict.get("choices", [])):
+                rc = (choice.get("message") or {}).get("reasoning_content")
+                if rc and i < len(result.generations):
+                    result.generations[i].message.additional_kwargs["reasoning_content"] = rc
+        except Exception:
+            pass
+        return result
 
     def _get_request_payload(self, input_: Any, *, stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
@@ -51,14 +68,11 @@ class DeepSeekChatOpenAI(ChatOpenAI):
                 if i >= len(payload_messages):
                     break
                 if isinstance(msg, AIMessage):
-                    rc = (
-                        msg.additional_kwargs.get("reasoning_content")
-                        or msg.response_metadata.get("reasoning_content")
-                    )
+                    rc = msg.additional_kwargs.get("reasoning_content")
                     if rc:
                         payload_messages[i]["reasoning_content"] = rc
         except Exception:
-            pass  # never break inference due to injection failure
+            pass
         return payload
 
 
