@@ -243,9 +243,15 @@ function normalizeConfigFromForm() {
       const exApiKey = getFieldValue('cfg-ex_api_key');
       const exSecret = getFieldValue('cfg-ex_secret');
       const exPass = getFieldValue('cfg-ex_passphrase');
-      if (exApiKey) cfg.api_key = exApiKey;
-      if (exSecret) cfg.secret = exSecret;
-      if (exPass) cfg.passphrase = exPass;
+      const exch = cfg.exchange || 'binance';
+      if (exch === 'okx') {
+        if (exApiKey) cfg.okx_api_key = exApiKey;
+        if (exSecret) cfg.okx_secret = exSecret;
+        if (exPass) cfg.passphrase = exPass;
+      } else {
+        if (exApiKey) cfg.binance_api_key = exApiKey;
+        if (exSecret) cfg.binance_secret = exSecret;
+      }
     }
   }
 
@@ -276,8 +282,14 @@ function setConfigForm(cfg) {
   setFieldValue('cfg-leverage', cfg?.leverage ?? 1);
   setFieldValue('cfg-run_interval', cfg?.run_interval ?? '');
   setFieldValue('cfg-exchange', cfg?.exchange || 'binance');
-  setFieldValue('cfg-ex_api_key', cfg?.api_key || cfg?.binance_api_key || '');
-  setFieldValue('cfg-ex_secret', cfg?.secret || cfg?.binance_secret || '');
+  const exchType = cfg?.exchange || 'binance';
+  if (exchType === 'okx') {
+    setFieldValue('cfg-ex_api_key', cfg?.okx_api_key || '');
+    setFieldValue('cfg-ex_secret', cfg?.okx_secret || '');
+  } else {
+    setFieldValue('cfg-ex_api_key', cfg?.binance_api_key || '');
+    setFieldValue('cfg-ex_secret', cfg?.binance_secret || '');
+  }
   setFieldValue('cfg-ex_passphrase', cfg?.passphrase || '');
 
   setFieldValue('cfg-dca_amount', cfg?.dca_amount ?? 50);

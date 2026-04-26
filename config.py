@@ -117,7 +117,9 @@ class Config:
                 exchange = cfg.get('exchange', 'binance').lower()
                 
                 if exchange == 'okx':
-                    if not cfg.get('api_key') or not cfg.get('secret') or not cfg.get('passphrase'):
+                    okx_key = cfg.get('okx_api_key') or cfg.get('api_key')
+                    okx_secret = cfg.get('okx_secret') or cfg.get('secret')
+                    if not okx_key or not okx_secret or not cfg.get('passphrase'):
                          errors.append(f"交易对 {symbol} (OKX) 缺少API配置，且未配置全局OKX API")
                 else: # binance
                     # 兼容老的 key 名 (binance_api_key) 和新的通用名 (api_key)
@@ -159,9 +161,9 @@ class Config:
                 api_key = config.get('binance_api_key') or config.get('api_key')
                 secret = config.get('binance_secret') or config.get('secret')
             else:
-                # 其他交易所仍按通用字段读取。
-                api_key = config.get('api_key')
-                secret = config.get('secret')
+                # OKX 优先读取 okx_* 专属字段，避免与 LLM api_key 混淆。
+                api_key = config.get('okx_api_key') or config.get('api_key')
+                secret = config.get('okx_secret') or config.get('secret')
             
             if api_key and secret:
                 if exchange == 'okx' and not passphrase:
