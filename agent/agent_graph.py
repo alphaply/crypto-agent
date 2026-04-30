@@ -100,7 +100,20 @@ def summarize_content(content: str, agent_config: dict) -> str:
             base_url=api_base,
             temperature=temperature,
         )
-        prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑思路”（150字以内），保留趋势情况、关键点位(支持阻力)和操作意图等等。
+        prompt = f"""请将以下交易分析内容压缩为一段“市场状态复盘”（150字以内）。
+只保留客观市场结构，不保留具体做多/做空偏好，不延续旧挂单意图，不输出“继续低吸/继续加仓/维持原策略”等惯性表述。
+
+必须包含：
+1. 主导周期趋势：1d/4h/1h 哪个方向占优，是趋势还是震荡。
+2. 关键失效位：多头失效位、空头失效位。
+3. 当前市场类型：趋势延续 / 趋势反转 / 区间震荡 / 高波动不确定。
+4. 若存在频繁补仓、逆势、追高、被洗盘风险，必须明确记录为风险提醒。
+
+禁止包含：
+- “继续低吸”“继续加多”“支撑挂多为主”等延续性交易建议；
+- 未经当前数据重新确认的方向偏好；
+- 任何鼓励补仓摊平亏损的措辞。
+
 直接输出压缩后的文字，不要有任何前缀。
 内容：
 {content}
@@ -156,8 +169,14 @@ def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
             return False
             
         summary_text = summarize_content(
-            f"以下是 {date_str} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾，"
-            f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}",
+            f"以下是 {date_str} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的“市场状态与策略偏差复盘”。"
+            f"重点提炼客观结构，不要延续旧交易意图。\n\n"
+            f"必须包含：\n"
+            f"1. 当日主导行情类型：趋势下跌/趋势上涨/震荡/假突破/高波动扫损。\n"
+            f"2. 多空关键分界位，以及哪些点位已经失效。\n"
+            f"3. 当日策略是否存在偏差：逆势低吸、追高、过度补仓、止损过近、挂单过密等。\n"
+            f"4. 下一交易日只作为风险提醒，不得给出默认做多或默认做空建议。\n\n"
+            f"原始多轮逻辑：\n{combined}",
             target_config
         )
         
@@ -219,7 +238,8 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         timeframes_to_fetch = ['5m', '15m', '1h', '4h', '1d', '1w']
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
-        daily_history = get_daily_summaries(config_id, days=7)
+        history_days = int(agent_config.get('history_days', 3 if trade_mode == 'REAL' else 7))
+        daily_history = get_daily_summaries(config_id, days=history_days)
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
