@@ -921,7 +921,9 @@ def update_daily_summary(date_str, config_id, summary):
             SET summary = ?
             WHERE date = ? AND config_id = ?
         ''', (summary, date_str, config_id))
+        updated = c.rowcount
         conn.commit()
+        return updated > 0
 
 def get_daily_summaries(config_id, days=7):
     """获取最近 N 天的每日策略汇总（按日期倒序）"""

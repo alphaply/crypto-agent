@@ -7,7 +7,7 @@ import time
 from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
 from routes.utils import (
     DB_NAME, global_config, get_scheduler_status, get_symbol_specific_status,
-    _chat_authed, _require_admin_auth_api, logger, TZ_CN
+    _chat_authed, _require_admin_auth_api, _chat_password, logger, TZ_CN
 )
 from database import (
     get_paginated_summaries, get_summary_count, delete_summaries_by_symbol,
@@ -60,7 +60,11 @@ def verify_admin_action(password, captcha):
             return False, "验证码错误", True, 403
         session.pop('captcha_answer', None)
 
-    if password != global_config.admin_password:
+    expected_password = _chat_password() or global_config.admin_password
+    if not expected_password:
+        return False, "服务端未配置管理员密码", False, 500
+
+    if password != expected_password:
         fails += 1
         session['failed_attempts'] = fails
         if fails >= 5:
@@ -608,21 +612,29 @@ def clean_history():
 
 @main_bp.route('/api/daily_summary/update', methods=['POST'])
 def update_daily_summary_api():
-    auth_err = _require_admin_auth_api()
-    if auth_err:
-        return auth_err
+    data = request.json or {}
+    if not _chat_authed():
+        ok, message, need_captcha, status = verify_admin_action(
+            data.get('password', ''),
+            (data.get('captcha', '') or '').upper()
+        )
+        if not ok:
+            return jsonify({"success": False, "message": message, "need_captcha": need_captcha}), status
+        session["chat_authed"] = True
+        session["admin_authed"] = True
 
-    data = request.json
     date_str = data.get('date')
     config_id = data.get('config_id')
     summary_content = data.get('summary')
 
-    if not date_str or not config_id or not summary_content:
+    if not date_str or not config_id or summary_content is None:
         return jsonify({"success": False, "message": "参数不完整", "need_captcha": False}), 400
 
     try:
         from database import update_daily_summary as db_update_ds
-        db_update_ds(date_str, config_id, summary_content)
+        updated = db_update_ds(date_str, config_id, summary_content)
+        if not updated:
+            return jsonify({"success": False, "message": "未找到对应的每日总结记录", "need_captcha": False}), 404
         return jsonify({"success": True, "message": "每日总结已更新", "need_captcha": False})
     except Exception as e:
         logger.error(f"更新每日总结错误: {e}")
