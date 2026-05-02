@@ -35,6 +35,7 @@ TZ_US = pytz.timezone('America/New_York')
 logger = setup_logger("AgentGraph")
 load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_HISTORY_DAYS = 5
 
 
 def calculate_next_run_time(agent_config, now_cn):
@@ -238,7 +239,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         timeframes_to_fetch = ['5m', '15m', '1h', '4h', '1d', '1w']
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
-        history_days = int(agent_config.get('history_days', 3 if trade_mode == 'REAL' else 7))
+        history_days = int(agent_config.get('history_days', DEFAULT_HISTORY_DAYS))
         daily_history = get_daily_summaries(config_id, days=history_days)
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")

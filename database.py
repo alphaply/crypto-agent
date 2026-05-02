@@ -925,7 +925,7 @@ def update_daily_summary(date_str, config_id, summary):
         conn.commit()
         return updated > 0
 
-def get_daily_summaries(config_id, days=7):
+def get_daily_summaries(config_id, days=5):
     """获取最近 N 天的每日策略汇总（按日期倒序）"""
     with get_db_conn() as conn:
         c = conn.cursor()
