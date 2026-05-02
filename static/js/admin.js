@@ -6,6 +6,8 @@ let pricingRows = [];
 let promptEditor = null;
 let configJsonEditor = null;
 let adminTheme = 'light';
+let draggedConfigId = null;
+let configOrderDirty = false;
 
 function getResolvedTheme() {
   if (window.AppTheme && typeof window.AppTheme.getResolvedTheme === 'function') {
@@ -122,6 +124,14 @@ function updatePromptCount(visible, total) {
   const countEl = document.getElementById('prompt-count');
   if (!countEl) return;
   countEl.textContent = `${visible}/${total}`;
+}
+
+function setConfigOrderStatus(text, isDirty = configOrderDirty) {
+  const el = document.getElementById('config-order-status');
+  if (!el) return;
+  el.textContent = text || '拖拽左侧手柄调整顺序，保存后写入 .env。';
+  el.classList.toggle('text-amber-600', !!isDirty);
+  el.classList.toggle('font-bold', !!isDirty);
 }
 
 function toast(message, type = 'ok') {
@@ -343,29 +353,134 @@ function renderConfigList() {
   const el = document.getElementById('config-list');
   if (!el) return;
 
-  // 排序规则：先按 symbol 字母升序，同 symbol 内按模式优先级 REAL→STRATEGY→SPOT_DCA
-  const MODE_DISPLAY_ORDER = { REAL: 0, STRATEGY: 1, SPOT_DCA: 2 };
-  const sorted = [...configs].sort((a, b) => {
-    const sa = (a.symbol || '').toUpperCase();
-    const sb = (b.symbol || '').toUpperCase();
-    if (sa !== sb) return sa < sb ? -1 : 1;
-    return (MODE_DISPLAY_ORDER[a.mode] ?? 99) - (MODE_DISPLAY_ORDER[b.mode] ?? 99);
-  });
-
-  el.innerHTML = sorted.map(cfg => {
+  el.innerHTML = configs.map((cfg, index) => {
     const active = editingConfigId === cfg.config_id;
     return `
-      <div class="border ${active ? 'border-blue-300 bg-blue-50/50' : 'border-slate-200'} rounded-xl p-3 flex items-center justify-between gap-3">
+      <div class="config-drag-card border ${active ? 'border-blue-300 bg-blue-50/50' : 'border-slate-200'} rounded-xl p-3 flex items-center justify-between gap-3"
+           data-config-id="${escapeHtml(cfg.config_id)}"
+           draggable="true"
+           ondragstart="onConfigDragStart(event, '${escapeHtml(cfg.config_id)}')"
+           ondragover="onConfigDragOver(event, '${escapeHtml(cfg.config_id)}')"
+           ondragleave="onConfigDragLeave(event)"
+           ondrop="onConfigDrop(event, '${escapeHtml(cfg.config_id)}')"
+           ondragend="onConfigDragEnd(event)">
+        <button type="button"
+                class="config-drag-handle shrink-0 w-8 h-8 rounded-lg border border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-200 hover:bg-blue-50"
+                title="拖拽排序"
+                aria-label="拖拽排序 ${escapeHtml(cfg.config_id)}">☰</button>
         <button onclick="selectConfig('${escapeHtml(cfg.config_id)}')" class="text-left flex-1 min-w-0">
-          <div class="font-bold text-slate-800 text-sm truncate">${escapeHtml(cfg.config_id)}</div>
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="shrink-0 text-[10px] font-mono text-slate-400">#${index + 1}</span>
+            <span class="font-bold text-slate-800 text-sm truncate">${escapeHtml(cfg.config_id)}</span>
+          </div>
           <div class="text-xs text-slate-500 truncate">${escapeHtml(cfg.symbol)} · ${escapeHtml(cfg.mode || 'STRATEGY')} · ${cfg.enabled === false ? 'disabled' : 'enabled'}</div>
         </button>
+        <div class="flex flex-col gap-1 shrink-0">
+          <button type="button"
+                  onclick="moveConfigById('${escapeHtml(cfg.config_id)}', -1)"
+                  class="px-2 py-0.5 rounded border border-slate-200 text-slate-500 text-[10px] hover:bg-slate-50 disabled:opacity-30"
+                  ${index === 0 ? 'disabled' : ''}
+                  title="上移">↑</button>
+          <button type="button"
+                  onclick="moveConfigById('${escapeHtml(cfg.config_id)}', 1)"
+                  class="px-2 py-0.5 rounded border border-slate-200 text-slate-500 text-[10px] hover:bg-slate-50 disabled:opacity-30"
+                  ${index === configs.length - 1 ? 'disabled' : ''}
+                  title="下移">↓</button>
+        </div>
         <button onclick="deleteConfig('${escapeHtml(cfg.config_id)}')" class="px-2 py-1 rounded-lg border border-red-200 text-red-600 text-xs hover:bg-red-50">删除</button>
       </div>
     `;
   }).join('');
 
   setConfigJsonValue(JSON.stringify(configs, null, 2));
+  setConfigOrderStatus(configOrderDirty ? '排序已调整，点击“保存排序”写入 .env。' : '拖拽左侧手柄调整顺序，保存后写入 .env。');
+}
+
+function reorderConfigById(sourceId, targetId) {
+  if (!sourceId || !targetId || sourceId === targetId) return false;
+  const fromIndex = configs.findIndex(item => item.config_id === sourceId);
+  const toIndex = configs.findIndex(item => item.config_id === targetId);
+  if (fromIndex < 0 || toIndex < 0) return false;
+
+  const [moved] = configs.splice(fromIndex, 1);
+  configs.splice(toIndex, 0, moved);
+  configOrderDirty = true;
+  renderConfigList();
+  return true;
+}
+
+function moveConfigById(configId, delta) {
+  const fromIndex = configs.findIndex(item => item.config_id === configId);
+  if (fromIndex < 0) return;
+  const toIndex = fromIndex + delta;
+  if (toIndex < 0 || toIndex >= configs.length) return;
+
+  const [moved] = configs.splice(fromIndex, 1);
+  configs.splice(toIndex, 0, moved);
+  configOrderDirty = true;
+  renderConfigList();
+}
+
+function clearConfigDragState() {
+  document.querySelectorAll('.config-drag-card').forEach(card => {
+    card.classList.remove('is-dragging', 'drag-over');
+  });
+}
+
+function onConfigDragStart(event, configId) {
+  draggedConfigId = configId;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', configId);
+  event.currentTarget.classList.add('is-dragging');
+}
+
+function onConfigDragOver(event, configId) {
+  if (!draggedConfigId || draggedConfigId === configId) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  event.currentTarget.classList.add('drag-over');
+}
+
+function onConfigDragLeave(event) {
+  event.currentTarget.classList.remove('drag-over');
+}
+
+function onConfigDrop(event, targetId) {
+  event.preventDefault();
+  const sourceId = event.dataTransfer.getData('text/plain') || draggedConfigId;
+  reorderConfigById(sourceId, targetId);
+  draggedConfigId = null;
+  clearConfigDragState();
+}
+
+function onConfigDragEnd() {
+  draggedConfigId = null;
+  clearConfigDragState();
+}
+
+async function saveConfigOrder() {
+  try {
+    const formConfig = normalizeConfigFromForm();
+    const idx = configs.findIndex(item => item.config_id === formConfig.config_id);
+    if (idx >= 0) configs[idx] = formConfig;
+  } catch (error) {
+    // 允许仅保存排序；表单中可能正在填写尚未完成的新配置。
+  }
+
+  const resp = await fetch('/api/config/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ configs, global: {} }),
+  });
+  const data = await resp.json();
+  if (!data.success) {
+    toast(data.message || '保存排序失败', 'err');
+    return;
+  }
+
+  configOrderDirty = false;
+  toast('排序已保存并写入 .env');
+  await loadConfigs();
 }
 
 function selectConfig(configId) {
@@ -391,6 +506,7 @@ async function loadConfigs() {
   }
 
   configs = data.configs || [];
+  configOrderDirty = false;
   renderConfigList();
 
   if (editingConfigId) {
@@ -453,6 +569,7 @@ async function upsertConfig() {
     return;
   }
 
+  configOrderDirty = false;
   toast('配置已保存并写入 .env');
   await loadConfigs();
 }
@@ -503,6 +620,7 @@ async function saveRawConfigs() {
 
   toast('JSON 配置已保存');
   configs = parsed;
+  configOrderDirty = false;
   await loadConfigs();
 }
 
@@ -851,6 +969,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.formatConfigJson = formatConfigJson;
   window.saveRawConfigs = saveRawConfigs;
   window.deleteConfig = deleteConfig;
+  window.saveConfigOrder = saveConfigOrder;
+  window.moveConfigById = moveConfigById;
+  window.onConfigDragStart = onConfigDragStart;
+  window.onConfigDragOver = onConfigDragOver;
+  window.onConfigDragLeave = onConfigDragLeave;
+  window.onConfigDrop = onConfigDrop;
+  window.onConfigDragEnd = onConfigDragEnd;
 
   window.createPrompt = createPrompt;
   window.openPrompt = openPrompt;
