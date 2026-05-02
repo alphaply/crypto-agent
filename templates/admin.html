@@ -60,6 +60,30 @@
   :root[data-theme='dark'] #admin-page .CodeMirror-gutters {
     border-right-color: #334155;
   }
+
+  #admin-page .config-drag-card {
+    transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, opacity 0.16s ease;
+  }
+
+  #admin-page .config-drag-card.is-dragging {
+    opacity: 0.55;
+    transform: scale(0.99);
+  }
+
+  #admin-page .config-drag-card.drag-over {
+    border-color: #2563eb;
+    background: color-mix(in srgb, #dbeafe 72%, transparent);
+  }
+
+  #admin-page .config-drag-handle {
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+
+  #admin-page .config-drag-handle:active {
+    cursor: grabbing;
+  }
 </style>
 {% endblock %}
 
@@ -97,6 +121,10 @@
           <button onclick="startCreateConfig()" class="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700">新建</button>
           <button onclick="loadConfigs()" class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">刷新</button>
         </div>
+      </div>
+      <div class="flex items-center justify-between gap-2 mb-3">
+        <div id="config-order-status" class="admin-muted text-[11px]">拖拽左侧手柄调整顺序，保存后写入 .env。</div>
+        <button onclick="saveConfigOrder()" class="shrink-0 text-xs px-2.5 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 font-bold">保存排序</button>
       </div>
       <div id="config-list" class="space-y-2 max-h-[620px] overflow-y-auto"></div>
     </div>
