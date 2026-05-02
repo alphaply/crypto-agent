@@ -345,7 +345,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict['order_page'] = 1
 
                 # 每日策略汇总
-                summary_dict['daily_summaries'] = get_daily_summaries(config_id, days=7)
+                summary_dict['daily_summaries'] = get_daily_summaries(config_id, days=5)
                 
                 agent_summaries.append(summary_dict)
 
@@ -678,7 +678,7 @@ def get_orders_api():
 @main_bp.route('/api/daily_summaries')
 def get_daily_summaries_api():
     config_id = request.args.get('config_id')
-    days = int(request.args.get('days', 7))
+    days = int(request.args.get('days', 5))
     if not config_id:
         return jsonify({"success": False, "message": "Missing config_id"})
     data = get_daily_summaries(config_id, days=days)
