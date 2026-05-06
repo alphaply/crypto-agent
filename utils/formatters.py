@@ -111,8 +111,7 @@ def format_market_data_to_text(data: dict) -> str:
     
     output = [
         "【市场快照】",
-        f"• 价格: {current_price} | 基准ATR: {atr_base} | 资金费率: {funding:.4f}% | OI: {oi}",
-        f"• 24h量: {vol_24h} | 大户多空比: {ls_ratio} | 人数多空比: {ls_accounts}",
+        f"• 价格: {current_price} | 资金费率: {funding:.4f}% | OI: {oi} | 24h量: {vol_24h} | 大户L/S: {ls_ratio} | 人数L/S: {ls_accounts}",
         ""
     ]
 
@@ -135,9 +134,8 @@ def format_market_data_to_text(data: dict) -> str:
             macro_label = "✅ 宏观多头结构：月线+周线排列向好，顺势做多为优先方向"
         else:
             macro_label = f"⚡ 宏观趋势分歧：月线({_1M_status}) 与 周线({_1w_status}) 信号不一致，方向不明，提高警惕"
-        output.append("【宏观趋势概览】")
+        output.append("【宏观】")
         output.append(f"• 1M={_1M_status}(ADX={_1M_adx}) | 1w={_1w_status}(ADX={_1w_adx})")
-        output.append(f"• {macro_label}")
         output.append("")
     
     if not available_tfs:
@@ -158,7 +156,7 @@ def format_market_data_to_text(data: dict) -> str:
             atr = d.get('atr', 0)
             vol_stat = d.get('volume_status') or d.get('volume_analysis', {}).get('status', 'N/A')
             
-            output.append(f"【{tf}周期】 {t_status} | ADX={adx} ({t_strength}) DI+={di_plus} DI-={di_minus} | ATR={atr} | Vol={vol_stat}")
+            output.append(f"【{tf}】 ADX={adx} DI+={di_plus} DI-={di_minus} | ATR={atr} | Vol={vol_stat}")
             
             # 2. 均线 + VWAP（条件输出）
             ema = d.get('ema', {})
@@ -179,13 +177,12 @@ def format_market_data_to_text(data: dict) -> str:
             
             macd = d.get('macd', {})
             diff, hist = macd.get('diff', 0), macd.get('hist', 0)
-            momentum = macd.get('momentum', '')
-            output.append(f"• {rsi_str} | MACD: Diff={diff} Hist={hist} ({momentum})")
+            output.append(f"• {rsi_str} | MACD: {diff}/{hist}")
 
             # 4. 布林带
             bb = d.get('bollinger', {})
-            up, low, width = bb.get('up', 0), bb.get('low', 0), bb.get('width', 0)
-            output.append(f"• BB: Up={up} Low={low} Width={width}")
+            up, low = bb.get('up', 0), bb.get('low', 0)
+            output.append(f"• BB: {up}/{low}")
             
             # 5. K线序列
             closes = d.get('recent_closes', [])
@@ -195,16 +192,20 @@ def format_market_data_to_text(data: dict) -> str:
             
             if closes and len(closes) == len(opens) == len(highs) == len(lows):
                 ohlc_list = [f"[{o},{h},{l},{c}]" for o, h, l, c in zip(opens, highs, lows, closes)]
-                c_str = ", ".join(ohlc_list)
-                output.append(f"• 近{len(closes)}根K线(O,H,L,C): {c_str}")
+                mid = len(ohlc_list) // 2
+                row1 = " ".join(ohlc_list[:mid])
+                row2 = " ".join(ohlc_list[mid:])
+                output.append(f"• K线(O,H,L,C):")
+                output.append(f"  {row1}")
+                output.append(f"  {row2}")
             
             # 6. 价值分布
             vp = d.get('vp', {})
             poc = vp.get('poc', 0)
             val_p, vah = vp.get('val', 0), vp.get('vah', 0)
             raw_hvns = vp.get('hvns', [])
-            hvn_str = ", ".join([str(x) for x in raw_hvns[:3]]) if raw_hvns else "N/A"
-            output.append(f"• VP: POC={poc} VA=[{val_p}~{vah}] HVN=[{hvn_str}]")
+            hvn_str = "/".join([str(x) for x in raw_hvns[:3]]) if raw_hvns else "N/A"
+            output.append(f"• VP: POC={poc} VA={val_p}~{vah} HVN={hvn_str}")
             output.append("")
 
     return "\n".join(output).strip()
