@@ -98,9 +98,12 @@
 "summarizer": {
   "model": "qwen-plus",
   "api_base": "https://example.com/v1",
-  "api_key": "sk-xxx"
+  "api_key": "sk-xxx",
+  "daily_prompt_file": "daily_summary.txt"
 }
 ```
+
+`daily_prompt_file` 用于每日总结汇总提示词，文件位于 `agent/prompts/`，可在后台的 Prompt 模板管理中直接编辑。未配置时默认使用 `daily_summary.txt`。
 
 若未配置，则回退全局：
 

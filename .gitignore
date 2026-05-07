@@ -10,6 +10,7 @@ wheels/
 # Virtual environments
 .venv
 agent/prompts/*
+!agent/prompts/daily_summary.txt
 # Local runtime database
 trading_data.db
 chat_checkpoints.sqlite

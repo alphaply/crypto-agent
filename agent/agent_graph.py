@@ -36,6 +36,45 @@ logger = setup_logger("AgentGraph")
 load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_HISTORY_DAYS = 5
+DEFAULT_DAILY_SUMMARY_PROMPT_FILE = "daily_summary.txt"
+
+
+def _read_prompt_file(prompt_file: str) -> str:
+    if not isinstance(prompt_file, str) or not prompt_file.strip():
+        return ""
+
+    try:
+        file_path = Path(prompt_file.strip())
+        if not file_path.is_absolute():
+            candidate = PROJECT_ROOT / file_path
+            if not candidate.exists():
+                candidate = PROJECT_ROOT / "agent" / "prompts" / file_path
+            file_path = candidate
+
+        if file_path.exists():
+            content = file_path.read_text(encoding="utf-8").strip()
+            if content:
+                logger.info(f"Using summary prompt file: {file_path}")
+                return content
+            logger.warning(f"Summary prompt file is empty: {file_path}")
+        else:
+            logger.warning(f"Summary prompt file does not exist: {file_path}")
+    except Exception as e:
+        logger.warning(f"Failed to load summary prompt file: {e}")
+
+    return ""
+
+
+def _resolve_daily_summary_prompt(agent_config: dict) -> str:
+    summarizer_cfg = agent_config.get("summarizer", {})
+    prompt_file = (
+        summarizer_cfg.get("daily_prompt_file")
+        or summarizer_cfg.get("prompt_file")
+        or agent_config.get("daily_summary_prompt_file")
+        or os.getenv("DAILY_SUMMARY_PROMPT_FILE")
+        or DEFAULT_DAILY_SUMMARY_PROMPT_FILE
+    )
+    return _read_prompt_file(prompt_file)
 
 
 def calculate_next_run_time(agent_config, now_cn):
@@ -76,7 +115,7 @@ def calculate_next_run_time(agent_config, now_cn):
 # 1. Summarizer Pipeline
 # ==========================================
 
-def summarize_content(content: str, agent_config: dict) -> str:
+def summarize_content(content: str, agent_config: dict, prompt_template: str = "", prompt_context: dict = None) -> str:
     """使用独立的 LLM 配置对分析内容进行压缩。"""
     summarizer_cfg = agent_config.get("summarizer", {})
     
@@ -101,7 +140,11 @@ def summarize_content(content: str, agent_config: dict) -> str:
             base_url=api_base,
             temperature=temperature,
         )
-        prompt = f"""请将以下交易分析内容压缩为一段“市场状态复盘”（150字以内）。
+        prompt = render_prompt(
+            prompt_template,
+            content=content,
+            **(prompt_context or {}),
+        ) if prompt_template else f"""请将以下交易分析内容压缩为一段“市场状态复盘”（150字以内）。
 只保留客观市场结构，不保留具体做多/做空偏好，不延续旧挂单意图，不输出“继续低吸/继续加仓/维持原策略”等惯性表述。
 
 必须包含：
@@ -145,47 +188,48 @@ def summarize_content(content: str, agent_config: dict) -> str:
         return content[:200] + "..."
 
 def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
-    """手动或通过调度器触发特定周期的每日总结汇总。"""
+    """Generate the daily summary with a prompt template editable from the admin UI."""
     from database import get_pending_daily_summary_data, save_daily_summary
     from config import config as global_config
-    
-    # 查找对应的 config
+
     all_configs = global_config.get_all_symbol_configs()
-    target_config = next((c for c in all_configs if c['config_id'] == config_id), None)
+    target_config = next((c for c in all_configs if c["config_id"] == config_id), None)
     if not target_config:
         logger.error(f"Config ID {config_id} not found for manual summary.")
         return False
-        
+
     try:
         rows = get_pending_daily_summary_data(config_id, date_str)
         if not rows:
             logger.info(f"No summary data found for {config_id} on {date_str}")
             return False
-            
+
         combined = "\n".join(
             f"[{r['timestamp']}] {r['strategy_logic']}"
-            for r in rows if r.get('strategy_logic')
+            for r in rows if r.get("strategy_logic")
         )
         if not combined.strip():
             return False
-            
+
+        daily_prompt_template = _resolve_daily_summary_prompt(target_config)
         summary_text = summarize_content(
-            f"以下是 {date_str} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的“市场状态与策略偏差复盘”。"
-            f"重点提炼客观结构，不要延续旧交易意图。\n\n"
-            f"必须包含：\n"
-            f"1. 当日主导行情类型：趋势下跌/趋势上涨/震荡/假突破/高波动扫损。\n"
-            f"2. 多空关键分界位，以及哪些点位已经失效。\n"
-            f"3. 当日策略是否存在偏差：逆势低吸、追高、过度补仓、止损过近、挂单过密等。\n"
-            f"4. 下一交易日只作为风险提醒，不得给出默认做多或默认做空建议。\n\n"
-            f"原始多轮逻辑：\n{combined}",
-            target_config
+            combined,
+            target_config,
+            prompt_template=daily_prompt_template,
+            prompt_context={
+                "date": date_str,
+                "symbol": target_config.get("symbol", "Unknown"),
+                "config_id": config_id,
+                "source_count": len(rows),
+            },
         )
-        
-        save_daily_summary(date_str, target_config.get('symbol', 'Unknown'), config_id, summary_text, len(rows))
+
+        save_daily_summary(date_str, target_config.get("symbol", "Unknown"), config_id, summary_text, len(rows))
         return True
     except Exception as e:
         logger.error(f"Failed to generate manual daily summary for {config_id}: {e}")
         return False
+
 
 # ==========================================
 # 2. Nodes

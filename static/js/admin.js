@@ -269,11 +269,13 @@ function normalizeConfigFromForm() {
   const sumModel = getFieldValue('cfg-sum-model');
   const sumApiBase = getFieldValue('cfg-sum-api_base');
   const sumApiKey = getFieldValue('cfg-sum-api_key');
-  if (sumModel || sumApiBase || sumApiKey) {
+  const sumDailyPromptFile = getFieldValue('cfg-sum-daily_prompt_file');
+  if (sumModel || sumApiBase || sumApiKey || sumDailyPromptFile) {
     cfg.summarizer = {};
     if (sumModel) cfg.summarizer.model = sumModel;
     if (sumApiBase) cfg.summarizer.api_base = sumApiBase;
     if (sumApiKey) cfg.summarizer.api_key = sumApiKey;
+    if (sumDailyPromptFile) cfg.summarizer.daily_prompt_file = sumDailyPromptFile;
   }
 
   return cfg;
@@ -313,6 +315,7 @@ function setConfigForm(cfg) {
   setFieldValue('cfg-sum-model', cfg?.summarizer?.model || '');
   setFieldValue('cfg-sum-api_base', cfg?.summarizer?.api_base || '');
   setFieldValue('cfg-sum-api_key', cfg?.summarizer?.api_key || '');
+  populateDailyPromptFileSelect(cfg?.summarizer?.daily_prompt_file || cfg?.summarizer?.prompt_file || '');
 
   const badge = document.getElementById('config-form-badge');
   if (badge) badge.textContent = cfg?.config_id || '未选择';
@@ -662,6 +665,7 @@ async function loadPrompts() {
   promptFiles = data.files || [];
   renderPromptList();
   populatePromptFileSelect();
+  populateDailyPromptFileSelect();
 }
 
 function populatePromptFileSelect(selectedValue) {
@@ -680,6 +684,27 @@ function populatePromptFileSelect(selectedValue) {
   } else if (promptFiles.length > 0) {
     select.value = promptFiles[0];
   }
+}
+
+function populateDailyPromptFileSelect(selectedValue) {
+  const select = document.getElementById('cfg-sum-daily_prompt_file');
+  if (!select) return;
+  const current = selectedValue !== undefined ? selectedValue : select.value;
+  select.innerHTML = '';
+
+  const defaultOpt = document.createElement('option');
+  defaultOpt.value = '';
+  defaultOpt.textContent = 'daily_summary.txt (default)';
+  select.appendChild(defaultOpt);
+
+  promptFiles.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = f;
+    select.appendChild(opt);
+  });
+
+  select.value = current && promptFiles.includes(current) ? current : '';
 }
 
 async function openPrompt(name) {
@@ -736,6 +761,7 @@ async function createPrompt() {
   await loadPrompts();
   await openPrompt(name);
   populatePromptFileSelect();
+  populateDailyPromptFileSelect();
   toast(`模板已创建: ${name}`);
 }
 
@@ -983,6 +1009,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.deletePrompt = deletePrompt;
   window.loadPrompts = loadPrompts;
   window.populatePromptFileSelect = populatePromptFileSelect;
+  window.populateDailyPromptFileSelect = populateDailyPromptFileSelect;
 
   window.addPricingRow = addPricingRow;
   window.savePricingRow = savePricingRow;
