@@ -16,6 +16,22 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = os.path.join(BASE_DIR, "trading_data.db")
 logger = setup_logger("Database")
 
+
+def _safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _safe_json(data):
+    try:
+        return json.dumps(data, ensure_ascii=False, default=str)
+    except Exception:
+        return "{}"
+
 @contextmanager
 def get_db_conn():
     """数据库连接上下文管理器，自动处理关闭和超时"""
@@ -146,6 +162,8 @@ def init_db():
                     )''')
         try: c.execute("ALTER TABLE trade_history ADD COLUMN order_id TEXT")
         except: pass
+        try: c.execute("ALTER TABLE trade_history ADD COLUMN config_id TEXT")
+        except: pass
 
         c.execute('''CREATE TABLE IF NOT EXISTS chat_sessions (
                         session_id TEXT PRIMARY KEY,
@@ -186,6 +204,39 @@ def init_db():
                         source_count INTEGER DEFAULT 0,
                         created_at TEXT,
                         UNIQUE(date, config_id)
+                    )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS short_memories (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        bucket_start TEXT,
+                        bucket_end TEXT,
+                        symbol TEXT,
+                        config_id TEXT,
+                        market_summary TEXT,
+                        position_summary TEXT,
+                        source_summary_count INTEGER DEFAULT 0,
+                        source_position_count INTEGER DEFAULT 0,
+                        fingerprint TEXT,
+                        created_at TEXT,
+                        UNIQUE(bucket_start, config_id)
+                    )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS position_history (
+                        event_id TEXT PRIMARY KEY,
+                        config_id TEXT,
+                        symbol TEXT,
+                        source TEXT,
+                        event_type TEXT,
+                        order_id TEXT,
+                        side TEXT,
+                        amount REAL,
+                        entry_price REAL,
+                        close_price REAL,
+                        realized_pnl REAL,
+                        open_time TEXT,
+                        close_time TEXT,
+                        raw_data TEXT,
+                        created_at TEXT
                     )''')
 
         # 10. 模拟账户资金表
@@ -453,16 +504,20 @@ def update_mock_order_filled(order_id):
         c = conn.cursor()
         c.execute("UPDATE mock_orders SET is_filled = 1 WHERE order_id = ?", (order_id,))
         conn.commit()
+    record_mock_position_open(order_id)
 
 def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
     """平仓模拟挂单"""
+    event_row = None
+    did_close = False
+    close_time = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     with get_db_conn() as conn:
         c = conn.cursor()
-        close_time = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
         
         # 先更新虚拟账户与流水
-        row = c.execute("SELECT symbol, config_id FROM mock_orders WHERE order_id=?", (order_id,)).fetchone()
+        row = c.execute("SELECT * FROM mock_orders WHERE order_id=?", (order_id,)).fetchone()
         if row:
+            event_row = dict(row)
             update_mock_account_balance(row['config_id'], row['symbol'], realized_pnl)
 
         c.execute('''
@@ -470,9 +525,195 @@ def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
             SET status='CLOSED', close_price=?, realized_pnl=?, close_time=? 
             WHERE order_id=? AND status='OPEN'
         ''', (close_price, realized_pnl, close_time, order_id))
+        did_close = c.rowcount > 0
         
         c.execute("UPDATE orders SET status = 'CLOSED' WHERE order_id = ?", (order_id,))
         conn.commit()
+
+    if event_row and did_close:
+        if int(event_row.get("is_filled") or 0):
+            record_mock_position_open(order_id, event_row)
+        upsert_position_history({
+            "event_id": f"mock:{order_id}:close",
+            "config_id": event_row.get("config_id"),
+            "symbol": event_row.get("symbol"),
+            "source": "mock",
+            "event_type": "CLOSE",
+            "order_id": order_id,
+            "side": "LONG" if "BUY" in str(event_row.get("side", "")).upper() else "SHORT",
+            "amount": _safe_float(event_row.get("amount")),
+            "entry_price": _safe_float(event_row.get("price")),
+            "close_price": _safe_float(close_price),
+            "realized_pnl": _safe_float(realized_pnl),
+            "open_time": event_row.get("timestamp"),
+            "close_time": close_time,
+            "raw_data": event_row,
+        })
+
+
+def upsert_position_history(event):
+    """Insert or update a normalized position event/snapshot."""
+    if not event or not event.get("event_id"):
+        return False
+    created_at = event.get("created_at") or datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    raw_data = event.get("raw_data")
+    raw_text = raw_data if isinstance(raw_data, str) else _safe_json(raw_data or {})
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO position_history (
+                event_id, config_id, symbol, source, event_type, order_id, side,
+                amount, entry_price, close_price, realized_pnl,
+                open_time, close_time, raw_data, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                config_id = excluded.config_id,
+                symbol = excluded.symbol,
+                source = excluded.source,
+                event_type = excluded.event_type,
+                order_id = excluded.order_id,
+                side = excluded.side,
+                amount = excluded.amount,
+                entry_price = excluded.entry_price,
+                close_price = excluded.close_price,
+                realized_pnl = excluded.realized_pnl,
+                open_time = excluded.open_time,
+                close_time = excluded.close_time,
+                raw_data = excluded.raw_data,
+                created_at = excluded.created_at
+            ''',
+            (
+                str(event.get("event_id")),
+                event.get("config_id"),
+                event.get("symbol"),
+                event.get("source"),
+                event.get("event_type"),
+                event.get("order_id"),
+                event.get("side"),
+                _safe_float(event.get("amount")),
+                _safe_float(event.get("entry_price")),
+                _safe_float(event.get("close_price")),
+                _safe_float(event.get("realized_pnl")),
+                event.get("open_time"),
+                event.get("close_time"),
+                raw_text,
+                created_at,
+            ),
+        )
+        conn.commit()
+        return True
+
+
+def record_mock_position_open(order_id, row_data=None):
+    """Record a mock position once the pending order becomes a filled position."""
+    if row_data is None:
+        with get_db_conn() as conn:
+            row = conn.execute("SELECT * FROM mock_orders WHERE order_id = ?", (order_id,)).fetchone()
+            if not row:
+                return False
+            row_data = dict(row)
+
+    if not int(row_data.get("is_filled") or 0):
+        return False
+
+    return upsert_position_history({
+        "event_id": f"mock:{order_id}:open",
+        "config_id": row_data.get("config_id"),
+        "symbol": row_data.get("symbol"),
+        "source": "mock",
+        "event_type": "OPEN",
+        "order_id": order_id,
+        "side": "LONG" if "BUY" in str(row_data.get("side", "")).upper() else "SHORT",
+        "amount": _safe_float(row_data.get("amount")),
+        "entry_price": _safe_float(row_data.get("price")),
+        "close_price": 0,
+        "realized_pnl": 0,
+        "open_time": row_data.get("timestamp"),
+        "close_time": None,
+        "raw_data": row_data,
+    })
+
+
+def sync_real_position_history(config_id, symbol, positions=None, trades=None):
+    """Persist exchange-backed position snapshots and close events when available."""
+    now = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    count = 0
+
+    for pos in positions or []:
+        side = str(pos.get("side") or "").upper() or "UNKNOWN"
+        amount = _safe_float(pos.get("amount") or pos.get("contracts") or pos.get("qty"))
+        entry_price = _safe_float(pos.get("entry_price") or pos.get("entryPrice"))
+        if amount <= 0:
+            continue
+        event_id = f"real:{config_id}:{symbol}:{side}:snapshot:{now[:13]}"
+        if upsert_position_history({
+            "event_id": event_id,
+            "config_id": config_id,
+            "symbol": symbol,
+            "source": "exchange",
+            "event_type": "SNAPSHOT",
+            "order_id": "",
+            "side": side,
+            "amount": amount,
+            "entry_price": entry_price,
+            "close_price": 0,
+            "realized_pnl": _safe_float(pos.get("unrealized_pnl")),
+            "open_time": now,
+            "close_time": None,
+            "raw_data": pos,
+            "created_at": now,
+        }):
+            count += 1
+
+    for trade in trades or []:
+        pnl = trade.get("realizedPnl")
+        if pnl is None and isinstance(trade.get("info"), dict):
+            pnl = trade["info"].get("realizedPnl")
+        pnl = _safe_float(pnl)
+        if pnl == 0:
+            continue
+
+        trade_id = str(trade.get("id") or trade.get("trade_id") or "")
+        if not trade_id:
+            continue
+        side_raw = str(trade.get("side") or "").lower()
+        event_side = "LONG" if side_raw == "sell" else "SHORT"
+        amount = _safe_float(trade.get("amount"))
+        close_price = _safe_float(trade.get("price"))
+        entry_price = 0
+        if amount > 0:
+            entry_price = close_price - (pnl / amount) if side_raw == "sell" else close_price + (pnl / amount)
+
+        close_time = now
+        if trade.get("timestamp"):
+            try:
+                close_time = datetime.fromtimestamp(float(trade["timestamp"]) / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        elif trade.get("datetime"):
+            close_time = str(trade.get("datetime"))[:19].replace("T", " ")
+
+        if upsert_position_history({
+            "event_id": f"real:{config_id}:{trade_id}:close",
+            "config_id": config_id,
+            "symbol": trade.get("symbol") or symbol,
+            "source": "exchange",
+            "event_type": "CLOSE",
+            "order_id": str(trade.get("order") or trade.get("order_id") or ""),
+            "side": event_side,
+            "amount": amount,
+            "entry_price": entry_price,
+            "close_price": close_price,
+            "realized_pnl": pnl,
+            "open_time": None,
+            "close_time": close_time,
+            "raw_data": trade,
+            "created_at": now,
+        }):
+            count += 1
+
+    return count
 
 
 def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY", config_id=None, amount=0):
@@ -751,7 +992,7 @@ def get_balance_history(symbol, limit=100):
         return [dict(row) for row in c.fetchall()]
 
 
-def save_trade_history(trades):
+def save_trade_history(trades, config_id=None):
     """批量保存成交记录 (会自动忽略已存在的 trade_id)"""
     if not trades: return
     with get_db_conn() as conn:
@@ -778,11 +1019,12 @@ def save_trade_history(trades):
 
                 c.execute('''
                     INSERT OR IGNORE INTO trade_history 
-                    (trade_id, order_id, timestamp, symbol, side, price, amount, cost, fee, fee_currency, realized_pnl)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (trade_id, order_id, config_id, timestamp, symbol, side, price, amount, cost, fee, fee_currency, realized_pnl)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     str(t['id']),
                     str(t.get('order', t.get('order_id', ''))),
+                    config_id,
                     datetime.fromtimestamp(t['timestamp']/1000).strftime('%Y-%m-%d %H:%M:%S'),
                     t['symbol'],
                     t['side'],
@@ -951,6 +1193,119 @@ def get_pending_daily_summary_data(config_id, date_str):
         ''', (config_id, date_str))
         return [dict(row) for row in c.fetchall()]
 
+
+def save_short_memory(bucket_start, bucket_end, symbol, config_id, market_summary,
+                      position_summary, source_summary_count=0, source_position_count=0,
+                      fingerprint=None):
+    created_at = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO short_memories (
+                bucket_start, bucket_end, symbol, config_id, market_summary, position_summary,
+                source_summary_count, source_position_count, fingerprint, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket_start, config_id) DO UPDATE SET
+                bucket_end = excluded.bucket_end,
+                symbol = excluded.symbol,
+                market_summary = excluded.market_summary,
+                position_summary = excluded.position_summary,
+                source_summary_count = excluded.source_summary_count,
+                source_position_count = excluded.source_position_count,
+                fingerprint = excluded.fingerprint,
+                created_at = excluded.created_at
+            ''',
+            (
+                bucket_start,
+                bucket_end,
+                symbol,
+                config_id,
+                market_summary,
+                position_summary,
+                int(source_summary_count or 0),
+                int(source_position_count or 0),
+                fingerprint,
+                created_at,
+            ),
+        )
+        conn.commit()
+
+
+def get_short_memory(config_id, bucket_start):
+    with get_db_conn() as conn:
+        row = conn.execute(
+            '''
+            SELECT *
+            FROM short_memories
+            WHERE config_id = ? AND bucket_start = ?
+            LIMIT 1
+            ''',
+            (config_id, bucket_start),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_recent_short_memories(config_id, limit=2):
+    with get_db_conn() as conn:
+        rows = conn.execute(
+            '''
+            SELECT bucket_start, bucket_end, symbol, config_id, market_summary, position_summary,
+                   source_summary_count, source_position_count, created_at
+            FROM short_memories
+            WHERE config_id = ?
+            ORDER BY bucket_start DESC
+            LIMIT ?
+            ''',
+            (config_id, int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_pending_short_memory_data(config_id, bucket_start, bucket_end):
+    with get_db_conn() as conn:
+        summaries = conn.execute(
+            '''
+            SELECT timestamp, content, strategy_logic
+            FROM summaries
+            WHERE config_id = ? AND timestamp >= ? AND timestamp < ?
+            ORDER BY id ASC
+            ''',
+            (config_id, bucket_start, bucket_end),
+        ).fetchall()
+        positions = conn.execute(
+            '''
+            SELECT *
+            FROM position_history
+            WHERE config_id = ?
+              AND COALESCE(close_time, open_time, created_at) >= ?
+              AND COALESCE(close_time, open_time, created_at) < ?
+            ORDER BY COALESCE(close_time, open_time, created_at) ASC
+            ''',
+            (config_id, bucket_start, bucket_end),
+        ).fetchall()
+        return {
+            "summaries": [dict(row) for row in summaries],
+            "positions": [dict(row) for row in positions],
+        }
+
+
+def get_recent_position_events(config_id, hours=4, limit=20):
+    cutoff = (datetime.now(TZ_CN) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        rows = conn.execute(
+            '''
+            SELECT *
+            FROM position_history
+            WHERE config_id = ?
+              AND COALESCE(close_time, open_time, created_at) >= ?
+            ORDER BY COALESCE(close_time, open_time, created_at) DESC
+            LIMIT ?
+            ''',
+            (config_id, cutoff, int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
 def get_history_pnl_stats(symbol, config_id='ALL'):
     """获取标的的盈亏统计，整合实盘和模拟盘数据"""
     with get_db_conn() as conn:
@@ -975,7 +1330,27 @@ def get_history_pnl_stats(symbol, config_id='ALL'):
                 from config import config as global_config
                 cfg = global_config.get_config_by_id(config_id)
                 if cfg and cfg.get('mode', '').upper() == 'REAL':
-                    trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol LIKE ? AND realized_pnl IS NOT NULL AND realized_pnl != 0", (symbol + '%',)).fetchall()
+                    trades = c.execute(
+                        """
+                        SELECT realized_pnl FROM trade_history
+                        WHERE symbol LIKE ?
+                          AND config_id = ?
+                          AND realized_pnl IS NOT NULL
+                          AND realized_pnl != 0
+                        """,
+                        (symbol + '%', config_id),
+                    ).fetchall()
+                    if not trades:
+                        trades = c.execute(
+                            """
+                            SELECT realized_pnl FROM trade_history
+                            WHERE symbol LIKE ?
+                              AND config_id IS NULL
+                              AND realized_pnl IS NOT NULL
+                              AND realized_pnl != 0
+                            """,
+                            (symbol + '%',),
+                        ).fetchall()
                     realized_pnls.extend([t['realized_pnl'] for t in trades])
             except Exception:
                 pass
@@ -1070,7 +1445,10 @@ def get_config_dependency_counts(config_id: str):
             "orders",
             "summaries",
             "token_usage",
+            "trade_history",
             "daily_summaries",
+            "short_memories",
+            "position_history",
         ]
         counts = {}
         for table in tables:
@@ -1167,8 +1545,20 @@ def purge_config_all_data(config_id: str):
                 "DELETE FROM token_usage WHERE config_id = ?",
                 (config_id,),
             ).rowcount,
+            "trade_history_deleted": c.execute(
+                "DELETE FROM trade_history WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
             "daily_summaries_deleted": c.execute(
                 "DELETE FROM daily_summaries WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "short_memories_deleted": c.execute(
+                "DELETE FROM short_memories WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "position_history_deleted": c.execute(
+                "DELETE FROM position_history WHERE config_id = ?",
                 (config_id,),
             ).rowcount,
         }

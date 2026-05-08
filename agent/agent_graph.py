@@ -26,7 +26,7 @@ from utils.logger import setup_logger
 from utils.prompt_utils import resolve_prompt_template, render_prompt
 
 import database
-from database import get_daily_summaries
+from database import get_daily_summaries, get_recent_short_memories
 from utils.market_data import MarketTool
 from config import config as global_config
 
@@ -37,6 +37,8 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_HISTORY_DAYS = 5
 DEFAULT_DAILY_SUMMARY_PROMPT_FILE = "daily_summary.txt"
+DEFAULT_STRATEGY_SUMMARY_PROMPT_FILE = "strategy_summary.txt"
+DEFAULT_SHORT_MEMORY_PROMPT_FILE = "short_memory.txt"
 
 
 def _read_prompt_file(prompt_file: str) -> str:
@@ -73,6 +75,26 @@ def _resolve_daily_summary_prompt(agent_config: dict) -> str:
         or agent_config.get("daily_summary_prompt_file")
         or os.getenv("DAILY_SUMMARY_PROMPT_FILE")
         or DEFAULT_DAILY_SUMMARY_PROMPT_FILE
+    )
+    return _read_prompt_file(prompt_file)
+
+
+def _resolve_strategy_summary_prompt(agent_config: dict) -> str:
+    summarizer_cfg = agent_config.get("summarizer", {})
+    prompt_file = (
+        summarizer_cfg.get("strategy_prompt_file")
+        or os.getenv("STRATEGY_SUMMARY_PROMPT_FILE")
+        or DEFAULT_STRATEGY_SUMMARY_PROMPT_FILE
+    )
+    return _read_prompt_file(prompt_file)
+
+
+def _resolve_short_memory_prompt(agent_config: dict) -> str:
+    summarizer_cfg = agent_config.get("summarizer", {})
+    prompt_file = (
+        summarizer_cfg.get("short_memory_prompt_file")
+        or os.getenv("SHORT_MEMORY_PROMPT_FILE")
+        or DEFAULT_SHORT_MEMORY_PROMPT_FILE
     )
     return _read_prompt_file(prompt_file)
 
@@ -231,6 +253,146 @@ def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
         return False
 
 
+def _format_position_events_for_memory(events):
+    lines = []
+    for event in events:
+        ts = event.get("close_time") or event.get("open_time") or event.get("created_at") or ""
+        parts = [
+            f"[{ts}]",
+            str(event.get("event_type") or ""),
+            str(event.get("side") or ""),
+            f"amount={event.get('amount', 0)}",
+            f"entry={event.get('entry_price', 0)}",
+        ]
+        if event.get("close_price"):
+            parts.append(f"close={event.get('close_price')}")
+        if event.get("realized_pnl") is not None:
+            parts.append(f"pnl={event.get('realized_pnl')}")
+        if event.get("order_id"):
+            parts.append(f"order={event.get('order_id')}")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+def format_short_memory_text(memories):
+    if not memories:
+        return "(暂无短期记忆)"
+    entries = []
+    for item in memories:
+        header = (
+            f"[{item.get('bucket_start')} ~ {item.get('bucket_end')}] "
+            f"analysis={item.get('source_summary_count', 0)}, "
+            f"positions={item.get('source_position_count', 0)}"
+        )
+        entries.append(
+            f"{header}\n"
+            f"市场: {item.get('market_summary') or '无'}\n"
+            f"仓位: {item.get('position_summary') or '无'}"
+        )
+    return "\n\n".join(entries)
+
+
+def generate_short_memory_for_config(config_id: str, bucket_start: str, bucket_end: str) -> bool:
+    from database import (
+        get_pending_short_memory_data,
+        get_recent_short_memories,
+        get_short_memory,
+        save_short_memory,
+    )
+
+    if get_short_memory(config_id, bucket_start):
+        return True
+
+    target_config = global_config.get_config_by_id(config_id)
+    if not target_config:
+        logger.error(f"Config ID {config_id} not found for short memory.")
+        return False
+    if not target_config.get("enabled", True):
+        logger.info(f"Skip short memory for disabled config: {config_id}")
+        return False
+
+    data = get_pending_short_memory_data(config_id, bucket_start, bucket_end)
+    summary_rows = data.get("summaries", [])
+    position_rows = data.get("positions", [])
+
+    if not summary_rows and not position_rows:
+        previous = get_recent_short_memories(config_id, limit=1)
+        if previous:
+            save_short_memory(
+                bucket_start,
+                bucket_end,
+                target_config.get("symbol", "Unknown"),
+                config_id,
+                f"No new analysis in this 4h bucket. Previous market memory still applies: {previous[0].get('market_summary', '')}",
+                f"No new position events in this 4h bucket. Previous position memory still applies: {previous[0].get('position_summary', '')}",
+                0,
+                0,
+                fingerprint="no-change",
+            )
+            return True
+        save_short_memory(
+            bucket_start,
+            bucket_end,
+            target_config.get("symbol", "Unknown"),
+            config_id,
+            "No new analysis in this 4h bucket.",
+            "No new position events in this 4h bucket.",
+            0,
+            0,
+            fingerprint="empty",
+        )
+        return True
+
+    analysis_text = "\n".join(
+        f"[{row.get('timestamp')}] {row.get('strategy_logic') or row.get('content') or ''}"
+        for row in summary_rows
+    )
+    position_text = _format_position_events_for_memory(position_rows)
+    content = (
+        f"Window: {bucket_start} ~ {bucket_end}\n"
+        f"Symbol: {target_config.get('symbol', 'Unknown')}\n"
+        f"Config: {config_id}\n\n"
+        f"Recent market analysis:\n{analysis_text or '(none)'}\n\n"
+        f"Recent position events:\n{position_text or '(none)'}"
+    )
+
+    prompt_template = _resolve_short_memory_prompt(target_config)
+    summary_text = summarize_content(
+        content,
+        target_config,
+        prompt_template=prompt_template,
+        prompt_context={
+            "bucket_start": bucket_start,
+            "bucket_end": bucket_end,
+            "symbol": target_config.get("symbol", "Unknown"),
+            "config_id": config_id,
+            "source_summary_count": len(summary_rows),
+            "source_position_count": len(position_rows),
+        },
+    )
+
+    parts = re.split(r"\n\s*---+\s*\n", summary_text, maxsplit=1)
+    if len(parts) == 2:
+        market_summary, position_summary = parts[0].strip(), parts[1].strip()
+    else:
+        market_summary = summary_text.strip()
+        position_summary = "See market summary; no separate position section was returned."
+
+    fingerprint = f"summaries:{len(summary_rows)}|positions:{len(position_rows)}"
+    save_short_memory(
+        bucket_start,
+        bucket_end,
+        target_config.get("symbol", "Unknown"),
+        config_id,
+        market_summary,
+        position_summary,
+        len(summary_rows),
+        len(position_rows),
+        fingerprint=fingerprint,
+    )
+    return True
+
+
 # ==========================================
 # 2. Nodes
 # ==========================================
@@ -285,6 +447,8 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
         history_days = int(agent_config.get('history_days', DEFAULT_HISTORY_DAYS))
         daily_history = get_daily_summaries(config_id, days=history_days)
+        short_memory_limit = int(agent_config.get("short_memory_limit", 2) or 2)
+        short_memories = get_recent_short_memories(config_id, limit=short_memory_limit)
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
@@ -301,6 +465,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
             'real_positions': []
         }
         daily_history = []
+        short_memories = []
 
     if is_real_exec:
         try:
@@ -313,7 +478,8 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 
             recent_trades = market_tool.fetch_recent_trades(symbol, limit=10)
             if recent_trades:
-                database.save_trade_history(recent_trades)
+                database.save_trade_history(recent_trades, config_id=config_id)
+            database.sync_real_position_history(config_id, symbol, positions=positions, trades=recent_trades or [])
         except Exception as e:
             logger.error(f"❌ Failed to save real-time stats: {e}")
 
@@ -381,11 +547,16 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
     else:
         formatted_history_text = "(暂无历史记录)"
 
+    formatted_short_memory_text = format_short_memory_text(short_memories)
+
     next_run_time = calculate_next_run_time(agent_config, now_cn)
 
     positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
     prompt_template = resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger)
     leverage = global_config.get_leverage(config_id)
+    history_text_for_prompt = formatted_history_text
+    if "{short_memory_text" not in prompt_template:
+        history_text_for_prompt = f"{formatted_short_memory_text}\n\n{formatted_history_text}"
 
     if is_real_exec:
         raw_orders = account_data.get('real_open_orders', [])
@@ -431,7 +602,8 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         positions_text=positions_text,
         orders_text=orders_friendly_text,
         formatted_market_data=formatted_market_data,
-        history_text=formatted_history_text,
+        short_memory_text=formatted_short_memory_text,
+        history_text=history_text_for_prompt,
         dca_period_text=dca_period_text,
         dca_budget=dca_budget
     )
@@ -654,7 +826,8 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     if final_full_content:
         # 汇总逻辑仅针对主要内容
         logic_source = full_content if full_content else final_full_content
-        strategy_logic = summarize_content(logic_source, agent_config)
+        strategy_prompt_template = _resolve_strategy_summary_prompt(agent_config)
+        strategy_logic = summarize_content(logic_source, agent_config, prompt_template=strategy_prompt_template)
         
         processed_content = escape_markdown_special_chars(final_full_content)
         processed_strategy_logic = escape_markdown_special_chars(strategy_logic)

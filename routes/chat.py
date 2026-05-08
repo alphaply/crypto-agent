@@ -36,6 +36,8 @@ def chat_bootstrap():
 
     configs = []
     for cfg in global_config.get_all_symbol_configs():
+        if not cfg.get("enabled", True):
+            continue
         configs.append(
             {
                 "config_id": cfg.get("config_id", ""),
@@ -63,6 +65,9 @@ def create_chat_session_api():
     cfg = global_config.get_config_by_id(config_id)
     if not cfg:
         return jsonify({"success": False, "message": "配置不存在"}), 404
+
+    if not cfg.get("enabled", True):
+        return jsonify({"success": False, "message": "config disabled"}), 403
 
     session_id = uuid.uuid4().hex
     symbol = cfg.get("symbol", "")

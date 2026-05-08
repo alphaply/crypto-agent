@@ -25,6 +25,15 @@ DCA_STATS_CACHE = {}
 DCA_STATS_CACHE_TTL = 300
 
 
+def _enabled_configs():
+    return [cfg for cfg in global_config.get_all_symbol_configs() if cfg.get('enabled', True)]
+
+
+def _is_enabled_config(config_id):
+    cfg = global_config.get_config_by_id(config_id)
+    return bool(cfg and cfg.get('enabled', True))
+
+
 def _resolve_symbol(default_symbol='BTC/USDT'):
     raw = (request.args.get('symbol') or '').strip()
     return raw or default_symbol
@@ -206,7 +215,7 @@ def calculate_dca_stats(config_id, force_sync=False):
         try:
             trades = mt.exchange.fetch_my_trades(symbol, limit=1000)
             if trades:
-                save_trade_history(trades)
+                save_trade_history(trades, config_id=config_id)
         except Exception as trade_error:
             logger.warning(f"Fetch my_trades failed for {symbol}: {trade_error}")
 
@@ -288,7 +297,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
     try:
         with get_db_conn() as conn:
             # 1. 获取该币种下配置的所有 Agent
-            configs = global_config.get_all_symbol_configs()
+            configs = _enabled_configs()
             symbol_configs = [conf for conf in configs if conf['symbol'] == symbol]
             
             agent_summaries = []
@@ -362,7 +371,7 @@ def index():
 
     # ... (rest of the route logic)
     # 获取配置的币种列表
-    configs = global_config.get_all_symbol_configs()
+    configs = _enabled_configs()
     seen = set()
     symbols = []
     for c in configs:
@@ -407,7 +416,7 @@ def history_view():
 
     try:
         symbol_configs = [
-            cfg for cfg in global_config.get_all_symbol_configs()
+            cfg for cfg in _enabled_configs()
             if cfg.get('symbol') == symbol and cfg.get('config_id')
         ]
         config_map = {cfg.get('config_id'): cfg for cfg in symbol_configs}
@@ -415,10 +424,26 @@ def history_view():
             agent_filter = 'ALL'
 
         summaries = get_paginated_summaries(symbol, page, per_page, config_id=agent_filter)
-        total_count = get_summary_count(symbol, config_id=agent_filter)
+        allowed_ids = set(config_map.keys())
+        summaries = [s for s in summaries if s.get('config_id') in allowed_ids]
+        if agent_filter == 'ALL':
+            total_count = sum(get_summary_count(symbol, config_id=cid) for cid in allowed_ids)
+        else:
+            total_count = get_summary_count(symbol, config_id=agent_filter)
         total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
         active_agents = [aid for aid in get_active_agents(symbol) if aid in config_map]
-        pnl_stats = get_history_pnl_stats(symbol, config_id=agent_filter)
+        if agent_filter == 'ALL':
+            pnl_stats = {"total_trades": 0, "total_pnl": 0, "win_rate": 0, "win_count": 0, "lose_count": 0}
+            for cid in allowed_ids:
+                one = get_history_pnl_stats(symbol, config_id=cid)
+                pnl_stats["total_trades"] += one.get("total_trades", 0)
+                pnl_stats["total_pnl"] += one.get("total_pnl", 0)
+                pnl_stats["win_count"] += one.get("win_count", 0)
+                pnl_stats["lose_count"] += one.get("lose_count", 0)
+            decided = pnl_stats["win_count"] + pnl_stats["lose_count"]
+            pnl_stats["win_rate"] = (pnl_stats["win_count"] / decided * 100) if decided else 0
+        else:
+            pnl_stats = get_history_pnl_stats(symbol, config_id=agent_filter)
         
         # 获取模拟账本信息与资金曲线
         mock_config_id = agent_filter if agent_filter != 'ALL' else ""
@@ -646,7 +671,7 @@ def public_stats_view():
     if symbol_redirect:
         return symbol_redirect
 
-    configs = global_config.get_all_symbol_configs()
+    configs = _enabled_configs()
     seen = set()
     symbols = []
     for c in configs:
@@ -664,6 +689,8 @@ def get_orders_api():
     per_page = int(request.args.get('per_page', 20))
     if not config_id:
         return jsonify({"success": False, "message": "Missing config_id"})
+    if not _is_enabled_config(config_id):
+        return jsonify({"success": False, "message": "config disabled"}), 404
     
     orders, total = get_paginated_orders(config_id, page, per_page)
     return jsonify({
@@ -681,5 +708,7 @@ def get_daily_summaries_api():
     days = int(request.args.get('days', 5))
     if not config_id:
         return jsonify({"success": False, "message": "Missing config_id"})
+    if not _is_enabled_config(config_id):
+        return jsonify({"success": False, "message": "config disabled"}), 404
     data = get_daily_summaries(config_id, days=days)
     return jsonify({"success": True, "daily_summaries": data})

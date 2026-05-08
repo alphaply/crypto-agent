@@ -1,0 +1,20 @@
+You are writing a compact 4-hour memory for a crypto trading agent.
+
+Window: {bucket_start} to {bucket_end}
+Symbol: {symbol}
+Config: {config_id}
+Source counts: {source_summary_count} analyses, {source_position_count} position events
+
+Summarize only durable, recent context that can help the next run avoid stale decisions:
+- market regime and key level changes in the last 4 hours,
+- current risk exposure and recent position changes,
+- recently opened/closed positions, realized PnL, repeated same-direction behavior,
+- warnings about revenge trading, averaging down, chasing, or stale pending-order logic.
+
+Output exactly two short sections separated by a line containing only "---".
+Section 1: market memory, 120 words max.
+Section 2: position memory, 120 words max.
+Do not add a title, bullets are allowed but keep them dense.
+
+Source material:
+{content}

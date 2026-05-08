@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import pytz
 import os
 from dotenv import load_dotenv
-from agent.agent_graph import run_agent_for_config, summarize_content, generate_manual_daily_summary
+from agent.agent_graph import run_agent_for_config, summarize_content, generate_manual_daily_summary, generate_short_memory_for_config
 from utils.market_data import MarketTool
 from utils.logger import setup_logger
 from config import config as global_config
@@ -23,6 +23,7 @@ logger = setup_logger("MainScheduler")
 _last_run_times = {}
 # 防止每日汇总任务在同一天重复执行
 _daily_summary_done_date = None
+_short_memory_done_buckets = set()
 
 
 def normalize_dca_freq(raw_freq):
@@ -215,6 +216,43 @@ def run_daily_summary_job():
     logger.info(f"📅 [DailySummary] {yesterday} 全部汇总完成")
 
 
+def _floor_4h(dt):
+    hour = (dt.hour // 4) * 4
+    return dt.replace(hour=hour, minute=0, second=0, microsecond=0)
+
+
+def run_short_memory_job():
+    """Build one short-memory record for the last completed 4h bucket."""
+    now = datetime.now(TZ_CN)
+    if now.minute != 0 or now.hour % 4 != 0:
+        return
+
+    bucket_end_dt = _floor_4h(now)
+    bucket_start_dt = bucket_end_dt - timedelta(hours=4)
+    bucket_key = bucket_start_dt.strftime('%Y-%m-%d %H:%M:%S')
+    if bucket_key in _short_memory_done_buckets:
+        return
+
+    bucket_start = bucket_start_dt.strftime('%Y-%m-%d %H:%M:%S')
+    bucket_end = bucket_end_dt.strftime('%Y-%m-%d %H:%M:%S')
+    logger.info(f"[ShortMemory] Building 4h memories for {bucket_start} ~ {bucket_end}")
+
+    configs = [c for c in global_config.get_all_symbol_configs() if c.get('enabled', True)]
+    for config in configs:
+        config_id = config.get('config_id')
+        if not config_id:
+            continue
+        try:
+            generate_short_memory_for_config(config_id, bucket_start, bucket_end)
+        except Exception as e:
+            logger.error(f"[ShortMemory] Failed for {config_id}: {e}")
+
+    _short_memory_done_buckets.add(bucket_key)
+    if len(_short_memory_done_buckets) > 24:
+        for old in sorted(_short_memory_done_buckets)[:-24]:
+            _short_memory_done_buckets.discard(old)
+
+
 def run_smart_scheduler():
     logger.info("--- [系统] 智能调度器启动 (1分钟高频心跳模式) ---")
 
@@ -240,6 +278,7 @@ def run_smart_scheduler():
 
             # 3. 每日汇总检查（00:00 时执行）
             run_daily_summary_job()
+            run_short_memory_job()
 
             # 4. 执行任务
             job()

@@ -8,6 +8,15 @@ from utils.indicators import calc_ema
 
 stats_bp = Blueprint('stats', __name__)
 
+
+def _is_enabled_config(config_id):
+    cfg = global_config.get_config_by_id(config_id)
+    return bool(cfg and cfg.get('enabled', True))
+
+
+def _has_enabled_symbol(symbol):
+    return any(c.get('symbol') == symbol and c.get('enabled', True) for c in global_config.get_all_symbol_configs())
+
 @stats_bp.route('/api/stats/tokens', methods=['GET'])
 def get_token_stats():
     """获取 Token 消耗统计 (公开)"""
@@ -158,6 +167,8 @@ def delete_pricing():
 def get_financial_stats():
     """公开的财务统计接口"""
     symbol = request.args.get('symbol', 'BTC/USDT')
+    if not _has_enabled_symbol(symbol):
+        return jsonify({"success": False, "message": "symbol disabled"}), 404
     try:
         conn = sqlite3.connect(DB_NAME)
         conn.row_factory = sqlite3.Row
@@ -223,6 +234,8 @@ def get_agent_stats(config_id):
         from database import get_agent_trade_stats
         from config import config as global_config
         from routes.main import calculate_dca_stats
+        if not _is_enabled_config(config_id):
+            return jsonify({"success": False, "message": "config disabled"}), 404
         
         # 基础成交统计 (所有模式)
         stats = get_agent_trade_stats(config_id)
@@ -362,7 +375,7 @@ def _fetch_real_position_data(mt, symbol, cfg):
     try:
         raw_trades = mt.exchange.fetch_my_trades(symbol, limit=100)
         if raw_trades:
-            save_trade_history(raw_trades)
+            save_trade_history(raw_trades, config_id=cfg.get('config_id'))
 
             # 聚合相同 order_id 的成交 (解决分批成交导致的“乱”)
             aggregated = {}
@@ -555,6 +568,8 @@ def get_position_stats(config_id):
         cfg = global_config.get_config_by_id(config_id)
         if not cfg:
             return jsonify({"success": False, "message": f"未找到配置: {config_id}"})
+        if not cfg.get('enabled', True):
+            return jsonify({"success": False, "message": "config disabled"}), 404
 
         mode = cfg.get('mode', 'STRATEGY').upper()
         symbol = cfg.get('symbol')
@@ -610,7 +625,7 @@ def get_equity_compare():
     symbol = request.args.get('symbol', 'BTC/USDT')
     raw_ids = request.args.get('config_ids', '').strip()
 
-    configs = [c for c in global_config.get_all_symbol_configs() if c.get('symbol') == symbol]
+    configs = [c for c in global_config.get_all_symbol_configs() if c.get('symbol') == symbol and c.get('enabled', True)]
     if raw_ids:
         wanted = {x.strip() for x in raw_ids.split(',') if x.strip()}
         configs = [c for c in configs if c.get('config_id') in wanted]
@@ -692,6 +707,8 @@ def get_kline_data(config_id):
     cfg = global_config.get_config_by_id(config_id)
     if not cfg:
         return jsonify({"success": False, "message": f"未找到配置: {config_id}"}), 404
+    if not cfg.get('enabled', True):
+        return jsonify({"success": False, "message": "config disabled"}), 404
 
     symbol = cfg.get('symbol')
     mode = (cfg.get('mode') or 'STRATEGY').upper()

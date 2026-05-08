@@ -1,0 +1,13 @@
+Compress the following trading analysis into a neutral market-state memory, 150 words max.
+
+Keep objective market structure only:
+- dominant 1d/4h/1h trend and whether it is trending or ranging,
+- key invalidation levels for bullish and bearish ideas,
+- current market regime: trend continuation, reversal, range, or high-volatility uncertainty,
+- explicit risk reminders for repeated averaging, counter-trend entries, chasing, or whipsaw.
+
+Do not preserve stale trade intent such as "continue buying dips", "keep adding", or "maintain the old strategy" unless the current data independently confirms it.
+Return only the compressed text.
+
+Content:
+{content}

@@ -11,6 +11,8 @@ wheels/
 .venv
 agent/prompts/*
 !agent/prompts/daily_summary.txt
+!agent/prompts/short_memory.txt
+!agent/prompts/strategy_summary.txt
 # Local runtime database
 trading_data.db
 chat_checkpoints.sqlite
