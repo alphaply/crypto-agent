@@ -19,10 +19,37 @@ class ApiAccessTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("summary", response.json())
 
+    def test_public_history_is_open(self):
+        response = self.client.get("/api/public/history", params={"symbol": "BTC/USDT"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("summaries", response.json())
+
+    def test_public_daily_summaries_is_open(self):
+        response = self.client.get("/api/public/daily-summaries", params={"symbol": "BTC/USDT"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("daily_summaries", response.json())
+
     def test_protected_routes_require_auth(self):
-        for path in ("/api/stats/tokens", "/api/config"):
+        for path in ("/api/stats/tokens", "/api/config", "/api/history/daily-summaries/generate"):
             with self.subTest(path=path):
-                response = self.client.get(path)
+                if path.endswith("/generate"):
+                    response = self.client.post(path, json={"config_id": "missing", "date": "2026-05-06"})
+                else:
+                    response = self.client.get(path)
+                self.assertEqual(response.status_code, 401)
+
+    def test_daily_summary_writes_require_auth(self):
+        checks = [
+            ("put", "/api/history/daily-summaries", {"date": "2026-05-06", "config_id": "missing", "summary": ""}),
+            ("delete", "/api/history/daily-summaries", {"date": "2026-05-06", "config_id": "missing"}),
+            ("post", "/api/history/clean", {"symbol": "BTC/USDT"}),
+        ]
+        for method, path, body in checks:
+            with self.subTest(path=path):
+                if method == "delete":
+                    response = self.client.request("DELETE", path, json=body)
+                else:
+                    response = getattr(self.client, method)(path, json=body)
                 self.assertEqual(response.status_code, 401)
 
     def test_login_unlocks_config(self):

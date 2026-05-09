@@ -3,7 +3,6 @@ import {
   Alert,
   Button,
   Card,
-  Collapse,
   Empty,
   Input,
   List,
@@ -14,6 +13,7 @@ import {
   Typography,
 } from 'antd';
 import MarkdownBlock from '../components/MarkdownBlock';
+import ReasoningBlock, { splitThinkingContent } from '../components/ReasoningBlock';
 import { api, streamSse } from '../lib/api';
 import { usePreferences } from '../app/preferences';
 
@@ -30,26 +30,18 @@ function normalizeAssistantDraft(draft) {
 
 function MessageBubble({ message }) {
   const { t } = usePreferences();
+  const normalized = splitThinkingContent(message.content || '', message.reasoning_content || '');
+  const roleMap = { user: t('roleUser'), assistant: t('roleAssistant'), tool: t('roleTool'), system: t('roleSystem') };
+  const roleLabel = roleMap[message.role] || message.role;
 
   return (
     <div className={`chat-bubble ${message.role}`}>
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
         <Text strong className="chat-role">
-          {message.role}
+          {roleLabel}
         </Text>
-        <MarkdownBlock content={message.content || '(empty)'} />
-        {message.reasoning_content ? (
-          <Collapse
-            ghost
-            items={[
-              {
-                key: 'reasoning',
-                label: t('strategyLogic'),
-                children: <MarkdownBlock content={message.reasoning_content} />,
-              },
-            ]}
-          />
-        ) : null}
+        <MarkdownBlock content={normalized.content || '(empty)'} />
+        <ReasoningBlock title={t('reasoning')} content={normalized.reasoning} />
       </Space>
     </div>
   );
@@ -253,7 +245,7 @@ export default function ChatPage({ token }) {
               {t('chat')}
             </Title>
             <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Streamed tool-aware chat with markdown rendering and approval checkpoints.
+              {t('chatPageDesc')}
             </Paragraph>
           </div>
           <Space wrap>
@@ -342,7 +334,7 @@ export default function ChatPage({ token }) {
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 rows={5}
-                placeholder="Ask the agent about the selected config..."
+                placeholder={t('chatPlaceholder')}
               />
               <Button type="primary" onClick={handleSend} loading={streaming}>
                 {t('send')}

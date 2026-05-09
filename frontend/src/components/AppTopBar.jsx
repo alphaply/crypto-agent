@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { BulbOutlined, GlobalOutlined, MenuOutlined } from '@ant-design/icons';
-import { Button, Drawer, Grid, Segmented, Space, Typography } from 'antd';
+import { Button, Drawer, Grid, Segmented, Select, Space, Typography } from 'antd';
 import { usePreferences } from '../app/preferences';
+import { api } from '../lib/api';
 
 const { useBreakpoint } = Grid;
 
@@ -42,6 +43,29 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions }) {
   const screens = useBreakpoint();
   const isMobile = !screens.lg;
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [symbols, setSymbols] = useState([]);
+  const { selectedSymbol, setSelectedSymbol, t } = usePreferences();
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadSymbols() {
+      try {
+        const response = await api.get('/public/dashboard', { params: selectedSymbol ? { symbol: selectedSymbol } : {} });
+        if (!mounted) return;
+        const nextSymbols = response.data.symbols || [];
+        setSymbols(nextSymbols);
+        if (!selectedSymbol && response.data.current_symbol) {
+          setSelectedSymbol(response.data.current_symbol);
+        }
+      } catch {
+        if (mounted) setSymbols([]);
+      }
+    }
+    loadSymbols();
+    return () => {
+      mounted = false;
+    };
+  }, [selectedSymbol, setSelectedSymbol]);
 
   const navButtons = useMemo(
     () =>
@@ -75,6 +99,16 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions }) {
               {navButtons}
             </Space>
             <Space className="app-topbar__actions" wrap size="middle">
+              {symbols.length ? (
+                <Select
+                  className="topbar-symbol"
+                  size="small"
+                  value={selectedSymbol || undefined}
+                  onChange={setSelectedSymbol}
+                  options={symbols.map((item) => ({ label: item, value: item }))}
+                  placeholder={t('symbol')}
+                />
+              ) : null}
               <PreferenceControls />
               {actions}
             </Space>
@@ -82,22 +116,12 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions }) {
         ) : (
           <Space size="small">
             <PreferenceControls compact />
-            <Button
-              className="app-topbar__menu"
-              icon={<MenuOutlined />}
-              onClick={() => setDrawerOpen(true)}
-            />
+            <Button className="app-topbar__menu" icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)} />
           </Space>
         )}
       </header>
 
-      <Drawer
-        placement="right"
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        width={280}
-        title="Crypto Agent"
-      >
+      <Drawer placement="right" open={drawerOpen} onClose={() => setDrawerOpen(false)} width={280} title={t('brand')}>
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <Space direction="vertical" style={{ width: '100%' }}>
             {items.map((item) => (

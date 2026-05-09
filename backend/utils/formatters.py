@@ -118,8 +118,28 @@ def format_market_data_to_text(data: dict) -> str:
 
     # ========== 按周期组织技术指标 ==========
     indicators = data.get("technical_indicators") or {}
-    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
     available_tfs = [tf for tf in tf_order if tf in indicators]
+
+    monthly = indicators.get('1M', {})
+    weekly = indicators.get('1w', {})
+    if monthly and weekly:
+        monthly_trend = monthly.get('trend', {})
+        weekly_trend = weekly.get('trend', {})
+        monthly_status = monthly_trend.get('status', 'N/A')
+        weekly_status = weekly_trend.get('status', 'N/A')
+        monthly_adx = monthly_trend.get('adx', 0)
+        weekly_adx = weekly_trend.get('adx', 0)
+        if 'Downtrend' in str(monthly_status) and 'Downtrend' in str(weekly_status):
+            macro_label = "Macro bearish: monthly and weekly trends both point down; avoid fighting the trend."
+        elif 'Uptrend' in str(monthly_status) and 'Uptrend' in str(weekly_status):
+            macro_label = "Macro bullish: monthly and weekly trends both point up; long bias has trend support."
+        else:
+            macro_label = "Macro mixed: monthly and weekly trends disagree; reduce confidence and wait for confirmation."
+        output.append("[Macro Trend]")
+        output.append(f"- 1M={monthly_status} (ADX={monthly_adx}) | 1w={weekly_status} (ADX={weekly_adx})")
+        output.append(f"- {macro_label}")
+        output.append("")
     
     if not available_tfs:
         output.append("【技术指标】")
@@ -218,7 +238,7 @@ def format_market_data_to_markdown(data: dict) -> str:
     
     rows = []
     indicators = data.get("technical_indicators", {})
-    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+    tf_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
     available_tfs = [tf for tf in tf_order if tf in indicators]
     
     for tf in available_tfs:

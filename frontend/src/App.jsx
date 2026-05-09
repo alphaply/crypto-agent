@@ -11,6 +11,7 @@ const PublicUsagePage = lazy(() => import('./pages/PublicPage'));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
+const SetupPage = lazy(() => import('./pages/SetupPage'));
 
 function SuspenseFallback() {
   return (
@@ -38,12 +39,13 @@ function PublicShell({ authenticated, onLogout }) {
   const items = useMemo(
     () => [
       { key: '/', label: t('publicDashboard') },
+      { key: '/history', label: t('history') },
       { key: '/usage', label: t('usage') },
     ],
     [t],
   );
 
-  const activeKey = location.pathname === '/usage' ? '/usage' : '/';
+  const activeKey = location.pathname === '/usage' ? '/usage' : location.pathname === '/history' ? '/history' : '/';
 
   const actions = (
     <Space wrap>
@@ -108,6 +110,8 @@ export default function App() {
   const navigate = useNavigate();
   const [token, setToken] = useState(() => localStorage.getItem('crypto-agent-token') || '');
   const [bootstrapping, setBootstrapping] = useState(true);
+  const [setupStatus, setSetupStatus] = useState(null);
+  const [setupLoading, setSetupLoading] = useState(true);
 
   useEffect(() => {
     setApiToken(token);
@@ -120,6 +124,24 @@ export default function App() {
 
   useEffect(() => {
     let mounted = true;
+    async function loadSetupStatus() {
+      try {
+        const response = await api.get('/setup/status');
+        if (mounted) setSetupStatus(response.data);
+      } catch {
+        if (mounted) setSetupStatus({ required: false });
+      } finally {
+        if (mounted) setSetupLoading(false);
+      }
+    }
+    loadSetupStatus();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
     async function bootstrap() {
       if (!token) {
         setBootstrapping(false);
@@ -127,7 +149,7 @@ export default function App() {
       }
       try {
         await api.get('/auth/me');
-      } catch (_) {
+      } catch {
         if (mounted) {
           setToken('');
         }
@@ -154,11 +176,24 @@ export default function App() {
     navigate('/');
   };
 
+  if (setupLoading) {
+    return <SuspenseFallback />;
+  }
+
+  if (setupStatus?.required) {
+    return (
+      <Suspense fallback={<SuspenseFallback />}>
+        <SetupPage status={setupStatus} onComplete={(next) => setSetupStatus((prev) => ({ ...prev, ...next }))} />
+      </Suspense>
+    );
+  }
+
   return (
     <Routes>
       <Route path="/public" element={<Navigate to="/" replace />} />
       <Route element={<PublicShell authenticated={Boolean(token)} onLogout={handleLogout} />}>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/history" element={<HistoryPage />} />
         <Route path="/usage" element={<PublicUsagePage />} />
       </Route>
       <Route

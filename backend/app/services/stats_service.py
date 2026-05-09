@@ -85,8 +85,8 @@ def get_token_stats_payload():
     }
 
 
-def save_pricing_payload(model: str, input_price: float, output_price: float):
-    update_model_pricing(model, input_price, output_price)
+def save_pricing_payload(model: str, input_price: float, output_price: float, currency: str = "USD"):
+    update_model_pricing(model, input_price, output_price, currency or "USD")
     return {"message": "Pricing updated."}
 
 
@@ -449,7 +449,7 @@ def get_position_stats_payload(config_id: str):
 
 
 def get_equity_compare_payload(symbol: str, config_ids: str = ""):
-    configs = [cfg for cfg in global_config.get_all_symbol_configs() if cfg.get("symbol") == symbol]
+    configs = [cfg for cfg in global_config.get_all_symbol_configs() if cfg.get("symbol") == symbol and cfg.get("enabled", True)]
     if config_ids:
         wanted = {item.strip() for item in config_ids.split(",") if item.strip()}
         configs = [cfg for cfg in configs if cfg.get("config_id") in wanted]
@@ -496,7 +496,7 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
     return {"symbol": symbol, "series": series}
 
 
-_KLINE_ALLOWED_TF = {"15m", "1h", "4h", "1d"}
+_KLINE_ALLOWED_TF = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}
 
 
 def get_kline_payload(config_id: str, timeframe: str = "1h"):
@@ -509,7 +509,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
     symbol = cfg.get("symbol")
     mode = str(cfg.get("mode") or "STRATEGY").upper()
     mt = MarketTool(config_id=config_id)
-    raw = mt.exchange.fetch_ohlcv(symbol, timeframe, limit=300)
+    fetch_limit = 260 if timeframe in {"1w", "1M"} else 300
+    raw = mt.exchange.fetch_ohlcv(symbol, timeframe, limit=fetch_limit)
     if not raw:
         return {
             "candles": [],
@@ -555,6 +556,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
                         "side": str(current.get("side", "")).upper(),
                         "entry_price": float(current.get("entryPrice", 0)),
                         "amount": float(current.get("contracts", 0)),
+                        "mark_price": float(current.get("markPrice", 0) or 0),
+                        "unrealized_pnl": round(float(current.get("unrealizedPnl", 0) or 0), 4),
                     }
                     positions.append(payload)
             if positions:
@@ -578,6 +581,11 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
                 "stop_loss": float(row["stop_loss"] or 0),
                 "take_profit": float(row["take_profit"] or 0),
             }
+            if candles:
+                current_price = float(candles[-1]["close"])
+                direction = 1 if payload["side"] == "LONG" else -1
+                payload["mark_price"] = current_price
+                payload["unrealized_pnl"] = round((current_price - payload["entry_price"]) * payload["amount"] * direction, 4)
             positions.append(payload)
             if float(row["take_profit"] or 0) > 0:
                 risk_lines.append(

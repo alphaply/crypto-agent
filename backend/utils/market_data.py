@@ -403,7 +403,14 @@ class MarketTool:
         全量获取市场数据的主入口
         """
         if timeframes is None:
-            timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
+            try:
+                from backend.config import config as runtime_config
+
+                timeframes = list(getattr(runtime_config, "market_timeframes", None) or [])
+            except Exception:
+                timeframes = []
+            if not timeframes:
+                timeframes = ['15m', '30m', '1h', '4h', '1d', '1w', '1M']
 
         final_output = {
             "symbol": symbol,
@@ -428,8 +435,10 @@ class MarketTool:
 
     # VP 回看长度按周期自适应
     VP_LENGTH_MAP = {
+        '1M': 24,
         '5m': 576,   # ~2 天
         '15m': 384,  # ~4 天
+        '30m': 360,  # ~7 天
         '1h': 360,   # ~15 天
         '4h': 180,   # ~30 天
         '1d': 120,   # ~4 个月
@@ -446,8 +455,10 @@ class MarketTool:
         """
         try:
             logger.debug(f"    🔍 [{tf}] Fetching OHLCV data for {symbol}...")
-            ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=1000)
-            if not ohlcv or len(ohlcv) < 200:
+            fetch_limit = 60 if tf == '1M' else 1000
+            min_bars = 12 if tf == '1M' else (52 if tf == '1w' else 200)
+            ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=fetch_limit)
+            if not ohlcv or len(ohlcv) < min_bars:
                 logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles (need >= 200)")
                 return None
 

@@ -1,17 +1,59 @@
-# Python-generated files
+# Environment and local secrets
+.env
+.env.*
+.env*
+!.env.template
+pricing.json
+
+# Docker local overrides
+docker-compose.override.yml
+
+# Runtime state
+trading_data.db
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+*.log
+app.log
+
+# Python
 __pycache__/
-*.py[oc]
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 build/
 dist/
 wheels/
-*.egg-info
-.env
-.env copy
-# Virtual environments
-.venv
+*.egg-info/
+.venv/
+venv/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local generated assets
 agent/prompts/*
-# Local runtime database
-trading_data.db
-chat_checkpoints.sqlite
-app.log
-pricing.json
+backend/agent/prompts/*.local

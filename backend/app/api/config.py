@@ -2,12 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from backend.app.core.deps import get_current_user
-from backend.app.schemas.payloads import PromptDeleteRequest, PromptSaveRequest, SaveConfigRequest
+from backend.app.schemas.payloads import FullImportRequest, PromptDeleteRequest, PromptSaveRequest, SaveConfigRequest
 from backend.app.services.config_service import (
     BLOCKED_PROMPT_FILES,
     delete_config_payload,
     delete_prompt_payload,
     export_config_payload,
+    full_export_payload,
+    full_import_payload,
     get_config_dependencies_payload,
     get_raw_config_payload,
     list_prompts_payload,
@@ -32,6 +34,8 @@ def save_config(payload: SaveConfigRequest, _: dict = Depends(get_current_user))
         **save_config_payload(
             payload.globals.model_dump(mode="json"),
             [item.model_dump(mode="json", exclude_none=True) for item in payload.agents],
+            [item.model_dump(mode="json", exclude_none=True) for item in payload.llm_providers],
+            [item.model_dump(mode="json", exclude_none=True) for item in payload.exchange_profiles],
         ),
     }
 
@@ -41,6 +45,24 @@ def export_config(_: dict = Depends(get_current_user)):
     content, filename = export_config_payload()
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return Response(content=content, media_type="application/json", headers=headers)
+
+
+@router.get("/full-export")
+def full_export(include_secrets: bool = Query(default=True), _: dict = Depends(get_current_user)):
+    content, filename = full_export_payload(include_secrets=include_secrets)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=content, media_type="application/json", headers=headers)
+
+
+@router.post("/full-import")
+def full_import(payload: FullImportRequest, _: dict = Depends(get_current_user)):
+    try:
+        result = full_import_payload(data=dict(payload.data), write_env=payload.write_env)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Import failed: {exc}") from exc
+    return {"success": True, **result}
 
 
 @router.get("/prompts")

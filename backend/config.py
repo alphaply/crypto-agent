@@ -33,6 +33,7 @@ class Config:
     global_summarizer_model = ""
     global_summarizer_api_base = ""
     global_summarizer_api_key = ""
+    market_timeframes: List[str] = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
     symbol_configs: List[Dict] = []
     configs_by_id: Dict[str, Dict] = {}
     source = "env"
@@ -86,6 +87,8 @@ class Config:
         self.trading_mode = snapshot.get("trading_mode", "REAL")
         self.global_summarizer_model = snapshot.get("global_summarizer_model", "")
         self.global_summarizer_api_base = snapshot.get("global_summarizer_api_base", "")
+        raw_timeframes = snapshot.get("market_timeframes") or ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+        self.market_timeframes = [str(item).strip() for item in raw_timeframes if str(item).strip()]
         self.source = snapshot.get("source", "env")
 
         self.symbol_configs = self._normalize_symbol_configs(snapshot.get("agents", []))
@@ -106,7 +109,9 @@ class Config:
                 exchange = str(cfg.get("exchange", "binance")).lower()
 
                 if exchange == "okx":
-                    if not cfg.get("api_key") or not cfg.get("secret") or not cfg.get("passphrase"):
+                    okx_key = cfg.get("okx_api_key") or cfg.get("api_key")
+                    okx_secret = cfg.get("okx_secret") or cfg.get("secret")
+                    if not okx_key or not okx_secret or not cfg.get("passphrase"):
                         errors.append(f"{symbol} (OKX) is missing API credentials and no global OKX key is set")
                 else:
                     key = cfg.get("binance_api_key") or cfg.get("api_key")
@@ -141,8 +146,8 @@ class Config:
                 api_key = config.get("binance_api_key") or config.get("api_key")
                 secret = config.get("binance_secret") or config.get("secret")
             else:
-                api_key = config.get("api_key")
-                secret = config.get("secret")
+                api_key = config.get("okx_api_key") or config.get("api_key")
+                secret = config.get("okx_secret") or config.get("secret")
 
             if api_key and secret:
                 if exchange == "okx" and not passphrase:

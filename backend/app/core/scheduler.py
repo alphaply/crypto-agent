@@ -7,7 +7,9 @@ import pytz
 from dotenv import load_dotenv
 
 from backend.agent.agent_graph import (
+    generate_short_memory_for_config,
     generate_manual_daily_summary,
+    get_short_memory_bucket,
     run_agent_for_config,
 )
 from backend.config import config as global_config
@@ -23,6 +25,7 @@ logger = setup_logger("MainScheduler")
 
 _last_run_times = {}
 _daily_summary_done_date = None
+_short_memory_done_buckets = set()
 
 
 def normalize_dca_freq(raw_freq):
@@ -200,6 +203,32 @@ def run_daily_summary_job():
     logger.info(f"[DailySummary] completed summarizing {yesterday}")
 
 
+def run_short_memory_job():
+    now = datetime.now(TZ_CN)
+    target_time = now - timedelta(seconds=1)
+    bucket_start, _ = get_short_memory_bucket(target_time)
+    bucket_key = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
+
+    if now.minute != 0 or now.hour % 4 != 0:
+        return
+    if bucket_key in _short_memory_done_buckets:
+        return
+
+    configs = [cfg for cfg in global_config.get_all_symbol_configs() if cfg.get("enabled", True)]
+    for config in configs:
+        config_id = config.get("config_id")
+        if not config_id:
+            continue
+        try:
+            generate_short_memory_for_config(config_id, now_cn=target_time)
+        except Exception as exc:
+            logger.error(f"[ShortMemory] failed for {config_id}: {exc}")
+
+    _short_memory_done_buckets.add(bucket_key)
+    while len(_short_memory_done_buckets) > 12:
+        _short_memory_done_buckets.pop()
+
+
 def run_scheduler_forever():
     logger.info("[System] scheduler loop started")
 
@@ -221,6 +250,7 @@ def run_scheduler_forever():
                 continue
 
             run_daily_summary_job()
+            run_short_memory_job()
             job()
 
             if datetime.now().minute % 5 == 0:

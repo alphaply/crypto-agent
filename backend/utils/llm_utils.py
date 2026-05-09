@@ -1,8 +1,9 @@
 import os
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from openai import APIError, APITimeoutError, AuthenticationError, BadRequestError, RateLimitError
 
@@ -42,6 +43,38 @@ class LLMInvocationError(Exception):
         self.original = original
 
 
+class DeepSeekChatOpenAI(ChatOpenAI):
+    """ChatOpenAI subclass that preserves DeepSeek reasoning_content in tool-call turns."""
+
+    def _create_chat_result(self, response: Any, generation_info: Optional[Dict[str, Any]] = None) -> Any:
+        result = super()._create_chat_result(response, generation_info)
+        try:
+            resp_dict = response if isinstance(response, dict) else response.model_dump()
+            for index, choice in enumerate(resp_dict.get("choices", [])):
+                reasoning = (choice.get("message") or {}).get("reasoning_content")
+                if reasoning and index < len(result.generations):
+                    result.generations[index].message.additional_kwargs["reasoning_content"] = reasoning
+        except Exception:
+            pass
+        return result
+
+    def _get_request_payload(self, input_: Any, *, stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        try:
+            original_messages = self._convert_input(input_).to_messages()
+            payload_messages: List[Dict[str, Any]] = payload.get("messages", [])
+            for index, msg in enumerate(original_messages):
+                if index >= len(payload_messages):
+                    break
+                if isinstance(msg, AIMessage):
+                    reasoning = msg.additional_kwargs.get("reasoning_content")
+                    if reasoning:
+                        payload_messages[index]["reasoning_content"] = reasoning
+        except Exception:
+            pass
+        return payload
+
+
 def build_chat_openai(
     *,
     model: str,
@@ -50,12 +83,21 @@ def build_chat_openai(
     temperature: float = 0.5,
     streaming: bool = False,
     extra_body: Optional[Dict[str, Any]] = None,
+    thinking_enabled: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> ChatOpenAI:
     model_kwargs: Dict[str, Any] = {}
-    if extra_body:
-        model_kwargs["extra_body"] = extra_body
+    model_lower = (model or "").lower()
+    cls = DeepSeekChatOpenAI if ("deepseek" in model_lower or "-r1" in model_lower or "reasoner" in model_lower) else ChatOpenAI
+    next_extra_body = dict(extra_body or {})
+    if cls is DeepSeekChatOpenAI and thinking_enabled is not None:
+        next_extra_body["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
+    if next_extra_body:
+        model_kwargs["extra_body"] = next_extra_body
+    if cls is DeepSeekChatOpenAI and reasoning_effort:
+        model_kwargs["reasoning_effort"] = reasoning_effort
 
-    return ChatOpenAI(
+    return cls(
         model=model,
         api_key=api_key,
         base_url=base_url,

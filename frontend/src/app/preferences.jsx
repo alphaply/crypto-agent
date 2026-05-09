@@ -3,6 +3,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 const STORAGE_KEYS = {
   locale: 'crypto-agent-locale',
   theme: 'crypto-agent-theme',
+  selectedSymbol: 'crypto-agent-selected-symbol',
 };
 
 const messages = {
@@ -109,6 +110,20 @@ const messages = {
     themeDarkHint: 'Dim surfaces for low-light viewing',
     localeEnHint: 'English labels and content chrome',
     localeZhHint: 'Chinese labels and content chrome',
+    setupHeadline: 'Initial setup',
+    setupDesc: 'Set bootstrap secrets before using the console in production.',
+    dockerDetected: 'Docker runtime detected',
+    dockerDesc: 'Environment changes are applied after the container restarts.',
+    setupCompleted: 'Setup saved',
+    restartBackend: 'Restart the backend or container for security settings to take effect.',
+    adminPassword: 'Admin password',
+    jwtSecret: 'JWT secret',
+    configMasterKey: 'Config master key',
+    jwtExpireHours: 'JWT expire hours',
+    port: 'Port',
+    timezone: 'Timezone',
+    runSchedulerInWeb: 'Run scheduler in web process',
+    saveSetup: 'Save setup',
   },
   zh: {
     brand: 'Crypto Agent',
@@ -240,9 +255,17 @@ function detectTheme() {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
+function detectSelectedSymbol() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  return window.localStorage.getItem(STORAGE_KEYS.selectedSymbol) || '';
+}
+
 export function PreferencesProvider({ children }) {
   const [locale, setLocale] = useState(detectLocale);
   const [theme, setTheme] = useState(detectTheme);
+  const [selectedSymbol, setSelectedSymbol] = useState(detectSelectedSymbol);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.locale, locale);
@@ -254,6 +277,14 @@ export function PreferencesProvider({ children }) {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  useEffect(() => {
+    if (selectedSymbol) {
+      window.localStorage.setItem(STORAGE_KEYS.selectedSymbol, selectedSymbol);
+    } else {
+      window.localStorage.removeItem(STORAGE_KEYS.selectedSymbol);
+    }
+  }, [selectedSymbol]);
+
   const value = useMemo(() => {
     const dictionary = messages[locale] || messages.en;
     return {
@@ -261,12 +292,14 @@ export function PreferencesProvider({ children }) {
       setLocale,
       theme,
       setTheme,
+      selectedSymbol,
+      setSelectedSymbol,
       isDark: theme === 'dark',
       t(key) {
         return dictionary[key] || messages.en[key] || key;
       },
     };
-  }, [locale, theme]);
+  }, [locale, theme, selectedSymbol]);
 
   return <PreferencesContext.Provider value={value}>{children}</PreferencesContext.Provider>;
 }

@@ -12,6 +12,19 @@ export function setApiToken(token) {
   }
 }
 
+export async function fullExport(includeSecrets = true) {
+  const response = await api.get('/config/full-export', {
+    params: { include_secrets: includeSecrets },
+    responseType: 'blob',
+  });
+  return response;
+}
+
+export async function fullImport(data, writeEnv = false) {
+  const response = await api.post('/config/full-import', { data, write_env: writeEnv });
+  return response.data;
+}
+
 export async function streamSse(url, token, onEvent) {
   const response = await fetch(url, {
     headers: {

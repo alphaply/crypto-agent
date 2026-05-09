@@ -23,10 +23,17 @@ from backend.utils.formatters import format_positions_to_agent_friendly, format_
     format_market_data_to_text
 from backend.utils.llm_utils import LLMInvocationError, build_chat_openai, invoke_with_retry
 from backend.utils.logger import setup_logger
-from backend.utils.prompt_utils import resolve_prompt_template, render_prompt
+from backend.utils.prompt_utils import resolve_prompt_file_content, resolve_prompt_template, render_prompt
 
 import backend.database as database
-from backend.database import get_daily_summaries
+from backend.database import (
+    get_daily_summaries,
+    get_position_history,
+    get_short_memories,
+    get_short_memory,
+    get_summary_logic_between,
+    save_short_memory,
+)
 from backend.utils.market_data import MarketTool
 from backend.config import config as global_config
 
@@ -75,7 +82,7 @@ def calculate_next_run_time(agent_config, now_cn):
 # 1. Summarizer Pipeline
 # ==========================================
 
-def summarize_content(content: str, agent_config: dict) -> str:
+def summarize_content(content: str, agent_config: dict, summary_type: str = "strategy") -> str:
     """使用独立的 LLM 配置对分析内容进行压缩。"""
     summarizer_cfg = agent_config.get("summarizer", {})
     
@@ -99,12 +106,39 @@ def summarize_content(content: str, agent_config: dict) -> str:
             api_key=api_key,
             base_url=api_base,
             temperature=temperature,
+            thinking_enabled=summarizer_cfg.get("thinking_enabled"),
+            reasoning_effort=summarizer_cfg.get("reasoning_effort"),
         )
         prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑思路”（150字以内），保留趋势情况、关键点位(支持阻力)和操作意图等等。
 直接输出压缩后的文字，不要有任何前缀。
 内容：
 {content}
 """
+        default_prompts = {
+            "strategy": "请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}",
+            "daily": "请把以下一整天的交易推理压缩成一段中文日内记忆，300字以内。保留趋势演变、关键价位、决策变化、执行动作和风险结论。只输出总结文本。\n\n内容：\n{content}",
+            "short_memory": "请把以下最近4小时的市场与持仓信息整理成中文短期记忆，300字以内。包含市场状态、近期决策、持仓/挂单变化、已实现盈亏和风险提醒。只输出总结文本。\n\n内容：\n{content}",
+        }
+        prompt_text_key = {
+            "strategy": "strategy_prompt",
+            "daily": "daily_prompt",
+            "short_memory": "short_memory_prompt",
+        }.get(summary_type, "strategy_prompt")
+        prompt_file_key = {
+            "strategy": "strategy_prompt_file",
+            "daily": "daily_prompt_file",
+            "short_memory": "short_memory_prompt_file",
+        }.get(summary_type, "strategy_prompt_file")
+        prompt_template = str(summarizer_cfg.get(prompt_text_key) or "").strip()
+        if not prompt_template:
+            prompt_template = resolve_prompt_file_content(
+                summarizer_cfg.get(prompt_file_key),
+                PROJECT_ROOT,
+                logger,
+                fallback=default_prompts.get(summary_type, default_prompts["strategy"]),
+            )
+        prompt = render_prompt(prompt_template, content=content)
+
         response = invoke_with_retry(
             lambda: llm.invoke([SystemMessage(content=prompt)]),
             logger=logger,
@@ -158,7 +192,8 @@ def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
         summary_text = summarize_content(
             f"以下是 {date_str} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾，"
             f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}",
-            target_config
+            target_config,
+            summary_type="daily",
         )
         
         save_daily_summary(date_str, target_config.get('symbol', 'Unknown'), config_id, summary_text, len(rows))
@@ -166,6 +201,109 @@ def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to generate manual daily summary for {config_id}: {e}")
         return False
+
+
+def get_short_memory_bucket(now_cn: datetime | None = None) -> tuple[datetime, datetime]:
+    now_cn = now_cn or datetime.now(TZ_CN)
+    bucket_hour = (now_cn.hour // 4) * 4
+    bucket_start = now_cn.replace(hour=bucket_hour, minute=0, second=0, microsecond=0)
+    return bucket_start, bucket_start + timedelta(hours=4)
+
+
+def _format_position_history_for_memory(rows: list[dict]) -> str:
+    if not rows:
+        return "No position changes recorded."
+    chunks = []
+    for row in rows[:20]:
+        chunks.append(
+            " | ".join(
+                [
+                    str(row.get("updated_at") or row.get("closed_at") or row.get("opened_at") or "-"),
+                    str(row.get("status") or "-"),
+                    str(row.get("side") or "-"),
+                    f"amount={row.get('amount')}",
+                    f"entry={row.get('entry_price')}",
+                    f"close={row.get('close_price')}",
+                    f"pnl={row.get('realized_pnl')}",
+                    f"source={row.get('source')}",
+                ]
+            )
+        )
+    return "\n".join(chunks)
+
+
+def format_short_memory_text(config_id: str, limit: int = 2) -> str:
+    memories = get_short_memories(config_id, limit=limit)
+    if not memories:
+        return "(No short-term memory yet)"
+
+    entries = []
+    for item in memories:
+        market = item.get("market_summary") or ""
+        position = item.get("position_summary") or ""
+        entries.append(
+            f"[{item.get('bucket_start')} - {item.get('bucket_end')}] "
+            f"sources={item.get('source_count', 0)}\n"
+            f"Market/Decision: {market or '-'}\n"
+            f"Positions: {position or '-'}"
+        )
+    return "\n\n".join(entries)
+
+
+def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = None) -> bool:
+    all_configs = global_config.get_all_symbol_configs()
+    target_config = next((c for c in all_configs if c.get("config_id") == config_id), None)
+    if not target_config or not target_config.get("enabled", True):
+        return False
+
+    bucket_start, bucket_end = get_short_memory_bucket(now_cn)
+    start_text = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
+    end_text = bucket_end.strftime("%Y-%m-%d %H:%M:%S")
+    existing = get_short_memory(config_id, start_text)
+    if existing and int(existing.get("source_count") or 0) > 0:
+        return False
+
+    summary_rows = get_summary_logic_between(config_id, start_text, end_text)
+    position_rows = get_position_history(config_id, since_time=start_text, limit=20)
+    source_count = len(summary_rows) + len(position_rows)
+
+    previous = format_short_memory_text(config_id, limit=1)
+    position_text = _format_position_history_for_memory(position_rows)
+    if source_count <= 0:
+        save_short_memory(
+            start_text,
+            end_text,
+            target_config.get("symbol", "Unknown"),
+            config_id,
+            "No new analysis in this 4h window. Reuse previous context if relevant.",
+            previous,
+            0,
+        )
+        return True
+
+    market_text = "\n".join(
+        f"[{row.get('timestamp')}] {row.get('strategy_logic')}"
+        for row in summary_rows
+        if row.get("strategy_logic")
+    )
+    memory_input = (
+        f"Window: {start_text} - {end_text}\n"
+        f"Symbol: {target_config.get('symbol')}\n\n"
+        f"Recent market/agent reasoning:\n{market_text or 'No new market reasoning.'}\n\n"
+        f"Recent position history:\n{position_text}\n\n"
+        f"Previous short memory:\n{previous}"
+    )
+    memory_summary = summarize_content(memory_input, target_config, summary_type="short_memory")
+    save_short_memory(
+        start_text,
+        end_text,
+        target_config.get("symbol", "Unknown"),
+        config_id,
+        memory_summary,
+        position_text,
+        source_count,
+    )
+    return True
 
 # ==========================================
 # 2. Nodes
@@ -216,10 +354,13 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
     logger.info(f"--- [Node] Start: Analyzing {symbol} | Mode: {trade_mode} ---")
 
     try:
-        timeframes_to_fetch = ['5m', '15m', '1h', '4h', '1d', '1w']
+        timeframes_to_fetch = list(
+            getattr(global_config, "market_timeframes", None) or ['15m', '30m', '1h', '4h', '1d', '1w', '1M']
+        )
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
         daily_history = get_daily_summaries(config_id, days=7)
+        short_memory_text = format_short_memory_text(config_id, limit=2)
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
@@ -236,6 +377,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
             'real_positions': []
         }
         daily_history = []
+        short_memory_text = "(No short-term memory yet)"
 
     if is_real_exec:
         try:
@@ -249,12 +391,15 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
             recent_trades = market_tool.fetch_recent_trades(symbol, limit=10)
             if recent_trades:
                 database.save_trade_history(recent_trades)
+                database.sync_trade_position_history(config_id, symbol, recent_trades)
+            database.sync_open_position_history(config_id, symbol, positions)
         except Exception as e:
             logger.error(f"❌ Failed to save real-time stats: {e}")
 
     balance = account_data.get('balance', 0)
     prompt_balance = account_data.get('available_balance', balance)
-    analysis_data = market_full.get("analysis", {}).get("15m", {})
+    raw_analysis = market_full.get("analysis", {})
+    analysis_data = raw_analysis.get("15m") or next(iter(raw_analysis.values()), {})
     current_price = analysis_data.get("price", 0)
     atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
 
@@ -262,14 +407,9 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
     logger.debug(f"💳 Prompt balance (available): {prompt_balance} USDT | Snapshot balance (total): {balance} USDT")
 
     indicators_summary = {}
-    if trade_mode == 'STRATEGY':
-        timeframes = ['1h', '4h', '1d', '1w']
-    elif trade_mode == 'SPOT_DCA':
-        timeframes = ['1h', '4h', '1d', '1w']
-    else:
-        timeframes = ['15m', '1h', '4h', '1d']
+    configured_timeframes = list(getattr(global_config, "market_timeframes", None) or [])
+    timeframes = [tf for tf in configured_timeframes if tf in raw_analysis] or list(raw_analysis.keys())
 
-    raw_analysis = market_full.get("analysis", {})
     logger.debug(f"🔍 Available timeframes in raw_analysis: {list(raw_analysis.keys())}")
 
     for tf in timeframes:
@@ -315,6 +455,13 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         formatted_history_text = "\n".join(history_entries)
     else:
         formatted_history_text = "(暂无历史记录)"
+
+    formatted_history_text = (
+        "## Short-Term Memory (Last 4h)\n"
+        f"{short_memory_text}\n\n"
+        "## Daily Memory\n"
+        f"{formatted_history_text}"
+    )
 
     next_run_time = calculate_next_run_time(agent_config, now_cn)
 
@@ -366,6 +513,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         positions_text=positions_text,
         orders_text=orders_friendly_text,
         formatted_market_data=formatted_market_data,
+        short_memory_text=short_memory_text,
         history_text=formatted_history_text,
         dca_period_text=dca_period_text,
         dca_budget=dca_budget
@@ -390,18 +538,10 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent_config = configurable.get("agent_config", {})
     
     symbol = state.symbol
-    model_name = agent_config.get('model', '').lower()
     trade_mode = agent_config.get('mode', 'STRATEGY').upper()
     logger.info(f"--- [Node] Agent: {agent_config.get('model')} (Mode: {trade_mode}) ---")
 
-    messages = []
-    is_deepseek = "deepseek" in model_name or "r1" in model_name
-    
-    for msg in state.messages:
-        if isinstance(msg, AIMessage) and is_deepseek:
-            if getattr(msg, "tool_calls", None) or "reasoning_content" in msg.additional_kwargs or msg.response_metadata.get("reasoning_content"):
-                msg.additional_kwargs["reasoning_content"] = None
-        messages.append(msg)
+    messages = list(state.messages)
 
     try:
         kwargs = {}
@@ -425,6 +565,8 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             base_url=agent_config.get('api_base'),
             temperature=agent_config.get('temperature', 0.5),
             extra_body=kwargs.get("extra_body"),
+            thinking_enabled=agent_config.get("thinking_enabled"),
+            reasoning_effort=agent_config.get("reasoning_effort"),
         ).bind_tools(tools)
 
         response = invoke_with_retry(
@@ -432,10 +574,6 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             logger=logger,
             context=f"agent symbol={symbol} config_id={config_id} model={agent_config.get('model')}",
         )
-        
-        reasoning = response.additional_kwargs.get("reasoning_content") or response.response_metadata.get("reasoning_content")
-        if reasoning and "<thinking>" not in response.content:
-            response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
         
         try:
             usage = response.response_metadata.get("token_usage", {})
@@ -491,6 +629,8 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             base_url=api_base,
             temperature=temperature,
             extra_body=kwargs.get("extra_body"),
+            thinking_enabled=agent_config.get("thinking_enabled"),
+            reasoning_effort=agent_config.get("reasoning_effort"),
         ).bind_tools(tools)
 
         response = invoke_with_retry(

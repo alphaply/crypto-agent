@@ -47,7 +47,7 @@ export default function AuthGate({ authenticated, loading, onLogin, children }) 
         {error ? <Alert style={{ marginBottom: 16 }} type="error" message={error} showIcon /> : null}
         <Form layout="vertical" initialValues={formInitialValues} onFinish={handleSubmit}>
           <Form.Item label={t('password')} name="password" rules={[{ required: true, message: t('password') }]}>
-            <Input.Password placeholder="CHAT_PASSWORD (preferred) / ADMIN_PASSWORD" />
+            <Input.Password placeholder={t('adminPassword')} />
           </Form.Item>
           <Button type="primary" htmlType="submit" block loading={submitting}>
             {t('login')}

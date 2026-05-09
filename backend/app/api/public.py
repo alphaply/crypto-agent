@@ -3,6 +3,8 @@ from fastapi import APIRouter, HTTPException
 from backend.app.services.public_service import (
     build_public_compare_payload,
     build_public_dashboard_payload,
+    build_public_history_payload,
+    build_public_daily_summaries_payload,
     build_public_usage_payload,
     build_public_workspace_payload,
 )
@@ -19,6 +21,20 @@ def dashboard(symbol: str | None = None):
 @router.get("/compare")
 def compare(symbol: str = "BTC/USDT", config_ids: str = ""):
     return {"success": True, **build_public_compare_payload(symbol, config_ids)}
+
+
+@router.get("/history")
+def history(symbol: str = "BTC/USDT", config_id: str = "ALL", page: int = 1, compare_ids: str = ""):
+    compare = [item.strip() for item in compare_ids.split(",") if item.strip()]
+    return {"success": True, **build_public_history_payload(symbol, config_id, page, compare)}
+
+
+@router.get("/daily-summaries")
+def daily_summaries(config_id: str = "ALL", symbol: str | None = None, days: int | None = 7, limit: int = 200):
+    return {
+        "success": True,
+        **build_public_daily_summaries_payload(symbol=symbol, config_id=config_id, days=days, limit=limit),
+    }
 
 
 @router.get("/workspace/{config_id}")

@@ -4,16 +4,20 @@ import time
 import traceback
 from datetime import datetime, timedelta
 
-from backend.agent.agent_graph import generate_manual_daily_summary
+from backend.agent.agent_graph import generate_manual_daily_summary, generate_short_memory_for_config
 from backend.config import config as global_config
 from backend.database import (
     clean_financial_data,
     delete_summaries_by_symbol,
+    delete_daily_summary as db_delete_daily_summary,
     get_active_agents,
     get_daily_summaries,
+    get_short_memories,
     get_db_conn,
     get_dca_daily_snapshot_history,
     get_history_pnl_stats,
+    get_all_pricing,
+    list_daily_summaries,
     get_mock_account,
     get_mock_equity_history,
     get_paginated_orders,
@@ -32,6 +36,118 @@ from backend.app.services.common import TZ_CN, get_scheduler_status, get_symbol_
 
 DCA_STATS_CACHE = {}
 DCA_STATS_CACHE_TTL = 300
+
+
+def _order_action_label(order: dict) -> str:
+    side = str(order.get("side") or "").lower()
+    status = str(order.get("status") or "").upper()
+    trade_mode = str(order.get("trade_mode") or "").upper()
+    if "cancel" in side or status == "CANCELLED":
+        return "取消"
+    if "close" in side:
+        return "平多" if "long" in side or "buy" in side else "平空"
+    if "sell" in side or "short" in side:
+        return "开空" if status != "CLOSED" else "平多"
+    if "buy" in side or "long" in side:
+        return "开多" if trade_mode != "SPOT_DCA" else "现货买入"
+    return side.upper() or status or "记录"
+
+
+def _normalize_order_record(order: dict) -> dict:
+    payload = dict(order)
+    payload["action_label"] = _order_action_label(payload)
+    payload["copy_fields"] = [
+        value
+        for value in (payload.get("entry_price"), payload.get("amount"), payload.get("take_profit"), payload.get("stop_loss"))
+        if value not in (None, "")
+    ]
+    if str(payload.get("trade_mode") or "").upper() == "SPOT_DCA":
+        payload["strategy_note"] = "监控自动成交"
+    elif payload.get("take_profit") or payload.get("stop_loss"):
+        payload["strategy_note"] = "止盈止损"
+    else:
+        payload["strategy_note"] = ""
+    return payload
+
+
+def build_symbol_overview_metrics(symbol: str, agent_summaries: list[dict]) -> dict:
+    config_ids = [item.get("config_id") for item in agent_summaries if item.get("config_id")]
+    with get_db_conn() as conn:
+        placeholders = ",".join(["?"] * len(config_ids))
+        token_total = 0
+        cost_total = 0.0
+        if config_ids:
+            rows = conn.execute(
+                f"""
+                SELECT model,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt,
+                       COALESCE(SUM(completion_tokens), 0) AS completion,
+                       COALESCE(SUM(total_tokens), 0) AS total
+                FROM token_usage
+                WHERE config_id IN ({placeholders})
+                GROUP BY model
+                """,
+                tuple(config_ids),
+            ).fetchall()
+            pricing = get_all_pricing()
+            for row in rows:
+                token_total += int(row["total"] or 0)
+                price = pricing.get(row["model"], {"input_price_per_m": 0, "output_price_per_m": 0})
+                cost_total += (float(row["prompt"] or 0) / 1_000_000 * price.get("input_price_per_m", 0)) + (
+                    float(row["completion"] or 0) / 1_000_000 * price.get("output_price_per_m", 0)
+                )
+
+    pnl_stats = get_history_pnl_stats(symbol, config_id="ALL")
+    return {
+        "agent_count": len(agent_summaries),
+        "win_rate": round(float(pnl_stats.get("win_rate", 0) or 0), 2),
+        "total_pnl": round(float(pnl_stats.get("total_pnl", 0) or 0), 4),
+        "total_trades": int(pnl_stats.get("total_trades", 0) or 0),
+        "total_tokens": int(token_total or 0),
+        "total_cost": round(cost_total, 4),
+    }
+
+
+def build_config_compare_rows(symbol: str, agent_summaries: list[dict]) -> list[dict]:
+    rows = []
+    for agent in agent_summaries:
+        config_id = agent.get("config_id")
+        if not config_id:
+            continue
+        pnl = get_history_pnl_stats(symbol, config_id=config_id)
+        with get_db_conn() as conn:
+            orders = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_orders,
+                    SUM(CASE WHEN LOWER(side) LIKE '%buy%' OR LOWER(side) LIKE '%long%' THEN 1 ELSE 0 END) AS long_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%sell%' OR LOWER(side) LIKE '%short%' THEN 1 ELSE 0 END) AS short_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%close%' OR status = 'CLOSED' THEN 1 ELSE 0 END) AS close_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%cancel%' OR status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancel_count
+                FROM orders
+                WHERE config_id = ?
+                """,
+                (config_id,),
+            ).fetchone()
+        long_count = int(orders["long_count"] or 0)
+        short_count = int(orders["short_count"] or 0)
+        rows.append(
+            {
+                "config_id": config_id,
+                "display_name": agent.get("display_name") or config_id,
+                "mode": agent.get("mode"),
+                "model": agent.get("model"),
+                "long_count": long_count,
+                "short_count": short_count,
+                "long_short_ratio": round(long_count / short_count, 2) if short_count else (long_count if long_count else 0),
+                "close_count": int(orders["close_count"] or 0),
+                "cancel_count": int(orders["cancel_count"] or 0),
+                "total_orders": int(orders["total_orders"] or 0),
+                "win_rate": round(float(pnl.get("win_rate", 0) or 0), 2),
+                "total_pnl": round(float(pnl.get("total_pnl", 0) or 0), 4),
+            }
+        )
+    return rows
 
 
 def calculate_next_run(config, latest_summary=None):
@@ -220,7 +336,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
     try:
         with get_db_conn() as conn:
             configs = global_config.get_all_symbol_configs()
-            symbol_configs = [conf for conf in configs if conf["symbol"] == symbol]
+            symbol_configs = [conf for conf in configs if conf["symbol"] == symbol and conf.get("enabled", True)]
 
             agent_summaries = []
             for config in symbol_configs:
@@ -284,10 +400,13 @@ def build_dashboard_overview(symbol: str | None = None, page: int = 1):
         "symbols": symbols,
         "current_symbol": current_symbol,
         "agent_summaries": agent_summaries,
+        "overview_metrics": build_symbol_overview_metrics(current_symbol, agent_summaries),
+        "compare_rows": build_config_compare_rows(current_symbol, agent_summaries),
         "symbol_mode": symbol_mode,
         "symbol_freq": symbol_freq,
         "symbol_enabled": symbol_enabled,
         "scheduler_enabled": get_scheduler_status(),
+        "market_timeframes": list(getattr(global_config, "market_timeframes", None) or []),
     }
 
 
@@ -411,7 +530,7 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
 def get_orders_payload(config_id: str, page: int = 1, per_page: int = 20):
     orders, total = get_paginated_orders(config_id, page, per_page)
     return {
-        "orders": orders,
+        "orders": [_normalize_order_record(order) for order in orders],
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -421,6 +540,52 @@ def get_orders_payload(config_id: str, page: int = 1, per_page: int = 20):
 
 def get_daily_summaries_payload(config_id: str, days: int = 7):
     return {"daily_summaries": get_daily_summaries(config_id, days=days)}
+
+
+def get_short_memories_payload(config_id: str, limit: int = 2):
+    return {"short_memories": get_short_memories(config_id, limit=limit)}
+
+
+def generate_short_memory_payload(config_id: str, bucket_start: str | None = None):
+    target_time = None
+    if bucket_start:
+        try:
+            target_time = TZ_CN.localize(datetime.strptime(bucket_start, "%Y-%m-%d %H:%M:%S")) + timedelta(seconds=1)
+        except Exception:
+            target_time = None
+    return {"generated": generate_short_memory_for_config(config_id, now_cn=target_time)}
+
+
+def list_daily_summaries_payload(
+    symbol: str | None = None,
+    config_id: str | None = None,
+    days: int | None = None,
+    limit: int = 200,
+):
+    return {
+        "daily_summaries": list_daily_summaries(symbol=symbol, config_id=config_id, days=days, limit=limit),
+    }
+
+
+def export_daily_summaries_payload(
+    symbol: str | None = None,
+    config_id: str | None = None,
+    days: int | None = None,
+):
+    rows = list_daily_summaries(symbol=symbol, config_id=config_id, days=days, limit=1000)
+    chunks = []
+    for row in rows:
+        chunks.append(
+            "\n".join(
+                [
+                    f"# {row.get('date')} {row.get('symbol')} {row.get('config_id')}",
+                    f"Created: {row.get('created_at') or '-'}",
+                    "",
+                    row.get("summary") or "",
+                ]
+            )
+        )
+    return "\n\n---\n\n".join(chunks)
 
 
 def generate_daily_summary_payload(config_id: str, date_str: str):
@@ -436,3 +601,10 @@ def clean_history_payload(symbol: str):
 def update_daily_summary_payload(date_str: str, config_id: str, summary_content: str):
     db_update_daily_summary(date_str, config_id, summary_content)
     return {"message": "Daily summary updated."}
+
+
+def delete_daily_summary_payload(date_str: str, config_id: str):
+    deleted = db_delete_daily_summary(date_str, config_id)
+    if not deleted:
+        raise FileNotFoundError("Daily summary not found")
+    return {"message": "Daily summary deleted.", "deleted": deleted}

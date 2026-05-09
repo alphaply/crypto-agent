@@ -40,3 +40,27 @@ def resolve_prompt_template(
 
 def render_prompt(template: str, **kwargs) -> str:
     return template.format_map(defaultdict(str, kwargs))
+
+
+def resolve_prompt_file_content(prompt_file: str | None, project_root: Path, logger, fallback: str = "") -> str:
+    if not isinstance(prompt_file, str) or not prompt_file.strip():
+        return fallback
+
+    try:
+        file_path = Path(prompt_file.strip())
+        if not file_path.is_absolute():
+            candidate = project_root / file_path
+            if not candidate.exists():
+                candidate = project_root / "backend" / "agent" / "prompts" / file_path
+            file_path = candidate
+
+        if file_path.exists():
+            content = file_path.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+            logger.warning(f"Prompt file is empty, fallback to default template: {file_path}")
+        else:
+            logger.warning(f"Prompt file does not exist, fallback to default template: {file_path}")
+    except Exception as e:
+        logger.warning(f"Failed to load prompt file, fallback to default template: {e}")
+    return fallback

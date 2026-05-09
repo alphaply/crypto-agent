@@ -1,6 +1,7 @@
+/* eslint-disable react-refresh/only-export-components */
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { ConfigProvider, theme as antdTheme } from 'antd';
+import { App as AntdApp, ConfigProvider, theme as antdTheme } from 'antd';
 import enUS from 'antd/locale/en_US';
 import zhCN from 'antd/locale/zh_CN';
 import { BrowserRouter } from 'react-router-dom';
@@ -18,14 +19,18 @@ function ConfiguredApp() {
       theme={{
         algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
-          borderRadius: 16,
-          colorPrimary: '#0f766e',
+          borderRadius: 8,
+          colorPrimary: '#2563eb',
+          colorBgLayout: isDark ? '#0b0f17' : '#f6f8fb',
+          colorBorderSecondary: isDark ? '#263142' : '#e5e7eb',
         },
       }}
     >
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
+      <AntdApp>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </AntdApp>
     </ConfigProvider>
   );
 }

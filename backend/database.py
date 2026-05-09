@@ -13,7 +13,9 @@ TZ_CN = pytz.timezone('Asia/Shanghai')
 # 使用绝对路径定位数据库文件
 # 强制获取项目根目录
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_NAME = os.path.join(BASE_DIR, "trading_data.db")
+DATA_DIR = os.getenv("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_NAME = os.getenv("TRADING_DB_PATH", os.path.join(DATA_DIR, "trading_data.db"))
 logger = setup_logger("Database")
 
 @contextmanager
@@ -168,6 +170,7 @@ def init_db():
                         enabled INTEGER NOT NULL DEFAULT 1,
                         mode TEXT NOT NULL,
                         data_json TEXT NOT NULL,
+                        sort_order INTEGER,
                         updated_at TEXT NOT NULL
                     )''')
         try: c.execute("ALTER TABLE agent_configs ADD COLUMN symbol TEXT NOT NULL DEFAULT ''")
@@ -177,6 +180,8 @@ def init_db():
         try: c.execute("ALTER TABLE agent_configs ADD COLUMN mode TEXT NOT NULL DEFAULT 'STRATEGY'")
         except: pass
         try: c.execute("ALTER TABLE agent_configs ADD COLUMN data_json TEXT NOT NULL DEFAULT '{}'")
+        except: pass
+        try: c.execute("ALTER TABLE agent_configs ADD COLUMN sort_order INTEGER")
         except: pass
         try: c.execute("ALTER TABLE agent_configs ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
         except: pass
@@ -191,6 +196,31 @@ def init_db():
                     )''')
 
         # 7. LLM Token 使用统计
+        c.execute('''CREATE TABLE IF NOT EXISTS llm_providers (
+                        provider_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        api_base TEXT,
+                        temperature REAL,
+                        role TEXT NOT NULL DEFAULT 'agent',
+                        extra_body TEXT NOT NULL DEFAULT '{}',
+                        thinking_enabled INTEGER,
+                        reasoning_effort TEXT,
+                        updated_at TEXT NOT NULL
+                    )''')
+        try: c.execute("ALTER TABLE llm_providers ADD COLUMN thinking_enabled INTEGER")
+        except: pass
+        try: c.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_effort TEXT")
+        except: pass
+
+        c.execute('''CREATE TABLE IF NOT EXISTS exchange_profiles (
+                        profile_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        market_type TEXT,
+                        updated_at TEXT NOT NULL
+                    )''')
+
         c.execute('''CREATE TABLE IF NOT EXISTS token_usage (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp TEXT,
@@ -268,6 +298,40 @@ def init_db():
                         updated_at TEXT,
                         UNIQUE(snapshot_date, config_id)
                     )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS short_memories (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        bucket_start TEXT NOT NULL,
+                        bucket_end TEXT NOT NULL,
+                        symbol TEXT,
+                        config_id TEXT NOT NULL,
+                        market_summary TEXT,
+                        position_summary TEXT,
+                        source_count INTEGER DEFAULT 0,
+                        created_at TEXT,
+                        UNIQUE(config_id, bucket_start)
+                    )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS position_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        config_id TEXT NOT NULL,
+                        symbol TEXT,
+                        position_key TEXT NOT NULL,
+                        side TEXT,
+                        status TEXT,
+                        source TEXT,
+                        opened_at TEXT,
+                        closed_at TEXT,
+                        entry_price REAL,
+                        close_price REAL,
+                        amount REAL,
+                        realized_pnl REAL,
+                        raw_json TEXT,
+                        updated_at TEXT,
+                        UNIQUE(config_id, position_key)
+                    )''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_short_memories_config_bucket ON short_memories(config_id, bucket_start)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_position_history_config_time ON position_history(config_id, updated_at)")
 
         conn.commit()
 
@@ -476,14 +540,27 @@ def create_mock_order(symbol, side, price, amount, stop_loss, take_profit, agent
     if not order_id:
         order_id = f"ST-{uuid.uuid4().hex[:6]}"
 
+    created_at = datetime.now(TZ_CN).strftime('%Y-%m-%d %H:%M:%S')
     with get_db_conn() as conn:
         c = conn.cursor()
         try:
             c.execute('''
                 INSERT INTO mock_orders (order_id, symbol, agent_name, config_id, side, price, amount, stop_loss, take_profit, timestamp, expire_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (order_id, symbol, agent_name, config_id or agent_name, side, price, amount, stop_loss, take_profit, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), expire_at))
+            ''', (order_id, symbol, agent_name, config_id or agent_name, side, price, amount, stop_loss, take_profit, created_at, expire_at))
             conn.commit()
+            upsert_position_history(
+                config_id=config_id or agent_name,
+                symbol=symbol,
+                position_key=str(order_id),
+                side="LONG" if "BUY" in str(side).upper() else "SHORT",
+                status="OPEN",
+                source="mock_order",
+                opened_at=created_at,
+                entry_price=price,
+                amount=amount,
+                raw={"order_id": order_id, "stop_loss": stop_loss, "take_profit": take_profit, "expire_at": expire_at},
+            )
         except Exception as e:
             logger.error(f"❌ DB Error (create_mock_order): {e}")
 
@@ -502,15 +579,17 @@ def update_mock_order_filled(order_id):
         conn.commit()
 
 def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
+    closed_position = None
     """平仓模拟挂单"""
     with get_db_conn() as conn:
         c = conn.cursor()
         close_time = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
         
         # 先更新虚拟账户与流水
-        row = c.execute("SELECT symbol, config_id FROM mock_orders WHERE order_id=?", (order_id,)).fetchone()
+        row = c.execute("SELECT * FROM mock_orders WHERE order_id=?", (order_id,)).fetchone()
         if row:
             update_mock_account_balance(row['config_id'], row['symbol'], realized_pnl)
+            closed_position = dict(row)
 
         c.execute('''
             UPDATE mock_orders 
@@ -520,6 +599,23 @@ def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
         
         c.execute("UPDATE orders SET status = 'CLOSED' WHERE order_id = ?", (order_id,))
         conn.commit()
+
+    if closed_position:
+        upsert_position_history(
+            config_id=closed_position.get("config_id"),
+            symbol=closed_position.get("symbol"),
+            position_key=str(order_id),
+            side="LONG" if "BUY" in str(closed_position.get("side", "")).upper() else "SHORT",
+            status="CLOSED",
+            source="mock_order",
+            opened_at=closed_position.get("timestamp"),
+            closed_at=close_time,
+            entry_price=closed_position.get("price"),
+            close_price=close_price,
+            amount=closed_position.get("amount"),
+            realized_pnl=realized_pnl,
+            raw={**closed_position, "close_price": close_price, "realized_pnl": realized_pnl, "close_time": close_time},
+        )
 
 
 def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY", config_id=None, amount=0):
@@ -970,6 +1066,18 @@ def update_daily_summary(date_str, config_id, summary):
         ''', (summary, date_str, config_id))
         conn.commit()
 
+def delete_daily_summary(date_str, config_id):
+    """Delete one daily summary by date and config."""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM daily_summaries WHERE date = ? AND config_id = ?",
+            (date_str, config_id),
+        )
+        deleted = c.rowcount
+        conn.commit()
+        return deleted
+
 def get_daily_summaries(config_id, days=7):
     """获取最近 N 天的每日策略汇总（按日期倒序）"""
     with get_db_conn() as conn:
@@ -984,6 +1092,38 @@ def get_daily_summaries(config_id, days=7):
         return [dict(row) for row in c.fetchall()]
 
 
+def list_daily_summaries(symbol=None, config_id=None, days=None, limit=200):
+    """List daily summaries for admin management and export."""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        clauses = []
+        params = []
+        if symbol and symbol != "ALL":
+            clauses.append("symbol = ?")
+            params.append(symbol)
+        if config_id and config_id != "ALL":
+            clauses.append("config_id = ?")
+            params.append(config_id)
+        if days:
+            cutoff = (datetime.now(TZ_CN) - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            clauses.append("date >= ?")
+            params.append(cutoff)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(int(limit or 200))
+        rows = c.execute(
+            f"""
+            SELECT id, date, symbol, config_id, summary, source_count, created_at
+            FROM daily_summaries
+            {where}
+            ORDER BY date DESC, config_id ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 def get_pending_daily_summary_data(config_id, date_str):
     """获取指定日期、指定 config 的所有 strategy_logic 原文（用于 LLM 汇总）"""
     with get_db_conn() as conn:
@@ -995,6 +1135,227 @@ def get_pending_daily_summary_data(config_id, date_str):
             ORDER BY id ASC
         ''', (config_id, date_str))
         return [dict(row) for row in c.fetchall()]
+
+def get_summary_logic_between(config_id, start_time, end_time):
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        rows = c.execute(
+            '''
+            SELECT strategy_logic, timestamp
+            FROM summaries
+            WHERE config_id = ?
+              AND timestamp >= ?
+              AND timestamp < ?
+              AND strategy_logic IS NOT NULL
+              AND strategy_logic != ''
+            ORDER BY id ASC
+            ''',
+            (config_id, start_time, end_time),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def save_short_memory(bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count):
+    created_at = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO short_memories (
+                bucket_start, bucket_end, symbol, config_id, market_summary,
+                position_summary, source_count, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(config_id, bucket_start) DO UPDATE SET
+                bucket_end = excluded.bucket_end,
+                symbol = excluded.symbol,
+                market_summary = excluded.market_summary,
+                position_summary = excluded.position_summary,
+                source_count = excluded.source_count,
+                created_at = excluded.created_at
+            ''',
+            (bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, int(source_count or 0), created_at),
+        )
+        conn.commit()
+
+
+def get_short_memories(config_id, limit=2):
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        rows = c.execute(
+            '''
+            SELECT bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count, created_at
+            FROM short_memories
+            WHERE config_id = ?
+            ORDER BY bucket_start DESC
+            LIMIT ?
+            ''',
+            (config_id, int(limit or 2)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_short_memory(config_id, bucket_start):
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        row = c.execute(
+            '''
+            SELECT bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count, created_at
+            FROM short_memories
+            WHERE config_id = ? AND bucket_start = ?
+            ''',
+            (config_id, bucket_start),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_position_history(
+    config_id,
+    symbol,
+    position_key,
+    side=None,
+    status=None,
+    source=None,
+    opened_at=None,
+    closed_at=None,
+    entry_price=None,
+    close_price=None,
+    amount=None,
+    realized_pnl=None,
+    raw=None,
+):
+    if not config_id or not position_key:
+        return
+
+    updated_at = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    raw_json = json.dumps(raw or {}, ensure_ascii=False, default=str)
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO position_history (
+                config_id, symbol, position_key, side, status, source, opened_at,
+                closed_at, entry_price, close_price, amount, realized_pnl, raw_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(config_id, position_key) DO UPDATE SET
+                symbol = excluded.symbol,
+                side = COALESCE(excluded.side, position_history.side),
+                status = CASE
+                    WHEN position_history.status = 'CLOSED' AND excluded.status = 'OPEN' THEN position_history.status
+                    ELSE COALESCE(excluded.status, position_history.status)
+                END,
+                source = COALESCE(excluded.source, position_history.source),
+                opened_at = COALESCE(position_history.opened_at, excluded.opened_at),
+                closed_at = COALESCE(excluded.closed_at, position_history.closed_at),
+                entry_price = COALESCE(excluded.entry_price, position_history.entry_price),
+                close_price = COALESCE(excluded.close_price, position_history.close_price),
+                amount = COALESCE(excluded.amount, position_history.amount),
+                realized_pnl = COALESCE(excluded.realized_pnl, position_history.realized_pnl),
+                raw_json = excluded.raw_json,
+                updated_at = excluded.updated_at
+            ''',
+            (
+                str(config_id),
+                symbol,
+                str(position_key),
+                side,
+                status,
+                source,
+                opened_at,
+                closed_at,
+                entry_price,
+                close_price,
+                amount,
+                realized_pnl,
+                raw_json,
+                updated_at,
+            ),
+        )
+        conn.commit()
+
+
+def get_position_history(config_id, since_time=None, limit=50):
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        params = [config_id]
+        where = "WHERE config_id = ?"
+        if since_time:
+            where += " AND (updated_at >= ? OR closed_at >= ? OR opened_at >= ?)"
+            params.extend([since_time, since_time, since_time])
+        params.append(int(limit or 50))
+        rows = c.execute(
+            f'''
+            SELECT config_id, symbol, position_key, side, status, source, opened_at, closed_at,
+                   entry_price, close_price, amount, realized_pnl, updated_at
+            FROM position_history
+            {where}
+            ORDER BY COALESCE(closed_at, updated_at, opened_at) DESC
+            LIMIT ?
+            ''',
+            tuple(params),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def sync_open_position_history(config_id, symbol, positions, source="exchange_position"):
+    for pos in positions or []:
+        try:
+            side = str(pos.get("side") or "").upper() or "UNKNOWN"
+            amount = float(pos.get("amount", pos.get("contracts", 0)) or 0)
+            entry_price = float(pos.get("entry_price", pos.get("entryPrice", 0)) or 0)
+            if amount <= 0:
+                continue
+            position_key = f"{source}:{symbol}:{side}:{entry_price}"
+            upsert_position_history(
+                config_id=config_id,
+                symbol=symbol,
+                position_key=position_key,
+                side=side,
+                status="OPEN",
+                source=source,
+                entry_price=entry_price,
+                amount=amount,
+                raw=pos,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to sync open position history: {exc}")
+
+
+def sync_trade_position_history(config_id, symbol, trades, source="exchange_trade"):
+    for trade in trades or []:
+        try:
+            info = trade.get("info") or {}
+            raw_pnl = trade.get("realizedPnl")
+            if raw_pnl is None:
+                raw_pnl = info.get("realizedPnl")
+            realized_pnl = float(raw_pnl or 0)
+            if realized_pnl == 0:
+                continue
+
+            timestamp = trade.get("timestamp")
+            closed_at = None
+            if timestamp:
+                closed_at = datetime.fromtimestamp(float(timestamp) / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+            side = str(trade.get("side") or info.get("side") or "").upper()
+            position_side = str(info.get("positionSide") or "").upper()
+            if position_side in {"LONG", "SHORT"}:
+                side = position_side
+            position_key = f"{source}:{trade.get('id') or trade.get('order') or uuid.uuid4().hex}"
+            upsert_position_history(
+                config_id=config_id,
+                symbol=trade.get("symbol") or symbol,
+                position_key=position_key,
+                side=side,
+                status="CLOSED",
+                source=source,
+                closed_at=closed_at,
+                close_price=float(trade.get("price", 0) or 0),
+                amount=float(trade.get("amount", 0) or 0),
+                realized_pnl=realized_pnl,
+                raw=trade,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to sync trade position history: {exc}")
+
 
 def get_history_pnl_stats(symbol, config_id='ALL'):
     """获取标的的盈亏统计，整合实盘和模拟盘数据"""
@@ -1116,6 +1477,8 @@ def get_config_dependency_counts(config_id: str):
             "summaries",
             "token_usage",
             "daily_summaries",
+            "short_memories",
+            "position_history",
         ]
         counts = {}
         for table in tables:
@@ -1214,6 +1577,14 @@ def purge_config_all_data(config_id: str):
             ).rowcount,
             "daily_summaries_deleted": c.execute(
                 "DELETE FROM daily_summaries WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "short_memories_deleted": c.execute(
+                "DELETE FROM short_memories WHERE config_id = ?",
+                (config_id,),
+            ).rowcount,
+            "position_history_deleted": c.execute(
+                "DELETE FROM position_history WHERE config_id = ?",
                 (config_id,),
             ).rowcount,
         }

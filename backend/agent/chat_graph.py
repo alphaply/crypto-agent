@@ -49,7 +49,13 @@ from backend.utils.logger import setup_logger
 load_dotenv()
 logger = setup_logger("ChatGraph")
 
-CHAT_CHECKPOINT_DB = os.getenv("CHAT_CHECKPOINT_DB", "chat_checkpoints.sqlite")
+_data_dir = os.getenv("DATA_DIR")
+if _data_dir:
+    os.makedirs(_data_dir, exist_ok=True)
+CHAT_CHECKPOINT_DB = os.getenv(
+    "CHAT_CHECKPOINT_DB",
+    os.path.join(_data_dir, "chat_checkpoints.sqlite") if _data_dir else "chat_checkpoints.sqlite",
+)
 CHAT_MAX_HISTORY_MESSAGES = int(os.getenv("CHAT_MAX_HISTORY_MESSAGES", "12"))
 CHAT_TRIM_MAX_TOKENS = int(os.getenv("CHAT_TRIM_MAX_TOKENS", "6000"))
 
@@ -248,6 +254,8 @@ def model_node(state: ChatState, config: RunnableConfig):
         temperature=0.5,
         streaming=True,
         extra_body=cfg.get("extra_body"),
+        thinking_enabled=cfg.get("thinking_enabled"),
+        reasoning_effort=cfg.get("reasoning_effort"),
     ).bind_tools(_get_chat_tools(cfg))
 
     started_at = time.time()
@@ -266,14 +274,6 @@ def model_node(state: ChatState, config: RunnableConfig):
     # 标注模型名称
     if response.content and not response.tool_calls:
         response.content += f"\n\n---\n> 🧠 本次回答由决策模型 **{model_name}** 完成。"
-
-    # Final formatting for the state (e.g. for DeepSeek reasoning)
-    reasoning = (
-        response.additional_kwargs.get("reasoning_content") or 
-        response.response_metadata.get("reasoning_content")
-    )
-    if reasoning and not response.tool_calls and "<thinking>" not in response.content:
-        response.content = f"<thinking>\n{reasoning}\n</thinking>\n\n{response.content}"
 
     logger.info(
         f"[Chat] success session={configurable.get('thread_id')} config_id={config_id} "

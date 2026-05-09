@@ -126,12 +126,13 @@ export default function KlineChart({ payload }) {
       if (!lastTime) {
         return;
       }
+      const pnlText = position.unrealized_pnl !== undefined ? ` PnL ${position.unrealized_pnl}` : '';
       markers.push({
         time: asChartTime(lastTime),
         position: position.side === 'SHORT' ? 'aboveBar' : 'belowBar',
         color: position.side === 'SHORT' ? '#ef4444' : '#22c55e',
         shape: position.side === 'SHORT' ? 'arrowDown' : 'arrowUp',
-        text: `POS ${position.side} ${index + 1}`,
+        text: `POS ${position.side} ${index + 1}${pnlText}`,
       });
     });
 
@@ -164,7 +165,7 @@ export default function KlineChart({ payload }) {
           lineWidth: 2,
           lineStyle: 2,
           axisLabelVisible: true,
-          title: `POS ${position.side}`,
+          title: `POS ${position.side}${position.unrealized_pnl !== undefined ? ` PnL ${position.unrealized_pnl}` : ''}`,
         }),
       );
     });

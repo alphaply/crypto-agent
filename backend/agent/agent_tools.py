@@ -162,7 +162,19 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             side_str = "多" if op.pos_side == "LONG" else "空"
             enhanced_reason = f"🏁 平{side_str}: {op.amount} {symbol.split('/')[0]} @ {op.entry_price} (价值: ${cost:.2f}) | {op.reason}"
             
-            database.save_order_log(final_log_id, symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id)
+            database.save_order_log(final_log_id, symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount)
+            database.upsert_position_history(
+                config_id=config_id,
+                symbol=symbol,
+                position_key=f"real-close:{final_log_id}",
+                side=op.pos_side,
+                status="CLOSED",
+                source="local_real_close_order",
+                closed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                close_price=op.entry_price,
+                amount=op.amount,
+                raw={"order_id": final_log_id, "reason": op.reason},
+            )
             execution_results.append(f"✅ 下单成功 ({op.pos_side}) @ {op.entry_price} | ID: {final_log_id}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 下单失败: {str(e)}")

@@ -8,7 +8,7 @@ import { usePreferences } from '../app/preferences';
 const { Title, Paragraph } = Typography;
 
 export default function HistoryPage() {
-  const { t } = usePreferences();
+  const { t, selectedSymbol, setSelectedSymbol } = usePreferences();
   const [payload, setPayload] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -23,9 +23,10 @@ export default function HistoryPage() {
       setLoading(true);
       setError('');
       try {
-        const bootstrap = await api.get('/dashboard/overview', { params: symbol ? { symbol } : {} });
-        const nextSymbol = symbol || bootstrap.data.current_symbol;
-        const response = await api.get('/history', {
+        const requestedSymbol = symbol || selectedSymbol;
+        const bootstrap = await api.get('/public/dashboard', { params: requestedSymbol ? { symbol: requestedSymbol } : {} });
+        const nextSymbol = requestedSymbol || bootstrap.data.current_symbol;
+        const response = await api.get('/public/history', {
           params: {
             symbol: nextSymbol,
             config_id: configId,
@@ -37,13 +38,17 @@ export default function HistoryPage() {
           return;
         }
         setSymbol(nextSymbol);
+        if (nextSymbol && nextSymbol !== selectedSymbol) {
+          setSelectedSymbol(nextSymbol);
+        }
         setPayload({
           symbols: bootstrap.data.symbols,
           history: response.data,
         });
         setCompareIds((prev) => {
           const allowed = new Set(response.data.active_agents || []);
-          return prev.filter((item) => allowed.has(item));
+          const filtered = prev.filter((item) => allowed.has(item));
+          return filtered.length === prev.length ? prev : filtered;
         });
       } catch (err) {
         if (mounted) {
@@ -59,7 +64,7 @@ export default function HistoryPage() {
     return () => {
       mounted = false;
     };
-  }, [symbol, configId, compareIds, page]);
+  }, [symbol, selectedSymbol, configId, compareIds, page, setSelectedSymbol]);
 
   const compareSeries = useMemo(() => {
     const series = payload?.history?.history_compare_series || [];
@@ -70,15 +75,16 @@ export default function HistoryPage() {
   }, [payload]);
 
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Card className="hero-card">
-        <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
+    <div className="boxed-page history-page">
+      <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      <Card className="admin-hero">
+        <Space className="admin-hero__inner" align="start" wrap>
           <div>
             <Title level={2} style={{ margin: 0 }}>
               {t('history')}
             </Title>
             <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Compare equity, review markdown summaries, and inspect symbol-level trade history.
+              {t('historyPageDesc')}
             </Paragraph>
           </div>
           <Space wrap>
@@ -89,6 +95,7 @@ export default function HistoryPage() {
               onChange={(value) => {
                 setPage(1);
                 setSymbol(value);
+                setSelectedSymbol(value);
               }}
             />
             <Select
@@ -184,6 +191,7 @@ export default function HistoryPage() {
           </Card>
         </>
       ) : null}
-    </Space>
+      </Space>
+    </div>
   );
 }

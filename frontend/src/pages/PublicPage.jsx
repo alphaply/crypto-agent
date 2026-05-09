@@ -119,11 +119,11 @@ export default function PublicPage() {
               pagination={false}
               scroll={{ x: 900 }}
               columns={[
-                { title: 'Model', dataIndex: 'model' },
-                { title: 'Prompt', dataIndex: 'prompt' },
-                { title: 'Completion', dataIndex: 'completion' },
-                { title: 'Total', dataIndex: 'total' },
-                { title: 'Cost', dataIndex: 'cost' },
+                { title: t('modelColumn'), dataIndex: 'model' },
+                { title: t('promptColumn'), dataIndex: 'prompt' },
+                { title: t('completionColumn'), dataIndex: 'completion' },
+                { title: t('totalColumn'), dataIndex: 'total' },
+                { title: t('costColumn'), dataIndex: 'cost' },
               ]}
             />
           </Card>
@@ -135,11 +135,11 @@ export default function PublicPage() {
               pagination={false}
               scroll={{ x: 900 }}
               columns={[
-                { title: 'Config ID', dataIndex: 'config_id' },
-                { title: 'Symbol', dataIndex: 'symbol' },
-                { title: 'Prompt', dataIndex: 'prompt' },
-                { title: 'Completion', dataIndex: 'completion' },
-                { title: 'Total', dataIndex: 'total' },
+                { title: t('configIdColumn'), dataIndex: 'config_id' },
+                { title: t('symbol'), dataIndex: 'symbol' },
+                { title: t('promptColumn'), dataIndex: 'prompt' },
+                { title: t('completionColumn'), dataIndex: 'completion' },
+                { title: t('totalColumn'), dataIndex: 'total' },
               ]}
             />
           </Card>

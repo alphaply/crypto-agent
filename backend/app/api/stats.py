@@ -30,7 +30,10 @@ def list_pricing(_: dict = Depends(get_current_user)):
 
 @router.post("/pricing")
 def save_pricing(payload: PricingSaveRequest, _: dict = Depends(get_current_user)):
-    return {"success": True, **save_pricing_payload(payload.model, payload.input_price, payload.output_price)}
+    return {
+        "success": True,
+        **save_pricing_payload(payload.model, payload.input_price, payload.output_price, payload.currency),
+    }
 
 
 @router.delete("/pricing")

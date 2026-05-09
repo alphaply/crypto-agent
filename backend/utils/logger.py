@@ -42,6 +42,12 @@ def setup_logger(name, log_file="app.log", level=logging.INFO):
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
+        if not os.path.isabs(log_file):
+            log_dir = os.getenv("DATA_DIR")
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+                log_file = os.path.join(log_dir, log_file)
+
         file_handler = RotatingFileHandler(
             log_file,
             maxBytes=10 * 1024 * 1024,

@@ -5,6 +5,8 @@ from datetime import datetime
 from backend.config import config as global_config
 from backend.config_store import (
     export_agent_configs,
+    export_full_snapshot,
+    import_full_snapshot,
     load_management_snapshot,
     runtime_options_payload,
     save_runtime_snapshot,
@@ -46,6 +48,8 @@ def get_raw_config_payload():
     return {
         "globals": snapshot["globals"],
         "agents": snapshot["agents"],
+        "llm_providers": snapshot.get("llm_providers", []),
+        "exchange_profiles": snapshot.get("exchange_profiles", []),
         "pricing": _pricing_items(),
         "prompts": {"files": _prompt_files()},
         "options": {**runtime_options_payload(), "prompt_files": _prompt_files()},
@@ -53,8 +57,18 @@ def get_raw_config_payload():
     }
 
 
-def save_config_payload(globals_payload: dict, agents_payload: list[dict]):
-    save_runtime_snapshot(globals_payload, agents_payload)
+def save_config_payload(
+    globals_payload: dict,
+    agents_payload: list[dict],
+    llm_providers_payload: list[dict] | None = None,
+    exchange_profiles_payload: list[dict] | None = None,
+):
+    save_runtime_snapshot(
+        globals_payload,
+        agents_payload,
+        llm_providers_payload or [],
+        exchange_profiles_payload or [],
+    )
     global_config.reload_config()
     return {"message": "Configuration saved."}
 
@@ -63,6 +77,45 @@ def export_config_payload():
     content = json.dumps(export_agent_configs(), indent=2, ensure_ascii=False)
     filename = f"crypto_configs_{datetime.now().strftime('%Y%m%d')}.json"
     return content, filename
+
+
+def full_export_payload(include_secrets: bool = True) -> tuple[str, str]:
+    """构建包含所有配置（含 prompts 和 pricing）的完整导出包并序列化为 JSON。"""
+    snapshot = export_full_snapshot(include_secrets=include_secrets)
+
+    # 附加 prompts 内容
+    directory = prompt_dir()
+    prompts: dict[str, str] = {}
+    if os.path.isdir(directory):
+        for fname in os.listdir(directory):
+            if not fname.endswith(".txt") or fname in BLOCKED_PROMPT_FILES:
+                continue
+            try:
+                with open(os.path.join(directory, fname), "r", encoding="utf-8") as f:
+                    prompts[fname] = f.read()
+            except Exception:
+                pass
+    snapshot["prompts"] = prompts
+
+    # 附加 model_pricing
+    snapshot["model_pricing"] = _pricing_items()
+
+    content = json.dumps(snapshot, indent=2, ensure_ascii=False)
+    filename = f"crypto_full_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    return content, filename
+
+
+def full_import_payload(data: dict, write_env: bool = False) -> dict:
+    """导入完整配置包，包括 prompts 和 model_pricing。"""
+    prompt_files: dict[str, str] = data.pop("prompts", None) or {}
+    model_pricing: list[dict] = data.pop("model_pricing", None) or []
+    result = import_full_snapshot(
+        data=data,
+        write_env=write_env,
+        prompt_files=prompt_files,
+        model_pricing=model_pricing,
+    )
+    return result
 
 
 def list_prompts_payload():
@@ -114,7 +167,12 @@ def delete_config_payload(config_id: str):
 
     dependencies_before = get_config_dependency_counts(config_id)
     cleanup_result = purge_config_all_data(config_id)
-    save_runtime_snapshot(snapshot["globals"], remaining)
+    save_runtime_snapshot(
+        snapshot["globals"],
+        remaining,
+        snapshot.get("llm_providers", []),
+        snapshot.get("exchange_profiles", []),
+    )
     global_config.reload_config()
     return {
         "message": f"Deleted config {config_id} and cleaned linked runtime/history data.",

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.api import auth, chat, config, dashboard, history, public, stats
+from backend.app.api import auth, chat, config, dashboard, history, public, setup, stats
 from backend.app.core.runtime import lifespan
 
 
@@ -21,6 +21,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(setup.router)
 app.include_router(chat.router)
 app.include_router(config.router)
 app.include_router(dashboard.router)
@@ -38,7 +39,38 @@ if ASSETS_DIR.exists():
 
 @app.get("/health")
 def health():
-    return {"success": True, "status": "ok"}
+    db_ok = False
+    config_ok = False
+    config_error = ""
+    db_path = ""
+    scheduler_enabled = False
+    try:
+        from backend.database import DB_NAME, get_db_conn
+
+        db_path = str(DB_NAME)
+        with get_db_conn() as conn:
+            conn.execute("SELECT 1").fetchone()
+        db_ok = True
+    except Exception:
+        db_ok = False
+    try:
+        from backend.config import config as runtime_config
+        from backend.config_store import LAST_RUNTIME_CONFIG_ERROR
+
+        config_error = LAST_RUNTIME_CONFIG_ERROR or ""
+        config_ok = not config_error
+        scheduler_enabled = bool(getattr(runtime_config, "enable_scheduler", False))
+    except Exception as exc:
+        config_error = str(exc)
+        config_ok = False
+    success = bool(db_ok and config_ok)
+    return {
+        "success": success,
+        "status": "ok" if success else "degraded",
+        "database": {"ok": db_ok, "path": db_path},
+        "config": {"ok": config_ok, "error": config_error},
+        "scheduler": {"enabled": scheduler_enabled, "run_in_web": os.getenv("RUN_SCHEDULER_IN_WEB", "true").lower() == "true"},
+    }
 
 
 if DIST_DIR.exists():
