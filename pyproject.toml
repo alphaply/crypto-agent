@@ -1,0 +1,28 @@
+[project]
+name = "crypto-agent"
+version = "0.1.0"
+description = "Crypto trading agent with FastAPI backend and React frontend"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ccxt>=4.5.34",
+    "cryptography>=46.0.3",
+    "fastapi>=0.128.0",
+    "gradio>=6.4.0",
+    "langchain-openai>=1.1.7",
+    "langgraph>=1.0.7",
+    "langgraph-checkpoint-sqlite>=3.0.3",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "plotly>=6.5.2",
+    "pydantic>=2.12.5",
+    "pyjwt>=2.12.1",
+    "python-dotenv>=1.2.1",
+    "schedule>=1.2.2",
+    "uvicorn>=0.40.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]

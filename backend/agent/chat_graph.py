@@ -1,0 +1,614 @@
+from __future__ import annotations
+
+import atexit
+import os
+import queue
+import sqlite3
+import threading
+import time
+from typing import Annotated, Any, Dict, TypedDict
+
+from dotenv import load_dotenv
+from langchain_core.messages import (
+    BaseMessageChunk,
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+    SystemMessage,
+    trim_messages,
+    BaseMessage,
+    message_chunk_to_message,
+)
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.types import Command, interrupt
+
+from backend.agent.agent_graph import start_node as scheduler_start_node
+from backend.agent.agent_models import AgentState
+from backend.agent.agent_tools import (
+    cancel_orders_real,
+    cancel_orders_strategy,
+    close_position_real,
+    open_position_real,
+    open_position_spot_dca,
+    open_position_strategy,
+    analyze_event_contract,
+    format_event_contract_order
+)
+from backend.config import config as global_config
+import backend.database as database
+from backend.utils.llm_utils import (
+    LLMInvocationError,
+    build_chat_openai,
+    format_llm_error_message,
+    invoke_with_retry,
+    sync_langsmith_environment,
+)
+from backend.utils.logger import setup_logger
+from backend.storage_paths import data_file
+
+load_dotenv()
+logger = setup_logger("ChatGraph")
+
+CHAT_CHECKPOINT_DB = str(data_file("CHAT_CHECKPOINT_DB", "chat_checkpoints.sqlite"))
+CHAT_MAX_HISTORY_MESSAGES = int(os.getenv("CHAT_MAX_HISTORY_MESSAGES", "12"))
+CHAT_TRIM_MAX_TOKENS = int(os.getenv("CHAT_TRIM_MAX_TOKENS", "6000"))
+
+
+class ChatState(TypedDict):
+    messages: Annotated[list, add_messages]
+    symbol: str
+    system_prompt: str
+    q: str
+    market_context: Dict[str, Any]
+    account_context: Dict[str, Any]
+
+def _get_chat_tools(cfg: Dict[str, Any]):
+    trade_mode = cfg.get("mode", "STRATEGY").upper()
+    
+    if trade_mode == "REAL":
+        return [open_position_real, close_position_real, cancel_orders_real] #, analyze_event_contract, format_event_contract_order]
+    if trade_mode == "SPOT_DCA":
+        return [open_position_spot_dca] #, analyze_event_contract, format_event_contract_order]
+    return [open_position_strategy, cancel_orders_strategy] #, analyze_event_contract, format_event_contract_order]
+
+
+def _message_counter(msgs: list) -> int:
+    return len(msgs)
+
+
+def _tool_call_ids_from_message(msg) -> list[str]:
+    tool_calls = getattr(msg, "tool_calls", None) or []
+    ids = []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            tcid = tc.get("id")
+        else:
+            tcid = getattr(tc, "id", None)
+        if tcid:
+            ids.append(str(tcid))
+    return ids
+
+
+def _sanitize_tool_sequences(messages: list):
+    sanitized = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if isinstance(msg, ToolMessage):
+            i += 1
+            continue
+        required_ids = _tool_call_ids_from_message(msg)
+        if not required_ids:
+            sanitized.append(msg)
+            i += 1
+            continue
+        required = set(required_ids)
+        seen = set()
+        matched_tools = []
+        j = i + 1
+        while j < len(messages) and isinstance(messages[j], ToolMessage):
+            tcid = str(getattr(messages[j], "tool_call_id", "") or "")
+            if tcid in required and tcid not in seen:
+                matched_tools.append(messages[j])
+                seen.add(tcid)
+            j += 1
+        if seen == required:
+            sanitized.append(msg)
+            sanitized.extend(matched_tools)
+        i = j
+    return sanitized
+
+
+def _trim_chat_messages(system_prompt: str, history: list):
+    pinned_prompt = HumanMessage(content=system_prompt)
+    if history:
+        token_trimmed_history = trim_messages(
+            history,
+            max_tokens=CHAT_TRIM_MAX_TOKENS,
+            token_counter="approximate",
+            strategy="last",
+            include_system=False,
+            allow_partial=False,
+        )
+    else:
+        token_trimmed_history = []
+    token_trimmed_history = _sanitize_tool_sequences(token_trimmed_history)
+    count_trimmed_history = trim_messages(
+        token_trimmed_history,
+        max_tokens=CHAT_MAX_HISTORY_MESSAGES,
+        token_counter=_message_counter,
+        strategy="last",
+        include_system=False,
+        allow_partial=False,
+    )
+    count_trimmed_history = _sanitize_tool_sequences(count_trimmed_history)
+    final_messages = [SystemMessage(content=system_prompt)] + count_trimmed_history
+    return final_messages
+
+
+def _emit_stream_status(configurable: Dict[str, Any], stage: str, message: str, attempt: int | None = None):
+    event_queue = configurable.get("event_queue")
+    if not event_queue:
+        return
+    payload = {"type": "status", "stage": stage, "message": message}
+    if attempt is not None:
+        payload["attempt"] = attempt
+    event_queue.put(payload)
+
+
+def _emit_stream_event(configurable: Dict[str, Any], payload: Dict[str, Any]):
+    event_queue = configurable.get("event_queue")
+    if event_queue:
+        event_queue.put(payload)
+
+
+def _chat_trace_config(session_id: str, config_id: str | None, event_queue=None) -> RunnableConfig:
+    sync_langsmith_environment()
+    cfg = global_config.get_config_by_id(config_id) if config_id else None
+    symbol = cfg.get("symbol", "Chat") if cfg else "Chat"
+    model = cfg.get("model", "Unknown Model") if cfg else "Unknown Model"
+    configurable = {"thread_id": session_id, "config_id": config_id}
+    if event_queue is not None:
+        configurable["event_queue"] = event_queue
+    return {
+        "configurable": configurable,
+        "metadata": {
+            "source": "chat",
+            "session_id": session_id,
+            "config_id": config_id or "",
+            "symbol": symbol,
+            "model": model,
+        },
+        "tags": ["chat", f"config:{config_id or 'unknown'}", f"symbol:{symbol}", f"model:{model}"],
+    }
+
+
+def _chat_error_payload(exc: BaseException) -> Dict[str, Any]:
+    if isinstance(exc, LLMInvocationError):
+        return {
+            "type": "error",
+            "message": str(exc),
+            "error_code": exc.error_type,
+            "retryable": exc.retryable,
+        }
+    return {
+        "type": "error",
+        "message": format_llm_error_message("unknown_error"),
+        "error_code": "unknown_error",
+        "retryable": False,
+    }
+
+
+def start_node(state: ChatState, config: RunnableConfig):
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    q = state.get("q")
+    
+    cfg = global_config.get_config_by_id(config_id)
+    if not cfg:
+        raise ValueError(f"Config not found for config_id={config_id}")
+
+    symbol = cfg.get("symbol", "Unknown")
+    
+    scheduler_state = AgentState(
+        symbol=symbol,
+        messages=[],
+        market_context={},
+        account_context={},
+        history_context=[],
+        full_analysis="",
+        human_message=None,
+    )
+    chat_config = {
+        "configurable": {
+            **configurable,
+            "agent_config": cfg
+        }
+    }
+    # 调用底层 start_node 获取最新数据
+    started = scheduler_start_node(scheduler_state, config=chat_config)
+    
+    system_prompt = started.messages[0].content if started.messages else ""
+    
+    updates = {
+        "system_prompt": system_prompt, 
+        "symbol": symbol,
+        "q": q,
+        "market_context": started.market_context,
+        "account_context": started.account_context
+    }
+    if q:
+        updates["messages"] = [HumanMessage(content=q)]
+    return updates
+
+
+def model_node(state: ChatState, config: RunnableConfig):
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    cfg = global_config.get_config_by_id(config_id)
+    if not cfg:
+        raise ValueError(f"Config context lost for config_id={config_id}")
+
+    symbol = cfg.get("symbol", "Chat")
+    model_name = cfg.get("model", "Unknown Model")
+    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
+    api_base = cfg.get("api_base")
+    
+    if not api_key:
+        logger.error(f"❌ [Chat Error] No API Key found for {symbol} ({config_id})")
+        return {"messages": [AIMessage(content="❌ 错误：未配置 API Key，请在设置中检查。")], "q": None}
+
+    history = list(state.get("messages", []))
+    system_prompt = state.get("system_prompt", "")
+    trimmed = _trim_chat_messages(system_prompt, history)
+    
+    logger.info(
+        f"[Chat] start session={configurable.get('thread_id')} config_id={config_id} "
+        f"symbol={symbol} model={model_name} messages={len(trimmed)}"
+    )
+    _emit_stream_status(configurable, "waiting_model", "正在等待模型响应")
+
+    llm = build_chat_openai(
+        model=model_name,
+        api_key=api_key,
+        base_url=api_base,
+        temperature=0.5,
+        streaming=True,
+        extra_body=cfg.get("extra_body"),
+        thinking_enabled=cfg.get("thinking_enabled"),
+        reasoning_effort=cfg.get("reasoning_effort"),
+    ).bind_tools(_get_chat_tools(cfg))
+
+    def _stream_model_response():
+        gathered = None
+        trace_config = {"metadata": config.get("metadata", {}), "tags": config.get("tags", [])}
+        for chunk in llm.stream(trimmed, config=trace_config):
+            if not isinstance(chunk, BaseMessageChunk):
+                continue
+            gathered = chunk if gathered is None else gathered + chunk
+
+            reasoning_token = _chunk_reasoning_text(chunk)
+            if reasoning_token:
+                _emit_stream_event(configurable, {"type": "reasoning_token", "token": reasoning_token})
+
+            token = _chunk_to_text(chunk)
+            if token:
+                _emit_stream_event(configurable, {"type": "token", "token": token})
+
+            tool_calls = _extract_tool_calls(chunk)
+            if tool_calls:
+                _emit_stream_event(configurable, {"type": "tool_calls", "tool_calls": tool_calls})
+
+        if gathered is None:
+            return AIMessage(content="")
+        return message_chunk_to_message(gathered)
+
+    started_at = time.time()
+    response = invoke_with_retry(
+        _stream_model_response,
+        logger=logger,
+        context=f"chat session={configurable.get('thread_id')} config_id={config_id} symbol={symbol} model={model_name}",
+        on_retry=lambda next_attempt, total_attempts, error_type, exc: _emit_stream_status(
+            configurable,
+            "retrying",
+            f"模型响应较慢，正在自动重试（第 {next_attempt}/{total_attempts} 次）",
+            next_attempt,
+        ),
+    )
+    
+    # 标注模型名称
+    if response.content and not response.tool_calls:
+        response.content += f"\n\n---\n> 🧠 本次回答由决策模型 **{model_name}** 完成。"
+
+    logger.info(
+        f"[Chat] success session={configurable.get('thread_id')} config_id={config_id} "
+        f"symbol={symbol} model={model_name} duration={time.time() - started_at:.2f}s"
+    )
+
+    return {
+        "messages": [response], 
+        "symbol": symbol, 
+        "q": None
+    }
+
+
+def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str) -> str:
+    tool_map = {
+        "open_position_real": open_position_real,
+        "open_position_spot_dca": open_position_spot_dca,
+        "close_position_real": close_position_real,
+        "cancel_orders_real": cancel_orders_real,
+        "open_position_strategy": open_position_strategy,
+        "cancel_orders_strategy": cancel_orders_strategy,
+        "analyze_event_contract": analyze_event_contract,
+        "format_event_contract_order": format_event_contract_order,
+    }
+    tool_obj = tool_map.get(tool_name)
+    if not tool_obj:
+        return f"Error: Tool '{tool_name}' not found."
+
+    call_args = dict(args)
+    call_args["config_id"] = config_id
+    call_args["symbol"] = symbol
+    return str(tool_obj.func(**call_args))
+
+
+def tools_node(state: ChatState, config: RunnableConfig):
+    last_message = state["messages"][-1]
+    tool_calls = getattr(last_message, "tool_calls", []) or []
+    outputs = []
+    
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id")
+    
+    cfg = global_config.get_config_by_id(config_id)
+    symbol = cfg.get("symbol", "Unknown") if cfg else state.get("symbol", "Unknown")
+
+    for call in tool_calls:
+        tool_name = call["name"]
+        tool_args = call.get("args", {})
+
+        approval = interrupt(
+            {
+                "type": "tool_approval",
+                "tool_call_id": call["id"],
+                "tool_name": tool_name,
+                "tool_args": tool_args,
+                "config_id": config_id,
+                "symbol": symbol,
+            }
+        )
+
+        approved = False
+        if isinstance(approval, dict):
+            approved = bool(approval.get("approved"))
+        elif isinstance(approval, bool):
+            approved = approval
+
+        if not approved:
+            outputs.append(ToolMessage(tool_call_id=call["id"], content="Rejected by user."))
+            continue
+
+        try:
+            result = _run_tool(tool_name, tool_args, config_id, symbol)
+            outputs.append(ToolMessage(tool_call_id=call["id"], content=result))
+        except Exception as exc:
+            logger.error(f"Tool error ({tool_name}): {exc}")
+            outputs.append(ToolMessage(tool_call_id=call["id"], content=f"Error: {exc}"))
+
+    return {"messages": outputs, "symbol": symbol}
+
+
+def should_continue(state: ChatState):
+    last = state["messages"][-1]
+    if getattr(last, "tool_calls", None):
+        return "tools"
+    return "end"
+
+
+workflow = StateGraph(ChatState)
+workflow.add_node("start", start_node)
+workflow.add_node("model", model_node)
+workflow.add_node("tools", tools_node)
+
+workflow.set_entry_point("start")
+
+workflow.add_edge("start", "model")
+
+workflow.add_conditional_edges("model", should_continue, {"tools": "tools", "end": END})
+workflow.add_edge("tools", "model")
+
+_checkpointer_cm = SqliteSaver.from_conn_string(CHAT_CHECKPOINT_DB)
+checkpointer = _checkpointer_cm.__enter__()
+atexit.register(lambda: _checkpointer_cm.__exit__(None, None, None))
+
+chat_app = workflow.compile(checkpointer=checkpointer, name="CryptoChat")
+
+
+def _chunk_to_text(chunk: BaseMessageChunk | Any) -> str:
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join([i.get("text", "") if isinstance(i, dict) else str(i) for i in content])
+    return ""
+
+
+def _coerce_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(item))
+        return "".join(parts)
+    if isinstance(value, dict):
+        for key in ("text", "content", "reasoning_content", "delta"):
+            if key in value:
+                return _coerce_text(value.get(key))
+        return ""
+    return str(value)
+
+
+def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
+    add_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+    resp_meta = getattr(chunk, "response_metadata", {}) or {}
+    
+    if "reasoning_content" in add_kwargs:
+        return _coerce_text(add_kwargs["reasoning_content"])
+    
+    if "reasoning_content" in resp_meta:
+        return _coerce_text(resp_meta["reasoning_content"])
+
+    delta = add_kwargs.get("delta") or resp_meta.get("delta") or {}
+    if isinstance(delta, dict):
+        res = delta.get("reasoning_content") or delta.get("reasoning")
+        if res:
+            return _coerce_text(res)
+            
+    return ""
+
+
+def _extract_tool_calls(chunk: BaseMessageChunk | Any) -> list:
+    """提取增量的工具调用块"""
+    tcc = getattr(chunk, "tool_call_chunks", [])
+    if not tcc: return []
+    
+    res = []
+    for c in tcc:
+        res.append({
+            "index": c.get("index"),
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "args": c.get("args"),
+        })
+    return res
+
+
+def _stream_worker(run_callable, event_queue):
+    try:
+        for item in run_callable():
+            event_queue.put(item)
+    except Exception as exc:
+        event_queue.put(exc)
+    finally:
+        event_queue.put(None)
+
+
+def _yield_stream_events(run_callable, event_queue, initial_status: str):
+    worker = threading.Thread(target=_stream_worker, args=(run_callable, event_queue), daemon=True)
+
+    yield {"type": "status", "stage": "preparing_context", "message": initial_status}
+    worker.start()
+
+    while True:
+        item = event_queue.get()
+        if item is None:
+            break
+
+        if isinstance(item, BaseException):
+            payload = _chat_error_payload(item)
+            logger.error(
+                f"[Chat Stream] failed type={payload['error_code']} retryable={payload['retryable']}: {item}"
+            )
+            yield payload
+            break
+
+        if isinstance(item, dict):
+            yield item
+
+
+def _chat_stream_items(request_payload, config):
+    for _ in chat_app.stream(request_payload, config=config, stream_mode="updates"):
+        continue
+
+
+def _resume_stream_items(command, config):
+    for item in chat_app.stream(command, config=config, stream_mode="updates"):
+        if not isinstance(item, dict):
+            continue
+        tools_update = item.get("tools")
+        if isinstance(tools_update, dict):
+            for msg in tools_update.get("messages", []) or []:
+                if isinstance(msg, ToolMessage):
+                    yield {
+                        "type": "tool_result",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content,
+                        "role": "tool",
+                    }
+        if isinstance(item.get("model"), dict):
+            yield {"type": "status", "stage": "waiting_model", "message": "工具已执行，正在等待模型继续分析"}
+
+
+def stream_chat(session_id: str, payload: Dict[str, Any]):
+    config_id = payload.pop("config_id", None)
+    event_queue = queue.Queue()
+    config = _chat_trace_config(session_id, config_id, event_queue)
+
+    def run():
+        yield from _chat_stream_items(payload, config)
+
+    yield from _yield_stream_events(run, event_queue, "正在整理市场与账户数据")
+
+
+def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
+    event_queue = queue.Queue()
+    config = _chat_trace_config(session_id, config_id, event_queue)
+    command = Command(resume={"approved": approved})
+
+    def run():
+        yield from _resume_stream_items(command, config)
+
+    yield from _yield_stream_events(run, event_queue, "正在继续执行工具审批后的对话")
+
+
+def invoke_chat(session_id: str, payload: Dict[str, Any]):
+    config_id = payload.pop("config_id", None)
+    config = _chat_trace_config(session_id, config_id)
+    return chat_app.invoke(payload, config=config)
+
+
+def resume_chat(session_id: str, approved: bool, config_id: str = None):
+    config = _chat_trace_config(session_id, config_id)
+    return chat_app.invoke(Command(resume={"approved": approved}), config=config)
+
+
+def get_chat_state(session_id: str, config_id: str = None):
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
+    snapshot = chat_app.get_state(config)
+    return snapshot.values if snapshot else {}
+
+
+def get_chat_interrupt(session_id: str, config_id: str = None):
+    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
+    snapshot = chat_app.get_state(config)
+    if not snapshot or not getattr(snapshot, "interrupts", None): return None
+    intr = snapshot.interrupts[0]
+    return {"id": getattr(intr, "id", ""), "value": getattr(intr, "value", {}) or {}}
+
+
+def delete_chat_threads(session_ids):
+    ids = [sid for sid in session_ids if sid]
+    if not ids: return 0
+    checkpointer.conn.commit()
+    conn = sqlite3.connect(CHAT_CHECKPOINT_DB)
+    c = conn.cursor()
+    tables = c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    deleted = 0
+    placeholders = ",".join(["?"] * len(ids))
+    for (table_name,) in tables:
+        if "thread_id" not in {col[1] for col in c.execute(f"PRAGMA table_info({table_name})").fetchall()}: continue
+        c.execute(f"DELETE FROM {table_name} WHERE thread_id IN ({placeholders})", tuple(ids))
+        deleted += c.rowcount
+    conn.commit()
+    conn.close()
+    return deleted

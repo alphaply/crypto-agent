@@ -1,0 +1,60 @@
+services:
+  crypto-agent:
+    image: alphaply712/crypto-agent:latest
+    container_name: crypto-agent
+    restart: unless-stopped
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-8}
+      CONFIG_MASTER_KEY: ${CONFIG_MASTER_KEY:?Set CONFIG_MASTER_KEY in .env}
+      PORT: ${APP_PORT:-7860}
+      DATA_DIR: /app/data
+      RUN_SCHEDULER_IN_WEB: "false"
+      TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+    ports:
+      - "${HOST_PORT:-31421}:${APP_PORT:-7860}"
+    volumes:
+      - crypto_agent_data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  crypto-agent-scheduler:
+    image: alphaply712/crypto-agent:latest
+    container_name: crypto-agent-scheduler
+    restart: unless-stopped
+    depends_on:
+      - crypto-agent
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      CONFIG_MASTER_KEY: ${CONFIG_MASTER_KEY:?Set CONFIG_MASTER_KEY in .env}
+      DATA_DIR: /app/data
+      RUN_SCHEDULER_IN_WEB: "false"
+      SCHEDULER_MAX_WORKERS: ${SCHEDULER_MAX_WORKERS:-2}
+      TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+    command:
+      - uv
+      - run
+      - python
+      - -c
+      - from backend.app.core.scheduler import run_scheduler_forever; run_scheduler_forever()
+    volumes:
+      - crypto_agent_data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+volumes:
+  crypto_agent_data:
