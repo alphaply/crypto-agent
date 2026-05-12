@@ -3,19 +3,28 @@
 .env.*
 .env*
 !.env.template
+frontend/.env
+frontend/.env.*
+frontend/.env*
 pricing.json
 
 # Docker local overrides
 docker-compose.override.yml
 
 # Runtime state
+data/
+logs/
 trading_data.db
+chat_checkpoints.sqlite
+chat_checkpoints.sqlite-*
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite-journal
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
 *.log
 app.log
 
@@ -29,6 +38,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 coverage.xml
 htmlcov/
 build/
@@ -43,16 +53,23 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/coverage/
+.npm/
+.pnpm-store/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# IDE and OS
+# IDE, AI assistant, and OS local files
 .idea/
 .vscode/
+.claude/
+.kiro/
+.cursor/
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 
 # Local generated assets
 agent/prompts/*
