@@ -28,6 +28,7 @@ import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock, { splitThinkingContent } from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
 import LineChart from '../components/LineChart';
+import { EditOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
 import { usePreferences } from '../app/preferences';
 
@@ -65,7 +66,8 @@ function formatPositionValue(value) {
 }
 
 function formatPercentValue(value) {
-  const numeric = Number(value || 0);
+  if (value === null || value === undefined || value === '') return '-';
+  const numeric = Number(value);
   return `${Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00'}%`;
 }
 
@@ -121,6 +123,21 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
 
   return (
     <div className="agent-overview-grid">
+      <button
+        type="button"
+        className={`agent-overview-card agent-overview-compare ${activeTab === 'compare' ? 'active' : ''}`}
+        onClick={() => onSelect('compare')}
+      >
+        <span className="agent-overview-main">
+          <span className="agent-overview-title">
+            <Text strong>{t('compareView')}</Text>
+            <Text type="secondary" className="agent-overview-meta">{agents.length} agents</Text>
+          </span>
+        </span>
+        <span className="agent-overview-footer">
+          <Text type="secondary">{t('equityCompare')}</Text>
+        </span>
+      </button>
       {agents.map((agent) => {
         const workspace = workspaceMap?.[agent.config_id];
         const pendingOrders = workspace?.kline?.pending_orders || [];
@@ -380,7 +397,7 @@ function PaginatedOrderList({ orders, t }) {
   );
 }
 
-function WorkspacePanel({ workspace, timeframe, setTimeframe }) {
+function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
   const { t } = usePreferences();
   const screens = useBreakpoint();
   const isMobile = !screens.md;
@@ -391,6 +408,58 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe }) {
   const shortMemories = workspace?.short_memories?.short_memories || [];
   const recentOrders = workspace?.orders?.orders || [];
   const pendingOrders = kline?.pending_orders || [];
+
+  const [editingMemory, setEditingMemory] = useState(null);
+  const [memoryEditText, setMemoryEditText] = useState('');
+  const [memorySaving, setMemorySaving] = useState(false);
+  const [editingDailySummary, setEditingDailySummary] = useState(null);
+  const [summaryEditText, setSummaryEditText] = useState('');
+  const [summarySaving, setSummarySaving] = useState(false);
+
+  const openMemoryEdit = (memory) => {
+    setEditingMemory(memory);
+    setMemoryEditText(memory.market_summary || '');
+  };
+
+  const saveMemoryEdit = async () => {
+    if (!editingMemory) return;
+    setMemorySaving(true);
+    try {
+      await api.put('/history/short-memories', {
+        config_id: editingMemory.config_id,
+        bucket_start: editingMemory.bucket_start,
+        market_summary: memoryEditText,
+        position_summary: editingMemory.position_summary || '',
+      });
+      setEditingMemory(null);
+      message.success(t('saved'));
+      window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'));
+    } finally {
+      setMemorySaving(false);
+    }
+  };
+
+  const openSummaryEdit = (summary) => {
+    setEditingDailySummary(summary);
+    setSummaryEditText(summary.summary || summary.content || '');
+  };
+
+  const saveSummaryEdit = async () => {
+    if (!editingDailySummary) return;
+    setSummarySaving(true);
+    try {
+      await api.put('/history/daily-summaries', {
+        date: editingDailySummary.date || editingDailySummary.timestamp,
+        config_id: editingDailySummary.config_id,
+        summary: summaryEditText,
+      });
+      setEditingDailySummary(null);
+      message.success(t('saved'));
+      window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'));
+    } finally {
+      setSummarySaving(false);
+    }
+  };
   const timeframeOptions = workspace?.market_timeframes || [];
 
   if (!agent) {
@@ -492,19 +561,42 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe }) {
 
       <Card className="panel-card" title={t('shortMemories')}>
         {shortMemories.length ? (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <div style={{ maxHeight: 400, overflowY: 'auto', paddingRight: 4 }}>
             {shortMemories.map((memory) => (
-              <Card key={`${memory.config_id}-${memory.bucket_start}`} className="summary-snippet">
+              <Card
+                key={`${memory.config_id}-${memory.bucket_start}`}
+                className="summary-snippet"
+                extra={authenticated ? (
+                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openMemoryEdit(memory)} />
+                ) : null}
+              >
                 <Space direction="vertical" size={6} style={{ width: '100%' }}>
                   <Text strong>{memory.bucket_start} - {memory.bucket_end}</Text>
                   <MarkdownBlock content={memory.market_summary || ''} />
                 </Space>
               </Card>
             ))}
-          </Space>
+          </div>
         ) : (
           <Empty description={t('noData')} />
         )}
+        <Modal
+          open={Boolean(editingMemory)}
+          title={t('shortMemories')}
+          onCancel={() => setEditingMemory(null)}
+          onOk={saveMemoryEdit}
+          confirmLoading={memorySaving}
+          okText={t('save')}
+          cancelText={t('cancel')}
+          width={640}
+        >
+          {editingMemory ? (
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Text type="secondary">{editingMemory.bucket_start} — {editingMemory.bucket_end}</Text>
+              <TextArea rows={10} value={memoryEditText} onChange={(e) => setMemoryEditText(e.target.value)} />
+            </Space>
+          ) : null}
+        </Modal>
       </Card>
 
       <div className="workspace-grid">
@@ -567,19 +659,42 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe }) {
 
       <Card className="panel-card" title={t('dailySummaries')}>
         {dailySummaries.length ? (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <div style={{ maxHeight: 400, overflowY: 'auto', paddingRight: 4 }}>
             {dailySummaries.map((summary) => (
-              <Card key={`${summary.date || summary.timestamp}-${summary.config_id}`} className="summary-snippet">
+              <Card
+                key={`${summary.date || summary.timestamp}-${summary.config_id}`}
+                className="summary-snippet"
+                extra={authenticated ? (
+                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openSummaryEdit(summary)} />
+                ) : null}
+              >
                 <Space direction="vertical" size={6} style={{ width: '100%' }}>
                   <Text strong>{summary.date || summary.timestamp}</Text>
                   <MarkdownBlock content={summary.summary || summary.content || ''} />
                 </Space>
               </Card>
             ))}
-          </Space>
+          </div>
         ) : (
           <Empty description={t('noSummaries')} />
         )}
+        <Modal
+          open={Boolean(editingDailySummary)}
+          title={t('editDailySummary')}
+          onCancel={() => setEditingDailySummary(null)}
+          onOk={saveSummaryEdit}
+          confirmLoading={summarySaving}
+          okText={t('save')}
+          cancelText={t('cancel')}
+          width={640}
+        >
+          {editingDailySummary ? (
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Text type="secondary">{editingDailySummary.date || editingDailySummary.timestamp}</Text>
+              <TextArea rows={10} value={summaryEditText} onChange={(e) => setSummaryEditText(e.target.value)} />
+            </Space>
+          ) : null}
+        </Modal>
       </Card>
     </Space>
   );
@@ -1050,6 +1165,8 @@ export default function DashboardPage() {
     { label: t('totalPnl'), value: formatPositionValue(overviewMetrics.total_pnl ?? 0) },
   ];
 
+  const authenticated = Boolean(localStorage.getItem('crypto-agent-token'));
+
   const tabItems = useMemo(() => {
     const items = [
       {
@@ -1062,11 +1179,11 @@ export default function DashboardPage() {
       items.push({
         key: agent.config_id,
         label: agent.config_id,
-        children: <WorkspacePanel workspace={workspaceMap[agent.config_id]} timeframe={timeframe} setTimeframe={setTimeframe} />,
+        children: <WorkspacePanel workspace={workspaceMap[agent.config_id]} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} />,
       });
     });
     return items;
-  }, [compareLoading, compareSeries, dashboard, t, timeframe, workspaceMap]);
+  }, [authenticated, compareLoading, compareSeries, dashboard, t, timeframe, workspaceMap]);
 
   return (
     <div className="boxed-page dashboard-page">
@@ -1112,7 +1229,7 @@ export default function DashboardPage() {
               loading={workspaceLoading}
             />
           </div>
-          <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} className="dashboard-main-tabs" />
+          <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} className="dashboard-main-tabs" renderTabBar={() => null} />
         </div>
       ) : null}
       </Space>

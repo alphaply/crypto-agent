@@ -230,6 +230,52 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual(paged_cfg[0]["strategy_logic"], "logic-2")
         self.assertEqual(active_agents, ["cfg-a", "cfg-b"])
 
+    def test_recent_summary_logic_filters_config_time_and_limit(self):
+        with database.get_db_conn() as conn:
+            rows = [
+                ("2026-05-05 01:00:00", "BTC/USDT", "cfg-a", "old"),
+                ("2026-05-05 02:00:00", "BTC/USDT", "cfg-a", "logic-1"),
+                ("2026-05-05 03:00:00", "BTC/USDT", "cfg-b", "logic-b"),
+                ("2026-05-05 04:00:00", "BTC/USDT", "cfg-a", "logic-2"),
+                ("2026-05-05 05:00:00", "BTC/USDT", "cfg-a", ""),
+            ]
+            for timestamp, symbol, config_id, logic in rows:
+                conn.execute(
+                    "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                    (timestamp, symbol, "agent", config_id, logic),
+                )
+            conn.commit()
+
+        rows = database.get_recent_summary_logic("cfg-a", since_time="2026-05-05 02:00:00", limit=1)
+
+        self.assertEqual([row["strategy_logic"] for row in rows], ["logic-2"])
+
+    def test_rolling_short_memory_saves_latest_compressed_summary(self):
+        from backend.agent import agent_graph
+
+        with database.get_db_conn() as conn:
+            conn.execute(
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                ("2026-05-05 03:00:00", "BTC/USDT", "agent", "cfg-a", "first logic"),
+            )
+            conn.execute(
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                ("2026-05-05 04:00:00", "BTC/USDT", "agent", "cfg-a", "second logic"),
+            )
+            conn.commit()
+
+        with patch.object(agent_graph, "summarize_content", return_value="rolling memory") as summarizer:
+            generated = agent_graph.generate_rolling_short_memory_for_config(
+                "cfg-a",
+                agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},
+                now_cn=agent_graph.TZ_CN.localize(__import__("datetime").datetime(2026, 5, 5, 5, 0, 0)),
+            )
+
+        self.assertTrue(generated)
+        summarizer.assert_called_once()
+        memory_text = agent_graph.format_short_memory_text("cfg-a")
+        self.assertIn("rolling memory", memory_text)
+
     def test_delete_summaries_by_symbol_removes_summary_order_and_mock_order_rows(self):
         database.save_summary("BTC/USDT", "agent-a", "content", "logic", config_id="cfg-a")
         database.save_summary("ETH/USDT", "agent-b", "other", "logic-eth", config_id="cfg-b")

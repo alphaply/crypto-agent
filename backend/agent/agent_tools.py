@@ -76,7 +76,7 @@ class AnalyzeEventContractSchema(BaseModel):
 def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbol: str):
     """【开仓：现货限价定投买入】仅在执行 BUY_LIMIT (买入) 时调用。"""
     from backend.config import config as global_config
-    agent_config = global_config.get_config_by_id(config_id)
+    agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
@@ -106,7 +106,7 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
 def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str):
     """【开仓：限价做多或做空】仅在执行 BUY_LIMIT (做多) 或 SELL_LIMIT (做空) 时调用。"""
     from backend.config import config as global_config
-    agent_config = global_config.get_config_by_id(config_id)
+    agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
@@ -137,7 +137,7 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
 def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     """【平仓：挂单平掉现有持仓】。"""
     from backend.config import config as global_config
-    agent_config = global_config.get_config_by_id(config_id)
+    agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
@@ -193,7 +193,7 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
 def cancel_orders_real(order_ids: List[str], config_id: str, symbol: str):
     """【撤单：撤销现有挂单】。"""
     from backend.config import config as global_config
-    agent_config = global_config.get_config_by_id(config_id)
+    agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []

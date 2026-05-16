@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import pytz
 from dotenv import load_dotenv
@@ -90,9 +91,35 @@ def serialize_message(msg):
 
 
 def prompt_dir() -> str:
-    return os.path.join(
+    configured = os.getenv("PROMPT_DIR")
+    if configured:
+        directory = configured
+    elif os.getenv("DATA_DIR"):
+        directory = os.path.join(os.getenv("DATA_DIR"), "prompts")
+    else:
+        directory = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            "backend",
+            "agent",
+            "prompts",
+        )
+
+    is_new_dir = not os.path.isdir(directory)
+    os.makedirs(directory, exist_ok=True)
+    bundled = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
         "backend",
         "agent",
         "prompts",
     )
+    # 只在目录首次创建时（新卷/新部署）才从镜像内复制默认 prompt 文件，
+    # 避免用户删除后被反复恢复。
+    if is_new_dir and os.path.isdir(bundled) and os.path.abspath(directory) != os.path.abspath(bundled):
+        for filename in os.listdir(bundled):
+            if not filename.endswith(".txt"):
+                continue
+            source = os.path.join(bundled, filename)
+            target = os.path.join(directory, filename)
+            if os.path.isfile(source) and not os.path.exists(target):
+                shutil.copyfile(source, target)
+    return directory

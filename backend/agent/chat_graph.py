@@ -21,6 +21,7 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
@@ -328,6 +329,28 @@ def model_node(state: ChatState, config: RunnableConfig):
         f"symbol={symbol} model={model_name} duration={time.time() - started_at:.2f}s"
     )
 
+    # 记录 Token 用量（流式响应的最后一个 chunk 含 usage 信息）
+    try:
+        usage = getattr(response, "response_metadata", {}).get("token_usage", {})
+        if not usage:
+            # 兼容 usage_metadata 字段（LangChain 0.3+）
+            um = getattr(response, "usage_metadata", None) or {}
+            if um:
+                usage = {
+                    "prompt_tokens": um.get("input_tokens", 0),
+                    "completion_tokens": um.get("output_tokens", 0),
+                }
+        if usage and (usage.get("prompt_tokens") or usage.get("completion_tokens")):
+            database.save_token_usage(
+                symbol=symbol,
+                config_id=config_id,
+                model=model_name,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+            )
+    except Exception as usage_e:
+        logger.warning(f"⚠️ [Chat] Failed to save token usage: {usage_e}")
+
     return {
         "messages": [response], 
         "symbol": symbol, 
@@ -512,6 +535,10 @@ def _yield_stream_events(run_callable, event_queue, initial_status: str):
     while True:
         item = event_queue.get()
         if item is None:
+            break
+
+        if isinstance(item, GraphInterrupt):
+            logger.info("[Chat Stream] paused for tool approval interrupt")
             break
 
         if isinstance(item, BaseException):

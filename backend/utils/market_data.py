@@ -12,6 +12,7 @@ from backend.utils.indicators import (
     smart_fmt, calc_ema, calc_rsi, calc_atr,
     calc_macd, calc_adx, calc_vwap,
     calc_bollinger_bands, calculate_vp,
+    calculate_smc,
     detect_rsi_divergence
 )
 import uuid
@@ -20,6 +21,14 @@ import math
 logger = setup_logger("MarketData")
 warnings.filterwarnings("ignore")
 load_dotenv()
+
+def _get_exchange_timeout_ms() -> int:
+    raw_value = str(os.getenv("EXCHANGE_TIMEOUT_MS", "15000") or "15000").strip()
+    try:
+        return max(1000, int(raw_value))
+    except ValueError:
+        logger.warning(f"Invalid EXCHANGE_TIMEOUT_MS={raw_value!r}, falling back to 15000ms")
+        return 15000
 
 class MarketTool:
     def __init__(self, config_id: str = None, symbol: str = None, proxy_port=None):
@@ -62,6 +71,7 @@ class MarketTool:
             'apiKey': api_key,
             'secret': secret,
             'enableRateLimit': True,
+            'timeout': _get_exchange_timeout_ms(),
             'options': {
                 'defaultType': market_type,
                 'adjustForTimeDifference': True,
@@ -586,16 +596,12 @@ class MarketTool:
             # ================= 新增：MACD Hist 动量标注 =================
             hist_prev = float(hist.iloc[-2])
             hist_curr = float(hist.iloc[-1])
-            if hist_curr > 0 and hist_curr > hist_prev:
-                macd_momentum = "多头加速"
-            elif hist_curr > 0 and hist_curr <= hist_prev:
-                macd_momentum = "多头减速 ⚠️"
-            elif hist_curr < 0 and hist_curr < hist_prev:
-                macd_momentum = "空头加速"
-            elif hist_curr < 0 and hist_curr >= hist_prev:
-                macd_momentum = "空头减速 ⚠️"
+            if abs(hist_curr) > abs(hist_prev):
+                macd_momentum = "hist扩大"
+            elif abs(hist_curr) < abs(hist_prev):
+                macd_momentum = "hist收敛"
             else:
-                macd_momentum = "零轴附近"
+                macd_momentum = "hist持平"
             
             # ================= 新增：RSI 背离检测 =================
             rsi_divergence = detect_rsi_divergence(close, rsi, lookback=20)
@@ -607,17 +613,18 @@ class MarketTool:
             e200_val = ema200.iloc[-1]
             
             # 趋势判定
-            trend_status = "Consolidation"
-            if e20_val > e50_val > e200_val: trend_status = "Strong Uptrend"
-            elif e20_val < e50_val < e200_val: trend_status = "Strong Downtrend"
-            elif curr_close > e200_val: trend_status = "Bullish Neutral"
-            elif curr_close < e200_val: trend_status = "Bearish Neutral"
+            trend_status = "区间震荡"
+            if e20_val > e50_val > e200_val: trend_status = "上涨排列"
+            elif e20_val < e50_val < e200_val: trend_status = "下跌排列"
+            elif curr_close > e200_val: trend_status = "震荡偏多"
+            elif curr_close < e200_val: trend_status = "震荡偏空"
 
             adx_val = float(adx.iloc[-1])
-            trend_strength = "Strong" if adx_val > 25 else "Weak/Ranging"
+            trend_strength = "趋势较强" if adx_val > 25 else "弱趋势/震荡"
+            smc = calculate_smc(df)
             
             # 序列数据
-            def to_list(series, n=10):
+            def to_list(series, n=5):
                 raw = series.iloc[-n:].values.tolist()
                 return [smart_fmt(float(x)) for x in raw]
 
@@ -674,7 +681,8 @@ class MarketTool:
                     "status": "High" if float(vol_ratio.iloc[-1]) > 1.5 else ("Low" if float(vol_ratio.iloc[-1]) < 0.5 else "Normal")
                 },
 
-                "vp": vp
+                "vp": vp,
+                "smc": smc
             }
 
             # VWAP 仅在日内周期输出

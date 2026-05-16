@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 from backend.config import config as global_config
 from backend.config_store import (
@@ -12,12 +13,51 @@ from backend.config_store import (
     save_runtime_snapshot,
 )
 from backend.database import get_all_pricing, get_config_dependency_counts, purge_config_all_data, update_model_pricing
+from backend.utils.prompt_utils import normalize_prompt_reference, resolve_prompt_path
 
 from backend.app.services.common import logger, prompt_dir
 
 
 BLOCKED_PROMPT_FILES = set()
 ALLOWED_MARKET_TIMEFRAMES = {"15m", "30m", "1h", "4h", "1d", "1w", "1M"}
+PROMPT_REFERENCE_FIELDS = ("prompt_file",)
+SUMMARIZER_PROMPT_FIELDS = ("strategy_prompt_file", "daily_prompt_file", "short_memory_prompt_file")
+
+
+def _prompt_project_root() -> Path:
+    return Path(prompt_dir()).resolve().parents[2]
+
+
+def _normalize_prompt_field(raw_value, *, field_name: str, project_root: Path):
+    normalized = normalize_prompt_reference(raw_value, project_root)
+    if not normalized:
+        return None
+    if resolve_prompt_path(normalized, project_root) is None:
+        raise ValueError(f"{field_name} prompt file not found: {normalized}")
+    return normalized
+
+
+def _normalize_agent_prompt_files(agent_payload: dict) -> dict:
+    project_root = _prompt_project_root()
+    payload = dict(agent_payload or {})
+    config_id = str(payload.get("config_id") or "agent")
+
+    for field_name in PROMPT_REFERENCE_FIELDS:
+        payload[field_name] = _normalize_prompt_field(
+            payload.get(field_name),
+            field_name=f"agents[{config_id}].{field_name}",
+            project_root=project_root,
+        )
+
+    summarizer = dict(payload.get("summarizer") or {})
+    for field_name in SUMMARIZER_PROMPT_FIELDS:
+        summarizer[field_name] = _normalize_prompt_field(
+            summarizer.get(field_name),
+            field_name=f"agents[{config_id}].summarizer.{field_name}",
+            project_root=project_root,
+        )
+    payload["summarizer"] = summarizer
+    return payload
 
 
 def _validate_market_timeframes(raw_timeframes, *, field_name: str) -> None:
@@ -86,16 +126,18 @@ def save_config_payload(
     exchange_profiles_payload: list[dict] | None = None,
 ):
     _validate_market_timeframes(globals_payload.get("market_timeframes") or [], field_name="market_timeframes")
+    normalized_agents_payload = []
     for agent_payload in agents_payload or []:
         config_id = str(agent_payload.get("config_id") or "agent")
         _validate_market_timeframes(
             agent_payload.get("market_timeframes"),
             field_name=f"agents[{config_id}].market_timeframes",
         )
+        normalized_agents_payload.append(_normalize_agent_prompt_files(agent_payload))
 
     save_runtime_snapshot(
         globals_payload,
-        agents_payload,
+        normalized_agents_payload,
         llm_providers_payload or [],
         exchange_profiles_payload or [],
     )
@@ -166,7 +208,7 @@ def full_import_payload(data: dict, write_env: bool = False) -> dict:
 
 
 def list_prompts_payload():
-    return {"files": _prompt_files()}
+    return {"files": _prompt_files(), "directory": prompt_dir()}
 
 
 def read_prompt_payload(name: str):
@@ -182,13 +224,15 @@ def save_prompt_payload(name: str, content: str):
     path = os.path.join(directory, name)
     with open(path, "w", encoding="utf-8") as file:
         file.write(content)
+    global_config.reload_config()
     return {"message": "Prompt saved."}
 
 
 def delete_prompt_payload(name: str):
     path = os.path.join(prompt_dir(), name)
-    if os.path.exists(path):
-        os.remove(path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Prompt file not found: {name}")
+    os.remove(path)
     return {"message": "Prompt deleted."}
 
 

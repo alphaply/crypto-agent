@@ -13,6 +13,7 @@ export default function MarkdownBlock({ content, className = '' }) {
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+          del: ({ children }) => <span>{children}</span>,
           table: ({ children, ...props }) => (
             <div className="markdown-table-wrap">
               <table {...props}>{children}</table>

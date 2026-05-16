@@ -289,8 +289,17 @@ def job():
         return
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=_scheduler_max_workers()) as executor:
-        futures = [executor.submit(process_single_config, config) for config in active_configs]
-        concurrent.futures.wait(futures)
+        future_to_config = {
+            executor.submit(process_single_config, config): config for config in active_configs
+        }
+        concurrent.futures.wait(future_to_config)
+
+        for future, config in future_to_config.items():
+            try:
+                future.result()
+            except Exception as exc:
+                config_id = config.get("config_id", "unknown")
+                logger.error(f"[{config_id}] scheduler worker failed: {exc}")
 
 
 def _ensure_balance_snapshot_for_date(configs: list, date_str: str) -> None:
@@ -360,6 +369,7 @@ def run_daily_summary_job():
 
 
 def run_short_memory_job():
+    return
     now = datetime.now(TZ_CN)
     target_time = now - timedelta(seconds=1)
     bucket_start, _ = get_short_memory_bucket(target_time)

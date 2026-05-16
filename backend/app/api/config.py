@@ -97,7 +97,10 @@ def delete_prompt(payload: PromptDeleteRequest, _: dict = Depends(get_current_us
         raise HTTPException(status_code=403, detail="Prompt is blocked")
     if not payload.name or payload.name in ["real.txt", "strategy.txt"]:
         raise HTTPException(status_code=400, detail="Protected prompt file")
-    return {"success": True, **delete_prompt_payload(payload.name)}
+    try:
+        return {"success": True, **delete_prompt_payload(payload.name)}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/{config_id}/dependencies")

@@ -3,7 +3,9 @@ import {
   Alert,
   Button,
   Card,
+  Drawer,
   Empty,
+  Grid,
   Modal,
   Popconfirm,
   Select,
@@ -11,14 +13,15 @@ import {
   Spin,
   Typography,
 } from 'antd';
-import { ClearOutlined, EditOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { ClearOutlined, EditOutlined, MenuOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Bubble, Conversations, Sender, XProvider } from '@ant-design/x';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock, { splitThinkingContent } from '../components/ReasoningBlock';
 import { api, streamSse } from '../lib/api';
 import { usePreferences } from '../app/preferences';
 
-const { Title, Paragraph, Text } = Typography;
+const { Title, Text } = Typography;
+const { useBreakpoint } = Grid;
 
 function normalizeAssistantDraft(draft) {
   return {
@@ -45,9 +48,18 @@ function hasRenderableMessage(message) {
   return Boolean(String(message.content || '').trim() || String(message.reasoning_content || '').trim());
 }
 
+function unwrapApproval(approval) {
+  if (!approval) return null;
+  if (approval.value && typeof approval.value === 'object') {
+    return approval.value;
+  }
+  return approval;
+}
+
 function ToolApproval({ approval, loading, onApprove, onReject }) {
   const { t } = usePreferences();
-  if (!approval) return null;
+  const approvalValue = unwrapApproval(approval);
+  if (!approvalValue) return null;
 
   return (
     <Alert
@@ -58,9 +70,9 @@ function ToolApproval({ approval, loading, onApprove, onReject }) {
       message={t('toolApproval')}
       description={
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Text strong>{approval.value?.tool_name || 'Unknown tool'}</Text>
+          <Text strong>{approvalValue.tool_name || 'Unknown tool'}</Text>
           <pre className="approval-json">
-            {JSON.stringify(approval.value?.tool_args || {}, null, 2)}
+            {JSON.stringify(approvalValue.tool_args || {}, null, 2)}
           </pre>
         </Space>
       }
@@ -80,6 +92,8 @@ function ToolApproval({ approval, loading, onApprove, onReject }) {
 
 export default function ChatPage({ token }) {
   const { t } = usePreferences();
+  const screens = useBreakpoint();
+  const isMobile = !screens.md;
   const [bootstrap, setBootstrap] = useState(null);
   const [currentSessionId, setCurrentSessionId] = useState('');
   const [currentConfigId, setCurrentConfigId] = useState('');
@@ -92,6 +106,7 @@ export default function ChatPage({ token }) {
   const [error, setError] = useState('');
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [creatingConfigId, setCreatingConfigId] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const draftRef = useRef({ content: '', reasoning_content: '' });
   const flushTimerRef = useRef(null);
 
@@ -166,6 +181,10 @@ export default function ChatPage({ token }) {
         if (!mounted) return;
         setMessages((response.data.messages || []).filter(hasRenderableMessage));
         setPendingApproval(response.data.pending_approval || null);
+        if (response.data.session?.config_id) {
+          setCurrentConfigId(response.data.session.config_id);
+          setCreatingConfigId(response.data.session.config_id);
+        }
       } catch (err) {
         if (mounted) setError(err.message || 'Failed to load session');
       }
@@ -178,6 +197,14 @@ export default function ChatPage({ token }) {
 
   const sessionItems = useMemo(() => bootstrap?.sessions || [], [bootstrap]);
   const configOptions = useMemo(() => bootstrap?.configs || [], [bootstrap]);
+  const currentSession = useMemo(
+    () => sessionItems.find((item) => item.session_id === currentSessionId) || null,
+    [currentSessionId, sessionItems],
+  );
+  const activeConfig = useMemo(
+    () => configOptions.find((item) => item.config_id === (currentSession?.config_id || currentConfigId)) || null,
+    [configOptions, currentConfigId, currentSession],
+  );
 
   const conversationItems = useMemo(
     () =>
@@ -260,11 +287,20 @@ export default function ChatPage({ token }) {
   const handleSend = async (value = input) => {
     if (!value.trim() || streaming) return;
     const message = value.trim();
+    const isFirstMessage = messages.length === 0;
     setInput('');
     setPendingApproval(null);
     const sessionId = await ensureSession();
     setMessages((prev) => [...prev, { role: 'user', content: message }]);
-    await runStream(`/api/chat/sessions/${sessionId}/stream?message=${encodeURIComponent(message)}`);
+    let streamOk = false;
+    try {
+      await runStream(`/api/chat/sessions/${sessionId}/stream?message=${encodeURIComponent(message)}`);
+      streamOk = true;
+    } finally {
+      if (isFirstMessage && streamOk) {
+        try { await summarizeTitle(sessionId); } catch (_) {}
+      }
+    }
   };
 
   const handleApproval = async (approved) => {
@@ -284,15 +320,17 @@ export default function ChatPage({ token }) {
     setCurrentSessionId(sessionId);
     setCurrentConfigId(creatingConfigId);
     setCreateModalOpen(false);
+    setSidebarOpen(false);
   };
 
-  const summarizeTitle = async () => {
-    if (!currentSessionId) return;
-    const response = await api.post(`/chat/sessions/${currentSessionId}/summarize-title`);
+  const summarizeTitle = async (sessionId) => {
+    const sid = sessionId || currentSessionId;
+    if (!sid) return;
+    const response = await api.post(`/chat/sessions/${sid}/summarize-title`);
     setBootstrap((prev) => ({
       ...prev,
       sessions: (prev?.sessions || []).map((item) =>
-        item.session_id === currentSessionId ? { ...item, title: response.data.title } : item,
+        item.session_id === sid ? { ...item, title: response.data.title } : item,
       ),
     }));
   };
@@ -305,41 +343,64 @@ export default function ChatPage({ token }) {
     draftRef.current = { content: '', reasoning_content: '' };
   };
 
+  const openCreateSessionModal = () => {
+    setCreatingConfigId(currentConfigId || configOptions[0]?.config_id || '');
+    setCreateModalOpen(true);
+    setSidebarOpen(false);
+  };
+
+  const handleSessionChange = (sessionId) => {
+    setCurrentSessionId(sessionId);
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
+  };
+
+  const sidebarContent = (
+    <div className="x-chat-sidebar-inner">
+      <div className="x-chat-sidebar-top">
+        <div className="x-chat-sidebar-title">
+          <Text strong>{t('chat')}</Text>
+          <Text type="secondary">{t('chatPageDesc')}</Text>
+        </div>
+
+        <Button type="primary" icon={<PlusOutlined />} block onClick={openCreateSessionModal}>
+          {t('createSession')}
+        </Button>
+
+        {activeConfig ? (
+          <div className="x-chat-active-config">
+            <Text type="secondary">{t('symbol')}</Text>
+            <Text strong>{`${activeConfig.symbol} / ${activeConfig.mode}`}</Text>
+          </div>
+        ) : null}
+
+        <div className="x-chat-session-actions">
+          <Button icon={<EditOutlined />} onClick={summarizeTitle} disabled={!currentSessionId} block>
+            {t('generateTitle')}
+          </Button>
+          <Popconfirm title={t('confirmDelete')} onConfirm={clearSession} disabled={!currentSessionId}>
+            <Button icon={<ClearOutlined />} disabled={!currentSessionId} block>
+              {t('clearMessages')}
+            </Button>
+          </Popconfirm>
+        </div>
+      </div>
+
+      <div className="x-chat-sidebar-list">
+        <Conversations
+          items={conversationItems}
+          activeKey={currentSessionId}
+          onActiveChange={handleSessionChange}
+          groupable
+        />
+      </div>
+    </div>
+  );
+
   return (
     <XProvider>
-      <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <Card className="hero-card">
-          <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
-            <div>
-              <Title level={2} style={{ margin: 0 }}>
-                {t('chat')}
-              </Title>
-              <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                {t('chatPageDesc')}
-              </Paragraph>
-            </div>
-            <Space wrap>
-              <Select
-                style={{ minWidth: 240 }}
-                value={currentConfigId || undefined}
-                options={configOptions.map((item) => ({ label: `${item.symbol} / ${item.mode}`, value: item.config_id }))}
-                onChange={setCurrentConfigId}
-              />
-              <Button icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
-                {t('createSession')}
-              </Button>
-              <Button icon={<EditOutlined />} onClick={summarizeTitle} disabled={!currentSessionId}>
-                {t('generateTitle')}
-              </Button>
-              <Popconfirm title={t('confirmDelete')} onConfirm={clearSession} disabled={!currentSessionId}>
-                <Button icon={<ClearOutlined />} disabled={!currentSessionId}>
-                  {t('clearMessages')}
-                </Button>
-              </Popconfirm>
-            </Space>
-          </Space>
-        </Card>
-
+      <div className="chat-console-page">
         {error ? <Alert type="error" message={error} showIcon closable onClose={() => setError('')} /> : null}
 
         {loading ? (
@@ -347,82 +408,104 @@ export default function ChatPage({ token }) {
             <Spin />
           </Card>
         ) : (
-          <div className="chat-layout x-chat-layout">
-            <Card className="panel-card session-panel x-session-panel" title={t('history')}>
-              <Conversations
-                items={conversationItems}
-                activeKey={currentSessionId}
-                onActiveChange={setCurrentSessionId}
-                groupable
-                creation={{
-                  onClick: () => setCreateModalOpen(true),
-                  label: t('createSession'),
-                }}
-              />
-            </Card>
+          <>
+            {isMobile ? (
+              <Drawer
+                className="chat-sidebar-drawer"
+                placement="left"
+                title={t('history')}
+                width="min(86vw, 320px)"
+                open={sidebarOpen}
+                onClose={() => setSidebarOpen(false)}
+              >
+                {sidebarContent}
+              </Drawer>
+            ) : null}
 
-            <Card className="panel-card x-chat-card" title={currentSessionId ? `Session ${currentSessionId.slice(0, 8)}` : t('chat')}>
-              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                <div className="x-chat-window">
-                  {bubbleItems.length ? (
-                    <Bubble.List
-                      autoScroll
-                      items={bubbleItems}
-                      role={{
-                        user: {
-                          placement: 'end',
-                          variant: 'filled',
-                          shape: 'round',
-                          rootClassName: 'x-bubble-user',
-                          contentRender: (content) => <MessageContent content={content} />,
-                        },
-                        ai: {
-                          placement: 'start',
-                          variant: 'shadow',
-                          shape: 'round',
-                          rootClassName: 'x-bubble-ai',
-                          typing: { effect: 'fade-in', step: [6, 12], interval: 30, keepPrefix: true },
-                          contentRender: (content, info) => (
-                            <MessageContent content={content} reasoning={info?.extraInfo?.reasoning} />
-                          ),
-                        },
-                        system: {
-                          placement: 'start',
-                          variant: 'outlined',
-                          shape: 'round',
-                          rootClassName: 'x-bubble-system',
-                          contentRender: (content) => <MessageContent content={content} />,
-                        },
-                      }}
-                    />
-                  ) : (
-                    <div className="x-chat-empty">
-                      <Empty description={t('emptySessions')} />
+            <div className={`x-chat-shell ${isMobile ? 'is-mobile' : ''}`}>
+              {!isMobile ? <aside className="x-chat-sidebar">{sidebarContent}</aside> : null}
+
+              <section className="x-chat-main">
+                <div className="x-chat-main-header">
+                  <Space size="middle" className="x-chat-main-heading">
+                    {isMobile ? <Button icon={<MenuOutlined />} onClick={() => setSidebarOpen(true)} /> : null}
+                    <div className="x-chat-main-titles">
+                      <Title level={4} style={{ margin: 0 }}>
+                        {currentSession?.title || t('chat')}
+                      </Title>
+                      <Text type="secondary">
+                        {activeConfig ? `${activeConfig.symbol} / ${activeConfig.mode}` : t('chatPageDesc')}
+                      </Text>
                     </div>
-                  )}
+                  </Space>
+
+                  {isMobile ? <Button icon={<PlusOutlined />} onClick={openCreateSessionModal} /> : null}
                 </div>
 
-                {streamStatus ? <Alert type="info" showIcon message={streamStatus} /> : null}
+                <div className="x-chat-main-body">
+                  <div className="x-chat-window">
+                    {bubbleItems.length ? (
+                      <Bubble.List
+                        autoScroll
+                        items={bubbleItems}
+                        role={{
+                          user: {
+                            placement: 'end',
+                            variant: 'filled',
+                            shape: 'round',
+                            rootClassName: 'x-bubble-user',
+                            contentRender: (content) => <MessageContent content={content} />,
+                          },
+                          ai: {
+                            placement: 'start',
+                            variant: 'shadow',
+                            shape: 'round',
+                            rootClassName: 'x-bubble-ai',
+                            typing: { effect: 'fade-in', step: [6, 12], interval: 30, keepPrefix: true },
+                            contentRender: (content, info) => (
+                              <MessageContent content={content} reasoning={info?.extraInfo?.reasoning} />
+                            ),
+                          },
+                          system: {
+                            placement: 'start',
+                            variant: 'outlined',
+                            shape: 'round',
+                            rootClassName: 'x-bubble-system',
+                            contentRender: (content) => <MessageContent content={content} />,
+                          },
+                        }}
+                      />
+                    ) : (
+                      <div className="x-chat-empty">
+                        <Empty description={t('emptySessions')} />
+                      </div>
+                    )}
+                  </div>
 
-                <ToolApproval
-                  approval={pendingApproval}
-                  loading={streaming}
-                  onApprove={() => handleApproval(true)}
-                  onReject={() => handleApproval(false)}
-                />
+                  {streamStatus ? <Alert type="info" showIcon message={streamStatus} /> : null}
 
-                <Sender
-                  value={input}
-                  onChange={setInput}
-                  onSubmit={handleSend}
-                  loading={streaming}
-                  placeholder={t('chatPlaceholder')}
-                  autoSize={{ minRows: 3, maxRows: 8 }}
-                  submitType="enter"
-                />
-              </Space>
-            </Card>
-          </div>
+                  <ToolApproval
+                    approval={pendingApproval}
+                    loading={streaming}
+                    onApprove={() => handleApproval(true)}
+                    onReject={() => handleApproval(false)}
+                  />
+
+                  <div className="x-chat-sender-wrap">
+                    <Sender
+                      value={input}
+                      onChange={setInput}
+                      onSubmit={handleSend}
+                      loading={streaming}
+                      placeholder={t('chatPlaceholder')}
+                      autoSize={{ minRows: 1, maxRows: isMobile ? 5 : 7 }}
+                      submitType="enter"
+                    />
+                  </div>
+                </div>
+              </section>
+            </div>
+          </>
         )}
 
         <Modal title={t('createSession')} open={createModalOpen} onOk={createSession} onCancel={() => setCreateModalOpen(false)}>
@@ -433,7 +516,7 @@ export default function ChatPage({ token }) {
             onChange={setCreatingConfigId}
           />
         </Modal>
-      </Space>
+      </div>
     </XProvider>
   );
 }

@@ -256,6 +256,213 @@ def calculate_vp(df, length=360, rows=100, va_perc=0.70):
     }
 
 
+def _pivot_points(series, size=5, kind="high"):
+    if len(series) < size * 2 + 1:
+        return []
+
+    pivots = []
+    values = series.values
+    for idx in range(size, len(series) - size):
+        window = values[idx - size:idx + size + 1]
+        value = values[idx]
+        if kind == "high" and value == np.max(window):
+            pivots.append({"index": idx, "price": float(value)})
+        elif kind == "low" and value == np.min(window):
+            pivots.append({"index": idx, "price": float(value)})
+    return pivots
+
+
+def _find_order_block(df, start_idx, end_idx, bias):
+    if end_idx <= start_idx:
+        return None
+
+    subset = df.iloc[start_idx:end_idx + 1]
+    if subset.empty:
+        return None
+
+    if bias == "bullish":
+        bearish = subset[subset["close"] < subset["open"]]
+        candle = bearish.iloc[-1] if not bearish.empty else subset.loc[subset["low"].idxmin()]
+    else:
+        bullish = subset[subset["close"] > subset["open"]]
+        candle = bullish.iloc[-1] if not bullish.empty else subset.loc[subset["high"].idxmax()]
+
+    return {
+        "bias": bias,
+        "low": smart_fmt(float(candle["low"])),
+        "high": smart_fmt(float(candle["high"])),
+    }
+
+
+def _unmitigated_order_blocks(df, events, limit=3):
+    blocks = []
+    for event in reversed(events):
+        block = event.get("order_block")
+        if not block:
+            continue
+        created_idx = event.get("index", 0)
+        later = df.iloc[created_idx + 1:]
+        if block["bias"] == "bullish":
+            mitigated = not later.empty and float(later["low"].min()) < float(block["low"])
+        else:
+            mitigated = not later.empty and float(later["high"].max()) > float(block["high"])
+        if not mitigated:
+            blocks.append(block)
+        if len(blocks) >= limit:
+            break
+    return blocks
+
+
+def _fair_value_gaps(df, limit=3):
+    gaps = []
+    for idx in range(2, len(df)):
+        prev2 = df.iloc[idx - 2]
+        curr = df.iloc[idx]
+        if float(curr["low"]) > float(prev2["high"]):
+            gap = {
+                "bias": "bullish",
+                "low": smart_fmt(float(prev2["high"])),
+                "high": smart_fmt(float(curr["low"])),
+                "index": idx,
+            }
+            later = df.iloc[idx + 1:]
+            if later.empty or float(later["low"].min()) > float(gap["low"]):
+                gaps.append(gap)
+        if float(curr["high"]) < float(prev2["low"]):
+            gap = {
+                "bias": "bearish",
+                "low": smart_fmt(float(curr["high"])),
+                "high": smart_fmt(float(prev2["low"])),
+                "index": idx,
+            }
+            later = df.iloc[idx + 1:]
+            if later.empty or float(later["high"].max()) < float(gap["high"]):
+                gaps.append(gap)
+
+    return [
+        {k: v for k, v in gap.items() if k != "index"}
+        for gap in reversed(gaps[-limit:])
+    ]
+
+
+def _equal_high_low(high_pivots, low_pivots, atr_value, limit=2):
+    threshold = max(float(atr_value or 0) * 0.1, 1e-10)
+    eqh = []
+    eql = []
+
+    for prev, curr in zip(high_pivots, high_pivots[1:]):
+        if abs(curr["price"] - prev["price"]) <= threshold:
+            eqh.append(smart_fmt((curr["price"] + prev["price"]) / 2))
+    for prev, curr in zip(low_pivots, low_pivots[1:]):
+        if abs(curr["price"] - prev["price"]) <= threshold:
+            eql.append(smart_fmt((curr["price"] + prev["price"]) / 2))
+
+    return {"eqh": eqh[-limit:], "eql": eql[-limit:]}
+
+
+def calculate_smc(df, swing_length=50, internal_length=5):
+    if len(df) < 20:
+        return {}
+
+    working = df.reset_index(drop=True).copy()
+    size = max(2, min(int(internal_length or 5), max(2, len(working) // 8)))
+    swing_size = max(3, min(int(swing_length or 50), max(3, len(working) // 4)))
+
+    internal_highs = _pivot_points(working["high"], size=size, kind="high")
+    internal_lows = _pivot_points(working["low"], size=size, kind="low")
+    swing_highs = _pivot_points(working["high"], size=swing_size, kind="high")
+    swing_lows = _pivot_points(working["low"], size=swing_size, kind="low")
+
+    pivot_high = None
+    pivot_low = None
+    bias = "neutral"
+    events = []
+    high_iter = iter(internal_highs)
+    low_iter = iter(internal_lows)
+    next_high = next(high_iter, None)
+    next_low = next(low_iter, None)
+
+    for idx, row in working.iterrows():
+        while next_high and next_high["index"] <= idx:
+            pivot_high = {**next_high, "crossed": False}
+            next_high = next(high_iter, None)
+        while next_low and next_low["index"] <= idx:
+            pivot_low = {**next_low, "crossed": False}
+            next_low = next(low_iter, None)
+
+        close_price = float(row["close"])
+        if pivot_high and not pivot_high["crossed"] and close_price > pivot_high["price"]:
+            tag = "CHoCH" if bias == "bearish" else "BOS"
+            block = _find_order_block(working, pivot_high["index"], idx, "bullish")
+            events.append({
+                "index": idx,
+                "type": tag,
+                "bias": "bullish",
+                "level": smart_fmt(pivot_high["price"]),
+                "order_block": block,
+            })
+            pivot_high["crossed"] = True
+            bias = "bullish"
+
+        if pivot_low and not pivot_low["crossed"] and close_price < pivot_low["price"]:
+            tag = "CHoCH" if bias == "bullish" else "BOS"
+            block = _find_order_block(working, pivot_low["index"], idx, "bearish")
+            events.append({
+                "index": idx,
+                "type": tag,
+                "bias": "bearish",
+                "level": smart_fmt(pivot_low["price"]),
+                "order_block": block,
+            })
+            pivot_low["crossed"] = True
+            bias = "bearish"
+
+    atr_series = calc_atr(working, 14)
+    atr_value = float(atr_series.iloc[-1] or 0)
+    liquidity = _equal_high_low(internal_highs, internal_lows, atr_value)
+
+    trailing_high = swing_highs[-1]["price"] if swing_highs else float(working["high"].tail(swing_size).max())
+    trailing_low = swing_lows[-1]["price"] if swing_lows else float(working["low"].tail(swing_size).min())
+    if trailing_high <= trailing_low:
+        trailing_high = float(working["high"].tail(swing_size).max())
+        trailing_low = float(working["low"].tail(swing_size).min())
+
+    current_price = float(working["close"].iloc[-1])
+    zone = "equilibrium"
+    if trailing_high > trailing_low:
+        premium_edge = trailing_low + (trailing_high - trailing_low) * 0.95
+        discount_edge = trailing_low + (trailing_high - trailing_low) * 0.05
+        eq_low = trailing_low + (trailing_high - trailing_low) * 0.475
+        eq_high = trailing_low + (trailing_high - trailing_low) * 0.525
+        if current_price >= premium_edge:
+            zone = "premium"
+        elif current_price <= discount_edge:
+            zone = "discount"
+        elif eq_low <= current_price <= eq_high:
+            zone = "equilibrium"
+        elif current_price > eq_high:
+            zone = "upper_value"
+        else:
+            zone = "lower_value"
+
+    latest_event = events[-1] if events else {}
+    return {
+        "structure": {k: v for k, v in latest_event.items() if k not in {"index", "order_block"}},
+        "order_blocks": _unmitigated_order_blocks(working, events),
+        "liquidity": {
+            **liquidity,
+            "swing_high": smart_fmt(trailing_high),
+            "swing_low": smart_fmt(trailing_low),
+        },
+        "fvg": _fair_value_gaps(working),
+        "zone": {
+            "name": zone,
+            "high": smart_fmt(trailing_high),
+            "low": smart_fmt(trailing_low),
+        },
+    }
+
+
 def detect_rsi_divergence(close, rsi, lookback=20):
     """
     检测 RSI 与价格的顶/底背离（简化版）

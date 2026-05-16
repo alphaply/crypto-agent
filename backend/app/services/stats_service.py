@@ -174,7 +174,12 @@ def get_agent_stats_payload(config_id: str):
 
 def _calculate_win_rate(trade_summary):
     total_decided = trade_summary["win_count"] + trade_summary["lose_count"]
-    trade_summary["win_rate"] = round(trade_summary["win_count"] / total_decided * 100, 1) if total_decided > 0 else 0
+    if total_decided > 0:
+        trade_summary["win_rate"] = round(trade_summary["win_count"] / total_decided * 100, 1)
+    elif trade_summary.get("total_trades", 0) > 0:
+        trade_summary["win_rate"] = None
+    else:
+        trade_summary["win_rate"] = 0
     trade_summary["realized_pnl"] = round(trade_summary["realized_pnl"], 4)
     return trade_summary
 

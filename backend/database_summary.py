@@ -74,6 +74,31 @@ class SummaryStore:
                 )
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_recent_summary_logic(self, config_id, since_time=None, limit=12):
+        with self._conn_factory() as conn:
+            cursor = conn.cursor()
+            params = [config_id]
+            where = [
+                "config_id = ?",
+                "strategy_logic IS NOT NULL",
+                "strategy_logic != ''",
+            ]
+            if since_time:
+                where.append("timestamp >= ?")
+                params.append(since_time)
+            params.append(int(limit or 12))
+            rows = cursor.execute(
+                f'''
+                SELECT timestamp, symbol, config_id, strategy_logic
+                FROM summaries
+                WHERE {' AND '.join(where)}
+                ORDER BY id DESC
+                LIMIT ?
+                ''',
+                tuple(params),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def get_summary_count(self, symbol, config_id=None):
         with self._conn_factory() as conn:
             cursor = conn.cursor()

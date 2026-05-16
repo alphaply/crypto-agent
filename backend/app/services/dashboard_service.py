@@ -17,6 +17,7 @@ from backend.database import (
     get_db_conn,
     get_dca_daily_snapshot_history,
     get_history_pnl_stats,
+    get_history_pnl_stats_for_configs,
     get_all_pricing,
     list_daily_summaries,
     get_mock_account,
@@ -269,10 +270,11 @@ def build_symbol_overview_metrics(symbol: str, agent_summaries: list[dict]) -> d
                     float(row["completion"] or 0) / 1_000_000 * price.get("output_price_per_m", 0)
                 )
 
-    pnl_stats = get_history_pnl_stats(symbol, config_id="ALL")
+    pnl_stats = get_history_pnl_stats_for_configs(symbol, config_ids)
+    win_rate = pnl_stats.get("win_rate")
     return {
         "agent_count": len(agent_summaries),
-        "win_rate": round(float(pnl_stats.get("win_rate", 0) or 0), 2),
+        "win_rate": round(float(win_rate), 2) if win_rate is not None else None,
         "total_pnl": round(float(pnl_stats.get("total_pnl", 0) or 0), 4),
         "total_trades": int(pnl_stats.get("total_trades", 0) or 0),
         "total_tokens": int(token_total or 0),
@@ -287,6 +289,7 @@ def build_config_compare_rows(symbol: str, agent_summaries: list[dict]) -> list[
         if not config_id:
             continue
         pnl = get_history_pnl_stats(symbol, config_id=config_id)
+        win_rate = pnl.get("win_rate")
         with get_db_conn() as conn:
             orders = conn.execute(
                 """
@@ -315,7 +318,7 @@ def build_config_compare_rows(symbol: str, agent_summaries: list[dict]) -> list[
                 "close_count": int(orders["close_count"] or 0),
                 "cancel_count": int(orders["cancel_count"] or 0),
                 "total_orders": int(orders["total_orders"] or 0),
-                "win_rate": round(float(pnl.get("win_rate", 0) or 0), 2),
+                "win_rate": round(float(win_rate), 2) if win_rate is not None else None,
                 "total_pnl": round(float(pnl.get("total_pnl", 0) or 0), 4),
             }
         )
@@ -596,7 +599,10 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
     total_count = get_summary_count(symbol, config_id=agent_filter)
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
     active_agents = [aid for aid in get_active_agents(symbol) if aid in config_map]
-    pnl_stats = get_history_pnl_stats(symbol, config_id=agent_filter)
+    if agent_filter == "ALL":
+        pnl_stats = get_history_pnl_stats_for_configs(symbol, config_map.keys())
+    else:
+        pnl_stats = get_history_pnl_stats(symbol, config_id=agent_filter)
 
     mock_config_id = agent_filter if agent_filter != "ALL" else ""
     agent_mode = "STRATEGY"

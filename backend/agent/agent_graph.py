@@ -30,10 +30,12 @@ from backend.database import (
     get_daily_summaries,
     get_short_memories,
     get_short_memory,
+    get_recent_summary_logic,
     get_summary_logic_between,
     save_short_memory,
 )
 from backend.utils.market_data import MarketTool
+from backend.utils.news_context import fetch_news_risk_context
 from backend.config import config as global_config
 
 TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
@@ -128,7 +130,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
         default_prompts = {
             "strategy": "请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}",
             "daily": "请把以下一整天的交易推理压缩成一段中文日内记忆，300字以内。保留趋势演变、关键价位、决策变化、执行动作和风险结论。只输出总结文本。\n\n内容：\n{content}",
-            "short_memory": "请把以下最近4小时的市场与持仓信息整理成中文短期记忆，300字以内。包含市场状态、近期决策、持仓/挂单变化、已实现盈亏和风险提醒。只输出总结文本。\n\n内容：\n{content}",
+            "short_memory": "请把以下最近一段时间的交易总结滚动压缩成中文短期记忆，400-600字。保留市场状态、连续决策变化、持仓/挂单变化、关键价位、已实现/未实现盈亏和风险提醒。只输出总结文本。\n\n内容：\n{content}",
         }
         prompt_text_key = {
             "strategy": "strategy_prompt",
@@ -221,7 +223,7 @@ def get_short_memory_bucket(now_cn: datetime | None = None) -> tuple[datetime, d
     return bucket_start, bucket_start + timedelta(hours=4)
 
 
-def format_short_memory_text(config_id: str, limit: int = 2) -> str:
+def format_short_memory_text(config_id: str, limit: int = 1) -> str:
     memories = get_short_memories(config_id, limit=limit)
     if not memories:
         return "(No short-term memory yet)"
@@ -230,11 +232,55 @@ def format_short_memory_text(config_id: str, limit: int = 2) -> str:
     for item in memories:
         market = item.get("market_summary") or ""
         entries.append(
-            f"[{item.get('bucket_start')} - {item.get('bucket_end')}] "
-            f"sources={item.get('source_count', 0)}\n"
-            f"Market/Decision: {market or '-'}"
+            f"[updated={item.get('bucket_start')}] sources={item.get('source_count', 0)}\n"
+            f"{market or '-'}"
         )
     return "\n\n".join(entries)
+
+
+def generate_rolling_short_memory_for_config(
+    config_id: str,
+    agent_config: dict | None = None,
+    now_cn: datetime | None = None,
+    hours: int = 12,
+    limit: int = 12,
+) -> bool:
+    now_cn = now_cn or datetime.now(TZ_CN)
+    all_configs = global_config.get_all_symbol_configs()
+    target_config = agent_config or next((c for c in all_configs if c.get("config_id") == config_id), None)
+    if not target_config or not target_config.get("enabled", True):
+        return False
+
+    since_time = (now_cn - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = get_recent_summary_logic(config_id, since_time=since_time, limit=limit)
+    if not rows:
+        return False
+
+    rows = list(reversed(rows))
+    previous = format_short_memory_text(config_id, limit=1)
+    source_text = "\n".join(
+        f"[{row.get('timestamp')}] {row.get('strategy_logic')}"
+        for row in rows
+        if row.get("strategy_logic")
+    )
+    memory_input = (
+        f"Window: last {hours}h\n"
+        f"Symbol: {target_config.get('symbol')}\n\n"
+        f"Previous rolling memory:\n{previous}\n\n"
+        f"Recent strategy summaries:\n{source_text}"
+    )
+    memory_summary = summarize_content(memory_input, target_config, summary_type="short_memory")
+    end_stamp = now_cn.strftime("%Y-%m-%d %H:%M:%S")
+    save_short_memory(
+        since_time,
+        end_stamp,
+        target_config.get("symbol", "Unknown"),
+        config_id,
+        memory_summary,
+        "",
+        len(rows),
+    )
+    return True
 
 
 def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = None) -> bool:
@@ -341,8 +387,9 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         timeframes_to_fetch = resolve_market_timeframes(agent_config)
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
+        news_context = fetch_news_risk_context(symbol)
         daily_history = get_daily_summaries(config_id, days=7)
-        short_memory_text = format_short_memory_text(config_id, limit=2)
+        short_memory_text = format_short_memory_text(config_id, limit=1)
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
@@ -351,6 +398,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         import traceback
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         market_full = {}
+        news_context = {}
         account_data = {
             'balance': 0,
             'available_balance': 0,
@@ -412,6 +460,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
             "macd": tf_data.get("macd"),
             "bollinger": tf_data.get("bollinger"),
             "vp": tf_data.get("vp", {}),
+            "smc": tf_data.get("smc", {}),
             "volume_analysis": tf_data.get("volume_analysis", {}),
         }
         # VWAP 仅日内周期存在
@@ -422,6 +471,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         "current_price": current_price,
         "atr_base": atr_15m,
         "sentiment": market_full.get("sentiment"),
+        "news_context": news_context,
         "technical_indicators": indicators_summary
     }
 
@@ -439,7 +489,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         formatted_history_text = "(暂无历史记录)"
 
     formatted_history_text = (
-        "## Short-Term Memory (Last 4h)\n"
+        "## Rolling Short-Term Memory\n"
         f"{short_memory_text}\n\n"
         "## Daily Memory\n"
         f"{formatted_history_text}"
@@ -737,6 +787,14 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 config_id=config_id,
                 agent_type=agent_type,
             )
+            try:
+                generate_rolling_short_memory_for_config(
+                    config_id,
+                    agent_config=agent_config,
+                    now_cn=datetime.now(TZ_CN),
+                )
+            except Exception as memory_exc:
+                logger.warning(f"Failed to update rolling short memory for {config_id}: {memory_exc}")
             
             # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
             trade_mode = agent_config.get('mode', 'STRATEGY').upper()

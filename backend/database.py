@@ -208,6 +208,9 @@ def get_recent_summaries(symbol, agent_name=None, limit=10, config_id=None, agen
     """获取最近的分析记录 (支持 agent_name, config_id 或 agent_type 隔离)"""
     return _summary_store.get_recent_summaries(symbol, agent_name=agent_name, limit=limit, config_id=config_id, agent_type=agent_type)
 
+def get_recent_summary_logic(config_id, since_time=None, limit=12):
+    return _summary_store.get_recent_summary_logic(config_id, since_time=since_time, limit=limit)
+
 def get_summary_count(symbol, config_id=None):
     return _summary_store.get_summary_count(symbol, config_id=config_id)
 
@@ -387,59 +390,188 @@ def sync_trade_position_history(config_id, symbol, trades, source="exchange_trad
     _position_history_store.sync_trade_positions(config_id, symbol, trades, source=source)
 
 
-def get_history_pnl_stats(symbol, config_id='ALL'):
-    """获取标的的盈亏统计，整合实盘和模拟盘数据"""
+def _build_pnl_stats(realized_pnls, total_trades=None):
+    normalized_pnls = []
+    for pnl in realized_pnls:
+        if pnl is None:
+            continue
+        try:
+            normalized_pnls.append(float(pnl))
+        except (TypeError, ValueError):
+            continue
+
+    total_pnl = sum(normalized_pnls)
+    win_trades = [pnl for pnl in normalized_pnls if pnl > 0]
+    lose_trades = [pnl for pnl in normalized_pnls if pnl < 0]
+    total_count = int(total_trades if total_trades is not None else len(normalized_pnls))
+    decided_count = len(win_trades) + len(lose_trades)
+    if decided_count > 0:
+        win_rate = len(win_trades) / decided_count * 100
+    elif total_count > 0:
+        win_rate = None
+    else:
+        win_rate = 0
+
+    return {
+        "total_trades": total_count,
+        "total_pnl": total_pnl,
+        "win_rate": win_rate,
+        "win_count": len(win_trades),
+        "lose_count": len(lose_trades),
+        "decided_trades": decided_count,
+    }
+
+
+def _config_mode_for_stats(config_id):
+    try:
+        from backend.config import config as global_config
+
+        cfg = global_config.get_config_by_id(config_id)
+    except Exception:
+        cfg = None
+    return str(cfg.get("mode") or "").upper() if cfg else ""
+
+
+def _rows_to_trade_stats(rows):
+    pnls = []
+    for row in rows:
+        pnls.append(row["realized_pnl"])
+    return len(rows), pnls
+
+
+def _aggregate_config_trade_stats(cursor, symbol, config_id):
+    symbol_prefix = symbol + "%"
+    mode = _config_mode_for_stats(config_id)
+
+    if mode == "REAL":
+        position_rows = cursor.execute(
+            """
+            SELECT realized_pnl
+            FROM position_history
+            WHERE config_id = ?
+              AND status = 'CLOSED'
+              AND (symbol = ? OR symbol LIKE ?)
+            """,
+            (config_id, symbol, symbol_prefix),
+        ).fetchall()
+        if position_rows:
+            return _rows_to_trade_stats(position_rows)
+
+        trade_rows = cursor.execute(
+            """
+            SELECT realized_pnl
+            FROM trade_history
+            WHERE config_id = ?
+              AND (symbol = ? OR symbol LIKE ?)
+            """,
+            (config_id, symbol, symbol_prefix),
+        ).fetchall()
+        return _rows_to_trade_stats(trade_rows)
+
+    if mode == "STRATEGY":
+        mock_rows = cursor.execute(
+            """
+            SELECT realized_pnl
+            FROM mock_orders
+            WHERE symbol = ?
+              AND config_id = ?
+              AND status = 'CLOSED'
+            """,
+            (symbol, config_id),
+        ).fetchall()
+        return _rows_to_trade_stats(mock_rows)
+
+    if mode == "SPOT_DCA":
+        trade_rows = cursor.execute(
+            """
+            SELECT realized_pnl
+            FROM trade_history
+            WHERE config_id = ?
+              AND (symbol = ? OR symbol LIKE ?)
+            """,
+            (config_id, symbol, symbol_prefix),
+        ).fetchall()
+        return _rows_to_trade_stats(trade_rows)
+
+    mock_rows = cursor.execute(
+        """
+        SELECT realized_pnl
+        FROM mock_orders
+        WHERE symbol = ?
+          AND config_id = ?
+          AND status = 'CLOSED'
+        """,
+        (symbol, config_id),
+    ).fetchall()
+    trade_rows = cursor.execute(
+        """
+        SELECT realized_pnl
+        FROM trade_history
+        WHERE config_id = ?
+          AND (symbol = ? OR symbol LIKE ?)
+        """,
+        (config_id, symbol, symbol_prefix),
+    ).fetchall()
+    return _rows_to_trade_stats(mock_rows + trade_rows)
+
+
+def get_history_pnl_stats_for_configs(symbol, config_ids):
+    """按当前展示的配置列表精确聚合盈亏统计。"""
+    normalized_ids = []
+    for raw_config_id in config_ids or []:
+        config_id = str(raw_config_id or "").strip()
+        if config_id and config_id not in normalized_ids:
+            normalized_ids.append(config_id)
+
+    if not normalized_ids:
+        return _build_pnl_stats([])
+
     with get_db_conn() as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        
         realized_pnls = []
-        
+        total_trades = 0
+
+        for config_id in normalized_ids:
+            trade_count, pnls = _aggregate_config_trade_stats(c, symbol, config_id)
+            total_trades += trade_count
+            realized_pnls.extend(pnls)
+
+        return _build_pnl_stats(realized_pnls, total_trades=total_trades)
+
+
+def get_history_pnl_stats(symbol, config_id='ALL'):
+    """获取标的的盈亏统计，整合实盘和模拟盘数据"""
+    if config_id == 'ALL':
+        try:
+            from backend.config import config as global_config
+
+            config_ids = [cfg.get("config_id") for cfg in global_config.get_configs_by_symbol(symbol) if cfg.get("config_id")]
+        except Exception:
+            config_ids = []
+        if config_ids:
+            return get_history_pnl_stats_for_configs(symbol, config_ids)
+
+    with get_db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
         if config_id == 'ALL':
-            trades = c.execute("SELECT realized_pnl FROM trade_history WHERE symbol LIKE ? AND realized_pnl IS NOT NULL AND realized_pnl != 0", (symbol + '%',)).fetchall()
-            realized_pnls.extend([t['realized_pnl'] for t in trades])
-            
-            mocks = c.execute("SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND status='CLOSED' AND realized_pnl IS NOT NULL", (symbol,)).fetchall()
-            realized_pnls.extend([m['realized_pnl'] for m in mocks])
-        else:
-            mocks = c.execute("SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND config_id = ? AND status='CLOSED' AND realized_pnl IS NOT NULL", (symbol, config_id)).fetchall()
-            realized_pnls.extend([m['realized_pnl'] for m in mocks])
-            
-            # 如果是 REAL 模式，把 trade_history 也加上 (因为目前 trade_history 没有 config_id 字段)
-            # 先查一下这个 config_id 的模式
-            try:
-                from backend.config import config as global_config
-                cfg = global_config.get_config_by_id(config_id)
-                if cfg and cfg.get('mode', '').upper() == 'REAL':
-                    trades = c.execute(
-                        """
-                        SELECT realized_pnl
-                        FROM trade_history
-                        WHERE symbol LIKE ?
-                          AND config_id = ?
-                          AND realized_pnl IS NOT NULL
-                          AND realized_pnl != 0
-                        """,
-                        (symbol + '%', config_id),
-                    ).fetchall()
-                    realized_pnls.extend([t['realized_pnl'] for t in trades])
-            except Exception:
-                pass
-            
-        total_pnl = sum(realized_pnls)
-        win_trades = [p for p in realized_pnls if p > 0]
-        lose_trades = [p for p in realized_pnls if p < 0]
-        
-        total_count = len(realized_pnls)
-        win_rate = (len(win_trades) / total_count * 100) if total_count > 0 else 0
-        
-        return {
-            "total_trades": total_count,
-            "total_pnl": total_pnl,
-            "win_rate": win_rate,
-            "win_count": len(win_trades),
-            "lose_count": len(lose_trades)
-        }
+            trades = c.execute(
+                "SELECT realized_pnl FROM trade_history WHERE symbol LIKE ?",
+                (symbol + '%',),
+            ).fetchall()
+            mocks = c.execute(
+                "SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND status='CLOSED'",
+                (symbol,),
+            ).fetchall()
+            return _build_pnl_stats(
+                [row['realized_pnl'] for row in trades] + [row['realized_pnl'] for row in mocks],
+                total_trades=len(trades) + len(mocks),
+            )
+
+        total_trades, realized_pnls = _aggregate_config_trade_stats(c, symbol, config_id)
+        return _build_pnl_stats(realized_pnls, total_trades=total_trades)
 
 # --- Agent 做单统计 ---
 
