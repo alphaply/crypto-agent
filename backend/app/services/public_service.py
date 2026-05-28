@@ -1,4 +1,5 @@
 from backend.config import config as global_config
+from backend.database import get_latest_news_snapshot
 
 from backend.app.services.dashboard_service import (
     build_dashboard_overview,
@@ -110,7 +111,8 @@ def build_public_workspace_payload(config_id: str, timeframe: str = "1h") -> dic
         "position": get_position_stats_payload(config_id),
         "orders": get_recent_order_activity_payload(config_id, limit=40),
         "daily_summaries": get_daily_summaries_payload(config_id, days=7),
-        "short_memories": get_short_memories_payload(config_id, limit=2),
+        "short_memories": get_short_memories_payload(config_id, limit=1),
+        "news_snapshot": get_latest_news_snapshot(symbol=symbol, config_id=config_id) or get_latest_news_snapshot(symbol=symbol),
         "kline": get_kline_payload(config_id, timeframe),
     }
 

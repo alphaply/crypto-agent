@@ -15,10 +15,24 @@ DEFAULT_RSS_SOURCES = [
     "https://decrypt.co/feed",
 ]
 
+DEFAULT_MACRO_RSS_SOURCES = [
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://www.reutersagency.com/feed/?best-topics=political-general&post_type=best",
+]
+
 HIGH_RISK_KEYWORDS = {
     "hack", "exploit", "stolen", "lawsuit", "sec", "cftc", "ban", "halt",
     "outage", "bankruptcy", "liquidation", "etf", "fed", "cpi", "inflation",
-    "rate decision", "emergency", "delist", "regulation",
+    "rate decision", "emergency", "delist", "regulation", "war", "sanction",
+    "tariff", "trump", "election", "middle east", "china", "russia",
+    "ukraine", "oil", "geopolitical",
+}
+
+MACRO_KEYWORDS = {
+    "fed", "federal reserve", "cpi", "inflation", "rate", "rates", "dollar",
+    "treasury", "tariff", "sanction", "trump", "election", "white house",
+    "war", "middle east", "israel", "iran", "china", "russia", "ukraine",
+    "oil", "opec", "geopolitical",
 }
 
 
@@ -45,8 +59,9 @@ def _symbol_terms(symbol: str) -> set[str]:
     return {term.lower() for term in terms if term}
 
 
-def _parse_rss_items(raw: bytes, symbol: str, limit: int) -> list[str]:
+def _parse_rss_items(raw: bytes, symbol: str, limit: int, *, include_symbol_terms: bool = True, keywords: set[str] | None = None) -> list[str]:
     terms = _symbol_terms(symbol)
+    keywords = keywords or HIGH_RISK_KEYWORDS
     root = ET.fromstring(raw)
     titles = []
     for item in root.findall(".//item"):
@@ -54,7 +69,9 @@ def _parse_rss_items(raw: bytes, symbol: str, limit: int) -> list[str]:
         if not title:
             continue
         title_l = title.lower()
-        if any(term in title_l for term in terms) or any(keyword in title_l for keyword in HIGH_RISK_KEYWORDS):
+        symbol_match = include_symbol_terms and any(term in title_l for term in terms)
+        keyword_match = any(keyword in title_l for keyword in keywords)
+        if symbol_match or keyword_match:
             titles.append(title)
         if len(titles) >= limit:
             break
@@ -86,13 +103,16 @@ def fetch_news_risk_context(symbol: str, limit: int = 5, timeout: float = 4.0) -
     if str(os.getenv("NEWS_RISK_ENABLED", "true")).lower() in {"0", "false", "no"}:
         return {}
 
-    headlines = []
+    crypto_limit = min(3, max(1, limit))
+    macro_limit = max(0, limit - crypto_limit)
+    crypto_headlines = []
+    macro_headlines = []
     try:
-        headlines.extend(_fetch_cryptocurrency_cv(symbol, limit=limit, timeout=timeout))
+        crypto_headlines.extend(_fetch_cryptocurrency_cv(symbol, limit=crypto_limit, timeout=timeout))
     except Exception as exc:
         logger.debug(f"cryptocurrency.cv news fetch failed: {exc}")
 
-    if len(headlines) < limit:
+    if len(crypto_headlines) < crypto_limit:
         sources = [
             item.strip()
             for item in os.getenv("NEWS_RSS_SOURCES", ",".join(DEFAULT_RSS_SOURCES)).split(",")
@@ -100,13 +120,35 @@ def fetch_news_risk_context(symbol: str, limit: int = 5, timeout: float = 4.0) -
         ]
         for source in sources:
             try:
-                headlines.extend(_parse_rss_items(_read_url(source, timeout=timeout), symbol, limit - len(headlines)))
+                crypto_headlines.extend(_parse_rss_items(_read_url(source, timeout=timeout), symbol, crypto_limit - len(crypto_headlines)))
             except Exception as exc:
                 logger.debug(f"RSS news fetch failed source={source}: {exc}")
-            if len(headlines) >= limit:
+            if len(crypto_headlines) >= crypto_limit:
                 break
 
-    deduped = list(dict.fromkeys(headlines))[:limit]
+    if macro_limit > 0:
+        sources = [
+            item.strip()
+            for item in os.getenv("NEWS_MACRO_RSS_SOURCES", ",".join(DEFAULT_MACRO_RSS_SOURCES)).split(",")
+            if item.strip()
+        ]
+        for source in sources:
+            try:
+                macro_headlines.extend(
+                    _parse_rss_items(
+                        _read_url(source, timeout=timeout),
+                        symbol,
+                        macro_limit - len(macro_headlines),
+                        include_symbol_terms=False,
+                        keywords=MACRO_KEYWORDS,
+                    )
+                )
+            except Exception as exc:
+                logger.debug(f"Macro RSS news fetch failed source={source}: {exc}")
+            if len(macro_headlines) >= macro_limit:
+                break
+
+    deduped = list(dict.fromkeys([*crypto_headlines[:crypto_limit], *macro_headlines[:macro_limit]]))[:limit]
     risk_score = 0
     for title in deduped:
         title_l = title.lower()
@@ -116,5 +158,7 @@ def fetch_news_risk_context(symbol: str, limit: int = 5, timeout: float = 4.0) -
     return {
         "risk_level": risk_level,
         "headlines": deduped,
-        "source": "cryptocurrency.cv/rss",
+        "crypto_headlines": crypto_headlines[:crypto_limit],
+        "macro_headlines": macro_headlines[:macro_limit],
+        "source": "cryptocurrency.cv/rss+macro_rss",
     }

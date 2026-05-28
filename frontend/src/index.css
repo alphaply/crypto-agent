@@ -188,17 +188,45 @@ a {
   min-height: 86px;
 }
 
+.agent-overview-shell {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
 .agent-overview-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
+  min-width: 0;
+}
+
+.agent-overview-compare-chip {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-height: 74px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-overview-compare-chip.active {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .agent-overview-card {
   display: grid;
   gap: 6px;
-  min-height: 154px;
-  padding: 12px;
+  min-height: 116px;
+  padding: 10px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   background: var(--bg-surface);
@@ -266,17 +294,6 @@ a {
   padding-top: 8px;
   border-top: 1px solid var(--border-soft);
   font-size: 12px;
-}
-
-.agent-overview-compare {
-  border-style: dashed;
-  min-height: 80px;
-  opacity: 0.82;
-}
-
-.agent-overview-compare.active {
-  border-style: solid;
-  opacity: 1;
 }
 
 .agent-overview-skeleton {
@@ -489,6 +506,26 @@ a {
 .order-record-meta .ant-typography {
   max-width: 100%;
   overflow-wrap: anywhere;
+}
+
+.news-snapshot-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.news-headline-list {
+  display: grid;
+  gap: 8px;
+}
+
+.news-headline-item {
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-subtle);
 }
 
 .chart-wrap-large {
@@ -2080,5 +2117,19 @@ a {
 @media (max-width: 480px) {
   .metric-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .agent-overview-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-overview-compare-chip {
+    min-height: 56px;
+  }
+
+  .agent-overview-card {
+    min-height: 116px;
   }
 }

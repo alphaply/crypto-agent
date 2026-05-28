@@ -59,10 +59,13 @@ function MobileRecordList({ items, emptyText, renderItem }) {
 
 function formatPositionValue(value) {
   if (value === null || value === undefined || value === '') return '-';
-  if (typeof value === 'number') return value.toFixed(2);
   const numeric = Number(value);
-  if (Number.isFinite(numeric) && String(value).trim() !== '') return numeric.toFixed(2);
-  return value;
+  if (!Number.isFinite(numeric) || String(value).trim() === '') return value;
+  const abs = Math.abs(numeric);
+  if (abs === 0) return '0.00';
+  if (abs >= 1) return numeric.toFixed(2);
+  const decimals = abs >= 0.01 ? 4 : abs >= 0.0001 ? 6 : 8;
+  return numeric.toFixed(decimals).replace(/\.?0+$/, '');
 }
 
 function formatPercentValue(value) {
@@ -91,8 +94,8 @@ function buildPositionFacts(t, position, pendingOrders, summary, dcaStats) {
     return [
       { label: t('avgCost'), value: formatPositionValue(dcaStats.avg_cost) },
       { label: t('qty'), value: formatPositionValue(dcaStats.total_qty) },
-      { label: t('pendingOrders'), value: pendingOrders.length },
-      { label: t('totalCost'), value: formatPositionValue(dcaStats.total_cost) },
+      { label: t('roiPct'), value: formatPercentValue(dcaStats.return_pct) },
+      { label: t('unrealizedPnl'), value: formatPositionValue(dcaStats.unrealized_pnl) },
     ];
   }
 
@@ -122,66 +125,60 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
   if (!agents?.length) return null;
 
   return (
-    <div className="agent-overview-grid">
+    <div className="agent-overview-shell">
       <button
         type="button"
-        className={`agent-overview-card agent-overview-compare ${activeTab === 'compare' ? 'active' : ''}`}
+        className={`agent-overview-compare-chip ${activeTab === 'compare' ? 'active' : ''}`}
         onClick={() => onSelect('compare')}
       >
-        <span className="agent-overview-main">
-          <span className="agent-overview-title">
-            <Text strong>{t('compareView')}</Text>
-            <Text type="secondary" className="agent-overview-meta">{agents.length} agents</Text>
-          </span>
-        </span>
-        <span className="agent-overview-footer">
-          <Text type="secondary">{t('equityCompare')}</Text>
-        </span>
+        <Text strong>{t('compareView')}</Text>
+        <Text type="secondary" className="agent-overview-meta">{agents.length} agents</Text>
       </button>
-      {agents.map((agent) => {
-        const workspace = workspaceMap?.[agent.config_id];
-        const pendingOrders = workspace?.kline?.pending_orders || [];
-        const position = getPrimaryPosition(workspace);
-        const summary = workspace?.position?.summary || {};
-        const dcaStats = agent.mode === 'SPOT_DCA' ? agent.dca_stats : null;
-        const workspacePending = loading && !workspace;
-        const facts = buildPositionFacts(t, position, pendingOrders, summary, dcaStats);
-        if (!dcaStats) {
-          facts.unshift({ label: t('marginBalance'), value: formatPositionValue(getMarginBalance(workspace)) });
-        }
-        const keyFacts = facts.slice(0, 4);
+      <div className="agent-overview-grid">
+        {agents.map((agent) => {
+          const workspace = workspaceMap?.[agent.config_id];
+          const pendingOrders = workspace?.kline?.pending_orders || [];
+          const position = getPrimaryPosition(workspace);
+          const summary = workspace?.position?.summary || {};
+          const dcaStats = agent.mode === 'SPOT_DCA' ? agent.dca_stats : null;
+          const workspacePending = loading && !workspace;
+          const facts = buildPositionFacts(t, position, pendingOrders, summary, dcaStats);
+          if (!dcaStats) {
+            facts.unshift({ label: t('marginBalance'), value: formatPositionValue(getMarginBalance(workspace)) });
+          }
+          const keyFacts = facts.slice(0, 3);
 
-        return (
-          <button
-            type="button"
-            key={agent.config_id}
-            className={`agent-overview-card ${activeTab === agent.config_id ? 'active' : ''}`}
-            onClick={() => onSelect(agent.config_id)}
-          >
-            <span className="agent-overview-main">
-              <span className="agent-overview-title">
-                <Text strong>{agent.title || agent.config_id}</Text>
-                <Text type="secondary" className="agent-overview-meta">{agent.config_id}</Text>
-              </span>
-              <span className="agent-overview-tags">
-                <Tag color={agent.enabled ? 'green' : 'default'}>{agent.enabled ? 'ON' : 'OFF'}</Tag>
-                <Tag color="blue">{agent.mode}</Tag>
-              </span>
-            </span>
-            {workspacePending ? (
-              <Skeleton active title={false} paragraph={{ rows: 4 }} className="agent-overview-skeleton" />
-            ) : (
-              <>
-                <FactGrid items={keyFacts} />
-                <span className="agent-overview-footer">
-                  <Text type="secondary">{t('nextRun')}: {agent.next_run || '-'}</Text>
-                  <Text type="secondary">{agent.freq || '-'}</Text>
+          return (
+            <button
+              type="button"
+              key={agent.config_id}
+              className={`agent-overview-card ${activeTab === agent.config_id ? 'active' : ''}`}
+              onClick={() => onSelect(agent.config_id)}
+            >
+              <span className="agent-overview-main">
+                <span className="agent-overview-title">
+                  <Text strong>{agent.title || agent.config_id}</Text>
+                  <Text type="secondary" className="agent-overview-meta">{agent.config_id}</Text>
                 </span>
-              </>
-            )}
-          </button>
-        );
-      })}
+                <span className="agent-overview-tags">
+                  <Tag color={agent.enabled ? 'green' : 'default'}>{agent.enabled ? 'ON' : 'OFF'}</Tag>
+                  <Tag color="blue">{agent.mode}</Tag>
+                </span>
+              </span>
+              {workspacePending ? (
+                <Skeleton active title={false} paragraph={{ rows: 2 }} className="agent-overview-skeleton" />
+              ) : (
+                <>
+                  <FactGrid items={keyFacts} />
+                  <span className="agent-overview-footer">
+                    <Text type="secondary">{t('nextRun')}: {agent.next_run || '-'}</Text>
+                  </span>
+                </>
+              )}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -282,6 +279,7 @@ function ComparePanel({ dashboard, compareSeries, loading, workspaceMap }) {
           />
         ) : null}
       </Card>
+      <NewsSnapshotCard snapshot={dashboard?.news_snapshot} />
     </Space>
   );
 }
@@ -397,6 +395,34 @@ function PaginatedOrderList({ orders, t }) {
   );
 }
 
+function NewsSnapshotCard({ snapshot }) {
+  const { t } = usePreferences();
+  const headlines = snapshot?.headlines || snapshot?.raw?.headlines || [];
+  const risk = snapshot?.risk_level || snapshot?.raw?.risk_level || 'normal';
+  const riskColor = risk === 'high' ? 'red' : risk === 'watch' ? 'orange' : 'green';
+  return (
+    <Card className="panel-card" title={t('newsFlow')} extra={<Tag color={riskColor}>{risk}</Tag>}>
+      {headlines.length ? (
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <div className="news-snapshot-meta">
+            <Text type="secondary">{snapshot?.timestamp || '-'}</Text>
+            <Text type="secondary">{snapshot?.source || '-'}</Text>
+          </div>
+          <div className="news-headline-list">
+            {headlines.slice(0, 5).map((headline, index) => (
+              <div className="news-headline-item" key={`${index}-${headline}`}>
+                <Text>{headline}</Text>
+              </div>
+            ))}
+          </div>
+        </Space>
+      ) : (
+        <Empty description={t('noData')} />
+      )}
+    </Card>
+  );
+}
+
 function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
   const { t } = usePreferences();
   const screens = useBreakpoint();
@@ -408,6 +434,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
   const shortMemories = workspace?.short_memories?.short_memories || [];
   const recentOrders = workspace?.orders?.orders || [];
   const pendingOrders = kline?.pending_orders || [];
+  const newsSnapshot = workspace?.news_snapshot;
 
   const [editingMemory, setEditingMemory] = useState(null);
   const [memoryEditText, setMemoryEditText] = useState('');
@@ -535,6 +562,8 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
         </div>
       </Card>
 
+      <NewsSnapshotCard snapshot={newsSnapshot} />
+
       <Card className="panel-card" title={t('analysis')}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <Descriptions size="small" column={1} bordered>
@@ -559,25 +588,24 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
         </Space>
       </Card>
 
-      <Card className="panel-card" title={t('shortMemories')}>
-        {shortMemories.length ? (
-          <div style={{ maxHeight: 400, overflowY: 'auto', paddingRight: 4 }}>
-            {shortMemories.map((memory) => (
-              <Card
-                key={`${memory.config_id}-${memory.bucket_start}`}
-                className="summary-snippet"
-                extra={authenticated ? (
-                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openMemoryEdit(memory)} />
-                ) : null}
-              >
-                <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                  <Text strong>{memory.bucket_start} - {memory.bucket_end}</Text>
-                  <MarkdownBlock content={memory.market_summary || ''} />
-                </Space>
-              </Card>
-            ))}
-          </div>
-        ) : (
+      <Card
+        className="panel-card"
+        title={t('shortMemories')}
+        extra={shortMemories[0] && authenticated ? (
+          <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openMemoryEdit(shortMemories[0])} />
+        ) : null}
+      >
+        {shortMemories[0] ? (() => {
+          const memory = shortMemories[0];
+          return (
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Text type="secondary" style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                [updated={memory.bucket_start}] sources={memory.source_count ?? 0}
+              </Text>
+              <MarkdownBlock content={memory.market_summary || ''} />
+            </Space>
+          );
+        })() : (
           <Empty description={t('noData')} />
         )}
         <Modal

@@ -438,6 +438,32 @@ def get_position_stats_payload(config_id: str):
     symbol = cfg.get("symbol")
     if not symbol:
         raise ValueError(f"Config {config_id} is missing symbol")
+    if mode == "SPOT_DCA":
+        dca_stats = calculate_dca_stats(config_id)
+        positions = []
+        if dca_stats and dca_stats.get("avg_cost", 0) > 0:
+            positions.append(
+                {
+                    "side": "LONG",
+                    "entry_price": dca_stats.get("avg_cost", 0),
+                    "mark_price": dca_stats.get("current_price", 0),
+                    "amount": dca_stats.get("total_qty", 0),
+                    "qty": dca_stats.get("total_qty", 0),
+                    "unrealized_pnl": dca_stats.get("unrealized_pnl", 0),
+                    "roi_pct": dca_stats.get("return_pct", 0),
+                }
+            )
+        return {
+            "mode": mode,
+            "positions": positions,
+            "balance": round(float(dca_stats.get("market_value", 0) if dca_stats else 0), 2),
+            "margin_balance": round(float(dca_stats.get("market_value", 0) if dca_stats else 0), 2),
+            "unrealized_pnl": round(float(dca_stats.get("unrealized_pnl", 0) if dca_stats else 0), 4),
+            "summary": None,
+            "dca_stats": dca_stats,
+            "errors": [],
+        }
+
     if mode not in ["REAL", "STRATEGY"]:
         return {"mode": mode, "positions": [], "summary": None, "message": "Only REAL/STRATEGY support live positions"}
 
@@ -708,7 +734,14 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
     elif mode == "SPOT_DCA":
         dca = calculate_dca_stats(config_id)
         if dca and dca.get("avg_cost", 0) > 0:
-            position = {"side": "LONG", "entry_price": dca["avg_cost"], "amount": dca.get("total_qty", 0)}
+            position = {
+                "side": "LONG",
+                "entry_price": dca["avg_cost"],
+                "mark_price": dca.get("current_price", 0),
+                "amount": dca.get("total_qty", 0),
+                "unrealized_pnl": dca.get("unrealized_pnl", 0),
+                "roi_pct": dca.get("return_pct", 0),
+            }
             positions.append(position)
 
     pending_orders = []
@@ -743,7 +776,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
                 SELECT o.order_id, o.side, o.entry_price, o.amount
                 FROM orders o LEFT JOIN spot_order_fills f ON o.order_id = f.order_id
                 WHERE o.config_id=? AND o.trade_mode='SPOT_DCA' AND o.status='OPEN'
-                  AND (f.status IS NULL OR f.status NOT IN ('FILLED','CANCELED'))
+                  AND (f.status IS NULL OR f.status NOT IN ('FILLED','CANCELED','CANCELLED'))
                 """,
                 (config_id,),
             ).fetchall()

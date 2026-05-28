@@ -12,6 +12,7 @@ from backend.database import (
     delete_daily_summary as db_delete_daily_summary,
     get_active_agents,
     get_daily_summaries,
+    get_latest_news_snapshot,
     get_short_memories,
     list_short_memories,
     get_db_conn,
@@ -364,22 +365,33 @@ def calculate_dca_stats(config_id, force_sync=False):
     try:
         cache_key = str(config_id)
         now_ts = time.time()
-        if not force_sync:
-            cached = DCA_STATS_CACHE.get(cache_key)
-            if cached and now_ts - cached["timestamp"] < DCA_STATS_CACHE_TTL:
-                return cached["data"]
-
         cfg = global_config.get_config_by_id(config_id)
         if not cfg:
             return None
+
+        cache_signature = (
+            cfg.get("symbol"),
+            cfg.get("initial_cost"),
+            cfg.get("initial_qty"),
+            cfg.get("manual_avg_cost"),
+        )
+        if not force_sync:
+            cached = DCA_STATS_CACHE.get(cache_key)
+            if cached and cached.get("signature") == cache_signature and now_ts - cached["timestamp"] < DCA_STATS_CACHE_TTL:
+                return cached["data"]
 
         symbol = cfg.get("symbol")
         if not symbol:
             return None
 
         base_asset = symbol.split("/")[0] if "/" in symbol else symbol.replace("USDT", "")
-        initial_cost = float(cfg.get("initial_cost", 0) or 0)
         initial_qty = float(cfg.get("initial_qty", 0) or 0)
+        manual_avg_cost = float(cfg.get("manual_avg_cost", 0) or 0)
+        if manual_avg_cost > 0 and initial_qty > 0:
+            initial_cost = manual_avg_cost * initial_qty
+        else:
+            initial_cost = float(cfg.get("initial_cost", 0) or 0)
+            manual_avg_cost = (initial_cost / initial_qty) if initial_qty > 0 and initial_cost > 0 else 0
         mt = MarketTool(config_id=config_id)
 
         try:
@@ -480,15 +492,39 @@ def calculate_dca_stats(config_id, force_sync=False):
         elif "total" in balances and base_asset in balances["total"]:
             current_qty = float(balances["total"].get(base_asset, 0) or 0)
 
-        final_qty = traded_qty + initial_qty
-        final_invested = traded_cost + initial_cost
+        if initial_qty > 0:
+            final_qty = initial_qty
+            final_invested = initial_cost
+            stats_source = "manual"
+        else:
+            final_qty = traded_qty
+            final_invested = traded_cost
+            stats_source = "trades"
         avg_cost = (final_invested / final_qty) if final_qty > 0 else 0
+        current_price = 0.0
+        try:
+            ticker = mt.exchange.fetch_ticker(symbol)
+            current_price = float(ticker.get("last") or ticker.get("close") or 0)
+        except Exception as ticker_error:
+            logger.debug(f"Fetch ticker failed for DCA stats {config_id}: {ticker_error}")
+        market_value = final_qty * current_price if current_price > 0 else 0
+        unrealized_pnl = market_value - final_invested if market_value > 0 else 0
+        return_pct = (unrealized_pnl / final_invested * 100) if final_invested > 0 and market_value > 0 else 0
 
         result = {
             "buy_count": buy_count,
             "total_invested": round(final_invested, 2),
             "total_qty": round(final_qty, 6),
             "avg_cost": round(avg_cost, 4),
+            "manual_avg_cost": round(manual_avg_cost, 4),
+            "manual_qty": round(initial_qty, 6),
+            "recorded_buy_qty": round(traded_qty, 6),
+            "recorded_buy_cost": round(traded_cost, 2),
+            "stats_source": stats_source,
+            "current_price": round(current_price, 4),
+            "market_value": round(market_value, 2),
+            "unrealized_pnl": round(unrealized_pnl, 4),
+            "return_pct": round(return_pct, 2),
             "dca_amount_per": cfg.get("dca_amount", cfg.get("dca_budget", 0)),
             "has_legacy": initial_qty > 0,
             "first_buy": agg["first_buy"],
@@ -500,7 +536,7 @@ def calculate_dca_stats(config_id, force_sync=False):
         }
 
         save_dca_daily_snapshot(config_id, symbol, result)
-        DCA_STATS_CACHE[cache_key] = {"timestamp": now_ts, "data": result}
+        DCA_STATS_CACHE[cache_key] = {"timestamp": now_ts, "signature": cache_signature, "data": result}
         return result
     except Exception as exc:
         logger.error(f"Error calculating CCXT DCA stats for {config_id}: {exc}\n{traceback.format_exc()}")
@@ -583,6 +619,7 @@ def build_dashboard_overview(symbol: str | None = None, page: int = 1):
         "symbol_enabled": symbol_enabled,
         "scheduler_enabled": get_scheduler_status(),
         "market_timeframes": list(getattr(global_config, "market_timeframes", None) or []),
+        "news_snapshot": get_latest_news_snapshot(symbol=current_symbol),
     }
 
 

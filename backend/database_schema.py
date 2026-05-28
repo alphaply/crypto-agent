@@ -261,6 +261,17 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     UNIQUE(config_id, bucket_start)
                 )''')
 
+    cursor.execute('''CREATE TABLE IF NOT EXISTS news_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    symbol TEXT,
+                    config_id TEXT,
+                    risk_level TEXT,
+                    headlines TEXT,
+                    source TEXT,
+                    raw_json TEXT
+                )''')
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS position_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     config_id TEXT NOT NULL,
@@ -280,6 +291,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     UNIQUE(config_id, position_key)
                 )''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_short_memories_config_bucket ON short_memories(config_id, bucket_start)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_symbol_time ON news_snapshots(symbol, timestamp)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_config_time ON news_snapshots(config_id, timestamp)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_position_history_config_time ON position_history(config_id, updated_at)")
 
     conn.commit()

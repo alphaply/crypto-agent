@@ -388,6 +388,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
         news_context = fetch_news_risk_context(symbol)
+        database.save_news_snapshot(symbol, config_id, news_context)
         daily_history = get_daily_summaries(config_id, days=7)
         short_memory_text = format_short_memory_text(config_id, limit=1)
 

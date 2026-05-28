@@ -166,12 +166,12 @@ docker compose down
 ### 从源码构建镜像
 
 ```bash
-docker build -t alphaply712/crypto-agent:local .
+docker build -t alphaply712/crypto-agent:latest .
 docker run --rm -p 31421:7860 \
   -e ADMIN_PASSWORD=local-password \
   -e JWT_SECRET=local-jwt-secret \
   -e CONFIG_MASTER_KEY=local-config-master-key \
-  alphaply712/crypto-agent:local
+  alphaply712/crypto-agent:latest
 ```
 
 ## WebUI 配置

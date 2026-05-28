@@ -258,6 +258,14 @@ def process_single_config(config):
         # 这里不再每分钟调用交易所，避免 fetch_balance 速率限制。
         pass
 
+    elif mode == "SPOT_DCA":
+        try:
+            from backend.app.services.dashboard_service import calculate_dca_stats
+
+            calculate_dca_stats(config_id)
+        except Exception as exc:
+            logger.warning(f"[DCA Sync] {config_id} order/stat sync failed: {exc}")
+
     if not is_time_to_run(config, now):
         return
 

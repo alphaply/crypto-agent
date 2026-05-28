@@ -95,6 +95,7 @@ function buildBlankAgent(promptFiles = []) {
     dca_weekday: 0,
     initial_cost: 0,
     initial_qty: 0,
+    manual_avg_cost: 0,
     extra_body: {},
     llm_provider_id: '',
     summarizer_provider_id: '',
@@ -487,13 +488,31 @@ export default function AdminPage() {
   };
 
   const openEditTask = (agent) => {
-    setEditingTask({ ...agent });
+    const initialQty = Number(agent.initial_qty || 0);
+    const manualAvg = Number(agent.manual_avg_cost || 0);
+    setEditingTask({
+      ...agent,
+      manual_avg_cost: manualAvg || (initialQty > 0 ? Number(agent.initial_cost || 0) / initialQty : 0),
+    });
     setEditingTaskId(agent.config_id);
     setTaskDrawerOpen(true);
   };
 
+  const normalizeTaskForSave = (task) => {
+    const next = { ...task };
+    if (String(next.mode || '').toUpperCase() === 'SPOT_DCA') {
+      const qty = Number(next.initial_qty || 0);
+      const avg = Number(next.manual_avg_cost || 0);
+      if (qty > 0 && avg > 0) {
+        next.initial_cost = Number((qty * avg).toFixed(8));
+      }
+    }
+    return next;
+  };
+
   const saveTask = () => {
     if (!editingTask) return;
+    const taskToSave = normalizeTaskForSave(editingTask);
     const required = [
       ['config_id', 'Config ID'],
       ['symbol', t('symbol')],
@@ -502,14 +521,14 @@ export default function AdminPage() {
       ['llm_provider_id', t('llmProviders')],
     ];
     const missing = required
-      .filter(([field]) => !String(editingTask[field] || '').trim())
+      .filter(([field]) => !String(taskToSave[field] || '').trim())
       .map(([, label]) => label);
     if (missing.length) {
       message.error(`${locale === 'zh' ? '请先填写必填项' : 'Required fields'}: ${missing.join(', ')}`);
       return;
     }
     const duplicate = (payload?.agents || []).some(
-      (agent) => agent.config_id === editingTask.config_id && agent.config_id !== editingTaskId,
+      (agent) => agent.config_id === taskToSave.config_id && agent.config_id !== editingTaskId,
     );
     if (duplicate) {
       message.error('Config ID already exists');
@@ -519,9 +538,9 @@ export default function AdminPage() {
       const agents = [...(prev.agents || [])];
       if (editingTaskId) {
         const idx = agents.findIndex((a) => a.config_id === editingTaskId);
-        if (idx >= 0) agents[idx] = editingTask;
+        if (idx >= 0) agents[idx] = taskToSave;
       } else {
-        agents.push(editingTask);
+        agents.push(taskToSave);
       }
       return { ...prev, agents };
     });
@@ -557,7 +576,18 @@ export default function AdminPage() {
   };
 
   const updateEditingTask = (field, value) => {
-    setEditingTask((prev) => (prev ? { ...prev, [field]: value } : prev));
+    setEditingTask((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, [field]: value };
+      if (String(next.mode || '').toUpperCase() === 'SPOT_DCA') {
+        const qty = Number(next.initial_qty || 0);
+        const avg = Number(next.manual_avg_cost || 0);
+        if ((field === 'initial_qty' || field === 'manual_avg_cost') && qty > 0 && avg > 0) {
+          next.initial_cost = Number((qty * avg).toFixed(8));
+        }
+      }
+      return next;
+    });
   };
 
   const updateEditingTaskSummarizer = (field, value) => {
@@ -1245,8 +1275,16 @@ export default function AdminPage() {
                         <InputNumber min={0} max={6} value={editingTask.dca_weekday ?? 0} onChange={(v) => updateEditingTask('dca_weekday', v ?? 0)} style={{ width: '100%' }} />
                       </div>
                       <div className="form-field">
+                        <label>Initial Qty</label>
+                        <InputNumber min={0} value={editingTask.initial_qty ?? 0} onChange={(v) => updateEditingTask('initial_qty', v ?? 0)} style={{ width: '100%' }} />
+                      </div>
+                      <div className="form-field">
+                        <label>Manual Avg Cost</label>
+                        <InputNumber min={0} value={editingTask.manual_avg_cost ?? 0} onChange={(v) => updateEditingTask('manual_avg_cost', v ?? 0)} style={{ width: '100%' }} />
+                      </div>
+                      <div className="form-field">
                         <label>Initial Cost</label>
-                        <InputNumber min={0} value={editingTask.initial_cost ?? 0} onChange={(v) => updateEditingTask('initial_cost', v ?? 0)} style={{ width: '100%' }} />
+                        <InputNumber min={0} value={editingTask.initial_cost ?? 0} onChange={(v) => updateEditingTask('initial_cost', v ?? 0)} style={{ width: '100%' }} disabled={Number(editingTask.initial_qty || 0) > 0 && Number(editingTask.manual_avg_cost || 0) > 0} />
                       </div>
                     </>
                   )}

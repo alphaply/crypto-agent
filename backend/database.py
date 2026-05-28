@@ -346,6 +346,67 @@ def update_short_memory(config_id, bucket_start, market_summary, position_summar
     return _summary_memory_store.update_short_memory(config_id, bucket_start, market_summary, position_summary)
 
 
+def save_news_snapshot(symbol, config_id, news_context):
+    """Persist the latest news context shown to agents and the dashboard."""
+    if not news_context:
+        return
+    headlines = news_context.get("headlines") or []
+    source = news_context.get("source") or ""
+    risk_level = news_context.get("risk_level") or "normal"
+    with get_db_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO news_snapshots (timestamp, symbol, config_id, risk_level, headlines, source, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _current_timestamp(),
+                symbol,
+                config_id,
+                risk_level,
+                json.dumps(headlines, ensure_ascii=False),
+                source,
+                json.dumps(news_context, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+
+
+def get_latest_news_snapshot(symbol=None, config_id=None):
+    clauses = []
+    params = []
+    if config_id:
+        clauses.append("config_id = ?")
+        params.append(str(config_id))
+    if symbol:
+        clauses.append("symbol = ?")
+        params.append(str(symbol))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with get_db_conn() as conn:
+        row = conn.execute(
+            f"""
+            SELECT *
+            FROM news_snapshots
+            {where}
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+    if not row:
+        return None
+    payload = dict(row)
+    try:
+        payload["headlines"] = json.loads(payload.get("headlines") or "[]")
+    except Exception:
+        payload["headlines"] = []
+    try:
+        payload["raw"] = json.loads(payload.get("raw_json") or "{}")
+    except Exception:
+        payload["raw"] = {}
+    return payload
+
+
 def upsert_position_history(
     config_id,
     symbol,
