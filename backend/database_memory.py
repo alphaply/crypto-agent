@@ -216,3 +216,51 @@ class SummaryMemoryStore:
             )
             conn.commit()
             return cursor.rowcount
+
+    def delete_short_memories(
+        self,
+        symbol=None,
+        config_id=None,
+        bucket_start_from=None,
+        bucket_start_to=None,
+        buckets=None,
+    ):
+        where = []
+        params = []
+        bucket_pairs = [
+            (str(item.get("config_id") or "").strip(), str(item.get("bucket_start") or "").strip())
+            for item in (buckets or [])
+            if isinstance(item, dict)
+            and str(item.get("config_id") or "").strip()
+            and str(item.get("bucket_start") or "").strip()
+        ]
+
+        if bucket_pairs:
+            pair_clauses = []
+            for pair_config_id, pair_bucket_start in bucket_pairs:
+                pair_clauses.append("(config_id = ? AND bucket_start = ?)")
+                params.extend([pair_config_id, pair_bucket_start])
+            where.append("(" + " OR ".join(pair_clauses) + ")")
+        if symbol:
+            where.append("symbol = ?")
+            params.append(symbol)
+        if config_id and config_id != "ALL":
+            where.append("config_id = ?")
+            params.append(config_id)
+        if bucket_start_from:
+            where.append("bucket_start >= ?")
+            params.append(bucket_start_from)
+        if bucket_start_to:
+            where.append("bucket_start <= ?")
+            params.append(bucket_start_to)
+        if not where:
+            raise ValueError("At least one short memory delete filter is required")
+
+        with self._conn_factory() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"DELETE FROM short_memories WHERE {' AND '.join(where)}",
+                tuple(params),
+            )
+            conn.commit()
+            return cursor.rowcount

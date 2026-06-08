@@ -8,8 +8,9 @@ from backend.agent.agent_graph import generate_manual_daily_summary, generate_sh
 from backend.config import config as global_config
 from backend.database import (
     clean_financial_data,
-    delete_summaries_by_symbol,
     delete_daily_summary as db_delete_daily_summary,
+    delete_short_memories as db_delete_short_memories,
+    delete_summaries_by_symbol,
     get_active_agents,
     get_daily_summaries,
     get_latest_news_snapshot,
@@ -69,10 +70,65 @@ def _order_action_label(order: dict) -> str:
     return side.upper() or status or "记录"
 
 
+def _event_label(event_type: str, trade_mode: str, side: str, status: str) -> str:
+    event = str(event_type or "ORDER_CREATED").upper()
+    mode = str(trade_mode or "").upper()
+    side_up = str(side or "").upper()
+    status_up = str(status or "").upper()
+    labels = {
+        "ENTRY_FILLED": "入场成交",
+        "TP_HIT": "止盈成交",
+        "SL_HIT": "止损成交",
+        "AUTO_CLOSE": "自动平仓",
+        "MANUAL_CLOSE": "主动平仓",
+        "CANCELLED": "撤单",
+        "TRADE_FILL": "交易所成交",
+    }
+    if event in labels:
+        return labels[event]
+    if status_up == "PARTIAL":
+        return "部分成交"
+    if status_up == "FILLED":
+        return "成交"
+    if status_up == "CANCELLED" or "CANCEL" in side_up:
+        return "撤单"
+    if "CLOSE" in side_up:
+        return "平仓"
+    if mode == "SPOT_DCA":
+        return "现货买入挂单"
+    if "SELL" in side_up or "SHORT" in side_up:
+        return "开空挂单"
+    if "BUY" in side_up or "LONG" in side_up:
+        return "开多挂单"
+    return status_up or "记录"
+
+
+def _direction_label(side: str) -> str:
+    side_up = str(side or "").upper()
+    if "CLOSE" in side_up:
+        if "SHORT" in side_up:
+            return "平空"
+        if "LONG" in side_up or "BUY" in side_up:
+            return "平多"
+        return "平仓"
+    if "BUY" in side_up or "LONG" in side_up:
+        return "多"
+    if "SELL" in side_up or "SHORT" in side_up:
+        return "空"
+    return side or "-"
+
+
 def _normalize_order_record(order: dict) -> dict:
     payload = dict(order)
+    event_type = str(payload.get("event_type") or "ORDER_CREATED").upper()
+    trade_mode = str(payload.get("trade_mode") or "").upper()
+    status = str(payload.get("status") or "").upper()
     payload["activity_type"] = payload.get("activity_type") or "order"
-    payload["action_label"] = _order_action_label(payload)
+    payload["event_type"] = event_type
+    payload["event_label"] = _event_label(event_type, trade_mode, payload.get("side"), status)
+    payload["action_label"] = payload["event_label"]
+    payload["direction_label"] = _direction_label(payload.get("side"))
+    payload["is_auto"] = bool(payload.get("is_auto"))
     payload["copy_fields"] = [
         value
         for value in (payload.get("entry_price"), payload.get("amount"), payload.get("take_profit"), payload.get("stop_loss"))
@@ -84,6 +140,12 @@ def _normalize_order_record(order: dict) -> dict:
         payload["strategy_note"] = "止盈止损"
     else:
         payload["strategy_note"] = ""
+    if payload.get("is_auto"):
+        payload["strategy_note"] = "自动检测"
+    elif trade_mode == "SPOT_DCA":
+        payload["strategy_note"] = "现货定投"
+    elif payload.get("take_profit") or payload.get("stop_loss"):
+        payload["strategy_note"] = "止盈止损"
     return payload
 
 
@@ -112,11 +174,15 @@ def _normalize_trade_activity_record(row: dict) -> dict:
     payload.update(
         {
             "activity_type": "trade",
+            "event_type": "TRADE_FILL",
+            "event_label": action_label,
             "action_label": action_label,
+            "direction_label": _direction_label(payload.get("side")),
             "entry_price": payload.get("price"),
             "status": "FILLED",
             "strategy_note": f"PnL {realized_pnl:.2f}" if abs(realized_pnl) > 1e-12 else "Exchange fill",
             "reason": "; ".join(details),
+            "is_auto": False,
             "copy_fields": [value for value in (payload.get("price"), payload.get("amount")) if value not in (None, "")],
         }
     )
@@ -151,7 +217,10 @@ def _get_recent_order_activity(config_id: str, limit: int = 20) -> list[dict]:
                     NULL AS cost,
                     NULL AS fee,
                     NULL AS fee_currency,
-                    NULL AS realized_pnl
+                    realized_pnl,
+                    event_type,
+                    parent_order_id,
+                    is_auto
                 FROM orders
                 WHERE config_id = ?
 
@@ -179,7 +248,10 @@ def _get_recent_order_activity(config_id: str, limit: int = 20) -> list[dict]:
                     cost,
                     fee,
                     fee_currency,
-                    realized_pnl
+                    realized_pnl,
+                    'TRADE_FILL' AS event_type,
+                    order_id AS parent_order_id,
+                    0 AS is_auto
                 FROM trade_history
                 WHERE config_id = ?
             )
@@ -872,6 +944,23 @@ def update_short_memory_payload(config_id: str, bucket_start: str, market_summar
     if not updated:
         raise FileNotFoundError("Short memory not found")
     return {"message": "Short memory updated.", "updated": updated}
+
+
+def delete_short_memories_payload(
+    symbol: str | None = None,
+    config_id: str | None = None,
+    bucket_start_from: str | None = None,
+    bucket_start_to: str | None = None,
+    buckets: list[dict] | None = None,
+):
+    deleted = db_delete_short_memories(
+        symbol=symbol,
+        config_id=config_id,
+        bucket_start_from=bucket_start_from,
+        bucket_start_to=bucket_start_to,
+        buckets=buckets or None,
+    )
+    return {"message": f"Deleted {deleted} short memories.", "deleted": deleted}
 
 
 def delete_daily_summary_payload(date_str: str, config_id: str):

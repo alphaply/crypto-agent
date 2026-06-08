@@ -24,6 +24,19 @@ class BulkDeleteSessionsRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
 
 
+class ShortMemoryKey(BaseModel):
+    config_id: str
+    bucket_start: str
+
+
+class DeleteShortMemoriesRequest(BaseModel):
+    symbol: str | None = None
+    config_id: str | None = None
+    bucket_start_from: str | None = None
+    bucket_start_to: str | None = None
+    buckets: list[ShortMemoryKey] = Field(default_factory=list)
+
+
 class SecretUpdate(BaseModel):
     value: str | None = None
     clear: bool = False

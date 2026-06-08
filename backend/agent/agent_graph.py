@@ -14,11 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 
 from backend.agent.agent_models import AgentState
-from backend.agent.agent_tools import (
-    open_position_real, close_position_real, cancel_orders_real,
-    open_position_strategy, cancel_orders_strategy, close_position_strategy, open_position_spot_dca,
-    analyze_event_contract, format_event_contract_order
-)
+from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool
 from backend.utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
 from backend.utils.llm_utils import LLMInvocationError, build_chat_openai, invoke_with_retry, sync_langsmith_environment
@@ -175,6 +171,8 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
         return response.content.strip()
     except Exception as e:
         logger.error(f"❌ [Summarizer Error]: {e}")
+        if summary_type == "short_memory":
+            return ""
         return content[:200] + "..."
 
 def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
@@ -238,6 +236,33 @@ def format_short_memory_text(config_id: str, limit: int = 1) -> str:
     return "\n\n".join(entries)
 
 
+def format_short_memory_for_llm(config_id: str, limit: int = 1) -> str:
+    memories = get_short_memories(config_id, limit=limit)
+    entries = [
+        str(item.get("market_summary") or "").strip()
+        for item in memories
+        if str(item.get("market_summary") or "").strip()
+    ]
+    return "\n\n".join(entries) if entries else "(No short-term memory yet)"
+
+
+def _is_invalid_short_memory_summary(summary: str, source_input: str) -> bool:
+    text = str(summary or "").strip()
+    if not text:
+        return True
+    markers = (
+        "Window:",
+        "Symbol:",
+        "Previous rolling memory:",
+        "Previous short memory:",
+        "Recent strategy summaries:",
+        "Recent market/agent reasoning:",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    return text.endswith("...") and source_input.startswith(text[:-3])
+
+
 def generate_rolling_short_memory_for_config(
     config_id: str,
     agent_config: dict | None = None,
@@ -257,7 +282,7 @@ def generate_rolling_short_memory_for_config(
         return False
 
     rows = list(reversed(rows))
-    previous = format_short_memory_text(config_id, limit=1)
+    previous = format_short_memory_for_llm(config_id, limit=1)
     source_text = "\n".join(
         f"[{row.get('timestamp')}] {row.get('strategy_logic')}"
         for row in rows
@@ -270,6 +295,9 @@ def generate_rolling_short_memory_for_config(
         f"Recent strategy summaries:\n{source_text}"
     )
     memory_summary = summarize_content(memory_input, target_config, summary_type="short_memory")
+    if _is_invalid_short_memory_summary(memory_summary, memory_input):
+        logger.warning(f"Skip saving invalid rolling short memory for {config_id}.")
+        return False
     end_stamp = now_cn.strftime("%Y-%m-%d %H:%M:%S")
     save_short_memory(
         since_time,
@@ -299,7 +327,7 @@ def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = N
     summary_rows = get_summary_logic_between(config_id, start_text, end_text)
     source_count = len(summary_rows)
 
-    previous = format_short_memory_text(config_id, limit=1)
+    previous = format_short_memory_for_llm(config_id, limit=1)
     if source_count <= 0:
         save_short_memory(
             start_text,
@@ -324,6 +352,9 @@ def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = N
         f"Previous short memory:\n{previous}"
     )
     memory_summary = summarize_content(memory_input, target_config, summary_type="short_memory")
+    if _is_invalid_short_memory_summary(memory_summary, memory_input):
+        logger.warning(f"Skip saving invalid short memory for {config_id}.")
+        return False
     save_short_memory(
         start_text,
         end_text,
@@ -390,7 +421,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         news_context = fetch_news_risk_context(symbol)
         database.save_news_snapshot(symbol, config_id, news_context)
         daily_history = get_daily_summaries(config_id, days=7)
-        short_memory_text = format_short_memory_text(config_id, limit=1)
+        short_memory_text = format_short_memory_for_llm(config_id, limit=1)
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
@@ -592,12 +623,12 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             kwargs["extra_body"] = agent_config.get('extra_body')
 
         # 根据模式选择工具集
-        if trade_mode == 'REAL':
-            tools = [open_position_real, close_position_real, cancel_orders_real]
-        elif trade_mode == 'SPOT_DCA':
-            tools = [open_position_spot_dca, cancel_orders_real]
-        else:
-            tools = [open_position_strategy, cancel_orders_strategy, close_position_strategy]
+        tools = get_trade_tools_for_mode(trade_mode)
+        logger.info(
+            "[ToolRegistry] Bound tools for mode=%s: %s",
+            trade_mode,
+            [tool.name for tool in tools],
+        )
         
         # if trade_mode == 'REAL':
         #     tools += [analyze_event_contract, format_event_contract_order]
@@ -664,7 +695,12 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         if agent_config.get('extra_body'):
             kwargs["extra_body"] = agent_config.get('extra_body')
 
-        tools = [open_position_strategy, cancel_orders_strategy, close_position_strategy]
+        tools = get_trade_tools_for_mode(trade_mode)
+        logger.info(
+            "[ToolRegistry] Bound tools for small agent mode=%s: %s",
+            trade_mode,
+            [tool.name for tool in tools],
+        )
         
         llm = build_chat_openai(
             model=model_name,
@@ -703,51 +739,6 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     except Exception as e:
         logger.error(f"❌ [Small Agent Error] ({symbol}): {e}")
         return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
-
-def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
-    """通用的工具执行节点。"""
-    last_message = state.messages[-1]
-    tool_calls = getattr(last_message, 'tool_calls', [])
-    
-    configurable = config.get("configurable", {})
-    config_id = configurable.get("config_id", "unknown")
-    
-    symbol = state.symbol
-    
-    tool_outputs = []
-    # 动态映射可用工具
-    available_tools_map = {
-        "open_position_real": open_position_real,
-        "close_position_real": close_position_real,
-        "cancel_orders_real": cancel_orders_real,
-        "open_position_strategy": open_position_strategy,
-        "cancel_orders_strategy": cancel_orders_strategy,
-        "close_position_strategy": close_position_strategy,
-        "open_position_spot_dca": open_position_spot_dca,
-        "analyze_event_contract": analyze_event_contract,
-        "format_event_contract_order": format_event_contract_order
-    }
-    
-    for tool_call in tool_calls:
-        tool_name = tool_call['name']
-        args = tool_call['args']
-        logger.info(f"🛠️ ToolNode Dispatching: {tool_name}")
-        
-        if tool_name in available_tools_map:
-            tool_obj = available_tools_map[tool_name]
-            args['config_id'] = config_id
-            args['symbol'] = symbol
-            
-            try:
-                result = tool_obj.func(**args)
-                tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=str(result)))
-            except Exception as e:
-                logger.error(f"❌ Error executing tool {tool_name}: {e}")
-                tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=f"Error: {str(e)}"))
-        else:
-            tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=f"Error: Tool '{tool_name}' not found."))
-            
-    return state.model_copy(update={"messages": state.messages + tool_outputs})
 
 def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """合并 AI 消息的内容并保存到数据库。"""
@@ -824,6 +815,36 @@ def should_continue(state: AgentState):
     if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
         return "tools"
     return "finalize"
+
+
+def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    """Execute real tool_calls emitted by the model."""
+    last_message = state.messages[-1]
+    tool_calls = getattr(last_message, 'tool_calls', [])
+
+    configurable = config.get("configurable", {})
+    config_id = configurable.get("config_id", "unknown")
+    symbol = state.symbol
+
+    tool_outputs = []
+    for tool_call in tool_calls:
+        tool_name = tool_call["name"]
+        args = tool_call.get("args", {})
+        logger.info(
+            "ToolNode dispatching real tool_call: name=%s config_id=%s symbol=%s",
+            tool_name,
+            config_id,
+            symbol,
+        )
+
+        try:
+            result = run_trade_tool(tool_name, args, config_id, symbol)
+            tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=result))
+        except Exception as e:
+            logger.error("Error executing tool %s: %s", tool_name, e)
+            tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=f"Error: {str(e)}"))
+
+    return state.model_copy(update={"messages": state.messages + tool_outputs})
 
 # ==========================================
 # 4. Graph Construction

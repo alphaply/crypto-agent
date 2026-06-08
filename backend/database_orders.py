@@ -15,18 +15,60 @@ class OrderPersistenceStore:
         self._conn_factory = conn_factory
         self._timestamp_factory = timestamp_factory
 
-    def save_order_log(self, order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY", config_id=None, amount=0, status="OPEN"):
+    def save_order_log(
+        self,
+        order_id,
+        symbol,
+        agent_name,
+        side,
+        entry,
+        tp,
+        sl,
+        reason,
+        trade_mode="STRATEGY",
+        config_id=None,
+        amount=0,
+        status="OPEN",
+        event_type="ORDER_CREATED",
+        parent_order_id=None,
+        is_auto=False,
+        realized_pnl=0.0,
+    ):
         timestamp = self._timestamp_factory()
         valid_mode = _normalize_trade_mode(trade_mode)
+        normalized_event_type = str(event_type or "ORDER_CREATED").upper()
 
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''
-                INSERT INTO orders (order_id, timestamp, symbol, agent_name, config_id, side, entry_price, amount, take_profit, stop_loss, reason, trade_mode, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO orders (
+                    order_id, timestamp, symbol, agent_name, config_id, side,
+                    entry_price, amount, take_profit, stop_loss, reason,
+                    trade_mode, status, event_type, parent_order_id, is_auto,
+                    realized_pnl
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
-                (str(order_id), timestamp, symbol, str(agent_name), config_id or str(agent_name), side, entry, amount, tp, sl, reason, valid_mode, status),
+                (
+                    str(order_id),
+                    timestamp,
+                    symbol,
+                    str(agent_name),
+                    config_id or str(agent_name),
+                    side,
+                    entry,
+                    amount,
+                    tp,
+                    sl,
+                    reason,
+                    valid_mode,
+                    status,
+                    normalized_event_type,
+                    str(parent_order_id) if parent_order_id else None,
+                    1 if is_auto else 0,
+                    float(realized_pnl or 0),
+                ),
             )
             conn.commit()
 

@@ -100,6 +100,116 @@ class MarketTool:
     # 0. 基础工具 (衍生数据获取)
     # ==========================================
 
+    @staticmethod
+    def _safe_float(value, default=0.0):
+        try:
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _order_position_side(order):
+        info = order.get("info") or {}
+        return str(info.get("positionSide") or order.get("positionSide") or "BOTH").upper()
+
+    @classmethod
+    def _order_effective_price(cls, order, prefer_stop=False):
+        info = order.get("info") or {}
+        if prefer_stop:
+            return cls._safe_float(order.get("stopPrice") or info.get("stopPrice") or info.get("triggerPrice"))
+        return cls._safe_float(order.get("price"))
+
+    @classmethod
+    def _order_remaining_amount(cls, order):
+        info = order.get("info") or {}
+        amount = cls._safe_float(order.get("remaining"))
+        if amount > 0:
+            return amount
+        amount = cls._safe_float(order.get("amount"))
+        if amount > 0:
+            return amount
+        return cls._safe_float(info.get("origQty") or info.get("qty"))
+
+    @staticmethod
+    def _same_price(left, right):
+        left = float(left or 0)
+        right = float(right or 0)
+        return left > 0 and right > 0 and abs(left - right) <= max(1e-12, abs(left) * 1e-10)
+
+    def _fetch_merge_candidate_orders(self, symbol, is_trigger_order):
+        orders = []
+        try:
+            orders.extend(self.exchange.fetch_open_orders(symbol))
+        except Exception as e:
+            logger.warning(f"Fetch regular orders for merge failed: {e}")
+
+        if is_trigger_order:
+            try:
+                orders.extend(self.exchange.fetch_open_orders(symbol, params={"trigger": True}))
+            except Exception as e:
+                logger.warning(f"Fetch trigger orders for merge failed: {e}")
+        return orders
+
+    def _merge_same_price_real_orders(self, symbol, side, amount, price, position_side, order_type):
+        """Merge same-symbol, same-side, same-price live orders before creating a new one."""
+        target_price = self._safe_float(price)
+        target_amount = self._safe_float(amount)
+        if target_amount <= 0 or target_price <= 0:
+            return target_amount, []
+
+        order_type_text = str(order_type or "").upper()
+        is_trigger_order = "STOP" in order_type_text or "TAKE_PROFIT" in order_type_text
+        target_side = str(side or "").lower()
+        target_position_side = str(position_side or "BOTH").upper()
+        merged_order_ids = []
+
+        for order in self._fetch_merge_candidate_orders(symbol, is_trigger_order):
+            order_id = str(order.get("id") or order.get("order_id") or "")
+            if not order_id:
+                continue
+            if str(order.get("side") or "").lower() != target_side:
+                continue
+            if self._order_position_side(order) != target_position_side:
+                continue
+
+            existing_type = str(order.get("type") or (order.get("info") or {}).get("type") or "").upper()
+            existing_is_trigger = "STOP" in existing_type or "TAKE_PROFIT" in existing_type
+            if existing_is_trigger != is_trigger_order:
+                continue
+
+            existing_price = self._order_effective_price(order, prefer_stop=is_trigger_order)
+            if not self._same_price(existing_price, target_price):
+                continue
+
+            existing_amount = self._order_remaining_amount(order)
+            if existing_amount <= 0:
+                continue
+
+            try:
+                cancel_params = {"trigger": True} if is_trigger_order else {}
+                self.exchange.cancel_order(order_id, symbol, params=cancel_params)
+                target_amount += existing_amount
+                merged_order_ids.append(order_id)
+                try:
+                    with database.get_db_conn() as conn:
+                        conn.execute(
+                            "UPDATE orders SET status = 'CANCELLED' WHERE order_id = ? AND status = 'OPEN'",
+                            (order_id,),
+                        )
+                        conn.commit()
+                except Exception as db_error:
+                    logger.warning(f"Order merge local status update failed for {order_id}: {db_error}")
+                logger.info(
+                    f"🔗 [ORDER-MERGE] merged existing order {order_id}: "
+                    f"{target_position_side} {target_side} {existing_amount} @ {target_price}"
+                )
+            except Exception as e:
+                logger.warning(f"Order merge skipped for {order_id}: cancel failed: {e}")
+
+        return target_amount, merged_order_ids
+
     def _fetch_market_derivatives(self, symbol):
         """获取资金费率、持仓量、多空比、爆仓量等衍生品数据"""
         try:
@@ -203,9 +313,43 @@ class MarketTool:
                     if 'BUY' in side and current_low <= entry:
                         is_filled = 1
                         database.update_mock_order_filled(o['order_id'])
+                        database.save_order_log(
+                            o['order_id'],
+                            symbol,
+                            o['agent_name'],
+                            f"ENTRY_{side}",
+                            entry,
+                            tp,
+                            sl,
+                            f"[Auto Monitor] Entry filled at {entry} (CandleTS: {candle_ts_ms})",
+                            trade_mode="STRATEGY",
+                            config_id=self.config_id,
+                            amount=amount,
+                            status="FILLED",
+                            event_type="ENTRY_FILLED",
+                            parent_order_id=o['order_id'],
+                            is_auto=True,
+                        )
                     elif 'SELL' in side and current_high >= entry:
                         is_filled = 1
                         database.update_mock_order_filled(o['order_id'])
+                        database.save_order_log(
+                            o['order_id'],
+                            symbol,
+                            o['agent_name'],
+                            f"ENTRY_{side}",
+                            entry,
+                            tp,
+                            sl,
+                            f"[Auto Monitor] Entry filled at {entry} (CandleTS: {candle_ts_ms})",
+                            trade_mode="STRATEGY",
+                            config_id=self.config_id,
+                            amount=amount,
+                            status="FILLED",
+                            event_type="ENTRY_FILLED",
+                            parent_order_id=o['order_id'],
+                            is_auto=True,
+                        )
                         
                 # 只有入场后才检测止盈止损
                 if not is_filled:
@@ -213,6 +357,7 @@ class MarketTool:
                 
                 close_price = 0
                 reason = ""
+                close_event_type = "AUTO_CLOSE"
                 
                 if 'BUY' in side:
                     if sl > 0 and current_low <= sl:
@@ -230,10 +375,31 @@ class MarketTool:
                         reason = f"🎯 触及止盈价 {tp}"
                         
                 if close_price > 0:
+                    if sl > 0 and math.isclose(close_price, sl, rel_tol=0, abs_tol=1e-12):
+                        close_event_type = "SL_HIT"
+                    elif tp > 0 and math.isclose(close_price, tp, rel_tol=0, abs_tol=1e-12):
+                        close_event_type = "TP_HIT"
                     realized_pnl = (close_price - entry) * amount * (1 if 'BUY' in side else -1)
                     database.close_mock_order(o['order_id'], close_price=close_price, realized_pnl=realized_pnl)
                     logger.info(f"⚡ [Auto TP/SL] {symbol} 模拟单 {o['order_id']} 自动平仓: {reason}, PnL={realized_pnl:.4f}, candle_ts={candle_ts_ms}")
-                    database.save_order_log(o['order_id'] + "_AUTO", symbol, o['agent_name'], f"CLOSE_{side}", close_price, tp, sl, f"[智能盯盘] {reason} (CandleTS: {candle_ts_ms})", trade_mode="STRATEGY", config_id=self.config_id, amount=amount, status="CLOSED")
+                    database.save_order_log(
+                        o['order_id'],
+                        symbol,
+                        o['agent_name'],
+                        f"CLOSE_{side}",
+                        close_price,
+                        tp,
+                        sl,
+                        f"[Auto Monitor] {reason} PnL={realized_pnl:.4f} (CandleTS: {candle_ts_ms})",
+                        trade_mode="STRATEGY",
+                        config_id=self.config_id,
+                        amount=amount,
+                        status="CLOSED",
+                        event_type=close_event_type,
+                        parent_order_id=o['order_id'],
+                        is_auto=True,
+                        realized_pnl=realized_pnl,
+                    )
             except Exception as e:
                 logger.error(f"❌ _check_mock_orders_tp_sl error for {o.get('order_id')}: {e}")
 
@@ -778,15 +944,40 @@ class MarketTool:
                                 
                                 # 方案 A: 止损市价单 (推荐，保证止损触发后立刻跑路)
                                 order_type = 'STOP_MARKET' # STOP / STOP_LIMIT
+                                final_amt, merged_ids = self._merge_same_price_real_orders(
+                                    symbol,
+                                    close_side,
+                                    final_amt,
+                                    formatted_price,
+                                    current_pos_side_str,
+                                    order_type,
+                                )
+                                if merged_ids:
+                                    formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
+                                    logger.info(f"🔗 [CLOSE-MERGE] merged {len(merged_ids)} stop orders -> {formatted_amt} @ {formatted_price}")
                                 params['stopPrice'] = float(formatted_price) # 触发价格
-                                params['closePosition'] = True # 某些交易所支持直接平仓标志
+                                is_full_close_stop = final_amt >= amt
+                                if is_full_close_stop:
+                                    params['closePosition'] = True
                                 
                                 # 注意：STOP_MARKET 通常不需要传 price 参数 (传 None)，但需要 stopPrice
-                                order = self.exchange.create_order(symbol, order_type, close_side, final_amt, None, params=params)
+                                order_amount = None if is_full_close_stop else final_amt
+                                order = self.exchange.create_order(symbol, order_type, close_side, order_amount, None, params=params)
 
                             else:
                                 logger.info(f"💰 [CLOSE-TP] 检测到止盈场景 (现价 {current_price} -> 目标 {formatted_price})")
                                 order_type = 'LIMIT'
+                                final_amt, merged_ids = self._merge_same_price_real_orders(
+                                    symbol,
+                                    close_side,
+                                    final_amt,
+                                    formatted_price,
+                                    current_pos_side_str,
+                                    order_type,
+                                )
+                                if merged_ids:
+                                    formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
+                                    logger.info(f"🔗 [CLOSE-MERGE] merged {len(merged_ids)} limit orders -> {formatted_amt} @ {formatted_price}")
                                 params['timeInForce'] = 'GTC'
                                 order = self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
                         else:
@@ -821,6 +1012,18 @@ class MarketTool:
                 else:
                     logger.info(f"🚀 [SPOT-LIMIT] 现货挂单: {side} {amount} @ {price}")
                 
+                merged_amount, merged_ids = self._merge_same_price_real_orders(
+                    symbol,
+                    side,
+                    amount,
+                    price,
+                    params.get('positionSide', 'BOTH'),
+                    'LIMIT',
+                )
+                if merged_ids:
+                    amount = self.exchange.amount_to_precision(symbol, merged_amount)
+                    logger.info(f"🔗 [OPEN-MERGE] merged {len(merged_ids)} limit orders -> {amount} @ {price}")
+
                 order = self.exchange.create_order(symbol, 'LIMIT', side, float(amount), float(price), params=params)
                 
                 logger.info(f"✅ [OPEN-LIMIT] 挂单成功 ID: {order['id']}")

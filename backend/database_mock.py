@@ -194,7 +194,10 @@ class MockTradingStore:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM mock_orders WHERE order_id = ?", (order_id,))
             deleted = cursor.rowcount > 0
-            cursor.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", (order_id,))
+            cursor.execute(
+                "UPDATE orders SET status = 'CANCELLED' WHERE order_id = ? AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
+                (order_id,),
+            )
             conn.commit()
             return deleted
 
@@ -223,7 +226,10 @@ class MockTradingStore:
                 (close_price, realized_pnl, close_time, order_id),
             )
 
-            cursor.execute("UPDATE orders SET status = 'CLOSED' WHERE order_id = ?", (order_id,))
+            cursor.execute(
+                "UPDATE orders SET status = 'CLOSED' WHERE order_id = ? AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
+                (order_id,),
+            )
             conn.commit()
 
         if closed_position:
@@ -276,7 +282,7 @@ class MockTradingStore:
                 )
                 closed_count = cursor.rowcount
                 cursor.execute(
-                    f"UPDATE orders SET status='CANCELLED' WHERE order_id IN ({placeholders}) AND status='OPEN'",
+                    f"UPDATE orders SET status='CANCELLED' WHERE order_id IN ({placeholders}) AND status='OPEN' AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
                     tuple(order_ids),
                 )
                 conn.commit()

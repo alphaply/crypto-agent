@@ -1,6 +1,8 @@
 import concurrent.futures
 import os
+import sqlite3
 import time
+import threading
 from datetime import datetime, timedelta
 
 import pytz
@@ -27,6 +29,16 @@ logger = setup_logger("MainScheduler")
 _last_run_times = {}
 _daily_summary_done_date = None
 _short_memory_done_buckets = set()
+_agent_executor = None
+_maintenance_executor = None
+_running_agent_futures = {}
+_running_maintenance_futures = {}
+_daily_summary_future = None
+_scheduler_lock = threading.RLock()
+_last_heartbeat_key = None
+
+AGENT_JOB_TYPE = "agent"
+MAINTENANCE_JOB_TYPE = "maintenance"
 
 
 def _scheduler_max_workers() -> int:
@@ -39,6 +51,103 @@ def _scheduler_max_workers() -> int:
 
     cpu_count = os.cpu_count() or 1
     return max(1, min(5, cpu_count))
+
+
+def _maintenance_max_workers() -> int:
+    raw_value = str(os.getenv("SCHEDULER_MAINTENANCE_WORKERS", "2")).strip()
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        logger.warning(f"Invalid SCHEDULER_MAINTENANCE_WORKERS={raw_value!r}, falling back to 2")
+        return 2
+
+
+def _get_agent_executor():
+    global _agent_executor
+    with _scheduler_lock:
+        if _agent_executor is None:
+            _agent_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_scheduler_max_workers(),
+                thread_name_prefix="agent-job",
+            )
+        return _agent_executor
+
+
+def _get_maintenance_executor():
+    global _maintenance_executor
+    with _scheduler_lock:
+        if _maintenance_executor is None:
+            _maintenance_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_maintenance_max_workers(),
+                thread_name_prefix="scheduler-maintenance",
+            )
+        return _maintenance_executor
+
+
+def _timestamp() -> str:
+    return datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _scheduled_at(now: datetime) -> str:
+    return now.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:00")
+
+
+def _insert_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status: str = "QUEUED", error: str | None = None) -> bool:
+    from backend.database import get_db_conn
+
+    now_str = _timestamp()
+    try:
+        with get_db_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO scheduler_runs (
+                    config_id, job_type, scheduled_at, status, started_at,
+                    finished_at, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(config_id),
+                    str(job_type),
+                    str(scheduled_at),
+                    str(status),
+                    now_str if status == "RUNNING" else None,
+                    now_str if status.startswith("SKIPPED") else None,
+                    error,
+                    now_str,
+                    now_str,
+                ),
+            )
+            conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status: str, error: str | None = None) -> None:
+    from backend.database import get_db_conn
+
+    now_str = _timestamp()
+    started_at_sql = ", started_at = COALESCE(started_at, ?)" if status == "RUNNING" else ""
+    finished_at_sql = ", finished_at = ?" if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING"} else ""
+    params = [status]
+    if status == "RUNNING":
+        params.append(now_str)
+    if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING"}:
+        params.append(now_str)
+    params.extend([error, now_str, str(config_id), str(job_type), str(scheduled_at)])
+
+    with get_db_conn() as conn:
+        conn.execute(
+            f"""
+            UPDATE scheduler_runs
+            SET status = ?{started_at_sql}{finished_at_sql},
+                error = ?,
+                updated_at = ?
+            WHERE config_id = ? AND job_type = ? AND scheduled_at = ?
+            """,
+            tuple(params),
+        )
+        conn.commit()
 
 
 def normalize_dca_freq(raw_freq):
@@ -130,7 +239,11 @@ def is_time_to_run(config, now):
         return True
 
     default_interval = 60 if mode == "STRATEGY" else 15
-    interval = int(config.get("run_interval", default_interval))
+    try:
+        interval = int(config.get("run_interval", default_interval))
+    except (TypeError, ValueError):
+        logger.warning(f"[{config_id}] invalid run_interval={config.get('run_interval')!r}, using {default_interval}")
+        interval = default_interval
     if interval < 15:
         interval = 15
 
@@ -224,11 +337,10 @@ def _snapshot_real_equity(config, mt):
         logger.warning(f"[EquitySnapshot] REAL snapshot failed {config_id}: {exc}")
 
 
-def process_single_config(config):
+def run_config_maintenance(config):
     config_id = config.get("config_id", "unknown")
     symbol = config.get("symbol")
     mode = config.get("mode", "STRATEGY").upper()
-    now = datetime.now(TZ_CN)
 
     if not symbol:
         return
@@ -266,18 +378,94 @@ def process_single_config(config):
         except Exception as exc:
             logger.warning(f"[DCA Sync] {config_id} order/stat sync failed: {exc}")
 
-    if not is_time_to_run(config, now):
-        return
 
+def run_config_agent(config, scheduled_at: str):
+    config_id = config.get("config_id", "unknown")
+    mode = config.get("mode", "STRATEGY").upper()
     logger.info(
-        f"[{config_id}] scheduler triggered ({mode}, interval={config.get('run_interval', 'default')})"
+        f"[{config_id}] started scheduled agent job ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
     )
-    _last_run_times[config_id] = now
-
+    _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "RUNNING")
     try:
         run_agent_for_config(config)
-    except Exception as e:
-        logger.error(f"Error executing agent [{config_id}]: {e}")
+        _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FINISHED")
+        logger.info(f"[{config_id}] finished scheduled agent job (scheduled_at={scheduled_at})")
+    except Exception as exc:
+        _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FAILED", error=str(exc))
+        logger.error(f"Error executing agent [{config_id}] scheduled_at={scheduled_at}: {exc}")
+
+
+def _drop_finished_futures(running_map: dict[str, concurrent.futures.Future], label: str) -> None:
+    with _scheduler_lock:
+        finished_keys = [key for key, future in running_map.items() if future.done()]
+        for key in finished_keys:
+            future = running_map.pop(key)
+            try:
+                future.result()
+            except Exception as exc:
+                logger.error(f"[{key}] {label} worker failed: {exc}")
+
+
+def _submit_maintenance(config) -> bool:
+    config_id = str(config.get("config_id") or "unknown")
+    with _scheduler_lock:
+        existing = _running_maintenance_futures.get(config_id)
+        if existing and not existing.done():
+            logger.debug(f"[{config_id}] maintenance skip_due_to_running")
+            return False
+        future = _get_maintenance_executor().submit(run_config_maintenance, config)
+        _running_maintenance_futures[config_id] = future
+    logger.debug(f"[{config_id}] maintenance queued")
+    return True
+
+
+def _submit_agent(config, scheduled_at: str) -> bool:
+    config_id = str(config.get("config_id") or "unknown")
+    mode = str(config.get("mode", "STRATEGY")).upper()
+
+    with _scheduler_lock:
+        existing = _running_agent_futures.get(config_id)
+        if existing and not existing.done():
+            inserted = _insert_scheduler_run(
+                config_id,
+                AGENT_JOB_TYPE,
+                scheduled_at,
+                status="SKIPPED_RUNNING",
+                error="previous job still running",
+            )
+            if inserted:
+                logger.warning(f"[{config_id}] skip_due_to_running scheduled_at={scheduled_at}")
+            else:
+                logger.info(f"[{config_id}] duplicate skipped scheduled_at={scheduled_at}")
+            return False
+
+    if not _insert_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, status="QUEUED"):
+        logger.info(f"[{config_id}] duplicate skipped scheduled_at={scheduled_at}")
+        return False
+
+    logger.info(
+        f"[{config_id}] queued scheduled agent job ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
+    )
+    try:
+        future = _get_agent_executor().submit(run_config_agent, config, scheduled_at)
+    except Exception as exc:
+        _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FAILED", error=str(exc))
+        logger.error(f"[{config_id}] failed to submit scheduled agent job scheduled_at={scheduled_at}: {exc}")
+        return False
+
+    with _scheduler_lock:
+        _running_agent_futures[config_id] = future
+    return True
+
+
+def _submit_daily_summary() -> bool:
+    global _daily_summary_future
+    with _scheduler_lock:
+        if _daily_summary_future and not _daily_summary_future.done():
+            logger.debug("[DailySummary] skip_due_to_running")
+            return False
+        _daily_summary_future = _get_maintenance_executor().submit(run_daily_summary_job)
+    return True
 
 
 def wait_until_next_minute():
@@ -287,27 +475,59 @@ def wait_until_next_minute():
         time.sleep(sleep_seconds)
 
 
-def job():
+def job(now: datetime | None = None):
+    global _last_heartbeat_key
+    now = now or datetime.now(TZ_CN)
+    scheduled_at = _scheduled_at(now)
+
     global_config.reload_config()
     sync_langsmith_environment()
     configs = global_config.get_all_symbol_configs()
     active_configs = [c for c in configs if c.get("enabled", True)]
 
+    _drop_finished_futures(_running_agent_futures, "agent")
+    _drop_finished_futures(_running_maintenance_futures, "maintenance")
+
     if not active_configs:
-        return
+        return {"active": 0, "maintenance_queued": 0, "agent_queued": 0, "agent_due": 0}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_scheduler_max_workers()) as executor:
-        future_to_config = {
-            executor.submit(process_single_config, config): config for config in active_configs
-        }
-        concurrent.futures.wait(future_to_config)
+    maintenance_queued = 0
+    agent_due = 0
+    agent_queued = 0
 
-        for future, config in future_to_config.items():
-            try:
-                future.result()
-            except Exception as exc:
-                config_id = config.get("config_id", "unknown")
-                logger.error(f"[{config_id}] scheduler worker failed: {exc}")
+    for config in active_configs:
+        if _submit_maintenance(config):
+            maintenance_queued += 1
+
+        if is_time_to_run(config, now):
+            config_id = config.get("config_id", "unknown")
+            mode = str(config.get("mode", "STRATEGY")).upper()
+            agent_due += 1
+            logger.info(
+                f"[{config_id}] due detected ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
+            )
+            _last_run_times[config_id] = now
+            if _submit_agent(config, scheduled_at):
+                agent_queued += 1
+
+    heartbeat_key = now.strftime("%Y-%m-%d %H:%M")
+    if now.minute % 10 == 0 and heartbeat_key != _last_heartbeat_key:
+        _last_heartbeat_key = heartbeat_key
+        with _scheduler_lock:
+            active_agent_jobs = sum(1 for future in _running_agent_futures.values() if not future.done())
+            active_maintenance_jobs = sum(1 for future in _running_maintenance_futures.values() if not future.done())
+        logger.info(
+            "[SchedulerHeartbeat] alive "
+            f"active_configs={len(active_configs)} active_agent_jobs={active_agent_jobs} "
+            f"active_maintenance_jobs={active_maintenance_jobs} due={agent_due} queued={agent_queued}"
+        )
+
+    return {
+        "active": len(active_configs),
+        "maintenance_queued": maintenance_queued,
+        "agent_due": agent_due,
+        "agent_queued": agent_queued,
+    }
 
 
 def _ensure_balance_snapshot_for_date(configs: list, date_str: str) -> None:
@@ -423,7 +643,7 @@ def run_scheduler_forever():
                     logger.info("Scheduler disabled globally, waiting...")
                 continue
 
-            run_daily_summary_job()
+            _submit_daily_summary()
             run_short_memory_job()
             job()
 

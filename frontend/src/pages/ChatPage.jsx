@@ -13,7 +13,14 @@ import {
   Spin,
   Typography,
 } from 'antd';
-import { ClearOutlined, EditOutlined, MenuOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import {
+  ClearOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  MenuOutlined,
+  PlusOutlined,
+  SafetyCertificateOutlined,
+} from '@ant-design/icons';
 import { Bubble, Conversations, Sender, XProvider } from '@ant-design/x';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock, { splitThinkingContent } from '../components/ReasoningBlock';
@@ -343,6 +350,29 @@ export default function ChatPage({ token }) {
     draftRef.current = { content: '', reasoning_content: '' };
   };
 
+  const deleteSession = async () => {
+    if (!currentSessionId) return;
+    const deletingId = currentSessionId;
+    await api.delete(`/chat/sessions/${deletingId}`);
+
+    const remainingSessions = (bootstrap?.sessions || []).filter((item) => item.session_id !== deletingId);
+    const nextSession = remainingSessions[0] || null;
+    setBootstrap((prev) => ({
+      ...prev,
+      sessions: (prev?.sessions || []).filter((item) => item.session_id !== deletingId),
+    }));
+    setCurrentSessionId(nextSession?.session_id || '');
+    setCurrentConfigId(nextSession?.config_id || currentConfigId || configOptions[0]?.config_id || '');
+    if (!nextSession) {
+      setMessages([]);
+      setPendingApproval(null);
+      draftRef.current = { content: '', reasoning_content: '' };
+    }
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
+  };
+
   const openCreateSessionModal = () => {
     setCreatingConfigId(currentConfigId || configOptions[0]?.config_id || '');
     setCreateModalOpen(true);
@@ -382,6 +412,11 @@ export default function ChatPage({ token }) {
           <Popconfirm title={t('confirmDelete')} onConfirm={clearSession} disabled={!currentSessionId}>
             <Button icon={<ClearOutlined />} disabled={!currentSessionId} block>
               {t('clearMessages')}
+            </Button>
+          </Popconfirm>
+          <Popconfirm title={t('confirmDeleteSession')} onConfirm={deleteSession} disabled={!currentSessionId}>
+            <Button icon={<DeleteOutlined />} disabled={!currentSessionId} danger block>
+              {t('deleteSession')}
             </Button>
           </Popconfirm>
         </div>

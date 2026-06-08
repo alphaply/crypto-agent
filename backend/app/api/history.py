@@ -5,6 +5,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.schemas.payloads import (
     CleanHistoryRequest,
     DeleteDailySummaryRequest,
+    DeleteShortMemoriesRequest,
     GenerateDailySummaryRequest,
     GenerateShortMemoryRequest,
     UpdateShortMemoryRequest,
@@ -22,6 +23,7 @@ from backend.app.services.dashboard_service import (
     export_daily_summaries_payload,
     list_daily_summaries_payload,
     delete_daily_summary_payload,
+    delete_short_memories_payload,
     update_daily_summary_payload,
     update_short_memory_payload,
 )
@@ -109,6 +111,35 @@ def update_short_memory(payload: UpdateShortMemoryRequest, _: dict = Depends(get
         }
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/short-memories")
+def delete_short_memories(payload: DeleteShortMemoriesRequest, _: dict = Depends(get_current_user)):
+    buckets = [item.model_dump() for item in payload.buckets]
+    has_filter = any(
+        [
+            payload.symbol,
+            payload.config_id and payload.config_id != "ALL",
+            payload.bucket_start_from,
+            payload.bucket_start_to,
+            buckets,
+        ]
+    )
+    if not has_filter:
+        raise HTTPException(status_code=400, detail="At least one delete filter is required")
+    try:
+        return {
+            "success": True,
+            **delete_short_memories_payload(
+                symbol=payload.symbol,
+                config_id=payload.config_id,
+                bucket_start_from=payload.bucket_start_from,
+                bucket_start_to=payload.bucket_start_to,
+                buckets=buckets,
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/daily-summaries")

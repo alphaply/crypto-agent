@@ -172,8 +172,75 @@ def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
     _mock_trading_store.close_order(order_id, close_price=close_price, realized_pnl=realized_pnl)
 
 
-def save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode="STRATEGY", config_id=None, amount=0, status="OPEN"):
-    _order_persistence_store.save_order_log(order_id, symbol, agent_name, side, entry, tp, sl, reason, trade_mode=trade_mode, config_id=config_id, amount=amount, status=status)
+def save_order_log(
+    order_id,
+    symbol,
+    agent_name,
+    side,
+    entry,
+    tp,
+    sl,
+    reason,
+    trade_mode="STRATEGY",
+    config_id=None,
+    amount=0,
+    status="OPEN",
+    event_type="ORDER_CREATED",
+    parent_order_id=None,
+    is_auto=False,
+    realized_pnl=0.0,
+):
+    order_id_text = str(order_id)
+    if order_id_text.endswith("_AUTO"):
+        parent_id = order_id_text[:-5]
+        order_id = parent_id
+        parent_order_id = parent_order_id or parent_id
+        is_auto = True
+        if event_type == "ORDER_CREATED":
+            event_type = "AUTO_CLOSE"
+            try:
+                close_price = float(entry or 0)
+                tp_price = float(tp or 0)
+                sl_price = float(sl or 0)
+                if sl_price > 0 and abs(close_price - sl_price) <= 1e-12:
+                    event_type = "SL_HIT"
+                elif tp_price > 0 and abs(close_price - tp_price) <= 1e-12:
+                    event_type = "TP_HIT"
+            except Exception:
+                event_type = "AUTO_CLOSE"
+        if not realized_pnl:
+            try:
+                with get_db_conn() as conn:
+                    row = conn.execute(
+                        "SELECT side, price, amount FROM mock_orders WHERE order_id = ? LIMIT 1",
+                        (parent_id,),
+                    ).fetchone()
+                if row:
+                    close_price = float(entry or 0)
+                    entry_price = float(row["price"] or 0)
+                    qty = float(amount or row["amount"] or 0)
+                    direction = 1 if "BUY" in str(row["side"]).upper() else -1
+                    realized_pnl = (close_price - entry_price) * qty * direction
+            except Exception:
+                realized_pnl = 0.0
+    _order_persistence_store.save_order_log(
+        order_id,
+        symbol,
+        agent_name,
+        side,
+        entry,
+        tp,
+        sl,
+        reason,
+        trade_mode=trade_mode,
+        config_id=config_id,
+        amount=amount,
+        status=status,
+        event_type=event_type,
+        parent_order_id=parent_order_id,
+        is_auto=is_auto,
+        realized_pnl=realized_pnl,
+    )
 
 
 def update_order_fill_status(order_id, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None):
@@ -344,6 +411,16 @@ def get_short_memory(config_id, bucket_start):
 
 def update_short_memory(config_id, bucket_start, market_summary, position_summary):
     return _summary_memory_store.update_short_memory(config_id, bucket_start, market_summary, position_summary)
+
+
+def delete_short_memories(symbol=None, config_id=None, bucket_start_from=None, bucket_start_to=None, buckets=None):
+    return _summary_memory_store.delete_short_memories(
+        symbol=symbol,
+        config_id=config_id,
+        bucket_start_from=bucket_start_from,
+        bucket_start_to=bucket_start_to,
+        buckets=buckets,
+    )
 
 
 def save_news_snapshot(symbol, config_id, news_context):

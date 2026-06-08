@@ -12,6 +12,7 @@ from backend.utils.market_data import MarketTool
 from backend.utils.logger import setup_logger
 
 logger = setup_logger("AgentTools")
+DEFAULT_CANCEL_REASON = "未提供撤单原因"
 
 
 def _cancel_side_from_value(side):
@@ -49,13 +50,15 @@ class CloseRealSchema(BaseModel):
     orders: List[CloseOrder] = Field(description="平仓指令列表")
 
 class CancelRealSchema(BaseModel):
-    order_ids: List[str] = Field(description="要撤销的订单 ID 列表")
+    order_id: str = Field(description="要撤销的单个真实订单 ID。一次工具调用只填写一个订单 ID；多个订单请分别调用多次。")
+    reason: str = Field(description="撤单原因，必须说明为什么撤销该订单。")
 
 class OpenStrategySchema(BaseModel):
     orders: List[OpenOrderStrategy] = Field(description="模拟开仓指令列表")
 
 class CancelStrategySchema(BaseModel):
-    order_ids: List[str] = Field(description="要撤销的模拟订单 ID 列表")
+    order_id: str = Field(description="要撤销的单个模拟订单 ID。一次工具调用只填写一个订单 ID；多个订单请分别调用多次。")
+    reason: str = Field(description="撤单原因，必须说明为什么撤销该订单。")
 
 class CloseStrategySchema(BaseModel):
     orders: List[CloseOrder] = Field(description="平仓模拟挂单指令列表")
@@ -94,7 +97,7 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
                 # 优化日志展示：增加金额和数量
                 cost = price * op.amount
                 enhanced_reason = f"💰 定投下单: {op.amount} {symbol.split('/')[0]} @ {price} (总额: ${cost:.2f}) | {op.reason}"
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, enhanced_reason, trade_mode="SPOT_DCA", config_id=config_id, amount=op.amount)
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, enhanced_reason, trade_mode="SPOT_DCA", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
                 execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
             else:
                 execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")
@@ -125,7 +128,7 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
                 cost = price * op.amount
                 side_str = "多" if "BUY" in action else "空"
                 enhanced_reason = f"🚀 实盘开{side_str}: {op.amount} {symbol.split('/')[0]} @ {price} (价值: ${cost:.2f}) | {op.reason}"
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount)
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
                 execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
             else:
                 execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")
@@ -171,7 +174,7 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             side_str = "多" if op.pos_side == "LONG" else "空"
             enhanced_reason = f"🏁 平{side_str}: {op.amount} {symbol.split('/')[0]} @ {op.entry_price} (价值: ${cost:.2f}) | {op.reason}"
             
-            database.save_order_log(final_log_id, symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, status="CLOSED")
+            database.save_order_log(final_log_id, symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, status="CLOSED", event_type="MANUAL_CLOSE")
             database.upsert_position_history(
                 config_id=config_id,
                 symbol=symbol,
@@ -190,41 +193,42 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     return "\n".join(execution_results)
 
 @tool(args_schema=CancelRealSchema)
-def cancel_orders_real(order_ids: List[str], config_id: str, symbol: str):
-    """【撤单：撤销现有挂单】。"""
+def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
+    """【撤单：撤销一个现有真实挂单】每次只传一个 order_id。"""
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
 
-    for oid in order_ids:
-        try:
-            latest_row = None
-            base_row = None
-            with database.get_db_conn() as _conn:
-                latest_row = _conn.execute(
-                    "SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? ORDER BY id DESC LIMIT 1", (oid, config_id)
-                ).fetchone()
-                base_row = _conn.execute(
-                    "SELECT side FROM orders WHERE order_id = ? AND config_id = ? AND LOWER(side) NOT LIKE 'cancel%' ORDER BY id DESC LIMIT 1",
-                    (oid, config_id),
-                ).fetchone()
-            latest_side = str((latest_row["side"] if latest_row else "") or "").upper()
-            latest_status = str((latest_row["status"] if latest_row else "") or "").upper()
-            if latest_row and ("CANCEL" in latest_side or latest_status in {"CANCELLED", "CLOSED", "FILLED"}):
-                execution_results.append(f"⚠️ [Skip] 订单 {oid} 当前状态为 {latest_status or latest_side}，无需重复撤单。")
-                continue
+    oid = str(order_id or "").strip()
+    cancel_reason = str(reason or DEFAULT_CANCEL_REASON).strip() or DEFAULT_CANCEL_REASON
+    try:
+        latest_row = None
+        base_row = None
+        with database.get_db_conn() as _conn:
+            latest_row = _conn.execute(
+                "SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? ORDER BY id DESC LIMIT 1", (oid, config_id)
+            ).fetchone()
+            base_row = _conn.execute(
+                "SELECT side FROM orders WHERE order_id = ? AND config_id = ? AND LOWER(side) NOT LIKE 'cancel%' ORDER BY id DESC LIMIT 1",
+                (oid, config_id),
+            ).fetchone()
+        latest_side = str((latest_row["side"] if latest_row else "") or "").upper()
+        latest_status = str((latest_row["status"] if latest_row else "") or "").upper()
+        if latest_row and ("CANCEL" in latest_side or latest_status in {"CANCELLED", "CLOSED", "FILLED"}):
+            execution_results.append(f"⚠️ [Skip] 订单 {oid} 当前状态为 {latest_status or latest_side}，无需重复撤单。")
+            return "\n".join(execution_results)
 
-            orig_side = _cancel_side_from_value(base_row["side"] if base_row else (latest_row["side"] if latest_row else None))
-            market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=config_id)
-            with database.get_db_conn() as _conn:
-                _conn.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ? AND status = 'OPEN'", (oid,))
-                _conn.commit()
-            database.save_order_log(oid, symbol, agent_name, orig_side, 0, 0, 0, f"🚫 撤单成功: {oid}", trade_mode="REAL", config_id=config_id, status="CANCELLED")
-            execution_results.append(f"✅ [Cancelled Real] 订单 {oid} 已撤回。")
-        except Exception as e:
-            execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
+        orig_side = _cancel_side_from_value(base_row["side"] if base_row else (latest_row["side"] if latest_row else None))
+        market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=config_id)
+        with database.get_db_conn() as _conn:
+            _conn.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ? AND status = 'OPEN' AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'", (oid,))
+            _conn.commit()
+        database.save_order_log(oid, symbol, agent_name, orig_side, 0, 0, 0, f"撤单成功: {oid} | {cancel_reason}", trade_mode="REAL", config_id=config_id, status="CANCELLED", event_type="CANCELLED")
+        execution_results.append(f"✅ [Cancelled Real] 订单 {oid} 已撤回。")
+    except Exception as e:
+        execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
     return "\n".join(execution_results)
 
 @tool(args_schema=OpenStrategySchema)
@@ -284,7 +288,7 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
             expire_at = (datetime.now() + timedelta(hours=op.valid_duration_hours)).timestamp()
             mock_id = f"ST-{uuid.uuid4().hex[:6]}"
             database.create_mock_order(symbol, 'BUY' if 'BUY' in action else 'SELL', price, op.amount, sl, tp, agent_name=agent_name, config_id=config_id, order_id=mock_id, expire_at=expire_at)
-            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, tp, sl, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=op.amount)
+            database.save_order_log(mock_id, symbol, agent_name, 'BUY' if 'BUY' in action else 'SELL', price, tp, sl, f"[Strategy] {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
             latest.setdefault('mock_open_orders', []).append({
                 'order_id': mock_id,
                 'side': 'BUY' if 'BUY' in action else 'SELL',
@@ -299,39 +303,40 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
     return "\n".join(execution_results)
 
 @tool(args_schema=CancelStrategySchema)
-def cancel_orders_strategy(order_ids: List[str], config_id: str, symbol: str):
-    """【策略撤单：撤销模拟挂单】。"""
+def cancel_orders_strategy(order_id: str, reason: str, config_id: str, symbol: str):
+    """【策略撤单：撤销一个模拟挂单】每次只传一个 order_id。"""
     agent_name = config_id
     execution_results = []
-    for oid in order_ids:
-        try:
-            with database.get_db_conn() as _conn:
-                mock_row = _conn.execute(
-                    "SELECT side FROM mock_orders WHERE order_id = ? LIMIT 1", (oid,)
-                ).fetchone()
-                latest_row = _conn.execute(
-                    "SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? ORDER BY id DESC LIMIT 1",
-                    (oid, config_id),
-                ).fetchone()
-            latest_side = str((latest_row["side"] if latest_row else "") or "").upper()
-            latest_status = str((latest_row["status"] if latest_row else "") or "").upper()
-            if not mock_row:
-                if latest_row and ("CANCEL" in latest_side or latest_status in {"CANCELLED", "CLOSED", "FILLED"}):
-                    execution_results.append(f"⚠️ [Skip] 订单 {oid} 当前状态为 {latest_status or latest_side}，无需重复撤单。")
-                else:
-                    execution_results.append(f"⚠️ [Skip] 未找到可撤销的策略挂单 {oid}。")
-                continue
+    oid = str(order_id or "").strip()
+    cancel_reason = str(reason or DEFAULT_CANCEL_REASON).strip() or DEFAULT_CANCEL_REASON
+    try:
+        with database.get_db_conn() as _conn:
+            mock_row = _conn.execute(
+                "SELECT side FROM mock_orders WHERE order_id = ? LIMIT 1", (oid,)
+            ).fetchone()
+            latest_row = _conn.execute(
+                "SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? ORDER BY id DESC LIMIT 1",
+                (oid, config_id),
+            ).fetchone()
+        latest_side = str((latest_row["side"] if latest_row else "") or "").upper()
+        latest_status = str((latest_row["status"] if latest_row else "") or "").upper()
+        if not mock_row:
+            if latest_row and ("CANCEL" in latest_side or latest_status in {"CANCELLED", "CLOSED", "FILLED"}):
+                execution_results.append(f"⚠️ [Skip] 订单 {oid} 当前状态为 {latest_status or latest_side}，无需重复撤单。")
+            else:
+                execution_results.append(f"⚠️ [Skip] 未找到可撤销的策略挂单 {oid}。")
+            return "\n".join(execution_results)
 
-            orig_side = _cancel_side_from_value(mock_row["side"] if mock_row else None)
-            cancelled = database.cancel_mock_order(oid)
-            if not cancelled:
-                execution_results.append(f"⚠️ [Skip] 订单 {oid} 已被其他流程撤回，跳过重复撤单。")
-                continue
+        orig_side = _cancel_side_from_value(mock_row["side"] if mock_row else None)
+        cancelled = database.cancel_mock_order(oid)
+        if not cancelled:
+            execution_results.append(f"⚠️ [Skip] 订单 {oid} 已被其他流程撤回，跳过重复撤单。")
+            return "\n".join(execution_results)
 
-            database.save_order_log(oid, symbol, agent_name, orig_side, 0, 0, 0, f"[Strategy] 撤单: {oid}", trade_mode="STRATEGY", config_id=config_id, status="CANCELLED")
-            execution_results.append(f"✅ [Cancelled Strategy] 订单 {oid} 已撤回。")
-        except Exception as e:
-            execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
+        database.save_order_log(oid, symbol, agent_name, orig_side, 0, 0, 0, f"[Strategy] 撤单成功: {oid} | {cancel_reason}", trade_mode="STRATEGY", config_id=config_id, status="CANCELLED", event_type="CANCELLED")
+        execution_results.append(f"✅ [Cancelled Strategy] 订单 {oid} 已撤回。")
+    except Exception as e:
+        execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
     return "\n".join(execution_results)
 
 @tool(args_schema=CloseStrategySchema)
@@ -378,7 +383,7 @@ def close_position_strategy(orders: List[CloseOrder], config_id: str, symbol: st
                     pnl = (entry_price - current_price) * amount
                     
                 database.close_mock_order(order_id, close_price=current_price, realized_pnl=pnl)
-                database.save_order_log(order_id + "-CLOSE", symbol, agent_name, "CLOSE", current_price, 0, 0, f"[Strategy Close] 市价平仓, 盈亏: {pnl:.2f} | {op.reason}", trade_mode="STRATEGY", config_id=config_id, status="CLOSED")
+                database.save_order_log(order_id, symbol, agent_name, "CLOSE", current_price, 0, 0, f"[Strategy Close] 市价平仓, 盈亏: {pnl:.2f} | {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=amount, status="CLOSED", event_type="MANUAL_CLOSE", parent_order_id=order_id, realized_pnl=pnl)
                 execution_results.append(f"✅ [Closed Strategy] {op.pos_side} 仓位已平，订单: {order_id}，模拟盈亏: {pnl:.2f}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 策略平仓失败: {str(e)}")

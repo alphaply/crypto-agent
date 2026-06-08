@@ -26,7 +26,11 @@ def create_activity_tables(db_path: Path) -> None:
             take_profit REAL,
             stop_loss REAL,
             reason TEXT,
-            status TEXT DEFAULT 'OPEN'
+            status TEXT DEFAULT 'OPEN',
+            event_type TEXT,
+            parent_order_id TEXT,
+            is_auto INTEGER DEFAULT 0,
+            realized_pnl REAL DEFAULT 0
         )
         """
     )
@@ -120,6 +124,7 @@ class RecentOrderActivityTests(unittest.TestCase):
         self.assertEqual(row["amount"], 0.2)
         self.assertEqual(row["take_profit"], 110)
         self.assertEqual(row["stop_loss"], 90)
+        self.assertEqual(row["reason"], "duplicate cancel reason")
 
 
 if __name__ == "__main__":

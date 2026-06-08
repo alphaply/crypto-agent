@@ -284,82 +284,103 @@ function ComparePanel({ dashboard, compareSeries, loading, workspaceMap }) {
   );
 }
 
+function CopyText({ value, className = '' }) {
+  const { t } = usePreferences();
+  if (value === null || value === undefined || value === '') return '-';
+  return (
+    <button
+      type="button"
+      className={`copy-text ${className}`}
+      onClick={() => {
+        navigator.clipboard?.writeText(String(value));
+        message.success(t('copied'));
+      }}
+    >
+      {value}
+    </button>
+  );
+}
+
 function getOrderTagColor(row) {
-  const label = ((row.action_label || row.side || '')).toUpperCase();
-  if (label.includes('CANCEL') || label.includes('撤单')) return 'default';
-  if (label.includes('OPEN_LONG') || label === 'BUY' || label === 'LONG' || label.includes('开多')) return 'success';
-  if (label.includes('OPEN_SHORT') || label === 'SELL' || label === 'SHORT' || label.includes('开空')) return 'error';
-  if (label.includes('CLOSE_LONG') || label.includes('平多')) return 'processing';
-  if (label.includes('CLOSE_SHORT') || label.includes('平空')) return 'warning';
-  if (row.activity_type === 'trade') {
-    const side = (row.side || '').toUpperCase();
-    if (side.includes('BUY') || side.includes('LONG')) return 'success';
-    if (side.includes('SELL') || side.includes('SHORT')) return 'error';
-    return 'success';
-  }
+  const eventType = String(row.event_type || '').toUpperCase();
+  const side = String(row.side || '').toUpperCase();
+  if (eventType.includes('CANCEL')) return 'default';
+  if (eventType === 'SL_HIT') return 'error';
+  if (eventType === 'TP_HIT') return 'success';
+  if (eventType.includes('CLOSE')) return 'processing';
+  if (eventType === 'ENTRY_FILLED' || eventType === 'TRADE_FILL') return 'green';
+  if (side.includes('SELL') || side.includes('SHORT')) return 'red';
+  if (side.includes('BUY') || side.includes('LONG')) return 'green';
   return 'blue';
 }
 
+function ActivityMetric({ label, value, tone = '' }) {
+  return (
+    <div className={`activity-metric ${tone}`}>
+      <Text type="secondary">{label}</Text>
+      <div>{value ?? '-'}</div>
+    </div>
+  );
+}
+
 function OrderRecordCard({ row, t }) {
-  const isTrade = row.activity_type === 'trade';
-  const sideUp = (row.side || '').toUpperCase();
-  const isCancel = sideUp.includes('CANCEL');
-
-  // 标签颜色
   const tagColor = getOrderTagColor(row);
-
-  let facts;
-  if (isTrade) {
-    facts = [
-      { label: t('price'), value: <CopyNumber value={row.price ?? row.entry_price} /> },
-      { label: t('amount'), value: <CopyNumber value={row.amount} /> },
-      { label: 'PnL', value: formatPositionValue(row.realized_pnl ?? 0) },
-      { label: 'Fee', value: row.fee !== null && row.fee !== undefined ? `${formatPositionValue(row.fee)} ${row.fee_currency || ''}`.trim() : '-' },
-      { label: t('side'), value: row.side || '-' },
-      { label: t('status'), value: row.status || '-' },
-    ];
-  } else if (isCancel) {
-    facts = [
-      ...(row.entry_price ? [{ label: t('entry'), value: <CopyNumber value={row.entry_price} /> }] : []),
-      ...(row.amount ? [{ label: t('amount'), value: <CopyNumber value={row.amount} /> }] : []),
-      ...(row.take_profit ? [{ label: 'TP', value: <CopyNumber value={row.take_profit} /> }] : []),
-      ...(row.stop_loss ? [{ label: 'SL', value: <CopyNumber value={row.stop_loss} /> }] : []),
-      { label: t('status'), value: row.status || 'CANCELLED' },
-      ...(row.strategy_note ? [{ label: t('note'), value: row.strategy_note }] : []),
-      ...(row.order_id ? [{ label: t('orderId'), value: row.order_id }] : []),
-    ];
-  } else {
-    facts = [
-      ...(row.entry_price ? [{ label: t('entry'), value: <CopyNumber value={row.entry_price} /> }] : []),
-      ...(row.amount ? [{ label: t('amount'), value: <CopyNumber value={row.amount} /> }] : []),
-      ...(row.take_profit ? [{ label: 'TP', value: <CopyNumber value={row.take_profit} /> }] : []),
-      ...(row.stop_loss ? [{ label: 'SL', value: <CopyNumber value={row.stop_loss} /> }] : []),
-      { label: t('status'), value: row.status || '-' },
-      ...(row.strategy_note ? [{ label: t('note'), value: row.strategy_note }] : []),
-      ...(row.order_id ? [{ label: t('orderId'), value: row.order_id }] : []),
-    ];
-  }
+  const price = row.price ?? row.entry_price;
+  const pnl = Number(row.realized_pnl ?? row.pnl ?? 0);
+  const hasPnl = Number.isFinite(pnl) && Math.abs(pnl) > 1e-12;
+  const idRows = [
+    row.order_id ? { label: t('orderId'), value: row.order_id } : null,
+    row.parent_order_id && row.parent_order_id !== row.order_id ? { label: 'Parent ID', value: row.parent_order_id } : null,
+    row.trade_id ? { label: 'Trade ID', value: row.trade_id } : null,
+  ].filter(Boolean);
 
   return (
     <Card
       key={row.trade_id || row.id || row.order_id || `${row.timestamp}-${row.side}`}
       size="small"
-      className="dashboard-mobile-card order-record-card"
-      title={row.timestamp || '-'}
-      extra={<Tag color={tagColor}>{row.action_label || row.status || '-'}</Tag>}
+      className="dashboard-mobile-card order-record-card activity-record-card"
+      title={(
+        <Space size={8} wrap>
+          <Tag color={tagColor}>{row.event_label || row.action_label || row.status || '-'}</Tag>
+          {row.is_auto ? <Tag color="cyan">AUTO</Tag> : null}
+          <Text type="secondary" className="activity-time">{row.timestamp || '-'}</Text>
+        </Space>
+      )}
     >
-      <FactGrid items={facts} />
-      {isTrade && (row.order_id || row.trade_id || row.cost) ? (
-        <div className="order-record-meta">
-          {row.order_id ? <Text type="secondary">{t('orderId')}: {row.order_id}</Text> : null}
-          {row.trade_id ? <Text type="secondary">Trade ID: {row.trade_id}</Text> : null}
-          {row.cost ? <Text type="secondary">Cost: {formatPositionValue(row.cost)}</Text> : null}
+      <div className="activity-metric-grid">
+        <ActivityMetric label={t('side')} value={row.direction_label || row.side || '-'} />
+        <ActivityMetric label={t('price')} value={<CopyNumber value={price} />} />
+        <ActivityMetric label={t('amount')} value={<CopyNumber value={row.amount} />} />
+        <ActivityMetric label={t('status')} value={row.status || '-'} />
+        <ActivityMetric label="PnL" value={formatPositionValue(pnl)} tone={hasPnl ? (pnl > 0 ? 'positive' : 'negative') : ''} />
+        {row.fee !== null && row.fee !== undefined ? (
+          <ActivityMetric label="Fee" value={`${formatPositionValue(row.fee)} ${row.fee_currency || ''}`.trim()} />
+        ) : null}
+      </div>
+
+      {idRows.length ? (
+        <div className="activity-id-block">
+          {idRows.map((item) => (
+            <div className="activity-id-row" key={item.label}>
+              <Text type="secondary">{item.label}</Text>
+              <CopyText value={item.value} className="activity-id-value" />
+            </div>
+          ))}
         </div>
       ) : null}
+
+      {(row.take_profit || row.stop_loss || row.strategy_note) ? (
+        <div className="activity-risk-row">
+          {row.take_profit ? <Tag color="green">TP <CopyNumber value={row.take_profit} /></Tag> : null}
+          {row.stop_loss ? <Tag color="red">SL <CopyNumber value={row.stop_loss} /></Tag> : null}
+          {row.strategy_note ? <Text type="secondary">{row.strategy_note}</Text> : null}
+        </div>
+      ) : null}
+
       {row.reason ? (
-        <div className="dashboard-mobile-card__footer">
+        <div className="activity-reason">
           <Text type="secondary">{t('reason')}</Text>
-          <div className="dashboard-fact-value">{row.reason}</div>
+          <div>{row.reason}</div>
         </div>
       ) : null}
     </Card>
@@ -456,7 +477,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
         config_id: editingMemory.config_id,
         bucket_start: editingMemory.bucket_start,
         market_summary: memoryEditText,
-        position_summary: editingMemory.position_summary || '',
+        position_summary: '',
       });
       setEditingMemory(null);
       message.success(t('saved'));
@@ -646,9 +667,11 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
                       { label: t('price'), value: <CopyNumber value={row.price} /> },
                       ...(row.trigger_price > 0 ? [{ label: t('triggerPrice'), value: <CopyNumber value={row.trigger_price} /> }] : []),
                       { label: t('amount'), value: <CopyNumber value={row.amount} /> },
-                      { label: t('rawType'), value: row.raw_type || '-' },
-                      { label: t('posSide'), value: row.pos_side || '-' },
-                      { label: t('orderId'), value: row.order_id || '-' },
+                      ...(row.take_profit ? [{ label: 'TP', value: <CopyNumber value={row.take_profit} /> }] : []),
+                      ...(row.stop_loss ? [{ label: 'SL', value: <CopyNumber value={row.stop_loss} /> }] : []),
+                      { label: t('status'), value: row.status || 'OPEN' },
+                      { label: t('reason'), value: row.reason || '-' },
+                      { label: t('orderId'), value: <CopyText value={row.order_id} className="activity-id-value" /> },
                     ]}
                   />
                 </Card>
@@ -660,13 +683,20 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
               rowKey={(row) => row.order_id || `${row.side}-${row.price}-${row.amount}`}
               dataSource={pendingOrders}
               pagination={false}
-              scroll={{ x: 920 }}
+              scroll={{ x: 1080 }}
               locale={{ emptyText: <Empty description={t('noOpenOrders')} /> }}
               columns={[
                 { title: t('side'), dataIndex: 'side' },
-                { title: t('type'), dataIndex: 'type' },
-                { title: t('rawType'), dataIndex: 'raw_type' },
-                { title: t('posSide'), dataIndex: 'pos_side' },
+                {
+                  title: t('type'),
+                  dataIndex: 'type',
+                  render: (value, row) => (
+                    <Space size={4} wrap>
+                      <Tag>{value || '-'}</Tag>
+                      {row.raw_type ? <Text type="secondary">{row.raw_type}</Text> : null}
+                    </Space>
+                  ),
+                },
                 { title: t('price'), dataIndex: 'price', render: (value) => <CopyNumber value={value} /> },
                 {
                   title: t('triggerPrice'),
@@ -674,7 +704,11 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
                   render: (value) => (value > 0 ? <CopyNumber value={value} /> : '-'),
                 },
                 { title: t('amount'), dataIndex: 'amount', render: (value) => <CopyNumber value={value} /> },
-                { title: t('orderId'), dataIndex: 'order_id', ellipsis: true },
+                { title: 'TP', dataIndex: 'take_profit', render: (value) => (value ? <CopyNumber value={value} /> : '-') },
+                { title: 'SL', dataIndex: 'stop_loss', render: (value) => (value ? <CopyNumber value={value} /> : '-') },
+                { title: t('status'), dataIndex: 'status', render: (value) => value || 'OPEN' },
+                { title: t('reason'), dataIndex: 'reason', width: 220, render: (value) => value || '-' },
+                { title: t('orderId'), dataIndex: 'order_id', render: (value) => <CopyText value={value} className="activity-id-value" /> },
               ]}
             />
           )}
@@ -921,6 +955,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
   const [filter, setFilter] = useState({ symbol: '', config_id: 'ALL', limit: 100 });
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRow, setEditingRow] = useState(null);
+  const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [form] = Form.useForm();
 
   const configOptions = useMemo(
@@ -944,6 +979,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
         },
       });
       setRows(response.data.short_memories || []);
+      setSelectedRowKeys([]);
     } finally {
       setLoading(false);
     }
@@ -962,7 +998,6 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
     setEditingRow(row);
     form.setFieldsValue({
       market_summary: row?.market_summary || '',
-      position_summary: row?.position_summary || '',
     });
     setModalOpen(true);
   };
@@ -974,12 +1009,41 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
       config_id: editingRow.config_id,
       bucket_start: editingRow.bucket_start,
       market_summary: values.market_summary || '',
-      position_summary: values.position_summary || '',
+      position_summary: '',
     });
     setModalOpen(false);
     await loadRows();
     message.success(t('saved'));
   };
+
+  const deleteShortMemories = async (payload) => {
+    await api.delete('/history/short-memories', { data: payload });
+    await loadRows();
+    window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'));
+    message.success(t('deleted'));
+  };
+
+  const deleteSelected = async () => {
+    const selected = rows.filter((row) => selectedRowKeys.includes(row.id || `${row.bucket_start}-${row.config_id}`));
+    if (!selected.length) return;
+    await deleteShortMemories({
+      buckets: selected.map((row) => ({
+        config_id: row.config_id,
+        bucket_start: row.bucket_start,
+      })),
+    });
+  };
+
+  const deleteFiltered = async () => {
+    const symbol = filter.symbol || dashboard?.current_symbol;
+    if (!symbol) return;
+    await deleteShortMemories({
+      symbol,
+      config_id: filter.config_id || 'ALL',
+    });
+  };
+
+  const rowKey = (row) => row.id || `${row.bucket_start}-${row.config_id}`;
 
   return (
     <Card className={embedded ? 'memory-inner-card' : 'panel-card'} title={embedded ? null : t('shortMemories')} bordered={!embedded}>
@@ -1016,10 +1080,24 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
             }}
           />
           <Button onClick={() => loadRows()} loading={loading}>{t('loading')}</Button>
+          {authenticated ? (
+            <>
+              <Popconfirm title={t('confirmDelete')} onConfirm={deleteSelected} disabled={!selectedRowKeys.length}>
+                <Button danger disabled={!selectedRowKeys.length}>{t('deleteSelected')}</Button>
+              </Popconfirm>
+              <Popconfirm title={t('confirmDelete')} onConfirm={deleteFiltered}>
+                <Button danger>{t('deleteFiltered')}</Button>
+              </Popconfirm>
+            </>
+          ) : null}
         </Space>
         <Table
           size="small"
-          rowKey={(row) => row.id || `${row.bucket_start}-${row.config_id}`}
+          rowKey={rowKey}
+          rowSelection={authenticated ? {
+            selectedRowKeys,
+            onChange: setSelectedRowKeys,
+          } : undefined}
           dataSource={rows}
           loading={loading}
           scroll={{ x: 1040 }}
@@ -1059,9 +1137,6 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
         <Form form={form} layout="vertical">
           <Form.Item label={t('marketDecision')} name="market_summary">
             <TextArea rows={10} />
-          </Form.Item>
-          <Form.Item label={t('position')} name="position_summary">
-            <TextArea rows={5} />
           </Form.Item>
         </Form>
       </Modal>

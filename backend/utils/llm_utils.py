@@ -238,7 +238,7 @@ def invoke_with_retry(
             log_fn = logger.error if is_last_attempt or not retryable else logger.warning
             log_fn(
                 f"[LLM] {context} failed on attempt {attempt}/{total_attempts} "
-                f"type={error_type}: {exc}"
+                f"type={error_type} exc={type(exc).__name__}: {exc!r}"
             )
 
             if not retryable or is_last_attempt:

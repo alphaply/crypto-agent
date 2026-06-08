@@ -77,6 +77,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _execute_best_effort(cursor, "ALTER TABLE orders ADD COLUMN filled_cost REAL DEFAULT 0")
     _execute_best_effort(cursor, "ALTER TABLE orders ADD COLUMN avg_fill_price REAL DEFAULT 0")
     _execute_best_effort(cursor, "ALTER TABLE orders ADD COLUMN filled_at TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE orders ADD COLUMN event_type TEXT DEFAULT 'ORDER_CREATED'")
+    _execute_best_effort(cursor, "ALTER TABLE orders ADD COLUMN parent_order_id TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE orders ADD COLUMN is_auto INTEGER DEFAULT 0")
+    _execute_best_effort(cursor, "ALTER TABLE orders ADD COLUMN realized_pnl REAL DEFAULT 0")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS balance_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,9 +294,23 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     updated_at TEXT,
                     UNIQUE(config_id, position_key)
                 )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS scheduler_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    config_id TEXT NOT NULL,
+                    job_type TEXT NOT NULL,
+                    scheduled_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(config_id, job_type, scheduled_at)
+                )''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_short_memories_config_bucket ON short_memories(config_id, bucket_start)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_symbol_time ON news_snapshots(symbol, timestamp)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_config_time ON news_snapshots(config_id, timestamp)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_position_history_config_time ON position_history(config_id, updated_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status ON scheduler_runs(status, scheduled_at)")
 
     conn.commit()

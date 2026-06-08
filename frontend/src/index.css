@@ -20,6 +20,8 @@
   --accent: #2563eb;
   --accent-strong: #1d4ed8;
   --accent-soft: #dbeafe;
+  --success: #15803d;
+  --danger: #dc2626;
 }
 
 :root[data-theme='dark'] {
@@ -41,6 +43,8 @@
   --accent: #60a5fa;
   --accent-strong: #3b82f6;
   --accent-soft: #17345d;
+  --success: #4ade80;
+  --danger: #f87171;
 }
 
 * {
@@ -505,6 +509,101 @@ a {
 
 .order-record-meta .ant-typography {
   max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.copy-text {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.copy-text:hover {
+  color: var(--accent);
+}
+
+.activity-record-card .ant-card-head-title {
+  min-width: 0;
+}
+
+.activity-time {
+  font-size: 12px;
+}
+
+.activity-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.activity-metric {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+}
+
+.activity-metric > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.activity-metric.positive > div {
+  color: var(--success);
+}
+
+.activity-metric.negative > div {
+  color: var(--danger);
+}
+
+.activity-id-block {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+}
+
+.activity-id-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.activity-id-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.activity-risk-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.activity-reason {
+  display: grid;
+  gap: 4px;
+  max-height: 92px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  overflow: auto;
   overflow-wrap: anywhere;
 }
 
@@ -1962,6 +2061,14 @@ a {
 
   .dashboard-page .ant-table {
     font-size: 12px;
+  }
+
+  .activity-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .activity-id-row {
+    grid-template-columns: 72px minmax(0, 1fr);
   }
 
   .chat-message-content {

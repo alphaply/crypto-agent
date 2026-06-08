@@ -554,7 +554,38 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
 _KLINE_ALLOWED_TF = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}
 
 
-def _normalize_real_open_order(order: dict, current_side: str, positions: list[dict]) -> dict:
+def _load_order_reasons(config_id: str, order_ids: list[str]) -> dict[str, str]:
+    unique_ids = [str(order_id) for order_id in dict.fromkeys(order_ids) if str(order_id or "").strip()]
+    if not config_id or not unique_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in unique_ids)
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT order_id, reason
+            FROM orders
+            WHERE config_id = ?
+              AND order_id IN ({placeholders})
+              AND COALESCE(reason, '') != ''
+            ORDER BY id DESC
+            """,
+            (config_id, *unique_ids),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    reasons: dict[str, str] = {}
+    for row in rows:
+        order_id = str(row["order_id"] or "")
+        if order_id and order_id not in reasons:
+            reasons[order_id] = str(row["reason"] or "")
+    return reasons
+
+
+def _normalize_real_open_order(order: dict, current_side: str, positions: list[dict], reason: str = "") -> dict:
     info = order.get("info", {}) or {}
     side = str(order.get("side", "")).upper()
     raw_type = str(order.get("type") or info.get("type") or "").upper()
@@ -596,10 +627,12 @@ def _normalize_real_open_order(order: dict, current_side: str, positions: list[d
         "order_id": order.get("id", ""),
         "type": order_type,
         "raw_type": raw_type,
+        "status": str(order.get("status") or info.get("status") or "OPEN").upper(),
+        "reason": reason or "",
     }
 
 
-def _fetch_real_open_orders(mt: MarketTool, symbol: str, current_side: str, positions: list[dict]) -> list[dict]:
+def _fetch_real_open_orders(mt: MarketTool, symbol: str, current_side: str, positions: list[dict], config_id: str) -> list[dict]:
     regular_orders = mt.exchange.fetch_open_orders(symbol)
     trigger_orders = []
     try:
@@ -608,15 +641,20 @@ def _fetch_real_open_orders(mt: MarketTool, symbol: str, current_side: str, posi
         logger.warning(f"Kline trigger orders fetch failed: {exc}")
 
     seen = set()
-    pending_orders = []
+    raw_pending_orders = []
     for order in [*regular_orders, *trigger_orders]:
         order_id = str(order.get("id") or "")
         dedupe_key = order_id or f"{order.get('type')}:{order.get('side')}:{order.get('price')}:{order.get('amount')}"
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
-        pending_orders.append(_normalize_real_open_order(order, current_side, positions))
-    return pending_orders
+        raw_pending_orders.append(order)
+
+    reason_by_order_id = _load_order_reasons(config_id, [str(order.get("id") or "") for order in raw_pending_orders])
+    return [
+        _normalize_real_open_order(order, current_side, positions, reason_by_order_id.get(str(order.get("id") or ""), ""))
+        for order in raw_pending_orders
+    ]
 
 
 def get_kline_payload(config_id: str, timeframe: str = "1h"):
@@ -748,12 +786,12 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
     try:
         if mode == "REAL":
             current_side = (position or {}).get("side", "").upper()
-            pending_orders = _fetch_real_open_orders(mt, symbol, current_side, positions)
+            pending_orders = _fetch_real_open_orders(mt, symbol, current_side, positions, config_id)
         elif mode == "STRATEGY":
             conn = sqlite3.connect(DB_NAME)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT order_id, side, price, amount FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=0",
+                "SELECT order_id, side, price, amount, stop_loss, take_profit, status FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=0",
                 (config_id, symbol),
             ).fetchall()
             conn.close()
@@ -766,6 +804,9 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
                         "amount": float(row["amount"]),
                         "order_id": row["order_id"],
                         "type": "open_long" if "BUY" in side else "open_short",
+                        "take_profit": float(row["take_profit"] or 0),
+                        "stop_loss": float(row["stop_loss"] or 0),
+                        "status": row["status"] or "OPEN",
                     }
                 )
         elif mode == "SPOT_DCA":
@@ -773,7 +814,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT o.order_id, o.side, o.entry_price, o.amount
+                SELECT o.order_id, o.side, o.entry_price, o.amount, o.status
                 FROM orders o LEFT JOIN spot_order_fills f ON o.order_id = f.order_id
                 WHERE o.config_id=? AND o.trade_mode='SPOT_DCA' AND o.status='OPEN'
                   AND (f.status IS NULL OR f.status NOT IN ('FILLED','CANCELED','CANCELLED'))
@@ -789,6 +830,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
                         "amount": float(row["amount"] or 0),
                         "order_id": row["order_id"],
                         "type": "buy_spot",
+                        "status": row["status"] or "OPEN",
                     }
                 )
     except Exception as exc:

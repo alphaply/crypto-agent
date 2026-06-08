@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import queue
 import sqlite3
@@ -16,8 +17,6 @@ from langchain_core.messages import (
     ToolMessage,
     SystemMessage,
     trim_messages,
-    BaseMessage,
-    message_chunk_to_message,
 )
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -28,16 +27,7 @@ from langgraph.types import Command, interrupt
 
 from backend.agent.agent_graph import start_node as scheduler_start_node
 from backend.agent.agent_models import AgentState
-from backend.agent.agent_tools import (
-    cancel_orders_real,
-    cancel_orders_strategy,
-    close_position_real,
-    open_position_real,
-    open_position_spot_dca,
-    open_position_strategy,
-    analyze_event_contract,
-    format_event_contract_order
-)
+from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool
 from backend.config import config as global_config
 import backend.database as database
 from backend.utils.llm_utils import (
@@ -67,13 +57,7 @@ class ChatState(TypedDict):
     account_context: Dict[str, Any]
 
 def _get_chat_tools(cfg: Dict[str, Any]):
-    trade_mode = cfg.get("mode", "STRATEGY").upper()
-    
-    if trade_mode == "REAL":
-        return [open_position_real, close_position_real, cancel_orders_real] #, analyze_event_contract, format_event_contract_order]
-    if trade_mode == "SPOT_DCA":
-        return [open_position_spot_dca] #, analyze_event_contract, format_event_contract_order]
-    return [open_position_strategy, cancel_orders_strategy] #, analyze_event_contract, format_event_contract_order]
+    return get_trade_tools_for_mode(cfg.get("mode", "STRATEGY"))
 
 
 def _message_counter(msgs: list) -> int:
@@ -284,28 +268,29 @@ def model_node(state: ChatState, config: RunnableConfig):
     ).bind_tools(_get_chat_tools(cfg))
 
     def _stream_model_response():
-        gathered = None
+        accumulator = _new_stream_accumulator()
         trace_config = {"metadata": config.get("metadata", {}), "tags": config.get("tags", [])}
         for chunk in llm.stream(trimmed, config=trace_config):
             if not isinstance(chunk, BaseMessageChunk):
                 continue
-            gathered = chunk if gathered is None else gathered + chunk
 
             reasoning_token = _chunk_reasoning_text(chunk)
             if reasoning_token:
+                accumulator["reasoning_content"] += reasoning_token
                 _emit_stream_event(configurable, {"type": "reasoning_token", "token": reasoning_token})
 
             token = _chunk_to_text(chunk)
             if token:
+                accumulator["content"] += token
                 _emit_stream_event(configurable, {"type": "token", "token": token})
 
+            _accumulate_tool_call_chunks(accumulator, chunk)
+            _capture_stream_metadata(accumulator, chunk)
             tool_calls = _extract_tool_calls(chunk)
             if tool_calls:
                 _emit_stream_event(configurable, {"type": "tool_calls", "tool_calls": tool_calls})
 
-        if gathered is None:
-            return AIMessage(content="")
-        return message_chunk_to_message(gathered)
+        return _stream_accumulator_to_message(accumulator, logger=logger)
 
     started_at = time.time()
     response = invoke_with_retry(
@@ -359,24 +344,7 @@ def model_node(state: ChatState, config: RunnableConfig):
 
 
 def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str) -> str:
-    tool_map = {
-        "open_position_real": open_position_real,
-        "open_position_spot_dca": open_position_spot_dca,
-        "close_position_real": close_position_real,
-        "cancel_orders_real": cancel_orders_real,
-        "open_position_strategy": open_position_strategy,
-        "cancel_orders_strategy": cancel_orders_strategy,
-        "analyze_event_contract": analyze_event_contract,
-        "format_event_contract_order": format_event_contract_order,
-    }
-    tool_obj = tool_map.get(tool_name)
-    if not tool_obj:
-        return f"Error: Tool '{tool_name}' not found."
-
-    call_args = dict(args)
-    call_args["config_id"] = config_id
-    call_args["symbol"] = symbol
-    return str(tool_obj.func(**call_args))
+    return run_trade_tool(tool_name, args, config_id, symbol)
 
 
 def tools_node(state: ChatState, config: RunnableConfig):
@@ -500,18 +468,147 @@ def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
     return ""
 
 
+def _new_stream_accumulator() -> dict[str, Any]:
+    return {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": {},
+        "response_metadata": {},
+        "usage_metadata": None,
+        "message_id": None,
+    }
+
+
+def _tool_chunk_value(chunk: Any, key: str) -> Any:
+    if isinstance(chunk, dict):
+        return chunk.get(key)
+    return getattr(chunk, key, None)
+
+
+def _normalize_tool_chunk_index(raw_index: Any, fallback: int) -> int:
+    if isinstance(raw_index, int):
+        return raw_index
+    if isinstance(raw_index, str):
+        try:
+            return int(raw_index)
+        except ValueError:
+            return fallback
+    return fallback
+
+
+def _accumulate_tool_call_chunks(accumulator: dict[str, Any], chunk: BaseMessageChunk | Any) -> None:
+    tool_call_chunks = getattr(chunk, "tool_call_chunks", None) or []
+    for fallback_index, raw in enumerate(tool_call_chunks):
+        index = _normalize_tool_chunk_index(_tool_chunk_value(raw, "index"), fallback_index)
+        current = accumulator["tool_calls"].setdefault(
+            index,
+            {"index": index, "id": "", "name": "", "args": ""},
+        )
+
+        call_id = _tool_chunk_value(raw, "id")
+        if call_id and not current["id"]:
+            current["id"] = str(call_id)
+
+        name = _tool_chunk_value(raw, "name")
+        if name and not current["name"]:
+            current["name"] = str(name)
+
+        args = _tool_chunk_value(raw, "args")
+        if args is not None:
+            current["args"] += str(args)
+
+
+def _capture_stream_metadata(accumulator: dict[str, Any], chunk: BaseMessageChunk | Any) -> None:
+    message_id = getattr(chunk, "id", None)
+    if message_id and not accumulator["message_id"]:
+        accumulator["message_id"] = message_id
+
+    response_metadata = getattr(chunk, "response_metadata", None) or {}
+    if response_metadata:
+        accumulator["response_metadata"].update(response_metadata)
+
+    usage_metadata = getattr(chunk, "usage_metadata", None)
+    if usage_metadata:
+        accumulator["usage_metadata"] = usage_metadata
+
+
+def _parse_tool_call_args(raw_args: str) -> dict[str, Any]:
+    text = str(raw_args or "").strip()
+    if not text:
+        return {}
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("tool call args must be a JSON object")
+    return parsed
+
+
+def _assistant_additional_kwargs(accumulator: dict[str, Any]) -> dict[str, Any]:
+    reasoning = str(accumulator.get("reasoning_content") or "")
+    return {"reasoning_content": reasoning} if reasoning else {}
+
+
+def _stream_accumulator_to_message(accumulator: dict[str, Any], *, logger) -> AIMessage:
+    tool_calls = []
+    for index, raw in sorted(accumulator["tool_calls"].items()):
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            logger.warning("Ignoring streamed tool call without name: index=%s raw=%s", index, raw)
+            continue
+
+        try:
+            args = _parse_tool_call_args(raw.get("args", ""))
+        except Exception as exc:
+            logger.warning(
+                "Invalid streamed tool call args: index=%s name=%s error=%r raw_args=%r",
+                index,
+                name,
+                exc,
+                raw.get("args", ""),
+            )
+            return AIMessage(
+                content=(
+                    "工具调用参数解析失败，已中止本次工具审批。"
+                    "请重新发送请求，或让模型用更简单的参数重试。"
+                ),
+                additional_kwargs=_assistant_additional_kwargs(accumulator),
+                id=accumulator.get("message_id"),
+                response_metadata=accumulator.get("response_metadata") or {},
+                usage_metadata=accumulator.get("usage_metadata"),
+            )
+
+        tool_calls.append(
+            {
+                "name": name,
+                "args": args,
+                "id": str(raw.get("id") or f"chat_tool_call_{index}"),
+            }
+        )
+
+    return AIMessage(
+        content="" if tool_calls else accumulator.get("content", ""),
+        tool_calls=tool_calls,
+        additional_kwargs=_assistant_additional_kwargs(accumulator),
+        id=accumulator.get("message_id"),
+        response_metadata=accumulator.get("response_metadata") or {},
+        usage_metadata=accumulator.get("usage_metadata"),
+    )
+
+
 def _extract_tool_calls(chunk: BaseMessageChunk | Any) -> list:
     """提取增量的工具调用块"""
     tcc = getattr(chunk, "tool_call_chunks", [])
     if not tcc: return []
     
     res = []
-    for c in tcc:
+    for fallback_index, c in enumerate(tcc):
+        call_id = _tool_chunk_value(c, "id")
+        name = _tool_chunk_value(c, "name")
+        if not call_id and not name:
+            continue
         res.append({
-            "index": c.get("index"),
-            "id": c.get("id"),
-            "name": c.get("name"),
-            "args": c.get("args"),
+            "index": _normalize_tool_chunk_index(_tool_chunk_value(c, "index"), fallback_index),
+            "id": call_id,
+            "name": name,
         })
     return res
 
