@@ -210,6 +210,38 @@ def test_cancel_orders_real_logs_user_reason(monkeypatch):
     assert saved["kwargs"]["event_type"] == "CANCELLED"
 
 
+def test_cancel_orders_real_attempts_exchange_cancel_when_local_status_closed(monkeypatch):
+    calls = []
+
+    class FakeMarketTool:
+        def __init__(self, **_kwargs):
+            pass
+
+        def place_real_order(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {"status": "cancelled"}
+
+    monkeypatch.setattr("backend.config.config.get_config_by_id", lambda _config_id: {"model": "model-a"})
+    monkeypatch.setattr(agent_tools, "MarketTool", FakeMarketTool)
+    monkeypatch.setattr(
+        agent_tools.database,
+        "get_db_conn",
+        lambda: _FakeConn([{"side": "BUY", "status": "CLOSED"}, {"side": "BUY"}]),
+    )
+    monkeypatch.setattr(agent_tools.database, "save_order_log", lambda *args, **kwargs: None)
+
+    result = agent_tools.cancel_orders_real.func(
+        order_id="stop-1",
+        reason="position already closed",
+        config_id="cfg-a",
+        symbol="BTC/USDT",
+    )
+
+    assert "Cancelled Real" in result
+    assert calls
+    assert calls[0][0][:3] == ("BTC/USDT", "CANCEL", {"cancel_order_id": "stop-1"})
+
+
 def test_cancel_orders_strategy_logs_user_reason(monkeypatch):
     saved = {}
 

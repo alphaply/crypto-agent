@@ -4,7 +4,7 @@ import time
 from typing import List
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 import sys
 from pathlib import Path
@@ -221,8 +221,8 @@ def run_test(llm, test_name, prompt_content):
     
     start_t = time.time()
     try:
-        # 发送 SystemMessage
-        response = llm.invoke([SystemMessage(content=prompt_content)])
+        # Send as a user message for broader OpenAI-compatible API support.
+        response = llm.invoke([HumanMessage(content=prompt_content)])
         
         # 打印结果
         logger.info(f"✅ 响应成功 (耗时 {time.time()-start_t:.2f}s)")

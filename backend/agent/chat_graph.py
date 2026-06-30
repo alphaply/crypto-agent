@@ -15,7 +15,6 @@ from langchain_core.messages import (
     HumanMessage,
     AIMessage,
     ToolMessage,
-    SystemMessage,
     trim_messages,
 )
 from langchain_core.runnables import RunnableConfig
@@ -130,7 +129,7 @@ def _trim_chat_messages(system_prompt: str, history: list):
         allow_partial=False,
     )
     count_trimmed_history = _sanitize_tool_sequences(count_trimmed_history)
-    final_messages = [SystemMessage(content=system_prompt)] + count_trimmed_history
+    final_messages = [HumanMessage(content=system_prompt)] + count_trimmed_history
     return final_messages
 
 

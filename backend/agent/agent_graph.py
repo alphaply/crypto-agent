@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytz
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
+from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 
@@ -149,7 +149,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
         prompt = render_prompt(prompt_template, content=content)
 
         response = invoke_with_retry(
-            lambda: llm.invoke([SystemMessage(content=prompt)]),
+            lambda: llm.invoke([HumanMessage(content=prompt)]),
             logger=logger,
             context=f"summarizer model={model} config_id={agent_config.get('config_id', 'summarizer')}",
         )
@@ -493,6 +493,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
             "bollinger": tf_data.get("bollinger"),
             "vp": tf_data.get("vp", {}),
             "smc": tf_data.get("smc", {}),
+            "liquidity_sweep_ifvg": tf_data.get("liquidity_sweep_ifvg", {}),
             "volume_analysis": tf_data.get("volume_analysis", {}),
         }
         # VWAP 仅日内周期存在

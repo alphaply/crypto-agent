@@ -9,10 +9,10 @@ import backend.database as database
 from datetime import datetime
 from backend.utils.logger import setup_logger
 from backend.utils.indicators import (
-    smart_fmt, calc_ema, calc_rsi, calc_atr,
+    smart_fmt, calc_ema, calc_emas, calc_rsi, calc_atr,
     calc_macd, calc_adx, calc_vwap,
     calc_bollinger_bands, calculate_vp,
-    calculate_smc,
+    calculate_smc, calculate_liquidity_sweep_ifvg,
     detect_rsi_divergence
 )
 import uuid
@@ -138,6 +138,54 @@ class MarketTool:
         right = float(right or 0)
         return left > 0 and right > 0 and abs(left - right) <= max(1e-12, abs(left) * 1e-10)
 
+    @staticmethod
+    def _cancel_response_status(response):
+        info = response.get("info") if isinstance(response, dict) else {}
+        status = response.get("status") if isinstance(response, dict) else None
+        return str(status or (info or {}).get("status") or "").lower()
+
+    @classmethod
+    def _cancel_response_is_success(cls, response):
+        status = cls._cancel_response_status(response)
+        if not status:
+            return True
+        return status in {"canceled", "cancelled"}
+
+    def _cancel_real_order_with_fallbacks(self, order_id, symbol, prefer_trigger=False):
+        """Cancel regular or trigger orders, treating closed/filled responses as fallback signals."""
+        param_candidates = (
+            [{"trigger": True}, {"stop": True}, {}]
+            if prefer_trigger
+            else [{}, {"trigger": True}, {"stop": True}]
+        )
+        attempts = []
+        last_error = None
+
+        for params in param_candidates:
+            try:
+                response = self.exchange.cancel_order(order_id, symbol, params=params)
+                status = self._cancel_response_status(response)
+                attempts.append((params, status or "unknown"))
+                if self._cancel_response_is_success(response):
+                    logger.info(f"✅ [CANCEL] 撤单成功: {order_id} params={params or '{}'}")
+                    return response
+                logger.warning(
+                    f"⚠️ [CANCEL] 撤单返回非取消状态，继续尝试其他模式: "
+                    f"{order_id} status={status} params={params or '{}'}"
+                )
+            except Exception as exc:
+                last_error = exc
+                attempts.append((params, str(exc)))
+                logger.warning(
+                    f"⚠️ [CANCEL] 撤单尝试失败，继续尝试其他模式: "
+                    f"{order_id} params={params or '{}'} error={exc}"
+                )
+
+        attempt_text = "; ".join(f"params={params or '{}'} -> {result}" for params, result in attempts)
+        if last_error:
+            raise RuntimeError(f"撤单失败: {order_id}; attempts: {attempt_text}") from last_error
+        raise RuntimeError(f"撤单失败: {order_id}; attempts: {attempt_text}")
+
     def _fetch_merge_candidate_orders(self, symbol, is_trigger_order):
         orders = []
         try:
@@ -188,8 +236,7 @@ class MarketTool:
                 continue
 
             try:
-                cancel_params = {"trigger": True} if is_trigger_order else {}
-                self.exchange.cancel_order(order_id, symbol, params=cancel_params)
+                self._cancel_real_order_with_fallbacks(order_id, symbol, prefer_trigger=is_trigger_order)
                 target_amount += existing_amount
                 merged_order_ids.append(order_id)
                 try:
@@ -729,9 +776,11 @@ class MarketTool:
             
             # ================= 精简指标计算 =================
             # 1. 均线 (移除 EMA100，保留 20/50/200)
-            ema20 = calc_ema(close, 20)
-            ema50 = calc_ema(close, 50)
-            ema200 = calc_ema(close, 200)
+            emas = calc_emas(close, (20, 50, 100, 200))
+            ema20 = emas[20]
+            ema50 = emas[50]
+            ema100 = emas[100]
+            ema200 = emas[200]
             
             # 2. 动量 (仅保留 RSI，移除 StochRSI/KDJ/CCI)
             rsi = calc_rsi(close, 14)
@@ -776,21 +825,15 @@ class MarketTool:
             curr_close = close.iloc[-1]
             e20_val = ema20.iloc[-1]
             e50_val = ema50.iloc[-1]
+            e100_val = ema100.iloc[-1]
             e200_val = ema200.iloc[-1]
             
-            # 趋势判定
-            trend_status = "区间震荡"
-            if e20_val > e50_val > e200_val: trend_status = "上涨排列"
-            elif e20_val < e50_val < e200_val: trend_status = "下跌排列"
-            elif curr_close > e200_val: trend_status = "震荡偏多"
-            elif curr_close < e200_val: trend_status = "震荡偏空"
-
             adx_val = float(adx.iloc[-1])
-            trend_strength = "趋势较强" if adx_val > 25 else "弱趋势/震荡"
-            smc = calculate_smc(df)
+            smc = calculate_smc(df, atr_series=atr)
+            liquidity_sweep_ifvg = calculate_liquidity_sweep_ifvg(df)
             
             # 序列数据
-            def to_list(series, n=5):
+            def to_list(series, n=10):
                 raw = series.iloc[-n:].values.tolist()
                 return [smart_fmt(float(x)) for x in raw]
 
@@ -808,8 +851,8 @@ class MarketTool:
             result = {
                 "price": smart_fmt(curr_close),
                 "trend": {
-                    "status": trend_status,
-                    "strength": trend_strength,
+                    "status": "",
+                    "strength": "",
                     "adx": round(adx_val, 1),
                     "di_plus": round(float(plus_di.iloc[-1]), 1),
                     "di_minus": round(float(minus_di.iloc[-1]), 1),
@@ -838,6 +881,7 @@ class MarketTool:
                 "ema": {
                     "ema_20": smart_fmt(e20_val),
                     "ema_50": smart_fmt(e50_val),
+                    "ema_100": smart_fmt(e100_val),
                     "ema_200": smart_fmt(e200_val)
                 },
 
@@ -848,7 +892,8 @@ class MarketTool:
                 },
 
                 "vp": vp,
-                "smc": smc
+                "smc": smc,
+                "liquidity_sweep_ifvg": liquidity_sweep_ifvg
             }
 
             # VWAP 仅在日内周期输出
@@ -878,24 +923,8 @@ class MarketTool:
                 cancel_id = order_params.get('cancel_order_id')
                 if cancel_id:
                     logger.info(f"🔄 [CANCEL] 正在撤单 ID: {cancel_id} ...")
-                    
-                    # 优先尝试普通撤单
-                    try:
-                        res = self.exchange.cancel_order(cancel_id, symbol)
-                        logger.info(f"✅ [CANCEL] 普通撤单成功: {cancel_id}")
-                        return {"status": "cancelled", "response": res}
-                    except Exception as e:
-                        # 如果报错 OrderNotFound，可能是条件单 (Trigger Order / Algo Order)
-                        logger.warning(f"⚠️ [CANCEL] 普通撤单失败或未找到订单，尝试条件单撤单模式: {e}")
-                        try:
-                            # 针对币安合约的条件单（如止损单），需加 params={'trigger': True} 或 {'stop': True}
-                            # CCXT 统一建议使用 trigger: True
-                            res = self.exchange.cancel_order(cancel_id, symbol, params={'trigger': True})
-                            logger.info(f"✅ [CANCEL] 条件单撤单成功: {cancel_id}")
-                            return {"status": "cancelled", "response": res}
-                        except Exception as e2:
-                            logger.error(f"❌ [CANCEL] 彻底撤单失败: {e2}")
-                            raise e2
+                    res = self._cancel_real_order_with_fallbacks(cancel_id, symbol)
+                    return {"status": "cancelled", "response": res}
                 else:
                     raise ValueError("CANCEL 指令缺失 cancel_order_id 参数")
                 return None

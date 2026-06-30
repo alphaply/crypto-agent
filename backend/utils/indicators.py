@@ -25,6 +25,10 @@ def calc_ema(series, span):
     # 这里我们采用 adjust=False 但先计算一个 SMA 作为初始值，以对齐标准 EMA
     return series.ewm(span=span, adjust=False).mean()
 
+def calc_emas(series, spans=(20, 50, 100, 200)):
+    """Calculate multiple EMA spans in one compact helper."""
+    return {int(span): calc_ema(series, int(span)) for span in spans}
+
 def calc_rsi(series, period=14):
     """
     计算 RSI (对齐 TradingView / Wilder's Smoothing)
@@ -306,14 +310,15 @@ def _unmitigated_order_blocks(df, events, limit=3):
             mitigated = not later.empty and float(later["low"].min()) < float(block["low"])
         else:
             mitigated = not later.empty and float(later["high"].max()) > float(block["high"])
+        block_payload = {**block, "mitigated": bool(mitigated)}
         if not mitigated:
-            blocks.append(block)
+            blocks.append(block_payload)
         if len(blocks) >= limit:
             break
     return blocks
 
 
-def _fair_value_gaps(df, limit=3):
+def _fair_value_gaps(df, limit=3, include_mitigated=False):
     gaps = []
     for idx in range(2, len(df)):
         prev2 = df.iloc[idx - 2]
@@ -326,7 +331,15 @@ def _fair_value_gaps(df, limit=3):
                 "index": idx,
             }
             later = df.iloc[idx + 1:]
-            if later.empty or float(later["low"].min()) > float(gap["low"]):
+            consumed = 0.0
+            mitigated = False
+            if not later.empty:
+                min_low = float(later["low"].min())
+                mitigated = min_low <= float(gap["low"])
+                consumed = max(0.0, min(1.0, (float(gap["high"]) - min_low) / max(float(gap["high"]) - float(gap["low"]), 1e-10)))
+            gap["mitigated"] = mitigated
+            gap["consumed_pct"] = round(consumed * 100, 1)
+            if include_mitigated or not mitigated:
                 gaps.append(gap)
         if float(curr["high"]) < float(prev2["low"]):
             gap = {
@@ -336,7 +349,15 @@ def _fair_value_gaps(df, limit=3):
                 "index": idx,
             }
             later = df.iloc[idx + 1:]
-            if later.empty or float(later["high"].max()) < float(gap["high"]):
+            consumed = 0.0
+            mitigated = False
+            if not later.empty:
+                max_high = float(later["high"].max())
+                mitigated = max_high >= float(gap["high"])
+                consumed = max(0.0, min(1.0, (max_high - float(gap["low"])) / max(float(gap["high"]) - float(gap["low"]), 1e-10)))
+            gap["mitigated"] = mitigated
+            gap["consumed_pct"] = round(consumed * 100, 1)
+            if include_mitigated or not mitigated:
                 gaps.append(gap)
 
     return [
@@ -360,25 +381,13 @@ def _equal_high_low(high_pivots, low_pivots, atr_value, limit=2):
     return {"eqh": eqh[-limit:], "eql": eql[-limit:]}
 
 
-def calculate_smc(df, swing_length=50, internal_length=5):
-    if len(df) < 20:
-        return {}
-
-    working = df.reset_index(drop=True).copy()
-    size = max(2, min(int(internal_length or 5), max(2, len(working) // 8)))
-    swing_size = max(3, min(int(swing_length or 50), max(3, len(working) // 4)))
-
-    internal_highs = _pivot_points(working["high"], size=size, kind="high")
-    internal_lows = _pivot_points(working["low"], size=size, kind="low")
-    swing_highs = _pivot_points(working["high"], size=swing_size, kind="high")
-    swing_lows = _pivot_points(working["low"], size=swing_size, kind="low")
-
+def _structure_events(working, high_pivots, low_pivots, scope):
     pivot_high = None
     pivot_low = None
     bias = "neutral"
     events = []
-    high_iter = iter(internal_highs)
-    low_iter = iter(internal_lows)
+    high_iter = iter(high_pivots)
+    low_iter = iter(low_pivots)
     next_high = next(high_iter, None)
     next_low = next(low_iter, None)
 
@@ -396,6 +405,7 @@ def calculate_smc(df, swing_length=50, internal_length=5):
             block = _find_order_block(working, pivot_high["index"], idx, "bullish")
             events.append({
                 "index": idx,
+                "scope": scope,
                 "type": tag,
                 "bias": "bullish",
                 "level": smart_fmt(pivot_high["price"]),
@@ -409,6 +419,7 @@ def calculate_smc(df, swing_length=50, internal_length=5):
             block = _find_order_block(working, pivot_low["index"], idx, "bearish")
             events.append({
                 "index": idx,
+                "scope": scope,
                 "type": tag,
                 "bias": "bearish",
                 "level": smart_fmt(pivot_low["price"]),
@@ -417,7 +428,28 @@ def calculate_smc(df, swing_length=50, internal_length=5):
             pivot_low["crossed"] = True
             bias = "bearish"
 
-    atr_series = calc_atr(working, 14)
+    return events
+
+
+def calculate_smc(df, swing_length=50, internal_length=5, atr_series=None):
+    if len(df) < 20:
+        return {}
+
+    working = df.reset_index(drop=True).copy()
+    size = max(2, min(int(internal_length or 5), max(2, len(working) // 8)))
+    swing_size = max(3, min(int(swing_length or 50), max(3, len(working) // 4)))
+
+    internal_highs = _pivot_points(working["high"], size=size, kind="high")
+    internal_lows = _pivot_points(working["low"], size=size, kind="low")
+    swing_highs = _pivot_points(working["high"], size=swing_size, kind="high")
+    swing_lows = _pivot_points(working["low"], size=swing_size, kind="low")
+
+    internal_events = _structure_events(working, internal_highs, internal_lows, "internal")
+    swing_events = _structure_events(working, swing_highs, swing_lows, "swing")
+    events = sorted(internal_events + swing_events, key=lambda item: item.get("index", 0))
+
+    if atr_series is None:
+        atr_series = calc_atr(working, 14)
     atr_value = float(atr_series.iloc[-1] or 0)
     liquidity = _equal_high_low(internal_highs, internal_lows, atr_value)
 
@@ -446,8 +478,17 @@ def calculate_smc(df, swing_length=50, internal_length=5):
             zone = "lower_value"
 
     latest_event = events[-1] if events else {}
+    latest_internal = internal_events[-1] if internal_events else {}
+    latest_swing = swing_events[-1] if swing_events else {}
+    public_events = [
+        {k: v for k, v in event.items() if k not in {"index", "order_block"}}
+        for event in events[-5:]
+    ]
     return {
         "structure": {k: v for k, v in latest_event.items() if k not in {"index", "order_block"}},
+        "internal_structure": {k: v for k, v in latest_internal.items() if k not in {"index", "order_block"}},
+        "swing_structure": {k: v for k, v in latest_swing.items() if k not in {"index", "order_block"}},
+        "events": public_events,
         "order_blocks": _unmitigated_order_blocks(working, events),
         "liquidity": {
             **liquidity,
@@ -460,6 +501,65 @@ def calculate_smc(df, swing_length=50, internal_length=5):
             "high": smart_fmt(trailing_high),
             "low": smart_fmt(trailing_low),
         },
+    }
+
+
+def calculate_liquidity_sweep_ifvg(df, pivot_size=5, limit=3):
+    """Detect liquidity sweeps plus active/inverse FVG state."""
+    if len(df) < max(10, pivot_size * 2 + 3):
+        return {}
+
+    working = df.reset_index(drop=True).copy()
+    size = max(2, min(int(pivot_size or 5), max(2, len(working) // 8)))
+    highs = _pivot_points(working["high"], size=size, kind="high")
+    lows = _pivot_points(working["low"], size=size, kind="low")
+
+    sweeps = []
+    for pivot in highs:
+        later = working.iloc[pivot["index"] + 1:]
+        for idx, row in later.iterrows():
+            if float(row["high"]) > pivot["price"] and float(row["close"]) < pivot["price"]:
+                sweeps.append({
+                    "index": int(idx),
+                    "direction": "bearish",
+                    "level": smart_fmt(pivot["price"]),
+                    "extreme": smart_fmt(float(row["high"])),
+                })
+                break
+    for pivot in lows:
+        later = working.iloc[pivot["index"] + 1:]
+        for idx, row in later.iterrows():
+            if float(row["low"]) < pivot["price"] and float(row["close"]) > pivot["price"]:
+                sweeps.append({
+                    "index": int(idx),
+                    "direction": "bullish",
+                    "level": smart_fmt(pivot["price"]),
+                    "extreme": smart_fmt(float(row["low"])),
+                })
+                break
+
+    sweeps = sorted(sweeps, key=lambda item: item["index"])
+    all_gaps = _fair_value_gaps(working, limit=50, include_mitigated=True)
+    active_fvg = [gap for gap in all_gaps if not gap.get("mitigated")][:limit]
+    inverse_fvg = []
+    for gap in all_gaps:
+        if not gap.get("mitigated"):
+            continue
+        flipped_bias = "bearish" if gap.get("bias") == "bullish" else "bullish"
+        inverse_fvg.append({
+            "bias": flipped_bias,
+            "source_bias": gap.get("bias"),
+            "low": gap.get("low"),
+            "high": gap.get("high"),
+            "consumed_pct": gap.get("consumed_pct", 100.0),
+        })
+
+    latest_sweep = sweeps[-1] if sweeps else {}
+    return {
+        "latest_sweep": {k: v for k, v in latest_sweep.items() if k != "index"},
+        "sweeps": [{k: v for k, v in sweep.items() if k != "index"} for sweep in sweeps[-limit:]],
+        "active_fvg": active_fvg[:limit],
+        "inverse_fvg": inverse_fvg[-limit:],
     }
 
 

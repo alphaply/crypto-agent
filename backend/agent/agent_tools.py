@@ -216,7 +216,7 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
             ).fetchone()
         latest_side = str((latest_row["side"] if latest_row else "") or "").upper()
         latest_status = str((latest_row["status"] if latest_row else "") or "").upper()
-        if latest_row and ("CANCEL" in latest_side or latest_status in {"CANCELLED", "CLOSED", "FILLED"}):
+        if latest_row and ("CANCEL" in latest_side or latest_status == "CANCELLED"):
             execution_results.append(f"⚠️ [Skip] 订单 {oid} 当前状态为 {latest_status or latest_side}，无需重复撤单。")
             return "\n".join(execution_results)
 
