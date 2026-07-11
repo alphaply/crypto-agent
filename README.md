@@ -10,6 +10,7 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 - 多 Agent 策略配置和定时调度
 - K 线、均线、持仓、订单和盈亏展示
 - 聊天控制台、运行配置页、公开用量统计页
+- 精简消息情报：官方宏观经济日历、政策监管与加密新闻（每轮最多 6 项，带缓存回退）
 - SQLite 本地状态存储
 - Docker Compose 部署，Web 服务和调度器分容器运行
 

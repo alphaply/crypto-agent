@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -25,7 +25,7 @@ import {
 } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, HolderOutlined, FileTextOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
-import { usePreferences } from '../app/preferences';
+import { usePreferences } from '../app/usePreferences';
 import { DailySummaryPanel, ShortMemoryPanel } from './DashboardPage';
 
 const { TextArea } = Input;
@@ -103,6 +103,7 @@ function buildBlankAgent(promptFiles = []) {
     strategy_prompt: DEFAULT_STRATEGY_PROMPT,
     daily_prompt: DEFAULT_DAILY_PROMPT,
     short_memory_prompt: DEFAULT_SHORT_MEMORY_PROMPT,
+    system_prompt_role: 'system',
     summarizer: {
       model: '',
       api_base: '',
@@ -135,8 +136,33 @@ function buildBlankProvider() {
     extra_body: {},
     thinking_enabled: null,
     reasoning_effort: '',
+    system_prompt_role: 'system',
     secrets: { api_key: buildBlankSecretMeta() },
   };
+}
+
+function normalizeApiBase(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function apiBaseGroupKey(value) {
+  return normalizeApiBase(value).toLowerCase() || '__unassigned__';
+}
+
+function apiBaseDisplayName(value, locale = 'en') {
+  const normalized = normalizeApiBase(value);
+  if (!normalized) return locale === 'zh' ? '未设置 API Base' : 'No API Base configured';
+  try {
+    const url = new URL(normalized);
+    return url.host.replace(/^api\./i, '') || normalized;
+  } catch {
+    return normalized;
+  }
+}
+
+function providerHasApiKey(provider) {
+  const apiKey = provider?.secrets?.api_key || {};
+  return Boolean(apiKey.configured || apiKey.value);
 }
 
 function buildBlankProfile() {
@@ -266,7 +292,6 @@ function PromptVarHints({ content, vars, locale }) {
   const varPattern = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
   let match;
   const safeContent = content || '';
-  // eslint-disable-next-line no-cond-assign
   while ((match = varPattern.exec(safeContent)) !== null) {
     usedVars.add(match[1]);
   }
@@ -357,6 +382,10 @@ export default function AdminPage() {
   // Provider/Profile drawer state
   const [providerDrawerOpen, setProviderDrawerOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState(null);
+  const [providerQuery, setProviderQuery] = useState('');
+  const [providerApiBaseFilter, setProviderApiBaseFilter] = useState('__all__');
+  const [providerKeyFilter, setProviderKeyFilter] = useState('__all__');
+  const [providerThinkingFilter, setProviderThinkingFilter] = useState('__all__');
   const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState(null);
 
@@ -364,7 +393,7 @@ export default function AdminPage() {
   const [importing, setImporting] = useState(false);
   const [importWriteEnv, setImportWriteEnv] = useState(false);
 
-  const loadAll = async () => {
+  const loadAll = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -380,21 +409,20 @@ export default function AdminPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       loadAll();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [loadAll]);
 
   useEffect(() => {
-    if (!ADMIN_TAB_KEYS.includes(activeAdminTab)) {
-      setActiveAdminTab('runtime');
-      return;
-    }
-    window.localStorage.setItem(ADMIN_TAB_STORAGE_KEY, activeAdminTab);
+    window.localStorage.setItem(
+      ADMIN_TAB_STORAGE_KEY,
+      ADMIN_TAB_KEYS.includes(activeAdminTab) ? activeAdminTab : 'runtime',
+    );
   }, [activeAdminTab]);
 
   useEffect(() => {
@@ -428,7 +456,7 @@ export default function AdminPage() {
     }));
   };
 
-  const persistConfig = async (targetPayload, reload = false) => {
+  const persistConfig = useCallback(async (targetPayload, reload = false) => {
     if (!targetPayload) return;
     setSaving(true);
     setError('');
@@ -454,7 +482,7 @@ export default function AdminPage() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [loadAll]);
 
   const saveConfig = async () => {
     if (autosaveTimerRef.current) {
@@ -477,7 +505,7 @@ export default function AdminPage() {
         autosaveTimerRef.current = null;
       }
     };
-  }, [payload, loading, saveState]);
+  }, [payload, loading, saveState, persistConfig]);
 
   // --- Task (Agent) CRUD ---
   const openAddTask = () => {
@@ -603,8 +631,8 @@ export default function AdminPage() {
   };
 
   // --- Provider CRUD ---
-  const openAddProvider = () => {
-    setEditingProvider(buildBlankProvider());
+  const openAddProvider = (apiBase = '') => {
+    setEditingProvider({ ...buildBlankProvider(), api_base: normalizeApiBase(apiBase) });
     setProviderDrawerOpen(true);
   };
 
@@ -615,11 +643,27 @@ export default function AdminPage() {
 
   const saveProvider = () => {
     if (!editingProvider) return;
+    const model = String(editingProvider.model || '').trim();
+    const apiBase = normalizeApiBase(editingProvider.api_base);
+    if (!model) {
+      message.error(locale === 'zh' ? '请填写模型名称' : 'Model is required');
+      return;
+    }
+    if (!apiBase) {
+      message.error(locale === 'zh' ? '请填写 API Base，便于按服务端点管理模型' : 'API Base is required to organize this provider');
+      return;
+    }
+    const providerToSave = {
+      ...editingProvider,
+      model,
+      api_base: apiBase,
+      name: String(editingProvider.name || '').trim() || `${apiBaseDisplayName(apiBase, locale)} · ${model}`,
+    };
     updatePayload((prev) => {
       const providers = [...(prev.llm_providers || [])];
-      const idx = providers.findIndex((p) => p.provider_id === editingProvider.provider_id);
-      if (idx >= 0) providers[idx] = editingProvider;
-      else providers.push(editingProvider);
+      const idx = providers.findIndex((p) => p.provider_id === providerToSave.provider_id);
+      if (idx >= 0) providers[idx] = providerToSave;
+      else providers.push(providerToSave);
       return { ...prev, llm_providers: providers };
     });
     setProviderDrawerOpen(false);
@@ -628,13 +672,13 @@ export default function AdminPage() {
 
   const duplicateProvider = (provider) => {
     const now = Date.now();
-    const clone = {
+    setEditingProvider({
       ...provider,
       provider_id: `${provider.provider_id}-copy-${now}`,
       name: provider.name ? `${provider.name} Copy` : `Provider Copy ${now}`,
       secrets: { api_key: buildBlankSecretMeta() },
-    };
-    updatePayload((prev) => ({ ...prev, llm_providers: [...(prev.llm_providers || []), clone] }));
+    });
+    setProviderDrawerOpen(true);
   };
 
   const deleteProvider = (providerId) => {
@@ -768,6 +812,97 @@ export default function AdminPage() {
     if (!profileId || !payload?.exchange_profiles) return null;
     return payload.exchange_profiles.find((p) => p.profile_id === profileId) || null;
   };
+
+  const providerCatalog = useMemo(() => {
+    const providers = payload?.llm_providers || [];
+    const taskUsage = new Map();
+    (payload?.agents || []).forEach((agent) => {
+      [agent.llm_provider_id, agent.summarizer_provider_id]
+        .filter(Boolean)
+        .forEach((providerId) => {
+          const tasks = taskUsage.get(providerId) || new Set();
+          tasks.add(agent.config_id);
+          taskUsage.set(providerId, tasks);
+        });
+    });
+
+    const groupMap = new Map();
+    providers.forEach((provider) => {
+      const apiBase = normalizeApiBase(provider.api_base);
+      const key = apiBaseGroupKey(apiBase);
+      if (!groupMap.has(key)) {
+        groupMap.set(key, {
+          key,
+          apiBase,
+          label: apiBaseDisplayName(apiBase, locale),
+          providers: [],
+          taskIds: new Set(),
+        });
+      }
+      const group = groupMap.get(key);
+      group.providers.push(provider);
+      (taskUsage.get(provider.provider_id) || new Set()).forEach((taskId) => group.taskIds.add(taskId));
+    });
+
+    const groups = [...groupMap.values()]
+      .map((group) => ({
+        ...group,
+        providers: [...group.providers].sort((a, b) => String(a.model || a.name).localeCompare(String(b.model || b.name))),
+        configuredCount: group.providers.filter(providerHasApiKey).length,
+        taskCount: group.taskIds.size,
+      }))
+      .sort((a, b) => {
+        if (!a.apiBase) return 1;
+        if (!b.apiBase) return -1;
+        return a.label.localeCompare(b.label);
+      });
+
+    const normalizedQuery = providerQuery.trim().toLowerCase();
+    const visibleGroups = groups
+      .map((group) => {
+        const visibleProviders = group.providers.filter((provider) => {
+          const matchesApiBase = providerApiBaseFilter === '__all__' || group.key === providerApiBaseFilter;
+          const hasKey = providerHasApiKey(provider);
+          const matchesKey = providerKeyFilter === '__all__'
+            || (providerKeyFilter === 'configured' && hasKey)
+            || (providerKeyFilter === 'missing' && !hasKey);
+          const matchesThinking = providerThinkingFilter === '__all__'
+            || (providerThinkingFilter === 'thinking' && provider.thinking_enabled === true)
+            || (providerThinkingFilter === 'standard' && provider.thinking_enabled !== true);
+          const searchable = [provider.name, provider.provider_id, provider.model, provider.api_base, provider.role]
+            .join(' ')
+            .toLowerCase();
+          return matchesApiBase && matchesKey && matchesThinking && (!normalizedQuery || searchable.includes(normalizedQuery));
+        });
+        return {
+          ...group,
+          providers: visibleProviders,
+          configuredCount: visibleProviders.filter(providerHasApiKey).length,
+          taskCount: new Set(
+            visibleProviders.flatMap((provider) => [...(taskUsage.get(provider.provider_id) || new Set())]),
+          ).size,
+        };
+      })
+      .filter((group) => group.providers.length);
+
+    return {
+      groups,
+      visibleGroups,
+      endpointOptions: groups.map((group) => ({
+        label: `${group.label} (${group.providers.length})`,
+        value: group.key,
+      })),
+      endpointDraftOptions: groups
+        .filter((group) => group.apiBase)
+        .map((group) => ({ label: `${group.label} · ${group.apiBase}`, value: group.apiBase })),
+      stats: {
+        total: providers.length,
+        endpoints: groups.filter((group) => group.apiBase).length,
+        configured: providers.filter(providerHasApiKey).length,
+        assignedTasks: new Set([...taskUsage.values()].flatMap((tasks) => [...tasks])).size,
+      },
+    };
+  }, [locale, payload?.agents, payload?.llm_providers, providerApiBaseFilter, providerKeyFilter, providerQuery, providerThinkingFilter]);
 
   const taskMode = editingTask?.mode || 'STRATEGY';
   const memoryDashboard = payload ? {
@@ -958,64 +1093,169 @@ export default function AdminPage() {
             key: 'providers',
             label: t('llmProviders'),
             children: (
-              <Card className="panel-card" title={t('llmProviders')} extra={
-                <Button type="primary" onClick={openAddProvider}>{t('addProvider')}</Button>
-              }>
-                {isMobile ? (
-                  <div className="admin-mobile-list">
-                    {(payload.llm_providers || []).map((record) => (
-                      <Card
-                        key={record.provider_id}
-                        size="small"
-                        className="admin-mobile-card"
-                        title={record.name || record.provider_id}
-                        extra={<Tag>{record.thinking_enabled === null ? '-' : (record.thinking_enabled ? 'Thinking' : 'Standard')}</Tag>}
-                      >
-                        <div className="admin-mobile-meta">
-                          <Text type="secondary">Model</Text><Text className="text-break">{record.model || '-'}</Text>
-                          <Text type="secondary">API Base</Text><Text className="text-break">{record.api_base || '-'}</Text>
-                          <Text type="secondary">Input $/M</Text><Text>{record.input_price_per_m ?? 0}</Text>
-                          <Text type="secondary">Output $/M</Text><Text>{record.output_price_per_m ?? 0}</Text>
-                          <Text type="secondary">{t('reasoningEffort')}</Text><Text>{record.reasoning_effort || '-'}</Text>
-                        </div>
-                        <Space className="admin-mobile-actions" wrap>
-                          <Button size="small" onClick={() => openEditProvider(record)}>Edit</Button>
-                          <Button size="small" onClick={() => duplicateProvider(record)}>Copy</Button>
-                          <Popconfirm title={t('confirmDelete')} onConfirm={() => deleteProvider(record.provider_id)}>
-                            <Button size="small" danger>Delete</Button>
-                          </Popconfirm>
-                        </Space>
-                      </Card>
-                    ))}
-                    {!(payload.llm_providers || []).length ? <Empty description={t('noProvider')} /> : null}
-                  </div>
-                ) : (
-                  <Table
-                    rowKey="provider_id"
-                    dataSource={payload.llm_providers || []}
-                    pagination={false}
-                    scroll={{ x: 1040 }}
-                    columns={[
-                      { title: t('providerName'), dataIndex: 'name', width: 180 },
-                      { title: 'Model', dataIndex: 'model', width: 180, ellipsis: true },
-                      { title: 'API Base', dataIndex: 'api_base', width: 260, ellipsis: true },
-                      { title: 'Input $/M', dataIndex: 'input_price_per_m', width: 110, render: (v) => v ?? 0 },
-                      { title: 'Output $/M', dataIndex: 'output_price_per_m', width: 120, render: (v) => v ?? 0 },
-                      { title: t('thinkingMode'), dataIndex: 'thinking_enabled', width: 120, render: (v) => v === null ? '-' : (v ? 'ON' : 'OFF') },
-                      { title: t('reasoningEffort'), dataIndex: 'reasoning_effort', width: 130, render: (v) => v || '-' },
-                      {
-                        title: '', width: 190, fixed: 'right', render: (_, record) => (
-                          <Space className="table-actions">
-                            <Button size="small" onClick={() => openEditProvider(record)}>Edit</Button>
-                            <Button size="small" onClick={() => duplicateProvider(record)}>Copy</Button>
-                            <Popconfirm title={t('confirmDelete')} onConfirm={() => deleteProvider(record.provider_id)}>
-                              <Button size="small" danger>Delete</Button>
-                            </Popconfirm>
-                          </Space>
-                        ),
-                      },
-                    ]}
+              <Card
+                className="panel-card provider-catalog-card"
+                title={t('llmProviders')}
+                extra={<Button type="primary" onClick={() => openAddProvider()}>{locale === 'zh' ? '新建服务端点 / 模型' : 'New endpoint / model'}</Button>}
+              >
+                <div className="provider-overview" aria-label={locale === 'zh' ? '模型服务商概览' : 'Provider overview'}>
+                  <div className="provider-stat"><Text type="secondary">{locale === 'zh' ? '模型配置' : 'Models'}</Text><strong>{providerCatalog.stats.total}</strong></div>
+                  <div className="provider-stat"><Text type="secondary">API Base</Text><strong>{providerCatalog.stats.endpoints}</strong></div>
+                  <div className="provider-stat"><Text type="secondary">{locale === 'zh' ? '已配置密钥' : 'Keys configured'}</Text><strong>{providerCatalog.stats.configured}</strong></div>
+                  <div className="provider-stat"><Text type="secondary">{locale === 'zh' ? '任务正在使用' : 'Used by tasks'}</Text><strong>{providerCatalog.stats.assignedTasks}</strong></div>
+                </div>
+
+                <div className="provider-filter-bar">
+                  <Input
+                    allowClear
+                    value={providerQuery}
+                    onChange={(event) => setProviderQuery(event.target.value)}
+                    placeholder={locale === 'zh' ? '搜索名称、模型、端点或配置 ID' : 'Search name, model, endpoint, or ID'}
                   />
+                  <Select
+                    value={providerApiBaseFilter}
+                    options={[{ label: locale === 'zh' ? '全部 API Base' : 'All API Bases', value: '__all__' }, ...providerCatalog.endpointOptions]}
+                    onChange={setProviderApiBaseFilter}
+                    showSearch
+                    optionFilterProp="label"
+                  />
+                  <Select
+                    value={providerKeyFilter}
+                    options={[
+                      { label: locale === 'zh' ? '全部密钥状态' : 'All key states', value: '__all__' },
+                      { label: locale === 'zh' ? '已配置密钥' : 'Key configured', value: 'configured' },
+                      { label: locale === 'zh' ? '未配置密钥' : 'Key missing', value: 'missing' },
+                    ]}
+                    onChange={setProviderKeyFilter}
+                  />
+                  <Select
+                    value={providerThinkingFilter}
+                    options={[
+                      { label: locale === 'zh' ? '全部推理模式' : 'All reasoning modes', value: '__all__' },
+                      { label: locale === 'zh' ? '支持思考' : 'Thinking enabled', value: 'thinking' },
+                      { label: locale === 'zh' ? '标准模式' : 'Standard mode', value: 'standard' },
+                    ]}
+                    onChange={setProviderThinkingFilter}
+                  />
+                  {(providerQuery || providerApiBaseFilter !== '__all__' || providerKeyFilter !== '__all__' || providerThinkingFilter !== '__all__') && (
+                    <Button onClick={() => {
+                      setProviderQuery('');
+                      setProviderApiBaseFilter('__all__');
+                      setProviderKeyFilter('__all__');
+                      setProviderThinkingFilter('__all__');
+                    }}>
+                      {locale === 'zh' ? '重置' : 'Reset'}
+                    </Button>
+                  )}
+                </div>
+
+                {providerCatalog.visibleGroups.length ? (
+                  <Collapse
+                    className="provider-groups"
+                    defaultActiveKey={providerCatalog.visibleGroups.map((group) => group.key)}
+                    items={providerCatalog.visibleGroups.map((group) => ({
+                      key: group.key,
+                      label: (
+                        <div className="provider-group-heading">
+                          <div className="provider-group-endpoint">
+                            <Text strong>{group.label}</Text>
+                            <Text type="secondary" className="text-break">{group.apiBase || (locale === 'zh' ? '需要补充端点地址' : 'Endpoint needs to be configured')}</Text>
+                          </div>
+                          <Space size={6} wrap>
+                            <Tag>{group.providers.length} {locale === 'zh' ? '个模型' : 'models'}</Tag>
+                            <Tag color={group.configuredCount === group.providers.length ? 'green' : 'gold'}>{group.configuredCount}/{group.providers.length} {locale === 'zh' ? '密钥' : 'keys'}</Tag>
+                            {group.taskCount > 0 && <Tag color="blue">{group.taskCount} {locale === 'zh' ? '个任务' : 'tasks'}</Tag>}
+                          </Space>
+                        </div>
+                      ),
+                      extra: (
+                        <Button
+                          size="small"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openAddProvider(group.apiBase);
+                          }}
+                        >
+                          {locale === 'zh' ? '添加模型' : 'Add model'}
+                        </Button>
+                      ),
+                      children: isMobile ? (
+                        <div className="admin-mobile-list">
+                          {group.providers.map((record) => (
+                            <Card
+                              key={record.provider_id}
+                              size="small"
+                              className="admin-mobile-card"
+                              title={record.name || record.provider_id}
+                              extra={<Tag color={providerHasApiKey(record) ? 'green' : 'gold'}>{providerHasApiKey(record) ? (locale === 'zh' ? '密钥已配' : 'Key ready') : (locale === 'zh' ? '缺少密钥' : 'Key missing')}</Tag>}
+                            >
+                              <div className="admin-mobile-meta">
+                                <Text type="secondary">Model</Text><Text className="text-break">{record.model || '-'}</Text>
+                                <Text type="secondary">{locale === 'zh' ? '任务引用' : 'Task usage'}</Text><Text>{[...(new Set((payload.agents || []).filter((agent) => agent.llm_provider_id === record.provider_id || agent.summarizer_provider_id === record.provider_id).map((agent) => agent.config_id)))].length}</Text>
+                                <Text type="secondary">{t('thinkingMode')}</Text><Text>{record.thinking_enabled === true ? (locale === 'zh' ? '已启用' : 'Enabled') : (locale === 'zh' ? '标准' : 'Standard')}</Text>
+                                <Text type="secondary">{t('reasoningEffort')}</Text><Text>{record.reasoning_effort || '-'}</Text>
+                              </div>
+                              <Space className="admin-mobile-actions" wrap>
+                                <Button size="small" onClick={() => openEditProvider(record)}>{locale === 'zh' ? '编辑' : 'Edit'}</Button>
+                                <Button size="small" onClick={() => duplicateProvider(record)}>{locale === 'zh' ? '复制' : 'Copy'}</Button>
+                                <Popconfirm title={t('confirmDelete')} onConfirm={() => deleteProvider(record.provider_id)}>
+                                  <Button size="small" danger>{locale === 'zh' ? '删除' : 'Delete'}</Button>
+                                </Popconfirm>
+                              </Space>
+                            </Card>
+                          ))}
+                        </div>
+                      ) : (
+                        <Table
+                          className="provider-group-table"
+                          rowKey="provider_id"
+                          dataSource={group.providers}
+                          pagination={false}
+                          scroll={{ x: 980 }}
+                          columns={[
+                            {
+                              title: t('providerName'), width: 220,
+                              render: (_, record) => (
+                                <Space direction="vertical" size={0}>
+                                  <Text strong>{record.name || record.provider_id}</Text>
+                                  <Text type="secondary" className="provider-id">{record.provider_id}</Text>
+                                </Space>
+                              ),
+                            },
+                            { title: 'Model', dataIndex: 'model', width: 180, ellipsis: true },
+                            {
+                              title: locale === 'zh' ? '密钥状态' : 'API key', width: 120,
+                              render: (_, record) => <Tag color={providerHasApiKey(record) ? 'green' : 'gold'}>{providerHasApiKey(record) ? (locale === 'zh' ? '已配置' : 'Configured') : (locale === 'zh' ? '未配置' : 'Missing')}</Tag>,
+                            },
+                            {
+                              title: locale === 'zh' ? '任务引用' : 'Task usage', width: 105,
+                              render: (_, record) => {
+                                const usages = (payload.agents || []).filter((agent) => agent.llm_provider_id === record.provider_id || agent.summarizer_provider_id === record.provider_id);
+                                return usages.length ? <Tooltip title={usages.map((agent) => agent.title || agent.config_id).join(', ')}><Tag color="blue">{usages.length}</Tag></Tooltip> : '-';
+                              },
+                            },
+                            { title: t('thinkingMode'), width: 110, render: (_, record) => record.thinking_enabled === true ? <Tag color="purple">Thinking</Tag> : <Tag>Standard</Tag> },
+                            { title: t('reasoningEffort'), dataIndex: 'reasoning_effort', width: 115, render: (value) => value || '-' },
+                            { title: 'Input $/M', dataIndex: 'input_price_per_m', width: 105, render: (value) => value ?? 0 },
+                            { title: 'Output $/M', dataIndex: 'output_price_per_m', width: 112, render: (value) => value ?? 0 },
+                            {
+                              title: '', width: 185, fixed: 'right', render: (_, record) => (
+                                <Space className="table-actions">
+                                  <Button size="small" onClick={() => openEditProvider(record)}>{locale === 'zh' ? '编辑' : 'Edit'}</Button>
+                                  <Button size="small" onClick={() => duplicateProvider(record)}>{locale === 'zh' ? '复制' : 'Copy'}</Button>
+                                  <Popconfirm title={t('confirmDelete')} onConfirm={() => deleteProvider(record.provider_id)}>
+                                    <Button size="small" danger>{locale === 'zh' ? '删除' : 'Delete'}</Button>
+                                  </Popconfirm>
+                                </Space>
+                              ),
+                            },
+                          ]}
+                        />
+                      ),
+                    }))}
+                  />
+                ) : (
+                  <Empty description={providerCatalog.stats.total ? (locale === 'zh' ? '没有符合当前筛选条件的模型' : 'No models match the current filters') : t('noProvider')} />
                 )}
               </Card>
             ),
@@ -1307,6 +1547,8 @@ export default function AdminPage() {
                       <>
                         <div className="form-field"><label>Model</label><Input value={info.model} disabled /></div>
                         <div className="form-field"><label>Temperature</label><InputNumber value={info.temperature} disabled style={{ width: '100%' }} /></div>
+                        <div className="form-field"><label>{locale === 'zh' ? '提示词角色' : 'Prompt role'}</label><Input value={info.system_prompt_role === 'user' ? (locale === 'zh' ? '用户消息' : 'User message') : 'System message'} disabled /></div>
+                        <div className="form-field"><label>{locale === 'zh' ? '任务提示词角色' : 'Task prompt role'}</label><Select value={editingTask.system_prompt_role || info.system_prompt_role || 'system'} options={[{ value: 'system', label: 'System message' }, { value: 'user', label: 'User message (compatibility)' }]} onChange={(value) => updateEditingTask('system_prompt_role', value)} /></div>
                         <div className="form-field field-span-2"><label>API Base</label><Input value={info.api_base} disabled /></div>
                       </>
                     );
@@ -1415,21 +1657,59 @@ export default function AdminPage() {
       >
         {editingProvider && (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message={locale === 'zh' ? '按 API Base 管理模型' : 'Manage models by API Base'}
+              description={locale === 'zh'
+                ? '从已有端点开始可快速新增模型。复制模型不会复制 API Key，避免密钥被意外复用。'
+                : 'Choose an existing endpoint to add a model quickly. Copying a model never copies its API key.'}
+            />
             <div className="form-field">
-              <label>{t('providerName')}</label>
-              <Input value={editingProvider.name} onChange={(e) => updateEditingProvider('name', e.target.value)} />
+              <label>{locale === 'zh' ? '复用已有 API Base' : 'Reuse an API Base'}</label>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={providerCatalog.endpointDraftOptions.some((option) => option.value === normalizeApiBase(editingProvider.api_base)) ? normalizeApiBase(editingProvider.api_base) : undefined}
+                options={providerCatalog.endpointDraftOptions}
+                placeholder={locale === 'zh' ? '选择端点后自动填入下方地址' : 'Choose an endpoint to prefill the address'}
+                onChange={(value) => {
+                  if (value) updateEditingProvider('api_base', value);
+                }}
+              />
             </div>
-            <div className="form-field">
-              <label>Model</label>
-              <Input value={editingProvider.model} onChange={(e) => updateEditingProvider('model', e.target.value)} placeholder="e.g. deepseek-chat, gpt-4o" />
+            <div className="field-grid">
+              <div className="form-field">
+                <label>{t('providerName')}</label>
+                <Input value={editingProvider.name} onChange={(e) => updateEditingProvider('name', e.target.value)} placeholder={locale === 'zh' ? '留空时根据端点和模型自动生成' : 'Generated from endpoint and model when empty'} />
+              </div>
+              <div className="form-field">
+                <label>Model *</label>
+                <Input value={editingProvider.model} onChange={(e) => updateEditingProvider('model', e.target.value)} placeholder="e.g. deepseek-chat, gpt-4o" />
+              </div>
+              <div className="form-field field-span-2">
+                <label>API Base *</label>
+                <Input value={editingProvider.api_base} onChange={(e) => updateEditingProvider('api_base', e.target.value)} placeholder="e.g. https://api.deepseek.com/v1" />
+                <Text type="secondary">{locale === 'zh' ? '同一地址下的模型会在列表中自动归为一组。' : 'Models using the same address are grouped together automatically.'}</Text>
+              </div>
             </div>
-            <div className="form-field">
-              <label>API Base</label>
-              <Input value={editingProvider.api_base} onChange={(e) => updateEditingProvider('api_base', e.target.value)} placeholder="e.g. https://api.deepseek.com/v1" />
-            </div>
+            <Text type="secondary" className="provider-id">Provider ID: {editingProvider.provider_id}</Text>
             <div className="form-field">
               <label>Temperature</label>
               <InputNumber min={0} max={2} step={0.1} value={editingProvider.temperature} onChange={(v) => updateEditingProvider('temperature', v)} style={{ width: '100%' }} />
+            </div>
+            <div className="form-field">
+              <label>{locale === 'zh' ? '提示词角色' : 'Prompt role'}</label>
+              <Select
+                value={editingProvider.system_prompt_role || 'system'}
+                options={[
+                  { value: 'system', label: locale === 'zh' ? 'System 消息（默认）' : 'System message (default)' },
+                  { value: 'user', label: locale === 'zh' ? 'User 消息（兼容模式）' : 'User message (compatibility)' },
+                ]}
+                onChange={(value) => updateEditingProvider('system_prompt_role', value)}
+              />
+              <Text type="secondary">{locale === 'zh' ? '若服务商报错或不支持 system role，请选择 User 消息。任务和临时聊天会自动继承。' : 'Choose User message when an endpoint rejects system roles. Task and temporary chats inherit this setting.'}</Text>
             </div>
             <div className="field-grid">
               <div className="form-field">

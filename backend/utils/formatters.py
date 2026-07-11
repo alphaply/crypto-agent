@@ -154,8 +154,9 @@ def format_market_data_to_text(data: dict) -> str:
     news_context = data.get("news_context") or {}
     if news_context:
         headlines = news_context.get("headlines") or []
-        headline_text = "; ".join(str(item) for item in headlines[:3]) if headlines else "none"
-        output.append(f"- News: {headline_text}")
+        headline_text = "; ".join(str(item) for item in headlines[:6]) if headlines else ("none selected" if news_context.get("available") else "unavailable")
+        stale_text = " [cached/stale]" if news_context.get("stale") else ""
+        output.append(f"- News risk: {news_context.get('risk_level', 'unknown')}{stale_text} | {headline_text}")
     output.append("")
 
     indicators = data.get("technical_indicators") or {}
@@ -214,6 +215,14 @@ def format_market_data_to_text(data: dict) -> str:
 
         bb = timeframe_data.get("bollinger", {})
         output.append(f"- BB: Up={bb.get('up', 0)} Low={bb.get('low', 0)} Width={bb.get('width', 0)}")
+
+        vp = timeframe_data.get("vp") or {}
+        if vp:
+            hvns = ", ".join(str(value) for value in (vp.get("hvns") or [])[:3]) or "none"
+            output.append(
+                f"- Volume Profile: POC={vp.get('poc', 0)} VAH={vp.get('vah', 0)} "
+                f"VAL={vp.get('val', 0)} HVN={hvns}"
+            )
 
         closes = timeframe_data.get("recent_closes", [])
         opens = timeframe_data.get("recent_opens", [])

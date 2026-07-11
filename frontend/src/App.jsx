@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { ReloadOutlined } from '@ant-design/icons';
 import { Button, Space, Spin } from 'antd';
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { usePreferences } from './app/preferences';
+import { usePreferences } from './app/usePreferences';
 import AppTopBar from './components/AppTopBar';
 import AuthGate from './components/AuthGate';
 import GlobalLoader from './components/GlobalLoader';

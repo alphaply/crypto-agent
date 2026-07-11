@@ -117,9 +117,13 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     title TEXT,
                     config_id TEXT NOT NULL,
                     symbol TEXT NOT NULL,
+                    session_type TEXT NOT NULL DEFAULT 'task',
+                    runtime_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )''')
+    _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'task'")
+    _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
@@ -162,10 +166,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     extra_body TEXT NOT NULL DEFAULT '{}',
                     thinking_enabled INTEGER,
                     reasoning_effort TEXT,
+                    system_prompt_role TEXT NOT NULL DEFAULT 'system',
                     updated_at TEXT NOT NULL
                 )''')
     _execute_best_effort(cursor, "ALTER TABLE llm_providers ADD COLUMN thinking_enabled INTEGER")
     _execute_best_effort(cursor, "ALTER TABLE llm_providers ADD COLUMN reasoning_effort TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE llm_providers ADD COLUMN system_prompt_role TEXT NOT NULL DEFAULT 'system'")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS exchange_profiles (
                     profile_id TEXT PRIMARY KEY,
@@ -276,6 +282,13 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     raw_json TEXT
                 )''')
 
+    cursor.execute('''CREATE TABLE IF NOT EXISTS intelligence_source_cache (
+                    source_key TEXT PRIMARY KEY,
+                    fetched_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    last_error TEXT
+                )''')
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS position_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     config_id TEXT NOT NULL,
@@ -310,6 +323,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_short_memories_config_bucket ON short_memories(config_id, bucket_start)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_symbol_time ON news_snapshots(symbol, timestamp)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_config_time ON news_snapshots(config_id, timestamp)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_intelligence_cache_fetched ON intelligence_source_cache(fetched_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_position_history_config_time ON position_history(config_id, updated_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status ON scheduler_runs(status, scheduled_at)")
 

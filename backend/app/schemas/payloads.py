@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -15,9 +17,21 @@ class SetupApplyRequest(BaseModel):
     run_scheduler_in_web: bool = True
 
 
+class TemporaryChatRuntimeRequest(BaseModel):
+    exchange_profile_id: str
+    market_type: Literal["spot", "swap"] = "spot"
+    symbol: str
+    llm_provider_id: str
+    global_requirement: str | None = None
+    system_prompt_role: Literal["system", "user"] | None = None
+    read_only: bool = True
+
+
 class CreateSessionRequest(BaseModel):
-    config_id: str
+    mode: Literal["task", "temporary"] = "task"
+    config_id: str | None = None
     title: str | None = None
+    runtime: TemporaryChatRuntimeRequest | None = None
 
 
 class BulkDeleteSessionsRequest(BaseModel):
@@ -126,6 +140,7 @@ class ConfigAgentPayload(BaseModel):
     initial_cost: float | None = None
     initial_qty: float | None = None
     extra_body: dict = Field(default_factory=dict)
+    system_prompt_role: Literal["system", "user"] | None = None
     llm_provider_id: str | None = None
     summarizer_provider_id: str | None = None
     exchange_profile_id: str | None = None
@@ -145,6 +160,7 @@ class LlmProviderPayload(BaseModel):
     extra_body: dict = Field(default_factory=dict)
     thinking_enabled: bool | None = None
     reasoning_effort: str | None = None
+    system_prompt_role: Literal["system", "user"] = "system"
     input_price_per_m: float | None = 0
     output_price_per_m: float | None = 0
     pricing_currency: str | None = "USD"

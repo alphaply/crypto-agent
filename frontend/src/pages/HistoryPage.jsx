@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Card, Empty, Grid, Pagination, Select, Space, Spin, Statistic, Tag, Typography } from 'antd';
-import LineChart from '../components/LineChart';
+import EquityCompareChart from '../components/EquityCompareChart';
 import MarkdownBlock from '../components/MarkdownBlock';
 import { api } from '../lib/api';
-import { usePreferences } from '../app/preferences';
+import { usePreferences } from '../app/usePreferences';
 
 const { Title, Paragraph, Text } = Typography;
 const { useBreakpoint } = Grid;
@@ -67,15 +67,9 @@ export default function HistoryPage() {
     };
   }, [selectedSymbol, configId, compareIds, page, setSelectedSymbol]);
 
-  const compareSeries = useMemo(() => {
-    const series = payload?.history?.history_compare_series || [];
-    return series.map((item) => ({
-      name: item.label,
-      data: item.points.map((point) => ({ name: point.date, value: point.equity })),
-    }));
-  }, [payload]);
+  const compareSeries = useMemo(() => payload?.history?.history_compare_series || [], [payload]);
 
-  const summaries = payload?.history?.summaries || [];
+  const summaries = useMemo(() => payload?.history?.summaries || [], [payload]);
 
   // 横向对比：按 config_id 分组，PC端多列展示
   const groupedSummaries = useMemo(() => {
@@ -119,7 +113,10 @@ export default function HistoryPage() {
                 mode="multiple"
                 style={{ minWidth: 260 }}
                 value={compareIds}
-                options={((payload?.history?.active_agents || []).map((item) => ({ label: item, value: item })) || [])}
+                options={((payload?.history?.compare_candidates || []).map((item) => ({
+                  label: `${item.label || item.config_id} · ${item.mode || '-'}`,
+                  value: item.config_id,
+                })) || [])}
                 onChange={setCompareIds}
                 placeholder={t('compare')}
               />
@@ -153,9 +150,7 @@ export default function HistoryPage() {
             </div>
 
             <Card className="panel-card" title={t('equityCompare')}>
-              <div className="chart-wrap">
-                {compareSeries.length ? <LineChart series={compareSeries} yName={t('equity')} /> : <Empty description={t('noData')} />}
-              </div>
+              <EquityCompareChart series={compareSeries} selectedIds={compareIds} onSelectedIdsChange={setCompareIds} />
             </Card>
 
             <Card className="panel-card history-review-card" title={t('historyReview')}>

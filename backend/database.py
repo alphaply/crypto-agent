@@ -128,11 +128,16 @@ def save_mock_equity_snapshot(config_id, symbol, balance, unrealized_pnl):
     """
     return _mock_trading_store.save_equity_snapshot(config_id, symbol, balance, unrealized_pnl)
 
-def get_mock_equity_history(config_id, days=30):
+def get_mock_equity_history(config_id, days=30, symbol=None, include_fallback=True):
     """获取指定策略模拟账户的资金曲线（按天聚合的最后一条），最多保留 30 天。
     优先使用 total_equity (钱包余额+未实现盈亏)，旧数据回退 balance。
     """
-    return _mock_trading_store.get_equity_history(config_id, days=days)
+    return _mock_trading_store.get_equity_history(
+        config_id,
+        days=days,
+        symbol=symbol,
+        include_fallback=include_fallback,
+    )
 
 def save_token_usage(symbol, config_id, model, prompt_tokens, completion_tokens):
     """记录 LLM Token 使用情况"""
@@ -334,8 +339,22 @@ def clean_financial_data(symbol):
     return _trade_history_store.clean_symbol_data(symbol)
 
 
-def create_chat_session(session_id: str, config_id: str, symbol: str, title: str):
-    _chat_session_store.create_session(session_id, config_id, symbol, title)
+def create_chat_session(
+    session_id: str,
+    config_id: str,
+    symbol: str,
+    title: str,
+    session_type: str = "task",
+    runtime_json: str = "{}",
+):
+    _chat_session_store.create_session(
+        session_id,
+        config_id,
+        symbol,
+        title,
+        session_type=session_type,
+        runtime_json=runtime_json,
+    )
 
 
 def touch_chat_session(session_id: str):
@@ -481,6 +500,39 @@ def get_latest_news_snapshot(symbol=None, config_id=None):
         payload["raw"] = json.loads(payload.get("raw_json") or "{}")
     except Exception:
         payload["raw"] = {}
+    return payload
+
+
+def save_intelligence_source_cache(source_key, fetched_at, payload, last_error=None):
+    """Persist the last successful normalized payload for a news/calendar source."""
+    with get_db_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO intelligence_source_cache (source_key, fetched_at, payload_json, last_error)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source_key) DO UPDATE SET
+                fetched_at = excluded.fetched_at,
+                payload_json = excluded.payload_json,
+                last_error = excluded.last_error
+            """,
+            (str(source_key), str(fetched_at), json.dumps(payload, ensure_ascii=False), last_error),
+        )
+        conn.commit()
+
+
+def get_intelligence_source_cache(source_key):
+    with get_db_conn() as conn:
+        row = conn.execute(
+            "SELECT source_key, fetched_at, payload_json, last_error FROM intelligence_source_cache WHERE source_key = ?",
+            (str(source_key),),
+        ).fetchone()
+    if not row:
+        return None
+    payload = dict(row)
+    try:
+        payload["payload"] = json.loads(payload.pop("payload_json") or "[]")
+    except Exception:
+        payload["payload"] = []
     return payload
 
 

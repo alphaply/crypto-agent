@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Alert, Button, Card, Form, Input, InputNumber, Switch, Typography } from 'antd';
 import { api } from '../lib/api';
-import { usePreferences } from '../app/preferences';
+import { usePreferences } from '../app/usePreferences';
 
 const { Title, Paragraph, Text } = Typography;
 

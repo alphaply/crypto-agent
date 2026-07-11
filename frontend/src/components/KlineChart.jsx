@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import {
   CandlestickSeries,
   CrosshairMode,
@@ -8,7 +8,7 @@ import {
   createSeriesMarkers,
 } from 'lightweight-charts';
 import { Empty } from 'antd';
-import { usePreferences } from '../app/preferences';
+import { usePreferences } from '../app/usePreferences';
 
 const EMA_COLORS = {
   '20': '#2563eb',
@@ -38,6 +38,17 @@ export default function KlineChart({ payload }) {
   const containerRef = useRef(null);
   const tooltipRef = useRef(null);
   const { isDark, t } = usePreferences();
+  const payloadFingerprint = useMemo(
+    () => JSON.stringify({
+      candles: payload?.candles || [],
+      volume: payload?.volume || [],
+      emas: payload?.emas || {},
+      positions: payload?.positions || [],
+      pending_orders: payload?.pending_orders || [],
+      risk_lines: payload?.risk_lines || [],
+    }),
+    [payload],
+  );
 
   useEffect(() => {
     if (!containerRef.current || !payload?.candles?.length) {
@@ -337,14 +348,25 @@ export default function KlineChart({ payload }) {
 
     chart.subscribeCrosshairMove(crosshairHandler);
 
+    let resizeFrame = null;
+    let lastWidth = Math.round(container.clientWidth);
+    let lastHeight = Math.round(container.clientHeight || 420);
     const resizeObserver = new ResizeObserver(([entry]) => {
-      const width = entry.contentRect.width;
-      const height = entry.contentRect.height || 420;
-      chart.applyOptions({ width, height });
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height || 420);
+      if (width < 1 || height < 1 || (width === lastWidth && height === lastHeight)) return;
+      lastWidth = width;
+      lastHeight = height;
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        chart.applyOptions({ width, height });
+        resizeFrame = null;
+      });
     });
     resizeObserver.observe(container);
 
     return () => {
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       resizeObserver.disconnect();
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateVisibleExtrema);
       chart.unsubscribeCrosshairMove(crosshairHandler);
@@ -352,7 +374,7 @@ export default function KlineChart({ payload }) {
       priceLines.forEach((line) => candleSeries.removePriceLine(line));
       chart.remove();
     };
-  }, [isDark, payload]);
+  }, [isDark, payloadFingerprint]);
 
   if (!payload?.candles?.length) {
     return <Empty description={t('noData')} />;

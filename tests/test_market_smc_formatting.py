@@ -110,11 +110,11 @@ class MarketSmcFormattingTests(unittest.TestCase):
         self.assertNotIn("馃敶", text)
         self.assertNotIn("VP:", text)
 
-    def test_agent_prompt_source_uses_system_message_for_rendered_prompt(self):
+    def test_agent_prompt_source_uses_configurable_instruction_role(self):
         source = Path("backend/agent/agent_graph.py").read_text(encoding="utf-8")
 
-        self.assertIn("messages = [SystemMessage(content=system_prompt)]", source)
-        self.assertNotIn("messages = [HumanMessage(content=system_prompt)]", source)
+        self.assertIn('instruction = instruction_message(system_prompt, prompt_role)', source)
+        self.assertIn('messages = [instruction]', source)
         self.assertEqual(SystemMessage(content="prompt").type, "system")
 
 

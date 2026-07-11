@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { PreferencesContext } from './preferences-context';
 
 const STORAGE_KEYS = {
   locale: 'crypto-agent-locale',
@@ -402,8 +403,6 @@ const messages = {
   },
 };
 
-const PreferencesContext = createContext(null);
-
 function detectLocale() {
   if (typeof window === 'undefined') {
     return 'en';
@@ -414,7 +413,6 @@ function detectLocale() {
   }
   return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
 }
-
 function detectTheme() {
   if (typeof window === 'undefined') {
     return 'light';
@@ -473,12 +471,4 @@ export function PreferencesProvider({ children }) {
   }, [locale, theme, selectedSymbol]);
 
   return <PreferencesContext.Provider value={value}>{children}</PreferencesContext.Provider>;
-}
-
-export function usePreferences() {
-  const context = useContext(PreferencesContext);
-  if (!context) {
-    throw new Error('usePreferences must be used within PreferencesProvider');
-  }
-  return context;
 }

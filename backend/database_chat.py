@@ -7,16 +7,31 @@ class ChatSessionStore:
         self._conn_factory = conn_factory
         self._now_factory = now_factory
 
-    def create_session(self, session_id: str, config_id: str, symbol: str, title: str) -> None:
+    def create_session(
+        self,
+        session_id: str,
+        config_id: str,
+        symbol: str,
+        title: str,
+        session_type: str = "task",
+        runtime_json: str = "{}",
+    ) -> None:
         now = self._now_factory()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
+            columns = {row[1] for row in cursor.execute("PRAGMA table_info(chat_sessions)").fetchall()}
+            if "session_type" not in columns:
+                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'task'")
+            if "runtime_json" not in columns:
+                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'")
             cursor.execute(
                 '''
-                INSERT INTO chat_sessions (session_id, title, config_id, symbol, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO chat_sessions (
+                    session_id, title, config_id, symbol, session_type, runtime_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
-                (session_id, title, config_id, symbol, now, now),
+                (session_id, title, config_id, symbol, session_type, runtime_json, now, now),
             )
             conn.commit()
 

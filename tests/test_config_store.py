@@ -175,6 +175,7 @@ class ConfigStoreTests(unittest.TestCase):
                 "temperature": 0.2,
                 "role": "agent",
                 "extra_body": {"reasoning_effort": "low"},
+                "system_prompt_role": "user",
                 "secrets": {"api_key": {"value": "provider-key"}},
             }
         ]
@@ -213,6 +214,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(agent["okx_secret"], "okx-secret")
         self.assertEqual(agent["passphrase"], "okx-pass")
         self.assertEqual(agent["extra_body"], {"reasoning_effort": "low"})
+        self.assertEqual(agent["system_prompt_role"], "user")
 
     def test_save_runtime_snapshot_preserves_agent_market_timeframes(self):
         config_store.save_runtime_snapshot(

@@ -7,7 +7,8 @@ import zhCN from 'antd/locale/zh_CN';
 import { BrowserRouter } from 'react-router-dom';
 import 'antd/dist/reset.css';
 import App from './App';
-import { PreferencesProvider, usePreferences } from './app/preferences';
+import { PreferencesProvider } from './app/preferences';
+import { usePreferences } from './app/usePreferences';
 import './index.css';
 
 function ConfiguredApp() {

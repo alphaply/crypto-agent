@@ -489,8 +489,36 @@ def get_position_stats_payload(config_id: str):
     }
 
 
+def _equity_series_metadata(points: list[dict]) -> dict:
+    if not points:
+        return {
+            "data_state": "no_data",
+            "point_count": 0,
+            "first_date": None,
+            "last_date": None,
+            "latest_equity": None,
+            "return_pct": None,
+        }
+    first = float(points[0]["equity"] or 0)
+    latest = float(points[-1]["equity"] or 0)
+    return {
+        "data_state": "ready",
+        "point_count": len(points),
+        "first_date": points[0]["date"],
+        "last_date": points[-1]["date"],
+        "latest_equity": latest,
+        "return_pct": ((latest - first) / first * 100) if first else None,
+    }
+
+
 def get_equity_compare_payload(symbol: str, config_ids: str = ""):
-    configs = [cfg for cfg in global_config.get_all_symbol_configs() if cfg.get("symbol") == symbol and cfg.get("enabled", True)]
+    configs = [
+        cfg
+        for cfg in global_config.get_all_symbol_configs()
+        if cfg.get("symbol") == symbol
+        and cfg.get("enabled", True)
+        and str(cfg.get("mode") or "STRATEGY").upper() != "SPOT_DCA"
+    ]
     if config_ids:
         wanted = {item.strip() for item in config_ids.split(",") if item.strip()}
         configs = [cfg for cfg in configs if cfg.get("config_id") in wanted]
@@ -503,49 +531,69 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
     for cfg in configs:
         config_id = cfg.get("config_id")
         mode = str(cfg.get("mode") or "STRATEGY").upper()
-        label = f"{config_id} ({mode})"
+        display_name = cfg.get("title") or cfg.get("display_name") or config_id
+        label = f"{display_name} ({mode})"
         points = []
+        data_source = None
         if mode == "REAL":
-            # 优先按 config_id 过滤，旧数据无 config_id 时回退为按 symbol
             rows = cursor.execute(
                 """
                 SELECT day, total_equity FROM (
                     SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
                            row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                    FROM balance_history WHERE config_id = ? AND symbol = ?
+                    FROM balance_history
+                    WHERE config_id = ? AND symbol = ? AND total_equity > 0
                 ) WHERE rn = 1 ORDER BY day ASC
                 """,
                 (config_id, symbol),
             ).fetchall()
-            if not rows:
-                rows = cursor.execute(
-                    """
-                    SELECT day, total_equity FROM (
-                        SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
-                               row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                        FROM balance_history WHERE (config_id IS NULL OR config_id = '') AND symbol = ?
-                    ) WHERE rn = 1 ORDER BY day ASC
-                    """,
-                    (symbol,),
-                ).fetchall()
             points = [{"date": row["day"], "equity": row["total_equity"]} for row in rows]
-        else:
-            # STRATEGY 模式：优先取 total_equity，旧数据回退 balance
+            data_source = {
+                "table": "balance_history",
+                "field": "total_equity",
+                "scope": "config_id",
+                "config_id": config_id,
+                "symbol": symbol,
+                "label": "balance_history.total_equity",
+                "display_label": "实盘账户权益快照",
+                "kind": "real_equity",
+            }
+        elif mode == "STRATEGY":
             rows = cursor.execute(
                 """
                 SELECT h.day as day, COALESCE(h.total_equity, h.balance) as equity FROM (
                     SELECT date(timestamp) as day,
                            total_equity, balance, timestamp,
                            row_number() OVER (PARTITION BY date(timestamp) ORDER BY id DESC) as rn
-                    FROM mock_balance_history WHERE config_id = ?
+                    FROM mock_balance_history
+                    WHERE config_id = ? AND symbol = ? AND COALESCE(total_equity, balance) > 0
                 ) h WHERE h.rn = 1 ORDER BY h.day ASC
                 """,
-                (config_id,),
+                (config_id, symbol),
             ).fetchall()
             points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
+            data_source = {
+                "table": "mock_balance_history",
+                "field": "total_equity",
+                "fallback_field": "balance",
+                "scope": "config_id",
+                "config_id": config_id,
+                "symbol": symbol,
+                "label": "mock_balance_history.total_equity",
+                "display_label": "策略模拟权益快照",
+                "kind": "strategy_equity",
+            }
 
-        if points:
-            series.append({"config_id": config_id, "label": label, "mode": mode, "points": points})
+        series.append(
+            {
+                "config_id": config_id,
+                "label": label,
+                "mode": mode,
+                "points": points,
+                "data_source": data_source,
+                **_equity_series_metadata(points),
+            }
+        )
 
     conn.close()
     return {"symbol": symbol, "series": series}

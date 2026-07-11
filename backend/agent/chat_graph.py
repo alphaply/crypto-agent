@@ -7,6 +7,7 @@ import queue
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, TypedDict
 
 from dotenv import load_dotenv
@@ -28,16 +29,25 @@ from backend.agent.agent_graph import start_node as scheduler_start_node
 from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool
 from backend.config import config as global_config
+from backend.config_store import load_effective_runtime_snapshot
 import backend.database as database
 from backend.utils.llm_utils import (
     LLMInvocationError,
     build_chat_openai,
     format_llm_error_message,
+    instruction_message,
     invoke_with_retry,
     sync_langsmith_environment,
 )
 from backend.utils.logger import setup_logger
+from backend.utils.market_data import MarketTool
 from backend.storage_paths import data_file
+from backend.utils.formatters import (
+    format_market_data_to_text,
+    format_orders_to_agent_friendly,
+    format_positions_to_agent_friendly,
+)
+from backend.utils.news_context import fetch_news_risk_context
 
 load_dotenv()
 logger = setup_logger("ChatGraph")
@@ -45,6 +55,12 @@ logger = setup_logger("ChatGraph")
 CHAT_CHECKPOINT_DB = str(data_file("CHAT_CHECKPOINT_DB", "chat_checkpoints.sqlite"))
 CHAT_MAX_HISTORY_MESSAGES = int(os.getenv("CHAT_MAX_HISTORY_MESSAGES", "12"))
 CHAT_TRIM_MAX_TOKENS = int(os.getenv("CHAT_TRIM_MAX_TOKENS", "6000"))
+TEMPORARY_CHAT_TIMEFRAMES = ("15m", "1h", "4h", "1d", "1w")
+CHAT_CONTEXT_RECENT_MESSAGES = int(os.getenv("CHAT_CONTEXT_RECENT_MESSAGES", "10"))
+CHAT_CONTEXT_COMPACTION_BATCH = int(os.getenv("CHAT_CONTEXT_COMPACTION_BATCH", "6"))
+CHAT_CONTEXT_SUMMARY_MAX_CHARS = int(os.getenv("CHAT_CONTEXT_SUMMARY_MAX_CHARS", "8000"))
+CHAT_CONTEXT_MESSAGE_MAX_CHARS = int(os.getenv("CHAT_CONTEXT_MESSAGE_MAX_CHARS", "3000"))
+CHAT_CONTEXT_RECENT_MAX_CHARS = int(os.getenv("CHAT_CONTEXT_RECENT_MAX_CHARS", "18000"))
 
 
 class ChatState(TypedDict):
@@ -54,9 +70,209 @@ class ChatState(TypedDict):
     q: str
     market_context: Dict[str, Any]
     account_context: Dict[str, Any]
+    retry_last: bool
+    replace_last_user_message: bool
+    conversation_summary: str
+    conversation_summary_cursor: int
+    conversation_summary_updated_at: str
 
 def _get_chat_tools(cfg: Dict[str, Any]):
+    if cfg.get("read_only"):
+        return []
     return get_trade_tools_for_mode(cfg.get("mode", "STRATEGY"))
+
+
+def _resolve_temporary_chat_config(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve temporary-session credentials just-in-time, never from checkpoint state."""
+    snapshot = load_effective_runtime_snapshot()
+    provider_id = str(runtime.get("llm_provider_id") or "")
+    profile_id = str(runtime.get("exchange_profile_id") or "")
+    provider = next((item for item in snapshot.get("llm_providers", []) if item.get("provider_id") == provider_id), None)
+    profile = next((item for item in snapshot.get("exchange_profiles", []) if item.get("profile_id") == profile_id), None)
+    if not provider or not provider.get("api_key"):
+        raise ValueError("Temporary chat LLM provider is missing or has no API key")
+    if not profile or not profile.get("api_key") or not profile.get("secret"):
+        raise ValueError("Temporary chat exchange profile is missing or incomplete")
+    if str(profile.get("exchange") or "").lower() == "okx" and not profile.get("passphrase"):
+        raise ValueError("Temporary chat OKX profile is missing its passphrase")
+
+    return {
+        **runtime,
+        "mode": "READ_ONLY",
+        "read_only": True,
+        "model": provider.get("model") or runtime.get("model") or "",
+        "api_key": provider.get("api_key"),
+        "api_base": provider.get("api_base") or "",
+        "extra_body": provider.get("extra_body") or {},
+        "thinking_enabled": provider.get("thinking_enabled"),
+        "reasoning_effort": provider.get("reasoning_effort") or "",
+        "exchange_profile": {
+            "profile_id": profile_id,
+            "exchange": profile.get("exchange"),
+            "api_key": profile.get("api_key"),
+            "secret": profile.get("secret"),
+            "passphrase": profile.get("passphrase"),
+        },
+    }
+
+
+def _resolve_chat_config(configurable: Dict[str, Any]) -> Dict[str, Any]:
+    runtime = configurable.get("runtime")
+    if isinstance(runtime, dict) and runtime.get("read_only"):
+        return _resolve_temporary_chat_config(runtime)
+    config_id = configurable.get("config_id")
+    cfg = global_config.get_config_by_id(config_id)
+    if not cfg:
+        raise ValueError(f"Config not found for config_id={config_id}")
+    return cfg
+
+
+def _temporary_market_context_text(market_data: Dict[str, Any]) -> str:
+    """Render the full compact technical context used by task chats, without task history."""
+    analysis = market_data.get("analysis") or {}
+    if not analysis:
+        error = str(market_data.get("error") or "No technical data was returned")
+        return f"Technical market data is unavailable for this turn: {error}"
+    primary = analysis.get("15m") or next(iter(analysis.values()), {})
+    return format_market_data_to_text(
+        {
+            "current_price": primary.get("price", 0),
+            "atr_base": primary.get("atr", 0),
+            "sentiment": market_data.get("sentiment") or {},
+            "technical_indicators": analysis,
+        }
+    )
+
+
+def _temporary_news_context_text(news_context: Dict[str, Any]) -> str:
+    headlines = [str(item).strip() for item in (news_context.get("headlines") or []) if str(item).strip()]
+    if not headlines:
+        if news_context.get("available"):
+            return "Risk level: normal\nNo sufficiently relevant macro events or headlines were selected for this turn."
+        error = str(news_context.get("error") or "No relevant headlines were retrieved")
+        return f"News context is unavailable for this turn: {error}"
+    risk_level = str(news_context.get("risk_level") or "unknown")
+    source = str(news_context.get("source") or "live news sources")
+    reasons = [str(item).strip() for item in (news_context.get("risk_reasons") or []) if str(item).strip()]
+    stale_note = " (using a recent cached snapshot)" if news_context.get("stale") else ""
+    return "\n".join(
+        [
+            f"Risk level: {risk_level}{stale_note}",
+            *[f"Risk reason: {reason}" for reason in reasons[:3]],
+            f"Source: {source}",
+            *[f"- {headline}" for headline in headlines],
+        ]
+    )
+
+
+def _temporary_account_context_text(account_context: Dict[str, Any]) -> str:
+    if not account_context.get("available"):
+        return f"Account data is unavailable for this turn: {account_context.get('error') or 'Unknown error'}"
+
+    positions_text = format_positions_to_agent_friendly(account_context.get("real_positions", []))
+    orders_text = format_orders_to_agent_friendly(
+        [
+            {**order, "id": order.get("id") or order.get("order_id")}
+            for order in account_context.get("real_open_orders", [])
+        ]
+    )
+    return (
+        f"Balance: {account_context.get('balance', 0)}\n"
+        f"Available: {account_context.get('available_balance', account_context.get('balance', 0))}\n"
+        f"Positions:\n{positions_text}\n\nOpen orders:\n{orders_text}"
+    )
+
+
+def _temporary_analysis_limitations(
+    market_context: Dict[str, Any], news_context: Dict[str, Any], account_context: Dict[str, Any]
+) -> str:
+    limitations = ["Use only the data supplied below. Never invent prices, indicators, news, balances, positions, or orders."]
+    if not market_context.get("analysis"):
+        limitations.append("Technical analysis is unavailable for this turn; explain that no live technical conclusion can be made.")
+    if not news_context.get("available", bool(news_context.get("headlines"))):
+        limitations.append("News context is unavailable for this turn; do not infer that there is no news risk.")
+    if not account_context.get("available"):
+        limitations.append("Account data is unavailable for this turn; do not describe the balance as zero or positions as empty.")
+    return "\n".join(f"- {item}" for item in limitations)
+
+
+def _start_temporary_chat(state: ChatState, configurable: Dict[str, Any], cfg: Dict[str, Any]):
+    symbol = str(cfg.get("symbol") or "Chat")
+    market_type = str(cfg.get("market_type") or "spot").upper()
+    try:
+        market_tool = MarketTool(
+            exchange_profile=cfg.get("exchange_profile"),
+            market_type=cfg.get("market_type"),
+            symbol=symbol,
+        )
+        market_context = market_tool.get_market_analysis(
+            symbol,
+            mode=market_type,
+            timeframes=list(TEMPORARY_CHAT_TIMEFRAMES),
+        )
+    except Exception as exc:
+        logger.warning("Temporary chat context failed for %s: %s", symbol, exc)
+        market_context = {"symbol": symbol, "analysis": {}, "error": str(exc)}
+    try:
+        if "market_tool" not in locals():
+            raise RuntimeError("Market data client could not be initialized")
+        account_context = market_tool.get_account_status(symbol, is_real=True, agent_name="temporary-chat")
+        account_context = {**account_context, "available": not bool(account_context.get("error"))}
+    except Exception as exc:
+        logger.warning("Temporary chat account context failed for %s: %s", symbol, exc)
+        account_context = {"available": False, "error": str(exc)}
+    try:
+        news_context = fetch_news_risk_context(symbol)
+        if not news_context.get("available", bool(news_context.get("headlines"))):
+            news_context = {**news_context, "error": "No relevant headlines were retrieved"}
+    except Exception as exc:
+        logger.warning("Temporary chat news context failed for %s: %s", symbol, exc)
+        news_context = {"error": str(exc)}
+
+    global_requirement = str(cfg.get("global_requirement") or "").strip()
+    market_context_text = _temporary_market_context_text(market_context)
+    news_context_text = _temporary_news_context_text(news_context)
+    account_context_text = _temporary_account_context_text(account_context)
+    limitations_text = _temporary_analysis_limitations(market_context, news_context, account_context)
+    unavailable_history = "Not loaded: temporary chats do not use task short-term memory, daily summaries, or strategy history."
+    system_prompt = "\n\n".join(
+        part
+        for part in (
+            "You are a professional crypto market research assistant. Give a clear, evidence-based analysis, separate facts from inference, and state uncertainty and risk plainly.",
+            global_requirement and f"## Global requirement\n{global_requirement}",
+            (
+                "## Temporary read-only session\n"
+                f"Exchange: {cfg.get('exchange', '')}\n"
+                f"Market: {market_type}\n"
+                f"Symbol: {symbol}\n"
+                f"Timeframes: {', '.join(TEMPORARY_CHAT_TIMEFRAMES)}\n"
+                "This session can analyze only. Do not generate or execute orders, cancellations, transfers, or other trading operations.\n"
+                f"{unavailable_history}"
+            ),
+            f"## Live technical context (refreshed for this message)\n{market_context_text}",
+            f"## Live news and macro context (refreshed for this message)\n{news_context_text}",
+            f"## Account context (read-only)\n{account_context_text}",
+            f"## Analysis limitations\n{limitations_text}",
+        )
+        if part
+    )
+    updates = {
+        "system_prompt": system_prompt,
+        "symbol": symbol,
+        "q": state.get("q"),
+        "market_context": market_context,
+        "account_context": {**account_context, "news_context": news_context},
+    }
+    if state.get("q") and state.get("retry_last") and state.get("replace_last_user_message"):
+        existing_messages = list(state.get("messages") or [])
+        last_message = existing_messages[-1] if existing_messages else None
+        if isinstance(last_message, HumanMessage):
+            updates["messages"] = [HumanMessage(content=state["q"], id=last_message.id)]
+    elif state.get("q") and not state.get("retry_last"):
+        updates["messages"] = [HumanMessage(content=state["q"])]
+    updates["retry_last"] = False
+    updates["replace_last_user_message"] = False
+    return updates
 
 
 def _message_counter(msgs: list) -> int:
@@ -106,11 +322,173 @@ def _sanitize_tool_sequences(messages: list):
     return sanitized
 
 
-def _trim_chat_messages(system_prompt: str, history: list):
-    pinned_prompt = HumanMessage(content=system_prompt)
-    if history:
+def _message_context_text(message: Any) -> str:
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in content)
+    else:
+        text = str(content or "")
+    if text.strip():
+        return text
+    tool_calls = getattr(message, "tool_calls", None) or []
+    if tool_calls:
+        return f"Tool calls: {json.dumps(tool_calls, ensure_ascii=False, default=str)}"
+    return text
+
+
+def _message_context_role(message: Any) -> str:
+    if isinstance(message, HumanMessage):
+        return "User"
+    if isinstance(message, ToolMessage):
+        return "Tool"
+    if isinstance(message, AIMessage):
+        return "Assistant"
+    return "Message"
+
+
+def _context_compaction_cutoff(history: list, cursor: int, force: bool = False) -> int:
+    cursor = max(0, min(int(cursor or 0), len(history)))
+    cutoff = max(cursor, len(history) - CHAT_CONTEXT_RECENT_MESSAGES)
+    unsummarized_chars = sum(len(_message_context_text(message)) for message in history[cursor:])
+    force_by_size = unsummarized_chars > CHAT_CONTEXT_RECENT_MAX_CHARS
+    if cutoff <= cursor and (force or force_by_size) and len(history) - cursor > 1:
+        keep_count = min(CHAT_CONTEXT_RECENT_MESSAGES, max(2, len(history) - cursor - 1))
+        cutoff = len(history) - keep_count
+    if cutoff <= cursor:
+        return cursor
+    pending_count = cutoff - cursor
+    pending_chars = sum(len(_message_context_text(message)) for message in history[cursor:cutoff])
+    if (
+        not force
+        and not force_by_size
+        and pending_count < CHAT_CONTEXT_COMPACTION_BATCH
+        and pending_chars < CHAT_CONTEXT_SUMMARY_MAX_CHARS
+    ):
+        return cursor
+    return cutoff
+
+
+def _format_messages_for_compaction(messages: list) -> str:
+    chunks = []
+    for message in messages:
+        text = _message_context_text(message).strip()
+        if not text:
+            continue
+        if len(text) > CHAT_CONTEXT_MESSAGE_MAX_CHARS:
+            text = f"{text[:CHAT_CONTEXT_MESSAGE_MAX_CHARS]} …[truncated]"
+        chunks.append(f"{_message_context_role(message)}: {text}")
+    return "\n\n".join(chunks)
+
+
+def _compact_chat_context(
+    history: list,
+    previous_summary: str,
+    cursor: int,
+    cfg: Dict[str, Any],
+    configurable: Dict[str, Any],
+    force: bool = False,
+) -> tuple[str, int]:
+    cutoff = _context_compaction_cutoff(history, cursor, force=force)
+    if cutoff <= cursor:
+        return previous_summary, cursor
+
+    _emit_stream_status(configurable, "compressing_context", "正在整理较早的对话上下文")
+    conversation = _format_messages_for_compaction(history[cursor:cutoff])
+    prompt = """Maintain a compact rolling memory for an ongoing chat. The memory is historical context, not live market data.
+Keep: user goals and constraints, explicit decisions, assumptions, named entities and values, key analysis conclusions, open questions, and promised follow-ups.
+Discard: greetings, repetition, filler, and superseded details. Never invent facts. Write concise Chinese with short headings and bullets.
+
+Existing rolling memory:
+{previous_summary}
+
+New conversation to incorporate:
+{conversation}""".format(
+        previous_summary=(previous_summary or "(none)")[-CHAT_CONTEXT_SUMMARY_MAX_CHARS:],
+        conversation=conversation,
+    )
+    try:
+        llm = build_chat_openai(
+            model=cfg.get("model"),
+            api_key=cfg.get("api_key") or os.getenv("OPENAI_API_KEY"),
+            base_url=cfg.get("api_base"),
+            temperature=0,
+            streaming=False,
+            extra_body=cfg.get("extra_body"),
+            thinking_enabled=cfg.get("thinking_enabled"),
+            reasoning_effort=cfg.get("reasoning_effort"),
+        )
+        response = invoke_with_retry(
+            lambda: llm.invoke([instruction_message(prompt, cfg.get("system_prompt_role"))]),
+            logger=logger,
+            context=f"chat-context-compaction session={configurable.get('thread_id')} model={cfg.get('model')}",
+        )
+        summary = _message_context_text(response).strip()
+        if not summary:
+            raise ValueError("Context compaction returned an empty summary")
+        return summary[:CHAT_CONTEXT_SUMMARY_MAX_CHARS], cutoff
+    except Exception as exc:
+        logger.warning("Chat context compaction failed; retaining recent raw history: %s", exc)
+        return previous_summary, cursor
+
+
+def conversation_memory_payload(state: Dict[str, Any] | None) -> Dict[str, Any]:
+    state = state or {}
+    messages = state.get("messages") or []
+    cursor = max(0, min(int(state.get("conversation_summary_cursor") or 0), len(messages)))
+    return {
+        "summary": str(state.get("conversation_summary") or ""),
+        "summarized_message_count": cursor,
+        "recent_message_count": len(messages) - cursor,
+        "total_message_count": len(messages),
+        "updated_at": state.get("conversation_summary_updated_at") or None,
+    }
+
+
+def compact_chat_memory(session_id: str, config_id: str = None, runtime: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    config = _chat_trace_config(session_id, config_id, runtime=runtime)
+    snapshot = chat_app.get_state(config)
+    state = snapshot.values if snapshot else {}
+    history = list(state.get("messages") or [])
+    cfg = _resolve_chat_config(config.get("configurable", {}))
+    summary = str(state.get("conversation_summary") or "")
+    cursor = int(state.get("conversation_summary_cursor") or 0)
+    next_summary, next_cursor = _compact_chat_context(history, summary, cursor, cfg, config["configurable"], force=True)
+    if next_summary != summary or next_cursor != cursor:
+        chat_app.update_state(
+            config,
+            {
+                "conversation_summary": next_summary,
+                "conversation_summary_cursor": next_cursor,
+                "conversation_summary_updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        snapshot = chat_app.get_state(config)
+        state = snapshot.values if snapshot else state
+    return conversation_memory_payload(state)
+
+
+def _trim_chat_messages(
+    system_prompt: str,
+    history: list,
+    conversation_summary: str = "",
+    summary_cursor: int = 0,
+    system_prompt_role: str = "system",
+):
+    cursor = max(0, min(int(summary_cursor or 0), len(history)))
+    recent_history = history[cursor:]
+    memory = str(conversation_summary or "").strip()
+    if memory:
+        system_prompt = (
+            f"{system_prompt}\n\n## Rolling conversation memory\n"
+            "This is a compact summary of earlier chat turns. Treat current live context as newer.\n"
+            f"{memory}"
+        )
+    pinned_prompt = instruction_message(system_prompt, system_prompt_role)
+    if recent_history:
         token_trimmed_history = trim_messages(
-            history,
+            recent_history,
             max_tokens=CHAT_TRIM_MAX_TOKENS,
             token_counter="approximate",
             strategy="last",
@@ -129,7 +507,12 @@ def _trim_chat_messages(system_prompt: str, history: list):
         allow_partial=False,
     )
     count_trimmed_history = _sanitize_tool_sequences(count_trimmed_history)
-    final_messages = [HumanMessage(content=system_prompt)] + count_trimmed_history
+    if str(system_prompt_role or "system").lower() == "user" and count_trimmed_history and isinstance(count_trimmed_history[0], HumanMessage):
+        first_message = count_trimmed_history[0]
+        merged_instruction = HumanMessage(content=f"{system_prompt}\n\n## User request\n{_message_context_text(first_message)}")
+        final_messages = [merged_instruction] + count_trimmed_history[1:]
+    else:
+        final_messages = [pinned_prompt] + count_trimmed_history
     return final_messages
 
 
@@ -149,12 +532,14 @@ def _emit_stream_event(configurable: Dict[str, Any], payload: Dict[str, Any]):
         event_queue.put(payload)
 
 
-def _chat_trace_config(session_id: str, config_id: str | None, event_queue=None) -> RunnableConfig:
+def _chat_trace_config(session_id: str, config_id: str | None, event_queue=None, runtime: Dict[str, Any] | None = None) -> RunnableConfig:
     sync_langsmith_environment()
-    cfg = global_config.get_config_by_id(config_id) if config_id else None
+    cfg = runtime if runtime else (global_config.get_config_by_id(config_id) if config_id else None)
     symbol = cfg.get("symbol", "Chat") if cfg else "Chat"
     model = cfg.get("model", "Unknown Model") if cfg else "Unknown Model"
     configurable = {"thread_id": session_id, "config_id": config_id}
+    if runtime:
+        configurable["runtime"] = runtime
     if event_queue is not None:
         configurable["event_queue"] = event_queue
     return {
@@ -170,19 +555,28 @@ def _chat_trace_config(session_id: str, config_id: str | None, event_queue=None)
     }
 
 
-def _chat_error_payload(exc: BaseException) -> Dict[str, Any]:
+def _chat_error_payload(
+    exc: BaseException,
+    *,
+    phase: str = "generation",
+    partial_content: bool = False,
+) -> Dict[str, Any]:
     if isinstance(exc, LLMInvocationError):
         return {
             "type": "error",
             "message": str(exc),
             "error_code": exc.error_type,
             "retryable": exc.retryable,
+            "phase": phase,
+            "partial_content": partial_content,
         }
     return {
         "type": "error",
         "message": format_llm_error_message("unknown_error"),
         "error_code": "unknown_error",
         "retryable": False,
+        "phase": phase,
+        "partial_content": partial_content,
     }
 
 
@@ -190,10 +584,10 @@ def start_node(state: ChatState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id")
     q = state.get("q")
-    
-    cfg = global_config.get_config_by_id(config_id)
-    if not cfg:
-        raise ValueError(f"Config not found for config_id={config_id}")
+
+    cfg = _resolve_chat_config(configurable)
+    if cfg.get("read_only"):
+        return _start_temporary_chat(state, configurable, cfg)
 
     symbol = cfg.get("symbol", "Unknown")
     
@@ -224,17 +618,22 @@ def start_node(state: ChatState, config: RunnableConfig):
         "market_context": started.market_context,
         "account_context": started.account_context
     }
-    if q:
+    if q and state.get("retry_last") and state.get("replace_last_user_message"):
+        existing_messages = list(state.get("messages") or [])
+        last_message = existing_messages[-1] if existing_messages else None
+        if isinstance(last_message, HumanMessage):
+            updates["messages"] = [HumanMessage(content=q, id=last_message.id)]
+    elif q and not state.get("retry_last"):
         updates["messages"] = [HumanMessage(content=q)]
+    updates["retry_last"] = False
+    updates["replace_last_user_message"] = False
     return updates
 
 
 def model_node(state: ChatState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id")
-    cfg = global_config.get_config_by_id(config_id)
-    if not cfg:
-        raise ValueError(f"Config context lost for config_id={config_id}")
+    cfg = _resolve_chat_config(configurable)
 
     symbol = cfg.get("symbol", "Chat")
     model_name = cfg.get("model", "Unknown Model")
@@ -247,7 +646,24 @@ def model_node(state: ChatState, config: RunnableConfig):
 
     history = list(state.get("messages", []))
     system_prompt = state.get("system_prompt", "")
-    trimmed = _trim_chat_messages(system_prompt, history)
+    conversation_summary = str(state.get("conversation_summary") or "")
+    summary_cursor = int(state.get("conversation_summary_cursor") or 0)
+    previous_summary = conversation_summary
+    previous_cursor = summary_cursor
+    conversation_summary, summary_cursor = _compact_chat_context(
+        history,
+        conversation_summary,
+        summary_cursor,
+        cfg,
+        configurable,
+    )
+    trimmed = _trim_chat_messages(
+        system_prompt,
+        history,
+        conversation_summary,
+        summary_cursor,
+        cfg.get("system_prompt_role", "system"),
+    )
     
     logger.info(
         f"[Chat] start session={configurable.get('thread_id')} config_id={config_id} "
@@ -264,32 +680,74 @@ def model_node(state: ChatState, config: RunnableConfig):
         extra_body=cfg.get("extra_body"),
         thinking_enabled=cfg.get("thinking_enabled"),
         reasoning_effort=cfg.get("reasoning_effort"),
-    ).bind_tools(_get_chat_tools(cfg))
+    )
+    chat_tools = _get_chat_tools(cfg)
+    if chat_tools:
+        llm = llm.bind_tools(chat_tools)
+
+    stream_state = {"emitted_content": False}
 
     def _stream_model_response():
         accumulator = _new_stream_accumulator()
+        stream_state["emitted_content"] = False
         trace_config = {"metadata": config.get("metadata", {}), "tags": config.get("tags", [])}
-        for chunk in llm.stream(trimmed, config=trace_config):
-            if not isinstance(chunk, BaseMessageChunk):
-                continue
+        try:
+            for chunk in llm.stream(trimmed, config=trace_config):
+                if not isinstance(chunk, BaseMessageChunk):
+                    continue
 
-            reasoning_token = _chunk_reasoning_text(chunk)
-            if reasoning_token:
-                accumulator["reasoning_content"] += reasoning_token
-                _emit_stream_event(configurable, {"type": "reasoning_token", "token": reasoning_token})
+                reasoning_token = _chunk_reasoning_text(chunk)
+                if reasoning_token:
+                    accumulator["reasoning_content"] += reasoning_token
+                    stream_state["emitted_content"] = True
+                    _emit_stream_event(configurable, {"type": "reasoning_token", "token": reasoning_token})
 
-            token = _chunk_to_text(chunk)
-            if token:
-                accumulator["content"] += token
-                _emit_stream_event(configurable, {"type": "token", "token": token})
+                token = _chunk_to_text(chunk)
+                if token:
+                    accumulator["content"] += token
+                    stream_state["emitted_content"] = True
+                    _emit_stream_event(configurable, {"type": "token", "token": token})
 
-            _accumulate_tool_call_chunks(accumulator, chunk)
-            _capture_stream_metadata(accumulator, chunk)
-            tool_calls = _extract_tool_calls(chunk)
-            if tool_calls:
-                _emit_stream_event(configurable, {"type": "tool_calls", "tool_calls": tool_calls})
+                _accumulate_tool_call_chunks(accumulator, chunk)
+                _capture_stream_metadata(accumulator, chunk)
+                tool_calls = _extract_tool_calls(chunk)
+                if tool_calls:
+                    stream_state["emitted_content"] = True
+                    _emit_stream_event(configurable, {"type": "tool_calls", "tool_calls": tool_calls})
+        except Exception as exc:
+            if _has_terminal_finish_reason(accumulator):
+                logger.warning("Ignoring stream trailer error after terminal finish marker: %r", exc)
+            elif stream_state["emitted_content"]:
+                raise LLMInvocationError(
+                    format_llm_error_message("stream_protocol_error"),
+                    error_type="stream_protocol_error",
+                    retryable=False,
+                    attempts=1,
+                    original=exc,
+                ) from exc
+            else:
+                raise
 
-        return _stream_accumulator_to_message(accumulator, logger=logger)
+        try:
+            response = _stream_accumulator_to_message(accumulator, logger=logger)
+        except Exception as exc:
+            raise LLMInvocationError(
+                format_llm_error_message("message_assembly_error"),
+                error_type="message_assembly_error",
+                retryable=False,
+                attempts=1,
+                original=exc,
+            ) from exc
+        _emit_stream_event(
+            configurable,
+            {
+                "type": "model_complete",
+                "content": str(response.content or ""),
+                "reasoning_content": str(response.additional_kwargs.get("reasoning_content") or ""),
+                "has_tool_calls": bool(response.tool_calls),
+            },
+        )
+        return response
 
     started_at = time.time()
     response = invoke_with_retry(
@@ -304,10 +762,6 @@ def model_node(state: ChatState, config: RunnableConfig):
         ),
     )
     
-    # 标注模型名称
-    if response.content and not response.tool_calls:
-        response.content += f"\n\n---\n> 🧠 本次回答由决策模型 **{model_name}** 完成。"
-
     logger.info(
         f"[Chat] success session={configurable.get('thread_id')} config_id={config_id} "
         f"symbol={symbol} model={model_name} duration={time.time() - started_at:.2f}s"
@@ -324,7 +778,7 @@ def model_node(state: ChatState, config: RunnableConfig):
                     "prompt_tokens": um.get("input_tokens", 0),
                     "completion_tokens": um.get("output_tokens", 0),
                 }
-        if usage and (usage.get("prompt_tokens") or usage.get("completion_tokens")):
+        if not cfg.get("read_only") and usage and (usage.get("prompt_tokens") or usage.get("completion_tokens")):
             database.save_token_usage(
                 symbol=symbol,
                 config_id=config_id,
@@ -338,7 +792,16 @@ def model_node(state: ChatState, config: RunnableConfig):
     return {
         "messages": [response], 
         "symbol": symbol, 
-        "q": None
+        "q": None,
+        "retry_last": False,
+        "replace_last_user_message": False,
+        "conversation_summary": conversation_summary,
+        "conversation_summary_cursor": summary_cursor,
+        "conversation_summary_updated_at": (
+            datetime.now(timezone.utc).isoformat()
+            if conversation_summary != previous_summary or summary_cursor != previous_cursor
+            else state.get("conversation_summary_updated_at")
+        ),
     }
 
 
@@ -354,7 +817,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id")
     
-    cfg = global_config.get_config_by_id(config_id)
+    cfg = _resolve_chat_config(configurable)
     symbol = cfg.get("symbol", "Unknown") if cfg else state.get("symbol", "Unknown")
 
     for call in tool_calls:
@@ -531,6 +994,12 @@ def _capture_stream_metadata(accumulator: dict[str, Any], chunk: BaseMessageChun
         accumulator["usage_metadata"] = usage_metadata
 
 
+def _has_terminal_finish_reason(accumulator: dict[str, Any]) -> bool:
+    metadata = accumulator.get("response_metadata") or {}
+    finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+    return bool(str(finish_reason or "").strip())
+
+
 def _parse_tool_call_args(raw_args: str) -> dict[str, Any]:
     text = str(raw_args or "").strip()
     if not text:
@@ -617,6 +1086,7 @@ def _stream_worker(run_callable, event_queue):
         for item in run_callable():
             event_queue.put(item)
     except Exception as exc:
+        logger.exception("[Chat Stream] worker failed")
         event_queue.put(exc)
     finally:
         event_queue.put(None)
@@ -628,6 +1098,8 @@ def _yield_stream_events(run_callable, event_queue, initial_status: str):
     yield {"type": "status", "stage": "preparing_context", "message": initial_status}
     worker.start()
 
+    model_completed = False
+    partial_content = False
     while True:
         item = event_queue.get()
         if item is None:
@@ -638,7 +1110,15 @@ def _yield_stream_events(run_callable, event_queue, initial_status: str):
             break
 
         if isinstance(item, BaseException):
-            payload = _chat_error_payload(item)
+            error_type = item.error_type if isinstance(item, LLMInvocationError) else "unknown_error"
+            phase = (
+                "persistence"
+                if model_completed
+                else "assembly"
+                if error_type == "message_assembly_error"
+                else "generation"
+            )
+            payload = _chat_error_payload(item, phase=phase, partial_content=partial_content)
             logger.error(
                 f"[Chat Stream] failed type={payload['error_code']} retryable={payload['retryable']}: {item}"
             )
@@ -646,6 +1126,10 @@ def _yield_stream_events(run_callable, event_queue, initial_status: str):
             break
 
         if isinstance(item, dict):
+            if item.get("type") in {"token", "reasoning_token", "tool_calls"}:
+                partial_content = True
+            elif item.get("type") == "model_complete":
+                model_completed = True
             yield item
 
 
@@ -672,10 +1156,10 @@ def _resume_stream_items(command, config):
             yield {"type": "status", "stage": "waiting_model", "message": "工具已执行，正在等待模型继续分析"}
 
 
-def stream_chat(session_id: str, payload: Dict[str, Any]):
+def stream_chat(session_id: str, payload: Dict[str, Any], runtime: Dict[str, Any] | None = None):
     config_id = payload.pop("config_id", None)
     event_queue = queue.Queue()
-    config = _chat_trace_config(session_id, config_id, event_queue)
+    config = _chat_trace_config(session_id, config_id, event_queue, runtime=runtime)
 
     def run():
         yield from _chat_stream_items(payload, config)
@@ -683,9 +1167,9 @@ def stream_chat(session_id: str, payload: Dict[str, Any]):
     yield from _yield_stream_events(run, event_queue, "正在整理市场与账户数据")
 
 
-def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
+def stream_resume_chat(session_id: str, approved: bool, config_id: str = None, runtime: Dict[str, Any] | None = None):
     event_queue = queue.Queue()
-    config = _chat_trace_config(session_id, config_id, event_queue)
+    config = _chat_trace_config(session_id, config_id, event_queue, runtime=runtime)
     command = Command(resume={"approved": approved})
 
     def run():
@@ -694,24 +1178,24 @@ def stream_resume_chat(session_id: str, approved: bool, config_id: str = None):
     yield from _yield_stream_events(run, event_queue, "正在继续执行工具审批后的对话")
 
 
-def invoke_chat(session_id: str, payload: Dict[str, Any]):
+def invoke_chat(session_id: str, payload: Dict[str, Any], runtime: Dict[str, Any] | None = None):
     config_id = payload.pop("config_id", None)
-    config = _chat_trace_config(session_id, config_id)
+    config = _chat_trace_config(session_id, config_id, runtime=runtime)
     return chat_app.invoke(payload, config=config)
 
 
-def resume_chat(session_id: str, approved: bool, config_id: str = None):
-    config = _chat_trace_config(session_id, config_id)
+def resume_chat(session_id: str, approved: bool, config_id: str = None, runtime: Dict[str, Any] | None = None):
+    config = _chat_trace_config(session_id, config_id, runtime=runtime)
     return chat_app.invoke(Command(resume={"approved": approved}), config=config)
 
 
-def get_chat_state(session_id: str, config_id: str = None):
+def get_chat_state(session_id: str, config_id: str = None, runtime: Dict[str, Any] | None = None):
     config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     snapshot = chat_app.get_state(config)
     return snapshot.values if snapshot else {}
 
 
-def get_chat_interrupt(session_id: str, config_id: str = None):
+def get_chat_interrupt(session_id: str, config_id: str = None, runtime: Dict[str, Any] | None = None):
     config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     snapshot = chat_app.get_state(config)
     if not snapshot or not getattr(snapshot, "interrupts", None): return None

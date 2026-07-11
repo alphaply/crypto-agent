@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { BulbOutlined, GlobalOutlined, MenuOutlined } from '@ant-design/icons';
 import { Button, Drawer, Grid, Select, Space, Tooltip, Typography } from 'antd';
-import { usePreferences } from '../app/preferences';
+import { usePreferences } from '../app/usePreferences';
 import { api } from '../lib/api';
 
 const { useBreakpoint } = Grid;

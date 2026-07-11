@@ -41,6 +41,29 @@ from backend.app.services.common import TZ_CN, get_scheduler_status, get_symbol_
 
 DCA_STATS_CACHE = {}
 DCA_STATS_CACHE_TTL = 300
+DASHBOARD_VISIBLE_MODES = {"REAL", "STRATEGY"}
+
+
+def _equity_series_metadata(points: list[dict]) -> dict:
+    if not points:
+        return {
+            "data_state": "no_data",
+            "point_count": 0,
+            "first_date": None,
+            "last_date": None,
+            "latest_equity": None,
+            "return_pct": None,
+        }
+    first = float(points[0].get("equity") or 0)
+    latest = float(points[-1].get("equity") or 0)
+    return {
+        "data_state": "ready",
+        "point_count": len(points),
+        "first_date": points[0].get("date"),
+        "last_date": points[-1].get("date"),
+        "latest_equity": latest,
+        "return_pct": ((latest - first) / first * 100) if first else None,
+    }
 
 
 def _order_action_label(order: dict) -> str:
@@ -619,7 +642,13 @@ def get_dashboard_data(symbol, page=1, per_page=10):
     try:
         with get_db_conn() as conn:
             configs = global_config.get_all_symbol_configs()
-            symbol_configs = [conf for conf in configs if conf["symbol"] == symbol and conf.get("enabled", True)]
+            symbol_configs = [
+                conf
+                for conf in configs
+                if conf["symbol"] == symbol
+                and conf.get("enabled", True)
+                and str(conf.get("mode", "STRATEGY")).upper() in DASHBOARD_VISIBLE_MODES
+            ]
 
             agent_summaries = []
             for config in symbol_configs:
@@ -651,13 +680,9 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict["mode"] = mode
                 summary_dict["enabled"] = enabled
                 summary_dict["next_run"] = calculate_next_run(config, latest_summary_row)
-                if mode == "SPOT_DCA":
-                    summary_dict["freq"] = f"{config.get('dca_freq', '1d')} (DCA)"
-                    summary_dict["dca_stats"] = calculate_dca_stats(config_id)
-                else:
-                    default_interval = 60 if mode == "STRATEGY" else 15
-                    interval = config.get("run_interval", default_interval)
-                    summary_dict["freq"] = f"{interval}m"
+                default_interval = 60 if mode == "STRATEGY" else 15
+                interval = config.get("run_interval", default_interval)
+                summary_dict["freq"] = f"{interval}m"
 
                 summary_dict["leverage"] = global_config.get_leverage(config_id)
                 summary_dict["market_timeframes"] = resolve_market_timeframes(config)
@@ -724,7 +749,11 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
     mock_chart_data = []
     if agent_mode == "STRATEGY" or agent_filter == "ALL":
         mock_acc = get_mock_account(mock_config_id, symbol)
-        mock_chart_data = get_mock_equity_history(mock_config_id)
+        mock_chart_data = get_mock_equity_history(
+            mock_config_id,
+            symbol=symbol,
+            include_fallback=agent_filter != "ALL",
+        )
 
     real_chart_data = []
     real_balance = None
@@ -741,17 +770,6 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
                     """,
                     (agent_filter, symbol),
                 ).fetchall()
-                if not rows:
-                    rows = conn.execute(
-                        """
-                        SELECT day, total_equity FROM (
-                            SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
-                                   row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                            FROM balance_history WHERE (config_id IS NULL OR config_id = '') AND symbol = ? AND total_equity > 0
-                        ) WHERE rn = 1 ORDER BY day ASC
-                        """,
-                        (symbol,),
-                    ).fetchall()
                 real_chart_data = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
         except Exception as exc:
             logger.warning(f"Failed to load real chart data: {exc}")
@@ -777,9 +795,10 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
             for cfg in target_cfgs:
                 config_id = cfg.get("config_id")
                 mode = str(cfg.get("mode", "STRATEGY")).upper()
-                if not config_id or mode == "SPOT_DCA":
+                if not config_id:
                     continue
 
+                data_source = None
                 if mode == "REAL":
                     rows = conn.execute(
                         """
@@ -791,30 +810,72 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
                         """,
                         (config_id, symbol),
                     ).fetchall()
-                    if not rows:
-                        rows = conn.execute(
-                            """
-                            SELECT day, total_equity FROM (
-                                SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
-                                       row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                                FROM balance_history WHERE (config_id IS NULL OR config_id = '') AND symbol = ? AND total_equity > 0
-                            ) WHERE rn = 1 ORDER BY day ASC
-                            """,
-                            (symbol,),
-                        ).fetchall()
                     points = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
-                else:
-                    strategy_points = get_mock_equity_history(config_id)
+                    data_source = {
+                        "table": "balance_history",
+                        "field": "total_equity",
+                        "scope": "config_id",
+                        "config_id": config_id,
+                        "symbol": symbol,
+                        "label": "balance_history.total_equity",
+                        "display_label": "实盘账户权益快照",
+                        "kind": "real_equity",
+                    }
+                elif mode == "STRATEGY":
+                    strategy_points = get_mock_equity_history(
+                        config_id,
+                        symbol=symbol,
+                        include_fallback=False,
+                    )
                     points = [
                         {"date": p.get("date"), "equity": p.get("equity", p.get("balance"))}
                         for p in strategy_points
                         if p.get("date") is not None and (p.get("equity") is not None or p.get("balance") is not None)
                     ]
+                    data_source = {
+                        "table": "mock_balance_history",
+                        "field": "total_equity",
+                        "fallback_field": "balance",
+                        "scope": "config_id",
+                        "config_id": config_id,
+                        "symbol": symbol,
+                        "label": "mock_balance_history.total_equity",
+                        "display_label": "策略模拟权益快照",
+                        "kind": "strategy_equity",
+                    }
+                elif mode == "SPOT_DCA":
+                    rows = conn.execute(
+                        """
+                        SELECT snapshot_date AS day, total_invested AS equity
+                        FROM dca_daily_snapshots
+                        WHERE config_id = ? AND symbol = ? AND total_invested > 0
+                        ORDER BY snapshot_date ASC
+                        LIMIT 30
+                        """,
+                        (config_id, symbol),
+                    ).fetchall()
+                    points = [{"date": r["day"], "equity": r["equity"]} for r in rows]
+                    data_source = {
+                        "table": "dca_daily_snapshots",
+                        "field": "total_invested",
+                        "scope": "config_id",
+                        "config_id": config_id,
+                        "symbol": symbol,
+                        "label": "dca_daily_snapshots.total_invested",
+                        "display_label": "定投累计投入快照",
+                        "kind": "dca_invested",
+                    }
 
-                if points:
-                    history_compare_series.append(
-                        {"config_id": config_id, "mode": mode, "label": f"{config_id} ({mode})", "points": points}
-                    )
+                history_compare_series.append(
+                    {
+                        "config_id": config_id,
+                        "mode": mode,
+                        "label": f"{cfg.get('title') or config_id} ({mode})",
+                        "points": points,
+                        "data_source": data_source,
+                        **_equity_series_metadata(points),
+                    }
+                )
 
     return {
         "summaries": summaries,
@@ -833,6 +894,14 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
         "dca_stats": dca_stats,
         "dca_chart_data": dca_chart_data,
         "history_compare_series": history_compare_series,
+        "compare_candidates": [
+            {
+                "config_id": cfg.get("config_id"),
+                "label": cfg.get("title") or cfg.get("config_id"),
+                "mode": str(cfg.get("mode", "STRATEGY")).upper(),
+            }
+            for cfg in symbol_configs
+        ],
         "compare_ids": selected_compare_ids,
     }
 

@@ -57,12 +57,26 @@ export async function fullImport(data, writeEnv = false) {
   return response.data;
 }
 
-export async function streamSse(url, token, onEvent) {
+function consumeSseBuffer(buffer, onEvent) {
+  const parts = buffer.split('\n\n');
+  const remainder = parts.pop() || '';
+  for (const part of parts) {
+    const lines = part.split('\n').filter((line) => line.startsWith('data:'));
+    for (const line of lines) {
+      const payload = line.slice(5).trim();
+      if (payload) onEvent(JSON.parse(payload));
+    }
+  }
+  return remainder;
+}
+
+export async function streamSse(url, token, onEvent, signal) {
   const response = await fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'text/event-stream',
     },
+    signal,
   });
 
   if (!response.ok || !response.body) {
@@ -80,17 +94,10 @@ export async function streamSse(url, token, onEvent) {
       break;
     }
     buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split('\n\n');
-    buffer = parts.pop() || '';
-    for (const part of parts) {
-      const lines = part.split('\n').filter((line) => line.startsWith('data:'));
-      for (const line of lines) {
-        const payload = line.slice(5).trim();
-        if (!payload) {
-          continue;
-        }
-        onEvent(JSON.parse(payload));
-      }
-    }
+    buffer = consumeSseBuffer(buffer, onEvent);
+  }
+
+  if (buffer.trim()) {
+    consumeSseBuffer(`${buffer}\n\n`, onEvent);
   }
 }

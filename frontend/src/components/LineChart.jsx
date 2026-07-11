@@ -1,30 +1,26 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Grid } from 'antd';
 import ReactECharts from 'echarts-for-react';
-import { usePreferences } from '../app/preferences';
+import { usePreferences } from '../app/usePreferences';
 
-export default function LineChart({ series = [], yName, xName, smooth = true, area = false }) {
+export default function LineChart({
+  series = [],
+  yName,
+  xName,
+  smooth = true,
+  area = false,
+  valueFormatter,
+  tooltipFormatter,
+}) {
   const { isDark } = usePreferences();
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
-  const formatTimeLabel = (value) => {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return value;
-    }
-
-    if (isMobile) {
-      return `${date.getMonth() + 1}/${date.getDate()}`;
-    }
-
-    return `${date.getMonth() + 1}-${date.getDate()}`;
-  };
-
-  const option = {
+  const option = useMemo(() => ({
     color: ['#2563eb', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'],
     tooltip: {
       trigger: 'axis',
       confine: true,
+      formatter: tooltipFormatter,
     },
     legend: {
       type: 'scroll',
@@ -56,7 +52,11 @@ export default function LineChart({ series = [], yName, xName, smooth = true, ar
         margin: isMobile ? 10 : 8,
         rotate: isMobile ? 24 : 0,
         fontSize: isMobile ? 11 : 12,
-        formatter: formatTimeLabel,
+        formatter: (value) => {
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) return value;
+          return isMobile ? `${date.getMonth() + 1}/${date.getDate()}` : `${date.getMonth() + 1}-${date.getDate()}`;
+        },
       },
     },
     yAxis: {
@@ -67,6 +67,7 @@ export default function LineChart({ series = [], yName, xName, smooth = true, ar
       axisLabel: {
         color: isDark ? '#cbd5e1' : '#475569',
         fontSize: isMobile ? 11 : 12,
+        formatter: valueFormatter,
       },
       splitLine: { lineStyle: { color: isDark ? 'rgba(148, 163, 184, 0.12)' : 'rgba(148, 163, 184, 0.18)' } },
     },
@@ -81,7 +82,15 @@ export default function LineChart({ series = [], yName, xName, smooth = true, ar
         .filter((point) => point?.name !== undefined && point?.value !== undefined && point?.value !== null)
         .map((point) => [point.name, point.value]),
     })),
-  };
+  }), [area, isDark, isMobile, series, smooth, tooltipFormatter, valueFormatter, xName, yName]);
 
-  return <ReactECharts option={option} notMerge style={{ height: '100%', width: '100%' }} />;
+  return (
+    <ReactECharts
+      option={option}
+      notMerge={false}
+      replaceMerge={['series']}
+      lazyUpdate
+      style={{ height: '100%', width: '100%' }}
+    />
+  );
 }

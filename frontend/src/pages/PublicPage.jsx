@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Card, Empty, Space, Spin, Statistic, Table, Typography } from 'antd';
 import LineChart from '../components/LineChart';
 import { api } from '../lib/api';
-import { usePreferences } from '../app/preferences';
+import { usePreferences } from '../app/usePreferences';
 
 const { Title, Paragraph } = Typography;
 

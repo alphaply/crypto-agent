@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from backend.app.core.deps import get_current_user
@@ -8,11 +8,14 @@ from backend.app.schemas.payloads import BulkDeleteSessionsRequest, CreateSessio
 from backend.app.services.chat_service import (
     chat_bootstrap_payload,
     clear_chat_messages_payload,
+    compact_chat_memory_payload,
     create_chat_session_payload,
     delete_chat_session_payload,
     delete_chat_sessions_payload,
     get_chat_messages_payload,
+    get_chat_memory_payload,
     get_chat_session_payload,
+    list_market_symbols_payload,
     stream_chat_events,
     summarize_chat_title_payload,
 )
@@ -29,10 +32,35 @@ def bootstrap(_: dict = Depends(get_current_user)):
 @router.post("/sessions")
 def create_session(payload: CreateSessionRequest, _: dict = Depends(get_current_user)):
     try:
-        data = create_chat_session_payload(payload.config_id, payload.title)
+        data = create_chat_session_payload(
+            config_id=payload.config_id,
+            title=payload.title,
+            mode=payload.mode,
+            runtime=payload.runtime.model_dump() if payload.runtime else None,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"success": True, **data}
+
+
+@router.get("/market-symbols")
+def market_symbols(
+    exchange_profile_id: str = Query(...),
+    market_type: str = Query("spot"),
+    keyword: str = Query(""),
+    _: dict = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            **list_market_symbols_payload(exchange_profile_id, market_type, keyword),
+        }
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/sessions/{session_id}")
@@ -58,11 +86,42 @@ def get_messages(session_id: str, _: dict = Depends(get_current_user)):
     return {"success": True, **data}
 
 
+@router.get("/sessions/{session_id}/memory")
+def get_memory(session_id: str, _: dict = Depends(get_current_user)):
+    try:
+        data = get_chat_memory_payload(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"success": True, **data}
+
+
+@router.post("/sessions/{session_id}/memory/compact")
+def compact_memory(session_id: str, _: dict = Depends(get_current_user)):
+    try:
+        data = compact_chat_memory_payload(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"success": True, **data}
+
+
 @router.get("/sessions/{session_id}/stream")
-def stream(session_id: str, message: str | None = None, approval: str | None = None, _: dict = Depends(get_current_user)):
+def stream(
+    session_id: str,
+    message: str | None = None,
+    approval: str | None = None,
+    retry: bool = False,
+    replace_last: bool = False,
+    _: dict = Depends(get_current_user),
+):
     def event_stream():
         try:
-            for event in stream_chat_events(session_id, user_input=message, approval=approval):
+            for event in stream_chat_events(
+                session_id,
+                user_input=message,
+                approval=approval,
+                retry=retry,
+                replace_last=replace_last,
+            ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except FileNotFoundError:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Chat session not found'})}\n\n"

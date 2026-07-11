@@ -31,7 +31,14 @@ def _get_exchange_timeout_ms() -> int:
         return 15000
 
 class MarketTool:
-    def __init__(self, config_id: str = None, symbol: str = None, proxy_port=None):
+    def __init__(
+        self,
+        config_id: str = None,
+        symbol: str = None,
+        proxy_port=None,
+        exchange_profile: dict | None = None,
+        market_type: str | None = None,
+    ):
         """
         初始化交易所连接
         :param config_id: 配置ID（推荐使用，支持多个相同交易对）
@@ -40,32 +47,60 @@ class MarketTool:
         """
         from backend.config import config as global_config
 
+        # 临时聊天可以直接使用已保存的交易所 Profile；密钥只在服务端传入。
+        if exchange_profile:
+            profile = dict(exchange_profile)
+            exchange_name = str(profile.get('exchange') or 'binance').lower()
+            requested_market_type = str(market_type or profile.get('market_type') or 'swap').lower()
+            self.config_id = None
+            self.symbol = symbol
+            api_key = profile.get('api_key')
+            secret = profile.get('secret')
+            passphrase = profile.get('passphrase')
+            cfg = None
         # 优先使用 config_id，如果没有则使用 symbol（向后兼容）
-        if config_id:
+        elif config_id:
             # 通过 config_id 获取完整配置
             cfg = global_config.get_config_by_id(config_id)
             if not cfg:
                 raise ValueError(f"未找到配置ID: {config_id}")
             self.config_id = config_id
             self.symbol = cfg.get('symbol')
-            api_key, secret = global_config.get_binance_credentials(config_id=config_id)
+            exchange_name = str(cfg.get('exchange') or 'binance').lower()
+            if exchange_name == 'binance':
+                api_key, secret = global_config.get_binance_credentials(config_id=config_id)
+                passphrase = None
+            else:
+                exchange_name, api_key, secret, passphrase = global_config.get_exchange_credentials(config_id=config_id)
             mode = cfg.get('mode', 'STRATEGY').upper()
-            market_type = cfg.get('market_type', 'swap')
+            requested_market_type = str(market_type or cfg.get('market_type', 'swap')).lower()
             if mode == 'SPOT_DCA':
-                market_type = 'spot'
+                requested_market_type = 'spot'
         elif symbol:
             # 向后兼容：使用 symbol 查询
             logger.warning(f"⚠️ 使用 symbol 初始化已过时，建议使用 config_id")
             self.config_id = None
             self.symbol = symbol
+            exchange_name = 'binance'
             api_key, secret = global_config.get_binance_credentials(symbol=symbol)
+            passphrase = None
             cfg = None
-            market_type = 'swap'
+            requested_market_type = str(market_type or 'swap').lower()
         else:
-            raise ValueError("必须提供 config_id 或 symbol")
+            raise ValueError("必须提供 config_id、symbol 或 exchange_profile")
 
         if not api_key or not secret:
-            raise ValueError(f"未找到币安API配置 (config_id={config_id}, symbol={symbol})")
+            raise ValueError(f"未找到交易所API配置 (config_id={config_id}, symbol={symbol})")
+
+        if exchange_name not in {'binance', 'okx'}:
+            raise ValueError(f"暂不支持交易所: {exchange_name}")
+        if requested_market_type not in {'spot', 'swap'}:
+            raise ValueError(f"暂不支持市场类型: {requested_market_type}")
+        if exchange_name == 'okx' and not passphrase:
+            raise ValueError("OKX 配置缺少 passphrase")
+
+        self.exchange_name = exchange_name
+        self.market_type = requested_market_type
 
         config = {
             'apiKey': api_key,
@@ -73,11 +108,13 @@ class MarketTool:
             'enableRateLimit': True,
             'timeout': _get_exchange_timeout_ms(),
             'options': {
-                'defaultType': market_type,
+                'defaultType': requested_market_type,
                 'adjustForTimeDifference': True,
                 'recvWindow': global_config.DEFAULT_RECVWINDOW,
             }
         }
+        if exchange_name == 'okx':
+            config['password'] = passphrase
 
         if proxy_port:
             config['proxies'] = {
@@ -85,16 +122,58 @@ class MarketTool:
                 'https': f'http://127.0.0.1:{proxy_port}',
             }
 
-        if market_type == 'spot':
+        if exchange_name == 'okx':
+            self.exchange = ccxt.okx(config)
+        elif requested_market_type == 'spot':
             self.exchange = ccxt.binance(config)
         else:
             self.exchange = ccxt.binanceusdm(config)
 
         try:
             self.exchange.load_markets()
-            logger.info(f"✅ 交易所连接成功 [config_id={config_id}, symbol={self.symbol}]")
+            logger.info(
+                f"✅ 交易所连接成功 [exchange={exchange_name}, market={requested_market_type}, "
+                f"config_id={config_id}, symbol={self.symbol}]"
+            )
         except Exception as e:
-            logger.warning(f"⚠️ 初始化加载市场失败 [config_id={config_id}, symbol={self.symbol}]: {e}")
+            logger.warning(
+                f"⚠️ 初始化加载市场失败 [exchange={exchange_name}, market={requested_market_type}, "
+                f"config_id={config_id}, symbol={self.symbol}]: {e}"
+            )
+
+    def list_symbols(self, market_type: str | None = None):
+        """Return active exchange symbols for an autocomplete catalogue without exposing credentials."""
+        requested_market_type = str(market_type or self.market_type or 'spot').lower()
+        if requested_market_type not in {'spot', 'swap'}:
+            raise ValueError(f"暂不支持市场类型: {requested_market_type}")
+        if not self.exchange.markets:
+            self.exchange.load_markets()
+
+        records = []
+        for market in self.exchange.markets.values():
+            if market.get('active') is False:
+                continue
+            is_match = bool(market.get('spot')) if requested_market_type == 'spot' else bool(market.get('swap'))
+            if not is_match:
+                continue
+            symbol = str(market.get('symbol') or '')
+            base = str(market.get('base') or '')
+            quote = str(market.get('quote') or '')
+            if not symbol or not base:
+                continue
+            records.append(
+                {
+                    'symbol': symbol,
+                    'base': base,
+                    'quote': quote,
+                    'market_type': requested_market_type,
+                    'display_name': f"{symbol} · {requested_market_type.upper()}",
+                }
+            )
+
+        preferred_quotes = {'USDT': 0, 'USDC': 1, 'FDUSD': 2, 'USD': 3}
+        records.sort(key=lambda item: (preferred_quotes.get(item['quote'], 9), item['symbol']))
+        return records
 
     # ==========================================
     # 0. 基础工具 (衍生数据获取)
@@ -547,6 +626,7 @@ class MarketTool:
             "real_positions": [],
             "real_open_orders": [],
             "mock_open_orders": [],
+            "error": None,
         }
         
         try:
@@ -693,6 +773,7 @@ class MarketTool:
                 
         except Exception as e:
             logger.error(f"Account Status Error: {e}")
+            status_data["error"] = str(e)
         
         return status_data
 

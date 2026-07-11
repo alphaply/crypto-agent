@@ -17,7 +17,7 @@ from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool
 from backend.utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
-from backend.utils.llm_utils import LLMInvocationError, build_chat_openai, invoke_with_retry, sync_langsmith_environment
+from backend.utils.llm_utils import LLMInvocationError, build_chat_openai, instruction_message, invoke_with_retry, sync_langsmith_environment
 from backend.utils.logger import setup_logger
 from backend.utils.prompt_utils import resolve_prompt_file_content, resolve_prompt_template, render_prompt
 
@@ -594,9 +594,14 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         dca_budget=dca_budget
     )
 
-    messages = [HumanMessage(content=system_prompt)]
-    if state.human_message:
-        messages.append(HumanMessage(content=state.human_message))
+    prompt_role = agent_config.get("system_prompt_role", "system")
+    instruction = instruction_message(system_prompt, prompt_role)
+    if isinstance(instruction, HumanMessage) and state.human_message:
+        messages = [HumanMessage(content=f"{system_prompt}\n\n## User request\n{state.human_message}")]
+    else:
+        messages = [instruction]
+        if state.human_message:
+            messages.append(HumanMessage(content=state.human_message))
 
     return state.model_copy(update={
         "market_context": market_full,

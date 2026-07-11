@@ -3,11 +3,18 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from openai import APIError, APITimeoutError, AuthenticationError, BadRequestError, RateLimitError
 
 _LANGSMITH_LOGGED_STATE: tuple[str, str, bool] | None = None
+
+
+def instruction_message(content: str, prompt_role: str | None = "system"):
+    """Create a model-compatible instruction message from a provider's role setting."""
+    if str(prompt_role or "system").strip().lower() == "user":
+        return HumanMessage(content=content)
+    return SystemMessage(content=content)
 
 
 def sync_langsmith_environment() -> Dict[str, str]:
@@ -168,6 +175,8 @@ def build_chat_openai(
 
 
 def classify_llm_error(exc: BaseException) -> str:
+    if isinstance(exc, LLMInvocationError):
+        return exc.error_type
     if isinstance(exc, (APITimeoutError, TimeoutError, httpx.TimeoutException)):
         return "timeout"
     if isinstance(exc, RateLimitError):
@@ -191,6 +200,8 @@ def classify_llm_error(exc: BaseException) -> str:
 
 
 def is_retryable_llm_error(error_type: str, exc: BaseException) -> bool:
+    if isinstance(exc, LLMInvocationError):
+        return exc.retryable
     if error_type in {"timeout", "rate_limit"}:
         return True
     if error_type == "api_error":
@@ -200,6 +211,12 @@ def is_retryable_llm_error(error_type: str, exc: BaseException) -> bool:
 
 
 def format_llm_error_message(error_type: str) -> str:
+    if error_type == "stream_protocol_error":
+        return "模型响应流在完成前意外中断，请重试。"
+    if error_type == "message_assembly_error":
+        return "模型响应已返回，但消息组装失败，请重试。"
+    if error_type == "persistence_error":
+        return "回答已生成，但暂时无法保存到会话历史。"
     if error_type == "timeout":
         return "模型请求超时，未能在规定时间内返回结果。"
     if error_type == "rate_limit":

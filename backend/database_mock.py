@@ -33,6 +33,10 @@ class MockTradingStore:
             cursor.execute("ALTER TABLE mock_balance_history ADD COLUMN unrealized_pnl REAL DEFAULT 0")
         except Exception:
             pass
+
+    @staticmethod
+    def _orders_have_event_type(cursor) -> bool:
+        return "event_type" in {row[1] for row in cursor.execute("PRAGMA table_info(orders)").fetchall()}
         try:
             cursor.execute("ALTER TABLE mock_balance_history ADD COLUMN total_equity REAL")
         except Exception:
@@ -98,13 +102,20 @@ class MockTradingStore:
                 self._logger.error(f"❌ DB Error (save_mock_equity_snapshot): {exc}")
         return total_equity
 
-    def get_equity_history(self, config_id, days=30):
+    def get_equity_history(self, config_id, days=30, symbol=None, include_fallback=True):
         cutoff = (self._now_factory() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             self._ensure_balance_history_columns(cursor)
+            symbol_filter = " AND symbol = ?" if symbol else ""
+            params = [config_id, cutoff]
+            if symbol:
+                params.append(symbol)
+            params.append(config_id)
+            if symbol:
+                params.append(symbol)
             cursor.execute(
-                '''
+                f'''
                 SELECT date(h.timestamp) as date,
                        h.balance as balance,
                        COALESCE(h.total_equity, h.balance) as equity,
@@ -113,18 +124,18 @@ class MockTradingStore:
                 INNER JOIN (
                     SELECT date(timestamp) as d, MAX(id) as max_id
                     FROM mock_balance_history
-                    WHERE config_id = ? AND timestamp >= ?
+                    WHERE config_id = ? AND timestamp >= ? {symbol_filter}
                     GROUP BY date(timestamp)
                 ) latest ON date(h.timestamp) = latest.d AND h.id = latest.max_id
-                WHERE h.config_id = ?
+                WHERE h.config_id = ? {symbol_filter}
                 ORDER BY date(h.timestamp) ASC
                 ''',
-                (config_id, cutoff, config_id),
+                tuple(params),
             )
             rows = [dict(row) for row in cursor.fetchall()]
 
-        if not rows:
-            account = self.get_account(config_id, "")
+        if not rows and include_fallback:
+            account = self.get_account(config_id, symbol or "")
             rows = [{
                 "date": self._date(),
                 "balance": account["balance"],
@@ -226,10 +237,13 @@ class MockTradingStore:
                 (close_price, realized_pnl, close_time, order_id),
             )
 
-            cursor.execute(
-                "UPDATE orders SET status = 'CLOSED' WHERE order_id = ? AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
-                (order_id,),
-            )
+            if self._orders_have_event_type(cursor):
+                cursor.execute(
+                    "UPDATE orders SET status = 'CLOSED' WHERE order_id = ? AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
+                    (order_id,),
+                )
+            else:
+                cursor.execute("UPDATE orders SET status = 'CLOSED' WHERE order_id = ?", (order_id,))
             conn.commit()
 
         if closed_position:
@@ -281,10 +295,16 @@ class MockTradingStore:
                     (close_time, *order_ids),
                 )
                 closed_count = cursor.rowcount
-                cursor.execute(
-                    f"UPDATE orders SET status='CANCELLED' WHERE order_id IN ({placeholders}) AND status='OPEN' AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
-                    tuple(order_ids),
-                )
+                if self._orders_have_event_type(cursor):
+                    cursor.execute(
+                        f"UPDATE orders SET status='CANCELLED' WHERE order_id IN ({placeholders}) AND status='OPEN' AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
+                        tuple(order_ids),
+                    )
+                else:
+                    cursor.execute(
+                        f"UPDATE orders SET status='CANCELLED' WHERE order_id IN ({placeholders}) AND status='OPEN'",
+                        tuple(order_ids),
+                    )
                 conn.commit()
 
         for order in expired_orders:

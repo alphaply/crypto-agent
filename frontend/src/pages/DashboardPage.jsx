@@ -25,12 +25,13 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import MarkdownBlock from '../components/MarkdownBlock';
-import ReasoningBlock, { splitThinkingContent } from '../components/ReasoningBlock';
+import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
-import LineChart from '../components/LineChart';
+import EquityCompareChart from '../components/EquityCompareChart';
 import { EditOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
-import { usePreferences } from '../app/preferences';
+import { splitThinkingContent } from '../lib/thinking';
+import { usePreferences } from '../app/usePreferences';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -89,16 +90,7 @@ function getMarginBalance(workspace) {
   return wallet || unrealized ? wallet + unrealized : null;
 }
 
-function buildPositionFacts(t, position, pendingOrders, summary, dcaStats) {
-  if (dcaStats) {
-    return [
-      { label: t('avgCost'), value: formatPositionValue(dcaStats.avg_cost) },
-      { label: t('qty'), value: formatPositionValue(dcaStats.total_qty) },
-      { label: t('roiPct'), value: formatPercentValue(dcaStats.return_pct) },
-      { label: t('unrealizedPnl'), value: formatPositionValue(dcaStats.unrealized_pnl) },
-    ];
-  }
-
+function buildPositionFacts(t, position, pendingOrders, summary) {
   if (!position) {
     return [
       { label: t('positions'), value: t('noActivePositions') },
@@ -140,12 +132,9 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
           const pendingOrders = workspace?.kline?.pending_orders || [];
           const position = getPrimaryPosition(workspace);
           const summary = workspace?.position?.summary || {};
-          const dcaStats = agent.mode === 'SPOT_DCA' ? agent.dca_stats : null;
           const workspacePending = loading && !workspace;
-          const facts = buildPositionFacts(t, position, pendingOrders, summary, dcaStats);
-          if (!dcaStats) {
-            facts.unshift({ label: t('marginBalance'), value: formatPositionValue(getMarginBalance(workspace)) });
-          }
+          const facts = buildPositionFacts(t, position, pendingOrders, summary);
+          facts.unshift({ label: t('marginBalance'), value: formatPositionValue(getMarginBalance(workspace)) });
           const keyFacts = facts.slice(0, 3);
 
           return (
@@ -200,7 +189,7 @@ function CopyNumber({ value }) {
   );
 }
 
-function ComparePanel({ dashboard, compareSeries, loading, workspaceMap }) {
+function ComparePanel({ dashboard, compareSeries, compareIds, onCompareIdsChange, loading, workspaceMap }) {
   const { t } = usePreferences();
   const screens = useBreakpoint();
   const isMobile = !screens.md;
@@ -225,9 +214,7 @@ function ComparePanel({ dashboard, compareSeries, loading, workspaceMap }) {
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Card className="panel-card" title={t('equityCompare')} extra={loading ? <Spin size="small" /> : null}>
-        <div className="chart-wrap">
-          {compareSeries.length ? <LineChart series={compareSeries} yName={t('equity')} /> : <Empty description={t('noData')} />}
-        </div>
+        <EquityCompareChart series={compareSeries} selectedIds={compareIds} onSelectedIdsChange={onCompareIdsChange} />
       </Card>
       <Card className="panel-card" title={t('compareView')}>
         <div className="compare-cards-scroll">
@@ -417,10 +404,22 @@ function PaginatedOrderList({ orders, t }) {
 }
 
 function NewsSnapshotCard({ snapshot }) {
-  const { t } = usePreferences();
-  const headlines = snapshot?.headlines || snapshot?.raw?.headlines || [];
-  const risk = snapshot?.risk_level || snapshot?.raw?.risk_level || 'normal';
+  const { t, locale } = usePreferences();
+  const isZh = locale === 'zh';
+  const raw = snapshot?.raw || {};
+  const headlines = snapshot?.headlines || raw.headlines || [];
+  const items = raw.items || [];
+  const nextEvent = (raw.events || []).find((item) => item.scheduled_at && dayjs(item.scheduled_at).isAfter(dayjs().subtract(2, 'hour')));
+  const risk = snapshot?.risk_level || raw.risk_level || 'normal';
   const riskColor = risk === 'high' ? 'red' : risk === 'watch' ? 'orange' : 'green';
+  const eventDistance = nextEvent ? dayjs(nextEvent.scheduled_at).diff(dayjs(), 'hour', true) : null;
+  const eventCountdown = eventDistance === null
+    ? ''
+    : eventDistance <= 0
+      ? (raw.stale ? (isZh ? '缓存' : 'cached') : (isZh ? '已公布' : 'released'))
+      : eventDistance < 24
+        ? `${Math.max(1, Math.ceil(eventDistance))}h`
+        : `${Math.ceil(eventDistance / 24)}d`;
   return (
     <Card className="panel-card" title={t('newsFlow')} extra={<Tag color={riskColor}>{risk}</Tag>}>
       {headlines.length ? (
@@ -429,13 +428,27 @@ function NewsSnapshotCard({ snapshot }) {
             <Text type="secondary">{snapshot?.timestamp || '-'}</Text>
             <Text type="secondary">{snapshot?.source || '-'}</Text>
           </div>
+          {nextEvent ? (
+            <div className="macro-next-event">
+              <div>
+                <Text type="secondary">{isZh ? '下一个宏观事件' : 'Next macro event'}</Text>
+                <div><Text strong>{nextEvent.title}</Text></div>
+                <Text type="secondary">{dayjs(nextEvent.scheduled_at).format('YYYY-MM-DD HH:mm')}</Text>
+              </div>
+              <Tag color={eventDistance !== null && eventDistance <= 6 ? 'red' : eventDistance !== null && eventDistance <= 24 ? 'orange' : 'blue'}>{eventCountdown}</Tag>
+            </div>
+          ) : null}
           <div className="news-headline-list">
-            {headlines.slice(0, 5).map((headline, index) => (
+            {headlines.slice(0, 6).map((headline, index) => (
               <div className="news-headline-item" key={`${index}-${headline}`}>
-                <Text>{headline}</Text>
+                <div className="news-headline-row">
+                  {items[index]?.category ? <Tag>{items[index].category.replace('_', ' ')}</Tag> : null}
+                  <Text>{headline}</Text>
+                </div>
               </div>
             ))}
           </div>
+          {raw.stale ? <Text type="warning">{isZh ? '当前使用最近一次成功的缓存情报。' : 'Using the most recent cached intelligence snapshot.'}</Text> : null}
         </Space>
       ) : (
         <Empty description={t('noData')} />
@@ -1151,7 +1164,7 @@ export default function DashboardPage() {
   const [compareIds, setCompareIds] = useState([]);
   const [comparePayload, setComparePayload] = useState(null);
   const [workspaceMap, setWorkspaceMap] = useState({});
-  const [activeTab, setActiveTab] = useState('compare');
+  const [requestedActiveTab, setRequestedActiveTab] = useState('compare');
   const [loading, setLoading] = useState(true);
   const [compareLoading, setCompareLoading] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
@@ -1163,10 +1176,6 @@ export default function DashboardPage() {
     window.addEventListener('crypto-agent-dashboard-refresh', refresh);
     return () => window.removeEventListener('crypto-agent-dashboard-refresh', refresh);
   }, []);
-
-  useEffect(() => {
-    setActiveTab('compare');
-  }, [selectedSymbol]);
 
   useEffect(() => {
     let mounted = true;
@@ -1252,13 +1261,13 @@ export default function DashboardPage() {
     };
   }, [dashboard?.agent_summaries, dashboard?.market_timeframes, timeframe, refreshNonce]);
 
-  const compareSeries = useMemo(() => {
-    const series = comparePayload?.series || [];
-    return series.map((item) => ({
-      name: item.label,
-      data: item.points.map((point) => ({ name: point.date, value: point.equity })),
-    }));
-  }, [comparePayload]);
+  const compareSeries = useMemo(() => comparePayload?.series || [], [comparePayload]);
+  const activeTab = useMemo(() => {
+    if (requestedActiveTab === 'compare') return 'compare';
+    return (dashboard?.agent_summaries || []).some((agent) => agent.config_id === requestedActiveTab)
+      ? requestedActiveTab
+      : 'compare';
+  }, [dashboard?.agent_summaries, requestedActiveTab]);
 
   const overviewMetrics = dashboard?.overview_metrics || {};
   const heroFacts = [
@@ -1275,7 +1284,16 @@ export default function DashboardPage() {
       {
         key: 'compare',
         label: t('compareView'),
-        children: <ComparePanel dashboard={dashboard} compareSeries={compareSeries} loading={compareLoading} workspaceMap={workspaceMap} />,
+        children: (
+          <ComparePanel
+            dashboard={dashboard}
+            compareSeries={compareSeries}
+            compareIds={compareIds}
+            onCompareIdsChange={setCompareIds}
+            loading={compareLoading}
+            workspaceMap={workspaceMap}
+          />
+        ),
       },
     ];
     (dashboard?.agent_summaries || []).forEach((agent) => {
@@ -1286,7 +1304,7 @@ export default function DashboardPage() {
       });
     });
     return items;
-  }, [authenticated, compareLoading, compareSeries, dashboard, t, timeframe, workspaceMap]);
+  }, [authenticated, compareIds, compareLoading, compareSeries, dashboard, t, timeframe, workspaceMap]);
 
   return (
     <div className="boxed-page dashboard-page">
@@ -1327,12 +1345,12 @@ export default function DashboardPage() {
             <AgentOverview
               agents={dashboard?.agent_summaries || []}
               activeTab={activeTab}
-              onSelect={(configId) => setActiveTab(configId)}
+              onSelect={(configId) => setRequestedActiveTab(configId)}
               workspaceMap={workspaceMap}
               loading={workspaceLoading}
             />
           </div>
-          <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} className="dashboard-main-tabs" renderTabBar={() => null} />
+          <Tabs activeKey={activeTab} onChange={setRequestedActiveTab} items={tabItems} className="dashboard-main-tabs" renderTabBar={() => null} />
         </div>
       ) : null}
       </Space>

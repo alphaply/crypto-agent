@@ -239,6 +239,7 @@ def _ensure_provider_tables(conn: sqlite3.Connection) -> None:
             extra_body TEXT NOT NULL DEFAULT '{}',
             thinking_enabled INTEGER,
             reasoning_effort TEXT,
+            system_prompt_role TEXT NOT NULL DEFAULT 'system',
             updated_at TEXT NOT NULL
         )
         """
@@ -247,6 +248,8 @@ def _ensure_provider_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN thinking_enabled INTEGER")
     if "reasoning_effort" not in _column_names(conn, "llm_providers"):
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_effort TEXT")
+    if "system_prompt_role" not in _column_names(conn, "llm_providers"):
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN system_prompt_role TEXT NOT NULL DEFAULT 'system'")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS exchange_profiles (
@@ -340,6 +343,7 @@ def _provider_payload(
     extra_body: dict[str, Any] | None = None,
     thinking_enabled: bool | None = None,
     reasoning_effort: str | None = None,
+    system_prompt_role: str | None = "system",
 ) -> dict[str, Any]:
     return {
         "provider_id": provider_id,
@@ -351,6 +355,7 @@ def _provider_payload(
         "extra_body": extra_body or {},
         "thinking_enabled": thinking_enabled,
         "reasoning_effort": reasoning_effort or "",
+        "system_prompt_role": "user" if str(system_prompt_role).lower() == "user" else "system",
     }
 
 
@@ -394,6 +399,7 @@ def _derive_provider_from_agent(agent: dict[str, Any], role: str) -> dict[str, A
         temperature=temperature,
         role=role,
         extra_body=agent.get("extra_body") if role == "agent" and isinstance(agent.get("extra_body"), dict) else {},
+        system_prompt_role=agent.get("system_prompt_role", "system") if role == "agent" else "system",
     )
     if api_key:
         provider["api_key"] = api_key
@@ -604,7 +610,7 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
 
         provider_rows = conn.execute(
             """
-            SELECT provider_id, name, model, api_base, temperature, role, extra_body, thinking_enabled, reasoning_effort
+            SELECT provider_id, name, model, api_base, temperature, role, extra_body, thinking_enabled, reasoning_effort, system_prompt_role
             FROM llm_providers
             ORDER BY name ASC, provider_id ASC
             """
@@ -622,6 +628,7 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
                 "extra_body": json.loads(row["extra_body"] or "{}"),
                 "thinking_enabled": None if row["thinking_enabled"] is None else bool(row["thinking_enabled"]),
                 "reasoning_effort": row["reasoning_effort"] or "",
+                "system_prompt_role": "user" if row["system_prompt_role"] == "user" else "system",
             }
             provider.update(provider_secret_map.get(row["provider_id"], {}))
             providers.append(provider)
@@ -685,6 +692,8 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
                     payload["thinking_enabled"] = provider.get("thinking_enabled")
                 if provider.get("reasoning_effort"):
                     payload["reasoning_effort"] = provider.get("reasoning_effort")
+                if payload.get("system_prompt_role") not in {"system", "user"}:
+                    payload["system_prompt_role"] = provider.get("system_prompt_role", "system")
                 if provider.get("api_key"):
                     payload["api_key"] = provider.get("api_key")
 
@@ -872,8 +881,8 @@ def save_runtime_snapshot(
                 conn.execute(
                     """
                     INSERT INTO llm_providers (
-                        provider_id, name, model, api_base, temperature, role, extra_body, thinking_enabled, reasoning_effort, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        provider_id, name, model, api_base, temperature, role, extra_body, thinking_enabled, reasoning_effort, system_prompt_role, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         provider_id,
@@ -885,6 +894,7 @@ def save_runtime_snapshot(
                         json.dumps(_ensure_jsonable(extra_body), ensure_ascii=False),
                         None if provider.get("thinking_enabled") is None else int(bool(provider.get("thinking_enabled"))),
                         str(provider.get("reasoning_effort") or ""),
+                        "user" if str(provider.get("system_prompt_role") or "system").lower() == "user" else "system",
                         timestamp,
                     ),
                 )

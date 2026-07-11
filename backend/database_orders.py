@@ -40,36 +40,40 @@ class OrderPersistenceStore:
 
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
-                INSERT INTO orders (
-                    order_id, timestamp, symbol, agent_name, config_id, side,
-                    entry_price, amount, take_profit, stop_loss, reason,
-                    trade_mode, status, event_type, parent_order_id, is_auto,
-                    realized_pnl
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    str(order_id),
-                    timestamp,
-                    symbol,
-                    str(agent_name),
-                    config_id or str(agent_name),
-                    side,
-                    entry,
-                    amount,
-                    tp,
-                    sl,
-                    reason,
-                    valid_mode,
-                    status,
-                    normalized_event_type,
-                    str(parent_order_id) if parent_order_id else None,
-                    1 if is_auto else 0,
-                    float(realized_pnl or 0),
-                ),
+            columns = {row[1] for row in cursor.execute("PRAGMA table_info(orders)").fetchall()}
+            base_values = (
+                str(order_id), timestamp, symbol, str(agent_name), config_id or str(agent_name), side,
+                entry, amount, tp, sl, reason, valid_mode, status,
             )
+            if {"event_type", "parent_order_id", "is_auto", "realized_pnl"}.issubset(columns):
+                cursor.execute(
+                    '''
+                    INSERT INTO orders (
+                        order_id, timestamp, symbol, agent_name, config_id, side,
+                        entry_price, amount, take_profit, stop_loss, reason,
+                        trade_mode, status, event_type, parent_order_id, is_auto,
+                        realized_pnl
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    base_values + (
+                        normalized_event_type,
+                        str(parent_order_id) if parent_order_id else None,
+                        1 if is_auto else 0,
+                        float(realized_pnl or 0),
+                    ),
+                )
+            else:
+                cursor.execute(
+                    '''
+                    INSERT INTO orders (
+                        order_id, timestamp, symbol, agent_name, config_id, side,
+                        entry_price, amount, take_profit, stop_loss, reason, trade_mode, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    base_values,
+                )
             conn.commit()
 
     def update_fill_status(self, order_id, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None):
