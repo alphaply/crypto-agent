@@ -114,3 +114,22 @@ def test_extract_tool_calls_ignores_empty_partial_chunks_and_omits_args():
     assert chat_graph._extract_tool_calls(chunk) == [
         {"index": 1, "id": "call-2", "name": "close_position_strategy"}
     ]
+
+
+def test_structured_thinking_block_is_separated_from_answer_text():
+    chunk = AIMessageChunk(
+        content=[
+            {"type": "thinking", "thinking": "先检查趋势"},
+            {"type": "text", "text": "结论：保持观望"},
+        ],
+    )
+
+    assert chat_graph._chunk_reasoning_text(chunk) == "先检查趋势"
+    assert chat_graph._chunk_to_text(chunk) == "结论：保持观望"
+
+
+def test_reasoning_alias_in_additional_kwargs_is_supported():
+    chunk = AIMessageChunk(content="answer", additional_kwargs={"reasoning": "analysis"})
+
+    assert chat_graph._chunk_reasoning_text(chunk) == "analysis"
+    assert chat_graph._chunk_to_text(chunk) == "answer"

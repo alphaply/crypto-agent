@@ -1,0 +1,29 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { splitThinkingContent } from '../src/lib/thinking.js';
+
+test('extracts completed think and thinking blocks from answer content', () => {
+  const result = splitThinkingContent(
+    '<think>first step</think>\n<thinking>second step</thinking>\nFinal answer',
+  );
+
+  assert.equal(result.content, 'Final answer');
+  assert.equal(result.reasoning, 'first step\n\nsecond step');
+  assert.equal(result.thinkingOpen, false);
+});
+
+test('treats an unclosed think block as streaming reasoning', () => {
+  const result = splitThinkingContent('<think>still working');
+
+  assert.equal(result.content, '');
+  assert.equal(result.reasoning, 'still working');
+  assert.equal(result.thinkingOpen, true);
+});
+
+test('prefers the provider reasoning stream while removing duplicate tags', () => {
+  const result = splitThinkingContent('<think>duplicated</think>Answer', 'provider reasoning');
+
+  assert.equal(result.content, 'Answer');
+  assert.equal(result.reasoning, 'provider reasoning');
+});

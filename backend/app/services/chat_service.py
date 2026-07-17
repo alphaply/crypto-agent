@@ -4,7 +4,7 @@ import time
 import uuid
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from backend.agent.chat_graph import (
     TEMPORARY_CHAT_TIMEFRAMES,
@@ -39,6 +39,7 @@ SUPPORTED_MARKETS = {
 }
 MARKET_SYMBOL_CACHE_TTL_SECONDS = 15 * 60
 _market_symbol_cache: dict[tuple[str, str], tuple[float, list[dict[str, str]]]] = {}
+PERSISTENCE_ERROR_MESSAGE = "回答已生成，但暂时无法保存到会话历史。"
 r"""
 LEGACY_MODEL_SIGNATURE_RE = re.compile(
     r"\n{2}---\s*\n>\s*(?:🧠\s*)?(?:本次回答由.*?完成\。?|This response was completed by.*?\.?)(?:\s*)$",
@@ -78,6 +79,32 @@ def _serialize_chat_messages(messages: list[Any]) -> list[dict[str, Any]]:
             payload["content"] = content.rstrip()
         payloads.append(payload)
     return payloads
+
+
+def _state_contains_model_completion(state: dict[str, Any] | None, completion: dict[str, Any] | None) -> bool:
+    """Confirm that the streamed model result is present in the persisted checkpoint."""
+    if not state or not completion:
+        return False
+
+    last_assistant = next(
+        (message for message in reversed(state.get("messages") or []) if isinstance(message, AIMessage)),
+        None,
+    )
+    if last_assistant is None:
+        return False
+
+    payload = serialize_message(last_assistant)
+    persisted_content = str(payload.get("content") or "")
+    persisted_reasoning = str(payload.get("reasoning_content") or "")
+    completion_content = str(completion.get("content") or "")
+    completion_reasoning = str(completion.get("reasoning_content") or "")
+    completion_has_tools = bool(completion.get("has_tool_calls"))
+
+    return (
+        persisted_content == completion_content
+        and persisted_reasoning == completion_reasoning
+        and bool(payload.get("tool_calls")) == completion_has_tools
+    )
 
 
 def _management_chat_options() -> dict[str, list[dict[str, Any]]]:
@@ -133,6 +160,8 @@ def chat_bootstrap_payload():
                 "model": cfg.get("model", ""),
                 "mode": cfg.get("mode", "STRATEGY"),
                 "title": cfg.get("title"),
+                "thinking_enabled": cfg.get("thinking_enabled"),
+                "reasoning_effort": cfg.get("reasoning_effort") or "",
             }
         )
     options = _management_chat_options()
@@ -360,10 +389,10 @@ def stream_chat_events(
     if not session:
         raise FileNotFoundError("Chat session not found")
 
+    model_completion = None
     try:
         runtime = _effective_session_runtime(session)
         has_error = False
-        model_completion = None
         persistence_error = None
         if approval is not None:
             generator = stream_resume_chat(session_id, approval == "true", config_id=session["config_id"], runtime=runtime)
@@ -383,11 +412,12 @@ def stream_chat_events(
                     continue
                 if event.get("type") == "error":
                     if event.get("phase") == "persistence" and model_completion:
-                        persistence_error = event.get("message") or "回答已生成，但暂时无法保存到会话历史。"
+                        persistence_error = event.get("message") or PERSISTENCE_ERROR_MESSAGE
                         logger.error(
-                            "Chat response completed but persistence failed: session=%s code=%s",
+                            "Chat response completed but post-generation processing failed: session=%s code=%s cause=%s",
                             session_id,
                             event.get("error_code"),
+                            event.get("cause_code") or event.get("error_code"),
                         )
                         continue
                     has_error = True
@@ -399,23 +429,63 @@ def stream_chat_events(
             state = None
             final_messages = None
             pending_approval = None
-            if not persistence_error:
+            conversation_memory = None
+            state_loaded = False
+            try:
+                state = get_chat_state(session_id, config_id=session["config_id"], runtime=runtime)
+                state_loaded = True
+                final_messages = _serialize_chat_messages(state.get("messages", []))
+            except Exception:
+                logger.exception("Chat checkpoint verification failed after model completion: session=%s", session_id)
+
+            completion_persisted = bool(
+                state_loaded
+                and (model_completion is None or _state_contains_model_completion(state, model_completion))
+            )
+            if model_completion and completion_persisted and persistence_error:
+                logger.warning(
+                    "Recovered post-generation chat error because the completed response is present in the checkpoint: session=%s",
+                    session_id,
+                )
+                persistence_error = None
+            elif not completion_persisted:
+                persistence_error = persistence_error or PERSISTENCE_ERROR_MESSAGE
+                # Keep the streamed draft visible in the browser. Replacing it with an older
+                # checkpoint would make a successfully generated answer disappear.
+                final_messages = None
+
+            if completion_persisted:
                 try:
                     touch_chat_session(session_id)
-                    state = get_chat_state(session_id, config_id=session["config_id"], runtime=runtime)
-                    final_messages = _serialize_chat_messages(state.get("messages", []))
-                    pending_approval = get_chat_interrupt(session_id, config_id=session["config_id"], runtime=runtime)
                 except Exception:
-                    logger.exception("Chat finalization failed after model completion: session=%s", session_id)
-                    persistence_error = "回答已生成，但暂时无法保存到会话历史。"
+                    # The checkpoint is the source of truth for chat history. A stale session
+                    # timestamp must not be reported to the user as a lost answer.
+                    logger.exception("Chat session timestamp update failed: session=%s", session_id)
+
+                try:
+                    pending_approval = get_chat_interrupt(
+                        session_id,
+                        config_id=session["config_id"],
+                        runtime=runtime,
+                    )
+                except Exception:
+                    logger.exception("Chat interrupt readback failed: session=%s", session_id)
+
+                try:
+                    conversation_memory = conversation_memory_payload(state)
+                except Exception:
+                    # Rolling-memory metadata is optional response decoration and does not
+                    # change whether the assistant message itself was checkpointed.
+                    logger.exception("Chat memory payload assembly failed: session=%s", session_id)
+
             if pending_approval:
                 yield {"type": "approval_required", "approval": pending_approval}
             yield {
                 "type": "done",
                 "messages": final_messages,
-                "conversation_memory": conversation_memory_payload(state) if state is not None else None,
+                "conversation_memory": conversation_memory,
                 "pending_approval": pending_approval,
-                "persisted": not bool(persistence_error),
+                "persisted": completion_persisted,
                 "persistence_error": persistence_error,
             }
     except Exception as exc:
@@ -427,7 +497,7 @@ def stream_chat_events(
                 "conversation_memory": None,
                 "pending_approval": None,
                 "persisted": False,
-                "persistence_error": "回答已生成，但暂时无法保存到会话历史。",
+                "persistence_error": PERSISTENCE_ERROR_MESSAGE,
             }
         else:
             yield {

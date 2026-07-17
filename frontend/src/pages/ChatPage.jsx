@@ -18,6 +18,7 @@ import {
   Typography,
 } from 'antd';
 import {
+  BulbOutlined,
   ClearOutlined,
   CopyOutlined,
   DatabaseOutlined,
@@ -79,6 +80,9 @@ function MessageContent({ content, reasoning, role, streaming, status }) {
   const { t, locale } = usePreferences();
   if (role === 'tool') return <ToolMessage content={content} locale={locale} />;
   const normalized = splitThinkingContent(content || '', reasoning || '');
+  const hasAnswer = Boolean(normalized.content?.trim());
+  const hasReasoning = Boolean(normalized.reasoning?.trim());
+  const reasoningStreaming = Boolean(streaming && hasReasoning && (!hasAnswer || normalized.thinkingOpen));
   if (!normalized.content?.trim() && !normalized.reasoning?.trim()) {
     return streaming ? (
       <div className="chat-waiting-inline">
@@ -89,8 +93,8 @@ function MessageContent({ content, reasoning, role, streaming, status }) {
   }
   return (
     <div className={`chat-message-content ${streaming ? 'is-streaming' : ''}`}>
-      <MarkdownBlock content={normalized.content || ''} />
-      <ReasoningBlock title={t('reasoning')} content={normalized.reasoning} streaming={streaming} />
+      <ReasoningBlock title={t('reasoning')} content={normalized.reasoning} streaming={reasoningStreaming} />
+      {hasAnswer ? <div className="chat-answer-content"><MarkdownBlock content={normalized.content} /></div> : null}
     </div>
   );
 }
@@ -436,6 +440,7 @@ export default function ChatPage({ token }) {
     () => configOptions.find((item) => item.config_id === (currentSession?.config_id || currentConfigId)) || null,
     [configOptions, currentConfigId, currentSession],
   );
+  const activeModelConfig = activeRuntime || activeConfig;
   const activeSubtitle = activeRuntime
     ? runtimeSubtitle(activeRuntime, locale)
     : (activeConfig ? `${activeConfig.symbol} / ${activeConfig.mode} · ${activeConfig.model || ''}` : t('chatPageDesc'));
@@ -525,11 +530,11 @@ export default function ChatPage({ token }) {
         lifecycle = reduceChatStreamLifecycle(lifecycle, event);
         if (event.type === 'token') {
           incomingDraftRef.current.content += event.token;
-          setStreamStatus('');
+          setStreamStatus(isZh ? '正在生成回答' : 'Writing the answer');
           scheduleDraftAnimation();
         } else if (event.type === 'reasoning_token') {
           incomingDraftRef.current.reasoning_content += event.token;
-          setStreamStatus('');
+          setStreamStatus(isZh ? '模型正在思考' : 'Model is thinking');
           scheduleDraftAnimation();
         } else if (event.type === 'status') {
           setStreamStatus(event.message || '');
@@ -548,10 +553,10 @@ export default function ChatPage({ token }) {
           setPersistenceWarning(event.persisted === false ? (event.persistence_error || (isZh ? '回答已生成，但暂时无法保存到历史会话。' : 'The response was generated but could not be saved.')) : '');
           setStreamStatus('');
         } else if (event.type === 'error') {
-          if (!event.phase || event.phase === 'generation') {
-            setStreamFailure({ message: event.message || 'Stream failed', messageText, phase: event.phase || 'generation' });
-          } else {
+          if (event.phase === 'persistence') {
             setPersistenceWarning(event.message || (isZh ? '回答处理失败，请重试。' : 'The response could not be finalized.'));
+          } else {
+            setStreamFailure({ message: event.message || 'Stream failed', messageText, phase: event.phase || 'generation' });
           }
           setStreamStatus('');
         }
@@ -787,6 +792,12 @@ export default function ChatPage({ token }) {
                       <Space size={8} wrap>
                         <Title level={4} style={{ margin: 0 }}>{isZh ? '即时市场研究' : 'Live market research'}</Title>
                         {activeRuntime ? <Tag color="purple">{isZh ? '临时只读' : 'Temporary read-only'}</Tag> : null}
+                        {activeModelConfig?.thinking_enabled ? (
+                          <Tag color="geekblue" icon={<BulbOutlined />}>
+                            {isZh ? '思考模型' : 'Reasoning model'}
+                            {activeModelConfig.reasoning_effort ? ` · ${activeModelConfig.reasoning_effort}` : ''}
+                          </Tag>
+                        ) : null}
                       </Space>
                       <Text type="secondary">{activeSubtitle}</Text>
                     </div>

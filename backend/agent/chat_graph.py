@@ -561,6 +561,17 @@ def _chat_error_payload(
     phase: str = "generation",
     partial_content: bool = False,
 ) -> Dict[str, Any]:
+    if phase == "persistence":
+        cause_code = exc.error_type if isinstance(exc, LLMInvocationError) else "unknown_error"
+        return {
+            "type": "error",
+            "message": format_llm_error_message("persistence_error"),
+            "error_code": "persistence_error",
+            "cause_code": cause_code,
+            "retryable": False,
+            "phase": phase,
+            "partial_content": partial_content,
+        }
     if isinstance(exc, LLMInvocationError):
         return {
             "type": "error",
@@ -886,7 +897,16 @@ def _chunk_to_text(chunk: BaseMessageChunk | Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join([i.get("text", "") if isinstance(i, dict) else str(i) for i in content])
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                parts.append(str(item))
+                continue
+            block_type = str(item.get("type") or "").lower()
+            if block_type in {"reasoning", "reasoning_content", "thinking"}:
+                continue
+            parts.append(str(item.get("text") or item.get("content") or ""))
+        return "".join(parts)
     return ""
 
 
@@ -904,7 +924,7 @@ def _coerce_text(value: Any) -> str:
                 parts.append(str(item))
         return "".join(parts)
     if isinstance(value, dict):
-        for key in ("text", "content", "reasoning_content", "delta"):
+        for key in ("text", "content", "reasoning_content", "reasoning", "thinking", "delta"):
             if key in value:
                 return _coerce_text(value.get(key))
         return ""
@@ -914,19 +934,35 @@ def _coerce_text(value: Any) -> str:
 def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
     add_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
     resp_meta = getattr(chunk, "response_metadata", {}) or {}
-    
-    if "reasoning_content" in add_kwargs:
-        return _coerce_text(add_kwargs["reasoning_content"])
-    
-    if "reasoning_content" in resp_meta:
-        return _coerce_text(resp_meta["reasoning_content"])
+
+    for container in (add_kwargs, resp_meta):
+        for key in ("reasoning_content", "reasoning", "thinking"):
+            if key in container:
+                reasoning = _coerce_text(container[key])
+                if reasoning:
+                    return reasoning
 
     delta = add_kwargs.get("delta") or resp_meta.get("delta") or {}
     if isinstance(delta, dict):
-        res = delta.get("reasoning_content") or delta.get("reasoning")
+        res = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
         if res:
             return _coerce_text(res)
-            
+
+    content = getattr(chunk, "content", "")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            block_type = str(item.get("type") or "").lower()
+            if block_type not in {"reasoning", "reasoning_content", "thinking"}:
+                continue
+            part = _coerce_text(item)
+            if part:
+                parts.append(part)
+        if parts:
+            return "".join(parts)
+
     return ""
 
 
