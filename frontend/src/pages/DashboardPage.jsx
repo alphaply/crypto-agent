@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -75,6 +75,25 @@ function formatPercentValue(value) {
   return `${Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00'}%`;
 }
 
+function isSpotMode(mode) {
+  return String(mode || '').toUpperCase() === 'SPOT_DCA';
+}
+
+function buildSpotFacts(t, stats, pendingOrders = []) {
+  return [
+    { label: t('marketValue'), value: formatPositionValue(stats?.market_value) },
+    { label: t('totalInvested'), value: formatPositionValue(stats?.total_invested) },
+    { label: t('actualBalance'), value: formatPositionValue(stats?.actual_balance) },
+    { label: t('recordedQty'), value: formatPositionValue(stats?.total_qty) },
+    { label: t('avgCost'), value: formatPositionValue(stats?.avg_cost) },
+    { label: t('mark'), value: formatPositionValue(stats?.current_price) },
+    { label: t('unrealizedPnl'), value: formatPositionValue(stats?.unrealized_pnl) },
+    { label: t('roiPct'), value: formatPercentValue(stats?.return_pct) },
+    { label: t('buyCount'), value: stats?.buy_count ?? 0 },
+    { label: t('pendingOrders'), value: pendingOrders.length },
+  ];
+}
+
 function getPrimaryPosition(workspace) {
   const positions = workspace?.position?.positions || workspace?.kline?.positions || [];
   return positions[0] || workspace?.kline?.position || null;
@@ -132,9 +151,14 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
           const pendingOrders = workspace?.kline?.pending_orders || [];
           const position = getPrimaryPosition(workspace);
           const summary = workspace?.position?.summary || {};
+          const spotMode = isSpotMode(agent.mode);
           const workspacePending = loading && !workspace;
-          const facts = buildPositionFacts(t, position, pendingOrders, summary);
-          facts.unshift({ label: t('marginBalance'), value: formatPositionValue(getMarginBalance(workspace)) });
+          const facts = spotMode
+            ? buildSpotFacts(t, workspace?.position?.dca_stats, pendingOrders)
+            : buildPositionFacts(t, position, pendingOrders, summary);
+          if (!spotMode) {
+            facts.unshift({ label: t('marginBalance'), value: formatPositionValue(getMarginBalance(workspace)) });
+          }
           const keyFacts = facts.slice(0, 3);
 
           return (
@@ -469,6 +493,8 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
   const recentOrders = workspace?.orders?.orders || [];
   const pendingOrders = kline?.pending_orders || [];
   const newsSnapshot = workspace?.news_snapshot;
+  const spotMode = isSpotMode(agent?.mode || position?.mode);
+  const spotStats = position?.dca_stats || {};
 
   const [editingMemory, setEditingMemory] = useState(null);
   const [memoryEditText, setMemoryEditText] = useState('');
@@ -549,13 +575,34 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
       <Card className="panel-card">
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <div className="position-header-row">
-            <Text strong>{t('positions')}</Text>
+            <Space size={8} wrap>
+              <Text strong>{spotMode ? t('spotAccount') : t('positions')}</Text>
+              {spotMode ? <Tag color="gold">SPOT_DCA</Tag> : null}
+            </Space>
             <div className="position-balance-row">
-              <span><Text type="secondary">{t('marginBalance')}: </Text><Text>{formatPositionValue(getMarginBalance(workspace))}</Text></span>
-              <span><Text type="secondary">{t('walletBalance')}: </Text><Text>{formatPositionValue(position.balance)}</Text></span>
+              {spotMode ? (
+                <>
+                  <span><Text type="secondary">{t('marketValue')}: </Text><Text>{formatPositionValue(spotStats.market_value)}</Text></span>
+                  <span><Text type="secondary">{t('totalInvested')}: </Text><Text>{formatPositionValue(spotStats.total_invested)}</Text></span>
+                </>
+              ) : (
+                <>
+                  <span><Text type="secondary">{t('marginBalance')}: </Text><Text>{formatPositionValue(getMarginBalance(workspace))}</Text></span>
+                  <span><Text type="secondary">{t('walletBalance')}: </Text><Text>{formatPositionValue(position.balance)}</Text></span>
+                </>
+              )}
             </div>
           </div>
-          {activePositions.length === 0 ? (
+          {spotMode ? (
+            <div className="spot-account-summary">
+              <FactGrid items={buildSpotFacts(t, spotStats, pendingOrders)} />
+              {spotStats.last_sync ? (
+                <Text type="secondary" className="spot-account-sync">
+                  {t('lastSync')}: {spotStats.last_sync}
+                </Text>
+              ) : null}
+            </div>
+          ) : activePositions.length === 0 ? (
             <Text type="secondary">{t('noActivePositions')}</Text>
           ) : hasDualPosition ? (
             <div className="dual-position-grid">
@@ -1170,6 +1217,7 @@ export default function DashboardPage() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [error, setError] = useState('');
+  const lastDashboardLoadRef = useRef({ symbol: null, refreshNonce: -1 });
 
   useEffect(() => {
     const refresh = () => setRefreshNonce((value) => value + 1);
@@ -1178,6 +1226,10 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    const lastLoad = lastDashboardLoadRef.current;
+    if (selectedSymbol && lastLoad.symbol === selectedSymbol && lastLoad.refreshNonce === refreshNonce) {
+      return undefined;
+    }
     let mounted = true;
     async function loadDashboard() {
       setLoading(true);
@@ -1185,6 +1237,10 @@ export default function DashboardPage() {
       try {
         const response = await api.get('/public/dashboard', { params: selectedSymbol ? { symbol: selectedSymbol } : {} });
         if (!mounted) return;
+        lastDashboardLoadRef.current = {
+          symbol: response.data.current_symbol || selectedSymbol || null,
+          refreshNonce,
+        };
         setDashboard(response.data);
         if (!selectedSymbol && response.data.current_symbol) {
           setSelectedSymbol(response.data.current_symbol);
@@ -1240,15 +1296,25 @@ export default function DashboardPage() {
       }
       setWorkspaceLoading(true);
       try {
-        const responses = await Promise.all(
+        const responses = await Promise.allSettled(
           configs.map((item) => api.get(`/public/workspace/${item.config_id}`, { params: { timeframe } })),
         );
         if (!mounted) return;
-        const nextMap = {};
-        responses.forEach((response) => {
-          nextMap[response.data.agent.config_id] = response.data;
+        setWorkspaceMap((previous) => {
+          const nextMap = {};
+          responses.forEach((result, index) => {
+            const configId = configs[index].config_id;
+            if (result.status === 'fulfilled') {
+              nextMap[configId] = result.value.data;
+            } else if (previous[configId]) {
+              nextMap[configId] = previous[configId];
+            }
+          });
+          return nextMap;
         });
-        setWorkspaceMap(nextMap);
+        if (responses.every((result) => result.status === 'rejected')) {
+          setError('Failed to load workspace data');
+        }
       } catch (err) {
         if (mounted) setError(err.message || 'Failed to load workspace data');
       } finally {
@@ -1327,7 +1393,7 @@ export default function DashboardPage() {
         </Space>
       </Card>
 
-      {loading ? (
+      {loading && !dashboard ? (
         <Card className="panel-card loading-card">
           <Spin />
         </Card>
@@ -1339,7 +1405,7 @@ export default function DashboardPage() {
         </Card>
       ) : null}
 
-      {!loading && (dashboard?.agent_summaries || []).length ? (
+      {(dashboard?.agent_summaries || []).length ? (
         <div className="dashboard-workspace">
           <div className="dashboard-agent-overview-wrap">
             <AgentOverview

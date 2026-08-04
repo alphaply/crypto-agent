@@ -71,14 +71,17 @@ def test_equity_compare_uses_config_scoped_sources(tmp_path, monkeypatch):
     payload = stats_service.get_equity_compare_payload("BTC/USDT", "real-a,strategy-a,dca-a")
     by_config = {item["config_id"]: item for item in payload["series"]}
 
-    assert set(by_config) == {"real-a", "strategy-a"}
+    assert set(by_config) == {"real-a", "strategy-a", "dca-a"}
     assert by_config["real-a"]["points"] == [{"date": "2026-07-01", "equity": 12000.0}]
     assert by_config["real-a"]["data_source"]["table"] == "balance_history"
     assert by_config["real-a"]["data_source"]["config_id"] == "real-a"
     assert by_config["strategy-a"]["data_source"]["table"] == "mock_balance_history"
+    assert by_config["dca-a"]["points"] == [{"date": "2026-07-01", "equity": 2500.0}]
+    assert by_config["dca-a"]["data_source"]["table"] == "dca_daily_snapshots"
+    assert by_config["dca-a"]["data_source"]["config_id"] == "dca-a"
 
 
-def test_dashboard_data_hides_spot_dca_configs(tmp_path, monkeypatch):
+def test_dashboard_data_includes_spot_dca_configs(tmp_path, monkeypatch):
     db_path = tmp_path / "dashboard.db"
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -108,17 +111,12 @@ def test_dashboard_data_hides_spot_dca_configs(tmp_path, monkeypatch):
         finally:
             db_conn.close()
 
-    def fail_dca_stats(config_id, force_sync=False):
-        raise AssertionError("SPOT_DCA stats should not be loaded for dashboard cards")
-
     monkeypatch.setattr(dashboard_service, "global_config", StubConfig())
     monkeypatch.setattr(dashboard_service, "get_db_conn", connect)
     monkeypatch.setattr(dashboard_service, "get_paginated_orders", lambda *args, **kwargs: ([], 0))
     monkeypatch.setattr(dashboard_service, "get_daily_summaries", lambda *args, **kwargs: [])
     monkeypatch.setattr(dashboard_service, "resolve_market_timeframes", lambda config: ["1h"])
-    monkeypatch.setattr(dashboard_service, "calculate_dca_stats", fail_dca_stats)
-
     rows = dashboard_service.get_dashboard_data("BTC/USDT")
 
-    assert [row["config_id"] for row in rows] == ["real-a", "strategy-a"]
-    assert all(row["mode"] != "SPOT_DCA" for row in rows)
+    assert [row["config_id"] for row in rows] == ["real-a", "strategy-a", "dca-a"]
+    assert rows[-1]["mode"] == "SPOT_DCA"

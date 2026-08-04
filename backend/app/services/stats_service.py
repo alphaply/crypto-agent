@@ -517,7 +517,7 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
         for cfg in global_config.get_all_symbol_configs()
         if cfg.get("symbol") == symbol
         and cfg.get("enabled", True)
-        and str(cfg.get("mode") or "STRATEGY").upper() != "SPOT_DCA"
+        and str(cfg.get("mode") or "STRATEGY").upper() in {"REAL", "STRATEGY", "SPOT_DCA"}
     ]
     if config_ids:
         wanted = {item.strip() for item in config_ids.split(",") if item.strip()}
@@ -582,6 +582,27 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
                 "label": "mock_balance_history.total_equity",
                 "display_label": "策略模拟权益快照",
                 "kind": "strategy_equity",
+            }
+        elif mode == "SPOT_DCA":
+            rows = cursor.execute(
+                """
+                SELECT snapshot_date AS day, total_invested AS equity
+                FROM dca_daily_snapshots
+                WHERE config_id = ? AND symbol = ? AND total_invested > 0
+                ORDER BY snapshot_date ASC
+                """,
+                (config_id, symbol),
+            ).fetchall()
+            points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
+            data_source = {
+                "table": "dca_daily_snapshots",
+                "field": "total_invested",
+                "scope": "config_id",
+                "config_id": config_id,
+                "symbol": symbol,
+                "label": "dca_daily_snapshots.total_invested",
+                "display_label": "定投累计投入快照",
+                "kind": "dca_invested",
             }
 
         series.append(
@@ -864,7 +885,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
                 """
                 SELECT o.order_id, o.side, o.entry_price, o.amount, o.status
                 FROM orders o LEFT JOIN spot_order_fills f ON o.order_id = f.order_id
-                WHERE o.config_id=? AND o.trade_mode='SPOT_DCA' AND o.status='OPEN'
+                WHERE o.config_id=? AND o.trade_mode='SPOT_DCA' AND o.status IN ('OPEN', 'PARTIAL')
                   AND (f.status IS NULL OR f.status NOT IN ('FILLED','CANCELED','CANCELLED'))
                 """,
                 (config_id,),

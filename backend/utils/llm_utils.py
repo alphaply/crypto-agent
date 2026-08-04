@@ -1,13 +1,23 @@
 import os
 import time
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from openai import APIError, APITimeoutError, AuthenticationError, BadRequestError, RateLimitError
+from openai import (
+    APIError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 
 _LANGSMITH_LOGGED_STATE: tuple[str, str, bool] | None = None
+_BAI_API_HOST = "api.b.ai"
+_BAI_DEFAULT_HEADERS = {"User-Agent": "crypto-agent/0.1.0"}
 
 
 def instruction_message(content: str, prompt_role: str | None = "system"):
@@ -137,6 +147,19 @@ class DeepSeekChatOpenAI(ChatOpenAI):
         return payload
 
 
+def _provider_default_headers(base_url: Optional[str]) -> Optional[Dict[str, str]]:
+    """Return narrowly scoped compatibility headers for known provider gateways."""
+    try:
+        hostname = (urlparse(str(base_url or "")).hostname or "").lower()
+    except ValueError:
+        return None
+    if hostname == _BAI_API_HOST:
+        # B.AI is fronted by Cloudflare. A stable application user agent avoids
+        # false-positive bot filtering of the OpenAI SDK's default fingerprint.
+        return dict(_BAI_DEFAULT_HEADERS)
+    return None
+
+
 def build_chat_openai(
     *,
     model: str,
@@ -161,16 +184,23 @@ def build_chat_openai(
     if cls is DeepSeekChatOpenAI and reasoning_effort:
         model_kwargs["reasoning_effort"] = reasoning_effort
 
-    return cls(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=temperature,
-        streaming=streaming,
-        timeout=get_llm_timeout_seconds(),
+    client_kwargs: Dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "temperature": temperature,
+        "streaming": streaming,
+        "timeout": get_llm_timeout_seconds(),
         # Retries are handled in invoke_with_retry so SSE status events can reflect retry progress.
-        max_retries=0,
-        model_kwargs=model_kwargs,
+        "max_retries": 0,
+        "model_kwargs": model_kwargs,
+    }
+    default_headers = _provider_default_headers(base_url)
+    if default_headers:
+        client_kwargs["default_headers"] = default_headers
+
+    return cls(
+        **client_kwargs,
     )
 
 
@@ -183,6 +213,8 @@ def classify_llm_error(exc: BaseException) -> str:
         return "rate_limit"
     if isinstance(exc, AuthenticationError):
         return "auth_error"
+    if isinstance(exc, PermissionDeniedError):
+        return "permission_error"
     if isinstance(exc, BadRequestError):
         return "bad_request"
     if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.NetworkError)):
@@ -193,8 +225,10 @@ def classify_llm_error(exc: BaseException) -> str:
             return "rate_limit"
         if status_code in (400, 404, 413, 422):
             return "bad_request"
-        if status_code in (401, 403):
+        if status_code == 401:
             return "auth_error"
+        if status_code == 403:
+            return "permission_error"
         return "api_error"
     return "unknown_error"
 
@@ -223,6 +257,8 @@ def format_llm_error_message(error_type: str) -> str:
         return "模型请求触发了上游限流，请稍后再试。"
     if error_type == "auth_error":
         return "模型鉴权失败，请检查 API Key 或接口地址配置。"
+    if error_type == "permission_error":
+        return "模型上游拒绝了请求（HTTP 403），请检查账户额度、模型权限或网关/WAF 策略。"
     if error_type == "bad_request":
         return "模型拒绝了本次请求，请检查模型、提示词或请求内容。"
     if error_type == "api_error":

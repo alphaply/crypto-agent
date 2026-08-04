@@ -48,12 +48,12 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions, extra
     let mounted = true;
     async function loadSymbols() {
       try {
-        const response = await api.get('/public/dashboard', { params: selectedSymbol ? { symbol: selectedSymbol } : {} });
+        const response = await api.get('/public/dashboard');
         if (!mounted) return;
         const nextSymbols = response.data.symbols || [];
         setSymbols(nextSymbols);
-        if (!selectedSymbol && response.data.current_symbol) {
-          setSelectedSymbol(response.data.current_symbol);
+        if (response.data.current_symbol) {
+          setSelectedSymbol((current) => current || response.data.current_symbol);
         }
       } catch {
         if (mounted) setSymbols([]);
@@ -63,7 +63,7 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions, extra
     return () => {
       mounted = false;
     };
-  }, [selectedSymbol, setSelectedSymbol]);
+  }, [setSelectedSymbol]);
 
   const navButtons = useMemo(
     () =>

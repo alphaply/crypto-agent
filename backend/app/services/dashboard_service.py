@@ -41,7 +41,7 @@ from backend.app.services.common import TZ_CN, get_scheduler_status, get_symbol_
 
 DCA_STATS_CACHE = {}
 DCA_STATS_CACHE_TTL = 300
-DASHBOARD_VISIBLE_MODES = {"REAL", "STRATEGY"}
+DASHBOARD_VISIBLE_MODES = {"REAL", "STRATEGY", "SPOT_DCA"}
 
 
 def _equity_series_metadata(points: list[dict]) -> dict:
@@ -686,7 +686,8 @@ def get_dashboard_data(symbol, page=1, per_page=10):
 
                 summary_dict["leverage"] = global_config.get_leverage(config_id)
                 summary_dict["market_timeframes"] = resolve_market_timeframes(config)
-                summary_dict["display_name"] = f"{model_name} ({mode})"
+                summary_dict["title"] = config.get("title") or config_id
+                summary_dict["display_name"] = f"{summary_dict['title']} ({mode})"
                 orders, total = get_paginated_orders(config_id, page=1, per_page=10)
                 summary_dict["all_orders"] = orders
                 summary_dict["order_total"] = total

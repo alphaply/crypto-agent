@@ -568,6 +568,16 @@ a {
   margin-bottom: 8px;
 }
 
+.spot-account-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.spot-account-sync {
+  justify-self: end;
+  font-size: 12px;
+}
+
 /* 最近订单分页 */
 .paginated-order-list {
   display: flex;

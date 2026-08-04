@@ -29,7 +29,7 @@ function sourceName(source, locale) {
   return source?.display_label || source?.label || '-';
 }
 
-export default function EquityCompareChart({ series = [], selectedIds = [], onSelectedIdsChange }) {
+function EquityCompareChart({ series = [], selectedIds = [], onSelectedIdsChange }) {
   const { locale, t } = usePreferences();
   const [valueMode, setValueMode] = useState('equity');
   const allIds = useMemo(() => series.map((item) => item.config_id).filter(Boolean), [series]);
@@ -145,3 +145,5 @@ export default function EquityCompareChart({ series = [], selectedIds = [], onSe
     </div>
   );
 }
+
+export default React.memo(EquityCompareChart);

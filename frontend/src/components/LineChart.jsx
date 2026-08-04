@@ -3,7 +3,7 @@ import { Grid } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import { usePreferences } from '../app/usePreferences';
 
-export default function LineChart({
+function LineChart({
   series = [],
   yName,
   xName,
@@ -16,6 +16,7 @@ export default function LineChart({
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
   const option = useMemo(() => ({
+    animation: false,
     color: ['#2563eb', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'],
     tooltip: {
       trigger: 'axis',
@@ -94,3 +95,5 @@ export default function LineChart({
     />
   );
 }
+
+export default React.memo(LineChart);
