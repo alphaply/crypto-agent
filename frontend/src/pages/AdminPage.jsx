@@ -68,6 +68,12 @@ Write a concise Markdown decision. If action is needed, call the matching tradin
 
 const MARKET_TIMEFRAME_OPTIONS = ['15m', '30m', '1h', '4h', '1d', '1w', '1M'];
 
+const LLM_PROVIDER_PRESETS = [
+  { key: 'openai', label: 'OpenAI / Codex', api_base: 'https://api.openai.com/v1', model: 'gpt-5.6', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'medium' },
+  { key: 'deepseek', label: 'DeepSeek', api_base: 'https://api.deepseek.com', model: 'deepseek-v4-pro', compatibility_mode: 'deepseek', thinking_enabled: true, reasoning_effort: 'high' },
+  { key: 'bai-claude', label: 'BAI · Claude', api_base: 'https://api.bankofai.io/v1', model: 'claude-sonnet-5', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'high' },
+];
+
 function buildBlankSecretMeta() {
   return { configured: false, masked_value: '', value: '', clear: false };
 }
@@ -134,6 +140,7 @@ function buildBlankProvider() {
     output_price_per_m: 0,
     pricing_currency: 'USD',
     extra_body: {},
+    compatibility_mode: 'auto',
     thinking_enabled: null,
     reasoning_effort: '',
     system_prompt_role: 'system',
@@ -692,6 +699,18 @@ export default function AdminPage() {
 
   const updateEditingProvider = (field, value) => {
     setEditingProvider((prev) => (prev ? { ...prev, [field]: value } : prev));
+  };
+
+  const applyProviderPreset = (preset) => {
+    setEditingProvider((prev) => prev ? {
+      ...prev,
+      name: prev.name || preset.label,
+      api_base: preset.api_base,
+      model: preset.model,
+      compatibility_mode: preset.compatibility_mode,
+      thinking_enabled: preset.thinking_enabled,
+      reasoning_effort: preset.reasoning_effort,
+    } : prev);
   };
 
   const updateEditingProviderSecret = (field, patch) => {
@@ -1679,6 +1698,15 @@ export default function AdminPage() {
                 }}
               />
             </div>
+            <div className="form-field">
+              <label>{locale === 'zh' ? '快速预设' : 'Quick presets'}</label>
+              <Space wrap>
+                {LLM_PROVIDER_PRESETS.map((preset) => (
+                  <Button key={preset.key} size="small" onClick={() => applyProviderPreset(preset)}>{preset.label}</Button>
+                ))}
+              </Space>
+              <Text type="secondary">{locale === 'zh' ? '只填充协议、地址、模型与推荐力度，不会改动 API Key。' : 'Fills protocol, endpoint, model, and effort without changing the API key.'}</Text>
+            </div>
             <div className="field-grid">
               <div className="form-field">
                 <label>{t('providerName')}</label>
@@ -1698,6 +1726,21 @@ export default function AdminPage() {
             <div className="form-field">
               <label>Temperature</label>
               <InputNumber min={0} max={2} step={0.1} value={editingProvider.temperature} onChange={(v) => updateEditingProvider('temperature', v)} style={{ width: '100%' }} />
+            </div>
+            <div className="form-field">
+              <label>{locale === 'zh' ? '接口兼容模式' : 'API compatibility'}</label>
+              <Select
+                value={editingProvider.compatibility_mode || 'auto'}
+                options={[
+                  { value: 'auto', label: locale === 'zh' ? '自动识别（推荐）' : 'Auto detect (recommended)' },
+                  { value: 'openai', label: 'OpenAI Chat Completions-compatible' },
+                  { value: 'anthropic', label: 'Anthropic Messages API' },
+                  { value: 'deepseek', label: 'DeepSeek Chat Completions' },
+                ]}
+                onChange={(value) => updateEditingProvider('compatibility_mode', value)}
+                style={{ width: '100%' }}
+              />
+              <Text type="secondary">{locale === 'zh' ? '默认使用 OpenAI Chat Completions。DeepSeek 请显式选择其兼容模式以回传 reasoning_content；只有提供 /v1/messages 的服务才选择 Anthropic。' : 'OpenAI Chat Completions is the default. Select DeepSeek to replay reasoning_content, or Anthropic only for endpoints that expose /v1/messages.'}</Text>
             </div>
             <div className="form-field">
               <label>{locale === 'zh' ? '提示词角色' : 'Prompt role'}</label>
@@ -1723,15 +1766,27 @@ export default function AdminPage() {
             </div>
             <SecretField label="API Key" meta={editingProvider.secrets?.api_key} onChange={(v) => updateEditingProviderSecret('api_key', { value: v, clear: false })} onClear={() => updateEditingProviderSecret('api_key', { value: '', clear: true })} />
             <div className="form-field">
-              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                <label>{t('thinkingMode')}</label>
-                <Switch checked={editingProvider.thinking_enabled === true} onChange={(c) => updateEditingProvider('thinking_enabled', c)} />
-              </Space>
+              <label>{t('thinkingMode')}</label>
+              <Select
+                value={editingProvider.thinking_enabled == null ? 'auto' : editingProvider.thinking_enabled ? 'enabled' : 'disabled'}
+                options={[
+                  { value: 'auto', label: locale === 'zh' ? '跟随模型默认（推荐）' : 'Use model default (recommended)' },
+                  { value: 'enabled', label: locale === 'zh' ? '强制开启' : 'Force enabled' },
+                  { value: 'disabled', label: locale === 'zh' ? '强制关闭' : 'Force disabled' },
+                ]}
+                onChange={(value) => updateEditingProvider('thinking_enabled', value === 'auto' ? null : value === 'enabled')}
+                style={{ width: '100%' }}
+              />
             </div>
-            {editingProvider.thinking_enabled && (
+            {editingProvider.thinking_enabled !== false && (
               <div className="form-field">
                 <label>{t('reasoningEffort')}</label>
-                <Select value={editingProvider.reasoning_effort || undefined} options={(payload.options?.reasoning_efforts || ['high', 'max']).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingProvider('reasoning_effort', v)} allowClear style={{ width: '100%' }} />
+                <Select value={editingProvider.reasoning_effort || undefined} options={(payload.options?.reasoning_efforts || ['none', 'low', 'medium', 'high', 'xhigh', 'max']).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingProvider('reasoning_effort', v)} allowClear placeholder={locale === 'zh' ? '跟随模型默认' : 'Use model default'} style={{ width: '100%' }} />
+                <Text type="secondary">{editingProvider.compatibility_mode === 'deepseek'
+                  ? (locale === 'zh' ? 'DeepSeek 原生支持 low / high / max；medium 与 xhigh 会映射到 high。' : 'DeepSeek supports low / high / max; medium and xhigh map to high.')
+                  : editingProvider.compatibility_mode === 'anthropic'
+                    ? (locale === 'zh' ? 'Claude 4.6/5 使用 adaptive thinking；较早模型按强度映射 budget_tokens。' : 'Claude 4.6/5 use adaptive thinking; older models map effort to budget_tokens.')
+                    : (locale === 'zh' ? '支持值取决于模型；OpenAI 新推理模型可使用 none 到 max。' : 'Support depends on the model; recent OpenAI reasoning models accept none through max.')}</Text>
               </div>
             )}
             <div className="form-field">

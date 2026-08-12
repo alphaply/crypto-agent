@@ -1,4 +1,5 @@
 import math
+import json
 import sqlite3
 import time
 import traceback
@@ -657,6 +658,20 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                     "SELECT * FROM summaries WHERE config_id = ? ORDER BY id DESC LIMIT 1",
                     (config_id,),
                 ).fetchone()
+                try:
+                    latest_execution_row = conn.execute(
+                        """
+                        SELECT status, phase, progress_message, reasoning_content,
+                               tool_calls_json, scheduled_at, started_at, finished_at,
+                               updated_at, error
+                        FROM scheduler_runs
+                        WHERE config_id = ? AND job_type = 'agent'
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (config_id,),
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    latest_execution_row = None
 
                 mode = str(config.get("mode", "STRATEGY")).upper()
                 model_name = config.get("model", "Unknown")
@@ -693,6 +708,15 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict["order_total"] = total
                 summary_dict["order_page"] = 1
                 summary_dict["daily_summaries"] = get_daily_summaries(config_id, days=7)
+                if latest_execution_row:
+                    execution = dict(latest_execution_row)
+                    try:
+                        execution["tool_calls"] = json.loads(execution.pop("tool_calls_json") or "[]")
+                    except (TypeError, json.JSONDecodeError):
+                        execution["tool_calls"] = []
+                    summary_dict["execution"] = execution
+                else:
+                    summary_dict["execution"] = None
                 agent_summaries.append(summary_dict)
 
         return agent_summaries

@@ -269,9 +269,25 @@ def get_dca_daily_snapshot_history(config_id, days=30):
 
 # --- 数据分析与记录 ---
 
-def save_summary(symbol, agent_name, content, strategy_logic, config_id=None, agent_type=None):
+def save_summary(
+    symbol,
+    agent_name,
+    content,
+    strategy_logic,
+    config_id=None,
+    agent_type=None,
+    reasoning_content=None,
+):
     """保存 AI 分析结果"""
-    _summary_store.save_summary(symbol, agent_name, content, strategy_logic, config_id=config_id, agent_type=agent_type)
+    _summary_store.save_summary(
+        symbol,
+        agent_name,
+        content,
+        strategy_logic,
+        config_id=config_id,
+        agent_type=agent_type,
+        reasoning_content=reasoning_content,
+    )
 
 def get_active_agents(symbol):
     return _summary_store.get_active_agents(symbol)

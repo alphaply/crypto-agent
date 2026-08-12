@@ -1,5 +1,7 @@
 :root {
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', Arial, sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, 'Cascadia Mono', monospace;
+  font-family: var(--font-sans);
   line-height: 1.5;
   font-weight: 400;
   color-scheme: light;
@@ -62,6 +64,11 @@ body {
   min-width: 320px;
   color: var(--text-primary);
   background: var(--bg-base);
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 a {
@@ -847,8 +854,9 @@ a {
   color: var(--text-primary);
   width: 100%;
   max-width: 100%;
+  font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.62;
+  line-height: 1.7;
   overflow-wrap: break-word;
   word-break: normal;
   overflow-x: hidden;
@@ -877,6 +885,7 @@ a {
   margin: 14px 0 8px;
   line-height: 1.25;
   letter-spacing: 0;
+  scroll-margin-top: 72px;
 }
 
 .markdown-block h1 {
@@ -901,7 +910,7 @@ a {
 }
 
 .markdown-block li {
-  line-height: 1.55;
+  line-height: 1.65;
 }
 
 .markdown-block li + li {
@@ -913,6 +922,33 @@ a {
   border-left: 3px solid var(--accent);
   background: var(--bg-subtle);
   color: var(--text-secondary);
+  border-radius: 0 6px 6px 0;
+}
+
+.markdown-block blockquote > :last-child,
+.markdown-block li > :last-child,
+.markdown-block th > :last-child,
+.markdown-block td > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-block hr {
+  height: 1px;
+  margin: 18px 0;
+  border: 0;
+  background: var(--border-soft);
+}
+
+.markdown-block strong {
+  font-weight: 650;
+}
+
+.markdown-block img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 10px auto;
+  border-radius: 8px;
 }
 
 .markdown-table-wrap {
@@ -921,27 +957,57 @@ a {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   margin: 0 0 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  scrollbar-width: thin;
+}
+
+.markdown-table-wrap:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .markdown-block table {
   display: table;
-  width: max-content;
+  width: 100%;
   min-width: 100%;
-  max-width: none;
+  max-width: 100%;
   border-spacing: 0;
   border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .markdown-block th,
 .markdown-block td {
-  padding: 8px 10px;
-  border: 1px solid var(--border-soft);
+  min-width: 96px;
+  padding: 9px 11px;
+  border: 0;
+  border-right: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
   vertical-align: top;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.markdown-block th:last-child,
+.markdown-block td:last-child {
+  border-right: 0;
+}
+
+.markdown-block tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 .markdown-block th {
   background: var(--bg-subtle);
-  font-weight: 600;
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.markdown-block tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-subtle) 48%, transparent);
 }
 
 .markdown-block a {
@@ -951,10 +1017,19 @@ a {
 }
 
 .markdown-block code {
-  padding: 0.15rem 0.4rem;
-  border-radius: 6px;
-  background: rgba(37, 99, 235, 0.12);
+  display: inline;
+  padding: 0.12em 0.34em;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border-soft));
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--accent-strong) 82%, var(--text-primary));
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-subtle));
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+  line-height: inherit;
   white-space: break-spaces;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 .markdown-code,
@@ -968,6 +1043,8 @@ a {
   border-radius: 8px;
   background: #0f172a;
   color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
   line-height: 1.55;
   -webkit-overflow-scrolling: touch;
 }
@@ -977,6 +1054,10 @@ a {
   min-width: max-content;
   padding: 0;
   background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  font-size: inherit;
   white-space: pre;
   word-break: normal;
 }
@@ -1037,6 +1118,28 @@ a {
   padding-left: 10px;
   border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--text-secondary);
+  border-radius: 0 6px 6px 0;
+}
+
+.task-execution-panel {
+  width: 100%;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(22, 119, 255, 0.08), rgba(114, 46, 209, 0.06));
+}
+
+.task-execution-panel.is-active {
+  border-color: rgba(22, 119, 255, 0.32);
+  box-shadow: 0 10px 28px rgba(22, 119, 255, 0.08);
+}
+
+.task-execution-panel .ant-alert-description {
+  margin-top: 10px;
+}
+
+.task-execution-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .copy-number {
@@ -1449,15 +1552,16 @@ a {
 .chat-message-content {
   display: grid;
   gap: 10px;
-  max-width: min(720px, 68vw);
+  width: min(840px, 74vw);
+  max-width: 100%;
   min-width: 0;
   font-size: 14px;
-  line-height: 1.62;
+  line-height: 1.7;
 }
 
 .chat-message-content .markdown-block {
   font-size: 14px;
-  line-height: 1.62;
+  line-height: 1.7;
 }
 
 .chat-message-content .markdown-block p,
@@ -1510,8 +1614,8 @@ a {
 
 .chat-message-content .markdown-block th,
 .chat-message-content .markdown-block td {
-  padding: 6px 8px;
-  font-size: 12px;
+  padding: 8px 9px;
+  font-size: 13px;
 }
 
 .chat-message-content .markdown-block > :first-child {
@@ -2608,6 +2712,7 @@ a {
   }
 
   .chat-message-content {
+    width: auto;
     max-width: calc(100vw - 56px);
   }
 

@@ -55,7 +55,7 @@ function normalizeAssistantDraft(draft) {
 
 function hasRenderableMessage(message) {
   if (message.role !== 'assistant') return true;
-  return Boolean(message.pending || String(message.content || '').trim() || String(message.reasoning_content || '').trim());
+  return Boolean(message.pending || String(message.content || '').trim() || String(message.reasoning_content || '').trim() || Number(message.reasoning_tokens || 0));
 }
 
 function unwrapApproval(approval) {
@@ -76,7 +76,7 @@ function ToolMessage({ content, locale }) {
   );
 }
 
-function MessageContent({ content, reasoning, role, streaming, status }) {
+function MessageContent({ content, reasoning, reasoningTokens = 0, role, streaming, status }) {
   const { t, locale } = usePreferences();
   if (role === 'tool') return <ToolMessage content={content} locale={locale} />;
   const normalized = splitThinkingContent(content || '', reasoning || '');
@@ -94,6 +94,16 @@ function MessageContent({ content, reasoning, role, streaming, status }) {
   return (
     <div className={`chat-message-content ${streaming ? 'is-streaming' : ''}`}>
       <ReasoningBlock title={t('reasoning')} content={normalized.reasoning} streaming={reasoningStreaming} />
+      {!hasReasoning && reasoningTokens > 0 ? (
+        <Alert
+          className="reasoning-usage-note"
+          type="info"
+          showIcon
+          message={locale === 'zh'
+            ? `模型使用了 ${reasoningTokens} 个推理 token，但上游接口未返回可展示的思考摘要。`
+            : `The model used ${reasoningTokens} reasoning tokens, but the upstream API did not expose a displayable summary.`}
+        />
+      ) : null}
       {hasAnswer ? <div className="chat-answer-content"><MarkdownBlock content={normalized.content} /></div> : null}
     </div>
   );
@@ -469,6 +479,7 @@ export default function ChatPage({ token }) {
         content: message.content || '',
         extraInfo: {
           reasoning: message.reasoning_content || '',
+          reasoningTokens: Number(message.reasoning_tokens || 0),
           originalRole: message.role,
           streaming: streaming && index === messages.length - 1 && message.role === 'assistant',
           status: streamStatus,
@@ -819,7 +830,7 @@ export default function ChatPage({ token }) {
                           },
                           ai: {
                             placement: 'start', variant: 'shadow', shape: 'round', rootClassName: 'x-bubble-ai',
-                            contentRender: (content, info) => <MessageContent content={content} reasoning={info?.extraInfo?.reasoning} role="assistant" streaming={info?.extraInfo?.streaming} status={info?.extraInfo?.status} />,
+                            contentRender: (content, info) => <MessageContent content={content} reasoning={info?.extraInfo?.reasoning} reasoningTokens={info?.extraInfo?.reasoningTokens} role="assistant" streaming={info?.extraInfo?.streaming} status={info?.extraInfo?.status} />,
                           },
                           system: {
                             placement: 'start', variant: 'outlined', shape: 'round', rootClassName: 'x-bubble-system',

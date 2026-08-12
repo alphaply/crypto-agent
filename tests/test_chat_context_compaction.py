@@ -39,7 +39,7 @@ def test_context_compaction_summarizes_old_messages_in_batches(monkeypatch):
             captured["prompt"] = messages[0].content
             return AIMessage(content="- User needs a long-running market review")
 
-    monkeypatch.setattr(chat_graph, "build_chat_openai", lambda **_kwargs: FakeLlm())
+    monkeypatch.setattr(chat_graph, "build_chat_model", lambda **_kwargs: FakeLlm())
     monkeypatch.setattr(chat_graph, "invoke_with_retry", lambda operation, **_kwargs: operation())
 
     summary, cursor = chat_graph._compact_chat_context(

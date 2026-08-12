@@ -69,6 +69,51 @@ function formatPositionValue(value) {
   return numeric.toFixed(decimals).replace(/\.?0+$/, '');
 }
 
+function TaskExecutionPanel({ execution, locale }) {
+  if (!execution || !['QUEUED', 'RUNNING', 'FAILED'].includes(String(execution.status || '').toUpperCase())) {
+    return null;
+  }
+  const active = ['QUEUED', 'RUNNING'].includes(String(execution.status || '').toUpperCase());
+  const toolCalls = Array.isArray(execution.tool_calls) ? execution.tool_calls : [];
+  const title = active
+    ? (locale === 'zh' ? '任务正在执行' : 'Task in progress')
+    : (locale === 'zh' ? '最近任务执行失败' : 'Latest task failed');
+
+  return (
+    <Alert
+      className={`task-execution-panel ${active ? 'is-active' : 'is-failed'}`}
+      type={active ? 'info' : 'error'}
+      showIcon
+      message={
+        <Space size={8} wrap>
+          <span>{title}</span>
+          <Tag color={active ? 'processing' : 'error'}>{execution.phase || execution.status}</Tag>
+          {execution.updated_at ? <Text type="secondary">{execution.updated_at}</Text> : null}
+        </Space>
+      }
+      description={
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Text>{execution.progress_message || execution.error || ''}</Text>
+          {toolCalls.length ? (
+            <div className="task-execution-tools">
+              {toolCalls.map((call, index) => (
+                <Tag key={call.id || `${call.name}-${index}`} color={call.status === 'failed' ? 'error' : call.status === 'completed' ? 'success' : 'blue'}>
+                  {call.name || 'tool'} · {call.status || 'pending'}
+                </Tag>
+              ))}
+            </div>
+          ) : null}
+          <ReasoningBlock
+            title={locale === 'zh' ? '实时推理' : 'Live reasoning'}
+            content={execution.reasoning_content || ''}
+            streaming={active}
+          />
+        </Space>
+      }
+    />
+  );
+}
+
 function formatPercentValue(value) {
   if (value === null || value === undefined || value === '') return '-';
   const numeric = Number(value);
@@ -482,7 +527,7 @@ function NewsSnapshotCard({ snapshot }) {
 }
 
 function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
-  const { t } = usePreferences();
+  const { t, locale } = usePreferences();
   const screens = useBreakpoint();
   const isMobile = !screens.md;
   const agent = workspace?.agent;
@@ -647,6 +692,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
 
       <Card className="panel-card" title={t('analysis')}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <TaskExecutionPanel execution={agent.execution} locale={locale} />
           <Descriptions size="small" column={1} bordered>
             <Descriptions.Item label={t('executedAt')}>{agent.timestamp || '-'}</Descriptions.Item>
             <Descriptions.Item label={t('nextRun')}>{agent.next_run || '-'}</Descriptions.Item>
@@ -1265,6 +1311,38 @@ export default function DashboardPage() {
 
   useEffect(() => {
     let mounted = true;
+    const refreshExecutionState = async () => {
+      try {
+        const response = await api.get('/public/dashboard', { params: selectedSymbol ? { symbol: selectedSymbol } : {} });
+        if (mounted) {
+          setDashboard((previous) => {
+            if (!previous) return response.data;
+            const executionByConfig = new Map(
+              (response.data.agent_summaries || []).map((agent) => [agent.config_id, agent.execution]),
+            );
+            let changed = false;
+            const nextAgents = (previous.agent_summaries || []).map((agent) => {
+              const nextExecution = executionByConfig.get(agent.config_id) ?? null;
+              if (JSON.stringify(agent.execution || null) === JSON.stringify(nextExecution)) return agent;
+              changed = true;
+              return { ...agent, execution: nextExecution };
+            });
+            return changed ? { ...previous, agent_summaries: nextAgents } : previous;
+          });
+        }
+      } catch {
+        // Keep the last good dashboard snapshot; the main loader owns visible errors.
+      }
+    };
+    const timer = window.setInterval(refreshExecutionState, 8000);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, [selectedSymbol]);
+
+  useEffect(() => {
+    let mounted = true;
     async function loadCompare() {
       const currentSymbol = dashboard?.current_symbol || selectedSymbol;
       if (!currentSymbol) return;
@@ -1363,10 +1441,11 @@ export default function DashboardPage() {
       },
     ];
     (dashboard?.agent_summaries || []).forEach((agent) => {
+      const workspace = workspaceMap[agent.config_id];
       items.push({
         key: agent.config_id,
         label: agent.config_id,
-        children: <WorkspacePanel workspace={workspaceMap[agent.config_id]} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} />,
+        children: <WorkspacePanel workspace={workspace ? { ...workspace, agent } : { agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} />,
       });
     });
     return items;

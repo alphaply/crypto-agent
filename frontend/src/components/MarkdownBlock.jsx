@@ -15,22 +15,18 @@ export default function MarkdownBlock({ content, className = '' }) {
           a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
           del: ({ children }) => <span>{children}</span>,
           table: ({ children, ...props }) => (
-            <div className="markdown-table-wrap">
+            <div className="markdown-table-wrap" role="region" aria-label="Scrollable table" tabIndex={0}>
               <table {...props}>{children}</table>
             </div>
           ),
-          code: ({ inline, className: codeClassName, children, ...props }) =>
-            inline ? (
-              <code className={codeClassName} {...props}>
-                {children}
-              </code>
-            ) : (
-              <pre className="markdown-code">
-                <code className={codeClassName} {...props}>
-                  {children}
-                </code>
-              </pre>
-            ),
+          // react-markdown v10 no longer supplies the legacy `inline` prop.
+          // Block code is already wrapped in <pre>; bare <code> stays inline.
+          pre: ({ children, ...props }) => (
+            <pre className="markdown-code" {...props}>{children}</pre>
+          ),
+          code: ({ className: codeClassName, children, ...props }) => (
+            <code className={codeClassName} {...props}>{children}</code>
+          ),
         }}
       >
         {content}

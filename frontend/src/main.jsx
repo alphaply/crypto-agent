@@ -24,6 +24,8 @@ function ConfiguredApp() {
           colorPrimary: '#2563eb',
           colorBgLayout: isDark ? '#0b0f17' : '#f6f8fb',
           colorBorderSecondary: isDark ? '#263142' : '#e5e7eb',
+          fontFamily: 'var(--font-sans)',
+          fontFamilyCode: 'var(--font-mono)',
         },
         components: {
           Switch: {

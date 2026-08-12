@@ -4,7 +4,9 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from openai import (
     APIError,
@@ -16,7 +18,7 @@ from openai import (
 )
 
 _LANGSMITH_LOGGED_STATE: tuple[str, str, bool] | None = None
-_BAI_API_HOST = "api.b.ai"
+_BAI_API_HOSTS = {"api.b.ai", "api.bankofai.io"}
 _BAI_DEFAULT_HEADERS = {"User-Agent": "crypto-agent/0.1.0"}
 
 
@@ -115,20 +117,200 @@ class LLMInvocationError(Exception):
         self.original = original
 
 
-class DeepSeekChatOpenAI(ChatOpenAI):
-    """ChatOpenAI subclass that preserves DeepSeek reasoning_content in tool-call turns."""
+def _coerce_reasoning_text(value: Any) -> str:
+    """Normalize provider-specific reasoning payloads into displayable text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [_coerce_reasoning_text(item) for item in value]
+        return "".join(part for part in parts if part)
+    if isinstance(value, dict):
+        for key in ("reasoning_content", "reasoning", "thinking", "text", "content"):
+            if key in value:
+                text = _coerce_reasoning_text(value.get(key))
+                if text:
+                    return text
+        return ""
+    return str(value)
+
+
+def extract_reasoning_content(message: BaseMessage | Any) -> str:
+    """Extract displayable reasoning through LangChain's standard content blocks."""
+    try:
+        parts = [
+            _coerce_reasoning_text(block.get("reasoning"))
+            for block in (getattr(message, "content_blocks", None) or [])
+            if isinstance(block, dict) and block.get("type") == "reasoning"
+        ]
+        reasoning = "".join(part for part in parts if part)
+        if reasoning:
+            return reasoning
+    except Exception:
+        # Provider-native fallbacks below also support older compatible gateways.
+        pass
+
+    for container_name in ("additional_kwargs", "response_metadata"):
+        container = getattr(message, container_name, None) or {}
+        if isinstance(container, dict):
+            for key in ("reasoning_content", "reasoning", "thinking"):
+                text = _coerce_reasoning_text(container.get(key))
+                if text:
+                    return text
+
+    direct = _coerce_reasoning_text(getattr(message, "reasoning_content", None))
+    if direct:
+        return direct
+
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            block_type = str(item.get("type") or "").lower()
+            if block_type in {"reasoning", "reasoning_content", "thinking", "analysis"}:
+                text = _coerce_reasoning_text(item)
+                if text:
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def extract_message_text(message: BaseMessage | Any) -> str:
+    """Return only user-visible text, excluding reasoning and tool blocks."""
+    text = getattr(message, "text", None)
+    if isinstance(text, str) and text:
+        return text
+
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else str(content)
+
+    parts: List[str] = []
+    for item in content:
+        if isinstance(item, str):
+            parts.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        block_type = str(item.get("type") or "").lower()
+        if block_type in {"text", "output_text"}:
+            parts.append(_coerce_reasoning_text(item.get("text")))
+    return "".join(parts)
+
+
+def extract_reasoning_token_count(message: BaseMessage | Any) -> int:
+    """Read provider-normalized reasoning token usage when no summary is exposed."""
+    usage = getattr(message, "usage_metadata", None) or {}
+    details = usage.get("output_token_details") or usage.get("completion_tokens_details") or {}
+    for key in ("reasoning", "reasoning_tokens", "thinking", "thinking_tokens"):
+        value = details.get(key)
+        if value is not None:
+            try:
+                return max(int(value), 0)
+            except (TypeError, ValueError):
+                pass
+
+    metadata = getattr(message, "response_metadata", None) or {}
+    token_usage = metadata.get("token_usage") or metadata.get("usage") or {}
+    details = token_usage.get("completion_tokens_details") or token_usage.get("output_tokens_details") or {}
+    for key in ("reasoning_tokens", "reasoning", "thinking_tokens", "thinking"):
+        value = details.get(key)
+        if value is not None:
+            try:
+                return max(int(value), 0)
+            except (TypeError, ValueError):
+                pass
+    return 0
+
+
+def resolve_compatibility_mode(
+    compatibility_mode: Optional[str],
+    *,
+    model: Optional[str],
+    base_url: Optional[str],
+) -> str:
+    """Resolve the request dialect without relying on a provider's model slug alone."""
+    explicit = str(compatibility_mode or "auto").strip().lower()
+    if explicit in {"openai", "anthropic", "deepseek"}:
+        return explicit
+
+    model_lower = str(model or "").lower()
+    try:
+        hostname = (urlparse(str(base_url or "")).hostname or "").lower()
+    except ValueError:
+        hostname = ""
+    if "deepseek" in hostname or "deepseek" in model_lower or "-r1" in model_lower or "reasoner" in model_lower:
+        return "deepseek"
+    # OpenAI Chat Completions is the project's default transport, including
+    # routers that expose Claude/Gemini/GLM under an OpenAI-compatible endpoint.
+    # Native Anthropic Messages must be selected explicitly.
+    if "anthropic" in hostname:
+        return "anthropic"
+    return "openai"
+
+
+class ReasoningChatOpenAI(ChatOpenAI):
+    """Preserve reasoning fields returned by OpenAI-compatible chat gateways."""
 
     def _create_chat_result(self, response: Any, generation_info: Optional[Dict[str, Any]] = None) -> Any:
         result = super()._create_chat_result(response, generation_info)
         try:
             resp_dict = response if isinstance(response, dict) else response.model_dump()
             for index, choice in enumerate(resp_dict.get("choices", [])):
-                reasoning = (choice.get("message") or {}).get("reasoning_content")
+                raw_message = choice.get("message") or {}
+                reasoning = next(
+                    (
+                        _coerce_reasoning_text(raw_message.get(key))
+                        for key in ("reasoning_content", "reasoning", "thinking")
+                        if raw_message.get(key) is not None
+                    ),
+                    "",
+                )
                 if reasoning and index < len(result.generations):
                     result.generations[index].message.additional_kwargs["reasoning_content"] = reasoning
         except Exception:
             pass
         return result
+
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: Dict[str, Any],
+        default_chunk_class: type,
+        base_generation_info: Optional[Dict[str, Any]],
+    ) -> Any:
+        """Keep non-standard reasoning deltas dropped by ChatOpenAI's converter."""
+        generation = super()._convert_chunk_to_generation_chunk(
+            chunk,
+            default_chunk_class,
+            base_generation_info,
+        )
+        if generation is None:
+            return None
+        try:
+            choices = chunk.get("choices", []) or chunk.get("chunk", {}).get("choices", [])
+            delta = (choices[0].get("delta") or {}) if choices else {}
+            reasoning = next(
+                (
+                    _coerce_reasoning_text(delta.get(key))
+                    for key in ("reasoning_content", "reasoning", "thinking")
+                    if delta.get(key) is not None
+                ),
+                "",
+            )
+            if reasoning:
+                generation.message.additional_kwargs["reasoning_content"] = reasoning
+        except Exception:
+            pass
+        return generation
+
+
+class DeepSeekChatOpenAI(ReasoningChatOpenAI):
+    """Preserve and replay DeepSeek reasoning_content across tool-call turns."""
 
     def _get_request_payload(self, input_: Any, *, stop: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
@@ -139,7 +321,7 @@ class DeepSeekChatOpenAI(ChatOpenAI):
                 if index >= len(payload_messages):
                     break
                 if isinstance(msg, AIMessage):
-                    reasoning = msg.additional_kwargs.get("reasoning_content")
+                    reasoning = extract_reasoning_content(msg)
                     if reasoning:
                         payload_messages[index]["reasoning_content"] = reasoning
         except Exception:
@@ -153,14 +335,62 @@ def _provider_default_headers(base_url: Optional[str]) -> Optional[Dict[str, str
         hostname = (urlparse(str(base_url or "")).hostname or "").lower()
     except ValueError:
         return None
-    if hostname == _BAI_API_HOST:
+    if hostname in _BAI_API_HOSTS:
         # B.AI is fronted by Cloudflare. A stable application user agent avoids
         # false-positive bot filtering of the OpenAI SDK's default fingerprint.
         return dict(_BAI_DEFAULT_HEADERS)
     return None
 
 
-def build_chat_openai(
+def _anthropic_base_url(base_url: Optional[str]) -> Optional[str]:
+    """ChatAnthropic appends /v1/messages itself, so strip a configured /v1."""
+    normalized = str(base_url or "").rstrip("/")
+    if normalized.lower().endswith("/v1"):
+        normalized = normalized[:-3]
+    return normalized or None
+
+
+def _anthropic_uses_adaptive_thinking(model: str) -> bool:
+    """Claude 4.6+ uses adaptive thinking; Claude 4.5 and older use budgets."""
+    name = str(model or "").lower().replace(".", "-")
+    if any(family in name for family in ("sonnet-5", "opus-5", "fable-5", "mythos-5")):
+        return True
+    return any(version in name for version in ("4-6", "4-7", "4-8"))
+
+
+def _anthropic_thinking_options(
+    model: str,
+    thinking_enabled: Optional[bool],
+    reasoning_effort: str,
+) -> Dict[str, Any]:
+    if thinking_enabled is False or reasoning_effort == "none":
+        return {"thinking": {"type": "disabled"}}
+    if thinking_enabled is not True and not reasoning_effort:
+        return {}
+
+    effort = reasoning_effort or "high"
+    if _anthropic_uses_adaptive_thinking(model):
+        return {
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": effort},
+            "max_tokens": 16384,
+        }
+
+    budget_by_effort = {
+        "low": 2048,
+        "medium": 4096,
+        "high": 8192,
+        "xhigh": 16384,
+        "max": 32768,
+    }
+    budget = budget_by_effort.get(effort, 8192)
+    return {
+        "thinking": {"type": "enabled", "budget_tokens": budget, "display": "summarized"},
+        "max_tokens": budget + 4096,
+    }
+
+
+def build_chat_model(
     *,
     model: str,
     api_key: Optional[str],
@@ -170,19 +400,59 @@ def build_chat_openai(
     extra_body: Optional[Dict[str, Any]] = None,
     thinking_enabled: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
-) -> ChatOpenAI:
+    compatibility_mode: Optional[str] = "auto",
+) -> BaseChatModel:
     sync_langsmith_environment()
 
-    model_kwargs: Dict[str, Any] = {}
-    model_lower = (model or "").lower()
-    cls = DeepSeekChatOpenAI if ("deepseek" in model_lower or "-r1" in model_lower or "reasoner" in model_lower) else ChatOpenAI
+    resolved_mode = resolve_compatibility_mode(
+        compatibility_mode,
+        model=model,
+        base_url=base_url,
+    )
     next_extra_body = dict(extra_body or {})
-    if cls is DeepSeekChatOpenAI and thinking_enabled is not None:
-        next_extra_body["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
+    normalized_effort = str(reasoning_effort or "").strip().lower()
+    if normalized_effort not in {"", "none", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError(f"Unsupported reasoning_effort: {reasoning_effort}")
+    effective_thinking = thinking_enabled
+    if resolved_mode == "deepseek" and normalized_effort in {"medium", "xhigh"}:
+        normalized_effort = "high"
+    if resolved_mode == "deepseek" and normalized_effort == "none":
+        effective_thinking = False
+    if resolved_mode == "deepseek" and effective_thinking is not None:
+        next_extra_body["thinking"] = {"type": "enabled" if effective_thinking else "disabled"}
+
+    default_headers = _provider_default_headers(base_url)
+    if resolved_mode == "anthropic":
+        thinking_options = _anthropic_thinking_options(model, thinking_enabled, normalized_effort)
+        anthropic_kwargs: Dict[str, Any] = {
+            "model": model,
+            "api_key": api_key,
+            "base_url": _anthropic_base_url(base_url),
+            "streaming": streaming,
+            "timeout": get_llm_timeout_seconds(),
+            "max_retries": 0,
+            "output_version": "v1",
+            **thinking_options,
+        }
+        if not thinking_options or thinking_options.get("thinking", {}).get("type") == "disabled":
+            anthropic_kwargs["temperature"] = temperature
+        if default_headers:
+            anthropic_kwargs["default_headers"] = default_headers
+        # Anthropic has no extra_body escape hatch. Forward supported native
+        # options as model kwargs so provider settings are not silently lost.
+        if next_extra_body:
+            anthropic_kwargs["model_kwargs"] = next_extra_body
+        return ChatAnthropic(**anthropic_kwargs)
+
+    cls = DeepSeekChatOpenAI if resolved_mode == "deepseek" else ReasoningChatOpenAI
+    request_options: Dict[str, Any] = {}
     if next_extra_body:
-        model_kwargs["extra_body"] = next_extra_body
-    if cls is DeepSeekChatOpenAI and reasoning_effort:
-        model_kwargs["reasoning_effort"] = reasoning_effort
+        request_options["extra_body"] = next_extra_body
+    if normalized_effort and not (resolved_mode == "deepseek" and effective_thinking is False):
+        request_options["reasoning_effort"] = normalized_effort
+    elif thinking_enabled is False and resolved_mode == "openai" and str(compatibility_mode or "auto").lower() == "openai":
+        # OpenAI reasoning models use effort=none as the explicit off switch.
+        request_options["reasoning_effort"] = "none"
 
     client_kwargs: Dict[str, Any] = {
         "model": model,
@@ -193,9 +463,8 @@ def build_chat_openai(
         "timeout": get_llm_timeout_seconds(),
         # Retries are handled in invoke_with_retry so SSE status events can reflect retry progress.
         "max_retries": 0,
-        "model_kwargs": model_kwargs,
+        **request_options,
     }
-    default_headers = _provider_default_headers(base_url)
     if default_headers:
         client_kwargs["default_headers"] = default_headers
 

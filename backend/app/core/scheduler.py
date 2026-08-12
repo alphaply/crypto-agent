@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import os
 import sqlite3
 import time
@@ -143,6 +144,36 @@ def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status
             SET status = ?{started_at_sql}{finished_at_sql},
                 error = ?,
                 updated_at = ?
+            WHERE config_id = ? AND job_type = ? AND scheduled_at = ?
+            """,
+            tuple(params),
+        )
+        conn.commit()
+
+
+def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> None:
+    """Persist model/tool progress so the dashboard can follow an active task."""
+    from backend.database import get_db_conn
+
+    phase = str(event.get("phase") or "working")
+    message = str(event.get("message") or "")
+    reasoning = event.get("reasoning_content")
+    tool_calls = event.get("tool_calls")
+    assignments = ["phase = ?", "progress_message = ?", "updated_at = ?"]
+    params = [phase, message, _timestamp()]
+    if reasoning is not None:
+        assignments.append("reasoning_content = ?")
+        params.append(str(reasoning or ""))
+    if tool_calls is not None:
+        assignments.append("tool_calls_json = ?")
+        params.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
+    params.extend([str(config_id), AGENT_JOB_TYPE, str(scheduled_at)])
+
+    with get_db_conn() as conn:
+        conn.execute(
+            f"""
+            UPDATE scheduler_runs
+            SET {', '.join(assignments)}
             WHERE config_id = ? AND job_type = ? AND scheduled_at = ?
             """,
             tuple(params),
@@ -386,11 +417,29 @@ def run_config_agent(config, scheduled_at: str):
         f"[{config_id}] started scheduled agent job ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
     )
     _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "RUNNING")
+    _mark_scheduler_progress(
+        config_id,
+        scheduled_at,
+        {"phase": "preparing", "message": "正在准备市场、账户与历史上下文"},
+    )
     try:
-        run_agent_for_config(config)
+        run_agent_for_config(
+            config,
+            progress_callback=lambda event: _mark_scheduler_progress(config_id, scheduled_at, event),
+        )
+        _mark_scheduler_progress(
+            config_id,
+            scheduled_at,
+            {"phase": "completed", "message": "任务执行完成"},
+        )
         _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FINISHED")
         logger.info(f"[{config_id}] finished scheduled agent job (scheduled_at={scheduled_at})")
     except Exception as exc:
+        _mark_scheduler_progress(
+            config_id,
+            scheduled_at,
+            {"phase": "failed", "message": str(exc)},
+        )
         _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FAILED", error=str(exc))
         logger.error(f"Error executing agent [{config_id}] scheduled_at={scheduled_at}: {exc}")
 

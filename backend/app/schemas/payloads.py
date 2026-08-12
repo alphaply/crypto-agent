@@ -158,6 +158,7 @@ class LlmProviderPayload(BaseModel):
     temperature: float | None = None
     role: str = "llm"
     extra_body: dict = Field(default_factory=dict)
+    compatibility_mode: Literal["auto", "openai", "anthropic", "deepseek"] = "auto"
     thinking_enabled: bool | None = None
     reasoning_effort: str | None = None
     system_prompt_role: Literal["system", "user"] = "system"

@@ -22,10 +22,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     agent_type TEXT,
                     timeframe TEXT,
                     content TEXT,
+                    reasoning_content TEXT,
                     strategy_logic TEXT
                 )''')
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN agent_name TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN config_id TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN reasoning_content TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN agent_type TEXT")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS mock_orders (
@@ -164,11 +166,13 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     temperature REAL,
                     role TEXT NOT NULL DEFAULT 'agent',
                     extra_body TEXT NOT NULL DEFAULT '{}',
+                    compatibility_mode TEXT NOT NULL DEFAULT 'auto',
                     thinking_enabled INTEGER,
                     reasoning_effort TEXT,
                     system_prompt_role TEXT NOT NULL DEFAULT 'system',
                     updated_at TEXT NOT NULL
                 )''')
+    _execute_best_effort(cursor, "ALTER TABLE llm_providers ADD COLUMN compatibility_mode TEXT NOT NULL DEFAULT 'auto'")
     _execute_best_effort(cursor, "ALTER TABLE llm_providers ADD COLUMN thinking_enabled INTEGER")
     _execute_best_effort(cursor, "ALTER TABLE llm_providers ADD COLUMN reasoning_effort TEXT")
     _execute_best_effort(cursor, "ALTER TABLE llm_providers ADD COLUMN system_prompt_role TEXT NOT NULL DEFAULT 'system'")
@@ -316,10 +320,18 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     started_at TEXT,
                     finished_at TEXT,
                     error TEXT,
+                    phase TEXT,
+                    progress_message TEXT,
+                    reasoning_content TEXT,
+                    tool_calls_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(config_id, job_type, scheduled_at)
                 )''')
+    _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN phase TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN progress_message TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN reasoning_content TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_short_memories_config_bucket ON short_memories(config_id, bucket_start)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_symbol_time ON news_snapshots(symbol, timestamp)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_config_time ON news_snapshots(config_id, timestamp)")

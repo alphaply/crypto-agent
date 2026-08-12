@@ -17,6 +17,7 @@ from langchain_core.messages import (
     AIMessage,
     ToolMessage,
     trim_messages,
+    message_chunk_to_message,
 )
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -33,7 +34,10 @@ from backend.config_store import load_effective_runtime_snapshot
 import backend.database as database
 from backend.utils.llm_utils import (
     LLMInvocationError,
-    build_chat_openai,
+    build_chat_model,
+    extract_message_text,
+    extract_reasoning_content,
+    extract_reasoning_token_count,
     format_llm_error_message,
     instruction_message,
     invoke_with_retry,
@@ -104,6 +108,7 @@ def _resolve_temporary_chat_config(runtime: Dict[str, Any]) -> Dict[str, Any]:
         "api_key": provider.get("api_key"),
         "api_base": provider.get("api_base") or "",
         "extra_body": provider.get("extra_body") or {},
+        "compatibility_mode": provider.get("compatibility_mode") or "auto",
         "thinking_enabled": provider.get("thinking_enabled"),
         "reasoning_effort": provider.get("reasoning_effort") or "",
         "exchange_profile": {
@@ -409,7 +414,7 @@ New conversation to incorporate:
         conversation=conversation,
     )
     try:
-        llm = build_chat_openai(
+        llm = build_chat_model(
             model=cfg.get("model"),
             api_key=cfg.get("api_key") or os.getenv("OPENAI_API_KEY"),
             base_url=cfg.get("api_base"),
@@ -418,6 +423,7 @@ New conversation to incorporate:
             extra_body=cfg.get("extra_body"),
             thinking_enabled=cfg.get("thinking_enabled"),
             reasoning_effort=cfg.get("reasoning_effort"),
+            compatibility_mode=cfg.get("compatibility_mode"),
         )
         response = invoke_with_retry(
             lambda: llm.invoke([instruction_message(prompt, cfg.get("system_prompt_role"))]),
@@ -682,7 +688,7 @@ def model_node(state: ChatState, config: RunnableConfig):
     )
     _emit_stream_status(configurable, "waiting_model", "正在等待模型响应")
 
-    llm = build_chat_openai(
+    llm = build_chat_model(
         model=model_name,
         api_key=api_key,
         base_url=api_base,
@@ -691,6 +697,7 @@ def model_node(state: ChatState, config: RunnableConfig):
         extra_body=cfg.get("extra_body"),
         thinking_enabled=cfg.get("thinking_enabled"),
         reasoning_effort=cfg.get("reasoning_effort"),
+        compatibility_mode=cfg.get("compatibility_mode"),
     )
     chat_tools = _get_chat_tools(cfg)
     if chat_tools:
@@ -700,12 +707,18 @@ def model_node(state: ChatState, config: RunnableConfig):
 
     def _stream_model_response():
         accumulator = _new_stream_accumulator()
+        combined_chunk: BaseMessageChunk | None = None
         stream_state["emitted_content"] = False
         trace_config = {"metadata": config.get("metadata", {}), "tags": config.get("tags", [])}
         try:
             for chunk in llm.stream(trimmed, config=trace_config):
                 if not isinstance(chunk, BaseMessageChunk):
                     continue
+
+                # LangChain v1 chunks are additive. Keeping the provider-native
+                # aggregate preserves Anthropic thinking signatures and OpenAI
+                # Responses reasoning/tool blocks for the following graph turn.
+                combined_chunk = chunk if combined_chunk is None else combined_chunk + chunk
 
                 reasoning_token = _chunk_reasoning_text(chunk)
                 if reasoning_token:
@@ -740,7 +753,11 @@ def model_node(state: ChatState, config: RunnableConfig):
                 raise
 
         try:
-            response = _stream_accumulator_to_message(accumulator, logger=logger)
+            response = (
+                message_chunk_to_message(combined_chunk)
+                if combined_chunk is not None
+                else _stream_accumulator_to_message(accumulator, logger=logger)
+            )
         except Exception as exc:
             raise LLMInvocationError(
                 format_llm_error_message("message_assembly_error"),
@@ -753,8 +770,9 @@ def model_node(state: ChatState, config: RunnableConfig):
             configurable,
             {
                 "type": "model_complete",
-                "content": str(response.content or ""),
-                "reasoning_content": str(response.additional_kwargs.get("reasoning_content") or ""),
+                "content": extract_message_text(response),
+                "reasoning_content": extract_reasoning_content(response),
+                "reasoning_tokens": extract_reasoning_token_count(response),
                 "has_tool_calls": bool(response.tool_calls),
             },
         )
@@ -1185,7 +1203,7 @@ def _resume_stream_items(command, config):
                     yield {
                         "type": "tool_result",
                         "tool_call_id": msg.tool_call_id,
-                        "content": msg.content,
+                        "content": extract_message_text(msg),
                         "role": "tool",
                     }
         if isinstance(item.get("model"), dict):

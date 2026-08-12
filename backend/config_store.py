@@ -237,6 +237,7 @@ def _ensure_provider_tables(conn: sqlite3.Connection) -> None:
             temperature REAL,
             role TEXT NOT NULL DEFAULT 'agent',
             extra_body TEXT NOT NULL DEFAULT '{}',
+            compatibility_mode TEXT NOT NULL DEFAULT 'auto',
             thinking_enabled INTEGER,
             reasoning_effort TEXT,
             system_prompt_role TEXT NOT NULL DEFAULT 'system',
@@ -244,6 +245,8 @@ def _ensure_provider_tables(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    if "compatibility_mode" not in _column_names(conn, "llm_providers"):
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN compatibility_mode TEXT NOT NULL DEFAULT 'auto'")
     if "thinking_enabled" not in _column_names(conn, "llm_providers"):
         conn.execute("ALTER TABLE llm_providers ADD COLUMN thinking_enabled INTEGER")
     if "reasoning_effort" not in _column_names(conn, "llm_providers"):
@@ -341,6 +344,7 @@ def _provider_payload(
     temperature: float | None = None,
     role: str = "agent",
     extra_body: dict[str, Any] | None = None,
+    compatibility_mode: str | None = "auto",
     thinking_enabled: bool | None = None,
     reasoning_effort: str | None = None,
     system_prompt_role: str | None = "system",
@@ -353,6 +357,7 @@ def _provider_payload(
         "temperature": temperature,
         "role": role or "agent",
         "extra_body": extra_body or {},
+        "compatibility_mode": str(compatibility_mode or "auto").lower(),
         "thinking_enabled": thinking_enabled,
         "reasoning_effort": reasoning_effort or "",
         "system_prompt_role": "user" if str(system_prompt_role).lower() == "user" else "system",
@@ -610,7 +615,7 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
 
         provider_rows = conn.execute(
             """
-            SELECT provider_id, name, model, api_base, temperature, role, extra_body, thinking_enabled, reasoning_effort, system_prompt_role
+            SELECT provider_id, name, model, api_base, temperature, role, extra_body, compatibility_mode, thinking_enabled, reasoning_effort, system_prompt_role
             FROM llm_providers
             ORDER BY name ASC, provider_id ASC
             """
@@ -626,6 +631,7 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
                 "temperature": row["temperature"],
                 "role": row["role"] or "llm",
                 "extra_body": json.loads(row["extra_body"] or "{}"),
+                "compatibility_mode": row["compatibility_mode"] or "auto",
                 "thinking_enabled": None if row["thinking_enabled"] is None else bool(row["thinking_enabled"]),
                 "reasoning_effort": row["reasoning_effort"] or "",
                 "system_prompt_role": "user" if row["system_prompt_role"] == "user" else "system",
@@ -688,6 +694,7 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
                 payload["temperature"] = provider.get("temperature", payload.get("temperature"))
                 if provider.get("extra_body"):
                     payload["extra_body"] = provider.get("extra_body")
+                payload["compatibility_mode"] = provider.get("compatibility_mode") or "auto"
                 if provider.get("thinking_enabled") is not None:
                     payload["thinking_enabled"] = provider.get("thinking_enabled")
                 if provider.get("reasoning_effort"):
@@ -703,6 +710,7 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
                 summarizer["model"] = summary_provider.get("model") or summarizer.get("model") or ""
                 summarizer["api_base"] = summary_provider.get("api_base") or summarizer.get("api_base") or ""
                 summarizer["temperature"] = summary_provider.get("temperature", summarizer.get("temperature"))
+                summarizer["compatibility_mode"] = summary_provider.get("compatibility_mode") or "auto"
                 if summary_provider.get("thinking_enabled") is not None:
                     summarizer["thinking_enabled"] = summary_provider.get("thinking_enabled")
                 if summary_provider.get("reasoning_effort"):
@@ -881,8 +889,8 @@ def save_runtime_snapshot(
                 conn.execute(
                     """
                     INSERT INTO llm_providers (
-                        provider_id, name, model, api_base, temperature, role, extra_body, thinking_enabled, reasoning_effort, system_prompt_role, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        provider_id, name, model, api_base, temperature, role, extra_body, compatibility_mode, thinking_enabled, reasoning_effort, system_prompt_role, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         provider_id,
@@ -892,6 +900,7 @@ def save_runtime_snapshot(
                         provider.get("temperature"),
                         str(provider.get("role") or "llm"),
                         json.dumps(_ensure_jsonable(extra_body), ensure_ascii=False),
+                        str(provider.get("compatibility_mode") or "auto").lower(),
                         None if provider.get("thinking_enabled") is None else int(bool(provider.get("thinking_enabled"))),
                         str(provider.get("reasoning_effort") or ""),
                         "user" if str(provider.get("system_prompt_role") or "system").lower() == "user" else "system",
@@ -1033,7 +1042,8 @@ def runtime_options_payload() -> dict[str, Any]:
         "market_types": ["swap", "spot"],
         "dca_freqs": ["1d", "1w"],
         "market_timeframes": ["15m", "30m", "1h", "4h", "1d", "1w", "1M"],
-        "reasoning_efforts": ["high", "max"],
+        "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        "compatibility_modes": ["auto", "openai", "anthropic", "deepseek"],
     }
 
 

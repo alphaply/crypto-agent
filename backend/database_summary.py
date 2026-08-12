@@ -8,17 +8,51 @@ class SummaryStore:
         self._timestamp_factory = timestamp_factory
         self._logger = logger
 
-    def save_summary(self, symbol, agent_name, content, strategy_logic, config_id=None, agent_type=None):
+    def save_summary(
+        self,
+        symbol,
+        agent_name,
+        content,
+        strategy_logic,
+        config_id=None,
+        agent_type=None,
+        reasoning_content=None,
+    ):
         timestamp = self._timestamp_factory()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
-                INSERT INTO summaries (timestamp, symbol, timeframe, agent_name, config_id, agent_type, content, strategy_logic)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (timestamp, symbol, "15m", agent_name, config_id or agent_name, agent_type, content, strategy_logic),
-            )
+            columns = {row[1] for row in cursor.execute("PRAGMA table_info(summaries)").fetchall()}
+            if "reasoning_content" in columns:
+                cursor.execute(
+                    '''
+                    INSERT INTO summaries (
+                        timestamp, symbol, timeframe, agent_name, config_id, agent_type,
+                        content, reasoning_content, strategy_logic
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        timestamp,
+                        symbol,
+                        "15m",
+                        agent_name,
+                        config_id or agent_name,
+                        agent_type,
+                        content,
+                        reasoning_content or "",
+                        strategy_logic,
+                    ),
+                )
+            else:
+                # Supports lightweight external/test schemas that have not run migrations yet.
+                cursor.execute(
+                    '''
+                    INSERT INTO summaries (
+                        timestamp, symbol, timeframe, agent_name, config_id, agent_type,
+                        content, strategy_logic
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (timestamp, symbol, "15m", agent_name, config_id or agent_name, agent_type, content, strategy_logic),
+                )
             conn.commit()
 
     def get_active_agents(self, symbol):

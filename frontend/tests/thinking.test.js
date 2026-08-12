@@ -27,3 +27,12 @@ test('prefers the provider reasoning stream while removing duplicate tags', () =
   assert.equal(result.content, 'Answer');
   assert.equal(result.reasoning, 'provider reasoning');
 });
+
+test('preserves staged task reasoning markdown', () => {
+  const staged = '### 推理阶段 1 · 调用 market_tool\n\ncheck trend\n\n---\n\n### 推理阶段 2\n\nfinalize';
+  const result = splitThinkingContent('Final answer', staged);
+
+  assert.equal(result.content, 'Final answer');
+  assert.equal(result.reasoning, staged);
+  assert.equal(result.thinkingOpen, false);
+});

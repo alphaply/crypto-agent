@@ -27,7 +27,7 @@ from backend.database import (
     touch_chat_session,
     update_chat_session_title,
 )
-from backend.utils.llm_utils import build_chat_openai, invoke_with_retry
+from backend.utils.llm_utils import build_chat_model, extract_message_text, invoke_with_retry
 from backend.utils.market_data import MarketTool
 
 from backend.app.services.common import logger, serialize_message
@@ -118,6 +118,7 @@ def _management_chat_options() -> dict[str, list[dict[str, Any]]]:
                 "name": provider.get("name", ""),
                 "model": provider.get("model", ""),
                 "api_base": provider.get("api_base", ""),
+                "compatibility_mode": provider.get("compatibility_mode", "auto"),
                 "thinking_enabled": provider.get("thinking_enabled"),
                 "reasoning_effort": provider.get("reasoning_effort", ""),
                 "system_prompt_role": provider.get("system_prompt_role", "system"),
@@ -160,6 +161,7 @@ def chat_bootstrap_payload():
                 "model": cfg.get("model", ""),
                 "mode": cfg.get("mode", "STRATEGY"),
                 "title": cfg.get("title"),
+                "compatibility_mode": cfg.get("compatibility_mode") or "auto",
                 "thinking_enabled": cfg.get("thinking_enabled"),
                 "reasoning_effort": cfg.get("reasoning_effort") or "",
             }
@@ -234,6 +236,7 @@ def _resolve_temporary_runtime(runtime: dict[str, Any]) -> tuple[dict[str, Any],
         "provider_name": provider.get("name") or provider_id,
         "model": provider.get("model") or "",
         "global_requirement": global_requirement,
+        "compatibility_mode": provider.get("compatibility_mode") or "auto",
         "thinking_enabled": provider.get("thinking_enabled"),
         "reasoning_effort": provider.get("reasoning_effort") or "",
         "system_prompt_role": requested_prompt_role if requested_prompt_role in {"system", "user"} else provider.get("system_prompt_role", "system"),
@@ -535,10 +538,10 @@ def summarize_chat_title_payload(session_id: str):
     content_to_summarize = ""
     for msg in messages[:3]:
         role = "User" if isinstance(msg, HumanMessage) else "Assistant"
-        content_to_summarize += f"{role}: {str(msg.content)[:200]}\n"
+        content_to_summarize += f"{role}: {extract_message_text(msg)[:200]}\n"
 
     cfg = _session_llm_config(session)
-    llm = build_chat_openai(
+    llm = build_chat_model(
         model=cfg.get("model"),
         api_key=cfg.get("api_key"),
         base_url=cfg.get("api_base"),
@@ -546,6 +549,7 @@ def summarize_chat_title_payload(session_id: str):
         extra_body=cfg.get("extra_body"),
         thinking_enabled=cfg.get("thinking_enabled"),
         reasoning_effort=cfg.get("reasoning_effort"),
+        compatibility_mode=cfg.get("compatibility_mode"),
     )
     summary_prompt = (
         "Summarize the following conversation into a very short title in Chinese within 6 characters, "
@@ -558,7 +562,7 @@ def summarize_chat_title_payload(session_id: str):
             logger=logger,
             context=f"title-summary session={session_id} model={cfg.get('model')}",
         )
-        new_title = str(response.content).strip().replace('"', "").replace("'", "")
+        new_title = extract_message_text(response).strip().replace('"', "").replace("'", "")
     except Exception as exc:
         logger.warning(f"Title summary failed: {exc}")
         new_title = "New chat"

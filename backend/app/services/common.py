@@ -5,6 +5,8 @@ import pytz
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from backend.utils.llm_utils import extract_message_text, extract_reasoning_content, extract_reasoning_token_count
+
 from backend.config import config as global_config
 from backend.database import DB_NAME
 from backend.utils.logger import setup_logger
@@ -81,12 +83,16 @@ def serialize_message(msg):
     elif isinstance(msg, SystemMessage):
         role = "system"
 
-    payload = {"role": role, "content": msg.content}
+    payload = {"role": role, "content": extract_message_text(msg)}
     if isinstance(msg, AIMessage):
         payload["tool_calls"] = getattr(msg, "tool_calls", []) or []
-        reasoning = msg.additional_kwargs.get("reasoning_content") or msg.response_metadata.get("reasoning_content") or ""
+        reasoning = extract_reasoning_content(msg)
         if reasoning:
             payload["reasoning_content"] = reasoning
+        reasoning_tokens = extract_reasoning_token_count(msg)
+        if reasoning_tokens:
+            payload["reasoning_tokens"] = reasoning_tokens
+            payload["reasoning_visible"] = bool(reasoning)
     return payload
 
 

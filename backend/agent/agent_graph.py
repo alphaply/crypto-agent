@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytz
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 
@@ -17,7 +17,16 @@ from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool
 from backend.utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
-from backend.utils.llm_utils import LLMInvocationError, build_chat_openai, instruction_message, invoke_with_retry, sync_langsmith_environment
+from backend.utils.llm_utils import (
+    LLMInvocationError,
+    build_chat_model,
+    extract_message_text,
+    extract_reasoning_token_count,
+    extract_reasoning_content,
+    instruction_message,
+    invoke_with_retry,
+    sync_langsmith_environment,
+)
 from backend.utils.logger import setup_logger
 from backend.utils.prompt_utils import resolve_prompt_file_content, resolve_prompt_template, render_prompt
 
@@ -35,6 +44,16 @@ from backend.utils.news_context import fetch_news_risk_context
 from backend.config import config as global_config
 
 TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
+
+
+def _emit_task_progress(configurable: dict, *, phase: str, message: str, **payload) -> None:
+    callback = configurable.get("progress_callback")
+    if not callable(callback):
+        return
+    try:
+        callback({"phase": phase, "message": message, **payload})
+    except Exception as exc:
+        logger.warning("Task progress callback failed: %s", exc)
 
 
 def resolve_market_timeframes(agent_config: dict | None = None) -> list[str]:
@@ -110,13 +129,14 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
     logger.info(f"--- [Pipeline] Summarizing content for history using {model} ---")
     
     try:
-        llm = build_chat_openai(
+        llm = build_chat_model(
             model=model,
             api_key=api_key,
             base_url=api_base,
             temperature=temperature,
             thinking_enabled=summarizer_cfg.get("thinking_enabled"),
             reasoning_effort=summarizer_cfg.get("reasoning_effort"),
+            compatibility_mode=summarizer_cfg.get("compatibility_mode"),
         )
         prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑思路”（150字以内），保留趋势情况、关键点位(支持阻力)和操作意图等等。
 直接输出压缩后的文字，不要有任何前缀。
@@ -168,7 +188,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
         except Exception as usage_e:
             logger.warning(f"⚠️ [Summarizer] Failed to save token usage: {usage_e}")
 
-        return response.content.strip()
+        return extract_message_text(response).strip()
     except Exception as e:
         logger.error(f"❌ [Summarizer Error]: {e}")
         if summary_type == "short_memory":
@@ -622,6 +642,12 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     logger.info(f"--- [Node] Agent: {agent_config.get('model')} (Mode: {trade_mode}) ---")
 
     messages = list(state.messages)
+    _emit_task_progress(
+        configurable,
+        phase="thinking",
+        message="模型正在分析市场并规划工具调用",
+        reasoning_content=_collect_agent_reasoning(messages),
+    )
 
     try:
         kwargs = {}
@@ -639,7 +665,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         # if trade_mode == 'REAL':
         #     tools += [analyze_event_contract, format_event_contract_order]
 
-        llm = build_chat_openai(
+        llm = build_chat_model(
             model=agent_config.get('model'),
             api_key=agent_config.get('api_key'),
             base_url=agent_config.get('api_base'),
@@ -647,12 +673,29 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             extra_body=kwargs.get("extra_body"),
             thinking_enabled=agent_config.get("thinking_enabled"),
             reasoning_effort=agent_config.get("reasoning_effort"),
+            compatibility_mode=agent_config.get("compatibility_mode"),
         ).bind_tools(tools)
 
         response = invoke_with_retry(
             lambda: llm.invoke(messages),
             logger=logger,
             context=f"agent symbol={symbol} config_id={config_id} model={agent_config.get('model')}",
+        )
+        response_tool_calls = [
+            {
+                "id": str(call.get("id") or ""),
+                "name": str(call.get("name") or ""),
+                "args": call.get("args") or {},
+                "status": "planned",
+            }
+            for call in (response.tool_calls or [])
+        ]
+        _emit_task_progress(
+            configurable,
+            phase="tool_planning" if response_tool_calls else "finalizing",
+            message="模型已生成工具调用计划" if response_tool_calls else "模型分析完成，正在整理结果",
+            reasoning_content=_collect_agent_reasoning(messages + [response]),
+            tool_calls=response_tool_calls,
         )
         
         try:
@@ -671,9 +714,11 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         return state.model_copy(update={"messages": state.messages + [response], "active_agent": "MASTER"})
 
     except LLMInvocationError as e:
+        _emit_task_progress(configurable, phase="failed", message=str(e))
         logger.error(f"[LLM Error] ({symbol}) type={e.error_type}: {e}")
         return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
     except Exception as e:
+        _emit_task_progress(configurable, phase="failed", message=str(e))
         logger.error(f"❌ [LLM Error] ({symbol}): {e}")
         return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
 
@@ -708,7 +753,7 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             [tool.name for tool in tools],
         )
         
-        llm = build_chat_openai(
+        llm = build_chat_model(
             model=model_name,
             api_key=api_key,
             base_url=api_base,
@@ -716,6 +761,7 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             extra_body=kwargs.get("extra_body"),
             thinking_enabled=agent_config.get("thinking_enabled"),
             reasoning_effort=agent_config.get("reasoning_effort"),
+            compatibility_mode=agent_config.get("compatibility_mode"),
         ).bind_tools(tools)
 
         response = invoke_with_retry(
@@ -746,6 +792,29 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         logger.error(f"❌ [Small Agent Error] ({symbol}): {e}")
         return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
 
+def _collect_agent_reasoning(messages: list[BaseMessage]) -> str:
+    sections: list[str] = []
+    for message in messages:
+        if not isinstance(message, AIMessage):
+            continue
+        reasoning = extract_reasoning_content(message).strip()
+        reasoning_tokens = extract_reasoning_token_count(message)
+        if not reasoning and not reasoning_tokens:
+            continue
+        tool_names = [str(call.get("name") or "") for call in (message.tool_calls or []) if call.get("name")]
+        label = f"### 推理阶段 {len(sections) + 1}"
+        if tool_names:
+            label += f" · 调用 {', '.join(tool_names)}"
+        if reasoning:
+            sections.append(f"{label}\n\n{reasoning}")
+        else:
+            sections.append(
+                f"{label}\n\n模型使用了 {reasoning_tokens} 个推理 token，"
+                "但上游接口没有返回可展示的思考摘要。"
+            )
+    return "\n\n---\n\n".join(sections)
+
+
 def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """合并 AI 消息的内容并保存到数据库。"""
     configurable = config.get("configurable", {})
@@ -755,13 +824,17 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     symbol = state.symbol
     agent_name = agent_config.get('model', 'Unknown')
     
-    all_ai_messages = [msg for msg in state.messages if isinstance(msg, AIMessage) and msg.content]
+    all_ai_messages = [
+        (msg, extract_message_text(msg))
+        for msg in state.messages
+        if isinstance(msg, AIMessage) and extract_message_text(msg)
+    ]
     
     full_content = ""
     if all_ai_messages:
-        sorted_msgs = sorted(all_ai_messages, key=lambda m: len(m.content), reverse=True)
-        main_content = sorted_msgs[0].content 
-        other_parts = [m.content for m in all_ai_messages if m != sorted_msgs[0]]
+        sorted_msgs = sorted(all_ai_messages, key=lambda item: len(item[1]), reverse=True)
+        main_content = sorted_msgs[0][1]
+        other_parts = [text for message, text in all_ai_messages if message is not sorted_msgs[0][0]]
         
         if other_parts:
             full_content = main_content + "\n\n---\n\n" + "\n\n".join(other_parts)
@@ -770,6 +843,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     
     agent_type = "MASTER"
     final_full_content = full_content
+    reasoning_content = _collect_agent_reasoning(state.messages)
 
     if final_full_content:
         # 汇总逻辑仅针对主要内容
@@ -784,6 +858,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 strategy_logic,
                 config_id=config_id,
                 agent_type=agent_type,
+                reasoning_content=reasoning_content,
             )
             try:
                 generate_rolling_short_memory_for_config(
@@ -814,6 +889,13 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
         except Exception as e:
             logger.warning(f"⚠️ Save summary/DCA log failed: {e}")
 
+    _emit_task_progress(
+        configurable,
+        phase="completed",
+        message="分析与工具执行结果已保存",
+        reasoning_content=reasoning_content,
+    )
+
     return state
 
 def should_continue(state: AgentState):
@@ -833,6 +915,15 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
     symbol = state.symbol
 
     tool_outputs = []
+    progress_calls = [
+        {
+            "id": str(call.get("id") or ""),
+            "name": str(call.get("name") or ""),
+            "args": call.get("args") or {},
+            "status": "pending",
+        }
+        for call in tool_calls
+    ]
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
         args = tool_call.get("args", {})
@@ -842,13 +933,36 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
             config_id,
             symbol,
         )
+        for item in progress_calls:
+            if item["id"] == str(tool_call.get("id") or ""):
+                item["status"] = "running"
+        _emit_task_progress(
+            configurable,
+            phase="tool_running",
+            message=f"正在执行工具 {tool_name}",
+            reasoning_content=_collect_agent_reasoning(state.messages),
+            tool_calls=progress_calls,
+        )
 
         try:
             result = run_trade_tool(tool_name, args, config_id, symbol)
             tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=result))
+            status = "completed"
         except Exception as e:
             logger.error("Error executing tool %s: %s", tool_name, e)
             tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=f"Error: {str(e)}"))
+            status = "failed"
+        for item in progress_calls:
+            if item["id"] == str(tool_call.get("id") or ""):
+                item["status"] = status
+
+    _emit_task_progress(
+        configurable,
+        phase="thinking",
+        message="工具执行完成，模型正在继续推理",
+        reasoning_content=_collect_agent_reasoning(state.messages),
+        tool_calls=progress_calls,
+    )
 
     return state.model_copy(update={"messages": state.messages + tool_outputs})
 
@@ -879,7 +993,7 @@ workflow.add_edge("finalize", END)
 
 app = workflow.compile(name='Crypto Agent')
 
-def run_agent_for_config(config: dict, human_message: str = None):
+def run_agent_for_config(config: dict, human_message: str = None, progress_callback=None):
     config_id = config.get('config_id', 'unknown')
     symbol = config['symbol']
     sync_langsmith_environment()
@@ -893,6 +1007,15 @@ def run_agent_for_config(config: dict, human_message: str = None):
         human_message=human_message
     )
     try:
-        app.invoke(initial_state, config={"configurable": {"config_id": config_id, "agent_config": config}})
+        app.invoke(
+            initial_state,
+            config={
+                "configurable": {
+                    "config_id": config_id,
+                    "agent_config": config,
+                    "progress_callback": progress_callback,
+                }
+            },
+        )
     except Exception as e:
         logger.error(f"❌ Critical Graph Error for [{config_id}] {symbol}: {e}")
