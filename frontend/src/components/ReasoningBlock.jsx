@@ -66,7 +66,7 @@ export default function ReasoningBlock({ content, title = 'Reasoning', streaming
           ),
           children: (
             <div className="reasoning-block__content" aria-live={streaming ? 'polite' : 'off'}>
-              <MarkdownBlock content={reasoning} />
+              <MarkdownBlock content={reasoning} streaming={streaming} />
             </div>
           ),
         },

@@ -104,7 +104,7 @@ function MessageContent({ content, reasoning, reasoningTokens = 0, role, streami
             : `The model used ${reasoningTokens} reasoning tokens, but the upstream API did not expose a displayable summary.`}
         />
       ) : null}
-      {hasAnswer ? <div className="chat-answer-content"><MarkdownBlock content={normalized.content} /></div> : null}
+      {hasAnswer ? <div className="chat-answer-content"><MarkdownBlock content={normalized.content} streaming={streaming} /></div> : null}
     </div>
   );
 }
@@ -300,15 +300,13 @@ export default function ChatPage({ token }) {
     const pending = incomingDraftRef.current;
     const backlog = pending.content.length + pending.reasoning_content.length;
     if (!backlog) return;
-    const batchSize = immediate ? backlog : backlog > 500 ? 120 : backlog > 160 ? 48 : backlog > 40 ? 18 : 8;
-    let remaining = batchSize;
-    const reasoningSlice = pending.reasoning_content.slice(0, remaining);
-    pending.reasoning_content = pending.reasoning_content.slice(reasoningSlice.length);
-    remaining -= reasoningSlice.length;
-    const contentSlice = pending.content.slice(0, remaining);
-    pending.content = pending.content.slice(contentSlice.length);
-    draftRef.current.reasoning_content += reasoningSlice;
-    draftRef.current.content += contentSlice;
+    // Paint everything received during this frame. Artificially slicing a
+    // Markdown token (especially backticks) creates invalid intermediate ASTs
+    // and lets the visual draft lag behind the actual model stream.
+    draftRef.current.reasoning_content += pending.reasoning_content;
+    draftRef.current.content += pending.content;
+    pending.reasoning_content = '';
+    pending.content = '';
     draftRef.current.pending = false;
     paintDraftMessage();
   };
@@ -317,7 +315,7 @@ export default function ChatPage({ token }) {
     if (animationFrameRef.current) return;
     const animate = (timestamp) => {
       animationFrameRef.current = null;
-      if (timestamp - lastDraftPaintRef.current >= 30) {
+      if (timestamp - lastDraftPaintRef.current >= 40) {
         drainDraftBuffer(false);
         lastDraftPaintRef.current = timestamp;
       }
@@ -558,7 +556,16 @@ export default function ChatPage({ token }) {
           setMessages((prev) => [...prev, { role: 'tool', content: event.content }]);
         } else if (event.type === 'done') {
           drainDraftBuffer(true);
-          if (Array.isArray(event.messages)) setMessages(event.messages.filter(hasRenderableMessage));
+          if (Array.isArray(event.messages)) {
+            setMessages(event.messages.filter(hasRenderableMessage));
+          } else if (event.completion && !event.completion.has_tool_calls) {
+            draftRef.current = {
+              content: event.completion.content || draftRef.current.content,
+              reasoning_content: event.completion.reasoning_content || draftRef.current.reasoning_content,
+              pending: false,
+            };
+            paintDraftMessage();
+          }
           setPendingApproval(event.pending_approval || null);
           if (event.conversation_memory) setConversationMemory(event.conversation_memory);
           setPersistenceWarning(event.persisted === false ? (event.persistence_error || (isZh ? '回答已生成，但暂时无法保存到历史会话。' : 'The response was generated but could not be saved.')) : '');

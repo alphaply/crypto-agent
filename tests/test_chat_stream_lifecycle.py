@@ -61,6 +61,7 @@ def test_service_converts_post_completion_failure_to_unpersisted_done(monkeypatc
     assert [event["type"] for event in events] == ["token", "done"]
     assert events[-1]["persisted"] is False
     assert events[-1]["messages"] is None
+    assert events[-1]["completion"]["content"] == "answer"
     assert events[-1]["persistence_error"] == "save failed"
 
 

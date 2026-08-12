@@ -486,6 +486,7 @@ def stream_chat_events(
             yield {
                 "type": "done",
                 "messages": final_messages,
+                "completion": model_completion,
                 "conversation_memory": conversation_memory,
                 "pending_approval": pending_approval,
                 "persisted": completion_persisted,

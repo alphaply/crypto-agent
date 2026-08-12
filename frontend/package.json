@@ -1,13 +1,13 @@
 {
   "name": "crypto-agent-frontend",
   "private": true,
-  "version": "0.2.0-preview.2",
+  "version": "0.2.0-preview.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test:chat": "node --test tests/chatStreamLifecycle.test.js tests/thinking.test.js",
+    "test:chat": "node --test tests/chatStreamLifecycle.test.js tests/markdown.test.js tests/thinking.test.js",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -23,7 +23,8 @@
     "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.14.2",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "remend": "^1.3.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
