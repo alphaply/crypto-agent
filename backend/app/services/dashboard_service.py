@@ -45,6 +45,16 @@ DCA_STATS_CACHE_TTL = 300
 DASHBOARD_VISIBLE_MODES = {"REAL", "STRATEGY", "SPOT_DCA"}
 
 
+def _scheduler_timestamp_iso(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+        return TZ_CN.localize(parsed).isoformat()
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _equity_series_metadata(points: list[dict]) -> dict:
     if not points:
         return {
@@ -661,9 +671,9 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 try:
                     latest_execution_row = conn.execute(
                         """
-                        SELECT status, phase, progress_message, reasoning_content,
+                        SELECT status, phase, progress_message, reasoning_content, reasoning_tokens,
                                tool_calls_json, scheduled_at, started_at, finished_at,
-                               updated_at, error
+                               created_at, updated_at, error
                         FROM scheduler_runs
                         WHERE config_id = ? AND job_type = 'agent'
                         ORDER BY id DESC LIMIT 1
@@ -714,6 +724,9 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                         execution["tool_calls"] = json.loads(execution.pop("tool_calls_json") or "[]")
                     except (TypeError, json.JSONDecodeError):
                         execution["tool_calls"] = []
+                    execution["started_at_iso"] = _scheduler_timestamp_iso(
+                        execution.get("started_at") or execution.get("created_at")
+                    )
                     summary_dict["execution"] = execution
                 else:
                     summary_dict["execution"] = None

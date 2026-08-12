@@ -17,12 +17,34 @@ class SummaryStore:
         config_id=None,
         agent_type=None,
         reasoning_content=None,
+        reasoning_tokens=0,
     ):
         timestamp = self._timestamp_factory()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             columns = {row[1] for row in cursor.execute("PRAGMA table_info(summaries)").fetchall()}
-            if "reasoning_content" in columns:
+            if "reasoning_content" in columns and "reasoning_tokens" in columns:
+                cursor.execute(
+                    '''
+                    INSERT INTO summaries (
+                        timestamp, symbol, timeframe, agent_name, config_id, agent_type,
+                        content, reasoning_content, reasoning_tokens, strategy_logic
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        timestamp,
+                        symbol,
+                        "15m",
+                        agent_name,
+                        config_id or agent_name,
+                        agent_type,
+                        content,
+                        reasoning_content or "",
+                        max(int(reasoning_tokens or 0), 0),
+                        strategy_logic,
+                    ),
+                )
+            elif "reasoning_content" in columns:
                 cursor.execute(
                     '''
                     INSERT INTO summaries (

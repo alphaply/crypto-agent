@@ -277,6 +277,7 @@ def save_summary(
     config_id=None,
     agent_type=None,
     reasoning_content=None,
+    reasoning_tokens=0,
 ):
     """保存 AI 分析结果"""
     _summary_store.save_summary(
@@ -287,6 +288,7 @@ def save_summary(
         config_id=config_id,
         agent_type=agent_type,
         reasoning_content=reasoning_content,
+        reasoning_tokens=reasoning_tokens,
     )
 
 def get_active_agents(symbol):

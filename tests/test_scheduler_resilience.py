@@ -74,6 +74,39 @@ class SchedulerResilienceTests(unittest.TestCase):
         self.assertFalse(second)
         self.assertTrue(other_minute)
 
+    def test_scheduler_progress_persists_reasoning_tokens(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        initialize_schema(conn)
+
+        @contextmanager
+        def temp_conn():
+            yield conn
+
+        scheduled_at = "2026-05-29 08:20:00"
+        try:
+            with patch("backend.database.get_db_conn", temp_conn):
+                scheduler._insert_scheduler_run("cfg-a", scheduler.AGENT_JOB_TYPE, scheduled_at)
+                scheduler._mark_scheduler_progress(
+                    "cfg-a",
+                    scheduled_at,
+                    {
+                        "phase": "thinking",
+                        "message": "working",
+                        "reasoning_content": "risk check",
+                        "reasoning_tokens": 321,
+                    },
+                )
+            row = conn.execute(
+                "SELECT reasoning_content, reasoning_tokens FROM scheduler_runs WHERE config_id = ?",
+                ("cfg-a",),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(row["reasoning_content"], "risk check")
+        self.assertEqual(row["reasoning_tokens"], 321)
+
     def test_job_dispatches_without_waiting_for_agent_future(self):
         agent_executor = RecordingExecutor(complete=False)
         maintenance_executor = RecordingExecutor(complete=False)

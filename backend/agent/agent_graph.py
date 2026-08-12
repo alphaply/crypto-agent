@@ -647,6 +647,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         phase="thinking",
         message="模型正在分析市场并规划工具调用",
         reasoning_content=_collect_agent_reasoning(messages),
+        reasoning_tokens=_collect_agent_reasoning_token_count(messages),
     )
 
     try:
@@ -695,6 +696,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             phase="tool_planning" if response_tool_calls else "finalizing",
             message="模型已生成工具调用计划" if response_tool_calls else "模型分析完成，正在整理结果",
             reasoning_content=_collect_agent_reasoning(messages + [response]),
+            reasoning_tokens=_collect_agent_reasoning_token_count(messages + [response]),
             tool_calls=response_tool_calls,
         )
         
@@ -815,6 +817,14 @@ def _collect_agent_reasoning(messages: list[BaseMessage]) -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def _collect_agent_reasoning_token_count(messages: list[BaseMessage]) -> int:
+    return sum(
+        extract_reasoning_token_count(message)
+        for message in messages
+        if isinstance(message, AIMessage)
+    )
+
+
 def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     """合并 AI 消息的内容并保存到数据库。"""
     configurable = config.get("configurable", {})
@@ -844,6 +854,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent_type = "MASTER"
     final_full_content = full_content
     reasoning_content = _collect_agent_reasoning(state.messages)
+    reasoning_tokens = _collect_agent_reasoning_token_count(state.messages)
 
     if final_full_content:
         # 汇总逻辑仅针对主要内容
@@ -859,6 +870,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 config_id=config_id,
                 agent_type=agent_type,
                 reasoning_content=reasoning_content,
+                reasoning_tokens=reasoning_tokens,
             )
             try:
                 generate_rolling_short_memory_for_config(
@@ -894,6 +906,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
         phase="completed",
         message="分析与工具执行结果已保存",
         reasoning_content=reasoning_content,
+        reasoning_tokens=reasoning_tokens,
     )
 
     return state
@@ -941,6 +954,7 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
             phase="tool_running",
             message=f"正在执行工具 {tool_name}",
             reasoning_content=_collect_agent_reasoning(state.messages),
+            reasoning_tokens=_collect_agent_reasoning_token_count(state.messages),
             tool_calls=progress_calls,
         )
 
@@ -961,6 +975,7 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
         phase="thinking",
         message="工具执行完成，模型正在继续推理",
         reasoning_content=_collect_agent_reasoning(state.messages),
+        reasoning_tokens=_collect_agent_reasoning_token_count(state.messages),
         tool_calls=progress_calls,
     )
 

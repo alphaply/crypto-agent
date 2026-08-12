@@ -23,11 +23,13 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     timeframe TEXT,
                     content TEXT,
                     reasoning_content TEXT,
+                    reasoning_tokens INTEGER DEFAULT 0,
                     strategy_logic TEXT
                 )''')
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN agent_name TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN config_id TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN reasoning_content TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN agent_type TEXT")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS mock_orders (
@@ -323,6 +325,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     phase TEXT,
                     progress_message TEXT,
                     reasoning_content TEXT,
+                    reasoning_tokens INTEGER DEFAULT 0,
                     tool_calls_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -331,6 +334,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN phase TEXT")
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN progress_message TEXT")
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN reasoning_content TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_short_memories_config_bucket ON short_memories(config_id, bucket_start)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_snapshots_symbol_time ON news_snapshots(symbol, timestamp)")

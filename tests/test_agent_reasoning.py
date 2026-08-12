@@ -1,6 +1,6 @@
 from langchain_core.messages import AIMessage, ToolMessage
 
-from backend.agent.agent_graph import _collect_agent_reasoning
+from backend.agent.agent_graph import _collect_agent_reasoning, _collect_agent_reasoning_token_count
 
 
 def test_collect_agent_reasoning_preserves_tool_call_stages():
@@ -35,5 +35,6 @@ def test_collect_agent_reasoning_reports_hidden_reasoning_usage():
 
     reasoning = _collect_agent_reasoning([message])
 
+    assert _collect_agent_reasoning_token_count([message]) == 5
     assert "5 个推理 token" in reasoning
     assert "没有返回可展示的思考摘要" in reasoning

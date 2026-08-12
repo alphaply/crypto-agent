@@ -1,13 +1,13 @@
 {
   "name": "crypto-agent-frontend",
   "private": true,
-  "version": "0.2.0-preview.3",
+  "version": "0.2.0-preview.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test:chat": "node --test tests/chatStreamLifecycle.test.js tests/markdown.test.js tests/thinking.test.js",
+    "test:chat": "node --test tests/chatStreamLifecycle.test.js tests/markdown.test.js tests/reasoning.test.js tests/thinking.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

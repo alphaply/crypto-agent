@@ -70,25 +70,34 @@ function formatPositionValue(value) {
 }
 
 function TaskExecutionPanel({ execution, locale }) {
-  if (!execution || !['QUEUED', 'RUNNING', 'FAILED'].includes(String(execution.status || '').toUpperCase())) {
+  const status = String(execution?.status || '').toUpperCase();
+  if (!execution || !['QUEUED', 'RUNNING', 'FINISHED', 'FAILED'].includes(status)) {
     return null;
   }
-  const active = ['QUEUED', 'RUNNING'].includes(String(execution.status || '').toUpperCase());
+  const active = ['QUEUED', 'RUNNING'].includes(status);
+  const completed = status === 'FINISHED';
+  const failed = status === 'FAILED';
   const toolCalls = Array.isArray(execution.tool_calls) ? execution.tool_calls : [];
   const title = active
     ? (locale === 'zh' ? '任务正在执行' : 'Task in progress')
-    : (locale === 'zh' ? '最近任务执行失败' : 'Latest task failed');
+    : completed
+      ? (locale === 'zh' ? '最近任务已完成' : 'Latest task completed')
+      : (locale === 'zh' ? '最近任务执行失败' : 'Latest task failed');
+  const alertType = failed ? 'error' : completed ? 'success' : 'info';
+  const statusColor = failed ? 'error' : completed ? 'success' : 'processing';
 
   return (
     <Alert
-      className={`task-execution-panel ${active ? 'is-active' : 'is-failed'}`}
-      type={active ? 'info' : 'error'}
+      className={`task-execution-panel ${active ? 'is-active' : completed ? 'is-complete' : 'is-failed'}`}
+      type={alertType}
       showIcon
       message={
         <Space size={8} wrap>
           <span>{title}</span>
-          <Tag color={active ? 'processing' : 'error'}>{execution.phase || execution.status}</Tag>
-          {execution.updated_at ? <Text type="secondary">{execution.updated_at}</Text> : null}
+          <Tag color={statusColor}>{execution.phase || execution.status}</Tag>
+          {execution.finished_at || execution.updated_at ? (
+            <Text type="secondary">{execution.finished_at || execution.updated_at}</Text>
+          ) : null}
         </Space>
       }
       description={
@@ -107,6 +116,8 @@ function TaskExecutionPanel({ execution, locale }) {
             title={locale === 'zh' ? '实时推理' : 'Live reasoning'}
             content={execution.reasoning_content || ''}
             streaming={active}
+            reasoningTokens={execution.reasoning_tokens || 0}
+            startedAt={execution.started_at_iso || execution.started_at || execution.created_at || execution.scheduled_at}
           />
         </Space>
       }
@@ -702,7 +713,11 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
             return (
               <>
                 <MarkdownBlock content={normalized.content || ''} />
-                <ReasoningBlock title={t('reasoning')} content={normalized.reasoning} />
+                <ReasoningBlock
+                  title={t('reasoning')}
+                  content={normalized.reasoning}
+                  reasoningTokens={agent.reasoning_tokens || 0}
+                />
               </>
             );
           })()}

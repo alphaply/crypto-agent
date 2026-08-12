@@ -1131,6 +1131,13 @@ a {
   margin-inline-end: 0;
 }
 
+.reasoning-block__metric {
+  min-width: 72px;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 .reasoning-block__preview {
   flex: 1 1 240px;
   min-width: 0;
@@ -2621,8 +2628,7 @@ a {
 }
 
 @media (max-width: 640px) {
-  .reasoning-block__preview,
-  .reasoning-block__count {
+  .reasoning-block__preview {
     display: none;
   }
 

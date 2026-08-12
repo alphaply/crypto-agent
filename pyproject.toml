@@ -1,6 +1,6 @@
 [project]
 name = "crypto-agent"
-version = "0.2.0rc3"
+version = "0.2.0rc4"
 description = "Crypto trading agent with FastAPI backend and React frontend"
 readme = "README.md"
 requires-python = ">=3.10"

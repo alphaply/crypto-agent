@@ -48,6 +48,8 @@ function normalizeAssistantDraft(draft) {
     role: 'assistant',
     content: draft.content || '',
     reasoning_content: draft.reasoning_content || '',
+    reasoning_tokens: Number(draft.reasoning_tokens || 0),
+    reasoning_started_at: draft.reasoning_started_at || null,
     pending: Boolean(draft.pending),
     draft: true,
   };
@@ -76,24 +78,33 @@ function ToolMessage({ content, locale }) {
   );
 }
 
-function MessageContent({ content, reasoning, reasoningTokens = 0, role, streaming, status }) {
+function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningStartedAt, role, streaming, status }) {
   const { t, locale } = usePreferences();
   if (role === 'tool') return <ToolMessage content={content} locale={locale} />;
   const normalized = splitThinkingContent(content || '', reasoning || '');
   const hasAnswer = Boolean(normalized.content?.trim());
   const hasReasoning = Boolean(normalized.reasoning?.trim());
-  const reasoningStreaming = Boolean(streaming && hasReasoning && (!hasAnswer || normalized.thinkingOpen));
+  const reasoningStreaming = Boolean(streaming && (!hasAnswer || normalized.thinkingOpen));
   if (!normalized.content?.trim() && !normalized.reasoning?.trim()) {
     return streaming ? (
-      <div className="chat-waiting-inline">
-        <span className="chat-stream-status-dot" />
-        <span>{status || (locale === 'zh' ? '正在等待模型响应' : 'Waiting for the model')}</span>
+      <div className="chat-message-content is-streaming">
+        <ReasoningBlock title={t('reasoning')} content="" streaming startedAt={reasoningStartedAt} />
+        <div className="chat-waiting-inline">
+          <span className="chat-stream-status-dot" />
+          <span>{status || (locale === 'zh' ? '正在等待模型响应' : 'Waiting for the model')}</span>
+        </div>
       </div>
     ) : null;
   }
   return (
     <div className={`chat-message-content ${streaming ? 'is-streaming' : ''}`}>
-      <ReasoningBlock title={t('reasoning')} content={normalized.reasoning} streaming={reasoningStreaming} />
+      <ReasoningBlock
+        title={t('reasoning')}
+        content={normalized.reasoning}
+        streaming={reasoningStreaming}
+        reasoningTokens={reasoningTokens}
+        startedAt={reasoningStartedAt}
+      />
       {!hasReasoning && reasoningTokens > 0 ? (
         <Alert
           className="reasoning-usage-note"
@@ -270,7 +281,7 @@ export default function ChatPage({ token }) {
   const [creating, setCreating] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
-  const draftRef = useRef({ content: '', reasoning_content: '', pending: false });
+  const draftRef = useRef({ content: '', reasoning_content: '', reasoning_tokens: 0, reasoning_started_at: null, pending: false });
   const incomingDraftRef = useRef({ content: '', reasoning_content: '' });
   const animationFrameRef = useRef(null);
   const lastDraftPaintRef = useRef(0);
@@ -327,7 +338,13 @@ export default function ChatPage({ token }) {
   };
 
   const appendDraftMessage = () => {
-    draftRef.current = { content: '', reasoning_content: '', pending: true };
+    draftRef.current = {
+      content: '',
+      reasoning_content: '',
+      reasoning_tokens: 0,
+      reasoning_started_at: Date.now(),
+      pending: true,
+    };
     incomingDraftRef.current = { content: '', reasoning_content: '' };
     followOutputRef.current = true;
     setShowScrollToBottom(false);
@@ -478,6 +495,7 @@ export default function ChatPage({ token }) {
         extraInfo: {
           reasoning: message.reasoning_content || '',
           reasoningTokens: Number(message.reasoning_tokens || 0),
+          reasoningStartedAt: message.reasoning_started_at || null,
           originalRole: message.role,
           streaming: streaming && index === messages.length - 1 && message.role === 'assistant',
           status: streamStatus,
@@ -562,6 +580,8 @@ export default function ChatPage({ token }) {
             draftRef.current = {
               content: event.completion.content || draftRef.current.content,
               reasoning_content: event.completion.reasoning_content || draftRef.current.reasoning_content,
+              reasoning_tokens: Number(event.completion.reasoning_tokens || draftRef.current.reasoning_tokens || 0),
+              reasoning_started_at: draftRef.current.reasoning_started_at,
               pending: false,
             };
             paintDraftMessage();
@@ -716,7 +736,7 @@ export default function ChatPage({ token }) {
     setConversationMemory(null);
     setStreamFailure(null);
     setPersistenceWarning('');
-    draftRef.current = { content: '', reasoning_content: '', pending: false };
+    draftRef.current = { content: '', reasoning_content: '', reasoning_tokens: 0, reasoning_started_at: null, pending: false };
     incomingDraftRef.current = { content: '', reasoning_content: '' };
   };
 
@@ -735,7 +755,7 @@ export default function ChatPage({ token }) {
       setConversationMemory(null);
       setStreamFailure(null);
       setPersistenceWarning('');
-      draftRef.current = { content: '', reasoning_content: '', pending: false };
+      draftRef.current = { content: '', reasoning_content: '', reasoning_tokens: 0, reasoning_started_at: null, pending: false };
       incomingDraftRef.current = { content: '', reasoning_content: '' };
     }
     if (isMobile) setSidebarOpen(false);
@@ -837,7 +857,7 @@ export default function ChatPage({ token }) {
                           },
                           ai: {
                             placement: 'start', variant: 'shadow', shape: 'round', rootClassName: 'x-bubble-ai',
-                            contentRender: (content, info) => <MessageContent content={content} reasoning={info?.extraInfo?.reasoning} reasoningTokens={info?.extraInfo?.reasoningTokens} role="assistant" streaming={info?.extraInfo?.streaming} status={info?.extraInfo?.status} />,
+                            contentRender: (content, info) => <MessageContent content={content} reasoning={info?.extraInfo?.reasoning} reasoningTokens={info?.extraInfo?.reasoningTokens} reasoningStartedAt={info?.extraInfo?.reasoningStartedAt} role="assistant" streaming={info?.extraInfo?.streaming} status={info?.extraInfo?.status} />,
                           },
                           system: {
                             placement: 'start', variant: 'outlined', shape: 'round', rootClassName: 'x-bubble-system',

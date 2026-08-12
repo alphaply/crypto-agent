@@ -158,12 +158,16 @@ def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> 
     phase = str(event.get("phase") or "working")
     message = str(event.get("message") or "")
     reasoning = event.get("reasoning_content")
+    reasoning_tokens = event.get("reasoning_tokens")
     tool_calls = event.get("tool_calls")
     assignments = ["phase = ?", "progress_message = ?", "updated_at = ?"]
     params = [phase, message, _timestamp()]
     if reasoning is not None:
         assignments.append("reasoning_content = ?")
         params.append(str(reasoning or ""))
+    if reasoning_tokens is not None:
+        assignments.append("reasoning_tokens = ?")
+        params.append(max(int(reasoning_tokens or 0), 0))
     if tool_calls is not None:
         assignments.append("tool_calls_json = ?")
         params.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
