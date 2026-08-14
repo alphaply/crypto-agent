@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { splitThinkingContent } from '../src/lib/thinking.js';
+import { normalizeReasoningMarkdown, splitThinkingContent } from '../src/lib/thinking.js';
 
 test('extracts completed think and thinking blocks from answer content', () => {
   const result = splitThinkingContent(
@@ -35,4 +35,18 @@ test('preserves staged task reasoning markdown', () => {
   assert.equal(result.content, 'Final answer');
   assert.equal(result.reasoning, staged);
   assert.equal(result.thinkingOpen, false);
+});
+
+test('removes a synthetic single stage heading', () => {
+  assert.equal(
+    normalizeReasoningMarkdown('### 推理阶段 1\nmarket trend is weakening'),
+    'market trend is weakening',
+  );
+});
+
+test('keeps real multi-stage reasoning and repairs heading spacing', () => {
+  assert.equal(
+    normalizeReasoningMarkdown('### 推理阶段 1\ncheck trend\n### 推理阶段 2\nmanage risk'),
+    '### 推理阶段 1\n\ncheck trend\n\n### 推理阶段 2\n\nmanage risk',
+  );
 });

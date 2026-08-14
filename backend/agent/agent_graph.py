@@ -2,6 +2,7 @@ import uuid
 import json
 import re
 import os
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -9,7 +10,14 @@ from pathlib import Path
 
 import pytz
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    BaseMessageChunk,
+    ToolMessage,
+    HumanMessage,
+    message_chunk_to_message,
+)
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 
@@ -54,6 +62,112 @@ def _emit_task_progress(configurable: dict, *, phase: str, message: str, **paylo
         callback({"phase": phase, "message": message, **payload})
     except Exception as exc:
         logger.warning("Task progress callback failed: %s", exc)
+
+
+def _stream_agent_response(
+    llm,
+    messages: list[BaseMessage],
+    *,
+    configurable: dict,
+    run_config: RunnableConfig | None = None,
+) -> AIMessage:
+    """Stream one agent turn while preserving reasoning and tool-call chunks."""
+    combined_chunk: BaseMessageChunk | None = None
+    streamed_reasoning = ""
+    last_progress_at = 0.0
+    last_progress_size = 0
+    trace_config = {
+        "metadata": (run_config or {}).get("metadata", {}),
+        "tags": (run_config or {}).get("tags", []),
+    }
+
+    for chunk in llm.stream(messages, config=trace_config):
+        if not isinstance(chunk, BaseMessageChunk):
+            continue
+        combined_chunk = chunk if combined_chunk is None else combined_chunk + chunk
+
+        reasoning_delta = extract_reasoning_content(chunk)
+        if not reasoning_delta:
+            continue
+        streamed_reasoning += reasoning_delta
+
+        now = time.monotonic()
+        should_emit = (
+            now - last_progress_at >= 0.5
+            or len(streamed_reasoning) - last_progress_size >= 256
+        )
+        if should_emit:
+            partial = AIMessage(
+                content="",
+                additional_kwargs={"reasoning_content": streamed_reasoning},
+            )
+            _emit_task_progress(
+                configurable,
+                phase="thinking",
+                message="模型正在流式推理",
+                reasoning_content=_collect_agent_reasoning(messages + [partial]),
+                reasoning_tokens=_collect_agent_reasoning_token_count(messages),
+            )
+            last_progress_at = now
+            last_progress_size = len(streamed_reasoning)
+
+    if combined_chunk is None:
+        raise RuntimeError("Model stream completed without returning a message")
+
+    response = message_chunk_to_message(combined_chunk)
+    if streamed_reasoning and not extract_reasoning_content(response):
+        response.additional_kwargs["reasoning_content"] = streamed_reasoning
+    return response
+
+
+def _thinking_requested(agent_config: dict) -> bool:
+    effort = str(agent_config.get("reasoning_effort") or "").strip().lower()
+    return agent_config.get("thinking_enabled") is True or effort not in {"", "none"}
+
+
+def _stream_agent_turn(
+    tool_llm,
+    reasoning_llm,
+    messages: list[BaseMessage],
+    *,
+    configurable: dict,
+    run_config: RunnableConfig,
+    agent_config: dict,
+) -> AIMessage:
+    """Run the tool-capable turn and recover visible reasoning when omitted.
+
+    Some OpenAI-compatible Claude gateways emit reasoning for ordinary streams
+    but omit it whenever the request contains ``tools``. The second request is
+    only made when thinking was explicitly requested and the real tool response
+    contained no displayable reasoning. Its answer text is discarded; only the
+    provider-supplied reasoning stream is attached to the real response.
+    """
+    response = _stream_agent_response(
+        tool_llm,
+        messages,
+        configurable=configurable,
+        run_config=run_config,
+    )
+    if extract_reasoning_content(response) or not _thinking_requested(agent_config):
+        return response
+
+    _emit_task_progress(
+        configurable,
+        phase="thinking",
+        message="工具兼容响应未返回推理，正在补充可展示分析",
+        reasoning_content=_collect_agent_reasoning(messages),
+        reasoning_tokens=_collect_agent_reasoning_token_count(messages),
+    )
+    reasoning_response = _stream_agent_response(
+        reasoning_llm,
+        messages,
+        configurable=configurable,
+        run_config=run_config,
+    )
+    recovered_reasoning = extract_reasoning_content(reasoning_response)
+    if recovered_reasoning:
+        response.additional_kwargs["reasoning_content"] = recovered_reasoning
+    return response
 
 
 def resolve_market_timeframes(agent_config: dict | None = None) -> list[str]:
@@ -129,7 +243,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
     logger.info(f"--- [Pipeline] Summarizing content for history using {model} ---")
     
     try:
-        llm = build_chat_model(
+        reasoning_llm = build_chat_model(
             model=model,
             api_key=api_key,
             base_url=api_base,
@@ -675,10 +789,19 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             thinking_enabled=agent_config.get("thinking_enabled"),
             reasoning_effort=agent_config.get("reasoning_effort"),
             compatibility_mode=agent_config.get("compatibility_mode"),
-        ).bind_tools(tools)
+            streaming=True,
+        )
+        llm = reasoning_llm.bind_tools(tools)
 
         response = invoke_with_retry(
-            lambda: llm.invoke(messages),
+            lambda: _stream_agent_turn(
+                llm,
+                reasoning_llm,
+                messages,
+                configurable=configurable,
+                run_config=config,
+                agent_config=agent_config,
+            ),
             logger=logger,
             context=f"agent symbol={symbol} config_id={config_id} model={agent_config.get('model')}",
         )
@@ -755,7 +878,7 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             [tool.name for tool in tools],
         )
         
-        llm = build_chat_model(
+        reasoning_llm = build_chat_model(
             model=model_name,
             api_key=api_key,
             base_url=api_base,
@@ -764,10 +887,19 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             thinking_enabled=agent_config.get("thinking_enabled"),
             reasoning_effort=agent_config.get("reasoning_effort"),
             compatibility_mode=agent_config.get("compatibility_mode"),
-        ).bind_tools(tools)
+            streaming=True,
+        )
+        llm = reasoning_llm.bind_tools(tools)
 
         response = invoke_with_retry(
-            lambda: llm.invoke(messages),
+            lambda: _stream_agent_turn(
+                llm,
+                reasoning_llm,
+                messages,
+                configurable=configurable,
+                run_config=config,
+                agent_config=agent_config,
+            ),
             logger=logger,
             context=f"small-agent symbol={symbol} config_id={config_id} model={model_name}",
         )
@@ -795,7 +927,7 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
 
 def _collect_agent_reasoning(messages: list[BaseMessage]) -> str:
-    sections: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
     for message in messages:
         if not isinstance(message, AIMessage):
             continue
@@ -803,18 +935,27 @@ def _collect_agent_reasoning(messages: list[BaseMessage]) -> str:
         reasoning_tokens = extract_reasoning_token_count(message)
         if not reasoning and not reasoning_tokens:
             continue
-        tool_names = [str(call.get("name") or "") for call in (message.tool_calls or []) if call.get("name")]
-        label = f"### 推理阶段 {len(sections) + 1}"
-        if tool_names:
-            label += f" · 调用 {', '.join(tool_names)}"
-        if reasoning:
-            sections.append(f"{label}\n\n{reasoning}")
-        else:
-            sections.append(
-                f"{label}\n\n模型使用了 {reasoning_tokens} 个推理 token，"
+        if not reasoning:
+            reasoning = (
+                f"模型使用了 {reasoning_tokens} 个推理 token，"
                 "但上游接口没有返回可展示的思考摘要。"
             )
-    return "\n\n---\n\n".join(sections)
+        tool_names = [str(call.get("name") or "") for call in (message.tool_calls or []) if call.get("name")]
+        sections.append((reasoning, tool_names))
+
+    # A single provider response is one coherent reasoning stream. Adding a
+    # synthetic "stage 1" heading creates noise and can be mistaken for model
+    # output, so stage labels are reserved for real multi-turn/tool runs.
+    if len(sections) == 1:
+        return sections[0][0]
+
+    formatted: list[str] = []
+    for index, (reasoning, tool_names) in enumerate(sections, start=1):
+        label = f"### 推理阶段 {index}"
+        if tool_names:
+            label += f" · 调用 {', '.join(tool_names)}"
+        formatted.append(f"{label}\n\n{reasoning}")
+    return "\n\n---\n\n".join(formatted)
 
 
 def _collect_agent_reasoning_token_count(messages: list[BaseMessage]) -> int:

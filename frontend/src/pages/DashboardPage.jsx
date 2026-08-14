@@ -113,7 +113,9 @@ function TaskExecutionPanel({ execution, locale }) {
             </div>
           ) : null}
           <ReasoningBlock
-            title={locale === 'zh' ? '实时推理' : 'Live reasoning'}
+            title={active
+              ? (locale === 'zh' ? '实时推理' : 'Live reasoning')
+              : (locale === 'zh' ? '最近任务推理' : 'Latest task reasoning')}
             content={execution.reasoning_content || ''}
             streaming={active}
             reasoningTokens={execution.reasoning_tokens || 0}
@@ -613,6 +615,13 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
     );
   }
 
+  const normalizedAnalysis = splitThinkingContent(agent.content || '', agent.reasoning_content || '');
+  const executionReasoning = splitThinkingContent('', agent.execution?.reasoning_content || '').reasoning;
+  const historyReasoningDuplicated = Boolean(
+    executionReasoning
+    && normalizedAnalysis.reasoning
+    && executionReasoning.trim() === normalizedAnalysis.reasoning.trim()
+  );
   const activePositions = workspace?.position?.positions || workspace?.kline?.positions || [];
   const hasDualPosition = activePositions.length > 1;
 
@@ -708,19 +717,14 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
             <Descriptions.Item label={t('executedAt')}>{agent.timestamp || '-'}</Descriptions.Item>
             <Descriptions.Item label={t('nextRun')}>{agent.next_run || '-'}</Descriptions.Item>
           </Descriptions>
-          {(() => {
-            const normalized = splitThinkingContent(agent.content || '', agent.reasoning_content || '');
-            return (
-              <>
-                <MarkdownBlock content={normalized.content || ''} />
-                <ReasoningBlock
-                  title={t('reasoning')}
-                  content={normalized.reasoning}
-                  reasoningTokens={agent.reasoning_tokens || 0}
-                />
-              </>
-            );
-          })()}
+          <MarkdownBlock content={normalizedAnalysis.content || ''} />
+          {!historyReasoningDuplicated ? (
+            <ReasoningBlock
+              title={t('reasoning')}
+              content={normalizedAnalysis.reasoning}
+              reasoningTokens={agent.reasoning_tokens || 0}
+            />
+          ) : null}
           {agent.strategy_logic ? (
             <div className="strategy-block">
               <Text strong>{t('strategyLogic')}</Text>

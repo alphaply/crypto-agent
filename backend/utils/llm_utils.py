@@ -117,6 +117,15 @@ class LLMInvocationError(Exception):
         self.original = original
 
 
+def _join_reasoning_parts(parts: List[str], *, block_boundaries: bool = False) -> str:
+    cleaned = [str(part) for part in parts if str(part or "")]
+    if not cleaned:
+        return ""
+    if block_boundaries:
+        return "\n\n".join(part.strip() for part in cleaned if part.strip())
+    return "".join(cleaned)
+
+
 def _coerce_reasoning_text(value: Any) -> str:
     """Normalize provider-specific reasoning payloads into displayable text."""
     if value is None:
@@ -125,9 +134,20 @@ def _coerce_reasoning_text(value: Any) -> str:
         return value
     if isinstance(value, list):
         parts = [_coerce_reasoning_text(item) for item in value]
-        return "".join(part for part in parts if part)
+        # Providers commonly return one dictionary per reasoning summary block.
+        # Preserve those boundaries so a stage title cannot run into its body.
+        return _join_reasoning_parts(parts, block_boundaries=any(isinstance(item, dict) for item in value))
     if isinstance(value, dict):
-        for key in ("reasoning_content", "reasoning", "thinking", "text", "content"):
+        for key in (
+            "reasoning_content",
+            "reasoning",
+            "thinking",
+            "analysis",
+            "summary",
+            "summary_text",
+            "text",
+            "content",
+        ):
             if key in value:
                 text = _coerce_reasoning_text(value.get(key))
                 if text:
@@ -140,11 +160,11 @@ def extract_reasoning_content(message: BaseMessage | Any) -> str:
     """Extract displayable reasoning through LangChain's standard content blocks."""
     try:
         parts = [
-            _coerce_reasoning_text(block.get("reasoning"))
+            _coerce_reasoning_text(block)
             for block in (getattr(message, "content_blocks", None) or [])
             if isinstance(block, dict) and block.get("type") == "reasoning"
         ]
-        reasoning = "".join(part for part in parts if part)
+        reasoning = _join_reasoning_parts(parts, block_boundaries=True)
         if reasoning:
             return reasoning
     except Exception:
@@ -154,7 +174,7 @@ def extract_reasoning_content(message: BaseMessage | Any) -> str:
     for container_name in ("additional_kwargs", "response_metadata"):
         container = getattr(message, container_name, None) or {}
         if isinstance(container, dict):
-            for key in ("reasoning_content", "reasoning", "thinking"):
+            for key in ("reasoning_content", "reasoning", "thinking", "analysis", "summary"):
                 text = _coerce_reasoning_text(container.get(key))
                 if text:
                     return text
@@ -174,7 +194,7 @@ def extract_reasoning_content(message: BaseMessage | Any) -> str:
                 text = _coerce_reasoning_text(item)
                 if text:
                     parts.append(text)
-        return "".join(parts)
+        return _join_reasoning_parts(parts, block_boundaries=True)
     return ""
 
 
@@ -266,7 +286,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
                 reasoning = next(
                     (
                         _coerce_reasoning_text(raw_message.get(key))
-                        for key in ("reasoning_content", "reasoning", "thinking")
+                        for key in ("reasoning_content", "reasoning", "thinking", "analysis", "summary")
                         if raw_message.get(key) is not None
                     ),
                     "",
@@ -297,7 +317,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
             reasoning = next(
                 (
                     _coerce_reasoning_text(delta.get(key))
-                    for key in ("reasoning_content", "reasoning", "thinking")
+                    for key in ("reasoning_content", "reasoning", "thinking", "analysis", "summary")
                     if delta.get(key) is not None
                 ),
                 "",
