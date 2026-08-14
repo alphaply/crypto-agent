@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from backend.agent.agent_graph import (
@@ -5,7 +7,10 @@ from backend.agent.agent_graph import (
     _collect_agent_reasoning_token_count,
     _stream_agent_response,
     _stream_agent_turn,
+    agent_node,
+    summarize_content,
 )
+from backend.agent.agent_models import AgentState
 from backend.utils.llm_utils import extract_reasoning_content
 
 
@@ -54,6 +59,21 @@ class _ReasoningOnlyStream:
         )
 
 
+class _BindableModel:
+    def __init__(self):
+        self.bound_tools = None
+
+    def bind_tools(self, tools):
+        self.bound_tools = tools
+        return "tool-model"
+
+
+class _SummaryModel:
+    def invoke(self, messages):
+        assert messages
+        return AIMessage(content="summary")
+
+
 def test_stream_agent_response_preserves_reasoning_tools_and_progress():
     progress = []
     response = _stream_agent_response(
@@ -90,6 +110,57 @@ def test_stream_agent_turn_recovers_reasoning_omitted_by_tool_gateway():
     assert extract_reasoning_content(response) == "visible fallback analysis"
     assert response.content == ""
     assert response.tool_calls[0]["name"] == "trade_tool"
+
+
+def test_agent_node_builds_reasoning_model_before_binding_tools():
+    model = _BindableModel()
+    state = AgentState(
+        symbol="BTC/USDT",
+        messages=[HumanMessage(content="analyze")],
+        market_context={},
+        account_context={},
+        history_context=[],
+    )
+    config = {
+        "configurable": {
+            "config_id": "cfg-test",
+            "agent_config": {
+                "model": "test-model",
+                "api_key": "test-key",
+                "api_base": "https://example.test/v1",
+                "mode": "STRATEGY",
+                "thinking_enabled": True,
+                "reasoning_effort": "high",
+            },
+        }
+    }
+
+    with patch("backend.agent.agent_graph.build_chat_model", return_value=model), patch(
+        "backend.agent.agent_graph.get_trade_tools_for_mode", return_value=[]
+    ), patch(
+        "backend.agent.agent_graph._stream_agent_turn",
+        return_value=AIMessage(content="done", additional_kwargs={"reasoning_content": "analysis"}),
+    ) as stream_turn:
+        result = agent_node(state, config)
+
+    assert model.bound_tools == []
+    assert result.messages[-1].content == "done"
+    assert stream_turn.call_args.args[:2] == ("tool-model", model)
+
+
+def test_summarize_content_invokes_the_model_it_builds():
+    config = {
+        "config_id": "cfg-test",
+        "symbol": "BTC/USDT",
+        "model": "test-model",
+        "summarizer": {
+            "model": "summary-model",
+            "strategy_prompt": "Summarize: {content}",
+        },
+    }
+
+    with patch("backend.agent.agent_graph.build_chat_model", return_value=_SummaryModel()):
+        assert summarize_content("market analysis", config) == "summary"
 
 
 def test_collect_agent_reasoning_preserves_tool_call_stages():

@@ -243,7 +243,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
     logger.info(f"--- [Pipeline] Summarizing content for history using {model} ---")
     
     try:
-        reasoning_llm = build_chat_model(
+        llm = build_chat_model(
             model=model,
             api_key=api_key,
             base_url=api_base,
@@ -780,7 +780,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         # if trade_mode == 'REAL':
         #     tools += [analyze_event_contract, format_event_contract_order]
 
-        llm = build_chat_model(
+        reasoning_llm = build_chat_model(
             model=agent_config.get('model'),
             api_key=agent_config.get('api_key'),
             base_url=agent_config.get('api_base'),
