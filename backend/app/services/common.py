@@ -83,7 +83,11 @@ def serialize_message(msg):
     elif isinstance(msg, SystemMessage):
         role = "system"
 
-    payload = {"role": role, "content": extract_message_text(msg)}
+    payload = {
+        "id": str(getattr(msg, "id", "") or ""),
+        "role": role,
+        "content": extract_message_text(msg),
+    }
     if isinstance(msg, AIMessage):
         payload["tool_calls"] = getattr(msg, "tool_calls", []) or []
         reasoning = extract_reasoning_content(msg)

@@ -153,18 +153,16 @@ def _temporary_news_context_text(news_context: Dict[str, Any]) -> str:
     headlines = [str(item).strip() for item in (news_context.get("headlines") or []) if str(item).strip()]
     if not headlines:
         if news_context.get("available"):
-            return "Risk level: normal\nNo sufficiently relevant macro events or headlines were selected for this turn."
+            return "No sufficiently relevant macro events or headlines were selected for this turn."
         error = str(news_context.get("error") or "No relevant headlines were retrieved")
         return f"News context is unavailable for this turn: {error}"
-    risk_level = str(news_context.get("risk_level") or "unknown")
     source = str(news_context.get("source") or "live news sources")
-    reasons = [str(item).strip() for item in (news_context.get("risk_reasons") or []) if str(item).strip()]
+    digest = str(news_context.get("digest") or "").strip()
     stale_note = " (using a recent cached snapshot)" if news_context.get("stale") else ""
     return "\n".join(
         [
-            f"Risk level: {risk_level}{stale_note}",
-            *[f"Risk reason: {reason}" for reason in reasons[:3]],
-            f"Source: {source}",
+            f"Source: {source}{stale_note}",
+            *([f"Compressed intelligence:\n{digest}"] if digest else []),
             *[f"- {headline}" for headline in headlines],
         ]
     )
@@ -940,9 +938,20 @@ def _coerce_text(value: Any) -> str:
                 parts.append(str(item.get("text") or item.get("content") or ""))
             else:
                 parts.append(str(item))
-        return "".join(parts)
+        separator = "\n\n" if any(isinstance(item, dict) for item in value) else ""
+        return separator.join(part.strip() for part in parts if part.strip()) if separator else "".join(parts)
     if isinstance(value, dict):
-        for key in ("text", "content", "reasoning_content", "reasoning", "thinking", "delta"):
+        for key in (
+            "reasoning_content",
+            "reasoning",
+            "thinking",
+            "analysis",
+            "summary",
+            "summary_text",
+            "text",
+            "content",
+            "delta",
+        ):
             if key in value:
                 return _coerce_text(value.get(key))
         return ""
@@ -954,7 +963,7 @@ def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
     resp_meta = getattr(chunk, "response_metadata", {}) or {}
 
     for container in (add_kwargs, resp_meta):
-        for key in ("reasoning_content", "reasoning", "thinking"):
+        for key in ("reasoning_content", "reasoning", "thinking", "analysis", "summary"):
             if key in container:
                 reasoning = _coerce_text(container[key])
                 if reasoning:
@@ -962,7 +971,13 @@ def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
 
     delta = add_kwargs.get("delta") or resp_meta.get("delta") or {}
     if isinstance(delta, dict):
-        res = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+        res = (
+            delta.get("reasoning_content")
+            or delta.get("reasoning")
+            or delta.get("thinking")
+            or delta.get("analysis")
+            or delta.get("summary")
+        )
         if res:
             return _coerce_text(res)
 
@@ -973,13 +988,13 @@ def _chunk_reasoning_text(chunk: BaseMessageChunk | Any) -> str:
             if not isinstance(item, dict):
                 continue
             block_type = str(item.get("type") or "").lower()
-            if block_type not in {"reasoning", "reasoning_content", "thinking"}:
+            if block_type not in {"reasoning", "reasoning_content", "thinking", "analysis"}:
                 continue
             part = _coerce_text(item)
             if part:
                 parts.append(part)
         if parts:
-            return "".join(parts)
+            return "\n\n".join(part.strip() for part in parts if part.strip())
 
     return ""
 

@@ -153,10 +153,13 @@ def format_market_data_to_text(data: dict) -> str:
 
     news_context = data.get("news_context") or {}
     if news_context:
+        digest = str(news_context.get("digest") or "").strip()
         headlines = news_context.get("headlines") or []
-        headline_text = "; ".join(str(item) for item in headlines[:6]) if headlines else ("none selected" if news_context.get("available") else "unavailable")
+        headline_text = "; ".join(str(item) for item in headlines[:10]) if headlines else ("none selected" if news_context.get("available") else "unavailable")
         stale_text = " [cached/stale]" if news_context.get("stale") else ""
-        output.append(f"- News risk: {news_context.get('risk_level', 'unknown')}{stale_text} | {headline_text}")
+        output.append(f"- News context{stale_text}: {headline_text}")
+        if digest:
+            output.append(f"- Compressed news intelligence:\n{digest}")
     output.append("")
 
     indicators = data.get("technical_indicators") or {}

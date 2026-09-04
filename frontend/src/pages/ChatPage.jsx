@@ -19,15 +19,18 @@ import {
 } from 'antd';
 import {
   BulbOutlined,
+  ApartmentOutlined,
   ClearOutlined,
   CopyOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   DownOutlined,
   EditOutlined,
+  LeftOutlined,
   MenuOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RightOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { Bubble, Conversations, Sender, XProvider } from '@ant-design/x';
@@ -78,7 +81,38 @@ function ToolMessage({ content, locale }) {
   );
 }
 
-function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningStartedAt, role, streaming, status }) {
+function MessageBranchActions({ branches, activeSessionId, onSelect, onEdit, disabled, locale }) {
+  const activeIndex = Math.max(0, branches.findIndex((item) => item.session_id === activeSessionId));
+  const hasBranches = branches.length > 1;
+  return (
+    <div className="chat-message-actions">
+      {hasBranches ? (
+        <div className="chat-branch-switcher" aria-label={locale === 'zh' ? '回答分支' : 'Response branches'}>
+          <Button
+            type="text"
+            size="small"
+            icon={<LeftOutlined />}
+            disabled={disabled || activeIndex <= 0}
+            onClick={() => onSelect(branches[activeIndex - 1]?.session_id)}
+          />
+          <span><ApartmentOutlined /> {activeIndex + 1}/{branches.length}</span>
+          <Button
+            type="text"
+            size="small"
+            icon={<RightOutlined />}
+            disabled={disabled || activeIndex >= branches.length - 1}
+            onClick={() => onSelect(branches[activeIndex + 1]?.session_id)}
+          />
+        </div>
+      ) : null}
+      <Button type="text" size="small" icon={<EditOutlined />} disabled={disabled} onClick={onEdit}>
+        {locale === 'zh' ? '编辑并分支' : 'Edit & branch'}
+      </Button>
+    </div>
+  );
+}
+
+function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningStartedAt, role, streaming, status, actions }) {
   const { t, locale } = usePreferences();
   if (role === 'tool') return <ToolMessage content={content} locale={locale} />;
   const normalized = splitThinkingContent(content || '', reasoning || '');
@@ -116,6 +150,7 @@ function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningStar
         />
       ) : null}
       {hasAnswer ? <div className="chat-answer-content"><MarkdownBlock content={normalized.content} streaming={streaming} /></div> : null}
+      {actions || null}
     </div>
   );
 }
@@ -267,6 +302,8 @@ export default function ChatPage({ token }) {
   const [persistenceWarning, setPersistenceWarning] = useState('');
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [editingFailedMessage, setEditingFailedMessage] = useState('');
+  const [editingMessage, setEditingMessage] = useState(null);
+  const [branching, setBranching] = useState(false);
   const [conversationMemory, setConversationMemory] = useState(null);
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [error, setError] = useState('');
@@ -289,6 +326,7 @@ export default function ChatPage({ token }) {
   const symbolRequestRef = useRef(0);
   const chatWindowRef = useRef(null);
   const followOutputRef = useRef(true);
+  const pendingBranchSessionRef = useRef('');
 
   const isZh = locale === 'zh';
 
@@ -399,6 +437,10 @@ export default function ChatPage({ token }) {
         setConversationMemory(null);
         return;
       }
+      if (pendingBranchSessionRef.current === currentSessionId) {
+        pendingBranchSessionRef.current = '';
+        return;
+      }
       try {
         const response = await api.get(`/chat/sessions/${currentSessionId}`);
         if (!mounted) return;
@@ -473,6 +515,34 @@ export default function ChatPage({ token }) {
   const selectedProvider = providerOptions.find((item) => item.provider_id === temporaryRuntime.llm_provider_id);
   const temporaryTimeframes = bootstrap?.temporary_chat?.timeframes || ['15m', '1h', '4h', '1d', '1w'];
 
+  const branchFamilies = useMemo(() => {
+    const families = new Map();
+    if (!currentSession) return families;
+    messages.forEach((message) => {
+      if (message.role !== 'user') return;
+      const messageIndex = Number.isInteger(message.message_index) ? message.message_index : null;
+      if (messageIndex === null) return;
+      const visited = new Map();
+      const queue = [currentSession];
+      while (queue.length) {
+        const item = queue.shift();
+        if (!item?.session_id || visited.has(item.session_id)) continue;
+        visited.set(item.session_id, item);
+        if (Number(item.fork_message_index) === messageIndex && item.parent_session_id) {
+          queue.push(sessionItems.find((candidate) => candidate.session_id === item.parent_session_id));
+        }
+        sessionItems
+          .filter((candidate) => candidate.parent_session_id === item.session_id && Number(candidate.fork_message_index) === messageIndex)
+          .forEach((candidate) => queue.push(candidate));
+      }
+      families.set(
+        messageIndex,
+        [...visited.values()].sort((left, right) => String(left.created_at || '').localeCompare(String(right.created_at || ''))),
+      );
+    });
+    return families;
+  }, [currentSession, messages, sessionItems]);
+
   const conversationItems = useMemo(
     () => sessionItems.map((item) => ({
       key: item.session_id,
@@ -488,8 +558,9 @@ export default function ChatPage({ token }) {
   const bubbleItems = useMemo(
     () => messages.filter(hasRenderableMessage).map((message, index) => {
       const role = message.role === 'assistant' ? 'ai' : message.role === 'user' ? 'user' : 'system';
+      const messageIndex = Number.isInteger(message.message_index) ? message.message_index : null;
       return {
-        key: `${message.role}-${index}`,
+        key: message.id || `${message.role}-${index}`,
         role,
         content: message.content || '',
         extraInfo: {
@@ -499,11 +570,13 @@ export default function ChatPage({ token }) {
           originalRole: message.role,
           streaming: streaming && index === messages.length - 1 && message.role === 'assistant',
           status: streamStatus,
+          messageIndex,
+          branches: messageIndex === null ? [] : (branchFamilies.get(messageIndex) || []),
         },
         streaming: streaming && index === messages.length - 1 && message.role === 'assistant',
       };
     }),
-    [messages, streaming, streamStatus],
+    [branchFamilies, messages, streaming, streamStatus],
   );
 
   const searchSymbols = async (keyword = '') => {
@@ -542,7 +615,7 @@ export default function ChatPage({ token }) {
     return response.data.session_id;
   };
 
-  const runStream = async (url, messageText = '') => {
+  const runStream = async (url, messageText = '', requestBody = null) => {
     setStreaming(true);
     setStreamStatus(isZh ? '正在整理上下文' : 'Preparing context');
     setStreamFailure(null);
@@ -598,7 +671,7 @@ export default function ChatPage({ token }) {
           }
           setStreamStatus('');
         }
-      }, controller.signal);
+      }, controller.signal, requestBody);
     } catch (err) {
       aborted = err.name === 'AbortError';
       if (!aborted) {
@@ -629,8 +702,11 @@ export default function ChatPage({ token }) {
     try {
       const sessionId = await ensureSession();
       if (appendUserMessage && !replacingFailedMessage) setMessages((prev) => [...prev, { role: 'user', content: message }]);
-      const retryQuery = retryBackend || replacingFailedMessage ? `&retry=true${replacingFailedMessage ? '&replace_last=true' : ''}` : '';
-      const result = await runStream(`/api/chat/sessions/${sessionId}/stream?message=${encodeURIComponent(message)}${retryQuery}`, message);
+      const result = await runStream(
+        `/api/chat/sessions/${sessionId}/stream`,
+        message,
+        { message, retry: retryBackend || replacingFailedMessage, replace_last: replacingFailedMessage },
+      );
       setEditingFailedMessage('');
       if (!result.completed && !result.aborted && !result.handledTerminalEvent) {
         setStreamFailure({ message: isZh ? '连接已结束，但没有收到完成事件。' : 'The connection closed without a completion event.', messageText: message, phase: 'network' });
@@ -644,7 +720,7 @@ export default function ChatPage({ token }) {
   const handleApproval = async (approved) => {
     if (!currentSessionId || streaming) return;
     setPendingApproval(null);
-    await runStream(`/api/chat/sessions/${currentSessionId}/stream?approval=${approved}`);
+    await runStream(`/api/chat/sessions/${currentSessionId}/stream`, '', { approval: approved });
   };
 
   const stopStreaming = () => {
@@ -662,6 +738,50 @@ export default function ChatPage({ token }) {
     setInput(streamFailure.messageText);
     setEditingFailedMessage(streamFailure.messageText);
     setStreamFailure(null);
+  };
+
+  const selectMessageBranch = (sessionId) => {
+    if (!sessionId || sessionId === currentSessionId || streaming) return;
+    setCurrentSessionId(sessionId);
+  };
+
+  const openMessageEditor = (messageIndex) => {
+    const message = messages[messageIndex];
+    if (!message || message.role !== 'user' || streaming) return;
+    setEditingMessage({ messageIndex, content: String(message.content || '') });
+  };
+
+  const createMessageBranch = async () => {
+    if (!editingMessage || !currentSessionId || branching || streaming) return;
+    const content = String(editingMessage.content || '').trim();
+    if (!content) return;
+    setBranching(true);
+    setError('');
+    try {
+      const response = await api.post(`/chat/sessions/${currentSessionId}/branches`, {
+        message_index: editingMessage.messageIndex,
+        content,
+      });
+      const branchSession = response.data.session;
+      const branchId = response.data.session_id;
+      if (!branchId || !branchSession) throw new Error('Branch session was not created');
+
+      const prefix = messages.slice(0, editingMessage.messageIndex);
+      pendingBranchSessionRef.current = branchId;
+      addOrUpdateSession(branchSession);
+      setMessages([...prefix, { role: 'user', content }]);
+      setPendingApproval(null);
+      setConversationMemory(null);
+      setStreamFailure(null);
+      setPersistenceWarning('');
+      setEditingMessage(null);
+      setCurrentSessionId(branchId);
+      await runStream(`/api/chat/sessions/${branchId}/stream`, content, { message: content });
+    } catch (err) {
+      setError(err.message || (isZh ? '创建回答分支失败。' : 'Failed to create response branch.'));
+    } finally {
+      setBranching(false);
+    }
   };
 
   const compactConversationMemory = async () => {
@@ -853,7 +973,22 @@ export default function ChatPage({ token }) {
                         role={{
                           user: {
                             placement: 'end', variant: 'filled', shape: 'round', rootClassName: 'x-bubble-user',
-                            contentRender: (content, info) => <MessageContent content={content} role={info?.extraInfo?.originalRole} />,
+                            contentRender: (content, info) => (
+                              <MessageContent
+                                content={content}
+                                role={info?.extraInfo?.originalRole}
+                                actions={info?.extraInfo?.originalRole === 'user' && Number.isInteger(info?.extraInfo?.messageIndex) ? (
+                                  <MessageBranchActions
+                                    branches={info?.extraInfo?.branches || []}
+                                    activeSessionId={currentSessionId}
+                                    onSelect={selectMessageBranch}
+                                    onEdit={() => openMessageEditor(info?.extraInfo?.messageIndex)}
+                                    disabled={streaming}
+                                    locale={locale}
+                                  />
+                                ) : null}
+                              />
+                            ),
                           },
                           ai: {
                             placement: 'start', variant: 'shadow', shape: 'round', rootClassName: 'x-bubble-ai',
@@ -886,6 +1021,31 @@ export default function ChatPage({ token }) {
             </div>
           </>
         )}
+
+        <Modal
+          title={isZh ? '编辑消息并创建分支' : 'Edit message and create branch'}
+          open={Boolean(editingMessage)}
+          onOk={createMessageBranch}
+          onCancel={() => setEditingMessage(null)}
+          confirmLoading={branching}
+          okButtonProps={{ disabled: !String(editingMessage?.content || '').trim() }}
+          okText={isZh ? '创建分支回答' : 'Create branch'}
+          cancelText={t('cancel')}
+          width={isMobile ? 'calc(100vw - 24px)' : 640}
+        >
+          <Paragraph type="secondary">
+            {isZh
+              ? '原对话会保留。系统会复制这条消息之前的上下文，并从编辑后的问题生成一条新分支。'
+              : 'The original conversation is preserved. A new branch copies the context before this message and answers the edited prompt.'}
+          </Paragraph>
+          <TextArea
+            value={editingMessage?.content || ''}
+            onChange={(event) => setEditingMessage((prev) => (prev ? { ...prev, content: event.target.value } : prev))}
+            autoSize={{ minRows: 4, maxRows: 12 }}
+            maxLength={12000}
+            autoFocus
+          />
+        </Modal>
 
         <Modal
           className="chat-create-modal"

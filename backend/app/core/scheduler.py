@@ -13,6 +13,7 @@ from backend.agent.agent_graph import (
     generate_short_memory_for_config,
     generate_manual_daily_summary,
     get_short_memory_bucket,
+    is_invalid_daily_summary,
     run_agent_for_config,
 )
 from backend.config import config as global_config
@@ -29,6 +30,7 @@ logger = setup_logger("MainScheduler")
 
 _last_run_times = {}
 _daily_summary_done_date = None
+_daily_summary_last_attempt_at = None
 _short_memory_done_buckets = set()
 _agent_executor = None
 _maintenance_executor = None
@@ -40,6 +42,8 @@ _last_heartbeat_key = None
 
 AGENT_JOB_TYPE = "agent"
 MAINTENANCE_JOB_TYPE = "maintenance"
+DAILY_SUMMARY_DEFAULT_TIME = "00:05"
+DAILY_SUMMARY_DEFAULT_RETRY_MINUTES = 15
 
 
 def _scheduler_max_workers() -> int:
@@ -207,6 +211,36 @@ def parse_dca_time(raw_time):
     hour = min(max(hour, 0), 23)
     minute = min(max(minute, 0), 59)
     return hour, minute
+
+
+def parse_daily_summary_time(raw_time: str | None = None) -> tuple[int, int]:
+    text = str(raw_time or os.getenv("DAILY_SUMMARY_TIME", DAILY_SUMMARY_DEFAULT_TIME)).strip()
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError
+        return hour, minute
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Invalid DAILY_SUMMARY_TIME={text!r}; using {DAILY_SUMMARY_DEFAULT_TIME}"
+        )
+        return 0, 5
+
+
+def _daily_summary_retry_minutes() -> int:
+    raw_value = str(
+        os.getenv("DAILY_SUMMARY_RETRY_MINUTES", DAILY_SUMMARY_DEFAULT_RETRY_MINUTES)
+    ).strip()
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        logger.warning(
+            "Invalid DAILY_SUMMARY_RETRY_MINUTES="
+            f"{raw_value!r}; using {DAILY_SUMMARY_DEFAULT_RETRY_MINUTES}"
+        )
+        return DAILY_SUMMARY_DEFAULT_RETRY_MINUTES
 
 
 def check_dca_executed(config_id, now, freq="1d"):
@@ -514,9 +548,14 @@ def _submit_agent(config, scheduled_at: str) -> bool:
 def _submit_daily_summary() -> bool:
     global _daily_summary_future
     with _scheduler_lock:
-        if _daily_summary_future and not _daily_summary_future.done():
-            logger.debug("[DailySummary] skip_due_to_running")
-            return False
+        if _daily_summary_future:
+            if not _daily_summary_future.done():
+                logger.debug("[DailySummary] skip_due_to_running")
+                return False
+            try:
+                _daily_summary_future.result()
+            except Exception as exc:
+                logger.error(f"[DailySummary] worker failed: {exc}")
         _daily_summary_future = _get_maintenance_executor().submit(run_daily_summary_job)
     return True
 
@@ -624,16 +663,44 @@ def _ensure_balance_snapshot_for_date(configs: list, date_str: str) -> None:
             logger.warning(f"[DailySummary] Failed to ensure balance snapshot for {symbol}: {exc}")
 
 
-def run_daily_summary_job():
-    global _daily_summary_done_date
-    now = datetime.now(TZ_CN)
+def run_daily_summary_job(now: datetime | None = None) -> dict:
+    global _daily_summary_done_date, _daily_summary_last_attempt_at
+    from backend.database import get_daily_summaries, get_pending_daily_summary_data
+
+    now = now or datetime.now(TZ_CN)
     today_str = now.strftime("%Y-%m-%d")
 
-    if now.hour >= 2 or _daily_summary_done_date == today_str:
-        return
+    if _daily_summary_done_date == today_str:
+        return {"status": "already_completed", "date": today_str}
+
+    target_hour, target_minute = parse_daily_summary_time()
+    target_time = now.replace(
+        hour=target_hour,
+        minute=target_minute,
+        second=0,
+        microsecond=0,
+    )
+    if now < target_time:
+        return {
+            "status": "not_due",
+            "date": today_str,
+            "scheduled_time": f"{target_hour:02d}:{target_minute:02d}",
+        }
+
+    retry_after = timedelta(minutes=_daily_summary_retry_minutes())
+    if (
+        _daily_summary_last_attempt_at is not None
+        and _daily_summary_last_attempt_at.date() == now.date()
+        and now - _daily_summary_last_attempt_at < retry_after
+    ):
+        return {"status": "retry_wait", "date": today_str}
+    _daily_summary_last_attempt_at = now
 
     yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    logger.info(f"[DailySummary] start summarizing {yesterday}")
+    logger.info(
+        f"[DailySummary] start summarizing {yesterday} "
+        f"(scheduled_time={target_hour:02d}:{target_minute:02d}, now={now.strftime('%H:%M')})"
+    )
 
     configs = global_config.get_all_symbol_configs()
     active_configs = [c for c in configs if c.get("enabled", True)]
@@ -641,12 +708,59 @@ def run_daily_summary_job():
     # 先补录昨日缺失的余额快照，保证 Equity 对比图表有数据
     _ensure_balance_snapshot_for_date(active_configs, yesterday)
 
+    result = {
+        "status": "completed",
+        "date": yesterday,
+        "generated": 0,
+        "existing": 0,
+        "no_source": 0,
+        "failed": [],
+    }
     for config in active_configs:
-        config_id = config["config_id"]
-        generate_manual_daily_summary(config_id, yesterday)
+        config_id = str(config.get("config_id") or "")
+        if not config_id:
+            continue
+        try:
+            existing = next(
+                (
+                    row
+                    for row in get_daily_summaries(config_id, days=7)
+                    if row.get("date") == yesterday
+                ),
+                None,
+            )
+            if existing and not is_invalid_daily_summary(existing.get("summary")):
+                result["existing"] += 1
+                continue
 
-    _daily_summary_done_date = today_str
-    logger.info(f"[DailySummary] completed summarizing {yesterday}")
+            source_rows = get_pending_daily_summary_data(config_id, yesterday)
+            if not any(str(row.get("strategy_logic") or "").strip() for row in source_rows):
+                result["no_source"] += 1
+                logger.info(f"[DailySummary] no source data for {config_id} on {yesterday}; skipped")
+                continue
+
+            if generate_manual_daily_summary(config_id, yesterday):
+                result["generated"] += 1
+            else:
+                result["failed"].append(config_id)
+        except Exception as exc:
+            result["failed"].append(config_id)
+            logger.error(f"[DailySummary] failed for {config_id} on {yesterday}: {exc}")
+
+    if result["failed"]:
+        result["status"] = "retry_pending"
+        logger.warning(
+            f"[DailySummary] incomplete for {yesterday}; retry in "
+            f"{_daily_summary_retry_minutes()} minutes, failed={result['failed']}"
+        )
+    else:
+        _daily_summary_done_date = today_str
+        logger.info(
+            f"[DailySummary] completed summarizing {yesterday}: "
+            f"generated={result['generated']} existing={result['existing']} "
+            f"no_source={result['no_source']}"
+        )
+    return result
 
 
 def run_short_memory_job():

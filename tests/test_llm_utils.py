@@ -215,6 +215,35 @@ class ProviderCompatibilityTests(unittest.TestCase):
 
         self.assertNotIn("default_headers", chat_openai.call_args.kwargs)
 
+    def test_gemini_38_maps_unsupported_reasoning_efforts(self):
+        with patch("backend.utils.llm_utils.sync_langsmith_environment"):
+            with patch("backend.utils.llm_utils.get_llm_timeout_seconds", return_value=120):
+                with patch.object(ReasoningChatOpenAI, "__init__", return_value=None) as chat_openai:
+                    build_chat_model(
+                        model="gemini-3.8-flash",
+                        api_key="unit-key",
+                        base_url="https://api.b.ai/v1",
+                        compatibility_mode="openai",
+                        thinking_enabled=True,
+                        reasoning_effort="max",
+                    )
+
+        self.assertEqual(chat_openai.call_args.kwargs["reasoning_effort"], "high")
+
+    def test_gemini_38_disabled_thinking_uses_lowest_supported_effort(self):
+        with patch("backend.utils.llm_utils.sync_langsmith_environment"):
+            with patch("backend.utils.llm_utils.get_llm_timeout_seconds", return_value=120):
+                with patch.object(ReasoningChatOpenAI, "__init__", return_value=None) as chat_openai:
+                    build_chat_model(
+                        model="gemini-3.8-flash",
+                        api_key="unit-key",
+                        base_url="https://api.b.ai/v1",
+                        compatibility_mode="openai",
+                        thinking_enabled=False,
+                    )
+
+        self.assertEqual(chat_openai.call_args.kwargs["reasoning_effort"], "low")
+
     def test_http_403_is_reported_as_permission_error(self):
         request = httpx.Request("POST", "https://api.b.ai/v1/chat/completions")
         response = httpx.Response(403, request=request)

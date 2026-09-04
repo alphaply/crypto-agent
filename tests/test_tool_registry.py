@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -87,6 +88,72 @@ def test_run_trade_tool_injects_config_and_symbol(monkeypatch):
             "symbol": "ETH/USDT",
         }
     ]
+
+
+def test_run_trade_tool_decodes_json_encoded_orders(monkeypatch):
+    calls = []
+
+    def fake_func(**kwargs):
+        calls.append(kwargs)
+        return "ok"
+
+    monkeypatch.setitem(tool_registry._TOOL_BY_NAME, "close_position_real", SimpleNamespace(func=fake_func))
+    encoded = json.dumps([
+        {
+            "action": "CLOSE",
+            "pos_side": "SHORT",
+            "entry_price": 2375,
+            "amount": 0.09,
+            "reason": "risk reduced",
+        }
+    ])
+
+    result = tool_registry.run_trade_tool(
+        "close_position_real",
+        {"orders": encoded},
+        config_id="cfg-real",
+        symbol="ETH/USDT",
+    )
+
+    assert result == "ok"
+    assert isinstance(calls[0]["orders"], list)
+    assert calls[0]["orders"][0]["pos_side"] == "SHORT"
+
+
+def test_close_position_real_accepts_json_encoded_orders(monkeypatch):
+    placed = []
+
+    class FakeMarketTool:
+        def __init__(self, **_kwargs):
+            pass
+
+        def place_real_order(self, *args, **kwargs):
+            placed.append((args, kwargs))
+            return {"id": "close-1"}
+
+    monkeypatch.setattr("backend.config.config.get_config_by_id", lambda _config_id: {"model": "model-a"})
+    monkeypatch.setattr(agent_tools, "MarketTool", FakeMarketTool)
+    monkeypatch.setattr(agent_tools.database, "save_order_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent_tools.database, "upsert_position_history", lambda **_kwargs: None)
+    encoded = json.dumps([
+        {
+            "action": "CLOSE",
+            "pos_side": "SHORT",
+            "entry_price": 2375,
+            "amount": 0.09,
+            "reason": "risk reduced",
+        }
+    ])
+
+    result = agent_tools.close_position_real.func(
+        orders=encoded,
+        config_id="cfg-real",
+        symbol="ETH/USDT",
+    )
+
+    assert "下单成功" in result
+    assert placed[0][0][2]["pos_side"] == "SHORT"
+    assert placed[0][0][2]["amount"] == 0.09
 
 
 def test_run_trade_tool_unknown_tool_returns_error():

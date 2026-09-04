@@ -42,6 +42,8 @@ services:
       RUN_SCHEDULER_IN_WEB: "false"
       SCHEDULER_MAX_WORKERS: ${SCHEDULER_MAX_WORKERS:-2}
       TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+      DAILY_SUMMARY_TIME: ${DAILY_SUMMARY_TIME:-00:05}
+      DAILY_SUMMARY_RETRY_MINUTES: ${DAILY_SUMMARY_RETRY_MINUTES:-15}
     command:
       - uv
       - run

@@ -70,12 +70,15 @@ function consumeSseBuffer(buffer, onEvent) {
   return remainder;
 }
 
-export async function streamSse(url, token, onEvent, signal) {
+export async function streamSse(url, token, onEvent, signal, body = null) {
   const response = await fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'text/event-stream',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
+    method: body ? 'POST' : 'GET',
+    body: body ? JSON.stringify(body) : undefined,
     signal,
   });
 

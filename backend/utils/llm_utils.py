@@ -434,6 +434,15 @@ def build_chat_model(
     if normalized_effort not in {"", "none", "low", "medium", "high", "xhigh", "max"}:
         raise ValueError(f"Unsupported reasoning_effort: {reasoning_effort}")
     effective_thinking = thinking_enabled
+    model_lower = str(model or "").strip().lower()
+    if resolved_mode == "openai" and model_lower.startswith("gemini-3.8"):
+        # B.AI's Gemini 3.8 Chat Completions route accepts low/medium/high only.
+        # It still performs hidden reasoning and reports its token count, but it
+        # does not expose a displayable reasoning summary.
+        if normalized_effort in {"xhigh", "max"}:
+            normalized_effort = "high"
+        elif normalized_effort == "none" or (thinking_enabled is False and not normalized_effort):
+            normalized_effort = "low"
     if resolved_mode == "deepseek" and normalized_effort in {"medium", "xhigh"}:
         normalized_effort = "high"
     if resolved_mode == "deepseek" and normalized_effort == "none":

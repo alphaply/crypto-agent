@@ -120,54 +120,26 @@ def _stream_agent_response(
     return response
 
 
-def _thinking_requested(agent_config: dict) -> bool:
-    effort = str(agent_config.get("reasoning_effort") or "").strip().lower()
-    return agent_config.get("thinking_enabled") is True or effort not in {"", "none"}
-
-
 def _stream_agent_turn(
     tool_llm,
-    reasoning_llm,
     messages: list[BaseMessage],
     *,
     configurable: dict,
     run_config: RunnableConfig,
-    agent_config: dict,
 ) -> AIMessage:
-    """Run the tool-capable turn and recover visible reasoning when omitted.
+    """Run exactly one billable model request for a tool-capable agent turn.
 
-    Some OpenAI-compatible Claude gateways emit reasoning for ordinary streams
-    but omit it whenever the request contains ``tools``. The second request is
-    only made when thinking was explicitly requested and the real tool response
-    contained no displayable reasoning. Its answer text is discarded; only the
-    provider-supplied reasoning stream is attached to the real response.
+    Some compatible gateways expose reasoning token usage without exposing the
+    reasoning text. Replaying the prompt without tools to manufacture a visible
+    reasoning stream doubles cost and can produce a rationale that does not
+    correspond to the tool decision, so missing reasoning stays provider-hidden.
     """
-    response = _stream_agent_response(
+    return _stream_agent_response(
         tool_llm,
         messages,
         configurable=configurable,
         run_config=run_config,
     )
-    if extract_reasoning_content(response) or not _thinking_requested(agent_config):
-        return response
-
-    _emit_task_progress(
-        configurable,
-        phase="thinking",
-        message="工具兼容响应未返回推理，正在补充可展示分析",
-        reasoning_content=_collect_agent_reasoning(messages),
-        reasoning_tokens=_collect_agent_reasoning_token_count(messages),
-    )
-    reasoning_response = _stream_agent_response(
-        reasoning_llm,
-        messages,
-        configurable=configurable,
-        run_config=run_config,
-    )
-    recovered_reasoning = extract_reasoning_content(reasoning_response)
-    if recovered_reasoning:
-        response.additional_kwargs["reasoning_content"] = recovered_reasoning
-    return response
 
 
 def resolve_market_timeframes(agent_config: dict | None = None) -> list[str]:
@@ -228,14 +200,17 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
     """使用独立的 LLM 配置对分析内容进行压缩。"""
     summarizer_cfg = agent_config.get("summarizer", {})
     
-    # 获取配置，优先级：1. agent专属summarizer -> 2. 全局环境变量 -> 3. agent自身配置
+    # 获取配置，优先级：1. agent 专属 summarizer -> 2. 全局运行配置/环境变量 -> 3. agent 自身配置
     model = (summarizer_cfg.get("model") or 
+             getattr(global_config, "global_summarizer_model", "") or
              os.getenv("GLOBAL_SUMMARIZER_MODEL") or 
              agent_config.get("model"))
     api_key = (summarizer_cfg.get("api_key") or 
+               getattr(global_config, "global_summarizer_api_key", "") or
                os.getenv("GLOBAL_SUMMARIZER_API_KEY") or 
                agent_config.get("api_key"))
     api_base = (summarizer_cfg.get("api_base") or 
+                getattr(global_config, "global_summarizer_api_base", "") or
                 os.getenv("GLOBAL_SUMMARIZER_API_BASE") or 
                 agent_config.get("api_base"))
     temperature = summarizer_cfg.get("temperature", 0.3)
@@ -305,9 +280,25 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
         return extract_message_text(response).strip()
     except Exception as e:
         logger.error(f"❌ [Summarizer Error]: {e}")
-        if summary_type == "short_memory":
+        if summary_type in {"daily", "short_memory"}:
             return ""
         return content[:200] + "..."
+
+
+def is_invalid_daily_summary(summary: str, source_input: str = "") -> bool:
+    """Reject empty summaries and prompt/input echoes masquerading as results."""
+    text = str(summary or "").strip()
+    if not text:
+        return True
+    prompt_markers = (
+        "一整天的多轮交易分析逻辑，请汇总为",
+        "请把以下一整天的交易推理压缩成",
+        "{content}",
+    )
+    if any(marker in text for marker in prompt_markers):
+        return True
+    return bool(source_input) and text.endswith("...") and source_input.startswith(text[:-3])
+
 
 def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
     """手动或通过调度器触发特定周期的每日总结汇总。"""
@@ -334,13 +325,19 @@ def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
         if not combined.strip():
             return False
             
-        summary_text = summarize_content(
+        summary_input = (
             f"以下是 {date_str} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾，"
-            f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}",
+            f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}"
+        )
+        summary_text = summarize_content(
+            summary_input,
             target_config,
             summary_type="daily",
         )
-        
+        if is_invalid_daily_summary(summary_text, summary_input):
+            logger.error(f"Daily summary returned no usable result for {config_id} on {date_str}; not saving it.")
+            return False
+
         save_daily_summary(date_str, target_config.get('symbol', 'Unknown'), config_id, summary_text, len(rows))
         return True
     except Exception as e:
@@ -796,11 +793,9 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         response = invoke_with_retry(
             lambda: _stream_agent_turn(
                 llm,
-                reasoning_llm,
                 messages,
                 configurable=configurable,
                 run_config=config,
-                agent_config=agent_config,
             ),
             logger=logger,
             context=f"agent symbol={symbol} config_id={config_id} model={agent_config.get('model')}",
@@ -894,11 +889,9 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         response = invoke_with_retry(
             lambda: _stream_agent_turn(
                 llm,
-                reasoning_llm,
                 messages,
                 configurable=configurable,
                 run_config=config,
-                agent_config=agent_config,
             ),
             logger=logger,
             context=f"small-agent symbol={symbol} config_id={config_id} model={model_name}",
@@ -1013,14 +1006,9 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 reasoning_content=reasoning_content,
                 reasoning_tokens=reasoning_tokens,
             )
-            try:
-                generate_rolling_short_memory_for_config(
-                    config_id,
-                    agent_config=agent_config,
-                    now_cn=datetime.now(TZ_CN),
-                )
-            except Exception as memory_exc:
-                logger.warning(f"Failed to update rolling short memory for {config_id}: {memory_exc}")
+            # The scheduler owns four-hour short-memory generation. Running it
+            # here as well makes every graph finalization issue a second summary
+            # request and needlessly doubles the summarizer cost.
             
             # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
             trade_mode = agent_config.get('mode', 'STRATEGY').upper()

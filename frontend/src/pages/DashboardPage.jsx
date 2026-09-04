@@ -194,11 +194,13 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
   if (!agents?.length) return null;
 
   return (
-    <div className="agent-overview-shell">
+    <div className="agent-overview-shell" role="tablist" aria-label={t('agents')}>
       <button
         type="button"
+        role="tab"
         className={`agent-overview-compare-chip ${activeTab === 'compare' ? 'active' : ''}`}
         onClick={() => onSelect('compare')}
+        aria-selected={activeTab === 'compare'}
       >
         <Text strong>{t('compareView')}</Text>
         <Text type="secondary" className="agent-overview-meta">{agents.length} agents</Text>
@@ -222,9 +224,11 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
           return (
             <button
               type="button"
+              role="tab"
               key={agent.config_id}
               className={`agent-overview-card ${activeTab === agent.config_id ? 'active' : ''}`}
               onClick={() => onSelect(agent.config_id)}
+              aria-selected={activeTab === agent.config_id}
             >
               <span className="agent-overview-main">
                 <span className="agent-overview-title">
@@ -299,7 +303,8 @@ function ComparePanel({ dashboard, compareSeries, compareIds, onCompareIdsChange
         <EquityCompareChart series={compareSeries} selectedIds={compareIds} onSelectedIdsChange={onCompareIdsChange} />
       </Card>
       <Card className="panel-card" title={t('compareView')}>
-        <div className="compare-cards-scroll">
+        {isMobile ? (
+          <div className="compare-cards-scroll">
           <MobileRecordList
             items={rows}
             emptyText={t('noData')}
@@ -326,8 +331,8 @@ function ComparePanel({ dashboard, compareSeries, compareIds, onCompareIdsChange
               </Card>
             )}
           />
-        </div>
-        {!isMobile && rows.length ? (
+          </div>
+        ) : rows.length ? (
           <Table
             className="compare-compact-table"
             size="small"
@@ -346,7 +351,9 @@ function ComparePanel({ dashboard, compareSeries, compareIds, onCompareIdsChange
               { title: t('totalPnl'), dataIndex: 'total_pnl', width: 120, render: (value) => formatPositionValue(value) },
             ]}
           />
-        ) : null}
+        ) : (
+          <Empty description={t('noData')} />
+        )}
       </Card>
       <NewsSnapshotCard snapshot={dashboard?.news_snapshot} />
     </Space>
@@ -491,9 +498,8 @@ function NewsSnapshotCard({ snapshot }) {
   const raw = snapshot?.raw || {};
   const headlines = snapshot?.headlines || raw.headlines || [];
   const items = raw.items || [];
+  const digest = raw.digest || '';
   const nextEvent = (raw.events || []).find((item) => item.scheduled_at && dayjs(item.scheduled_at).isAfter(dayjs().subtract(2, 'hour')));
-  const risk = snapshot?.risk_level || raw.risk_level || 'normal';
-  const riskColor = risk === 'high' ? 'red' : risk === 'watch' ? 'orange' : 'green';
   const eventDistance = nextEvent ? dayjs(nextEvent.scheduled_at).diff(dayjs(), 'hour', true) : null;
   const eventCountdown = eventDistance === null
     ? ''
@@ -503,7 +509,7 @@ function NewsSnapshotCard({ snapshot }) {
         ? `${Math.max(1, Math.ceil(eventDistance))}h`
         : `${Math.ceil(eventDistance / 24)}d`;
   return (
-    <Card className="panel-card" title={t('newsFlow')} extra={<Tag color={riskColor}>{risk}</Tag>}>
+    <Card className="panel-card" title={t('newsFlow')}>
       {headlines.length ? (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <div className="news-snapshot-meta">
@@ -520,8 +526,14 @@ function NewsSnapshotCard({ snapshot }) {
               <Tag color={eventDistance !== null && eventDistance <= 6 ? 'red' : eventDistance !== null && eventDistance <= 24 ? 'orange' : 'blue'}>{eventCountdown}</Tag>
             </div>
           ) : null}
+          {digest ? (
+            <div className="news-intelligence-digest">
+              <Text type="secondary">{isZh ? '消息压缩研判' : 'Compressed intelligence'}</Text>
+              <div><Text style={{ whiteSpace: 'pre-line' }}>{digest}</Text></div>
+            </div>
+          ) : null}
           <div className="news-headline-list">
-            {headlines.slice(0, 6).map((headline, index) => (
+            {headlines.slice(0, 10).map((headline, index) => (
               <div className="news-headline-item" key={`${index}-${headline}`}>
                 <div className="news-headline-row">
                   {items[index]?.category ? <Tag>{items[index].category.replace('_', ' ')}</Tag> : null}
@@ -1472,9 +1484,9 @@ export default function DashboardPage() {
 
   return (
     <div className="boxed-page dashboard-page">
-      <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card className="admin-hero dashboard-hero">
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <div className="dashboard-hero-layout">
             <div className="dashboard-hero-copy">
               <Title level={2} style={{ margin: 0 }}>

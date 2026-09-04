@@ -72,6 +72,7 @@ const LLM_PROVIDER_PRESETS = [
   { key: 'openai', label: 'OpenAI / Codex', api_base: 'https://api.openai.com/v1', model: 'gpt-5.6', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'medium' },
   { key: 'deepseek', label: 'DeepSeek', api_base: 'https://api.deepseek.com', model: 'deepseek-v4-pro', compatibility_mode: 'deepseek', thinking_enabled: true, reasoning_effort: 'high' },
   { key: 'bai-claude', label: 'BAI · Claude', api_base: 'https://api.bankofai.io/v1', model: 'claude-sonnet-5', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'high' },
+  { key: 'bai-gemini', label: 'BAI · Gemini', api_base: 'https://api.b.ai/v1', model: 'gemini-3.8-flash', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'high' },
 ];
 
 function buildBlankSecretMeta() {
@@ -992,6 +993,14 @@ export default function AdminPage() {
                     <label>LLM Retries</label>
                     <InputNumber min={0} value={payload.globals.llm_max_retries} onChange={(v) => updateGlobal('llm_max_retries', v ?? 0)} />
                   </div>
+                  <div className="form-field">
+                    <label>{locale === 'zh' ? '全局摘要模型' : 'Global summarizer model'}</label>
+                    <Input value={payload.globals.global_summarizer_model || ''} onChange={(e) => updateGlobal('global_summarizer_model', e.target.value)} placeholder="gpt-4.1-mini" />
+                  </div>
+                  <div className="form-field">
+                    <label>{locale === 'zh' ? '全局摘要 API Base' : 'Global summarizer API Base'}</label>
+                    <Input value={payload.globals.global_summarizer_api_base || ''} onChange={(e) => updateGlobal('global_summarizer_api_base', e.target.value)} placeholder="https://api.openai.com/v1" />
+                  </div>
                   <div className="form-field field-span-2">
                     <label>{locale === 'zh' ? '默认行情分析周期（未单独配置任务时生效）' : 'Default market analysis timeframes (fallback)'}</label>
                     <Select
@@ -1010,6 +1019,7 @@ export default function AdminPage() {
                   <SecretField label="OKX Secret" meta={payload.globals.secrets.global_okx_secret} onChange={(v) => updateGlobalSecret('global_okx_secret', { value: v, clear: false })} onClear={() => updateGlobalSecret('global_okx_secret', { value: '', clear: true })} />
                   <SecretField label="OKX Passphrase" meta={payload.globals.secrets.global_okx_passphrase} onChange={(v) => updateGlobalSecret('global_okx_passphrase', { value: v, clear: false })} onClear={() => updateGlobalSecret('global_okx_passphrase', { value: '', clear: true })} />
                   <SecretField label="LangSmith API Key" meta={payload.globals.secrets.langchain_api_key} onChange={(v) => updateGlobalSecret('langchain_api_key', { value: v, clear: false })} onClear={() => updateGlobalSecret('langchain_api_key', { value: '', clear: true })} />
+                  <SecretField label={locale === 'zh' ? '全局摘要 API Key' : 'Global summarizer API Key'} meta={payload.globals.secrets.global_summarizer_api_key} onChange={(v) => updateGlobalSecret('global_summarizer_api_key', { value: v, clear: false })} onClear={() => updateGlobalSecret('global_summarizer_api_key', { value: '', clear: true })} />
                 </div>
               </Card>
             ),
@@ -1781,8 +1791,10 @@ export default function AdminPage() {
             {editingProvider.thinking_enabled !== false && (
               <div className="form-field">
                 <label>{t('reasoningEffort')}</label>
-                <Select value={editingProvider.reasoning_effort || undefined} options={(payload.options?.reasoning_efforts || ['none', 'low', 'medium', 'high', 'xhigh', 'max']).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingProvider('reasoning_effort', v)} allowClear placeholder={locale === 'zh' ? '跟随模型默认' : 'Use model default'} style={{ width: '100%' }} />
-                <Text type="secondary">{editingProvider.compatibility_mode === 'deepseek'
+                <Select value={editingProvider.reasoning_effort || undefined} options={(payload.options?.reasoning_efforts || ['none', 'low', 'medium', 'high', 'xhigh', 'max']).filter((v) => !String(editingProvider.model || '').toLowerCase().startsWith('gemini-3.8') || ['low', 'medium', 'high'].includes(v)).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingProvider('reasoning_effort', v)} allowClear placeholder={locale === 'zh' ? '跟随模型默认' : 'Use model default'} style={{ width: '100%' }} />
+                <Text type="secondary">{String(editingProvider.model || '').toLowerCase().startsWith('gemini-3.8')
+                  ? (locale === 'zh' ? 'Gemini 3.8 支持 low / medium / high。BAI Chat Completions 会返回推理 token 数，但不提供可展示的 reasoning 文本。' : 'Gemini 3.8 supports low / medium / high. BAI Chat Completions reports reasoning-token usage but does not expose displayable reasoning text.')
+                  : editingProvider.compatibility_mode === 'deepseek'
                   ? (locale === 'zh' ? 'DeepSeek 原生支持 low / high / max；medium 与 xhigh 会映射到 high。' : 'DeepSeek supports low / high / max; medium and xhigh map to high.')
                   : editingProvider.compatibility_mode === 'anthropic'
                     ? (locale === 'zh' ? 'Claude 4.6/5 使用 adaptive thinking；较早模型按强度映射 budget_tokens。' : 'Claude 4.6/5 use adaptive thinking; older models map effort to budget_tokens.')

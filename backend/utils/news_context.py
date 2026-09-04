@@ -36,6 +36,7 @@ DEFAULT_POLICY_SOURCES = {
     "sec": "https://www.sec.gov/news/pressreleases.rss",
     "cftc": "https://www.cftc.gov/PressRoom/PressReleases",
 }
+DEFAULT_TREASURY_SOURCE = "https://home.treasury.gov/news/press-releases"
 DEFAULT_CALENDAR_SOURCES = {
     "bls": "https://www.bls.gov/schedule/news_release/bls.ics",
     "bea": "https://apps.bea.gov/API/signup/release_dates.json",
@@ -53,18 +54,24 @@ CRYPTO_POLICY_TERMS = {
     "crypto", "cryptocurrency", "digital asset", "bitcoin", "ethereum", "stablecoin",
     "token", "blockchain", "exchange-traded fund", "spot etf", "coinbase", "binance",
 }
+MACRO_MARKET_TERMS = {
+    "treasuries", "treasury yield", "bond yield", "yield curve", "auction size",
+    "bill issuance", "debt issuance", "quarterly refunding", "buyback", "liquidity support",
+    "cash management bill", "tga", "treasury general account", "soma", "repo", "reserves",
+    "balance sheet", "quantitative tightening", "quantitative easing", "dollar", "dxy",
+    "federal funds", "interest rate", "rate cut", "rate hike", "monetary policy", "fomc",
+    "inflation", "consumer price", "producer price", "payroll", "employment", "gdp",
+    "personal consumption expenditures", "pce", "financial conditions", "credit spread",
+}
 CRITICAL_TERMS = {
     "hack", "exploit", "stolen", "breach", "depeg", "de-peg", "insolvent", "bankruptcy",
     "withdrawal halt", "suspend withdrawals", "outage", "chain halt", "stopped producing blocks",
     "emergency", "liquidation cascade", "delist", "sanction", "war", "attack",
 }
 GEOPOLITICAL_TERMS = {
-    "war", "attack", "sanction", "tariff", "middle east", "israel", "iran", "china",
-    "russia", "ukraine", "oil", "opec", "shipping", "strait", "election",
-}
-WATCH_TERMS = {
-    "sec", "cftc", "lawsuit", "regulation", "etf", "fed", "inflation", "rate decision",
-    "interest rate", "monetary policy", "fomc",
+    "war", "military", "missile", "drone strike", "sanction", "tariff", "middle east",
+    "israel", "iran", "china", "russia", "ukraine", "oil", "opec", "shipping", "strait",
+    "election", "trade war",
 }
 CALENDAR_FILTERS = {
     "bls": (
@@ -78,6 +85,7 @@ _cache_lock = threading.RLock()
 _memory_cache: dict[str, dict[str, Any]] = {}
 _failure_cache: dict[str, dict[str, Any]] = {}
 _source_locks: dict[str, threading.Lock] = {}
+_digest_cache: dict[str, dict[str, Any]] = {}
 
 
 def _utc_now() -> datetime:
@@ -204,6 +212,23 @@ def _fetch_cached(
 def _symbol_terms(symbol: str) -> set[str]:
     base = str(symbol or "").split("/")[0].split(":")[0].upper()
     return {term.lower() for term in ({base.lower()} | CRYPTO_ALIASES.get(base, set())) if term}
+
+
+def _contains_term(text: str, term: str) -> bool:
+    normalized_text = str(text or "").lower()
+    normalized_term = str(term or "").strip().lower()
+    if not normalized_term:
+        return False
+    return bool(
+        re.search(
+            rf"(?<![a-z0-9]){re.escape(normalized_term)}(?![a-z0-9])",
+            normalized_text,
+        )
+    )
+
+
+def _contains_any(text: str, terms: set[str]) -> bool:
+    return any(_contains_term(text, term) for term in terms)
 
 
 def _clean_text(value: Any) -> str:
@@ -368,19 +393,102 @@ def _parse_feed(raw: bytes, source: str, category: str, relevance: float = 0.8) 
     return items
 
 
-def _fetch_cryptocurrency_cv(symbol: str, timeout: float) -> list[dict[str, Any]]:
+def _fetch_cryptocurrency_cv(symbol: str, timeout: float, category: str = "general") -> list[dict[str, Any]]:
     base = str(symbol or "").split("/")[0].split(":")[0].lower()
-    url = f"https://cryptocurrency.cv/api/news?{urllib.parse.urlencode({'symbol': base})}"
+    params = {
+        "limit": max(3, min(25, int(os.getenv("NEWS_CV_LIMIT", "10")))),
+    }
+    if category and category != "general":
+        params["category"] = category
+    elif base in {"bitcoin", "btc"}:
+        params["category"] = "bitcoin"
+    elif base in {"ethereum", "ether", "eth"}:
+        params["category"] = "ethereum"
+    url = f"https://cryptocurrency.cv/api/news?{urllib.parse.urlencode(params)}"
     payload = json.loads(_read_url(url, timeout).decode("utf-8", errors="ignore"))
-    rows = (payload.get("data") or payload.get("news") or payload.get("items") or []) if isinstance(payload, dict) else payload
+    rows = (
+        payload.get("articles")
+        or payload.get("data")
+        or payload.get("news")
+        or payload.get("items")
+        or []
+    ) if isinstance(payload, dict) else payload
     items = []
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
             continue
         title = row.get("title") or row.get("headline")
         if title:
-            items.append(_make_item(source="cryptocurrency.cv", title=title, category="crypto", impact="medium", relevance=0.95, published_at=_parse_iso(row.get("published_at") or row.get("date") or row.get("time")), url=str(row.get("url") or row.get("link") or "")))
+            title_l = str(title).lower()
+            raw_category = str(row.get("category") or category or "general").lower()
+            source = str(row.get("source") or "cryptocurrency.cv")
+            if raw_category in {"macro", "tradfi", "mainstream"} or _contains_any(title_l, MACRO_MARKET_TERMS):
+                normalized_category = "macro_market"
+            elif raw_category == "geopolitical":
+                normalized_category = "geopolitical"
+            elif source.lower() in {"federal reserve", "federal reserve feds notes", "us treasury press"}:
+                normalized_category = "macro_policy"
+            else:
+                normalized_category = "crypto"
+            relevance = 0.95 if _contains_any(title_l, _symbol_terms(symbol)) else 0.82
+            items.append(
+                _make_item(
+                    source=source,
+                    title=title,
+                    category=normalized_category,
+                    impact="high" if normalized_category in {"macro_market", "macro_policy"} else "medium",
+                    relevance=relevance,
+                    published_at=_parse_iso(
+                        row.get("published_at")
+                        or row.get("pubDate")
+                        or row.get("date")
+                        or row.get("time")
+                    ),
+                    url=str(row.get("url") or row.get("link") or ""),
+                )
+            )
     return items
+
+
+def _fetch_treasury_market_news(timeout: float) -> list[dict[str, Any]]:
+    url = os.getenv("NEWS_TREASURY_URL", DEFAULT_TREASURY_SOURCE)
+    page = _read_url(url, timeout).decode("utf-8", errors="ignore")
+    patterns = (
+        re.compile(
+            r'<span[^>]+class="date-format"[^>]*>\s*<time[^>]+datetime="(?P<date>[^"]+)"[^>]*>.*?</time>\s*</span>'
+            r'.*?<h3[^>]+class="featured-stories__headline"[^>]*>\s*'
+            r'<a[^>]+href="(?P<link>/news/press-releases/[^"]+)"[^>]*>(?P<title>.*?)</a>',
+            flags=re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r'<div[^>]+class="mm-news-row"[^>]*>\s*<time[^>]+datetime="(?P<date>[^"]+)"[^>]*>.*?</time>'
+            r'.*?<div[^>]+class="news-title"[^>]*>\s*'
+            r'<a[^>]+href="(?P<link>/news/press-releases/[^"]+)"[^>]*>(?P<title>.*?)</a>',
+            flags=re.IGNORECASE | re.DOTALL,
+        ),
+    )
+    items = []
+    seen = set()
+    for pattern in patterns:
+        for match in pattern.finditer(page):
+            title = _clean_text(match.group("title"))
+            link = urllib.parse.urljoin(url, match.group("link"))
+            key = (title.lower(), link)
+            if not title or key in seen:
+                continue
+            seen.add(key)
+            items.append(
+                _make_item(
+                    source="U.S. Treasury",
+                    title=title,
+                    category="macro_policy",
+                    impact="high",
+                    relevance=0.95,
+                    published_at=_parse_iso(match.group("date")),
+                    url=link,
+                )
+            )
+    return sorted(items, key=lambda item: item.get("published_at") or "", reverse=True)
 
 
 def _fetch_crypto_rss(timeout: float) -> list[dict[str, Any]]:
@@ -438,37 +546,137 @@ def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _dedupe_preserve_order(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen = set()
+    result = []
+    for item in items:
+        key = item.get("id") or _normalize_title(item.get("title", ""))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
 def _classify_news(items: list[dict[str, Any]], symbol: str, now: datetime) -> list[dict[str, Any]]:
     symbol_terms = _symbol_terms(symbol)
-    cutoff = now - timedelta(hours=36)
+    crypto_cutoff = now - timedelta(hours=max(12, int(os.getenv("NEWS_CRYPTO_LOOKBACK_HOURS", "48"))))
+    macro_cutoff = now - timedelta(hours=max(48, int(os.getenv("NEWS_MACRO_LOOKBACK_HOURS", "336"))))
+    geopolitical_cutoff = now - timedelta(hours=max(24, int(os.getenv("NEWS_GEOPOLITICAL_LOOKBACK_HOURS", "72"))))
     result = []
     for item in items:
         title_l = item.get("title", "").lower()
         published = _parse_iso(item.get("published_at"))
+        category = item.get("category")
+        cutoff = macro_cutoff if category in {"macro_policy", "macro_market", "policy"} else geopolitical_cutoff if category == "geopolitical" else crypto_cutoff
         if published and published < cutoff:
             continue
-        category = item.get("category")
         if category == "crypto":
-            symbol_match = any(term in title_l for term in symbol_terms)
-            broad_match = any(term in title_l for term in CRYPTO_POLICY_TERMS | CRITICAL_TERMS)
+            symbol_match = _contains_any(title_l, symbol_terms)
+            broad_match = _contains_any(title_l, CRYPTO_POLICY_TERMS | CRITICAL_TERMS)
             if not (symbol_match or broad_match):
                 continue
             item["relevance"] = max(item.get("relevance", 0), 0.95 if symbol_match else 0.72)
         elif category == "policy":
-            if not any(term in title_l for term in CRYPTO_POLICY_TERMS):
+            if not _contains_any(title_l, CRYPTO_POLICY_TERMS):
                 continue
         elif category == "macro_policy":
-            if not any(term in title_l for term in {"federal funds", "interest rate", "monetary policy", "fomc", "balance sheet"}):
+            if not _contains_any(title_l, MACRO_MARKET_TERMS):
                 continue
+            item["relevance"] = max(item.get("relevance", 0), 0.92)
+        elif category == "macro_market":
+            if not _contains_any(title_l, MACRO_MARKET_TERMS):
+                continue
+            item["relevance"] = max(item.get("relevance", 0), 0.88)
         elif category == "geopolitical":
-            if not any(term in title_l for term in GEOPOLITICAL_TERMS):
+            if not _contains_any(title_l, GEOPOLITICAL_TERMS):
                 continue
-        if any(term in title_l for term in CRITICAL_TERMS):
+        if _contains_any(title_l, CRITICAL_TERMS):
             item["category"] = "critical"
             item["impact"] = "high"
             item["relevance"] = max(item.get("relevance", 0), 0.95)
         result.append(item)
     return _dedupe(result)
+
+
+def _news_digest(items: list[dict[str, Any]], symbol: str) -> str:
+    if not items or str(os.getenv("NEWS_LLM_SUMMARY_ENABLED", "true")).lower() in {"0", "false", "no"}:
+        return ""
+    try:
+        from langchain_core.messages import HumanMessage
+
+        from backend.config import config as global_config
+        from backend.database import save_token_usage
+        from backend.utils.llm_utils import build_chat_model, extract_message_text, invoke_with_retry
+
+        model = str(getattr(global_config, "global_summarizer_model", "") or os.getenv("GLOBAL_SUMMARIZER_MODEL", "")).strip()
+        api_key = str(getattr(global_config, "global_summarizer_api_key", "") or os.getenv("GLOBAL_SUMMARIZER_API_KEY", "")).strip()
+        api_base = str(getattr(global_config, "global_summarizer_api_base", "") or os.getenv("GLOBAL_SUMMARIZER_API_BASE", "")).strip()
+        if not model or not api_key:
+            return ""
+
+        candidates = items[:max(6, min(30, int(os.getenv("NEWS_LLM_CANDIDATE_ITEMS", "20"))))]
+        input_lines = []
+        for item in candidates:
+            when = item.get("scheduled_at") or item.get("published_at") or "time unknown"
+            input_lines.append(
+                f"- [{item.get('category')}] [{item.get('source')}] [{when}] {item.get('title')}"
+            )
+        fingerprint = hashlib.sha1(
+            f"{model}|{symbol}|{'|'.join(item.get('id', '') for item in candidates)}".encode("utf-8")
+        ).hexdigest()
+        now = _utc_now()
+        with _cache_lock:
+            cached = _digest_cache.get(fingerprint)
+        if cached and now - cached["created_at"] <= timedelta(minutes=10):
+            return str(cached["digest"])
+
+        prompt = (
+            f"你是加密交易消息风控编辑。请把下面关于 {symbol} 的候选消息压缩为 3-6 条中文要点，"
+            "按对未来24小时至14天价格影响排序。必须优先保留美债发行/回购、收益率、TGA、美元流动性、"
+            "央行政策、ETF资金流、监管与重大安全事件。只根据标题和时间陈述，区分事实与可能影响，"
+            "不要编造数字或因果。总长度不超过500字。\n\n" + "\n".join(input_lines)
+        )
+        llm = build_chat_model(
+            model=model,
+            api_key=api_key,
+            base_url=api_base or None,
+            temperature=0.1,
+            thinking_enabled=False,
+        )
+        response = invoke_with_retry(
+            lambda: llm.invoke([HumanMessage(content=prompt)]),
+            logger=logger,
+            context=f"news digest model={model} symbol={symbol}",
+        )
+        digest = extract_message_text(response).strip()[:2000]
+        if not digest:
+            return ""
+        with _cache_lock:
+            expired = [
+                key
+                for key, value in _digest_cache.items()
+                if now - value["created_at"] > timedelta(minutes=10)
+            ]
+            for key in expired:
+                _digest_cache.pop(key, None)
+            _digest_cache[fingerprint] = {"created_at": now, "digest": digest}
+        try:
+            usage = response.response_metadata.get("token_usage", {})
+            if usage:
+                save_token_usage(
+                    symbol=symbol,
+                    config_id="news-intelligence",
+                    model=model,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                )
+        except Exception as exc:
+            logger.debug("News digest token accounting failed: %s", exc)
+        return digest
+    except Exception as exc:
+        logger.warning("News digest compression failed; using structured headlines: %s", exc)
+        return ""
 
 
 def _select_calendar(items: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
@@ -483,30 +691,6 @@ def _select_calendar(items: list[dict[str, Any]], now: datetime) -> list[dict[st
     return sorted(unique.values(), key=lambda item: item.get("scheduled_at") or "")[:2]
 
 
-def _risk_assessment(items: list[dict[str, Any]], now: datetime) -> tuple[str, list[str]]:
-    level = "normal"
-    reasons = []
-    for item in items:
-        if item.get("category") == "macro_calendar":
-            scheduled = _parse_iso(item.get("scheduled_at"))
-            if not scheduled:
-                continue
-            hours = (scheduled - now).total_seconds() / 3600
-            if 0 <= hours <= 6:
-                level = "high"
-                reasons.append(f"High-impact macro event within 6h: {item['title']}")
-            elif 0 <= hours <= 24 and level != "high":
-                level = "watch"
-                reasons.append(f"High-impact macro event within 24h: {item['title']}")
-        elif item.get("category") == "critical":
-            level = "high"
-            reasons.append(f"Critical headline: {item['title']}")
-        elif any(term in item.get("title", "").lower() for term in WATCH_TERMS) and level == "normal":
-            level = "watch"
-            reasons.append(f"Policy or market-risk headline: {item['title']}")
-    return level, reasons[:3]
-
-
 def _display_title(item: dict[str, Any]) -> str:
     if item.get("category") != "macro_calendar":
         return item.get("title", "")
@@ -515,19 +699,29 @@ def _display_title(item: dict[str, Any]) -> str:
     return f"{item.get('title', '')} — {when}"
 
 
-def fetch_news_risk_context(symbol: str, limit: int = 6, timeout: float = 4.0) -> dict:
+def fetch_news_risk_context(symbol: str, limit: int = 10, timeout: float = 8.0) -> dict:
     if str(os.getenv("NEWS_RISK_ENABLED", "true")).lower() in {"0", "false", "no"}:
         return {}
 
     now = _utc_now()
-    max_items = min(6, max(1, int(os.getenv("NEWS_MAX_ITEMS", str(limit or 6)))))
+    max_items = min(12, max(1, int(os.getenv("NEWS_MAX_ITEMS", str(limit or 10)))))
     source_specs: dict[str, tuple[Callable[[], list[dict[str, Any]]], timedelta, timedelta]] = {
         "calendar_bls": (lambda: _fetch_bls_calendar(timeout), timedelta(hours=6), timedelta(hours=72)),
         "calendar_bea": (lambda: _fetch_bea_calendar(timeout), timedelta(hours=6), timedelta(hours=72)),
         "calendar_fomc": (lambda: _fetch_fomc_calendar(timeout, now), timedelta(hours=6), timedelta(hours=72)),
     }
-    if str(os.getenv("CRYPTOCURRENCY_CV_ENABLED", "false")).lower() in {"1", "true", "yes"}:
-        source_specs[f"crypto_api:{symbol}"] = (lambda: _fetch_cryptocurrency_cv(symbol, timeout), timedelta(minutes=10), timedelta(hours=6))
+    if str(os.getenv("CRYPTOCURRENCY_CV_ENABLED", "true")).lower() in {"1", "true", "yes"}:
+        cv_categories = [
+            item.strip().lower()
+            for item in os.getenv("NEWS_CV_CATEGORIES", "general,macro,institutional,etf").split(",")
+            if item.strip()
+        ]
+        for category in cv_categories:
+            source_specs[f"crypto_api:{symbol}:{category}"] = (
+                lambda selected_category=category: _fetch_cryptocurrency_cv(symbol, timeout, selected_category),
+                timedelta(minutes=10),
+                timedelta(hours=12),
+            )
     crypto_sources = [item.strip() for item in os.getenv("NEWS_RSS_SOURCES", ",".join(DEFAULT_RSS_SOURCES)).split(",") if item.strip()]
     for index, url in enumerate(crypto_sources):
         source_specs[f"crypto_rss_{index + 1}"] = (
@@ -545,13 +739,19 @@ def fetch_news_risk_context(symbol: str, limit: int = 6, timeout: float = 4.0) -
     for source_key, default_url in DEFAULT_POLICY_SOURCES.items():
         url = os.getenv(f"NEWS_{source_key.upper()}_URL", default_url)
         source_specs[f"policy_{source_key}"] = (lambda key=source_key, source_url=url: _fetch_policy_source(key, source_url, timeout), timedelta(minutes=10), timedelta(hours=6))
+    source_specs["policy_us_treasury"] = (
+        lambda: _fetch_treasury_market_news(timeout),
+        timedelta(minutes=15),
+        timedelta(hours=48),
+    )
 
-    executor = ThreadPoolExecutor(max_workers=min(8, len(source_specs)), thread_name_prefix="news-intel")
+    worker_count = max(1, min(16, int(os.getenv("NEWS_SOURCE_WORKERS", "16")), len(source_specs)))
+    executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="news-intel")
     futures = {
         executor.submit(_fetch_cached, key, spec[0], ttl=spec[1], stale_ttl=spec[2], now=now): key
         for key, spec in source_specs.items()
     }
-    done, pending = wait(futures, timeout=float(os.getenv("NEWS_TOTAL_TIMEOUT_SECONDS", "5")))
+    done, pending = wait(futures, timeout=float(os.getenv("NEWS_TOTAL_TIMEOUT_SECONDS", "10")))
     results: dict[str, dict[str, Any]] = {}
     for future in done:
         key = futures[future]
@@ -574,13 +774,16 @@ def fetch_news_risk_context(symbol: str, limit: int = 6, timeout: float = 4.0) -
 
     events = _select_calendar(calendar_items, now)
     classified = _classify_news(news_items, symbol, now)
-    critical = [item for item in classified if item.get("category") == "critical"][:1]
-    crypto = [item for item in classified if item.get("category") == "crypto"][:2]
-    policy = [item for item in classified if item.get("category") in {"policy", "macro_policy"}][:1]
+    critical = [item for item in classified if item.get("category") == "critical"][:2]
+    crypto = [item for item in classified if item.get("category") == "crypto"][:3]
+    policy = [item for item in classified if item.get("category") in {"policy", "macro_policy", "macro_market"}][:3]
     if not critical:
         critical = [item for item in classified if item.get("category") == "geopolitical"][:1]
-    selected = [*events, *critical, *crypto, *policy][:max_items]
-    risk_level, risk_reasons = _risk_assessment(selected, now)
+    geopolitical = [item for item in classified if item.get("category") == "geopolitical"][:1]
+    selected = _dedupe_preserve_order([*events, *critical, *policy, *crypto, *geopolitical])
+    selected = selected[:max_items]
+    digest_candidates = _dedupe([*events, *classified])
+    digest = _news_digest(digest_candidates, symbol)
     stale = any(result.get("stale") for result in results.values())
     available_count = sum(1 for result in results.values() if result.get("status") in {"ok", "stale"})
     source_health = {
@@ -597,9 +800,8 @@ def fetch_news_risk_context(symbol: str, limit: int = 6, timeout: float = 4.0) -
     macro_headlines = [_display_title(item) for item in selected if item.get("category") in {"macro_calendar", "macro_policy", "policy", "geopolitical"}]
     payload = {
         "available": bool(available_count),
-        "risk_level": risk_level if available_count else "unknown",
-        "risk_reasons": risk_reasons,
         "headlines": headlines,
+        "digest": digest,
         "crypto_headlines": crypto_headlines,
         "macro_headlines": macro_headlines,
         "events": events,
@@ -607,7 +809,7 @@ def fetch_news_risk_context(symbol: str, limit: int = 6, timeout: float = 4.0) -
         "as_of": _iso(now),
         "stale": stale,
         "source_health": source_health,
-        "source": "official_macro+official_policy+crypto_rss",
+        "source": "official_macro+official_policy+us_treasury+cryptocurrency.cv+crypto_rss",
     }
     if not available_count:
         payload["error"] = "All configured news and macro sources are unavailable"

@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from backend.app.core.deps import get_current_user
-from backend.app.schemas.payloads import BulkDeleteSessionsRequest, CreateSessionRequest
+from backend.app.schemas.payloads import (
+    BulkDeleteSessionsRequest,
+    ChatStreamRequest,
+    CreateSessionRequest,
+    ForkSessionRequest,
+)
 from backend.app.services.chat_service import (
     chat_bootstrap_payload,
     clear_chat_messages_payload,
@@ -15,6 +20,7 @@ from backend.app.services.chat_service import (
     get_chat_messages_payload,
     get_chat_memory_payload,
     get_chat_session_payload,
+    fork_chat_session_payload,
     list_market_symbols_payload,
     stream_chat_events,
     summarize_chat_title_payload,
@@ -86,6 +92,21 @@ def get_messages(session_id: str, _: dict = Depends(get_current_user)):
     return {"success": True, **data}
 
 
+@router.post("/sessions/{session_id}/branches")
+def fork_session(
+    session_id: str,
+    payload: ForkSessionRequest,
+    _: dict = Depends(get_current_user),
+):
+    try:
+        data = fork_chat_session_payload(session_id, payload.message_index, payload.content)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, **data}
+
+
 @router.get("/sessions/{session_id}/memory")
 def get_memory(session_id: str, _: dict = Depends(get_current_user)):
     try:
@@ -104,14 +125,12 @@ def compact_memory(session_id: str, _: dict = Depends(get_current_user)):
     return {"success": True, **data}
 
 
-@router.get("/sessions/{session_id}/stream")
-def stream(
+def _stream_response(
     session_id: str,
     message: str | None = None,
     approval: str | None = None,
     retry: bool = False,
     replace_last: bool = False,
-    _: dict = Depends(get_current_user),
 ):
     def event_stream():
         try:
@@ -131,6 +150,34 @@ def stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/sessions/{session_id}/stream")
+def stream_post(
+    session_id: str,
+    payload: ChatStreamRequest,
+    _: dict = Depends(get_current_user),
+):
+    return _stream_response(
+        session_id,
+        message=payload.message,
+        approval=None if payload.approval is None else str(payload.approval).lower(),
+        retry=payload.retry,
+        replace_last=payload.replace_last,
+    )
+
+
+@router.get("/sessions/{session_id}/stream")
+def stream_get(
+    session_id: str,
+    message: str | None = None,
+    approval: str | None = None,
+    retry: bool = False,
+    replace_last: bool = False,
+    _: dict = Depends(get_current_user),
+):
+    """Backward-compatible stream transport; new clients should use POST."""
+    return _stream_response(session_id, message, approval, retry, replace_last)
 
 
 @router.post("/sessions/{session_id}/summarize-title")

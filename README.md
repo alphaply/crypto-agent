@@ -10,7 +10,7 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 - 多 Agent 策略配置和定时调度
 - K 线、均线、持仓、订单和盈亏展示
 - 聊天控制台、运行配置页、公开用量统计页
-- 精简消息情报：官方宏观经济日历、政策监管与加密新闻（每轮最多 6 项，带缓存回退）
+- 消息情报：官方宏观经济日历、美联储/美国财政部政策、美债流动性与加密新闻（默认每轮最多 10 项，支持全局 LLM 压缩和缓存回退）
 - SQLite 本地状态存储
 - Docker Compose 部署，Web 服务和调度器分容器运行
 
@@ -68,9 +68,12 @@ APP_PORT=7860
 RUN_SCHEDULER_IN_WEB=true
 SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
+DAILY_SUMMARY_TIME=00:05
+DAILY_SUMMARY_RETRY_MINUTES=15
 ```
 
 `ADMIN_PASSWORD` 用于登录控制台，`JWT_SECRET` 用于会话签名，`CONFIG_MASTER_KEY` 用于加密 SQLite 中保存的密钥。已有数据库继续使用时，不要更换 `CONFIG_MASTER_KEY`。
+每日总结默认在 `TIMEZONE` 对应时区的 `00:05` 汇总前一天数据；调度器当时离线会在恢复后补跑，模型调用失败则默认每 15 分钟重试。
 
 ### 启动开发环境
 
@@ -124,6 +127,8 @@ HOST_PORT=31421
 APP_PORT=7860
 SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
+DAILY_SUMMARY_TIME=00:05
+DAILY_SUMMARY_RETRY_MINUTES=15
 ```
 
 ### 启动服务

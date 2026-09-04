@@ -1,3 +1,4 @@
+import json
 import uuid
 import time
 from datetime import datetime, timedelta
@@ -13,6 +14,38 @@ from backend.utils.logger import setup_logger
 
 logger = setup_logger("AgentTools")
 DEFAULT_CANCEL_REASON = "未提供撤单原因"
+
+
+def _normalize_order_models(orders, model_type):
+    """Accept structured lists and JSON-encoded lists from model tool calls."""
+    value = orders
+    for _ in range(2):
+        if not isinstance(value, str):
+            break
+        text = value.strip()
+        if not text:
+            raise ValueError("orders 不能为空")
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"orders 必须是 JSON 数组: {exc.msg}") from exc
+
+    if isinstance(value, dict) and "orders" in value:
+        value = value["orders"]
+    elif isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("orders 必须是订单数组")
+
+    normalized = []
+    for item in value:
+        if isinstance(item, model_type):
+            normalized.append(item)
+        elif isinstance(item, dict):
+            normalized.append(model_type.model_validate(item))
+        else:
+            raise ValueError(f"订单项必须是对象，实际收到 {type(item).__name__}")
+    return normalized
 
 
 def _cancel_side_from_value(side):
@@ -84,9 +117,13 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
 
+    try:
+        orders = _normalize_order_models(orders, OpenOrderSpotDCA)
+    except Exception as exc:
+        return f"❌ [Error] 现货开仓参数无效: {exc}"
+
     for op in orders:
         try:
-            if isinstance(op, dict): op = OpenOrderSpotDCA(**op)
             action, price = op.action, op.entry_price
             latest = market_tool.get_account_status(symbol, is_real=True, agent_name=config_id)
             if _is_duplicate_real_order(action, price, latest.get('real_open_orders', [])):
@@ -114,9 +151,13 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
 
+    try:
+        orders = _normalize_order_models(orders, OpenOrderReal)
+    except Exception as exc:
+        return f"❌ [Error] 开仓参数无效: {exc}"
+
     for op in orders:
         try:
-            if isinstance(op, dict): op = OpenOrderReal(**op)
             action, price = op.action, op.entry_price
             latest = market_tool.get_account_status(symbol, is_real=True, agent_name=config_id)
             if _is_duplicate_real_order(action, price, latest.get('real_open_orders', [])):
@@ -145,9 +186,13 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
 
+    try:
+        orders = _normalize_order_models(orders, CloseOrder)
+    except Exception as exc:
+        return f"❌ [Error] 平仓参数无效: {exc}"
+
     for op in orders:
         try:
-            if isinstance(op, dict): op = CloseOrder(**op)
             res = market_tool.place_real_order(symbol, 'CLOSE', op.model_dump(), agent_name=config_id)
             
             if isinstance(res, dict) and res.get('status') == 'no_position':
@@ -240,9 +285,13 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
     latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id, config_id=config_id)
     remaining_available = float(latest.get('available_balance', 0) or 0)
 
+    try:
+        orders = _normalize_order_models(orders, OpenOrderStrategy)
+    except Exception as exc:
+        return f"❌ [Error] 策略开仓参数无效: {exc}"
+
     for op in orders:
         try:
-            if isinstance(op, dict): op = OpenOrderStrategy(**op)
             action, price = op.action, op.entry_price
             
             # --- Auto-correct LLM TP/SL swapping logic ---
@@ -359,9 +408,13 @@ def close_position_strategy(orders: List[CloseOrder], config_id: str, symbol: st
         execution_results.append(f"❌ [Error] 无法获取 {symbol} 当前价格进行平仓计算: {str(e)}")
         return "\n".join(execution_results)
 
+    try:
+        orders = _normalize_order_models(orders, CloseOrder)
+    except Exception as exc:
+        return f"❌ [Error] 策略平仓参数无效: {exc}"
+
     for op in orders:
         try:
-            if isinstance(op, dict): op = CloseOrder(**op)
             # 用户传的是你要平的仓位方向，例如平多(LONG)，那意味着找到我们做多的单子(BUY)
             target_side = "BUY" if op.pos_side == "LONG" else "SELL"
             

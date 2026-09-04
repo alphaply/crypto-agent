@@ -69,8 +69,9 @@ def _serialize_session(session: dict[str, Any]) -> dict[str, Any]:
 
 def _serialize_chat_messages(messages: list[Any]) -> list[dict[str, Any]]:
     payloads = []
-    for message in messages:
+    for message_index, message in enumerate(messages):
         payload = serialize_message(message)
+        payload["message_index"] = message_index
         if payload.get("role") == "assistant" and isinstance(payload.get("content"), str):
             content = payload["content"]
             prefix, marker, footer = content.rpartition("\n\n---\n>")
@@ -297,6 +298,77 @@ def create_chat_session_payload(
     return {"session_id": session_id, "session": _serialize_session(get_chat_session(session_id) or {})}
 
 
+def fork_chat_session_payload(session_id: str, message_index: int, content: str):
+    """Create a non-destructive branch before an existing user message."""
+    source = get_chat_session(session_id)
+    if not source:
+        raise FileNotFoundError("Chat session not found")
+
+    edited_content = str(content or "").strip()
+    if not edited_content:
+        raise ValueError("Edited message cannot be empty")
+
+    runtime = _effective_session_runtime(source)
+    state = get_chat_state(session_id, config_id=source["config_id"], runtime=runtime)
+    messages = list(state.get("messages") or [])
+    if message_index < 0 or message_index >= len(messages):
+        raise ValueError("Message index is outside the conversation")
+    if not isinstance(messages[message_index], HumanMessage):
+        raise ValueError("Only user messages can be edited")
+
+    sibling_count = sum(
+        1
+        for item in get_chat_sessions(limit=500)
+        if item.get("parent_session_id") == session_id
+        and item.get("fork_message_index") == message_index
+    )
+    branch_number = sibling_count + 2
+    branch_id = str(uuid.uuid4())
+    source_title = str(source.get("title") or "Chat")
+    title = f"{source_title} · Branch {branch_number}"
+    create_chat_session(
+        branch_id,
+        source["config_id"],
+        source["symbol"],
+        title,
+        session_type=str(source.get("session_type") or "task"),
+        runtime_json=str(source.get("runtime_json") or "{}"),
+        parent_session_id=session_id,
+        root_session_id=str(source.get("root_session_id") or session_id),
+        fork_message_index=message_index,
+    )
+    branch = get_chat_session(branch_id) or {}
+    return {
+        "session_id": branch_id,
+        "session": _serialize_session(branch),
+        "message_index": message_index,
+        "content": edited_content,
+    }
+
+
+def _branch_seed_messages(session: dict[str, Any]) -> list[Any]:
+    """Load the immutable prefix used for a branch's first model turn."""
+    parent_session_id = str(session.get("parent_session_id") or "")
+    fork_message_index = session.get("fork_message_index")
+    if not parent_session_id or fork_message_index is None:
+        return []
+
+    parent = get_chat_session(parent_session_id)
+    if not parent:
+        raise FileNotFoundError("Parent chat session not found")
+    parent_runtime = _effective_session_runtime(parent)
+    parent_state = get_chat_state(
+        parent_session_id,
+        config_id=parent["config_id"],
+        runtime=parent_runtime,
+    )
+    messages = list(parent_state.get("messages") or [])
+    index = int(fork_message_index)
+    if index < 0 or index >= len(messages) or not isinstance(messages[index], HumanMessage):
+        raise ValueError("Branch source message is no longer available")
+    return messages[:index]
+
+
 def list_market_symbols_payload(exchange_profile_id: str, market_type: str, keyword: str = "") -> dict[str, Any]:
     profile_id = str(exchange_profile_id or "").strip()
     requested_market = str(market_type or "spot").lower()
@@ -406,6 +478,14 @@ def stream_chat_events(
                 "retry_last": bool(retry),
                 "replace_last_user_message": bool(retry and replace_last),
             }
+            if session.get("parent_session_id"):
+                current_state = get_chat_state(
+                    session_id,
+                    config_id=session["config_id"],
+                    runtime=runtime,
+                )
+                if not current_state.get("messages"):
+                    payload["messages"] = _branch_seed_messages(session)
             generator = stream_chat(session_id, payload, runtime=runtime)
 
         for event in generator:

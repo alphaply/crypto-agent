@@ -123,11 +123,17 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     symbol TEXT NOT NULL,
                     session_type TEXT NOT NULL DEFAULT 'task',
                     runtime_json TEXT NOT NULL DEFAULT '{}',
+                    parent_session_id TEXT,
+                    root_session_id TEXT,
+                    fork_message_index INTEGER,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )''')
     _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'task'")
     _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'")
+    _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN parent_session_id TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN root_session_id TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN fork_message_index INTEGER")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
@@ -282,7 +288,6 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     timestamp TEXT,
                     symbol TEXT,
                     config_id TEXT,
-                    risk_level TEXT,
                     headlines TEXT,
                     source TEXT,
                     raw_json TEXT

@@ -447,11 +447,23 @@ a {
 }
 
 .dashboard-hero .dashboard-fact-grid {
-  padding: 4px;
-  border-radius: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 1px;
+  padding: 1px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--border-soft);
+}
+
+.dashboard-hero .dashboard-fact-item {
+  gap: 4px;
+  padding: 12px;
   background: var(--bg-subtle);
-  /* always 2-col so it stays compact even on mobile */
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+.dashboard-hero .dashboard-fact-value {
+  font-size: 16px;
+  font-weight: 650;
 }
 
 .compare-agent-card .ant-card-head-title,
@@ -462,11 +474,6 @@ a {
   white-space: nowrap;
 }
 
-.compare-compact-table {
-  margin-top: 16px;
-}
-
-/* 移动端任务配置横向滚动容器 */
 .compare-cards-scroll {
   display: contents;
 }
@@ -1596,6 +1603,33 @@ a {
   line-height: 1.7;
 }
 
+.chat-message-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 24px;
+  color: var(--text-secondary);
+}
+
+.chat-message-actions .ant-btn {
+  color: inherit;
+}
+
+.chat-branch-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.chat-branch-switcher > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
 .chat-message-content .markdown-block {
   font-size: 14px;
   line-height: 1.7;
@@ -2557,6 +2591,10 @@ a {
     gap: 12px;
   }
 
+  .dashboard-hero .dashboard-fact-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
   .dashboard-hero .ant-card-body {
     padding: 14px !important;
   }
@@ -2628,6 +2666,10 @@ a {
 }
 
 @media (max-width: 640px) {
+  .page-wrap {
+    padding: 8px;
+  }
+
   .reasoning-block__preview {
     display: none;
   }
@@ -2670,24 +2712,33 @@ a {
     min-width: 0;
   }
 
-  /* Agent 概览卡片：移动端横向滚动 */
-  .agent-overview-grid {
-    display: grid;
-    grid-template-columns: 1fr;
+  /* Keep the selected workspace close to the fold on phones. */
+  .agent-overview-shell {
+    display: flex;
     gap: 10px;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    overflow-x: hidden;
-    padding-bottom: 0;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: thin;
+    padding-bottom: 4px;
+  }
+
+  .agent-overview-compare-chip {
+    flex: 0 0 132px;
+    min-height: 116px;
+    scroll-snap-align: start;
+  }
+
+  .agent-overview-grid {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 10px;
   }
 
   .agent-overview-card {
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-    min-height: 132px;
-    flex: none;
+    width: min(78vw, 310px);
+    min-width: min(78vw, 310px);
+    min-height: 116px;
+    scroll-snap-align: start;
   }
 
   .agent-overview-stats {
@@ -2732,7 +2783,51 @@ a {
   }
 
   .dashboard-page .ant-card-body {
-    padding: 14px;
+    padding: 10px;
+  }
+
+  .dashboard-page > .ant-space,
+  .dashboard-page > .ant-space > .ant-space-item,
+  .dashboard-workspace > *,
+  .dashboard-page .ant-descriptions,
+  .dashboard-page .ant-descriptions-view {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .dashboard-page .panel-card .ant-card-head {
+    min-height: 40px;
+    padding: 0 10px;
+  }
+
+  .dashboard-page .panel-card .ant-card-body {
+    padding: 10px;
+  }
+
+  .dashboard-page .ant-card-head-wrapper {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .dashboard-page .ant-card-head-title,
+  .dashboard-page .ant-card-extra,
+  .dashboard-page .ant-descriptions-item-content,
+  .dashboard-page .ant-descriptions-item-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-page .ant-segmented {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .dashboard-page .task-execution-panel .ant-alert-description,
+  .dashboard-page .task-execution-panel .ant-space,
+  .dashboard-page .task-execution-tools {
+    width: 100%;
+    min-width: 0;
   }
 
   .dashboard-page .ant-table {
@@ -2750,6 +2845,15 @@ a {
   .chat-message-content {
     width: auto;
     max-width: calc(100vw - 56px);
+  }
+
+  .chat-message-actions {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+
+  .chat-message-actions .ant-btn {
+    padding-inline: 6px;
   }
 
   .chat-console-page {
@@ -2877,21 +2981,7 @@ a {
   }
 
   .agent-overview-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 10px;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    overflow-x: hidden;
-    padding-bottom: 0;
-  }
-
-  .agent-overview-card {
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-    flex: none;
+    display: flex;
   }
 }
 
@@ -2913,16 +3003,6 @@ a {
     overflow-x: hidden;
   }
 
-  .agent-overview-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .agent-overview-compare-chip {
-    width: 100%;
-    min-height: 56px;
-  }
-
-  .agent-overview-grid,
   .compare-cards-scroll .dashboard-mobile-list {
     display: grid;
     grid-template-columns: 1fr;
@@ -2934,16 +3014,11 @@ a {
     padding-bottom: 0;
   }
 
-  .agent-overview-card,
   .compare-cards-scroll .dashboard-mobile-card {
     width: 100%;
     min-width: 0;
     max-width: 100%;
     flex: none;
-  }
-
-  .agent-overview-card {
-    min-height: 116px;
   }
 
   .compare-cards-scroll {

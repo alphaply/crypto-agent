@@ -22,9 +22,12 @@ PORT=7860
 RUN_SCHEDULER_IN_WEB=true
 SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
+DAILY_SUMMARY_TIME=00:05
+DAILY_SUMMARY_RETRY_MINUTES=15
 ```
 
 其中 `RUN_SCHEDULER_IN_WEB` 只保留给单进程运行方式；当前 compose 会在服务定义中覆盖它，并单独启动 `crypto-agent-scheduler`。
+每日总结默认在所配置时区的 `00:05` 汇总前一天数据；若调度器错过该时刻，会在恢复后补跑。总结模型调用失败时不会保存 Prompt 回显，并会按 `DAILY_SUMMARY_RETRY_MINUTES` 重试。
 
 启动服务：
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from backend.agent.agent_tools import (
@@ -41,6 +42,11 @@ def get_trade_tools_for_mode(mode: str | None):
 def _normalize_tool_args(tool_name: str, args: Any) -> dict[str, Any]:
     if isinstance(args, dict):
         normalized = dict(args)
+        if isinstance(normalized.get("orders"), str):
+            try:
+                normalized["orders"] = json.loads(normalized["orders"])
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Tool '{tool_name}' orders must be a JSON array: {exc.msg}") from exc
         if tool_name in _CANCEL_TOOL_NAMES and "order_id" not in normalized and "cancel_order_id" in normalized:
             normalized["order_id"] = normalized.pop("cancel_order_id")
         if tool_name in _CANCEL_TOOL_NAMES and not normalized.get("reason"):

@@ -66,6 +66,7 @@ pnpm-debug.log*
 .claude/
 .kiro/
 .cursor/
+.freebuff/
 .DS_Store
 Thumbs.db
 *.swp

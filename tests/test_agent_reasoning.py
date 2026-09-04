@@ -8,6 +8,7 @@ from backend.agent.agent_graph import (
     _stream_agent_response,
     _stream_agent_turn,
     agent_node,
+    finalize_node,
     summarize_content,
 )
 from backend.agent.agent_models import AgentState
@@ -37,7 +38,11 @@ class _StreamingModel:
 
 
 class _ToolStreamWithoutReasoning:
+    def __init__(self):
+        self.calls = 0
+
     def stream(self, messages, config=None):
+        self.calls += 1
         yield AIMessageChunk(
             content="",
             tool_call_chunks=[
@@ -48,14 +53,6 @@ class _ToolStreamWithoutReasoning:
                     "index": 0,
                 }
             ],
-        )
-
-
-class _ReasoningOnlyStream:
-    def stream(self, messages, config=None):
-        yield AIMessageChunk(
-            content="discarded answer",
-            additional_kwargs={"reasoning_content": "visible fallback analysis"},
         )
 
 
@@ -97,17 +94,17 @@ def test_stream_agent_response_preserves_reasoning_tools_and_progress():
     assert "inspect trend" in progress[-1]["reasoning_content"]
 
 
-def test_stream_agent_turn_recovers_reasoning_omitted_by_tool_gateway():
+def test_stream_agent_turn_does_not_replay_when_gateway_omits_reasoning():
+    model = _ToolStreamWithoutReasoning()
     response = _stream_agent_turn(
-        _ToolStreamWithoutReasoning(),
-        _ReasoningOnlyStream(),
+        model,
         [HumanMessage(content="analyze")],
         configurable={},
         run_config={},
-        agent_config={"thinking_enabled": True, "reasoning_effort": "high"},
     )
 
-    assert extract_reasoning_content(response) == "visible fallback analysis"
+    assert extract_reasoning_content(response) == ""
+    assert model.calls == 1
     assert response.content == ""
     assert response.tool_calls[0]["name"] == "trade_tool"
 
@@ -145,7 +142,7 @@ def test_agent_node_builds_reasoning_model_before_binding_tools():
 
     assert model.bound_tools == []
     assert result.messages[-1].content == "done"
-    assert stream_turn.call_args.args[:2] == ("tool-model", model)
+    assert stream_turn.call_args.args == ("tool-model", state.messages)
 
 
 def test_summarize_content_invokes_the_model_it_builds():
@@ -161,6 +158,29 @@ def test_summarize_content_invokes_the_model_it_builds():
 
     with patch("backend.agent.agent_graph.build_chat_model", return_value=_SummaryModel()):
         assert summarize_content("market analysis", config) == "summary"
+
+
+def test_finalize_node_uses_one_summary_request_and_leaves_memory_to_scheduler():
+    state = AgentState(
+        symbol="BTC/USDT",
+        messages=[AIMessage(content="hold position")],
+        market_context={},
+        account_context={},
+        history_context=[],
+    )
+    config = {
+        "configurable": {
+            "config_id": "cfg-test",
+            "agent_config": {"model": "test-model", "mode": "STRATEGY"},
+        }
+    }
+
+    with patch("backend.agent.agent_graph.summarize_content", return_value="summary") as summarize, patch(
+        "backend.agent.agent_graph.database.save_summary"
+    ):
+        finalize_node(state, config)
+
+    summarize.assert_called_once_with("hold position", config["configurable"]["agent_config"])
 
 
 def test_collect_agent_reasoning_preserves_tool_call_stages():

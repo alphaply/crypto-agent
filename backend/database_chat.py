@@ -15,6 +15,9 @@ class ChatSessionStore:
         title: str,
         session_type: str = "task",
         runtime_json: str = "{}",
+        parent_session_id: str | None = None,
+        root_session_id: str | None = None,
+        fork_message_index: int | None = None,
     ) -> None:
         now = self._now_factory()
         with self._conn_factory() as conn:
@@ -24,14 +27,33 @@ class ChatSessionStore:
                 cursor.execute("ALTER TABLE chat_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'task'")
             if "runtime_json" not in columns:
                 cursor.execute("ALTER TABLE chat_sessions ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'")
+            if "parent_session_id" not in columns:
+                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN parent_session_id TEXT")
+            if "root_session_id" not in columns:
+                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN root_session_id TEXT")
+            if "fork_message_index" not in columns:
+                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN fork_message_index INTEGER")
             cursor.execute(
                 '''
                 INSERT INTO chat_sessions (
-                    session_id, title, config_id, symbol, session_type, runtime_json, created_at, updated_at
+                    session_id, title, config_id, symbol, session_type, runtime_json,
+                    parent_session_id, root_session_id, fork_message_index, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
-                (session_id, title, config_id, symbol, session_type, runtime_json, now, now),
+                (
+                    session_id,
+                    title,
+                    config_id,
+                    symbol,
+                    session_type,
+                    runtime_json,
+                    parent_session_id,
+                    root_session_id or session_id,
+                    fork_message_index,
+                    now,
+                    now,
+                ),
             )
             conn.commit()
 

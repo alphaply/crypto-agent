@@ -153,7 +153,7 @@ def test_temporary_chat_renders_full_technical_context_without_task_history(monk
             return {"balance": 1000, "available_balance": 800, "real_positions": [], "real_open_orders": []}
 
     monkeypatch.setattr(chat_graph, "MarketTool", FakeMarketTool)
-    monkeypatch.setattr(chat_graph, "fetch_news_risk_context", lambda *_args, **_kwargs: {"risk_level": "normal", "headlines": ["BTC market headline"], "source": "test"})
+    monkeypatch.setattr(chat_graph, "fetch_news_risk_context", lambda *_args, **_kwargs: {"headlines": ["BTC market headline"], "source": "test"})
 
     updates = chat_graph._start_temporary_chat(
         {"q": "Analyze BTC"},

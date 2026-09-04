@@ -186,6 +186,40 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual([row["strategy_logic"] for row in pending], ["logic-a1", "logic-a2", ""])
         self.assertEqual([row["strategy_logic"] for row in window_rows], ["logic-a2"])
 
+    def test_daily_summary_does_not_save_prompt_echo_as_result(self):
+        from backend.agent import agent_graph
+
+        with database.get_db_conn() as conn:
+            conn.execute(
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                ("2026-08-14 00:01:31", "BTC/USDT", "agent", "cfg-a", "中期空头未改，等待反弹做空。"),
+            )
+            conn.commit()
+
+        cfg = {"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True}
+        prompt_echo = (
+            "以下是 2026-08-14 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾..."
+        )
+        with patch.object(agent_graph.global_config, "get_all_symbol_configs", return_value=[cfg]), \
+            patch.object(agent_graph, "summarize_content", return_value=prompt_echo):
+            generated = agent_graph.generate_manual_daily_summary("cfg-a", "2026-08-14")
+
+        self.assertFalse(generated)
+        self.assertEqual(database.get_daily_summaries("cfg-a", days=7), [])
+
+    def test_daily_summarizer_failure_returns_no_fake_summary(self):
+        from backend.agent import agent_graph
+
+        cfg = {
+            "config_id": "cfg-a",
+            "symbol": "BTC/USDT",
+            "model": "summary-model",
+        }
+        with patch.object(agent_graph, "build_chat_model", side_effect=RuntimeError("upstream unavailable")):
+            summary = agent_graph.summarize_content("daily source input", cfg, summary_type="daily")
+
+        self.assertEqual(summary, "")
+
     def test_short_memory_upserts_by_config_and_bucket(self):
         database.save_short_memory("2026-05-06 00:00:00", "2026-05-06 04:00:00", "BTC/USDT", "btc-a", "A", "P", 2)
         database.save_short_memory("2026-05-06 00:00:00", "2026-05-06 04:00:00", "BTC/USDT", "btc-a", "B", "Q", 3)

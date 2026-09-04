@@ -34,6 +34,18 @@ class CreateSessionRequest(BaseModel):
     runtime: TemporaryChatRuntimeRequest | None = None
 
 
+class ForkSessionRequest(BaseModel):
+    message_index: int = Field(ge=0)
+    content: str = Field(min_length=1, max_length=12000)
+
+
+class ChatStreamRequest(BaseModel):
+    message: str | None = Field(default=None, max_length=12000)
+    approval: bool | None = None
+    retry: bool = False
+    replace_last: bool = False
+
+
 class BulkDeleteSessionsRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
 

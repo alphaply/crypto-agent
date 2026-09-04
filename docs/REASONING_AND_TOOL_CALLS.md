@@ -18,7 +18,7 @@ tool calls made while a model is in reasoning mode.
   `medium` and `xhigh` to `high`; `none` is translated to thinking disabled.
 - `extra_body`: remains available for gateway-specific extensions.
 
-The Web configuration page provides OpenAI/Codex, DeepSeek, and BAI Claude
+The Web configuration page provides OpenAI/Codex, DeepSeek, BAI Claude, and BAI Gemini
 presets. Presets never populate or copy API keys.
 
 ## Display and persistence
@@ -44,6 +44,15 @@ Provider behavior differs even when every model uses `/v1/chat/completions`:
 - Some Claude and Gemini routes report reasoning-token usage but omit any
   displayable reasoning field. The application can show the usage status, but
   cannot reconstruct text that the upstream API did not return.
+
+## Cost behavior
+
+Each agent graph node makes exactly one model request per tool-decision turn.
+Missing displayable reasoning never triggers a second request. A later agent
+request is expected only after a real tool result needs another decision, or
+when the configured retry policy retries a failed request. Finalization makes
+one strategy-summary request; the scheduler generates rolling short memory on
+its separate four-hour cadence.
 
 ## DeepSeek requirement
 

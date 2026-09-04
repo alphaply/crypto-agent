@@ -364,6 +364,9 @@ def create_chat_session(
     title: str,
     session_type: str = "task",
     runtime_json: str = "{}",
+    parent_session_id: str | None = None,
+    root_session_id: str | None = None,
+    fork_message_index: int | None = None,
 ):
     _chat_session_store.create_session(
         session_id,
@@ -372,6 +375,9 @@ def create_chat_session(
         title,
         session_type=session_type,
         runtime_json=runtime_json,
+        parent_session_id=parent_session_id,
+        root_session_id=root_session_id,
+        fork_message_index=fork_message_index,
     )
 
 
@@ -466,18 +472,16 @@ def save_news_snapshot(symbol, config_id, news_context):
         return
     headlines = news_context.get("headlines") or []
     source = news_context.get("source") or ""
-    risk_level = news_context.get("risk_level") or "normal"
     with get_db_conn() as conn:
         conn.execute(
             """
-            INSERT INTO news_snapshots (timestamp, symbol, config_id, risk_level, headlines, source, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO news_snapshots (timestamp, symbol, config_id, headlines, source, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 _current_timestamp(),
                 symbol,
                 config_id,
-                risk_level,
                 json.dumps(headlines, ensure_ascii=False),
                 source,
                 json.dumps(news_context, ensure_ascii=False),
@@ -510,6 +514,7 @@ def get_latest_news_snapshot(symbol=None, config_id=None):
     if not row:
         return None
     payload = dict(row)
+    payload.pop("risk_level", None)
     try:
         payload["headlines"] = json.loads(payload.get("headlines") or "[]")
     except Exception:
@@ -518,6 +523,8 @@ def get_latest_news_snapshot(symbol=None, config_id=None):
         payload["raw"] = json.loads(payload.get("raw_json") or "{}")
     except Exception:
         payload["raw"] = {}
+    payload["raw"].pop("risk_level", None)
+    payload["raw"].pop("risk_reasons", None)
     return payload
 
 
