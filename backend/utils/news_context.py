@@ -782,7 +782,17 @@ def fetch_news_risk_context(symbol: str, limit: int = 10, timeout: float = 8.0) 
     geopolitical = [item for item in classified if item.get("category") == "geopolitical"][:1]
     selected = _dedupe_preserve_order([*events, *critical, *policy, *crypto, *geopolitical])
     selected = selected[:max_items]
-    digest_candidates = _dedupe([*events, *classified])
+    from backend.utils.polymarket import get_polymarket_context, intelligence_items
+
+    try:
+        prediction_context = get_polymarket_context()
+    except Exception as exc:
+        logger.warning("Polymarket context unavailable: %s", exc)
+        prediction_context = {"enabled": True, "events": [], "source_health": {"polymarket": {"status": "unavailable", "error": str(exc)}}}
+    prediction_items = intelligence_items(prediction_context)
+    # Keep configured prediction events visible even when the RSS quota is full.
+    selected = [*selected, *prediction_items]
+    digest_candidates = _dedupe([*prediction_items, *events, *classified])
     digest = _news_digest(digest_candidates, symbol)
     stale = any(result.get("stale") for result in results.values())
     available_count = sum(1 for result in results.values() if result.get("status") in {"ok", "stale"})
@@ -795,6 +805,9 @@ def fetch_news_risk_context(symbol: str, limit: int = 10, timeout: float = 8.0) 
         }
         for key, result in results.items()
     }
+    source_health.update(prediction_context.get("source_health", {}))
+    stale = stale or any(item.get("stale") for item in prediction_context.get("events", []))
+    available_count += len(prediction_context.get("events", []))
     headlines = [_display_title(item) for item in selected]
     crypto_headlines = [_display_title(item) for item in selected if item.get("category") in {"crypto", "critical"}]
     macro_headlines = [_display_title(item) for item in selected if item.get("category") in {"macro_calendar", "macro_policy", "policy", "geopolitical"}]
@@ -806,10 +819,11 @@ def fetch_news_risk_context(symbol: str, limit: int = 10, timeout: float = 8.0) 
         "macro_headlines": macro_headlines,
         "events": events,
         "items": selected,
+        "polymarket": prediction_context,
         "as_of": _iso(now),
         "stale": stale,
         "source_health": source_health,
-        "source": "official_macro+official_policy+us_treasury+cryptocurrency.cv+crypto_rss",
+        "source": "official_macro+official_policy+us_treasury+cryptocurrency.cv+crypto_rss" + ("+polymarket" if prediction_context.get("enabled") else ""),
     }
     if not available_count:
         payload["error"] = "All configured news and macro sources are unavailable"

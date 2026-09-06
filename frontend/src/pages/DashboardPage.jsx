@@ -24,6 +24,7 @@ import {
   message,
 } from 'antd';
 import dayjs from 'dayjs';
+import PolymarketPanel from '../components/PolymarketPanel';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
@@ -355,7 +356,6 @@ function ComparePanel({ dashboard, compareSeries, compareIds, onCompareIdsChange
           <Empty description={t('noData')} />
         )}
       </Card>
-      <NewsSnapshotCard snapshot={dashboard?.news_snapshot} />
     </Space>
   );
 }
@@ -509,12 +509,12 @@ function NewsSnapshotCard({ snapshot }) {
         ? `${Math.max(1, Math.ceil(eventDistance))}h`
         : `${Math.ceil(eventDistance / 24)}d`;
   return (
-    <Card className="panel-card" title={t('newsFlow')}>
+    <Card className="panel-card intelligence-panel" title={t('newsFlow')}>
       {headlines.length ? (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <div className="news-snapshot-meta">
             <Text type="secondary">{snapshot?.timestamp || '-'}</Text>
-            <Text type="secondary">{snapshot?.source || '-'}</Text>
+            <Tag>{isZh ? '宏观 / 政策 / 加密' : 'Macro / Policy / Crypto'}</Tag>
           </div>
           {nextEvent ? (
             <div className="macro-next-event">
@@ -537,7 +537,7 @@ function NewsSnapshotCard({ snapshot }) {
               <div className="news-headline-item" key={`${index}-${headline}`}>
                 <div className="news-headline-row">
                   {items[index]?.category ? <Tag>{items[index].category.replace('_', ' ')}</Tag> : null}
-                  <Text>{headline}</Text>
+                  {items[index]?.url?.startsWith('https://') ? <a href={items[index].url} target="_blank" rel="noreferrer">{headline}</a> : <Text>{headline}</Text>}
                 </div>
               </div>
             ))}
@@ -562,7 +562,6 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
   const shortMemories = workspace?.short_memories?.short_memories || [];
   const recentOrders = workspace?.orders?.orders || [];
   const pendingOrders = kline?.pending_orders || [];
-  const newsSnapshot = workspace?.news_snapshot;
   const spotMode = isSpotMode(agent?.mode || position?.mode);
   const spotStats = position?.dca_stats || {};
 
@@ -720,7 +719,6 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
         </div>
       </Card>
 
-      <NewsSnapshotCard snapshot={newsSnapshot} />
 
       <Card className="panel-card" title={t('analysis')}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -1526,9 +1524,16 @@ export default function DashboardPage() {
               loading={workspaceLoading}
             />
           </div>
-          <Tabs activeKey={activeTab} onChange={setRequestedActiveTab} items={tabItems} className="dashboard-main-tabs" renderTabBar={() => null} />
+          <div className="market-workbench">
+            <Tabs activeKey={activeTab} onChange={setRequestedActiveTab} items={tabItems} className="dashboard-main-tabs" renderTabBar={() => null} />
+            <aside className="intelligence-rail" aria-label="Market intelligence">
+              <PolymarketPanel />
+              <NewsSnapshotCard snapshot={workspaceMap?.[activeTab]?.news_snapshot || dashboard?.news_snapshot} />
+            </aside>
+          </div>
         </div>
       ) : null}
+      {!loading && !(dashboard?.agent_summaries || []).length ? <PolymarketPanel /> : null}
       </Space>
     </div>
   );

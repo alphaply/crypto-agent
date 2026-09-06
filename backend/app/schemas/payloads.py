@@ -1,6 +1,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from backend.utils.polymarket import PolymarketSettings
 
 
 class LoginRequest(BaseModel):
@@ -79,6 +80,7 @@ class GlobalSecretsPayload(BaseModel):
 
 
 class ConfigGlobalPayload(BaseModel):
+    polymarket: PolymarketSettings = Field(default_factory=PolymarketSettings)
     leverage: int = 20
     enable_scheduler: bool = True
     trading_mode: str = "REAL"

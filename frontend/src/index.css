@@ -26,6 +26,55 @@
   --danger: #dc2626;
 }
 
+/* Market workbench: price action and intelligence share the first screen. */
+.boxed-page.dashboard-page { width: min(100%, 1660px); padding: 0; }
+.market-workbench { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start; }
+.market-workbench > *, .intelligence-rail { min-width: 0; }
+.intelligence-rail { display: grid; gap: 18px; }
+.dashboard-page .dashboard-hero { border-top: 3px solid var(--accent) !important; }
+.dashboard-page .agent-overview-shell { grid-template-columns: 120px minmax(0, 1fr); }
+.dashboard-page .agent-overview-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); }
+.dashboard-page .agent-overview-card { min-height: 104px; grid-template-columns: minmax(160px, 1fr) minmax(220px, 1fr); align-items: center; padding: 12px 16px; }
+.dashboard-page .agent-overview-card .dashboard-fact-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.dashboard-page .agent-overview-footer { grid-column: 1 / -1; padding-top: 5px; }
+.dashboard-page .agent-overview-compare-chip { min-height: 64px; }
+.prediction-meta { font-size: 12px; line-height: 1.6; color: var(--text-muted); overflow-wrap: anywhere; }
+.prediction-events { display: grid; gap: 18px; }
+.prediction-event { min-width: 0; padding-bottom: 16px; border-bottom: 1px solid var(--border-soft); }
+.prediction-event-heading { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; overflow-wrap: anywhere; }
+.prediction-event-heading a:hover, .news-headline-row a:hover { color: var(--accent); }
+.prediction-market-list { display: grid; gap: 15px; margin: 16px 0; }
+.prediction-market-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 13px; }
+.prediction-market-heading span { overflow-wrap: anywhere; }
+.prediction-market-heading strong { font: 600 15px var(--font-mono); white-space: nowrap; color: var(--accent); }
+.probability-track { height: 5px; background: var(--bg-subtle); border-radius: 4px; overflow: hidden; margin: 8px 0; }
+.probability-track > span { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.prediction-quote { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px; color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.prediction-panel .ant-alert { margin-bottom: 12px; }
+.signal-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 8px; }
+.prediction-settings-controls { display: flex; gap: 28px; flex-wrap: wrap; }
+.prediction-settings-controls label { display: flex; align-items: center; gap: 12px; }
+.prediction-add-row { display: flex; gap: 10px; }
+.prediction-watchlist { display: grid; gap: 8px; }
+.prediction-watchlist > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; background: var(--bg-subtle); border-radius: 8px; overflow-wrap: anywhere; }
+.prediction-watchlist a { min-width: 0; }
+.intelligence-rail .news-snapshot-meta { flex-wrap: wrap; }
+.intelligence-rail .news-headline-row { display: block; line-height: 1.7; overflow-wrap: anywhere; }
+.intelligence-rail .news-headline-item { padding: 12px 0; }
+.intelligence-rail .news-headline-row .ant-tag { margin-bottom: 4px; font-size: 10px; }
+.intelligence-rail .news-intelligence-digest { border-left: 2px solid var(--accent); padding-left: 12px; }
+@media (max-width: 1150px) {
+  .market-workbench { grid-template-columns: minmax(0, 1fr); }
+  .intelligence-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .intelligence-rail { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-page .agent-overview-shell { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-page .agent-overview-grid { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-page .agent-overview-card { grid-template-columns: minmax(0, 1fr); }
+  .prediction-add-row { flex-wrap: wrap; }
+}
+
 :root[data-theme='dark'] {
   color-scheme: dark;
   --bg-base: #07111f;

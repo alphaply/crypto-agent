@@ -27,12 +27,13 @@ import { ArrowDownOutlined, ArrowUpOutlined, HolderOutlined, FileTextOutlined, P
 import { api } from '../lib/api';
 import { usePreferences } from '../app/usePreferences';
 import { DailySummaryPanel, ShortMemoryPanel } from './DashboardPage';
+import { PolymarketSettings } from '../components/PolymarketPanel';
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 const { useBreakpoint } = Grid;
 const ADMIN_TAB_STORAGE_KEY = 'crypto-agent-admin-active-tab';
-const ADMIN_TAB_KEYS = ['runtime', 'tasks', 'providers', 'exchanges', 'memory', 'prompts', 'importexport'];
+const ADMIN_TAB_KEYS = ['runtime', 'intelligence', 'tasks', 'providers', 'exchanges', 'memory', 'prompts', 'importexport'];
 
 const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}';
 const DEFAULT_DAILY_PROMPT = '请把以下一整天的交易推理压缩成一段中文日内记忆，300字以内。保留趋势演变、关键价位、决策变化、执行动作和风险结论。只输出总结文本。\n\n内容：\n{content}';
@@ -962,6 +963,11 @@ export default function AdminPage() {
         <Card className="panel-card loading-card"><Spin /></Card>
       ) : payload ? (
         <Tabs activeKey={activeAdminTab} onChange={setActiveAdminTab} items={[
+          {
+            key: 'intelligence',
+            label: locale === 'zh' ? '消息源' : 'News sources',
+            children: <PolymarketSettings value={payload.globals.polymarket} onChange={(value) => updateGlobal('polymarket', value)} />,
+          },
           // ===== 运行配置 =====
           {
             key: 'runtime',

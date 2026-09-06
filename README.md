@@ -207,3 +207,7 @@ uv run backend/utils/test_agent_connection.py
 - 生产环境务必设置强 `ADMIN_PASSWORD`
 - 泄露后应立即轮换 `JWT_SECRET` 和相关 API Key
 - 同一份数据库必须长期使用同一个 `CONFIG_MASTER_KEY`
+
+## Polymarket 消息面
+
+支持在后台「配置 → 消息源」添加 Polymarket 事件监控，无需 API key。公开看板以行情主区与消息侧栏并列展示，预测概率也会进入 Agent 的消息上下文。配置及采集机制见 [Polymarket 监控说明](docs/POLYMARKET.md)。

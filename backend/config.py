@@ -79,6 +79,7 @@ class Config:
         self.global_summarizer_api_key = snapshot.get("global_summarizer_api_key", "")
 
         self.enable_scheduler = bool(snapshot.get("enable_scheduler", True))
+        self.polymarket = snapshot.get("polymarket") or {}
         self.leverage = int(snapshot.get("leverage", self.DEFAULT_LEVERAGE))
         self.langchain_tracing = bool(snapshot.get("langchain_tracing", False))
         self.langchain_project = snapshot.get("langchain_project", "crypto-agent")

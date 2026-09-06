@@ -22,6 +22,22 @@ from backend.app.services.config_service import (
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 
+@router.post("/polymarket/test")
+def test_polymarket(payload: dict, _: dict = Depends(get_current_user)):
+    from backend.utils.polymarket import event_slug, fetch_event
+
+    try:
+        slug = event_slug(str(payload.get("event", "")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        from datetime import datetime, timezone
+
+        return {"success": True, "event": {**fetch_event(slug)[0], "fetched_at": datetime.now(timezone.utc).isoformat()}}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Polymarket connection failed: {exc}") from exc
+
+
 @router.get("")
 def get_config(_: dict = Depends(get_current_user)):
     return {"success": True, **get_raw_config_payload()}

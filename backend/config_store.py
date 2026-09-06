@@ -23,6 +23,7 @@ BASE_DIR = PROJECT_ROOT
 DB_NAME = data_file("TRADING_DB_PATH", "trading_data.db")
 
 DEFAULT_GLOBAL_SETTINGS: dict[str, Any] = {
+    "polymarket": {"enabled": False, "events": [], "refresh_seconds": 300},
     "leverage": 20,
     "enable_scheduler": True,
     "trading_mode": "REAL",
@@ -831,6 +832,10 @@ def save_runtime_snapshot(
         if key == "secrets" or key in GLOBAL_SECRET_ENV_MAP:
             continue
         settings[key] = _ensure_jsonable(value)
+
+    from backend.utils.polymarket import PolymarketSettings
+
+    settings['polymarket'] = PolymarketSettings.model_validate(settings['polymarket']).model_dump()
 
     global_secret_updates = dict(globals_payload.get("secrets") or {})
     for secret_key in GLOBAL_SECRET_ENV_MAP:

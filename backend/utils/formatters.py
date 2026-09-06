@@ -158,6 +158,9 @@ def format_market_data_to_text(data: dict) -> str:
         headline_text = "; ".join(str(item) for item in headlines[:10]) if headlines else ("none selected" if news_context.get("available") else "unavailable")
         stale_text = " [cached/stale]" if news_context.get("stale") else ""
         output.append(f"- News context{stale_text}: {headline_text}")
+        predictions = [item['title'] for item in news_context.get('items', []) if item.get('category') == 'prediction_market']
+        if predictions:
+            output.append('- Prediction markets (market prices, not facts): ' + '; '.join(predictions))
         if digest:
             output.append(f"- Compressed news intelligence:\n{digest}")
     output.append("")

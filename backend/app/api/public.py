@@ -14,6 +14,13 @@ from backend.app.services.public_service import (
 router = APIRouter(prefix="/api/public", tags=["public"])
 
 
+@router.get("/polymarket")
+def polymarket():
+    from backend.utils.polymarket import get_polymarket_context
+
+    return {"success": True, **get_polymarket_context()}
+
+
 @router.get("/dashboard")
 def dashboard(symbol: str | None = None):
     return {"success": True, **build_public_dashboard_payload(symbol)}
