@@ -12,6 +12,20 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
 
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute('''CREATE TABLE IF NOT EXISTS real_protection_plans (
+                    config_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY(config_id, symbol, side)
+                )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS real_protection_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    config_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS summaries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

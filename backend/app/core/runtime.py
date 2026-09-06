@@ -20,8 +20,7 @@ def _run_scheduler_once() -> None:
         if _scheduler_thread and _scheduler_thread.is_alive():
             return
         if not scheduler_should_run():
-            logger.info("Scheduler disabled by configuration; API will run without the scheduler thread.")
-            return
+            logger.info("Agent scheduling disabled; keep the lifecycle thread available for existing protection plans.")
         _scheduler_thread = threading.Thread(
             target=run_scheduler_forever,
             daemon=True,

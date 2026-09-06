@@ -1,3 +1,4 @@
+import RunScheduleEditor from '../components/RunScheduleEditor';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -550,6 +551,18 @@ export default function AdminPage() {
   const saveTask = () => {
     if (!editingTask) return;
     const taskToSave = normalizeTaskForSave(editingTask);
+    const invalidRule = (taskToSave.run_schedule || []).findIndex(rule => (
+      !rule.days?.length || !/^([01]\d|2[0-3]):[0-5]\d$/.test(rule.start)
+      || !/^(([01]\d|2[0-3]):[0-5]\d|24:00)$/.test(rule.end) || rule.start === rule.end
+      || !Number.isInteger(rule.interval) || rule.interval < 15 || rule.interval > 1440
+    ));
+    if (invalidRule >= 0) {
+      message.error(locale === 'zh'
+        ? `请检查第 ${invalidRule + 1} 条时段的星期、时间及间隔；全天请填 00:00—24:00。`
+        : `Check weekdays, times and interval in rule ${invalidRule + 1}; use 00:00–24:00 for a full day.`);
+      return;
+    }
+
     const required = [
       ['config_id', 'Config ID'],
       ['symbol', t('symbol')],
@@ -1522,14 +1535,19 @@ export default function AdminPage() {
               children: (
                 <div className="field-grid">
                   <div className="form-field">
-                    <label>Run Interval</label>
-                    <InputNumber min={15} value={editingTask.run_interval ?? 60} onChange={(v) => updateEditingTask('run_interval', v ?? 60)} style={{ width: '100%' }} />
+                    <label>{locale === 'zh' ? '默认运行间隔（分钟）' : 'Default interval (minutes)'}</label>
+                    <InputNumber min={15} max={1440} precision={0} value={editingTask.run_interval ?? 60} onChange={(v) => updateEditingTask('run_interval', v ?? 60)} style={{ width: '100%' }} />
                   </div>
                   {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
                     <div className="form-field">
                       <label>Leverage</label>
                       <InputNumber min={1} value={editingTask.leverage ?? 1} onChange={(v) => updateEditingTask('leverage', v ?? 1)} style={{ width: '100%' }} />
                     </div>
+                  )}
+                  {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
+                    <RunScheduleEditor value={editingTask.run_schedule || []}
+                      onChange={rules => updateEditingTask('run_schedule', rules)}
+                      onPreset={rules => setEditingTask(previous => ({ ...previous, run_schedule: rules, run_interval: 30 }))} />
                   )}
                   {taskMode === 'SPOT_DCA' && (
                     <>

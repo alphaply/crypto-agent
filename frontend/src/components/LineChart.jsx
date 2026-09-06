@@ -1,6 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Grid } from 'antd';
-import ReactECharts from 'echarts-for-react';
+import { init } from 'echarts';
 import { usePreferences } from '../app/usePreferences';
 
 function LineChart({
@@ -12,6 +12,35 @@ function LineChart({
   valueFormatter,
   tooltipFormatter,
 }) {
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    // SVG avoids clearing and repainting a canvas during mobile layout changes.
+    const chart = init(container, undefined, { renderer: 'svg' });
+    chartRef.current = chart;
+    let width = Math.round(container.clientWidth);
+    let height = Math.round(container.clientHeight);
+    let frame;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const nextWidth = Math.round(container.clientWidth);
+        const nextHeight = Math.round(container.clientHeight);
+        if (nextWidth < 1 || nextHeight < 1 || (nextWidth === width && nextHeight === height)) return;
+        width = nextWidth;
+        height = nextHeight;
+        chart.resize({ width, height, animation: { duration: 0 } });
+      });
+    });
+    observer.observe(container);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      chartRef.current = null;
+      chart.dispose();
+    };
+  }, []);
   const { isDark } = usePreferences();
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
@@ -85,15 +114,11 @@ function LineChart({
     })),
   }), [area, isDark, isMobile, series, smooth, tooltipFormatter, valueFormatter, xName, yName]);
 
-  return (
-    <ReactECharts
-      option={option}
-      notMerge={false}
-      replaceMerge={['series']}
-      lazyUpdate
-      style={{ height: '100%', width: '100%' }}
-    />
-  );
+  useEffect(() => {
+    chartRef.current?.setOption(option, { notMerge: false, replaceMerge: ['series'] });
+  }, [option]);
+
+  return <div ref={containerRef} className="equity-line-chart" style={{ height: '100%', width: '100%', minWidth: 0 }} />;
 }
 
 export default React.memo(LineChart);

@@ -22,7 +22,7 @@ def _resolved_market_timeframes(config_payload: dict | None = None) -> list[str]
     timeframes = [str(item).strip() for item in list((config_payload or {}).get("market_timeframes") or []) if str(item).strip()]
     if timeframes:
         return timeframes
-    return [str(item).strip() for item in list(getattr(global_config, "market_timeframes", None) or ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]) if str(item).strip()]
+    return [str(item).strip() for item in list(getattr(global_config, "market_timeframes", None) or ["15m", "1h", "4h", "1d", "1w"]) if str(item).strip()]
 
 
 def _usage_summary(payload: dict) -> dict:

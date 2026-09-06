@@ -82,6 +82,20 @@ class OpenSpotDCASchema(BaseModel):
 class CloseRealSchema(BaseModel):
     orders: List[CloseOrder] = Field(description="平仓指令列表")
 
+
+class UpdateProtectionSchema(BaseModel):
+    pos_side: Literal["LONG", "SHORT"] = Field(description="管理该方向的整个仓位及系统待成交计划")
+    stop_loss: Optional[float] = Field(None, gt=0, allow_inf_nan=False, description="新的止损触发价；省略则保留")
+    take_profit: Optional[float] = Field(None, gt=0, allow_inf_nan=False, description="新的止盈触发价；省略则保留")
+    reason: str = Field(description="调整原因及策略失效条件")
+
+
+class UpdateStrategyProtectionSchema(BaseModel):
+    order_id: str = Field(description="模拟仓位或未成交模拟订单ID")
+    stop_loss: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    take_profit: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    reason: str = Field(description="修改理由及新的策略失效条件")
+
 class CancelRealSchema(BaseModel):
     order_id: str = Field(description="要撤销的单个真实订单 ID。一次工具调用只填写一个订单 ID；多个订单请分别调用多次。")
     reason: str = Field(description="撤单原因，必须说明为什么撤销该订单。")
@@ -144,7 +158,7 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
 
 @tool(args_schema=OpenRealSchema)
 def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str):
-    """【开仓：限价做多或做空】仅在执行 BUY_LIMIT (做多) 或 SELL_LIMIT (做空) 时调用。"""
+    """【实盘开仓并预设TP/SL】必填止盈止损，成交后系统自动挂条件市价保护单，覆盖同方向整个仓位。"""
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
@@ -163,14 +177,15 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
             if _is_duplicate_real_order(action, price, latest.get('real_open_orders', [])):
                 execution_results.append(f"⚠️ [Duplicate] {action} @ {price} 已存在。")
                 continue
-            res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=config_id)
+            from backend.utils.position_protection import PositionProtection
+            res = PositionProtection(market_tool).open(symbol, op)
             if res and 'id' in res:
                 # 优化日志展示：增加金额和数量
                 cost = price * op.amount
                 side_str = "多" if "BUY" in action else "空"
                 enhanced_reason = f"🚀 实盘开{side_str}: {op.amount} {symbol.split('/')[0]} @ {price} (价值: ${cost:.2f}) | {op.reason}"
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
-                execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, op.take_profit, op.stop_loss, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
+                execution_results.append(f"✅ [入场委托已提交，非成交确认] {action} {symbol} @ {price} | ID: {res['id']} | TP={op.take_profit} SL={op.stop_loss} | 保护状态={res.get('protection_state')} | 异常={res.get('protection_error') or '无'}")
             else:
                 execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")
         except Exception as e:
@@ -219,19 +234,9 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             side_str = "多" if op.pos_side == "LONG" else "空"
             enhanced_reason = f"🏁 平{side_str}: {op.amount} {symbol.split('/')[0]} @ {op.entry_price} (价值: ${cost:.2f}) | {op.reason}"
             
-            database.save_order_log(final_log_id, symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, status="CLOSED", event_type="MANUAL_CLOSE")
-            database.upsert_position_history(
-                config_id=config_id,
-                symbol=symbol,
-                position_key=f"real-close:{final_log_id}",
-                side=op.pos_side,
-                status="CLOSED",
-                source="local_real_close_order",
-                closed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                close_price=op.entry_price,
-                amount=op.amount,
-                raw={"order_id": final_log_id, "reason": op.reason},
-            )
+            database.save_order_log(final_log_id, symbol, agent_name, f"CLOSE_{op.pos_side}", op.entry_price, 0, 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, status="OPEN", event_type="CLOSE_ORDER_CREATED")
+            # Position closure and realized PnL must come from fill synchronization,
+            # never from a successful request to place a limit/stop order.
             execution_results.append(f"✅ 下单成功 ({op.pos_side}) @ {op.entry_price} | ID: {final_log_id}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 下单失败: {str(e)}")
@@ -276,6 +281,60 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
         execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
     return "\n".join(execution_results)
 
+
+@tool(args_schema=UpdateProtectionSchema)
+def update_position_protection_real(pos_side: str, reason: str, config_id: str, symbol: str,
+                                    stop_loss: Optional[float] = None, take_profit: Optional[float] = None):
+    """【调整实盘TP/SL】管理同方向整个仓位或已托管待成交计划；省略的价格保留。首次设置须同时给TP和SL。"""
+    if stop_loss is None and take_profit is None:
+        return "❌ 至少提供一个要调整的止盈或止损价格"
+    from backend.utils.position_protection import PositionProtection
+    try:
+        plan = PositionProtection(MarketTool(config_id=config_id)).adjust(symbol, pos_side, stop_loss, take_profit)
+        database.save_order_log(
+            f"protection:{uuid.uuid4().hex}", symbol, config_id, pos_side,
+            0, plan['take_profit'], plan['stop_loss'], reason,
+            trade_mode="REAL", config_id=config_id, event_type="PROTECTION_UPDATED",
+        )
+        return f"保护计划已更新：{pos_side} TP={plan['take_profit']} SL={plan['stop_loss']} 状态={plan['state']}；仅ACTIVE表示本轮已核验保护单。"
+    except Exception as exc:
+        return f"❌ 保护调整未确认完成：{exc}；系统保留已保存计划并继续核对，不能声称已生效。"
+
+
+@tool(args_schema=UpdateStrategyProtectionSchema)
+def update_position_protection_strategy(order_id: str, reason: str, config_id: str, symbol: str,
+                                        stop_loss: Optional[float] = None, take_profit: Optional[float] = None):
+    """【调整模拟TP/SL】按订单ID更新待成交或已成交模拟仓位；未指定的价格不变。"""
+    if stop_loss is None and take_profit is None:
+        return '❌ 至少提供止盈或止损价格'
+    from backend.utils.position_protection import PositionProtection
+    try:
+        with database.get_db_conn() as conn:
+            row = conn.execute("SELECT * FROM mock_orders WHERE order_id=? AND config_id=? AND symbol=? AND status='OPEN'",
+                               (order_id, config_id, symbol)).fetchone()
+        if not row:
+            return '❌ 未找到该配置的活跃模拟订单'
+        reference = float(row['price'])
+        if row['is_filled']:
+            reference = float(MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
+        sl = stop_loss if stop_loss is not None else row['stop_loss']
+        tp = take_profit if take_profit is not None else row['take_profit']
+        side = 'LONG' if 'BUY' in str(row['side']).upper() else 'SHORT'
+        PositionProtection._validate(side, reference, sl, tp)
+        with database.get_db_conn() as conn:
+            changed = conn.execute(
+                "UPDATE mock_orders SET stop_loss=?,take_profit=? WHERE order_id=? AND config_id=? AND status='OPEN' AND is_filled=? AND stop_loss IS ? AND take_profit IS ?",
+                (sl, tp, order_id, config_id, row['is_filled'], row['stop_loss'], row['take_profit']),
+            ).rowcount
+            conn.commit()
+        if not changed:
+            return '❌ 订单状态已变化，请重新读取后再管理'
+        database.save_order_log(f'protection:{uuid.uuid4().hex}', symbol, config_id, side, reference, tp, sl,
+                                reason, trade_mode='STRATEGY', config_id=config_id, event_type='PROTECTION_UPDATED', parent_order_id=order_id)
+        return f'模拟保护已更新：{order_id} TP={tp} SL={sl}'
+    except Exception as exc:
+        return f'❌ 模拟保护更新失败：{exc}'
+
 @tool(args_schema=OpenStrategySchema)
 def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symbol: str):
     """【策略开仓：记录模拟交易】。"""
@@ -294,21 +353,9 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
         try:
             action, price = op.action, op.entry_price
             
-            # --- Auto-correct LLM TP/SL swapping logic ---
-            sl = float(op.stop_loss or 0)
-            tp = float(op.take_profit or 0)
-            if 'BUY' in action:
-                if sl > 0 and tp > 0 and sl > price and tp < price:
-                    sl, tp = tp, sl
-                if sl > price: sl = 0
-                if tp > 0 and tp < price: tp = 0
-            elif 'SELL' in action:
-                if sl > 0 and tp > 0 and sl < price and tp > price:
-                    sl, tp = tp, sl
-                if sl > 0 and sl < price: sl = 0
-                if tp > price: tp = 0
-            # ---------------------------------------------
-            
+            sl = op.stop_loss
+            tp = op.take_profit
+
             # --- Balance & Stacking Checks ---
             order_value = price * op.amount
             if order_value > remaining_available:

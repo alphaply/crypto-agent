@@ -88,9 +88,13 @@ def format_market_data_to_text(data: dict) -> str:
         if not items:
             return "none"
         output = []
-        for item in items[:2]:
+        nearby = [item for item in items if item.get('distance_atr') is None or item['distance_atr'] <= 6]
+        if not nearby:
+            return "none within 6 ATR (historical zones omitted)"
+        for item in sorted(nearby, key=lambda x: x.get('distance_atr') or 0)[:2]:
             bias = item.get("bias", "N/A")
-            output.append(f"{prefix}:{bias}[{item.get('low')}~{item.get('high')}]")
+            suffix = f" age={item['age_bars']} bars dist={item.get('distance_atr')}ATR" if 'age_bars' in item else ''
+            output.append(f"{prefix}:{bias}[{item.get('low')}~{item.get('high')}]{suffix}")
         return ", ".join(output)
 
     def fmt_liquidity(liquidity):
@@ -106,9 +110,10 @@ def format_market_data_to_text(data: dict) -> str:
     def fmt_structure(structure):
         if not structure:
             return "none"
+        suffix = f" age={structure['age_bars']} bars dist={structure.get('distance_atr')}ATR" if 'age_bars' in structure else ''
         return (
             f"{structure.get('scope', 'N/A')} {structure.get('bias', 'N/A')} "
-            f"{structure.get('type', 'N/A')} @ {structure.get('level', 'N/A')}"
+            f"{structure.get('type', 'N/A')} @ {structure.get('level', 'N/A')}{suffix}"
         )
 
     def fmt_smc(smc):
@@ -132,6 +137,8 @@ def format_market_data_to_text(data: dict) -> str:
         sweep_text = "none"
         if latest:
             sweep_text = f"{latest.get('direction', 'N/A')} sweep @ {latest.get('level', 'N/A')}"
+            if 'age_bars' in latest:
+                sweep_text += f" age={latest['age_bars']} bars"
         ifvg = fmt_zone_items(payload.get("inverse_fvg") or [], "IFVG")
         fvg = fmt_zone_items(payload.get("active_fvg") or [], "FVG")
         return f"Liquidity/IFVG: Sweep={sweep_text} | IFVG={ifvg} | FVG={fvg}"
@@ -148,7 +155,8 @@ def format_market_data_to_text(data: dict) -> str:
     output = [
         "[Market Snapshot]",
         f"- Price: {current_price} | Base ATR: {atr_base} | Funding: {funding:.4f}% | OI: {oi}",
-        f"- 24h Vol: {vol_24h} | Long/Short ratio: {ls_ratio} | Account L/S: {ls_accounts}",
+        f"- 24h quote Vol: {vol_24h} | Binance top-position L/S (5m): {ls_ratio} | Global account L/S (5m): {ls_accounts}",
+        "- OI is a snapshot (exchange quantity units); without changes/contract size it is not a directional signal.",
     ]
 
     news_context = data.get("news_context") or {}
@@ -199,6 +207,11 @@ def format_market_data_to_text(data: dict) -> str:
         atr = timeframe_data.get("atr", 0)
         vol_stat = timeframe_data.get("volume_status") or timeframe_data.get("volume_analysis", {}).get("status", "N/A")
         output.append(f"[{tf}] ADX={adx} DI+={di_plus} DI-={di_minus} | ATR={atr} | Vol={vol_stat}")
+        quality = timeframe_data.get('data_quality') or {}
+        if quality:
+            output.append(f"- Data: {quality.get('basis')} | last close={quality.get('last_closed_at')} | stale={quality.get('stale')} | excluded forming={quality.get('forming_candles_excluded')}")
+            if quality.get('ema_warmup_bars'):
+                output.append(f"- EMA warm-up warning (<3x span): {quality['ema_warmup_bars']}")
 
         ema = timeframe_data.get("ema", {})
         ema_line = (
@@ -206,7 +219,7 @@ def format_market_data_to_text(data: dict) -> str:
             f"100={ema.get('ema_100', 0)} / 200={ema.get('ema_200', 0)}"
         )
         if timeframe_data.get("vwap"):
-            ema_line += f" | VWAP={timeframe_data.get('vwap')}"
+            ema_line += f" | VWAP={timeframe_data.get('vwap')} anchor={timeframe_data.get('vwap_anchor') or 'unknown'}"
         output.append(ema_line)
 
         rsi_data = timeframe_data.get("rsi_analysis", {})
@@ -220,7 +233,7 @@ def format_market_data_to_text(data: dict) -> str:
         )
 
         bb = timeframe_data.get("bollinger", {})
-        output.append(f"- BB: Up={bb.get('up', 0)} Low={bb.get('low', 0)} Width={bb.get('width', 0)}")
+        output.append(f"- BB(20,2σ,population): Up={bb.get('up', 'N/A')} Low={bb.get('low', 'N/A')} Width={bb.get('width', 'N/A')} %B={bb.get('percent_b', 'N/A')} width percentile(120)={bb.get('width_percentile_120', 'N/A')}")
 
         vp = timeframe_data.get("vp") or {}
         if vp:
@@ -229,12 +242,14 @@ def format_market_data_to_text(data: dict) -> str:
                 f"- Volume Profile: POC={vp.get('poc', 0)} VAH={vp.get('vah', 0)} "
                 f"VAL={vp.get('val', 0)} HVN={hvns}"
             )
+            if vp.get('window_bars'):
+                output.append(f"  Window={vp['window_bars']} bars from {vp.get('window_start')} UTC; {vp.get('method')}")
 
         closes = timeframe_data.get("recent_closes", [])
         opens = timeframe_data.get("recent_opens", [])
         highs = timeframe_data.get("recent_highs", [])
         lows = timeframe_data.get("recent_lows", [])
-        if closes and len(closes) == len(opens) == len(highs) == len(lows):
+        if tf not in {'1d', '1w', '1M'} and closes and len(closes) == len(opens) == len(highs) == len(lows):
             ohlc_list = [
                 f"[{open_},{high},{low},{close}]"
                 for open_, high, low, close in zip(opens[-10:], highs[-10:], lows[-10:], closes[-10:])

@@ -17,6 +17,7 @@ def test_trade_tools_for_real_mode_include_cancel_real():
         "open_position_real",
         "close_position_real",
         "cancel_orders_real",
+        "update_position_protection_real",
     ]
 
 
@@ -32,6 +33,7 @@ def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
         "open_position_strategy",
         "cancel_orders_strategy",
         "close_position_strategy",
+        "update_position_protection_strategy",
     ]
 
 

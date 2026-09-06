@@ -17,10 +17,6 @@ const EMA_COLORS = {
   '200': '#ef4444',
 };
 
-function asChartTime(unixSeconds) {
-  return Number(unixSeconds);
-}
-
 function formatChartPrice(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return '-';
@@ -34,9 +30,11 @@ function formatTooltipTime(time) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export default function KlineChart({ payload }) {
+export default function KlineChart({ payload, chartKey }) {
   const containerRef = useRef(null);
   const tooltipRef = useRef(null);
+  const updateRef = useRef(null);
+  const themeRef = useRef(null);
   const { isDark, t } = usePreferences();
   const payloadFingerprint = useMemo(
     () => JSON.stringify({
@@ -51,11 +49,12 @@ export default function KlineChart({ payload }) {
   );
 
   useEffect(() => {
-    if (!containerRef.current || !payload?.candles?.length) {
+    if (!containerRef.current) {
       return undefined;
     }
 
     const container = containerRef.current;
+    const isDark = false; // Theme is applied by the separate effect without replacing the chart.
     const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
     const chart = createChart(container, {
       width: container.clientWidth,
@@ -97,14 +96,8 @@ export default function KlineChart({ payload }) {
       },
     });
 
-    const candleData = payload.candles.map((item) => ({
-      time: asChartTime(item.time),
-      open: Number(item.open),
-      high: Number(item.high),
-      low: Number(item.low),
-      close: Number(item.close),
-    }));
-
+    let candleData = [];
+    let updating = false;
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#16a34a',
       downColor: '#dc2626',
@@ -114,7 +107,7 @@ export default function KlineChart({ payload }) {
       lastValueVisible: true,
       priceLineVisible: true,
     });
-    candleSeries.setData(candleData);
+
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
@@ -125,52 +118,9 @@ export default function KlineChart({ payload }) {
     volumeSeries.priceScale().applyOptions({
       scaleMargins: { top: 0.78, bottom: 0 },
     });
-    volumeSeries.setData(
-      (payload.volume || []).map((item) => ({
-        time: asChartTime(item.time),
-        value: Number(item.value),
-        color: item.color,
-      })),
-    );
-
     const emaSeriesMap = [];
-    Object.entries(payload.emas || {}).forEach(([span, values]) => {
-      const color = EMA_COLORS[span] || '#64748b';
-      const series = chart.addSeries(LineSeries, {
-        color,
-        lineWidth: 2,
-        lastValueVisible: false,
-        priceLineVisible: false,
-      });
-      series.setData(
-        values.map((item) => ({
-          time: asChartTime(item.time),
-          value: Number(item.value),
-        })),
-      );
-      emaSeriesMap.push({ span, series, color });
-    });
-
-    const lastTime = payload.candles[payload.candles.length - 1]?.time;
-    const staticMarkers = [];
-
-    (payload.positions || []).forEach((position) => {
-      if (!lastTime) {
-        return;
-      }
-      staticMarkers.push({
-        time: asChartTime(lastTime),
-        position: position.side === 'SHORT' ? 'aboveBar' : 'belowBar',
-        color: position.side === 'SHORT' ? '#ef4444' : '#22c55e',
-        shape: position.side === 'SHORT' ? 'arrowDown' : 'arrowUp',
-        text: '',
-      });
-    });
-
-    // pending_orders circle markers intentionally omitted
-
-    const markerApi = createSeriesMarkers(candleSeries, staticMarkers);
-
+    let staticMarkers = [];
+    const markerApi = createSeriesMarkers(candleSeries, []);
     const priceLines = [];
     let visibleExtremaPriceLines = [];
 
@@ -180,19 +130,21 @@ export default function KlineChart({ payload }) {
     };
 
     const updateVisibleExtrema = (logicalRange) => {
-      if (!logicalRange) return;
+      if (updating || !logicalRange) return;
       clearVisibleExtremaPriceLines();
 
       const from = Math.max(0, Math.floor(logicalRange.from));
       const to = Math.min(candleData.length - 1, Math.ceil(logicalRange.to));
       const visibleCandles = candleData.slice(from, to + 1);
-      if (!visibleCandles.length) return;
+      if (!visibleCandles.length) {
+        markerApi.setMarkers(staticMarkers);
+        return;
+      }
 
       const highest = visibleCandles.reduce((best, item) => (!best || item.high > best.high ? item : best), null);
       const lowest = visibleCandles.reduce((best, item) => (!best || item.low < best.low ? item : best), null);
       const extremaMarkers = [];
 
-      // 仅 PC 端显示 High/Low price lines（移动端已在上面 return 了）
       if (highest) {
         extremaMarkers.push({
           time: highest.time,
@@ -233,64 +185,117 @@ export default function KlineChart({ payload }) {
         );
       }
 
-      markerApi.setMarkers([...extremaMarkers, ...staticMarkers]);
+      markerApi.setMarkers([...extremaMarkers, ...staticMarkers].sort((a, b) => a.time - b.time));
     };
 
-    (payload.positions || []).forEach((position) => {
-      if (!position.entry_price) {
-        return;
+    let previousKey;
+    let initialized = false;
+    updateRef.current = (nextPayload, nextKey) => {
+      updating = true;
+      if (tooltipRef.current) tooltipRef.current.style.display = 'none';
+      const range = chart.timeScale().getVisibleLogicalRange();
+      const oldFirst = candleData[0]?.time;
+      candleData = (nextPayload?.candles || []).map(item => ({
+        time: Number(item.time), open: Number(item.open), high: Number(item.high),
+        low: Number(item.low), close: Number(item.close),
+      }));
+      clearVisibleExtremaPriceLines();
+      markerApi.setMarkers([]);
+      candleSeries.setData(candleData);
+      volumeSeries.setData((nextPayload?.volume || []).map(item => ({ ...item, time: Number(item.time), value: Number(item.value) })));
+      const emas = nextPayload?.emas || {};
+      for (let index = emaSeriesMap.length - 1; index >= 0; index -= 1) {
+        if (!(emaSeriesMap[index].span in emas)) {
+          chart.removeSeries(emaSeriesMap[index].series);
+          emaSeriesMap.splice(index, 1);
+        }
       }
-      priceLines.push(
-        candleSeries.createPriceLine({
-          price: Number(position.entry_price),
-          color: position.side === 'SHORT' ? '#f97316' : '#22c55e',
-          lineWidth: 2,
-          lineStyle: 2,
-          axisLabelVisible: true,
-          title: '',
-        }),
-      );
-    });
+      Object.entries(emas).forEach(([span, values]) => {
+        let entry = emaSeriesMap.find(item => item.span === span);
+        if (!entry) {
+          const color = EMA_COLORS[span] || '#64748b';
+          entry = { span, color, series: chart.addSeries(LineSeries, { color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false }) };
+          emaSeriesMap.push(entry);
+        }
+        entry.series.setData(values.map(item => ({ time: Number(item.time), value: Number(item.value) })));
+      });
+      const lastTime = candleData.at(-1)?.time;
+      staticMarkers = lastTime ? (nextPayload?.positions || []).map(position => ({
+        time: lastTime, position: position.side === 'SHORT' ? 'aboveBar' : 'belowBar',
+        color: position.side === 'SHORT' ? '#ef4444' : '#22c55e',
+        shape: position.side === 'SHORT' ? 'arrowDown' : 'arrowUp', text: '',
+      })) : [];
+      priceLines.splice(0).forEach(line => candleSeries.removePriceLine(line));
+      const payload = nextPayload || {};
+      (payload.positions || []).forEach((position) => {
+        if (!position.entry_price) {
+          return;
+        }
+        priceLines.push(
+          candleSeries.createPriceLine({
+            price: Number(position.entry_price),
+            color: position.side === 'SHORT' ? '#f97316' : '#22c55e',
+            lineWidth: 2,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: '',
+          }),
+        );
+      });
 
-    (payload.pending_orders || []).forEach((order) => {
-      if (!order.price) {
-        return;
+      (payload.pending_orders || []).forEach((order) => {
+        if (!order.price) {
+          return;
+        }
+        priceLines.push(
+          candleSeries.createPriceLine({
+            price: Number(order.price),
+            color: '#38bdf8',
+            lineWidth: 1,
+            lineStyle: 1,
+            axisLabelVisible: true,
+            title: '',
+          }),
+        );
+      });
+
+      (payload.risk_lines || []).forEach((line) => {
+        if (!line.price) {
+          return;
+        }
+        priceLines.push(
+          candleSeries.createPriceLine({
+            price: Number(line.price),
+            color: line.type === 'take_profit' ? '#16a34a' : '#ef4444',
+            lineWidth: 1,
+            lineStyle: 3,
+            axisLabelVisible: true,
+            title: '',
+          }),
+        );
+      });
+
+
+      if (candleData.length) {
+        if (!initialized || previousKey !== nextKey) {
+          chart.timeScale().setVisibleLogicalRange({ from: 0, to: candleData.length - 1 + (isMobile() ? 2 : 4) });
+        } else if (range) {
+          // Rolling candle windows remove bars at the left; retain the same timestamps and zoom.
+          const step = candleData[1]?.time - candleData[0]?.time;
+          const shift = step > 0 && oldFirst ? (oldFirst - candleData[0].time) / step : 0;
+          chart.timeScale().setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
+        }
+        initialized = true;
       }
-      priceLines.push(
-        candleSeries.createPriceLine({
-          price: Number(order.price),
-          color: '#38bdf8',
-          lineWidth: 1,
-          lineStyle: 1,
-          axisLabelVisible: true,
-          title: '',
-        }),
-      );
-    });
-
-    (payload.risk_lines || []).forEach((line) => {
-      if (!line.price) {
-        return;
-      }
-      priceLines.push(
-        candleSeries.createPriceLine({
-          price: Number(line.price),
-          color: line.type === 'take_profit' ? '#16a34a' : '#ef4444',
-          lineWidth: 1,
-          lineStyle: 3,
-          axisLabelVisible: true,
-          title: '',
-        }),
-      );
-    });
-
-    const rightPaddingBars = isMobile() ? 2 : 4;
-    chart.timeScale().setVisibleLogicalRange({
-      from: 0,
-      to: candleData.length - 1 + rightPaddingBars,
-    });
-    updateVisibleExtrema(chart.timeScale().getVisibleLogicalRange());
+      previousKey = nextKey;
+      updating = false;
+      updateVisibleExtrema(chart.timeScale().getVisibleLogicalRange());
+    };
     chart.timeScale().subscribeVisibleLogicalRangeChange(updateVisibleExtrema);
+    themeRef.current = (dark) => chart.applyOptions({
+      layout: { background: { type: 'solid', color: dark ? '#08111f' : '#f8fbff' }, textColor: dark ? '#dbeafe' : '#1e293b' },
+      grid: { vertLines: { color: dark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.15)' }, horzLines: { color: dark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.15)' } },
+    });
 
     // OHLC crosshair tooltip
     const tooltipEl = tooltipRef.current;
@@ -372,16 +377,18 @@ export default function KlineChart({ payload }) {
       chart.unsubscribeCrosshairMove(crosshairHandler);
       clearVisibleExtremaPriceLines();
       priceLines.forEach((line) => candleSeries.removePriceLine(line));
+      updateRef.current = null;
+      themeRef.current = null;
       chart.remove();
     };
-  }, [isDark, payloadFingerprint]);
+  }, []);
 
-  if (!payload?.candles?.length) {
-    return <Empty description={t('noData')} />;
-  }
+  useEffect(() => { updateRef.current?.(JSON.parse(payloadFingerprint), chartKey); }, [payloadFingerprint, chartKey]);
+  useEffect(() => { themeRef.current?.(isDark); }, [isDark]);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {!payload?.candles?.length && <div style={{ position: 'absolute', inset: 0, zIndex: 1 }}><Empty description={t('noData')} /></div>}
       <div ref={containerRef} className="trading-chart" />
       <div ref={tooltipRef} className="kline-tooltip" style={{ display: 'none' }} />
       {payload?.emas && Object.keys(payload.emas).length > 0 && (

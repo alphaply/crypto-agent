@@ -385,7 +385,7 @@ class MarketTool:
 
         try:
             # 去掉 symbol 中的 :USDT 等后缀，币安 API 通常只需要 BTCUSDT
-            clean_symbol = symbol.replace(':', '').replace('/', '')
+            clean_symbol = self.exchange.market(symbol)['id']
             
             # 1. 全球多空人数比 (Global Long/Short Account Ratio)
             try:
@@ -669,7 +669,7 @@ class MarketTool:
                             {
                                 'symbol': p['symbol'],
                                 'side': str(p.get('side', '')).upper(), # 'LONG' or 'SHORT'
-                                'amount': float(p['contracts']),
+                                'amount': float(p['contracts']) * float(p.get('contractSize') or 1),
                                 'entry_price': float(p['entryPrice']),
                                 'unrealized_pnl': float(p['unrealizedPnl'])
                             } for p in all_positions if float(p['contracts']) > 0
@@ -699,15 +699,20 @@ class MarketTool:
                         logger.info(f"  Order #{i}: ID={o.get('id')} Type={o.get('type')} Status={o.get('status')} Price={o.get('price')} StopPrice={o.get('stopPrice')} Amount={o.get('amount')} RawInfo={o.get('info')}")
                     
                     filtered_orders = []
+                    seen_order_keys = set()
                     for o in all_orders:
                         # 从 exchange 的原始响应中提取 positionSide (针对币安 USDM)
                         # ccxt 统一结构中通常在 o['info']['positionSide']
                         info = o.get('info', {})
-                        pos_side = info.get('positionSide', 'BOTH')
+                        key = (str(o.get('id')), str(info.get('algoId') or ''))
+                        if key in seen_order_keys:
+                            continue
+                        seen_order_keys.add(key)
+                        pos_side = str(info.get('positionSide') or info.get('posSide') or 'BOTH').upper()
                         
                         # 核心修复：处理条件单 (STOP_MARKET, TAKE_PROFIT_MARKET 等)
                         # 这些订单在 fetch_open_orders 中 price 为 0 或 None，实际价格在 stopPrice 中
-                        order_type = o.get('type', '').upper()
+                        order_type = str(info.get('orderType') or info.get('type') or info.get('ordType') or o.get('type') or '').upper()
                         
                         # 安全转换 float
                         def safe_float(val, default=0.0):
@@ -720,17 +725,23 @@ class MarketTool:
                         price = safe_float(o.get('price'))
                         # 尝试从多个地方获取数量：ccxt 标准字段 -> info['origQty'] -> info['qty']
                         amount = safe_float(o.get('amount') or info.get('origQty') or info.get('qty'))
+                        market = self.exchange.market(symbol) if hasattr(self.exchange, 'market') else {}
+                        if market.get('contract'):
+                            amount *= float(market.get('contractSize') or 1)
                         
                         # 特殊处理：如果是全平委托 (closePosition: true)，数量会显示为 0
                         # 此时我们需要从持仓中找到实际对应的数量，否则 Agent 看到数量为 0 会误判从而撤销并重新挂单
-                        if amount == 0 and str(info.get('closePosition', '')).lower() == 'true':
+                        close_all = str(info.get('closePosition', '')).lower() == 'true' or str(info.get('closeFraction') or '') == '1'
+                        if close_all and pos_side in {'BOTH', 'NET'}:
+                            pos_side = 'LONG' if o.get('side') == 'sell' else 'SHORT'
+                        if amount == 0 and close_all:
                             for pos in status_data.get("real_positions", []):
                                 if pos["side"] == pos_side.upper():
                                     amount = pos["amount"]
                                     break
                         
                         # 尝试从多个位置获取触发价 (stopPrice)
-                        stop_price = safe_float(o.get('stopPrice') or info.get('stopPrice') or info.get('triggerPrice'))
+                        stop_price = safe_float(o.get('triggerPrice') or o.get('stopLossPrice') or o.get('takeProfitPrice') or o.get('stopPrice') or info.get('stopPrice') or info.get('triggerPrice') or info.get('slTriggerPx') or info.get('tpTriggerPx'))
                         
                         # 如果是条件单且价格为0，则使用触发价作为显示价格
                         if price == 0 and stop_price > 0:
@@ -740,6 +751,8 @@ class MarketTool:
                         display_type = order_type
                         if 'STOP' in order_type: display_type = "STOP"
                         if 'TAKE_PROFIT' in order_type: display_type = "TP"
+                        if info.get('slTriggerPx') or o.get('stopLossPrice'): display_type = 'STOP'
+                        if info.get('tpTriggerPx') or o.get('takeProfitPrice'): display_type = 'TP'
 
                         filtered_orders.append({
                             'order_id': str(o.get('id')),
@@ -789,7 +802,7 @@ class MarketTool:
             except Exception:
                 timeframes = []
             if not timeframes:
-                timeframes = ['15m', '30m', '1h', '4h', '1d', '1w', '1M']
+                timeframes = ['15m', '1h', '4h', '1d', '1w']
 
         final_output = {
             "symbol": symbol,
@@ -844,6 +857,25 @@ class MarketTool:
             logger.debug(f"    ✅ [{tf}] Got {len(ohlcv)} candles, calculating indicators...")
             df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
             df['time'] = pd.to_datetime(df['time'], unit='ms')
+            df = df.sort_values('time').drop_duplicates('time', keep='last').reset_index(drop=True)
+            now_utc = pd.Timestamp.now(tz='UTC').tz_localize(None)
+            durations = {'1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600,
+                         '4h': 14400, '1d': 86400, '1w': 604800}
+            close_times = (df['time'] + pd.DateOffset(months=1) if tf == '1M'
+                           else df['time'] + pd.to_timedelta(durations[tf], unit='s'))
+            forming_count = int((close_times > now_utc).sum())
+            df = df.loc[close_times <= now_utc].reset_index(drop=True)
+            if len(df) < min_bars:
+                return None
+            last_closed_at = (df['time'].iloc[-1] + pd.DateOffset(months=1) if tf == '1M'
+                              else df['time'].iloc[-1] + pd.Timedelta(seconds=durations[tf]))
+            quality = {
+                'basis': 'closed_candles_only', 'last_closed_at': str(last_closed_at) + ' UTC',
+                'forming_candles_excluded': forming_count, 'bars': len(df),
+                'age_seconds': max(0, int((now_utc - last_closed_at).total_seconds())),
+                'stale': (now_utc - last_closed_at).total_seconds() > durations.get(tf, 2678400) * 2,
+                'ema_warmup_bars': {str(span): len(df) for span in (20, 50, 100, 200) if len(df) < span * 3},
+            }
             
             close = df['close']
             high = df['high']
@@ -888,6 +920,8 @@ class MarketTool:
             vp_length = self.VP_LENGTH_MAP.get(tf, 360)
             vp = calculate_vp(df, length=vp_length)
             if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": []}
+            vp.update(window_bars=min(vp_length, len(df)), window_start=str(df['time'].iloc[-min(vp_length, len(df))]),
+                      method='OHLCV volume allocation approximation; not holder cost distribution')
             
             # ================= 新增：MACD Hist 动量标注 =================
             hist_prev = float(hist.iloc[-2])
@@ -930,6 +964,7 @@ class MarketTool:
                 rsi_result["divergence"] = rsi_divergence
 
             result = {
+                "data_quality": quality,
                 "price": smart_fmt(curr_close),
                 "trend": {
                     "status": "",
@@ -980,6 +1015,20 @@ class MarketTool:
             # VWAP 仅在日内周期输出
             if vwap_val is not None:
                 result["vwap"] = vwap_val
+                result["vwap_anchor"] = str(df['time'].iloc[-1].floor('D')) + ' UTC (typical-price approximation)'
+            band_range = float(bb_up.iloc[-1] - bb_low.iloc[-1])
+            result['bollinger']['percent_b'] = round((float(curr_close) - float(bb_low.iloc[-1])) / band_range, 3) if band_range > 0 else None
+            result['bollinger']['width_percentile_120'] = round(float((bb_width.tail(120).dropna() <= bb_width.iloc[-1]).mean()) * 100, 1)
+            for span in (20, 50, 100, 200):
+                if len(df) < span:
+                    result['ema'][f'ema_{span}'] = None
+            if len(df) <= 14:
+                result['rsi_analysis']['rsi'] = None
+                result['atr'] = None
+            if len(df) < 20:
+                result['bollinger'] = {'available': False, 'reason': 'requires 20 closed candles'}
+            if len(df) < 35:
+                result['macd'] = {'available': False, 'reason': 'insufficient warm-up (<35 closed candles)'}
 
             logger.debug(f"    ✅ [{tf}] Indicators calculated (price={result['price']}, atr={result['atr']}, momentum={macd_momentum})")
             return result
@@ -1033,10 +1082,19 @@ class MarketTool:
                         close_side = 'sell' if side == 'long' else 'buy'
                         
                         # 确定数量：部分平仓 vs 全平
-                        final_amt = raw_close_amount if (0 < raw_close_amount < amt) else amt
+                        contract_size = float(pos.get('contractSize') or 1)
+                        requested_contracts = raw_close_amount / contract_size
+                        final_amt = requested_contracts if (0 < requested_contracts < amt) else amt
                         formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
 
-                        params = {'positionSide': current_pos_side_str}
+                        is_okx = getattr(self.exchange, 'id', '') == 'okx'
+                        hedged = bool(pos.get('hedged', True))
+                        if is_okx:
+                            params = {'hedged': hedged, 'reduceOnly': True}
+                        else:
+                            params = {'positionSide': current_pos_side_str if hedged else 'BOTH'}
+                            if not hedged:
+                                params['reduceOnly'] = True
                         
                         order = None
                         if raw_close_price > 0:
@@ -1065,14 +1123,15 @@ class MarketTool:
                                 if merged_ids:
                                     formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
                                     logger.info(f"🔗 [CLOSE-MERGE] merged {len(merged_ids)} stop orders -> {formatted_amt} @ {formatted_price}")
-                                params['stopPrice'] = float(formatted_price) # 触发价格
+                                params['stopLossPrice' if is_okx else 'stopPrice'] = float(formatted_price)
                                 is_full_close_stop = final_amt >= amt
-                                if is_full_close_stop:
+                                if is_full_close_stop and not is_okx:
                                     params['closePosition'] = True
+                                    params.pop('reduceOnly', None)
                                 
                                 # 注意：STOP_MARKET 通常不需要传 price 参数 (传 None)，但需要 stopPrice
-                                order_amount = None if is_full_close_stop else final_amt
-                                order = self.exchange.create_order(symbol, order_type, close_side, order_amount, None, params=params)
+                                order_amount = None if is_full_close_stop and not is_okx else final_amt
+                                order = self.exchange.create_order(symbol, 'market' if is_okx else order_type, close_side, order_amount, None, params=params)
 
                             else:
                                 logger.info(f"💰 [CLOSE-TP] 检测到止盈场景 (现价 {current_price} -> 目标 {formatted_price})")

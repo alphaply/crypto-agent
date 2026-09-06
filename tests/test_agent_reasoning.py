@@ -160,7 +160,7 @@ def test_summarize_content_invokes_the_model_it_builds():
         assert summarize_content("market analysis", config) == "summary"
 
 
-def test_finalize_node_uses_one_summary_request_and_leaves_memory_to_scheduler():
+def test_finalize_node_updates_memory_after_strategy_summary():
     state = AgentState(
         symbol="BTC/USDT",
         messages=[AIMessage(content="hold position")],
@@ -177,10 +177,11 @@ def test_finalize_node_uses_one_summary_request_and_leaves_memory_to_scheduler()
 
     with patch("backend.agent.agent_graph.summarize_content", return_value="summary") as summarize, patch(
         "backend.agent.agent_graph.database.save_summary"
-    ):
+    ), patch("backend.agent.agent_graph.update_turn_memory") as update_memory:
         finalize_node(state, config)
 
     summarize.assert_called_once_with("hold position", config["configurable"]["agent_config"])
+    update_memory.assert_called_once_with("cfg-test", config["configurable"]["agent_config"], "summary", state.messages)
 
 
 def test_collect_agent_reasoning_preserves_tool_call_stages():

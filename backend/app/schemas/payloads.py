@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from backend.utils.polymarket import PolymarketSettings
+from backend.utils.run_schedule import RunScheduleRule
 
 
 class LoginRequest(BaseModel):
@@ -90,7 +91,7 @@ class ConfigGlobalPayload(BaseModel):
     llm_max_retries: int = 2
     global_summarizer_model: str = ""
     global_summarizer_api_base: str = ""
-    market_timeframes: list[str] = Field(default_factory=lambda: ["15m", "30m", "1h", "4h", "1d", "1w", "1M"])
+    market_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h", "4h", "1d", "1w"])
     secrets: GlobalSecretsPayload = Field(default_factory=GlobalSecretsPayload)
 
 
@@ -142,6 +143,7 @@ class ConfigAgentPayload(BaseModel):
     temperature: float | None = None
     prompt_file: str | None = None
     run_interval: int | None = None
+    run_schedule: list[RunScheduleRule] = Field(default_factory=list, max_length=20)
     leverage: int | None = None
     market_timeframes: list[str] | None = None
     exchange: str | None = None

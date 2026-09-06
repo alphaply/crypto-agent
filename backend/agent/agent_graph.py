@@ -151,7 +151,7 @@ def resolve_market_timeframes(agent_config: dict | None = None) -> list[str]:
     if global_timeframes:
         return global_timeframes
 
-    return ['15m', '30m', '1h', '4h', '1d', '1w', '1M']
+    return ['15m', '1h', '4h', '1d', '1w']
 TZ_US = pytz.timezone('America/New_York')
 logger = setup_logger("AgentGraph")
 load_dotenv()
@@ -163,14 +163,9 @@ def calculate_next_run_time(agent_config, now_cn):
     mode = agent_config.get('mode', 'STRATEGY').upper()
 
     if mode in ['REAL', 'STRATEGY']:
-        default_interval = 60 if mode == 'STRATEGY' else 15
-        interval = int(agent_config.get('run_interval', default_interval))
-        if interval < 15:
-            interval = 15
-        minutes_since_midnight = now_cn.hour * 60 + now_cn.minute
-        next_total_minutes = ((minutes_since_midnight // interval) + 1) * interval
-        next_run = now_cn.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
-        return next_run.strftime('%H:%M')
+        from backend.utils.run_schedule import next_scheduled_run
+        next_run = next_scheduled_run(agent_config, now_cn)
+        return next_run.strftime('%m-%d %H:%M %Z') if next_run else 'N/A'
 
     elif mode == 'SPOT_DCA':
         dca_time_str = agent_config.get('dca_time', '08:00')
@@ -234,7 +229,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
 """
         default_prompts = {
             "strategy": "请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}",
-            "daily": "请把以下一整天的交易推理压缩成一段中文日内记忆，300字以内。保留趋势演变、关键价位、决策变化、执行动作和风险结论。只输出总结文本。\n\n内容：\n{content}",
+            "daily": "请依据以下策略和执行证据生成每日复盘，600字以内。包含市场与策略演变、实际成交与结果、计划执行偏差、风险教训和次日条件；计划不等于成交，缺失盈亏/费用标记未知，不重复计数。只输出复盘文本。\n\n内容：\n{content}",
             "short_memory": "请把以下最近一段时间的交易总结滚动压缩成中文短期记忆，400-600字。保留市场状态、连续决策变化、持仓/挂单变化、关键价位、已实现/未实现盈亏和风险提醒。只输出总结文本。\n\n内容：\n{content}",
         }
         prompt_text_key = {
@@ -314,7 +309,12 @@ def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
         
     try:
         rows = get_pending_daily_summary_data(config_id, date_str)
-        if not rows:
+        from backend.utils.trade_review import daily_execution_evidence, daily_exchange_evidence
+        execution_evidence = daily_execution_evidence(config_id, date_str)
+        exchange_evidence = daily_exchange_evidence(target_config, date_str)
+        if exchange_evidence:
+            execution_evidence += '\n\n' + exchange_evidence
+        if not rows and not execution_evidence:
             logger.info(f"No summary data found for {config_id} on {date_str}")
             return False
             
@@ -322,12 +322,14 @@ def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
             f"[{r['timestamp']}] {r['strategy_logic']}"
             for r in rows if r.get('strategy_logic')
         )
-        if not combined.strip():
+        if not combined.strip() and not execution_evidence:
             return False
             
         summary_input = (
-            f"以下是 {date_str} 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾，"
-            f"保留关键趋势判断、核心点位和操作意图的演变过程：\n\n{combined}"
+            f"复盘日期 {date_str}。按【市场与策略变化】【实际执行与结果】【偏差与教训】【下一日条件】总结。"
+            "区分计划、挂单、成交、平仓；只用有证据的数字，不把分析轮数当成交数。"
+            "检查失效后退出、止损变更、浮亏加仓和成本。缺失的费用/盈亏写未知。\n"
+            f"策略记录：\n{combined}\n\n执行记录：\n{execution_evidence or '无本地执行记录，不代表交易所没有交易。'}"
         )
         summary_text = summarize_content(
             summary_input,
@@ -350,6 +352,36 @@ def get_short_memory_bucket(now_cn: datetime | None = None) -> tuple[datetime, d
     bucket_hour = (now_cn.hour // 4) * 4
     bucket_start = now_cn.replace(hour=bucket_hour, minute=0, second=0, microsecond=0)
     return bucket_start, bucket_start + timedelta(hours=4)
+
+
+def update_turn_memory(config_id: str, agent_config: dict, strategy_logic: str, messages: list) -> bool:
+    """Replace bounded working memory after each new strategy, retaining execution evidence."""
+    if not str(strategy_logic or "").strip():
+        return False
+    previous = format_short_memory_for_llm(config_id)
+    call_names = {call['id']: call['name'] for msg in messages if isinstance(msg, AIMessage)
+                  for call in (msg.tool_calls or [])}
+    execution = "\n".join(
+        f"{getattr(msg, 'name', None) or call_names.get(msg.tool_call_id, 'tool')}: {extract_message_text(msg)}"
+        for msg in messages if isinstance(msg, ToolMessage)
+    )
+    now = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    source = (
+        "更新工作记忆，最多600字，替换而非无限追加。分为【当前假设】【候选计划与失效条件】"
+        "【本轮执行事实】【废弃观点/待核实】。最新证据优先；删除过期和重复观点。"
+        "策略中的持仓/挂单是意图，只有工具成功结果支持本轮操作，挂单成功仍不代表成交。"
+        "下轮交易所账户快照始终优先。不得杜撰订单ID、有效期或盈亏。\n"
+        f"更新时间：{now}\n旧记忆：\n{previous}\n新策略逻辑：\n{strategy_logic}\n"
+        f"本轮工具结果：\n{execution or '无工具执行，不得声称新交易已执行。'}"
+    )
+    summary = summarize_content(source, agent_config, summary_type="short_memory")
+    if _is_invalid_short_memory_summary(summary, source):
+        # Still advance the strategy on summarizer failure; never retain an old plan as current.
+        summary = f"【最新策略（压缩失败，待核实执行）】{strategy_logic[:1200]}\n历史计划须重新验证，账户以实时快照为准。"
+    if len(summary) > 2400:
+        summary = '【压缩输出过长，最新策略待核实】' + strategy_logic[:1200] + '\n账户以实时快照为准。'
+    save_short_memory(now, now, agent_config.get("symbol", "Unknown"), config_id, summary, "", 1)
+    return True
 
 
 def format_short_memory_text(config_id: str, limit: int = 1) -> str:
@@ -454,6 +486,9 @@ def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = N
     existing = get_short_memory(config_id, start_text)
     if existing and int(existing.get("source_count") or 0) > 0:
         return False
+    latest = get_short_memories(config_id, limit=1)
+    if latest and latest[0].get("bucket_start", "") >= start_text:
+        return False  # Per-turn memory already covers this maintenance window.
 
     summary_rows = get_summary_logic_between(config_id, start_text, end_text)
     source_count = len(summary_rows)
@@ -611,6 +646,8 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
             continue
         tf_data = raw_analysis[tf]
         indicators_summary[tf] = {
+            "data_quality": tf_data.get("data_quality", {}),
+            "vwap_anchor": tf_data.get("vwap_anchor"),
             "price": tf_data.get("price"),
             "trend": tf_data.get("trend", {}),
             "recent_opens": tf_data.get("recent_opens", []),
@@ -652,12 +689,7 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
     else:
         formatted_history_text = "(暂无历史记录)"
 
-    formatted_history_text = (
-        "## Rolling Short-Term Memory\n"
-        f"{short_memory_text}\n\n"
-        "## Daily Memory\n"
-        f"{formatted_history_text}"
-    )
+    formatted_history_text = "## Daily Memory\n" + formatted_history_text
 
     next_run_time = calculate_next_run_time(agent_config, now_cn)
 
@@ -725,6 +757,15 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         dca_budget=dca_budget
     )
 
+    from backend.utils.trading_policy import trading_policy, protection_context
+    system_prompt += '\n\n' + trading_policy(trade_mode)
+    if trade_mode == 'REAL':
+        try:
+            system_prompt += '\n\n' + protection_context(config_id)
+        except Exception as exc:
+            system_prompt += f'\n保护计划读取失败，不能假设已有保护单：{exc}'
+    if '{short_memory_text}' not in prompt_template:
+        system_prompt += '\n\n## Short-term memory\n' + short_memory_text
     prompt_role = agent_config.get("system_prompt_role", "system")
     instruction = instruction_message(system_prompt, prompt_role)
     if isinstance(instruction, HumanMessage) and state.human_message:
@@ -976,14 +1017,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     
     full_content = ""
     if all_ai_messages:
-        sorted_msgs = sorted(all_ai_messages, key=lambda item: len(item[1]), reverse=True)
-        main_content = sorted_msgs[0][1]
-        other_parts = [text for message, text in all_ai_messages if message is not sorted_msgs[0][0]]
-        
-        if other_parts:
-            full_content = main_content + "\n\n---\n\n" + "\n\n".join(other_parts)
-        else:
-            full_content = main_content
+        full_content = "\n\n---\n\n".join(text for _, text in all_ai_messages)
     
     agent_type = "MASTER"
     final_full_content = full_content
@@ -1006,9 +1040,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 reasoning_content=reasoning_content,
                 reasoning_tokens=reasoning_tokens,
             )
-            # The scheduler owns four-hour short-memory generation. Running it
-            # here as well makes every graph finalization issue a second summary
-            # request and needlessly doubles the summarizer cost.
+            update_turn_memory(config_id, agent_config, strategy_logic, state.messages)
             
             # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
             trade_mode = agent_config.get('mode', 'STRATEGY').upper()

@@ -131,7 +131,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertTrue(snapshot["exchange_profiles"])
         self.assertEqual(snapshot["agents"][0]["llm_provider_id"], snapshot["llm_providers"][0]["provider_id"])
         self.assertEqual(snapshot["agents"][0]["exchange_profile_id"], snapshot["exchange_profiles"][0]["profile_id"])
-        self.assertIn("1M", snapshot["market_timeframes"])
+        self.assertEqual(snapshot["market_timeframes"], ["15m", "1h", "4h", "1d", "1w"])
         self.assertEqual(snapshot["langchain_project"], "test-project")
 
         conn = sqlite3.connect(self.db_path)

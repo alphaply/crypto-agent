@@ -13,6 +13,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 
 from backend.utils.logger import setup_logger
+from backend.utils.run_schedule import validate_run_schedule
 from backend.storage_paths import DATA_DIR, PROJECT_ROOT, data_file
 
 
@@ -33,7 +34,7 @@ DEFAULT_GLOBAL_SETTINGS: dict[str, Any] = {
     "llm_max_retries": 2,
     "global_summarizer_model": "",
     "global_summarizer_api_base": "",
-    "market_timeframes": ["15m", "30m", "1h", "4h", "1d", "1w", "1M"],
+    "market_timeframes": ["15m", "1h", "4h", "1d", "1w"],
 }
 
 LANGSMITH_TRACING_ENV_KEYS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
@@ -311,6 +312,7 @@ def _normalize_agents(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         payload["config_id"] = raw_config_id
         payload["enabled"] = _normalize_bool(payload.get("enabled", True))
         payload["mode"] = str(payload.get("mode", "STRATEGY")).upper()
+        payload['run_schedule'] = validate_run_schedule(payload.get('run_schedule'))
         normalized.append(payload)
 
     return normalized
@@ -1046,7 +1048,7 @@ def runtime_options_payload() -> dict[str, Any]:
         "exchanges": ["binance", "okx"],
         "market_types": ["swap", "spot"],
         "dca_freqs": ["1d", "1w"],
-        "market_timeframes": ["15m", "30m", "1h", "4h", "1d", "1w", "1M"],
+        "market_timeframes": ["15m", "1h", "4h", "1d", "1w"],
         "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
         "compatibility_modes": ["auto", "openai", "anthropic", "deepseek"],
     }

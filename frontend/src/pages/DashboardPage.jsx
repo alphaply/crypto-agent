@@ -715,7 +715,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
         )}
       >
         <div className="chart-wrap chart-wrap-large">
-          <KlineChart payload={kline} />
+          <KlineChart payload={kline} chartKey={`${workspace?.agent?.config_id}:${agent?.symbol || ""}:${workspace?.timeframe || timeframe}`} />
         </div>
       </Card>
 
@@ -756,7 +756,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
           return (
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Text type="secondary" style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                [updated={memory.bucket_start}] sources={memory.source_count ?? 0}
+                [window={memory.bucket_start} → {memory.bucket_end}] updated={memory.created_at} sources={memory.source_count ?? 0}
               </Text>
               <MarkdownBlock content={memory.market_summary || ''} />
             </Space>

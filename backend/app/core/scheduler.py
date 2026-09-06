@@ -17,7 +17,7 @@ from backend.agent.agent_graph import (
     run_agent_for_config,
 )
 from backend.config import config as global_config
-from backend.database import init_db
+from backend.database import get_short_memory, init_db
 from backend.utils.logger import setup_logger
 from backend.utils.llm_utils import sync_langsmith_environment
 from backend.utils.market_data import MarketTool
@@ -32,18 +32,25 @@ _last_run_times = {}
 _daily_summary_done_date = None
 _daily_summary_last_attempt_at = None
 _short_memory_done_buckets = set()
+_short_memory_last_attempts = {}
 _agent_executor = None
 _maintenance_executor = None
 _running_agent_futures = {}
 _running_maintenance_futures = {}
 _daily_summary_future = None
+_short_memory_future = None
 _scheduler_lock = threading.RLock()
 _last_heartbeat_key = None
+_protection_thread = None
+_protection_futures = {}
+_protection_executor = None
+_protection_clients = {}
 
 AGENT_JOB_TYPE = "agent"
 MAINTENANCE_JOB_TYPE = "maintenance"
 DAILY_SUMMARY_DEFAULT_TIME = "00:05"
 DAILY_SUMMARY_DEFAULT_RETRY_MINUTES = 15
+SHORT_MEMORY_DEFAULT_RETRY_MINUTES = 15
 
 
 def _scheduler_max_workers() -> int:
@@ -243,6 +250,20 @@ def _daily_summary_retry_minutes() -> int:
         return DAILY_SUMMARY_DEFAULT_RETRY_MINUTES
 
 
+def _short_memory_retry_minutes() -> int:
+    raw_value = str(
+        os.getenv("SHORT_MEMORY_RETRY_MINUTES", SHORT_MEMORY_DEFAULT_RETRY_MINUTES)
+    ).strip()
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        logger.warning(
+            "Invalid SHORT_MEMORY_RETRY_MINUTES="
+            f"{raw_value!r}; using {SHORT_MEMORY_DEFAULT_RETRY_MINUTES}"
+        )
+        return SHORT_MEMORY_DEFAULT_RETRY_MINUTES
+
+
 def check_dca_executed(config_id, now, freq="1d"):
     from backend.database import get_db_conn
 
@@ -307,24 +328,11 @@ def is_time_to_run(config, now):
 
         return True
 
-    default_interval = 60 if mode == "STRATEGY" else 15
-    try:
-        interval = int(config.get("run_interval", default_interval))
-    except (TypeError, ValueError):
-        logger.warning(f"[{config_id}] invalid run_interval={config.get('run_interval')!r}, using {default_interval}")
-        interval = default_interval
-    if interval < 15:
-        interval = 15
-
-    minutes_since_midnight = now.hour * 60 + now.minute
-
-    if minutes_since_midnight % interval == 0:
-        last_run = _last_run_times.get(config_id)
-        if last_run and last_run.hour == now.hour and last_run.minute == now.minute:
-            return False
-        return True
-
-    return False
+    from backend.utils.run_schedule import schedule_due
+    if not schedule_due(config, now):
+        return False
+    last_run = _last_run_times.get(config_id)
+    return not (last_run and last_run.replace(second=0, microsecond=0) == now.replace(second=0, microsecond=0))
 
 
 def _get_current_price(mt, symbol: str) -> float:
@@ -435,9 +443,20 @@ def run_config_maintenance(config):
             _snapshot_strategy_equity(config, mt)
 
     elif mode == "REAL":
-        # REAL 模式的完整权益快照在 agent_graph 执行周期（每小时前 15 分钟）写入，
-        # 这里不再每分钟调用交易所，避免 fetch_balance 速率限制。
-        pass
+        from backend.utils.position_protection import PositionProtection
+        try:
+            import hashlib
+            fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
+            cached = _protection_clients.get(config_id)
+            if not cached or cached[0] != fingerprint or time.monotonic() - cached[1] > 300:
+                cached = (fingerprint, time.monotonic(), PositionProtection(MarketTool(config_id=config_id)))
+                _protection_clients[config_id] = cached
+            results = cached[2].reconcile_all()
+            for result in results:
+                if result.get("error"):
+                    logger.error(f"[PositionProtection] {config_id}: {result}")
+        except Exception as exc:
+            logger.error(f"[PositionProtection] {config_id} reconciliation failed: {exc}")
 
     elif mode == "SPOT_DCA":
         try:
@@ -557,6 +576,21 @@ def _submit_daily_summary() -> bool:
             except Exception as exc:
                 logger.error(f"[DailySummary] worker failed: {exc}")
         _daily_summary_future = _get_maintenance_executor().submit(run_daily_summary_job)
+    return True
+
+
+def _submit_short_memory() -> bool:
+    global _short_memory_future
+    with _scheduler_lock:
+        if _short_memory_future:
+            if not _short_memory_future.done():
+                logger.debug("[ShortMemory] skip_due_to_running")
+                return False
+            try:
+                _short_memory_future.result()
+            except Exception as exc:
+                logger.error(f"[ShortMemory] worker failed: {exc}")
+        _short_memory_future = _get_maintenance_executor().submit(run_short_memory_job)
     return True
 
 
@@ -735,9 +769,11 @@ def run_daily_summary_job(now: datetime | None = None) -> dict:
 
             source_rows = get_pending_daily_summary_data(config_id, yesterday)
             if not any(str(row.get("strategy_logic") or "").strip() for row in source_rows):
-                result["no_source"] += 1
-                logger.info(f"[DailySummary] no source data for {config_id} on {yesterday}; skipped")
-                continue
+                from backend.utils.trade_review import daily_execution_evidence
+                if config.get('mode', '').upper() not in {'REAL', 'SPOT_DCA'} and not daily_execution_evidence(config_id, yesterday):
+                    result["no_source"] += 1
+                    logger.info(f"[DailySummary] no source data for {config_id} on {yesterday}; skipped")
+                    continue
 
             if generate_manual_daily_summary(config_id, yesterday):
                 result["generated"] += 1
@@ -763,31 +799,81 @@ def run_daily_summary_job(now: datetime | None = None) -> dict:
     return result
 
 
-def run_short_memory_job():
-    return
-    now = datetime.now(TZ_CN)
-    target_time = now - timedelta(seconds=1)
-    bucket_start, _ = get_short_memory_bucket(target_time)
-    bucket_key = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
+def run_short_memory_job(now: datetime | None = None) -> dict:
+    """Generate the latest fully completed four-hour memory bucket.
 
-    if now.minute != 0 or now.hour % 4 != 0:
-        return
-    if bucket_key in _short_memory_done_buckets:
-        return
+    The scheduler checks this every minute so a restart shortly after a
+    four-hour boundary still catches up instead of waiting for the next one.
+    """
+    now = now or datetime.now(TZ_CN)
+    current_bucket_start, _ = get_short_memory_bucket(now)
+    target_time = current_bucket_start - timedelta(seconds=1)
+    bucket_start, bucket_end = get_short_memory_bucket(target_time)
+    bucket_key = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
+    result = {
+        "status": "completed",
+        "bucket_start": bucket_key,
+        "bucket_end": bucket_end.strftime("%Y-%m-%d %H:%M:%S"),
+        "generated": 0,
+        "existing": 0,
+        "retry_wait": 0,
+        "failed": [],
+    }
 
     configs = [cfg for cfg in global_config.get_all_symbol_configs() if cfg.get("enabled", True)]
+    retry_after = timedelta(minutes=_short_memory_retry_minutes())
     for config in configs:
-        config_id = config.get("config_id")
+        config_id = str(config.get("config_id") or "")
         if not config_id:
             continue
+        done_key = (bucket_key, config_id)
+        if done_key in _short_memory_done_buckets:
+            result["existing"] += 1
+            continue
+
+        last_attempt = _short_memory_last_attempts.get(done_key)
+        if last_attempt is not None and now - last_attempt < retry_after:
+            result["retry_wait"] += 1
+            continue
+
+        _short_memory_last_attempts[done_key] = now
         try:
-            generate_short_memory_for_config(config_id, now_cn=target_time)
+            generated = generate_short_memory_for_config(config_id, now_cn=target_time)
+            existing = get_short_memory(config_id, bucket_key)
+            if generated:
+                result["generated"] += 1
+                _short_memory_done_buckets.add(done_key)
+            elif existing and int(existing.get("source_count") or 0) > 0:
+                result["existing"] += 1
+                _short_memory_done_buckets.add(done_key)
+            else:
+                result["failed"].append(config_id)
         except Exception as exc:
+            result["failed"].append(config_id)
             logger.error(f"[ShortMemory] failed for {config_id}: {exc}")
 
-    _short_memory_done_buckets.add(bucket_key)
-    while len(_short_memory_done_buckets) > 12:
-        _short_memory_done_buckets.pop()
+    cutoff_key = (bucket_start - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S")
+    _short_memory_done_buckets.intersection_update(
+        {key for key in _short_memory_done_buckets if key[0] >= cutoff_key}
+    )
+    for key in list(_short_memory_last_attempts):
+        if key[0] < cutoff_key or key in _short_memory_done_buckets:
+            _short_memory_last_attempts.pop(key, None)
+
+    if result["failed"]:
+        result["status"] = "retry_pending"
+        logger.warning(
+            f"[ShortMemory] incomplete for {bucket_key}; retry in "
+            f"{_short_memory_retry_minutes()} minutes, failed={result['failed']}"
+        )
+    elif result["retry_wait"]:
+        result["status"] = "retry_wait"
+    elif result["generated"]:
+        logger.info(
+            f"[ShortMemory] completed {bucket_key} - {result['bucket_end']}: "
+            f"generated={result['generated']} existing={result['existing']}"
+        )
+    return result
 
 
 def run_scheduler_forever():
@@ -800,6 +886,7 @@ def run_scheduler_forever():
         logger.error(f"Database initialization failed in scheduler: {e}")
 
     global_config.reload_config()
+    _start_protection_monitor()
 
     while True:
         try:
@@ -811,7 +898,7 @@ def run_scheduler_forever():
                 continue
 
             _submit_daily_summary()
-            run_short_memory_job()
+            _submit_short_memory()
             job()
 
             if datetime.now().minute % 5 == 0:
@@ -824,6 +911,42 @@ def run_scheduler_forever():
 
 def scheduler_should_run() -> bool:
     return bool(getattr(global_config, "enable_scheduler", True))
+
+
+def protection_tick():
+    """Only persisted live plans need exchange polling; disabled agents still get protection."""
+    global _protection_executor
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        rows = conn.execute('SELECT config_id,payload FROM real_protection_plans').fetchall()
+    ids = {row['config_id'] for row in rows if json.loads(row['payload'])['state'] != 'DONE'}
+    configs = {cfg['config_id']: cfg for cfg in global_config.get_all_symbol_configs()}
+    if _protection_executor is None:
+        _protection_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix='position-protection')
+    _drop_finished_futures(_protection_futures, 'protection')
+    for config_id in ids:
+        if config_id in _protection_futures:
+            continue
+        cfg = configs.get(config_id)
+        if not cfg or cfg.get('mode', '').upper() != 'REAL':
+            logger.error(f'[PositionProtection] {config_id}: live plan has no REAL exchange configuration; manual attention required')
+            continue
+        _protection_futures[config_id] = _protection_executor.submit(run_config_maintenance, cfg)
+
+
+def _start_protection_monitor():
+    global _protection_thread
+    if _protection_thread and _protection_thread.is_alive():
+        return
+    def monitor():
+        while True:
+            try:
+                protection_tick()
+            except Exception as exc:
+                logger.error(f'[PositionProtection] monitor failed: {exc}')
+            time.sleep(5)
+    _protection_thread = threading.Thread(target=monitor, name='protection-monitor', daemon=True)
+    _protection_thread.start()
 
 
 if __name__ == "__main__":

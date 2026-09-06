@@ -20,8 +20,10 @@ class MarketSmcFormattingTests(unittest.TestCase):
 
         smc = calculate_smc(df, swing_length=4, internal_length=2)
 
-        self.assertEqual(smc["structure"]["type"], "BOS")
-        self.assertEqual(smc["structure"]["bias"], "bullish")
+        self.assertEqual(smc["structure"]["type"], "CHoCH")
+        # The latest *confirmed historical event* remains bearish: the final close
+        # equals the earlier 108 wick and has not broken above it.
+        self.assertEqual(smc["structure"]["bias"], "bearish")
         self.assertIn("internal_structure", smc)
         self.assertIn("swing_structure", smc)
         self.assertTrue(smc["events"])

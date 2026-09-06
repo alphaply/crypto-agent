@@ -8,6 +8,7 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 
 - FastAPI 后端和 React + Vite 前端
 - 多 Agent 策略配置和定时调度
+- 实盘开仓预设 TP/SL、成交后保护维护、LLM 后续改单；每轮工作记忆与每日交易复盘（[流程说明](docs/TRADING_WORKFLOW.md)）
 - K 线、均线、持仓、订单和盈亏展示
 - 聊天控制台、运行配置页、公开用量统计页
 - 消息情报：官方宏观经济日历、美联储/美国财政部政策、美债流动性与加密新闻（默认每轮最多 10 项，支持全局 LLM 压缩和缓存回退）
@@ -70,10 +71,11 @@ SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
 DAILY_SUMMARY_TIME=00:05
 DAILY_SUMMARY_RETRY_MINUTES=15
+SHORT_MEMORY_RETRY_MINUTES=15
 ```
 
 `ADMIN_PASSWORD` 用于登录控制台，`JWT_SECRET` 用于会话签名，`CONFIG_MASTER_KEY` 用于加密 SQLite 中保存的密钥。已有数据库继续使用时，不要更换 `CONFIG_MASTER_KEY`。
-每日总结默认在 `TIMEZONE` 对应时区的 `00:05` 汇总前一天数据；调度器当时离线会在恢复后补跑，模型调用失败则默认每 15 分钟重试。
+每日总结默认在 `TIMEZONE` 对应时区的 `00:05` 汇总前一天策略及交易证据；调度器当时离线会在恢复后补跑，模型调用失败则默认每 15 分钟重试。每次产生新策略逻辑后更新短期工作记忆，四小时任务仅作补充，重试间隔由 `SHORT_MEMORY_RETRY_MINUTES` 控制。实盘保护计划另由每 5 秒扫描的维护循环核对，不等待下一轮 LLM 分析；实际延迟受网络及任务队列影响。
 
 ### 启动开发环境
 
@@ -129,6 +131,7 @@ SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
 DAILY_SUMMARY_TIME=00:05
 DAILY_SUMMARY_RETRY_MINUTES=15
+SHORT_MEMORY_RETRY_MINUTES=15
 ```
 
 ### 启动服务
@@ -190,6 +193,8 @@ docker run --rm -p 31421:7860 \
 - 汇总提示词、短期记忆、模型价格和统计配置
 
 密钥会通过 `CONFIG_MASTER_KEY` 加密后保存在 SQLite 中。
+
+REAL / STRATEGY 任务的「调度设置」支持默认间隔加自定义时段：选择星期、时区、开始/结束时间和运行间隔（15–1440 分钟），按列表从上到下匹配第一条，其余时间沿用默认间隔。可一键填入「亚盘 30 / 美盘 20 / 周末 30 分钟」预设，再修改、保存任务，最后点击页面上的「保存配置」生效。规则从时段开始时间对齐，例如 09:30 起每 20 分钟在 09:30、09:50、10:10 运行；跨午夜的星期指开始那一天，全天使用 00:00–24:00。纽约时区自动适配夏令时。详见 [交易执行与证据说明](docs/TRADING_WORKFLOW.md)。
 
 ## 验证
 

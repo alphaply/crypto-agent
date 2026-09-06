@@ -33,7 +33,7 @@ class Config:
     global_summarizer_model = ""
     global_summarizer_api_base = ""
     global_summarizer_api_key = ""
-    market_timeframes: List[str] = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+    market_timeframes: List[str] = ["15m", "1h", "4h", "1d", "1w"]
     symbol_configs: List[Dict] = []
     configs_by_id: Dict[str, Dict] = {}
     source = "env"
@@ -88,7 +88,7 @@ class Config:
         self.trading_mode = snapshot.get("trading_mode", "REAL")
         self.global_summarizer_model = snapshot.get("global_summarizer_model", "")
         self.global_summarizer_api_base = snapshot.get("global_summarizer_api_base", "")
-        raw_timeframes = snapshot.get("market_timeframes") or ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+        raw_timeframes = snapshot.get("market_timeframes") or ["15m", "1h", "4h", "1d", "1w"]
         self.market_timeframes = [str(item).strip() for item in raw_timeframes if str(item).strip()]
         self.source = snapshot.get("source", "env")
 

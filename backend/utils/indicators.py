@@ -21,8 +21,7 @@ def smart_fmt(value):
         return round(val, 8)
 
 def calc_ema(series, span):
-    # 使用 adjust=True (默认) 在数据较少时更准确，或者保持 False 但需要确保 initial value 正确
-    # 这里我们采用 adjust=False 但先计算一个 SMA 作为初始值，以对齐标准 EMA
+    # Recursive EMA seeded by the first close; insufficient warm-up is reported by callers.
     return series.ewm(span=span, adjust=False).mean()
 
 def calc_emas(series, spans=(20, 50, 100, 200)):
@@ -33,6 +32,8 @@ def calc_rsi(series, period=14):
     """
     计算 RSI (对齐 TradingView / Wilder's Smoothing)
     """
+    if len(series) <= period:
+        return pd.Series(np.nan, index=series.index)
     delta = series.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -118,10 +119,14 @@ def calc_adx(df, period=14):
     return adx.fillna(0.0), plus_di.fillna(0.0), minus_di.fillna(0.0)
 
 def calc_vwap(df):
-    """计算 VWAP (成交量加权平均价)"""
+    """UTC session VWAP when candle timestamps exist; otherwise explicit window VWAP."""
     v = df['volume']
     p = (df['high'] + df['low'] + df['close']) / 3
-    vwap = (p * v).cumsum() / v.cumsum()
+    if "time" in df:
+        sessions = pd.to_datetime(df["time"], utc=True).dt.floor("D")
+        vwap = (p * v).groupby(sessions).cumsum() / v.groupby(sessions).cumsum().replace(0, np.nan)
+    else:
+        vwap = (p * v).cumsum() / v.cumsum().replace(0, np.nan)
     return vwap.fillna(p)
 
 def calc_cci(df, period=20):
@@ -149,7 +154,7 @@ def calc_macd(close, fast=12, slow=26, signal=9):
 def calc_bollinger_bands(close, window=20, num_std=2):
     """计算布林带"""
     rolling_mean = close.rolling(window=window).mean()
-    rolling_std = close.rolling(window=window).std()
+    rolling_std = close.rolling(window=window).std(ddof=0)
     upper = rolling_mean + (rolling_std * num_std)
     lower = rolling_mean - (rolling_std * num_std)
     safe_mean = rolling_mean.replace(0, 1e-10)
@@ -270,9 +275,9 @@ def _pivot_points(series, size=5, kind="high"):
         window = values[idx - size:idx + size + 1]
         value = values[idx]
         if kind == "high" and value == np.max(window):
-            pivots.append({"index": idx, "price": float(value)})
+            pivots.append({"index": idx, "confirmed_index": idx + size, "price": float(value)})
         elif kind == "low" and value == np.min(window):
-            pivots.append({"index": idx, "price": float(value)})
+            pivots.append({"index": idx, "confirmed_index": idx + size, "price": float(value)})
     return pivots
 
 
@@ -310,9 +315,10 @@ def _unmitigated_order_blocks(df, events, limit=3):
             mitigated = not later.empty and float(later["low"].min()) < float(block["low"])
         else:
             mitigated = not later.empty and float(later["high"].max()) > float(block["high"])
-        block_payload = {**block, "mitigated": bool(mitigated)}
+        block_payload = {**block, "mitigated": bool(mitigated), **_level_metadata(df, created_idx, block)}
         if not mitigated:
-            blocks.append(block_payload)
+            if not any((b['low'], b['high'], b['bias']) == (block['low'], block['high'], block['bias']) for b in blocks):
+                blocks.append(block_payload)
         if len(blocks) >= limit:
             break
     return blocks
@@ -361,7 +367,8 @@ def _fair_value_gaps(df, limit=3, include_mitigated=False):
                 gaps.append(gap)
 
     return [
-        {k: v for k, v in gap.items() if k != "index"}
+        {**{k: v for k, v in gap.items() if k != "index"}, **_level_metadata(df, gap['index'], gap),
+         "formed_index": gap['index']}
         for gap in reversed(gaps[-limit:])
     ]
 
@@ -392,10 +399,10 @@ def _structure_events(working, high_pivots, low_pivots, scope):
     next_low = next(low_iter, None)
 
     for idx, row in working.iterrows():
-        while next_high and next_high["index"] <= idx:
+        while next_high and next_high.get("confirmed_index", next_high["index"]) <= idx:
             pivot_high = {**next_high, "crossed": False}
             next_high = next(high_iter, None)
-        while next_low and next_low["index"] <= idx:
+        while next_low and next_low.get("confirmed_index", next_low["index"]) <= idx:
             pivot_low = {**next_low, "crossed": False}
             next_low = next(low_iter, None)
 
@@ -431,6 +438,20 @@ def _structure_events(working, high_pivots, low_pivots, scope):
     return events
 
 
+def _level_metadata(df, index, level):
+    """Age/distance of historical structures, rather than an assertion of current relevance."""
+    price = float(df['close'].iloc[-1])
+    atr = float(calc_atr(df).iloc[-1]) if len(df) >= 14 else 0
+    low = float(level.get('low', level.get('level', price)))
+    high = float(level.get('high', level.get('level', price)))
+    distance = max(low - price, price - high, 0)
+    return {
+        'age_bars': len(df) - 1 - index,
+        'formed_at': str(df['time'].iloc[index]) if 'time' in df else None,
+        'distance_atr': round(distance / atr, 2) if atr > 0 else None,
+    }
+
+
 def calculate_smc(df, swing_length=50, internal_length=5, atr_series=None):
     if len(df) < 20:
         return {}
@@ -447,6 +468,8 @@ def calculate_smc(df, swing_length=50, internal_length=5, atr_series=None):
     internal_events = _structure_events(working, internal_highs, internal_lows, "internal")
     swing_events = _structure_events(working, swing_highs, swing_lows, "swing")
     events = sorted(internal_events + swing_events, key=lambda item: item.get("index", 0))
+    for event in events:
+        event.update(_level_metadata(working, event['index'], event))
 
     if atr_series is None:
         atr_series = calc_atr(working, 14)
@@ -516,7 +539,7 @@ def calculate_liquidity_sweep_ifvg(df, pivot_size=5, limit=3):
 
     sweeps = []
     for pivot in highs:
-        later = working.iloc[pivot["index"] + 1:]
+        later = working.iloc[pivot.get("confirmed_index", pivot["index"]) + 1:]
         for idx, row in later.iterrows():
             if float(row["high"]) > pivot["price"] and float(row["close"]) < pivot["price"]:
                 sweeps.append({
@@ -527,7 +550,7 @@ def calculate_liquidity_sweep_ifvg(df, pivot_size=5, limit=3):
                 })
                 break
     for pivot in lows:
-        later = working.iloc[pivot["index"] + 1:]
+        later = working.iloc[pivot.get("confirmed_index", pivot["index"]) + 1:]
         for idx, row in later.iterrows():
             if float(row["low"]) < pivot["price"] and float(row["close"]) > pivot["price"]:
                 sweeps.append({
@@ -539,11 +562,23 @@ def calculate_liquidity_sweep_ifvg(df, pivot_size=5, limit=3):
                 break
 
     sweeps = sorted(sweeps, key=lambda item: item["index"])
+    for sweep in sweeps:
+        sweep.update(_level_metadata(working, sweep['index'], sweep))
     all_gaps = _fair_value_gaps(working, limit=50, include_mitigated=True)
     active_fvg = [gap for gap in all_gaps if not gap.get("mitigated")][:limit]
     inverse_fvg = []
     for gap in all_gaps:
         if not gap.get("mitigated"):
+            continue
+        later = working.iloc[gap['formed_index'] + 1:]
+        breaks = later[later['close'] < float(gap['low'])] if gap['bias'] == 'bullish' else later[later['close'] > float(gap['high'])]
+        if breaks.empty:
+            continue  # A wick filling a gap alone does not confirm an inverse FVG.
+        flip_index = int(breaks.index[0])
+        after_flip = working.iloc[flip_index + 1:]
+        invalidated = ((after_flip['close'] > float(gap['high'])).any() if gap['bias'] == 'bullish'
+                       else (after_flip['close'] < float(gap['low'])).any())
+        if invalidated:
             continue
         flipped_bias = "bearish" if gap.get("bias") == "bullish" else "bullish"
         inverse_fvg.append({
@@ -552,6 +587,7 @@ def calculate_liquidity_sweep_ifvg(df, pivot_size=5, limit=3):
             "low": gap.get("low"),
             "high": gap.get("high"),
             "consumed_pct": gap.get("consumed_pct", 100.0),
+            **_level_metadata(working, flip_index, gap),
         })
 
     latest_sweep = sweeps[-1] if sweeps else {}
@@ -559,7 +595,7 @@ def calculate_liquidity_sweep_ifvg(df, pivot_size=5, limit=3):
         "latest_sweep": {k: v for k, v in latest_sweep.items() if k != "index"},
         "sweeps": [{k: v for k, v in sweep.items() if k != "index"} for sweep in sweeps[-limit:]],
         "active_fvg": active_fvg[:limit],
-        "inverse_fvg": inverse_fvg[-limit:],
+        "inverse_fvg": sorted(inverse_fvg, key=lambda item: item['age_bars'])[:limit],
     }
 
 
