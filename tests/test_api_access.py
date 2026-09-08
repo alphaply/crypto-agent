@@ -43,6 +43,7 @@ class ApiAccessTests(unittest.TestCase):
             ("put", "/api/history/daily-summaries", {"date": "2026-05-06", "config_id": "missing", "summary": ""}),
             ("delete", "/api/history/daily-summaries", {"date": "2026-05-06", "config_id": "missing"}),
             ("post", "/api/history/clean", {"symbol": "BTC/USDT"}),
+            ("post", "/api/stats/position/protection", {"config_id": "missing", "symbol": "BTC/USDT", "side": "LONG"}),
         ]
         for method, path, body in checks:
             with self.subTest(path=path):
@@ -65,6 +66,20 @@ class ApiAccessTests(unittest.TestCase):
         data = response.json()
         self.assertIn("globals", data)
         self.assertIn("agents", data)
+
+    def test_database_export(self):
+        res = self.client.get("/api/config/database/export")
+        self.assertEqual(res.status_code, 401)
+
+        password = get_expected_password()
+        login = self.client.post("/api/auth/login", json={"password": password})
+        token = login.json()["token"]
+
+        res = self.client.get("/api/config/database/export", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("application/x-sqlite3", res.headers.get("content-type", ""))
+        self.assertTrue(res.headers.get("content-disposition", "").startswith('attachment; filename="trading_data_'))
+        self.assertTrue(res.content.startswith(b"SQLite format 3\x00"))
 
 
 if __name__ == "__main__":

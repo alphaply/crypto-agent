@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Collapse,
+  Divider,
   Drawer,
   Empty,
   Grid,
@@ -24,7 +25,7 @@ import {
   Upload,
   message,
 } from 'antd';
-import { ArrowDownOutlined, ArrowUpOutlined, HolderOutlined, FileTextOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
+import { ArrowDownOutlined, ArrowUpOutlined, DownloadOutlined, HolderOutlined, FileTextOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
 import { usePreferences } from '../app/usePreferences';
 import { DailySummaryPanel, ShortMemoryPanel } from './DashboardPage';
@@ -402,6 +403,7 @@ export default function AdminPage() {
   // Import state
   const [importing, setImporting] = useState(false);
   const [importWriteEnv, setImportWriteEnv] = useState(false);
+  const [exportingDb, setExportingDb] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -818,6 +820,32 @@ export default function AdminPage() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       setError(err.message || 'Export failed');
+    }
+  };
+
+  const handleExportDatabase = async () => {
+    setExportingDb(true);
+    try {
+      const response = await api.get('/config/database/export', { responseType: 'blob' });
+      const disposition = response.headers?.['content-disposition'] || '';
+      let filename = 'trading_data.db';
+      const match = disposition.match(/filename="?([^";]+)"?/);
+      if (match && match[1]) {
+        filename = match[1];
+      }
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/x-sqlite3' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      message.success(locale === 'zh' ? '数据库导出成功' : 'Database exported successfully');
+    } catch (err) {
+      setError(err.message || 'Database export failed');
+    } finally {
+      setExportingDb(false);
     }
   };
 
@@ -1455,6 +1483,24 @@ export default function AdminPage() {
                           : 'Also write .env (ADMIN_PASSWORD, JWT_SECRET, CONFIG_MASTER_KEY, PORT, etc.)'}
                       </Text>
                     </Space>
+                  </div>
+                  <Divider style={{ margin: '16px 0' }} />
+                  <div>
+                    <Typography.Title level={5} style={{ marginTop: 0 }}>
+                      {locale === 'zh' ? '数据库备份 (.db)' : 'Database Backup (.db)'}
+                    </Typography.Title>
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                      {locale === 'zh'
+                        ? '一键导出完整的 SQLite 数据库（包含全部历史平仓交易、委托、记忆、日志等原始表）。导出采用 SQLite 在线热备份，保证事务完整不损坏。'
+                        : 'One-click export of the complete SQLite database file (including all closed position history, orders, memory, logs). Uses online backup to ensure transaction consistency.'}
+                    </Typography.Paragraph>
+                    <Button
+                      icon={<DownloadOutlined />}
+                      loading={exportingDb}
+                      onClick={handleExportDatabase}
+                    >
+                      {locale === 'zh' ? '一键导出数据库 (.db)' : 'Export Database (.db)'}
+                    </Button>
                   </div>
                 </Space>
               </Card>

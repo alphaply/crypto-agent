@@ -12,7 +12,13 @@ from backend.config_store import (
     runtime_options_payload,
     save_runtime_snapshot,
 )
-from backend.database import get_all_pricing, get_config_dependency_counts, purge_config_all_data, update_model_pricing
+from backend.database import (
+    export_database_bytes,
+    get_all_pricing,
+    get_config_dependency_counts,
+    purge_config_all_data,
+    update_model_pricing,
+)
 from backend.utils.prompt_utils import normalize_prompt_reference, resolve_prompt_path
 
 from backend.app.services.common import logger, prompt_dir
@@ -192,6 +198,11 @@ def full_export_payload(include_secrets: bool = True) -> tuple[str, str]:
     content = json.dumps(snapshot, indent=2, ensure_ascii=False)
     filename = f"crypto_full_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     return content, filename
+
+
+def export_database_payload() -> tuple[bytes, str]:
+    """导出当前 SQLite 数据库二进制数据及文件名。"""
+    return export_database_bytes()
 
 
 def full_import_payload(data: dict, write_env: bool = False) -> dict:

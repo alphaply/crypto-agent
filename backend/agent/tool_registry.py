@@ -14,6 +14,7 @@ from backend.agent.agent_tools import (
     open_position_strategy,
     update_position_protection_real,
     update_position_protection_strategy,
+    update_entry_order_real,
 )
 from backend.utils.logger import setup_logger
 
@@ -24,7 +25,7 @@ logger = setup_logger("ToolRegistry")
 _CANCEL_TOOL_NAMES = {"cancel_orders_real", "cancel_orders_strategy"}
 
 _TOOLS_BY_MODE = {
-    "REAL": [open_position_real, close_position_real, cancel_orders_real, update_position_protection_real],
+    "REAL": [open_position_real, close_position_real, cancel_orders_real, update_position_protection_real, update_entry_order_real],
     "SPOT_DCA": [open_position_spot_dca, cancel_orders_real],
     "STRATEGY": [open_position_strategy, cancel_orders_strategy, close_position_strategy, update_position_protection_strategy],
 }
@@ -86,6 +87,10 @@ def _summarize_result(result: Any, limit: int = 300) -> str:
 
 
 def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str) -> str:
+    from backend.config import config as runtime_config
+    config = runtime_config.get_config_by_id(config_id)
+    if config and tool_name not in {tool.name for tool in get_trade_tools_for_mode(config.get('mode'))}:
+        return f"Error: Tool '{tool_name}' is not allowed for this trading mode."
     tool_obj = _TOOL_BY_NAME.get(tool_name)
     if not tool_obj:
         logger.warning("Tool call rejected: name=%s config_id=%s symbol=%s", tool_name, config_id, symbol)
@@ -106,7 +111,7 @@ def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str) -> st
         )
 
     call_args = _normalize_tool_args(tool_name, args)
-    if tool_name in {'update_position_protection_real', 'update_position_protection_strategy'}:
+    if tool_name in {'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real'}:
         # Dispatch uses .func(), so these scalar arguments need explicit schema validation.
         call_args = tool_obj.args_schema.model_validate(call_args).model_dump()
     call_args["config_id"] = config_id

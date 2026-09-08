@@ -101,6 +101,7 @@ class MarketTool:
 
         self.exchange_name = exchange_name
         self.market_type = requested_market_type
+        self.runtime_config = dict(cfg or {})
 
         config = {
             'apiKey': api_key,

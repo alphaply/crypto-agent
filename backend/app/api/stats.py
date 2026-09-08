@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.app.core.deps import get_current_user
-from backend.app.schemas.payloads import PricingDeleteRequest, PricingSaveRequest
+from backend.app.schemas.payloads import PricingDeleteRequest, PricingSaveRequest, UpdatePositionProtectionRequest
 from backend.app.services.stats_service import (
     delete_pricing_payload,
     get_agent_stats_payload,
@@ -12,6 +12,7 @@ from backend.app.services.stats_service import (
     get_token_stats_payload,
     list_pricing_payload,
     save_pricing_payload,
+    update_position_protection_payload,
 )
 
 
@@ -64,6 +65,31 @@ def position_stats(config_id: str, _: dict = Depends(get_current_user)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"success": True, **data}
+
+
+@router.post("/position/protection")
+def update_position_protection(
+    payload: UpdatePositionProtectionRequest,
+    _: dict = Depends(get_current_user),
+):
+    try:
+        data = update_position_protection_payload(
+            config_id=payload.config_id,
+            symbol=payload.symbol,
+            side=payload.side,
+            stop_loss=payload.stop_loss,
+            take_profit=payload.take_profit,
+            clear_stop_loss=payload.clear_stop_loss,
+            clear_take_profit=payload.clear_take_profit,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update position protection: {exc}") from exc
+    return {"success": True, **data}
+
 
 
 @router.get("/equity-compare")

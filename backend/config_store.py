@@ -313,6 +313,7 @@ def _normalize_agents(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         payload["enabled"] = _normalize_bool(payload.get("enabled", True))
         payload["mode"] = str(payload.get("mode", "STRATEGY")).upper()
         payload['run_schedule'] = validate_run_schedule(payload.get('run_schedule'))
+        payload.pop('futures_risk', None)
         normalized.append(payload)
 
     return normalized

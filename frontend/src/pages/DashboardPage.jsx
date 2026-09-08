@@ -3,12 +3,14 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   DatePicker,
   Descriptions,
   Empty,
   Form,
   Grid,
   Input,
+  InputNumber,
   Modal,
   Pagination,
   Popconfirm,
@@ -571,6 +573,45 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
   const [editingDailySummary, setEditingDailySummary] = useState(null);
   const [summaryEditText, setSummaryEditText] = useState('');
   const [summarySaving, setSummarySaving] = useState(false);
+  const [editingProtection, setEditingProtection] = useState(null);
+  const [protectionTp, setProtectionTp] = useState(null);
+  const [protectionSl, setProtectionSl] = useState(null);
+  const [clearTp, setClearTp] = useState(false);
+  const [clearSl, setClearSl] = useState(false);
+  const [protectionSaving, setProtectionSaving] = useState(false);
+
+  const openProtectionModal = (pos) => {
+    setEditingProtection(pos);
+    setProtectionTp(pos.take_profit ?? null);
+    setProtectionSl(pos.stop_loss ?? null);
+    setClearTp(false);
+    setClearSl(false);
+  };
+
+  const saveProtection = async () => {
+    if (!editingProtection) return;
+    setProtectionSaving(true);
+    try {
+      const tpCleared = clearTp || (Boolean(editingProtection.take_profit) && (protectionTp === null || protectionTp === undefined || protectionTp === ''));
+      const slCleared = clearSl || (Boolean(editingProtection.stop_loss) && (protectionSl === null || protectionSl === undefined || protectionSl === ''));
+      await api.post('/stats/position/protection', {
+        config_id: agent.config_id,
+        symbol: agent.symbol || editingProtection.symbol,
+        side: editingProtection.side,
+        stop_loss: slCleared ? null : (protectionSl !== null && protectionSl !== undefined && protectionSl !== '' ? Number(protectionSl) : null),
+        take_profit: tpCleared ? null : (protectionTp !== null && protectionTp !== undefined && protectionTp !== '' ? Number(protectionTp) : null),
+        clear_stop_loss: slCleared,
+        clear_take_profit: tpCleared,
+      });
+      setEditingProtection(null);
+      message.success(t('saved'));
+      window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'));
+    } catch (err) {
+      message.error(err.response?.data?.detail || err.message || 'Failed to update protection');
+    } finally {
+      setProtectionSaving(false);
+    }
+  };
 
   const openMemoryEdit = (memory) => {
     setEditingMemory(memory);
@@ -644,6 +685,8 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
     { label: t('unrealizedPnl'), value: formatPositionValue(pos.unrealized_pnl ?? 0) },
     { label: t('roiPct'), value: formatPositionValue(pos.roi_pct ?? 0) },
     { label: t('leverage'), value: pos.leverage ? `${pos.leverage}x` : '-' },
+    { label: t('takeProfit'), value: pos.take_profit ? <CopyNumber value={pos.take_profit} /> : '-' },
+    { label: t('stopLoss'), value: pos.stop_loss ? <CopyNumber value={pos.stop_loss} /> : '-' },
   ];
 
   return (
@@ -654,6 +697,11 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
             <Space size={8} wrap>
               <Text strong>{spotMode ? t('spotAccount') : t('positions')}</Text>
               {spotMode ? <Tag color="gold">SPOT_DCA</Tag> : null}
+              {!spotMode && authenticated && activePositions.length === 1 ? (
+                <Button size="small" type="primary" ghost onClick={() => openProtectionModal(activePositions[0])}>
+                  {t('adjustTpSl')}
+                </Button>
+              ) : null}
             </Space>
             <div className="position-balance-row">
               {spotMode ? (
@@ -688,7 +736,14 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
                   className={`position-card-inner ${pos.side === 'SHORT' ? 'position-card-short' : 'position-card-long'}`}
                 >
                   <div className="position-card-badge">
-                    <Tag color={pos.side === 'SHORT' ? 'red' : 'green'}>{pos.side}</Tag>
+                    <Space size={8}>
+                      <Tag color={pos.side === 'SHORT' ? 'red' : 'green'}>{pos.side}</Tag>
+                      {authenticated ? (
+                        <Button size="small" type="primary" ghost onClick={() => openProtectionModal(pos)}>
+                          {t('adjustTpSl')}
+                        </Button>
+                      ) : null}
+                    </Space>
                   </div>
                   <FactGrid items={buildSinglePositionFacts(pos)} />
                 </div>
@@ -698,6 +753,70 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
             <FactGrid items={buildSinglePositionFacts(activePositions[0])} />
           )}
         </Space>
+        <Modal
+          open={Boolean(editingProtection)}
+          title={`${t('adjustTpSl')} - ${editingProtection?.side || ''} (${agent?.symbol || editingProtection?.symbol || ''})`}
+          onCancel={() => setEditingProtection(null)}
+          onOk={saveProtection}
+          confirmLoading={protectionSaving}
+          okText={t('save')}
+          cancelText={t('cancel')}
+          destroyOnClose
+        >
+          {editingProtection ? (
+            <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 12 }}>
+              <Alert type="info" showIcon message={t('tpSlNotice')} />
+              <Descriptions size="small" column={2} bordered>
+                <Descriptions.Item label={t('side')}>
+                  <Tag color={editingProtection.side === 'SHORT' ? 'red' : 'green'}>{editingProtection.side}</Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label={t('entry')}>
+                  {formatPositionValue(editingProtection.entry_price)}
+                </Descriptions.Item>
+                <Descriptions.Item label={t('mark')}>
+                  {formatPositionValue(editingProtection.mark_price)}
+                </Descriptions.Item>
+                <Descriptions.Item label={t('qty')}>
+                  {formatPositionValue(editingProtection.qty || editingProtection.amount || editingProtection.contracts)}
+                </Descriptions.Item>
+              </Descriptions>
+
+              <Form layout="vertical">
+                <Form.Item label={t('takeProfitPrice')}>
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <InputNumber
+                      style={{ width: '100%' }}
+                      placeholder={t('takeProfitPrice')}
+                      value={clearTp ? null : protectionTp}
+                      onChange={(val) => setProtectionTp(val)}
+                      disabled={clearTp}
+                      step="any"
+                    />
+                    <Checkbox checked={clearTp} onChange={(e) => setClearTp(e.target.checked)}>
+                      {t('clearTp')}
+                    </Checkbox>
+                  </Space>
+                </Form.Item>
+
+                <Form.Item label={t('stopLossPrice')}>
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <InputNumber
+                      style={{ width: '100%' }}
+                      placeholder={t('stopLossPrice')}
+                      value={clearSl ? null : protectionSl}
+                      onChange={(val) => setProtectionSl(val)}
+                      disabled={clearSl}
+                      step="any"
+                    />
+                    <Checkbox checked={clearSl} onChange={(e) => setClearSl(e.target.checked)}>
+                      {t('clearSl')}
+                    </Checkbox>
+                  </Space>
+                </Form.Item>
+              </Form>
+            </Space>
+          ) : null}
+        </Modal>
       </Card>
 
       <Card

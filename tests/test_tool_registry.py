@@ -18,6 +18,7 @@ def test_trade_tools_for_real_mode_include_cancel_real():
         "close_position_real",
         "cancel_orders_real",
         "update_position_protection_real",
+        "update_entry_order_real",
     ]
 
 
@@ -39,6 +40,12 @@ def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
 
 def test_chat_tools_for_real_mode_include_cancel_real():
     assert "cancel_orders_real" in _tool_names(chat_graph._get_chat_tools({"mode": "REAL"}))
+
+
+def test_spot_cannot_dispatch_futures_amendment(monkeypatch):
+    from backend.config import config
+    monkeypatch.setattr(config, 'get_config_by_id', lambda cid: {'mode': 'SPOT_DCA'})
+    assert 'not allowed' in tool_registry.run_trade_tool('update_entry_order_real', {}, 'spot', 'ETH/USDT')
 
 
 def test_cancel_real_tool_schema_uses_single_order_id():

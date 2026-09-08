@@ -90,6 +90,14 @@ class UpdateProtectionSchema(BaseModel):
     reason: str = Field(description="调整原因及策略失效条件")
 
 
+class UpdateEntrySchema(BaseModel):
+    order_id: str = Field(min_length=1, description="本配置托管的未完全成交合约限价入场订单ID")
+    entry_price: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    amount: Optional[float] = Field(None, gt=0, allow_inf_nan=False,
+                                   description="修改后的总标的币数量，包含已成交部分，不是剩余数量")
+    reason: str = Field(min_length=1, description="新的入场条件及改单理由；不能仅因价格移动而追单")
+
+
 class UpdateStrategyProtectionSchema(BaseModel):
     order_id: str = Field(description="模拟仓位或未成交模拟订单ID")
     stop_loss: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
@@ -158,7 +166,7 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
 
 @tool(args_schema=OpenRealSchema)
 def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str):
-    """【实盘开仓并预设TP/SL】必填止盈止损，成交后系统自动挂条件市价保护单，覆盖同方向整个仓位。"""
+    """【实盘合约限价开仓】TP、SL 均可选；提供后，成交时自动挂对应的条件市价保护单。"""
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
@@ -184,8 +192,9 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
                 cost = price * op.amount
                 side_str = "多" if "BUY" in action else "空"
                 enhanced_reason = f"🚀 实盘开{side_str}: {op.amount} {symbol.split('/')[0]} @ {price} (价值: ${cost:.2f}) | {op.reason}"
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, op.take_profit, op.stop_loss, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
-                execution_results.append(f"✅ [入场委托已提交，非成交确认] {action} {symbol} @ {price} | ID: {res['id']} | TP={op.take_profit} SL={op.stop_loss} | 保护状态={res.get('protection_state')} | 异常={res.get('protection_error') or '无'}")
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, op.take_profit or 0, op.stop_loss or 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
+                protection = f"TP={op.take_profit or '未设置'} SL={op.stop_loss or '未设置'}"
+                execution_results.append(f"✅ [入场委托已提交，非成交确认] {action} {symbol} @ {price} | ID: {res['id']} | {protection} | 计划状态={res.get('protection_state')} | 异常={res.get('protection_error') or '无'}")
             else:
                 execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")
         except Exception as e:
@@ -225,6 +234,16 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             if not order_ids:
                 execution_results.append(f"❌ [平仓失败] 无法获取订单 ID，请检查持仓状态。")
                 continue
+
+            from backend.utils.execution_ledger import account_scope, register_order
+            from backend.utils.position_protection import PositionProtection
+            try:
+                canonical_symbol = PositionProtection(market_tool)._market(symbol)['symbol']
+                for oid in order_ids:
+                    register_order(account_scope(market_tool.exchange, config_id), canonical_symbol, oid,
+                                   config_id, 'agent_exit', reason=op.reason, side=op.pos_side)
+            except Exception as exc:
+                execution_results.append(f'⚠️ 平仓委托已提交 {order_ids}，但归因记录失败：{exc}；不要重复平仓。')
 
             # 默认取第一个 ID 作为记录
             final_log_id = order_ids[0]
@@ -285,7 +304,7 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
 @tool(args_schema=UpdateProtectionSchema)
 def update_position_protection_real(pos_side: str, reason: str, config_id: str, symbol: str,
                                     stop_loss: Optional[float] = None, take_profit: Optional[float] = None):
-    """【调整实盘TP/SL】管理同方向整个仓位或已托管待成交计划；省略的价格保留。首次设置须同时给TP和SL。"""
+    """【调整实盘TP/SL】管理同方向整个仓位或已托管待成交计划；可只设置或调整其中一个。"""
     if stop_loss is None and take_profit is None:
         return "❌ 至少提供一个要调整的止盈或止损价格"
     from backend.utils.position_protection import PositionProtection
@@ -293,12 +312,28 @@ def update_position_protection_real(pos_side: str, reason: str, config_id: str, 
         plan = PositionProtection(MarketTool(config_id=config_id)).adjust(symbol, pos_side, stop_loss, take_profit)
         database.save_order_log(
             f"protection:{uuid.uuid4().hex}", symbol, config_id, pos_side,
-            0, plan['take_profit'], plan['stop_loss'], reason,
+            0, plan['take_profit'] or 0, plan['stop_loss'] or 0, reason,
             trade_mode="REAL", config_id=config_id, event_type="PROTECTION_UPDATED",
         )
         return f"保护计划已更新：{pos_side} TP={plan['take_profit']} SL={plan['stop_loss']} 状态={plan['state']}；仅ACTIVE表示本轮已核验保护单。"
     except Exception as exc:
         return f"❌ 保护调整未确认完成：{exc}；系统保留已保存计划并继续核对，不能声称已生效。"
+
+
+@tool(args_schema=UpdateEntrySchema)
+def update_entry_order_real(order_id: str, reason: str, config_id: str, symbol: str,
+                            entry_price: Optional[float] = None, amount: Optional[float] = None):
+    """【合约限价改单】原生修改本配置创建的入场单；已有TP/SL保持不变。数量为含已成交的总币数。"""
+    from backend.config import config as global_config
+    from backend.utils.position_protection import PositionProtection
+    if (global_config.get_config_by_id(config_id) or {}).get('mode', '').upper() != 'REAL':
+        return '❌ 仅实盘合约可使用限价改单工具'
+    try:
+        result = PositionProtection(MarketTool(config_id=config_id)).amend_entry(
+            symbol, order_id, entry_price, amount, reason)
+        return json.dumps(result, ensure_ascii=False) + '；仅confirmed表示改单已核验，pending不得重复提交。'
+    except Exception as exc:
+        return f'❌ 改单未确认：{exc}；查询当前订单和成交，不能直接重新开单。'
 
 
 @tool(args_schema=UpdateStrategyProtectionSchema)

@@ -227,6 +227,23 @@ def _fetch_real_position_data(mt, symbol, cfg):
     trade_summary = {"total_trades": 0, "realized_pnl": 0, "win_count": 0, "lose_count": 0, "win_rate": 0}
     fallback_leverage = global_config.get_leverage(cfg.get("config_id") if isinstance(cfg, dict) else None)
 
+    active_plans = {}
+    config_id = cfg.get("config_id") if isinstance(cfg, dict) else None
+    if config_id:
+        try:
+            from backend.database import get_db_conn
+            with get_db_conn() as conn:
+                rows = conn.execute(
+                    "SELECT payload FROM real_protection_plans WHERE config_id=?",
+                    (config_id,)
+                ).fetchall()
+                for r in rows:
+                    p = json.loads(r["payload"])
+                    if p.get("state") != "DONE":
+                        active_plans[p.get("side")] = p
+        except Exception as exc:
+            logger.warning(f"Failed to load active protection plans for {config_id}: {exc}")
+
     try:
         all_positions = mt.exchange.fetch_positions([symbol])
         for position in all_positions:
@@ -240,10 +257,12 @@ def _fetch_real_position_data(mt, symbol, cfg):
             pnl_pct = (unrealized / abs(notional) * 100) if notional != 0 else 0
             roi_pct = pnl_pct * leverage
             margin_used = abs(notional) / leverage if leverage > 0 else abs(notional)
+            pos_side = str(position.get("side", "")).upper()
+            plan = active_plans.get(pos_side) or {}
             positions.append(
                 {
                     "symbol": position.get("symbol", symbol),
-                    "side": str(position.get("side", "")).upper(),
+                    "side": pos_side,
                     "contracts": contracts,
                     "qty": contracts,
                     "entry_price": entry,
@@ -254,6 +273,9 @@ def _fetch_real_position_data(mt, symbol, cfg):
                     "leverage": leverage,
                     "notional": round(abs(notional), 2),
                     "margin_used": round(margin_used, 2),
+                    "take_profit": plan.get("take_profit"),
+                    "stop_loss": plan.get("stop_loss"),
+                    "protection_state": plan.get("state"),
                 }
             )
     except Exception as exc:
@@ -398,6 +420,9 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
                     "leverage": leverage,
                     "notional": round(notional, 2),
                     "margin_used": round(margin_used, 2),
+                    "take_profit": float(order["take_profit"]) if order["take_profit"] is not None else None,
+                    "stop_loss": float(order["stop_loss"]) if order["stop_loss"] is not None else None,
+                    "protection_state": "ACTIVE" if (order["take_profit"] is not None or order["stop_loss"] is not None) else None,
                 }
             )
 
@@ -775,16 +800,36 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
     position = None
     risk_lines = []
     if mode == "REAL":
+        active_plans = {}
+        if config_id:
+            try:
+                from backend.database import get_db_conn
+                with get_db_conn() as conn:
+                    rows = conn.execute(
+                        "SELECT payload FROM real_protection_plans WHERE config_id=?",
+                        (config_id,)
+                    ).fetchall()
+                    for r in rows:
+                        p = json.loads(r["payload"])
+                        if p.get("state") != "DONE":
+                            active_plans[p.get("side")] = p
+            except Exception:
+                pass
         try:
             all_positions = mt.exchange.fetch_positions([symbol])
             for current in all_positions:
                 if float(current.get("contracts", 0)) > 0:
+                    pos_side = str(current.get("side", "")).upper()
+                    plan = active_plans.get(pos_side) or {}
                     payload = {
-                        "side": str(current.get("side", "")).upper(),
+                        "side": pos_side,
                         "entry_price": float(current.get("entryPrice", 0)),
                         "amount": float(current.get("contracts", 0)),
                         "mark_price": float(current.get("markPrice", 0) or 0),
                         "unrealized_pnl": round(float(current.get("unrealizedPnl", 0) or 0), 4),
+                        "take_profit": plan.get("take_profit"),
+                        "stop_loss": plan.get("stop_loss"),
+                        "protection_state": plan.get("state"),
                     }
                     positions.append(payload)
             if positions:
@@ -915,3 +960,80 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
         "pending_orders": pending_orders,
         "risk_lines": risk_lines,
     }
+
+
+def update_position_protection_payload(
+    config_id: str,
+    symbol: str,
+    side: str,
+    stop_loss: float | None = None,
+    take_profit: float | None = None,
+    clear_stop_loss: bool = False,
+    clear_take_profit: bool = False,
+) -> dict:
+    cfg = global_config.get_config_by_id(config_id)
+    if not cfg:
+        raise FileNotFoundError(f"Config not found: {config_id}")
+
+    mode = str(cfg.get("mode", "STRATEGY")).upper()
+    side = str(side).upper()
+    if side not in ("LONG", "SHORT"):
+        raise ValueError(f"Invalid side: {side}")
+
+    if mode == "REAL":
+        from backend.utils.market_data import MarketTool
+        from backend.utils.position_protection import PositionProtection
+
+        mt = MarketTool(config_id=config_id)
+        protection = PositionProtection(mt)
+        plan = protection.adjust(
+            symbol=symbol,
+            side=side,
+            sl=stop_loss,
+            tp=take_profit,
+            clear_sl=clear_stop_loss,
+            clear_tp=clear_take_profit,
+        )
+        return {
+            "config_id": config_id,
+            "symbol": symbol,
+            "side": side,
+            "stop_loss": plan.get("stop_loss"),
+            "take_profit": plan.get("take_profit"),
+            "state": plan.get("state"),
+            "error": plan.get("error"),
+        }
+    elif mode == "STRATEGY":
+        from backend.database import get_db_conn
+
+        target_side_pattern = "%BUY%" if side == "LONG" else "%SELL%"
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+            open_orders = cursor.execute(
+                "SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=1 AND UPPER(side) LIKE ?",
+                (config_id, symbol, target_side_pattern),
+            ).fetchall()
+            if not open_orders:
+                raise ValueError(f"No open position found for {side} {symbol}")
+
+            for order in open_orders:
+                new_sl = None if clear_stop_loss else (stop_loss if stop_loss is not None else order["stop_loss"])
+                new_tp = None if clear_take_profit else (take_profit if take_profit is not None else order["take_profit"])
+                cursor.execute(
+                    "UPDATE mock_orders SET stop_loss=?, take_profit=? WHERE order_id=?",
+                    (new_sl, new_tp, order["order_id"]),
+                )
+            conn.commit()
+
+        return {
+            "config_id": config_id,
+            "symbol": symbol,
+            "side": side,
+            "stop_loss": None if clear_stop_loss else stop_loss,
+            "take_profit": None if clear_take_profit else take_profit,
+            "state": "ACTIVE",
+            "error": None,
+        }
+    else:
+        raise ValueError(f"Mode {mode} does not support position protection adjustment")
+

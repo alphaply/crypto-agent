@@ -45,6 +45,9 @@ _protection_thread = None
 _protection_futures = {}
 _protection_executor = None
 _protection_clients = {}
+_execution_sync_futures = {}
+_execution_sync_executor = None
+_execution_sync_last = {}
 
 AGENT_JOB_TYPE = "agent"
 MAINTENANCE_JOB_TYPE = "maintenance"
@@ -525,6 +528,40 @@ def _submit_maintenance(config) -> bool:
     return True
 
 
+def _submit_execution_sync(config):
+    """Separate worker pool: history catch-up must never delay protective exits."""
+    global _execution_sync_executor
+    if str(config.get('mode') or '').upper() != 'REAL':
+        return
+    cid = config['config_id']
+    with _scheduler_lock:
+        current = _execution_sync_futures.get(cid)
+        if current and not current.done():
+            return
+        if time.monotonic() - _execution_sync_last.get(cid, 0) < 30:
+            return
+        _execution_sync_last[cid] = time.monotonic()
+        if _execution_sync_executor is None:
+            _execution_sync_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix='execution-sync')
+        _execution_sync_futures[cid] = _execution_sync_executor.submit(_sync_execution, dict(config))
+
+
+def _sync_execution(config):
+    from backend.utils.execution_ledger import ExecutionLedger
+    try:
+        mt = MarketTool(config_id=config['config_id'])
+        from backend.utils.execution_stream import ensure_stream
+        ensure_stream(mt)
+        ledger = ExecutionLedger(mt.exchange, config['config_id'], config['symbol'])
+        result = ledger.sync()
+        from backend.utils.execution_metrics import update_post_exit
+        update_post_exit(mt.exchange, ledger.scope, ledger.symbol)
+        if result.get('error'):
+            logger.warning(f"[ExecutionSync] {config['config_id']}: {result['error']}")
+    except Exception as exc:
+        logger.warning(f"[ExecutionSync] {config['config_id']}: {exc}")
+
+
 def _submit_agent(config, scheduled_at: str) -> bool:
     config_id = str(config.get("config_id") or "unknown")
     mode = str(config.get("mode", "STRATEGY")).upper()
@@ -622,6 +659,7 @@ def job(now: datetime | None = None):
     agent_queued = 0
 
     for config in active_configs:
+        _submit_execution_sync(config)
         if _submit_maintenance(config):
             maintenance_queued += 1
 
@@ -921,6 +959,14 @@ def protection_tick():
         rows = conn.execute('SELECT config_id,payload FROM real_protection_plans').fetchall()
     ids = {row['config_id'] for row in rows if json.loads(row['payload'])['state'] != 'DONE'}
     configs = {cfg['config_id']: cfg for cfg in global_config.get_all_symbol_configs()}
+    # Data accounting continues for recently active plans even when decision making
+    # is disabled, including fills that arrive after protective cleanup.
+    recent = {row['config_id'] for row in rows if json.loads(row['payload']).get('updated_at', 0) > time.time() - 86400}
+    for cfg in configs.values():
+        if cfg.get('mode', '').upper() == 'REAL' and (cfg.get('enabled', True) or cfg['config_id'] in ids | recent):
+            _submit_execution_sync(cfg)
+    from backend.utils.execution_stream import stop_unused_streams
+    stop_unused_streams()
     if _protection_executor is None:
         _protection_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix='position-protection')
     _drop_finished_futures(_protection_futures, 'protection')

@@ -11,20 +11,24 @@ from langchain_core.messages import (
 )
 
 class OpenOrderReal(BaseModel):
-    """限价开仓与成交后全仓 TP/SL 计划；数量使用标的币数量。"""
+    """实盘限价开仓；可选成交后全仓 TP/SL，数量使用标的币数量。"""
     action: Literal["BUY_LIMIT", "SELL_LIMIT"] = Field(description="BUY_LIMIT: 限价开多, SELL_LIMIT: 限价开空")
     entry_price: float = Field(gt=0, allow_inf_nan=False, description="入场的价格（限价单）")
     amount: float = Field(gt=0, allow_inf_nan=False, description="下单数量 (币种数量)")
-    stop_loss: float = Field(gt=0, allow_inf_nan=False, description="成交后止损触发价；保护同方向整个仓位")
-    take_profit: float = Field(gt=0, allow_inf_nan=False, description="成交后止盈触发价；保护同方向整个仓位")
+    stop_loss: Optional[float] = Field(None, gt=0, allow_inf_nan=False, description="可选：成交后止损触发价；保护同方向整个仓位")
+    take_profit: Optional[float] = Field(None, gt=0, allow_inf_nan=False, description="可选：成交后止盈触发价；保护同方向整个仓位")
     reason: str = Field(description="开仓理由")
 
     @model_validator(mode="after")
     def validate_bracket(self):
-        valid = (self.stop_loss < self.entry_price < self.take_profit if self.action == "BUY_LIMIT"
-                 else self.take_profit < self.entry_price < self.stop_loss)
-        if not valid:
-            raise ValueError("多单需要 SL < 入场 < TP；空单需要 TP < 入场 < SL")
+        if self.stop_loss is not None:
+            valid_sl = self.stop_loss < self.entry_price if self.action == "BUY_LIMIT" else self.stop_loss > self.entry_price
+            if not valid_sl:
+                raise ValueError("多单止损需低于入场；空单止损需高于入场")
+        if self.take_profit is not None:
+            valid_tp = self.take_profit > self.entry_price if self.action == "BUY_LIMIT" else self.take_profit < self.entry_price
+            if not valid_tp:
+                raise ValueError("多单止盈需高于入场；空单止盈需低于入场")
         return self
 
 class OpenOrderSpotDCA(BaseModel):
@@ -36,6 +40,8 @@ class OpenOrderSpotDCA(BaseModel):
 
 class OpenOrderStrategy(OpenOrderReal):
     """策略模式开仓参数：包含止盈止损和有效期"""
+    stop_loss: float = Field(gt=0, allow_inf_nan=False, description="止损触发价")
+    take_profit: float = Field(gt=0, allow_inf_nan=False, description="止盈触发价")
     valid_duration_hours: int = Field(24, gt=0, le=168, description="挂单有效期(小时)，过期自动撤销")
 
 class CloseOrder(BaseModel):

@@ -256,3 +256,14 @@ class DeleteDailySummaryRequest(BaseModel):
 
 class CleanHistoryRequest(BaseModel):
     symbol: str
+
+
+class UpdatePositionProtectionRequest(BaseModel):
+    config_id: str
+    symbol: str
+    side: Literal["LONG", "SHORT"]
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    clear_stop_loss: bool = False
+    clear_take_profit: bool = False
+

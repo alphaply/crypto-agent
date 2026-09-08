@@ -8,6 +8,7 @@ from backend.app.services.config_service import (
     delete_config_payload,
     delete_prompt_payload,
     export_config_payload,
+    export_database_payload,
     full_export_payload,
     full_import_payload,
     get_config_dependencies_payload,
@@ -71,6 +72,17 @@ def full_export(include_secrets: bool = Query(default=True), _: dict = Depends(g
     content, filename = full_export_payload(include_secrets=include_secrets)
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return Response(content=content, media_type="application/json", headers=headers)
+
+
+@router.get("/database/export")
+def export_database(_: dict = Depends(get_current_user)):
+    content, filename = export_database_payload()
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": "application/x-sqlite3",
+    }
+    return Response(content=content, media_type="application/x-sqlite3", headers=headers)
+
 
 
 @router.post("/full-import")

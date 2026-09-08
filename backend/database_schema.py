@@ -12,6 +12,49 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
 
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute('''CREATE TABLE IF NOT EXISTS execution_fills (
+        account_scope TEXT NOT NULL, symbol TEXT NOT NULL, trade_id TEXT NOT NULL,
+        order_id TEXT, config_id TEXT, timestamp_ms INTEGER NOT NULL, payload TEXT NOT NULL,
+        PRIMARY KEY(account_scope, symbol, trade_id))''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_execution_fills_config_time
+        ON execution_fills(config_id,timestamp_ms)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS execution_sync (
+        account_scope TEXT NOT NULL, symbol TEXT NOT NULL, payload TEXT NOT NULL,
+        PRIMARY KEY(account_scope,symbol))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS execution_order_links (
+        account_scope TEXT NOT NULL, symbol TEXT NOT NULL, order_id TEXT NOT NULL,
+        config_id TEXT NOT NULL, role TEXT NOT NULL, payload TEXT NOT NULL,
+        PRIMARY KEY(account_scope,symbol,order_id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS execution_income (
+        account_scope TEXT NOT NULL, symbol TEXT NOT NULL, income_type TEXT NOT NULL,
+        transaction_id TEXT NOT NULL, timestamp_ms INTEGER NOT NULL, payload TEXT NOT NULL,
+        PRIMARY KEY(account_scope,income_type,transaction_id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS execution_episodes (
+        episode_id TEXT PRIMARY KEY, account_scope TEXT NOT NULL, config_id TEXT NOT NULL,
+        symbol TEXT NOT NULL, payload TEXT NOT NULL)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS execution_position_history (
+        position_id TEXT PRIMARY KEY,
+        account_scope TEXT NOT NULL,
+        config_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        side TEXT,
+        opened_at_ms INTEGER,
+        closed_at_ms INTEGER,
+        entry_price REAL,
+        close_price REAL,
+        amount REAL,
+        take_profit REAL,
+        stop_loss REAL,
+        realized_pnl REAL,
+        fees_json TEXT,
+        exit_reason TEXT,
+        updated_at_ms INTEGER,
+        payload TEXT NOT NULL
+    )''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_execution_position_history_config_closed
+        ON execution_position_history(config_id,symbol,closed_at_ms)''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_execution_order_links_config
+        ON execution_order_links(config_id,symbol)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS real_protection_plans (
                     config_id TEXT NOT NULL,
                     symbol TEXT NOT NULL,

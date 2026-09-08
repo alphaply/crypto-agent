@@ -21,6 +21,8 @@ class Exchange:
         self.fail_kind = None
         self.timeout_kind = None
         self.contract_size = 1
+        self.visibility_delays = {}
+        self.status_delays = {}
 
     def load_markets(self):
         pass
@@ -61,7 +63,15 @@ class Exchange:
 
     def fetch_order(self, id, symbol, params):
         if id is not None and id in self.orders:
-            return dict(self.orders[id])
+            kind = self.orders[id]['kind']
+            if self.visibility_delays.get(kind, 0) > 0:
+                self.visibility_delays[kind] -= 1
+                raise ccxt.OrderNotFound("not visible yet")
+            result = dict(self.orders[id])
+            if self.status_delays.get(kind, 0) > 0:
+                self.status_delays[kind] -= 1
+                result['status'] = None
+            return result
         cid = params.get("clientOrderId") or params.get("clientAlgoId")
         for order in self.orders.values():
             if order["clientOrderId"] == cid:
@@ -102,6 +112,29 @@ def test_pending_then_partial_fill_installs_full_position_protection(service):
     assert len(ex.calls) == 3  # closePosition covers incremental fills, no duplicate legs.
 
 
+@pytest.mark.parametrize(('kwargs', 'expected_kinds'), [
+    ({'stop_loss': 90}, ['entry', 'sl']),
+    ({'take_profit': 120}, ['entry', 'tp']),
+    ({}, ['entry']),
+])
+def test_real_entry_protection_is_optional(service, kwargs, expected_kinds):
+    svc, ex = service
+    order = OpenOrderReal(action='BUY_LIMIT', entry_price=100, amount=1, reason='optional protection', **kwargs)
+    result = svc.open('ETH/USDT', order)
+    ex.orders[result['id']]['filled'] = 1
+    ex.quantity = 1
+    plan = svc.reconcile_all()[0]
+    assert plan['state'] == 'ACTIVE' and plan['error'] is None
+    assert [call[1] for call in ex.calls] == expected_kinds
+
+
+def test_optional_protection_still_validates_each_side():
+    with pytest.raises(ValueError, match='止损'):
+        OpenOrderReal(action='BUY_LIMIT', entry_price=100, amount=1, stop_loss=101, reason='bad')
+    with pytest.raises(ValueError, match='止盈'):
+        OpenOrderReal(action='SELL_LIMIT', entry_price=100, amount=1, take_profit=101, reason='bad')
+
+
 def test_restart_reconciles_entry_timeout_without_duplicate(service):
     svc, ex = service
     ex.timeout_kind = "entry"
@@ -121,6 +154,19 @@ def test_protection_timeout_is_queried_and_not_submitted_twice(service):
     assert result["protection_error"]
     assert svc.reconcile_all()[0]["state"] == "ACTIVE"
     assert [x[1] for x in ex.calls].count("sl") == 1
+
+
+def test_protection_confirmation_retries_exchange_visibility_lag_without_resubmit(service, monkeypatch):
+    svc, ex = service
+    ex.quantity = 1
+    ex.visibility_delays = {'sl': 2, 'tp': 1}
+    ex.status_delays = {'sl': 1, 'tp': 2}
+    monkeypatch.setattr('backend.utils.position_protection.time.sleep', lambda _: None)
+    result = svc.open('ETH/USDT', entry())
+    assert result['protection_state'] == 'ACTIVE'
+    assert result['protection_error'] is None
+    assert [call[1] for call in ex.calls].count('sl') == 1
+    assert [call[1] for call in ex.calls].count('tp') == 1
 
 
 def test_adjust_installs_before_cancelling_previous_orders(service):
@@ -275,3 +321,56 @@ def test_ccxt_native_request_contains_correct_close_only_semantics(exchange_clas
         else:
             assert request['closeFraction'] == '1' and request['reduceOnly'] is True
             assert 'sz' not in request
+    # Exercise the installed adapters' actual native amendment wire format.
+    if ex.id == 'binanceusdm':
+        request = ex.edit_contract_order_request('123', market['symbol'], 'limit', 'buy', .5, 101)
+        assert str(request['orderId']) == '123'
+        assert request['quantity'] == '0.5' and request['price'] == '101'
+        assert request['side'] == 'BUY'
+    else:
+        request = ex.edit_order_request('123', market['symbol'], 'limit', 'buy', .5, 101)
+        assert request['ordId'] == '123'
+        assert request['newSz'] == '0.5' and request['newPx'] == '101'
+
+
+def test_binance_4130_auto_conflict_resolution(service):
+    svc, ex = service
+    ex.quantity = 1
+    svc.open("ETH/USDT", entry())
+    ex.calls.clear()
+
+    orig_create = ex.create_order
+    def simulated_create_order(symbol, type, side, amount, price, params):
+        kind = "sl" if "stopLossPrice" in params else "tp" if "takeProfitPrice" in params else "entry" if type == "limit" else "exit"
+        # Simulate Binance -4130 if another open closePosition order of the same kind exists
+        if params.get("closePosition"):
+            has_existing = any(
+                o["status"] == "open" and o.get("kind") == kind
+                for o in ex.orders.values()
+            )
+            if has_existing:
+                raise ccxt.ExchangeError(
+                    'binanceusdm {"code":-4130,"msg":"An open stop or take profit order with GTE and closePosition in the direction is existing."}'
+                )
+        return orig_create(symbol, type, side, amount, price, params)
+
+    ex.create_order = simulated_create_order
+
+    # Agent updates TP from 120 to 115, leaving SL (90) unchanged
+    plan = svc.adjust("ETH/USDT", "LONG", tp=115)
+
+    assert plan["take_profit"] == 115
+    assert plan["stop_loss"] == 90
+    assert plan["state"] == "ACTIVE"
+    assert plan["error"] is None
+
+    # SL must remain open and untouched
+    sl_orders = [o for o in ex.orders.values() if o["kind"] == "sl"]
+    assert len(sl_orders) == 1
+    assert sl_orders[0]["status"] == "open"
+
+    # Old TP must be canceled and new TP open
+    tp_orders = [o for o in ex.orders.values() if o["kind"] == "tp"]
+    assert any(o["status"] == "canceled" for o in tp_orders)
+    assert any(o["status"] == "open" for o in tp_orders)
+

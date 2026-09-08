@@ -8,7 +8,7 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 
 - FastAPI 后端和 React + Vite 前端
 - 多 Agent 策略配置和定时调度
-- 实盘开仓预设 TP/SL、成交后保护维护、LLM 后续改单；每轮工作记忆与每日交易复盘（[流程说明](docs/TRADING_WORKFLOW.md)）
+- 实盘合约限价开仓可选 TP/SL、成交后保护维护与原生限价改单；最近 24 小时成交事实、每轮工作记忆与每日交易复盘（[流程说明](docs/TRADING_WORKFLOW.md)）
 - K 线、均线、持仓、订单和盈亏展示
 - 聊天控制台、运行配置页、公开用量统计页
 - 消息情报：官方宏观经济日历、美联储/美国财政部政策、美债流动性与加密新闻（默认每轮最多 10 项，支持全局 LLM 压缩和缓存回退）

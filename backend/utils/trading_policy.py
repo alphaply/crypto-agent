@@ -44,25 +44,21 @@ Volume Profile为OHLCV成交量分配近似，并非真实持仓成本或筹码�
 """
 
 REAL_EXECUTION_POLICY = """## 实盘工具执行约定
-open_position_real：限价入场必须包含amount（标的币数量）、entry_price、stop_loss、take_profit、reason。
-多单SL<入场<TP，空单TP<入场<SL。开仓前说明计划止损亏损=数量×入场止损距离，并单列费用/滑点未知项；保证金不是最大损失。
+open_position_real：限价入场必须包含amount（标的币数量）、entry_price、reason；stop_loss和take_profit均可省略或单独提供。提供SL时，多单SL<入场、空单SL>入场；提供TP时，多单TP>入场、空单TP<入场。未提供的保护不会自动创建，不得声称已有保护。
 TP/SL管理同方向整个仓位。已有同方向计划时，新开单沿用该计划；改变价格先调用update_position_protection_real。
-update_position_protection_real：指定pos_side及新的stop_loss和/或take_profit；未传的价格保留。新保护单确认后才撤旧单。不存在托管计划的已有仓位首次须同时指定TP和SL。
+update_position_protection_real：指定pos_side及新的stop_loss和/或take_profit；未传的价格保留。可首次只设置其中一个。新保护单确认后才撤旧单。
 开仓委托成功不等于成交；WAITING表示待成交，ACTIVE且error为空仅表示最近一次已核验保护单，EXITING表示退出清理尚未完成。
 系统在成交后由独立维护任务安装交易所条件市价TP/SL；部分成交同样受监控。首次安装有轮询和网络延迟，不能说已原子绑定。
-修改尚未成交的入场价格/数量：先cancel_orders_real确认撤单，再重新开仓并携带TP/SL；不可撤掉保护单代替调整计划。
+修改本配置创建的限价入场价格/数量：调用update_entry_order_real，amount是含已成交部分的总币数。只在confirmed时认为改单成功；pending先查询，不撤单重开来绕过未知状态。已有TP/SL沿用原计划，新入场必须仍满足已设置保护价；调整保护用专用工具。现货定投不使用合约改单。
 close_position_real负责主动部分/全部退出；entry_price=0表示立即市价退出，正值是平仓委托，不代表已成交。失效后不能靠等待更优退出价延长风险。
 不得把扩大止损、浮亏加仓当作默认解套手段；任何调整都必须解释新的失效条件和风险变化。
 工具失败/状态不确定时必须如实报告，不重复开仓。最终简述策略逻辑、工具实际结果、未完成事项和下一触发/失效条件。
+每轮直接执行事实区优先于短期摘要。是否开仓由Agent依据当前数据和用户提示词判断；系统不额外注入固定保证金、风险比例、盈亏比或冷却阈值。
 """
 
 
 def trading_policy(mode: str) -> str:
-    if mode.upper() == 'SPOT_DCA':
-        return MARKET_POLICY
-    if mode.upper() == 'REAL':
-        return MARKET_POLICY + '\n' + REAL_EXECUTION_POLICY
-    return MARKET_POLICY + '\n模拟交易也需预设TP/SL；后续通过update_position_protection_strategy按order_id调整，未传价格保持原值。\n'
+    return ""
 
 
 def protection_context(config_id: str) -> str:

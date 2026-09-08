@@ -354,6 +354,104 @@ def get_short_memory_bucket(now_cn: datetime | None = None) -> tuple[datetime, d
     return bucket_start, bucket_start + timedelta(hours=4)
 
 
+def parse_execution_facts_to_text(raw_data: str | dict) -> str:
+    """Parse structured execution facts JSON into human-readable text for prompt/memory injection."""
+    if isinstance(raw_data, str):
+        try:
+            data = json.loads(raw_data)
+        except Exception:
+            return raw_data
+    elif isinstance(raw_data, dict):
+        data = raw_data
+    else:
+        return ""
+
+    sections = []
+
+    # 1. 已平仓交易周期
+    cycles = data.get("position_cycles", {}) or {}
+    completed = cycles.get("completed", []) or []
+    if completed:
+        lines = ["【已平仓交易周期】"]
+        for c in completed:
+            symbol = c.get("symbol", "")
+            side = c.get("side", "")
+            pnl = c.get("realized_pnl_before_fees", 0.0)
+            reasons = c.get("exit_reasons", []) or []
+            reason_desc = []
+            if "stop_loss" in reasons:
+                reason_desc.append("止损出场")
+            elif "take_profit" in reasons:
+                reason_desc.append("止盈出场")
+            else:
+                reason_desc.append("正常平仓")
+            reason_str = " | " + " ".join(reason_desc) if reason_desc else ""
+            pnl_str = f"盈利 +{pnl:.2f} USDT" if pnl > 0 else (f"亏损 {pnl:.2f} USDT" if pnl < 0 else f"盈亏 {pnl:.2f} USDT")
+            entry_vwap = c.get("entry_vwap", 0.0)
+            exit_vwap = c.get("exit_vwap", 0.0)
+            amount = c.get("entered_base", 0.0)
+            lines.append(f"- {symbol} {side} | 入场均价: {entry_vwap:.2f} | 离场均价: {exit_vwap:.2f} | 数量: {amount:.4f} | {pnl_str}{reason_str}")
+        sections.append("\n".join(lines))
+
+    # 2. 未闭合持仓周期
+    open_cycles = cycles.get("open_cycles", []) or []
+    if open_cycles:
+        lines = ["【未闭合持仓周期 (实际持仓以实时账户快照为准)】"]
+        for oc in open_cycles:
+            symbol = oc.get("symbol", "")
+            side = oc.get("side", "")
+            rem = oc.get("remaining_base", 0.0)
+            cost = oc.get("entry_cost", 0.0)
+            lines.append(f"- {symbol} {side} | 剩余数量: {rem:.4f} | 累计成本: {cost:.2f} USDT")
+        sections.append("\n".join(lines))
+
+    # 3. 近期成交明细
+    recent_fills = data.get("recent_fills", []) or []
+    if recent_fills:
+        lines = ["【近期成交明细】"]
+        for f in recent_fills:
+            ts = f.get("timestamp") or 0
+            t_str = datetime.fromtimestamp(ts / 1000, tz=TZ_CN).strftime("%m-%d %H:%M:%S") if ts else "未知时间"
+            sym = f.get("symbol", "")
+            pside = f.get("position_side", "")
+            role = f.get("role", "")
+            side = f.get("side", "")
+            price = f.get("price", 0.0)
+            amount = f.get("amount", 0.0)
+            lines.append(f"- [{t_str}] {sym} {pside} ({role}/{side}) | 价格: {price} | 数量: {amount}")
+        sections.append("\n".join(lines))
+
+    # 4. 账本统计
+    lines = ["【账本统计】"]
+    pnl = data.get("known_realized_pnl_before_fees")
+    if pnl is not None:
+        pnl_str = f"+{pnl:.2f}" if pnl > 0 else f"{pnl:.2f}"
+        lines.append(f"已确认实现盈亏: {pnl_str} USDT")
+    fees = data.get("fees_by_currency", {}) or {}
+    if fees:
+        for cur, amt in fees.items():
+            lines.append(f"手续费: {amt} {cur}")
+    sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def format_recent_position_history_for_memory(config_id: str, agent_config: dict) -> str:
+    """Format recent closed positions and performance summary from local database for short memory summary."""
+    try:
+        symbol = agent_config.get('symbol', '')
+        positions = database.get_closed_positions_7d(
+            config_id=config_id,
+            symbol=symbol,
+            days=7,
+            mode=agent_config.get('mode'),
+        )
+        return database.format_closed_positions_summary(positions, days=7)
+    except Exception as e:
+        logger.warning(f"Failed to fetch local closed positions for memory: {e}")
+        return ""
+
+
 def update_turn_memory(config_id: str, agent_config: dict, strategy_logic: str, messages: list) -> bool:
     """Replace bounded working memory after each new strategy, retaining execution evidence."""
     if not str(strategy_logic or "").strip():
@@ -366,14 +464,18 @@ def update_turn_memory(config_id: str, agent_config: dict, strategy_logic: str, 
         for msg in messages if isinstance(msg, ToolMessage)
     )
     now = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+    pos_history_text = format_recent_position_history_for_memory(config_id, agent_config)
     source = (
         "更新工作记忆，最多600字，替换而非无限追加。分为【当前假设】【候选计划与失效条件】"
-        "【本轮执行事实】【废弃观点/待核实】。最新证据优先；删除过期和重复观点。"
+        "【近期仓位历史与盈亏教训】【本轮执行事实】【废弃观点/待核实】。最新证据优先；删除过期和重复观点。"
+        "将近期持仓平仓、止损止盈等关键记录（开平时间、入场价、离场价、盈亏）简明提炼保留在【近期仓位历史与盈亏教训】中。"
         "策略中的持仓/挂单是意图，只有工具成功结果支持本轮操作，挂单成功仍不代表成交。"
         "下轮交易所账户快照始终优先。不得杜撰订单ID、有效期或盈亏。\n"
         f"更新时间：{now}\n旧记忆：\n{previous}\n新策略逻辑：\n{strategy_logic}\n"
         f"本轮工具结果：\n{execution or '无工具执行，不得声称新交易已执行。'}"
     )
+    if pos_history_text:
+        source += f"\n\n## 近期仓位与成交事实\n{pos_history_text}"
     summary = summarize_content(source, agent_config, summary_type="short_memory")
     if _is_invalid_short_memory_summary(summary, source):
         # Still advance the strategy on summarizer failure; never retain an old plan as current.
@@ -511,12 +613,15 @@ def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = N
         for row in summary_rows
         if row.get("strategy_logic")
     )
+    pos_history_text = format_recent_position_history_for_memory(config_id, target_config)
     memory_input = (
         f"Window: {start_text} - {end_text}\n"
         f"Symbol: {target_config.get('symbol')}\n\n"
         f"Recent market/agent reasoning:\n{market_text or 'No new market reasoning.'}\n\n"
         f"Previous short memory:\n{previous}"
     )
+    if pos_history_text:
+        memory_input += f"\n\n## 近期仓位与成交事实\n{pos_history_text}"
     memory_summary = summarize_content(memory_input, target_config, summary_type="short_memory")
     if _is_invalid_short_memory_summary(memory_summary, memory_input):
         logger.warning(f"Skip saving invalid short memory for {config_id}.")

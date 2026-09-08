@@ -71,13 +71,13 @@ def test_protection_monitor_runs_disabled_config_without_scheduling_duplicate_jo
     assert calls == [cfg]
 
 
-def test_daily_exchange_query_is_bounded_to_the_requested_day_and_preserves_unknown_pnl():
+def test_spot_daily_query_is_bounded_to_the_requested_day_and_preserves_unknown_pnl():
     received = {}
     def fetch(symbol, since, limit, params):
         received.update(since=since, params=params)
         return [{'id': 'outside', 'timestamp': since - 1}, {'id': 'inside', 'timestamp': since + 1, 'fee': None, 'info': {}}]
     with patch('backend.utils.market_data.MarketTool', return_value=SimpleNamespace(exchange=SimpleNamespace(fetch_my_trades=fetch))):
-        text = daily_exchange_evidence({'mode': 'REAL', 'config_id': 'cfg', 'symbol': 'ETH/USDT'}, '2026-09-01')
+        text = daily_exchange_evidence({'mode': 'SPOT_DCA', 'config_id': 'cfg', 'symbol': 'ETH/USDT'}, '2026-09-01')
     assert 'outside' not in text and 'inside' in text
     assert '"realized_pnl": null' in text
     assert received['params']['until'] + 1 - received['since'] == 86400000

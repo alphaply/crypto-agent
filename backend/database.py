@@ -647,6 +647,225 @@ def _config_mode_for_stats(config_id):
     return str(cfg.get("mode") or "").upper() if cfg else ""
 
 
+def get_closed_positions_7d(
+    config_id: str,
+    symbol: str | None = None,
+    days: int = 7,
+    mode: str | None = None,
+) -> list[dict]:
+    """Retrieve positions closed within the past N days strictly from the local SQLite database.
+
+    Standardized fields per record:
+        opened_at: str,
+        closed_at: str,
+        symbol: str,
+        side: str ('LONG' / 'SHORT'),
+        entry_price: float,
+        close_price: float,
+        amount: float,
+        take_profit: float | None,
+        stop_loss: float | None,
+        realized_pnl: float
+    """
+    now = datetime.now(TZ_CN)
+    cutoff_str = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    mode = str(mode or _config_mode_for_stats(config_id)).upper()
+    clean_sym = symbol.split(':')[0] if symbol else None
+
+    results: list[dict] = []
+
+    with get_db_conn() as conn:
+        cursor = conn.cursor()
+        tables = {row[0] for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+        # 1. STRATEGY mode: query mock_orders
+        if mode == "STRATEGY":
+            if "mock_orders" in tables:
+                query = (
+                    "SELECT timestamp, close_time, symbol, side, price, close_price, amount, "
+                    "take_profit, stop_loss, realized_pnl FROM mock_orders "
+                    "WHERE config_id = ? AND status = 'CLOSED' AND close_time >= ?"
+                )
+                params = [config_id, cutoff_str]
+                if clean_sym:
+                    query += " AND (symbol = ? OR symbol LIKE ?)"
+                    params.extend([clean_sym, f"{clean_sym}%"])
+                query += " ORDER BY close_time DESC"
+
+                for r in cursor.execute(query, params).fetchall():
+                    side = "LONG" if "BUY" in str(r["side"]).upper() else "SHORT"
+                    results.append({
+                        "opened_at": r["timestamp"] or "未知",
+                        "closed_at": r["close_time"],
+                        "symbol": r["symbol"],
+                        "side": side,
+                        "entry_price": float(r["price"] or 0),
+                        "close_price": float(r["close_price"] or 0),
+                        "amount": float(r["amount"] or 0),
+                        "take_profit": float(r["take_profit"]) if r["take_profit"] and r["take_profit"] > 0 else None,
+                        "stop_loss": float(r["stop_loss"]) if r["stop_loss"] and r["stop_loss"] > 0 else None,
+                        "realized_pnl": float(r["realized_pnl"] or 0),
+                    })
+            return results
+
+        # 2. REAL mode: execution_position_history is the canonical history. The old
+        # position_history table stores snapshots and individual closing fills,
+        # so treating its rows as complete trades creates stale dates and double counts.
+        if mode == "REAL":
+            if "execution_position_history" not in tables:
+                return results
+            cutoff_ms = int((now - timedelta(days=days)).timestamp() * 1000)
+            query = (
+                "SELECT position_id, opened_at_ms, closed_at_ms, symbol, side, entry_price, "
+                "close_price, amount, take_profit, stop_loss, realized_pnl, fees_json, "
+                "exit_reason, payload FROM execution_position_history "
+                "WHERE config_id = ? AND closed_at_ms >= ?"
+            )
+            params = [config_id, cutoff_ms]
+            if clean_sym:
+                query += " AND (symbol = ? OR symbol LIKE ?)"
+                params.extend([clean_sym, f"{clean_sym}%"])
+            query += " ORDER BY closed_at_ms DESC"
+
+            for r in cursor.execute(query, params).fetchall():
+                results.append({
+                    "position_id": r["position_id"],
+                    "opened_at": datetime.fromtimestamp(r["opened_at_ms"] / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),
+                    "closed_at": datetime.fromtimestamp(r["closed_at_ms"] / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),
+                    "symbol": r["symbol"],
+                    "side": r["side"],
+                    "entry_price": float(r["entry_price"] or 0),
+                    "close_price": float(r["close_price"] or 0),
+                    "amount": float(r["amount"] or 0),
+                    "take_profit": float(r["take_profit"]) if r["take_profit"] else None,
+                    "stop_loss": float(r["stop_loss"]) if r["stop_loss"] else None,
+                    "realized_pnl": float(r["realized_pnl"]) if r["realized_pnl"] is not None else None,
+                    "fees": json.loads(r["fees_json"] or "{}"),
+                    "exit_reason": r["exit_reason"],
+                    "source": "execution_position_history",
+                })
+            return results
+
+        # Fallback for old/unknown configurations only. A known REAL config never
+        # falls back to snapshot rows because they are not complete position cycles.
+        if not results and "mock_orders" in tables:
+            m_query = (
+                "SELECT timestamp, close_time, symbol, side, price, close_price, amount, "
+                "take_profit, stop_loss, realized_pnl FROM mock_orders "
+                "WHERE config_id = ? AND status = 'CLOSED' AND close_time >= ?"
+            )
+            m_params = [config_id, cutoff_str]
+            if clean_sym:
+                m_query += " AND (symbol = ? OR symbol LIKE ?)"
+                m_params.extend([clean_sym, f"{clean_sym}%"])
+            m_query += " ORDER BY close_time DESC"
+
+            for r in cursor.execute(m_query, m_params).fetchall():
+                side = "LONG" if "BUY" in str(r["side"]).upper() else "SHORT"
+                results.append({
+                    "opened_at": r["timestamp"] or "未知",
+                    "closed_at": r["close_time"],
+                    "symbol": r["symbol"],
+                    "side": side,
+                    "entry_price": float(r["price"] or 0),
+                    "close_price": float(r["close_price"] or 0),
+                    "amount": float(r["amount"] or 0),
+                    "take_profit": float(r["take_profit"]) if r["take_profit"] and r["take_profit"] > 0 else None,
+                    "stop_loss": float(r["stop_loss"]) if r["stop_loss"] and r["stop_loss"] > 0 else None,
+                    "realized_pnl": float(r["realized_pnl"] or 0),
+                })
+
+    return results
+
+
+def format_closed_positions_summary(positions: list[dict], days: int = 7) -> str:
+    """Format closed positions and compute 7-day win rate and profit-loss ratio."""
+    if not positions:
+        return (
+            f"【过去{days}天平仓记录（本地成交账本）】\n"
+            f"账本中暂无已重建的完整平仓周期；若同步未覆盖该时段，这不代表期间没有交易。\n\n"
+            f"【{days}天战绩统计】\n"
+            "完整平仓周期: 0 笔 | 胜率: - | 盈亏比: - | 已确认累计盈亏: -"
+        )
+
+    lines = [f"【过去{days}天平仓记录（本地成交账本）】"]
+    win_trades: list[float] = []
+    loss_trades: list[float] = []
+    tie_trades: list[float] = []
+    unknown_trades = 0
+
+    for p in positions:
+        open_time = p.get("opened_at") or "未知"
+        close_time = p.get("closed_at") or "未知"
+        sym = p.get("symbol") or ""
+        side = p.get("side") or ""
+        side_zh = "多" if side == "LONG" else ("空" if side == "SHORT" else side)
+        ep = p.get("entry_price", 0.0)
+        cp = p.get("close_price", 0.0)
+        amt = p.get("amount", 0.0)
+        tp = p.get("take_profit")
+        sl = p.get("stop_loss")
+        pnl = p.get("realized_pnl")
+
+        tp_str = f"{tp:.2f}" if tp is not None and tp > 0 else "未设置"
+        sl_str = f"{sl:.2f}" if sl is not None and sl > 0 else "未设置"
+
+        cost = ep * amt if ep and amt else 0.0
+        roi_str = f" ({pnl / cost * 100:+.2f}%)" if pnl is not None and cost > 0 else ""
+
+        if pnl is None:
+            unknown_trades += 1
+            outcome = "已实现盈亏: 未知（成交源未返回完整盈亏）"
+        elif pnl > 1e-6:
+            win_trades.append(pnl)
+            outcome = f"盈利: +{pnl:.2f} USDT{roi_str}"
+        elif pnl < -1e-6:
+            loss_trades.append(abs(pnl))
+            outcome = f"亏损: {pnl:.2f} USDT{roi_str}"
+        else:
+            tie_trades.append(0.0)
+            outcome = f"平手: +0.00 USDT{roi_str}"
+
+        lines.append(
+            f"- [开仓: {open_time} -> 平仓: {close_time}] {sym} {side} ({side_zh}) | "
+            f"开单价: {ep:.2f} | 平仓价: {cp:.2f} | 数量: {amt} | "
+            f"TP: {tp_str} | SL: {sl_str} | {outcome}"
+        )
+
+    total_count = len(positions)
+    win_count = len(win_trades)
+    loss_count = len(loss_trades)
+    decided_count = win_count + loss_count
+    win_rate_str = f"{win_count / decided_count * 100:.1f}%" if decided_count > 0 else "-"
+
+    total_profit = sum(win_trades)
+    total_loss = sum(loss_trades)
+    net_pnl = total_profit - total_loss
+
+    avg_profit = (total_profit / win_count) if win_count > 0 else 0.0
+    avg_loss = (total_loss / loss_count) if loss_count > 0 else 0.0
+    known_count = win_count + loss_count + len(tie_trades)
+    confirmed_pnl = f"{net_pnl:+.2f} USDT" if known_count else "-"
+
+    if avg_loss > 0:
+        plr_str = f"{avg_profit / avg_loss:.2f}"
+    elif avg_profit > 0:
+        plr_str = "∞ (全胜无亏损)"
+    else:
+        plr_str = "-"
+
+    stats_line = (
+        f"【{days}天战绩统计】\n"
+        f"完整平仓周期: {total_count} 笔 | 胜率: {win_rate_str} ({win_count}胜 {loss_count}负"
+        + (f" {len(tie_trades)}平" if tie_trades else "")
+        + (f" {unknown_trades}笔盈亏未知" if unknown_trades else "")
+        + f") | 盈亏比: {plr_str} | 平均盈利: +{avg_profit:.2f} USDT | 平均亏损: -{avg_loss:.2f} USDT | "
+        f"已确认累计盈亏（手续费前）: {confirmed_pnl}"
+    )
+
+    return "\n".join(lines) + "\n\n" + stats_line
+
+
 def _rows_to_trade_stats(rows):
     pnls = []
     for row in rows:
@@ -659,6 +878,22 @@ def _aggregate_config_trade_stats(cursor, symbol, config_id):
     mode = _config_mode_for_stats(config_id)
 
     if mode == "REAL":
+        table_exists = cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='execution_position_history'"
+        ).fetchone()
+        if table_exists:
+            exec_rows = cursor.execute(
+                """
+                SELECT realized_pnl
+                FROM execution_position_history
+                WHERE config_id = ?
+                  AND (symbol = ? OR symbol LIKE ?)
+                """,
+                (config_id, symbol, symbol_prefix),
+            ).fetchall()
+            if exec_rows:
+                return _rows_to_trade_stats(exec_rows)
+
         position_rows = cursor.execute(
             """
             SELECT realized_pnl
@@ -871,6 +1106,42 @@ def purge_config_all_data(config_id: str):
     return _config_cleanup_store.purge_all_data(config_id)
 
 
+def export_database_bytes() -> tuple[bytes, str]:
+    """
+    Safely export the current SQLite database using SQLite's online backup API.
+    Returns (bytes, filename).
+    """
+    import tempfile
+
+    timestamp = datetime.now(TZ_CN).strftime("%Y%m%d_%H%M%S")
+    filename = f"trading_data_{timestamp}.db"
+
+    init_db()
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        source_conn = sqlite3.connect(DB_NAME, timeout=30)
+        dest_conn = sqlite3.connect(tmp_path)
+        try:
+            source_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+            source_conn.close()
+
+        with open(tmp_path, "rb") as f:
+            content = f.read()
+        return content, filename
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     init_db()
     logger.info("Database initialized.")
+

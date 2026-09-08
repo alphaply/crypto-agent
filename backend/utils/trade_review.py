@@ -16,6 +16,13 @@ def daily_exchange_evidence(config: dict, date_str: str) -> str:
     end_ms = int((start + timedelta(days=1)).timestamp() * 1000)
     try:
         ex = MarketTool(config_id=config['config_id']).exchange
+        if str(config.get('mode') or '').upper() == 'REAL':
+            from backend.utils.execution_ledger import ExecutionLedger, execution_context
+            ledger = ExecutionLedger(ex, config['config_id'], config['symbol'])
+            ledger.sync(now_ms=end_ms - 1, start_ms=start_ms, min_interval=0)
+            ledger.sync_income(start_ms, end_ms - 1)
+            return execution_context(config['config_id'], hours=24, limit=200,
+                                     now=start + timedelta(days=1), scope=ledger.scope, symbol=ledger.symbol)
         trades = ex.fetch_my_trades(config['symbol'], since=start_ms, limit=None,
                                    params={'until': end_ms - 1, 'paginate': True, 'paginationCalls': 5})
         unique = {}

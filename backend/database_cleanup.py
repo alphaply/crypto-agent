@@ -21,9 +21,23 @@ class ConfigCleanupStore:
                 "daily_summaries",
                 "short_memories",
                 "position_history",
+                "execution_fills",
+                "execution_order_links",
+                "execution_episodes",
+                "execution_position_history",
+                "real_protection_plans",
+                "real_protection_events",
             ]
+            existing_tables = {
+                row[0]
+                for row in cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
             counts = {}
             for table in tables:
+                if table not in existing_tables:
+                    continue
                 counts[table] = cursor.execute(
                     f"SELECT COUNT(*) FROM {table} WHERE config_id = ?",
                     (config_id,),
@@ -78,6 +92,12 @@ class ConfigCleanupStore:
     def purge_all_data(self, config_id: str):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
+            existing_tables = {
+                row[0]
+                for row in cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
             cleanup = {
                 "chat_sessions_deleted": cursor.execute(
                     "DELETE FROM chat_sessions WHERE config_id = ?",
@@ -120,6 +140,19 @@ class ConfigCleanupStore:
                     (config_id,),
                 ).rowcount,
             }
+            for table in (
+                "execution_fills",
+                "execution_order_links",
+                "execution_episodes",
+                "execution_position_history",
+                "real_protection_plans",
+                "real_protection_events",
+            ):
+                if table in existing_tables:
+                    cleanup[f"{table}_deleted"] = cursor.execute(
+                        f"DELETE FROM {table} WHERE config_id = ?",
+                        (config_id,),
+                    ).rowcount
 
             conn.commit()
             return cleanup
