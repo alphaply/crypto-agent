@@ -249,6 +249,11 @@ class ExecutionLedger:
                               int(trade['timestamp']), json.dumps(payload, default=str)))
             conn.commit()
         if refresh:
+            # An external close changes an owned cycle even without an order link.
+            with get_db_conn() as conn:
+                owners.update(r[0] for r in conn.execute(
+                    'SELECT DISTINCT config_id FROM execution_order_links WHERE account_scope=? AND symbol=?',
+                    (self.scope, self.symbol)))
             for owner_config_id in owners:
                 rebuild_execution_position_history(owner_config_id, self.scope, self.symbol)
 
@@ -449,25 +454,55 @@ def execution_context(config_id: str, hours=24, limit=20, now=None, scope=None, 
             + json.dumps(payload, ensure_ascii=False, default=str))
 
 
+def recent_activity_summary(config_id: str, symbol: str, now=None) -> str:
+    canonical = symbol if ':' in symbol else f'{symbol}:USDT'
+    raw = execution_context(config_id, hours=168, limit=5, now=now, symbol=canonical)
+    data = json.loads(raw[raw.index('\n{') + 1:])
+    cycles = data['position_cycles']
+    return ('【最近7天成交活动（按成交时间，与完整周期盈亏不可相加）】\n'
+            f"已归属成交: {data['fill_count']} 条；已确认手续费前盈亏: {data['known_realized_pnl_before_fees']}；"
+            f"手续费按币种: {json.dumps(data['fees_by_currency'])}；缺失盈亏: {data['missing_pnl_count']} 条；"
+            f"未知归属成交: {data['unknown_owner_fill_count']} 条；无法匹配: {cycles['unmatched_fill_count']} 条；"
+            f"混合归属/不完整周期排除: {cycles['excluded_cycle_count']}；"
+            f"窗口覆盖完整: {data['window_complete']}；同步: {json.dumps(data['sync'])}\n"
+            f"未闭合周期（非实时持仓）: {json.dumps([{'side': c['side'], 'remaining': c['remaining_base'], 'mixed': c['foreign_entry']} for c in cycles['open_cycles']])}")
+
+
 def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
     """Reconstruct every owned entry-to-flat cycle without inventing missing fills."""
     with get_db_conn() as conn:
         rows = conn.execute('SELECT f.*,l.role,l.payload AS link_metadata FROM execution_fills f '
-                            'JOIN execution_order_links l ON f.account_scope=l.account_scope AND f.symbol=l.symbol '
-                            'AND f.order_id=l.order_id WHERE f.config_id=? AND f.timestamp_ms<? '
+                            'LEFT JOIN execution_order_links l ON f.account_scope=l.account_scope AND f.symbol=l.symbol '
+                            'AND f.order_id=l.order_id WHERE EXISTS (SELECT 1 FROM execution_order_links own '
+                            'WHERE own.config_id=? AND own.account_scope=f.account_scope AND own.symbol=f.symbol) '
+                            'AND f.timestamp_ms<? '
                             'AND (? IS NULL OR f.account_scope=?) AND (? IS NULL OR f.symbol=?) '
                             'ORDER BY f.timestamp_ms, LENGTH(f.trade_id), f.trade_id',
                             (config_id, end_ms, scope, scope, symbol, symbol)).fetchall()
     current = {}
     completed = []
+    excluded = []
     unmatched = 0
     for row in rows:
         fill = json.loads(row['payload'])
-        metadata = json.loads(row['link_metadata'])
-        side = metadata.get('side')
+        metadata = json.loads(row['link_metadata'] or '{}')
+        side = str(fill.get('position_side') or metadata.get('side') or '').upper()
+        if side == 'BOTH':
+            side = metadata.get('side')
         if side not in {'LONG', 'SHORT'}:
             unmatched += 1
+            for key in list(current):
+                if key[:2] == (row['account_scope'], row['symbol']):
+                    current[key]['incomplete'] = True
             continue
+        role = row['role']
+        if not role:
+            # Direction establishes increase/decrease, never the reason for an exit.
+            action = str(fill.get('side') or '').lower()
+            if action not in {'buy', 'sell'}:
+                unmatched += 1
+                continue
+            role = 'entry' if (action == 'buy') == (side == 'LONG') else 'external_unknown_exit'
         key = (row['account_scope'], row['symbol'], side)
         quantity = number(fill.get('base_amount', fill.get('amount')))
         price = number(fill.get('price'))
@@ -475,7 +510,7 @@ def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol
             unmatched += 1
             continue
         cycle = current.get(key)
-        if row['role'] == 'entry':
+        if role == 'entry':
             if not cycle:
                 cycle = {
                     'account_scope': row['account_scope'],
@@ -498,10 +533,16 @@ def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol
                     'entry_order_ids': [],
                     'exit_order_ids': [],
                     'exit_reasons': [],
+                    'events': [],
+                    'incomplete': False,
+                    'foreign_entry': False,
+                    'owned_entry': False,
                     'take_profit': number(metadata.get('take_profit')),
                     'stop_loss': number(metadata.get('stop_loss')),
                 }
                 current[key] = cycle
+            cycle['owned_entry'] |= row['config_id'] == config_id
+            cycle['foreign_entry'] |= row['config_id'] != config_id
             cycle['episode_id'] = cycle.get('episode_id') or metadata.get('episode_id')
             cycle['take_profit'] = number(metadata.get('take_profit')) or cycle.get('take_profit')
             cycle['stop_loss'] = number(metadata.get('stop_loss')) or cycle.get('stop_loss')
@@ -519,17 +560,22 @@ def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol
             cycle['remaining_base'] = max(0, cycle['remaining_base'] - quantity)
             cycle['exited_base'] += quantity
             cycle['exit_cost'] += quantity * price
-            if row['role'] not in cycle['exit_reasons']:
-                cycle['exit_reasons'].append(row['role'])
+            if role not in cycle['exit_reasons']:
+                cycle['exit_reasons'].append(role)
             cycle['exit_trade_ids'].append(row['trade_id'])
             if row['order_id'] and row['order_id'] not in cycle['exit_order_ids']:
                 cycle['exit_order_ids'].append(row['order_id'])
-            if row['role'] == 'take_profit':
+            if role == 'take_profit':
                 cycle['take_profit'] = number(metadata.get('trigger_price')) or cycle.get('take_profit')
-            elif row['role'] == 'stop_loss':
+            elif role == 'stop_loss':
                 cycle['stop_loss'] = number(metadata.get('trigger_price')) or cycle.get('stop_loss')
+        cycle['events'].append({'trade_id': row['trade_id'], 'order_id': row['order_id'],
+                                'timestamp_ms': row['timestamp_ms'], 'role': role,
+                                'quantity': quantity, 'price': price,
+                                'remaining_base': cycle['remaining_base'],
+                                'owner_known': row['config_id'] == config_id})
         pnl = fill.get('realized_pnl')
-        if row['role'] != 'entry' and pnl is None:
+        if role != 'entry' and pnl is None:
             cycle['missing_pnl'] = True
         elif pnl is not None:
             cycle['realized_pnl_before_fees'] += pnl
@@ -544,38 +590,72 @@ def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol
             else:
                 cycle['fees_by_currency'][currency] = cycle['fees_by_currency'].get(currency, 0) + cost
         if cycle['remaining_base'] <= 1e-10:
+            cycle['remaining_base'] = 0
             cycle['closed_at_ms'] = row['timestamp_ms']
             cycle['entry_vwap'] = cycle['entry_cost'] / cycle['entered_base']
             cycle['exit_vwap'] = cycle['exit_cost'] / cycle['exited_base']
             cycle['holding_seconds'] = (cycle['closed_at_ms'] - cycle['opened_at_ms']) / 1000
-            if not cycle.get('episode_id'):
-                identity = (
-                    f"{row['account_scope']}:{row['symbol']}:{side}:"
-                    f"{cycle['entry_trade_ids'][0]}"
-                )
-                cycle['episode_id'] = hashlib.sha256(identity.encode()).hexdigest()
+            cycle['plan_episode_id'] = cycle.get('episode_id')
+            identity = f"{row['account_scope']}:{row['symbol']}:{side}:{cycle['entry_trade_ids'][0]}"
+            cycle['episode_id'] = hashlib.sha256(identity.encode()).hexdigest()
+            cycle['add_count'] = max(0, len(cycle['entry_order_ids']) - 1)
+            cycle['exit_count'] = len(cycle['exit_order_ids'])
+            cycle['final_exit_reason'] = role
+            cycle['settlement_currency'] = row['symbol'].split(':')[-1] if ':' in row['symbol'] else row['symbol'].split('/')[-1]
+            if cycle['missing_pnl']:
+                cycle['realized_pnl_before_fees'] = None
             if cycle['closed_at_ms'] >= start_ms:
-                completed.append(cycle)
+                if cycle['owned_entry'] and not cycle['foreign_entry'] and not cycle['incomplete']:
+                    completed.append(cycle)
+                elif cycle['owned_entry'] or row['config_id'] == config_id:
+                    excluded.append(cycle)
             current.pop(key, None)
+    # Audit snapshots carry the effective prices at each revision, including clears.
+    with get_db_conn() as conn:
+        audit_rows = conn.execute('SELECT timestamp,payload FROM real_protection_events '
+                                  'WHERE config_id=? ORDER BY id', (config_id,)).fetchall()
+    for cycle in completed:
+        revisions = {}
+        for audit in audit_rows:
+            plan = json.loads(audit['payload'])
+            if (plan.get('account_scope'), plan.get('symbol'), plan.get('side')) != (
+                    cycle['account_scope'], cycle['symbol'], cycle['side']):
+                continue
+            if cycle.get('plan_episode_id') and plan.get('episode_id') != cycle['plan_episode_id']:
+                continue
+            ts = int(TZ_CN.localize(datetime.fromisoformat(audit['timestamp'])).timestamp() * 1000)
+            if ts > cycle['closed_at_ms']:
+                continue
+            revision = plan.get('revision', 0)
+            revisions.setdefault(revision, {'timestamp_ms': ts, 'revision': revision,
+                                            'stop_loss': plan.get('stop_loss'), 'take_profit': plan.get('take_profit')})
+        timeline = sorted(revisions.values(), key=lambda x: x['timestamp_ms'])
+        before = [x for x in timeline if x['timestamp_ms'] <= cycle['opened_at_ms']]
+        cycle['protection_history'] = before[-1:] + [x for x in timeline if x['timestamp_ms'] > cycle['opened_at_ms']]
+        if cycle['protection_history']:
+            final = cycle['protection_history'][-1]
+            cycle.update(stop_loss=final['stop_loss'], take_profit=final['take_profit'])
     return {
         'completed': completed,
         'unmatched_fill_count': unmatched,
-        'open_cycles': list(current.values()),
+        'excluded_cycles': excluded,
+        'open_cycles': [c for c in current.values() if c['owned_entry']],
     }
 
 
 def rebuild_execution_position_history(config_id: str, scope: str, symbol: str):
     """Materialize closed trading cycles as the canonical local history table."""
     with get_db_conn() as conn:
+        # Prevent a stale reconstruction from replacing a newer stream/scheduler result.
+        conn.execute('BEGIN IMMEDIATE')
         newest = conn.execute(
             'SELECT MAX(timestamp_ms) FROM execution_fills '
-            'WHERE account_scope=? AND symbol=? AND config_id=?',
-            (scope, symbol, config_id),
+            'WHERE account_scope=? AND symbol=?',
+            (scope, symbol),
         ).fetchone()[0]
-    end_ms = int(newest or 0) + 1
-    rebuilt = _reconstruct_position_cycles(config_id, 0, end_ms, scope, symbol)
-    updated_at_ms = int(time.time() * 1000)
-    with get_db_conn() as conn:
+        end_ms = int(newest or 0) + 1
+        rebuilt = _reconstruct_position_cycles(config_id, 0, end_ms, scope, symbol)
+        updated_at_ms = int(time.time() * 1000)
         conn.execute(
             'DELETE FROM execution_position_history '
             'WHERE account_scope=? AND config_id=? AND symbol=?',
@@ -623,6 +703,7 @@ def position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
         'completed': completed[-10:],
         'omitted_completed': max(0, len(completed) - 10),
         'unmatched_fill_count': rebuilt['unmatched_fill_count'],
+        'excluded_cycle_count': len(rebuilt['excluded_cycles']),
         'open_cycles': rebuilt['open_cycles'],
-        'limits': '仅可重建已归属且开平仓成交链完整的周期；未匹配成交不构造虚假开仓。实际持仓以交易所快照为准；周期盈亏已包含在成交总计，不重复相加。',
+        'limits': '按账户同方向成交归零划分；外部退出仅注明未知原因。混合归属入场不计入本策略战绩。实际持仓以交易所快照为准；周期盈亏与窗口内成交盈亏口径不同，不能相加。',
     }

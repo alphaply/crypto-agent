@@ -1,4 +1,5 @@
 import RunScheduleEditor from '../components/RunScheduleEditor';
+import DatabaseMaintenance from '../components/DatabaseMaintenance';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -35,7 +36,7 @@ const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 const { useBreakpoint } = Grid;
 const ADMIN_TAB_STORAGE_KEY = 'crypto-agent-admin-active-tab';
-const ADMIN_TAB_KEYS = ['runtime', 'intelligence', 'tasks', 'providers', 'exchanges', 'memory', 'prompts', 'importexport'];
+const ADMIN_TAB_KEYS = ['runtime', 'intelligence', 'tasks', 'providers', 'exchanges', 'memory', 'prompts', 'database', 'importexport'];
 
 const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}';
 const DEFAULT_DAILY_PROMPT = '请把以下一整天的交易推理压缩成一段中文日内记忆，300字以内。保留趋势演变、关键价位、决策变化、执行动作和风险结论。只输出总结文本。\n\n内容：\n{content}';
@@ -1453,6 +1454,7 @@ export default function AdminPage() {
             ),
           },
           // ===== 导入导出 =====
+          { key: 'database', label: locale === 'zh' ? '数据库管理' : 'Database', children: <DatabaseMaintenance /> },
           {
             key: 'importexport',
             label: locale === 'zh' ? '导入导出' : 'Import/Export',

@@ -30,6 +30,7 @@ import PolymarketPanel from '../components/PolymarketPanel';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
+import PositionCycleHistory from '../components/PositionCycleHistory';
 import EquityCompareChart from '../components/EquityCompareChart';
 import { EditOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
@@ -264,16 +265,18 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
 function CopyNumber({ value }) {
   const { t } = usePreferences();
   if (value === null || value === undefined || value === '') return '-';
+  const numeric = Number(value);
+  const display = Number.isFinite(numeric) ? String(Number(numeric.toPrecision(12))) : String(value);
   return (
     <button
       type="button"
       className="copy-number"
       onClick={() => {
-        navigator.clipboard?.writeText(String(value));
+        navigator.clipboard?.writeText(display);
         message.success(t('copied'));
       }}
     >
-      {value}
+      {display}
     </button>
   );
 }
@@ -553,7 +556,7 @@ function NewsSnapshotCard({ snapshot }) {
   );
 }
 
-function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
+export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
   const { t, locale } = usePreferences();
   const screens = useBreakpoint();
   const isMobile = !screens.md;
@@ -592,19 +595,23 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
     if (!editingProtection) return;
     setProtectionSaving(true);
     try {
-      const tpCleared = clearTp || (Boolean(editingProtection.take_profit) && (protectionTp === null || protectionTp === undefined || protectionTp === ''));
-      const slCleared = clearSl || (Boolean(editingProtection.stop_loss) && (protectionSl === null || protectionSl === undefined || protectionSl === ''));
-      await api.post('/stats/position/protection', {
+      const tpCleared = clearTp;
+      const slCleared = clearSl;
+      const response = await api.post('/stats/position/protection', {
         config_id: agent.config_id,
-        symbol: agent.symbol || editingProtection.symbol,
+        symbol: editingProtection.symbol || agent.symbol,
         side: editingProtection.side,
         stop_loss: slCleared ? null : (protectionSl !== null && protectionSl !== undefined && protectionSl !== '' ? Number(protectionSl) : null),
         take_profit: tpCleared ? null : (protectionTp !== null && protectionTp !== undefined && protectionTp !== '' ? Number(protectionTp) : null),
         clear_stop_loss: slCleared,
         clear_take_profit: tpCleared,
+        expected_revision: editingProtection.protection_revision,
       });
+      if (!response.data.success || response.data.error) {
+        throw new Error(response.data.error || `保护尚未生效：${response.data.state}`);
+      }
       setEditingProtection(null);
-      message.success(t('saved'));
+      message.success(response.data.state === 'WAITING' ? '保护计划已保存，等待入场成交' : '保护已核验并生效');
       window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'));
     } catch (err) {
       message.error(err.response?.data?.detail || err.message || 'Failed to update protection');
@@ -626,7 +633,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
         config_id: editingMemory.config_id,
         bucket_start: editingMemory.bucket_start,
         market_summary: memoryEditText,
-        position_summary: '',
+        position_summary: editingMemory.position_summary || '',
       });
       setEditingMemory(null);
       message.success(t('saved'));
@@ -687,6 +694,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
     { label: t('leverage'), value: pos.leverage ? `${pos.leverage}x` : '-' },
     { label: t('takeProfit'), value: pos.take_profit ? <CopyNumber value={pos.take_profit} /> : '-' },
     { label: t('stopLoss'), value: pos.stop_loss ? <CopyNumber value={pos.stop_loss} /> : '-' },
+    { label: locale === 'zh' ? '保护状态' : 'Protection', value: <Tag color={pos.protection_error ? 'red' : pos.protection_state === 'ACTIVE' ? 'green' : 'orange'}>{pos.protection_error ? (locale === 'zh' ? '待核验' : 'Unverified') : pos.protection_state || (locale === 'zh' ? '未设置' : 'Not set')}</Tag> },
   ];
 
   return (
@@ -698,7 +706,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
               <Text strong>{spotMode ? t('spotAccount') : t('positions')}</Text>
               {spotMode ? <Tag color="gold">SPOT_DCA</Tag> : null}
               {!spotMode && authenticated && activePositions.length === 1 ? (
-                <Button size="small" type="primary" ghost onClick={() => openProtectionModal(activePositions[0])}>
+                <Button size="small" icon={<EditOutlined />} onClick={() => openProtectionModal(activePositions[0])}>
                   {t('adjustTpSl')}
                 </Button>
               ) : null}
@@ -739,7 +747,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
                     <Space size={8}>
                       <Tag color={pos.side === 'SHORT' ? 'red' : 'green'}>{pos.side}</Tag>
                       {authenticated ? (
-                        <Button size="small" type="primary" ghost onClick={() => openProtectionModal(pos)}>
+                        <Button size="small" icon={<EditOutlined />} onClick={() => openProtectionModal(pos)}>
                           {t('adjustTpSl')}
                         </Button>
                       ) : null}
@@ -755,7 +763,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
         </Space>
         <Modal
           open={Boolean(editingProtection)}
-          title={`${t('adjustTpSl')} - ${editingProtection?.side || ''} (${agent?.symbol || editingProtection?.symbol || ''})`}
+          title={`${t('adjustTpSl')} - ${editingProtection?.side || ''} (${editingProtection?.symbol || agent?.symbol || ''})`}
           onCancel={() => setEditingProtection(null)}
           onOk={saveProtection}
           confirmLoading={protectionSaving}
@@ -766,6 +774,9 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
           {editingProtection ? (
             <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 12 }}>
               <Alert type="info" showIcon message={t('tpSlNotice')} />
+              <Text type="secondary">作用于同方向整个仓位（含后续加仓）。留空保留原值；仅勾选取消才移除保护。</Text>
+              {editingProtection.protection_error ? <Alert type="error" showIcon message={editingProtection.protection_error} /> : null}
+              <Text type="secondary">最近核验：{editingProtection.protection_verified_at ? new Date(editingProtection.protection_verified_at * 1000).toLocaleString() : '尚未核验'} · {editingProtection.protection_state || '未设置'}</Text>
               <Descriptions size="small" column={2} bordered>
                 <Descriptions.Item label={t('side')}>
                   <Tag color={editingProtection.side === 'SHORT' ? 'red' : 'green'}>{editingProtection.side}</Tag>
@@ -790,7 +801,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
                       value={clearTp ? null : protectionTp}
                       onChange={(val) => setProtectionTp(val)}
                       disabled={clearTp}
-                      step="any"
+                      min={0.00000001}
                     />
                     <Checkbox checked={clearTp} onChange={(e) => setClearTp(e.target.checked)}>
                       {t('clearTp')}
@@ -806,7 +817,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
                       value={clearSl ? null : protectionSl}
                       onChange={(val) => setProtectionSl(val)}
                       disabled={clearSl}
-                      step="any"
+                      min={0.00000001}
                     />
                     <Checkbox checked={clearSl} onChange={(e) => setClearSl(e.target.checked)}>
                       {t('clearSl')}
@@ -819,6 +830,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
         </Modal>
       </Card>
 
+      {authenticated && !spotMode ? <PositionCycleHistory key={agent.config_id} configId={agent.config_id} /> : null}
       <Card
         className="panel-card"
         title={t('liveWorkspace')}
@@ -878,6 +890,7 @@ function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
                 [window={memory.bucket_start} → {memory.bucket_end}] updated={memory.created_at} sources={memory.source_count ?? 0}
               </Text>
               <MarkdownBlock content={memory.market_summary || ''} />
+              {memory.position_summary ? <details><summary>本轮成交事实快照</summary><MarkdownBlock content={memory.position_summary} /></details> : null}
             </Space>
           );
         })() : (
@@ -1263,7 +1276,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
       config_id: editingRow.config_id,
       bucket_start: editingRow.bucket_start,
       market_summary: values.market_summary || '',
-      position_summary: '',
+      position_summary: editingRow?.position_summary || '',
     });
     setModalOpen(false);
     await loadRows();
@@ -1360,6 +1373,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
             expandedRowRender: (row) => (
               <Space direction="vertical" style={{ width: '100%' }}>
                 <MarkdownBlock content={row.market_summary || ''} />
+                {row.position_summary ? <details><summary>本轮成交事实快照</summary><MarkdownBlock content={row.position_summary} /></details> : null}
               </Space>
             ),
           }}

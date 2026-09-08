@@ -26,6 +26,9 @@ def test_every_strategy_updates_bounded_memory_with_execution_evidence(local_db)
         assert agent_graph.update_turn_memory('cfg', {'symbol': 'ETH/USDT'}, 'reverse to long', messages)
     source = summarize.call_args.args[0]
     assert 'old short plan' in source and 'reverse to long' in source
+    assert '最多600字' not in source
+    assert '分为【当前假设】' not in source
+    assert source.startswith('更新时间：')
     assert 'open_position_real: Order rejected' in source
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'new plan; entry rejected'
 
@@ -137,7 +140,7 @@ def test_parse_execution_facts_to_text_formatting():
     # 验证各区块存在且由双换行分开，避免粘连
     assert "【已平仓交易周期】" in parsed
     assert "止损出场" in parsed
-    assert "亏损 -0.12 USDT" in parsed
+    assert "手续费前盈亏 -0.12 USDT" in parsed
     assert "【未闭合持仓周期 (实际持仓以实时账户快照为准)】" in parsed
     assert "剩余数量: 0.1610" in parsed
     assert "【近期成交明细】" in parsed

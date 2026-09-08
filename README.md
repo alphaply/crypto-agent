@@ -216,3 +216,8 @@ uv run backend/utils/test_agent_connection.py
 ## Polymarket 消息面
 
 支持在后台「配置 → 消息源」添加 Polymarket 事件监控，无需 API key。公开看板以行情主区与消息侧栏并列展示，预测概率也会进入 Agent 的消息上下文。配置及采集机制见 [Polymarket 监控说明](docs/POLYMARKET.md)。
+## TP/SL、持仓周期与数据库维护
+
+同方向加仓未填写 TP/SL 时继承现有保护；填写时先更新整仓保护再加仓。Dashboard 支持手动调整、明确取消单项保护，并查看最近 7 天持仓周期。后台「数据库管理」支持只读副本分析、历史清理预览、自动备份、周期重建与空间回收。
+
+数据库默认使用 `data/trading_data.db`；根目录同名文件仅在目标不存在时迁移。详见 [同步库核查与维护说明](docs/DB_AUDIT_2026-09-08.md)。

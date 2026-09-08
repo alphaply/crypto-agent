@@ -57,6 +57,25 @@ def setup_mock_db(db_path: Path):
 
 
 class TestPositionProtectionService(unittest.TestCase):
+    def test_dashboard_loads_saved_protection_for_the_requested_symbol(self):
+        import json
+        from backend.app.services.stats_service import _fetch_real_position_data
+        with database.get_db_conn() as conn:
+            for symbol, tp in [('ETH/USDT:USDT', 2473.8), ('BTC/USDT:USDT', 60000)]:
+                conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+                             ('cfg', symbol, 'SHORT', json.dumps({'symbol': symbol, 'side': 'SHORT',
+                              'state': 'ACTIVE', 'take_profit': tp, 'stop_loss': 2497.5, 'revision': 3})))
+            conn.commit()
+        mt = MagicMock()
+        mt.exchange.fetch_positions.return_value = [{'symbol': 'ETH/USDT:USDT', 'side': 'short',
+            'contracts': .15, 'entryPrice': 2501.2, 'markPrice': 2485.72, 'leverage': 5}]
+        mt.exchange.fetch_balance.return_value = {'USDT': {'total': 100}}
+        mt.exchange.fetch_my_trades.return_value = []
+        with patch.object(global_config, 'get_leverage', return_value=5):
+            positions = _fetch_real_position_data(mt, 'ETH/USDT', {'config_id': 'cfg'})[0]
+        assert positions[0]['take_profit'] == 2473.8
+        assert positions[0]['stop_loss'] == 2497.5
+        assert positions[0]['protection_revision'] == 3
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "test_trading.db"
@@ -173,6 +192,18 @@ class TestPositionProtectionService(unittest.TestCase):
 
 
 class TestPositionProtectionApi(unittest.TestCase):
+    def test_failed_verification_is_not_success_and_invalid_price_is_rejected(self):
+        from backend.app.core.deps import get_current_user
+        app.dependency_overrides[get_current_user] = lambda: {'sub': 'test'}
+        try:
+            with patch('backend.app.api.stats.update_position_protection_payload',
+                       return_value={'state': 'ACTIVE', 'error': 'not verified'}):
+                body = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'side': 'LONG', 'stop_loss': 90}
+                assert self.client.post('/api/stats/position/protection', json=body).json()['success'] is False
+                body['stop_loss'] = -1
+                assert self.client.post('/api/stats/position/protection', json=body).status_code == 422
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)

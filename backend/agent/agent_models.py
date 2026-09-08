@@ -15,8 +15,8 @@ class OpenOrderReal(BaseModel):
     action: Literal["BUY_LIMIT", "SELL_LIMIT"] = Field(description="BUY_LIMIT: 限价开多, SELL_LIMIT: 限价开空")
     entry_price: float = Field(gt=0, allow_inf_nan=False, description="入场的价格（限价单）")
     amount: float = Field(gt=0, allow_inf_nan=False, description="下单数量 (币种数量)")
-    stop_loss: Optional[float] = Field(None, gt=0, allow_inf_nan=False, description="可选：成交后止损触发价；保护同方向整个仓位")
-    take_profit: Optional[float] = Field(None, gt=0, allow_inf_nan=False, description="可选：成交后止盈触发价；保护同方向整个仓位")
+    stop_loss: Optional[float] = Field(None, gt=0, allow_inf_nan=False, description="可选：同方向整仓SL；加仓省略则继承，填写则先更新整仓SL再加仓")
+    take_profit: Optional[float] = Field(None, gt=0, allow_inf_nan=False, description="可选：同方向整仓TP；加仓省略则继承，填写则先更新整仓TP再加仓")
     reason: str = Field(description="开仓理由")
 
     @model_validator(mode="after")

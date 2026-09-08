@@ -1,4 +1,5 @@
 import sqlite3
+import json
 
 import pandas as pd
 
@@ -239,7 +240,7 @@ def _fetch_real_position_data(mt, symbol, cfg):
                 ).fetchall()
                 for r in rows:
                     p = json.loads(r["payload"])
-                    if p.get("state") != "DONE":
+                    if p.get("state") != "DONE" and str(p.get('symbol', '')).split(':')[0] == symbol.split(':')[0]:
                         active_plans[p.get("side")] = p
         except Exception as exc:
             logger.warning(f"Failed to load active protection plans for {config_id}: {exc}")
@@ -276,6 +277,9 @@ def _fetch_real_position_data(mt, symbol, cfg):
                     "take_profit": plan.get("take_profit"),
                     "stop_loss": plan.get("stop_loss"),
                     "protection_state": plan.get("state"),
+                    "protection_revision": plan.get("revision", 0),
+                    "protection_verified_at": plan.get("verified_at"),
+                    "protection_error": plan.get("error"),
                 }
             )
     except Exception as exc:
@@ -811,7 +815,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
                     ).fetchall()
                     for r in rows:
                         p = json.loads(r["payload"])
-                        if p.get("state") != "DONE":
+                        if p.get("state") != "DONE" and str(p.get('symbol', '')).split(':')[0] == symbol.split(':')[0]:
                             active_plans[p.get("side")] = p
             except Exception:
                 pass
@@ -830,6 +834,10 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
                         "take_profit": plan.get("take_profit"),
                         "stop_loss": plan.get("stop_loss"),
                         "protection_state": plan.get("state"),
+                        "protection_revision": plan.get("revision", 0),
+                        "protection_verified_at": plan.get("verified_at"),
+                        "protection_error": plan.get("error"),
+                        "symbol": current.get('symbol', symbol),
                     }
                     positions.append(payload)
             if positions:
@@ -970,6 +978,7 @@ def update_position_protection_payload(
     take_profit: float | None = None,
     clear_stop_loss: bool = False,
     clear_take_profit: bool = False,
+    expected_revision: int | None = None,
 ) -> dict:
     cfg = global_config.get_config_by_id(config_id)
     if not cfg:
@@ -979,6 +988,12 @@ def update_position_protection_payload(
     side = str(side).upper()
     if side not in ("LONG", "SHORT"):
         raise ValueError(f"Invalid side: {side}")
+    import math
+    for value in (stop_loss, take_profit):
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError('TP/SL 必须是有限正数')
+    if (clear_stop_loss and stop_loss is not None) or (clear_take_profit and take_profit is not None):
+        raise ValueError('不能同时修改和取消同一项保护')
 
     if mode == "REAL":
         from backend.utils.market_data import MarketTool
@@ -986,6 +1001,7 @@ def update_position_protection_payload(
 
         mt = MarketTool(config_id=config_id)
         protection = PositionProtection(mt)
+        revision_args = {'expected_revision': expected_revision} if expected_revision is not None else {}
         plan = protection.adjust(
             symbol=symbol,
             side=side,
@@ -993,6 +1009,7 @@ def update_position_protection_payload(
             tp=take_profit,
             clear_sl=clear_stop_loss,
             clear_tp=clear_take_profit,
+            **revision_args,
         )
         return {
             "config_id": config_id,
@@ -1002,6 +1019,8 @@ def update_position_protection_payload(
             "take_profit": plan.get("take_profit"),
             "state": plan.get("state"),
             "error": plan.get("error"),
+            "revision": plan.get("revision"),
+            "verified_at": plan.get("verified_at"),
         }
     elif mode == "STRATEGY":
         from backend.database import get_db_conn

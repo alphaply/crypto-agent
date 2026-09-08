@@ -44,9 +44,9 @@ Volume Profile为OHLCV成交量分配近似，并非真实持仓成本或筹码�
 """
 
 REAL_EXECUTION_POLICY = """## 实盘工具执行约定
-open_position_real：限价入场必须包含amount（标的币数量）、entry_price、reason；stop_loss和take_profit均可省略或单独提供。提供SL时，多单SL<入场、空单SL>入场；提供TP时，多单TP>入场、空单TP<入场。未提供的保护不会自动创建，不得声称已有保护。
-TP/SL管理同方向整个仓位。已有同方向计划时，新开单沿用该计划；改变价格先调用update_position_protection_real。
-update_position_protection_real：指定pos_side及新的stop_loss和/或take_profit；未传的价格保留。可首次只设置其中一个。新保护单确认后才撤旧单。
+open_position_real：限价入场必须包含amount（标的币数量）、entry_price、reason；stop_loss和take_profit均可省略或单独提供。提供SL时，多单SL<入场、空单SL>入场；提供TP时，多单TP>入场、空单TP<入场。首次开仓未提供的保护不会自动创建；同方向加仓省略TP/SL则继承现有计划，填写则先更新整个同方向仓位的对应保护，另一项保留。加仓不自动按均价移动保护。不得声称未核验的保护已生效。
+TP/SL管理同方向整个仓位。独立调整使用update_position_protection_real；加仓同时提供新价格时由开仓工具先完成保护更新，加仓失败不回滚已更新保护。
+update_position_protection_real：指定pos_side及新的stop_loss和/或take_profit；未传的价格保留。可首次只设置其中一个。优先新单确认后撤旧单；交易所拒绝并存时核验撤旧再重建，期间存在保护空窗，异常必须报告。
 开仓委托成功不等于成交；WAITING表示待成交，ACTIVE且error为空仅表示最近一次已核验保护单，EXITING表示退出清理尚未完成。
 系统在成交后由独立维护任务安装交易所条件市价TP/SL；部分成交同样受监控。首次安装有轮询和网络延迟，不能说已原子绑定。
 修改本配置创建的限价入场价格/数量：调用update_entry_order_real，amount是含已成交部分的总币数。只在confirmed时认为改单成功；pending先查询，不撤单重开来绕过未知状态。已有TP/SL沿用原计划，新入场必须仍满足已设置保护价；调整保护用专用工具。现货定投不使用合约改单。

@@ -185,6 +185,61 @@ def test_partial_fills_reconstruct_one_cycle_without_counting_fills_as_trades(lo
     assert result['completed'][0]['missing_pnl']
 
 
+@pytest.mark.parametrize('exit_role', ['take_profit', 'stop_loss', 'agent_exit'])
+@pytest.mark.parametrize('add', [False, True])
+def test_cycle_scenarios_with_partial_close_and_add(local_db, exit_role, add):
+    from backend.utils.execution_ledger import position_cycles
+    ledger = ExecutionLedger(Exchange([]), 'cfg', 'ETH/USDT')
+    for oid, role in [('entry', 'entry'), ('add', 'entry'), ('reduce', 'agent_exit'), ('close', exit_role)]:
+        register_order(ledger.scope, ledger.symbol, oid, 'cfg', role, side='LONG')
+    trades = [fill(1), {**fill(2), 'order': 'reduce', 'side': 'sell', 'amount': .04}]
+    if add:
+        trades.append({**fill(3), 'order': 'add'})
+    trades.append({**fill(4), 'order': 'close', 'side': 'sell', 'amount': .16 if add else .06})
+    ledger.ingest(trades)
+    cycle = position_cycles('cfg', 0, 200000)['completed'][0]
+    assert cycle['add_count'] == int(add)
+    assert cycle['exit_count'] == 2
+    assert cycle['final_exit_reason'] == exit_role
+    assert cycle['remaining_base'] == 0
+
+
+def test_unknown_close_ends_cycle_without_claiming_tp_or_poisoning_next(local_db):
+    from backend.utils.execution_ledger import position_cycles
+    ledger = ExecutionLedger(Exchange([]), 'cfg', 'ETH/USDT')
+    register_order(ledger.scope, ledger.symbol, 'entry', 'cfg', 'entry', side='LONG', episode_id='same-plan')
+    register_order(ledger.scope, ledger.symbol, 'close', 'cfg', 'agent_exit', side='LONG')
+    ledger.ingest([fill(1), {**fill(2), 'order': 'external', 'side': 'sell', 'info': {'positionSide': 'LONG'}},
+                   fill(3), {**fill(4), 'order': 'close', 'side': 'sell'}])
+    result = position_cycles('cfg', 0, 200000)
+    assert result['completed_count'] == 2
+    assert result['completed'][0]['exit_reasons'] == ['external_unknown_exit']
+    assert len({c['episode_id'] for c in result['completed']}) == 2
+    assert result['open_cycles'] == []
+
+
+def test_mixed_unowned_entry_is_not_attributed_to_agent(local_db):
+    from backend.utils.execution_ledger import position_cycles
+    ledger = ExecutionLedger(Exchange([]), 'cfg', 'ETH/USDT')
+    register_order(ledger.scope, ledger.symbol, 'entry', 'cfg', 'entry', side='LONG')
+    register_order(ledger.scope, ledger.symbol, 'close', 'cfg', 'take_profit', side='LONG')
+    ledger.ingest([fill(1), {**fill(2), 'order': 'manual', 'info': {'positionSide': 'LONG'}},
+                   {**fill(3), 'order': 'close', 'side': 'sell', 'amount': .2}])
+    result = position_cycles('cfg', 0, 200000)
+    assert result['completed_count'] == 0
+    assert result['excluded_cycle_count'] == 1
+
+
+def test_external_only_ingest_rebuilds_existing_owned_cycle(local_db):
+    from backend.utils.execution_ledger import position_cycles
+    ledger = ExecutionLedger(Exchange([]), 'cfg', 'ETH/USDT')
+    register_order(ledger.scope, ledger.symbol, 'entry', 'cfg', 'entry', side='LONG')
+    ledger.ingest([fill(1)])
+    ledger.ingest([{**fill(2), 'order': 'manual', 'side': 'sell', 'info': {'positionSide': 'LONG'}}])
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM execution_position_history').fetchone()[0] == 1
+
+
 def test_completed_cycle_is_materialized_with_prices_protection_and_pnl(local_db):
     ex = Exchange([])
     ledger = ExecutionLedger(ex, 'cfg', 'ETH/USDT')
@@ -221,7 +276,8 @@ def test_completed_cycle_is_materialized_with_prices_protection_and_pnl(local_db
 
     with database.get_db_conn() as conn:
         row = conn.execute('SELECT * FROM execution_position_history').fetchone()
-    assert row['position_id'] == 'episode-1'
+    assert json.loads(row['payload'])['plan_episode_id'] == 'episode-1'
+    assert len(row['position_id']) == 64  # Identity follows first fill, not a reusable plan.
     assert row['entry_price'] == 100
     assert row['close_price'] == 110
     assert row['amount'] == pytest.approx(.1)

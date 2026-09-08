@@ -719,15 +719,16 @@ def get_closed_positions_7d(
                 "SELECT position_id, opened_at_ms, closed_at_ms, symbol, side, entry_price, "
                 "close_price, amount, take_profit, stop_loss, realized_pnl, fees_json, "
                 "exit_reason, payload FROM execution_position_history "
-                "WHERE config_id = ? AND closed_at_ms >= ?"
+                "WHERE config_id = ? AND closed_at_ms >= ? AND closed_at_ms <= ?"
             )
-            params = [config_id, cutoff_ms]
+            params = [config_id, cutoff_ms, int(now.timestamp() * 1000)]
             if clean_sym:
                 query += " AND (symbol = ? OR symbol LIKE ?)"
                 params.extend([clean_sym, f"{clean_sym}%"])
             query += " ORDER BY closed_at_ms DESC"
 
             for r in cursor.execute(query, params).fetchall():
+                cycle = json.loads(r['payload'] or '{}')
                 results.append({
                     "position_id": r["position_id"],
                     "opened_at": datetime.fromtimestamp(r["opened_at_ms"] / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),
@@ -743,6 +744,11 @@ def get_closed_positions_7d(
                     "fees": json.loads(r["fees_json"] or "{}"),
                     "exit_reason": r["exit_reason"],
                     "source": "execution_position_history",
+                    "add_count": cycle.get('add_count', 0),
+                    "exit_count": cycle.get('exit_count', 1),
+                    "protection_history": cycle.get('protection_history', []),
+                    "settlement_currency": cycle.get('settlement_currency', 'USDT'),
+                    "events": cycle.get('events', []),
                 })
             return results
 
@@ -788,6 +794,12 @@ def format_closed_positions_summary(positions: list[dict], days: int = 7) -> str
             "完整平仓周期: 0 笔 | 胜率: - | 盈亏比: - | 已确认累计盈亏: -"
         )
 
+    currencies = {p.get('settlement_currency', 'USDT') for p in positions}
+    if len(currencies) > 1:
+        return '\n\n'.join(format_closed_positions_summary(
+            [p for p in positions if p.get('settlement_currency', 'USDT') == currency], days)
+            for currency in sorted(currencies))
+    settlement = next(iter(currencies))
     lines = [f"【过去{days}天平仓记录（本地成交账本）】"]
     win_trades: list[float] = []
     loss_trades: list[float] = []
@@ -806,6 +818,7 @@ def format_closed_positions_summary(positions: list[dict], days: int = 7) -> str
         tp = p.get("take_profit")
         sl = p.get("stop_loss")
         pnl = p.get("realized_pnl")
+        currency = p.get('settlement_currency', 'USDT')
 
         tp_str = f"{tp:.2f}" if tp is not None and tp > 0 else "未设置"
         sl_str = f"{sl:.2f}" if sl is not None and sl > 0 else "未设置"
@@ -818,19 +831,24 @@ def format_closed_positions_summary(positions: list[dict], days: int = 7) -> str
             outcome = "已实现盈亏: 未知（成交源未返回完整盈亏）"
         elif pnl > 1e-6:
             win_trades.append(pnl)
-            outcome = f"盈利: +{pnl:.2f} USDT{roi_str}"
+            outcome = f"盈利: +{pnl:.2f} {currency}{roi_str}"
         elif pnl < -1e-6:
             loss_trades.append(abs(pnl))
-            outcome = f"亏损: {pnl:.2f} USDT{roi_str}"
+            outcome = f"亏损: {pnl:.2f} {currency}{roi_str}"
         else:
             tie_trades.append(0.0)
             outcome = f"平手: +0.00 USDT{roi_str}"
 
-        lines.append(
+        detail = (
             f"- [开仓: {open_time} -> 平仓: {close_time}] {sym} {side} ({side_zh}) | "
             f"开单价: {ep:.2f} | 平仓价: {cp:.2f} | 数量: {amt} | "
-            f"TP: {tp_str} | SL: {sl_str} | {outcome}"
+            f"TP: {tp_str} | SL: {sl_str} | {outcome} | 周期ID: {p.get('position_id', '模拟订单')} | "
+            f"加仓: {p.get('add_count', 0)} 次 | 退出委托: {p.get('exit_count', 1)} 次 | "
+            f"退出原因: {p.get('exit_reason') or '未知'} | 已知手续费（空值不代表无费用）: {json.dumps(p.get('fees', {}))} | "
+            f"保护版本数: {len(p.get('protection_history', []))}"
         )
+        if len(lines) <= 15:
+            lines.append(detail)
 
     total_count = len(positions)
     win_count = len(win_trades)
@@ -845,7 +863,7 @@ def format_closed_positions_summary(positions: list[dict], days: int = 7) -> str
     avg_profit = (total_profit / win_count) if win_count > 0 else 0.0
     avg_loss = (total_loss / loss_count) if loss_count > 0 else 0.0
     known_count = win_count + loss_count + len(tie_trades)
-    confirmed_pnl = f"{net_pnl:+.2f} USDT" if known_count else "-"
+    confirmed_pnl = f"{net_pnl:+.2f} {settlement}" if known_count else "-"
 
     if avg_loss > 0:
         plr_str = f"{avg_profit / avg_loss:.2f}"
@@ -859,10 +877,12 @@ def format_closed_positions_summary(positions: list[dict], days: int = 7) -> str
         f"完整平仓周期: {total_count} 笔 | 胜率: {win_rate_str} ({win_count}胜 {loss_count}负"
         + (f" {len(tie_trades)}平" if tie_trades else "")
         + (f" {unknown_trades}笔盈亏未知" if unknown_trades else "")
-        + f") | 盈亏比: {plr_str} | 平均盈利: +{avg_profit:.2f} USDT | 平均亏损: -{avg_loss:.2f} USDT | "
+        + f") | 盈亏比: {plr_str} | 平均盈利: +{avg_profit:.2f} {settlement} | 平均亏损: -{avg_loss:.2f} {settlement} | "
         f"已确认累计盈亏（手续费前）: {confirmed_pnl}"
     )
 
+    if len(positions) > 15:
+        lines.append(f'另有 {len(positions) - 15} 个周期未展示明细；统计包含全部周期。')
     return "\n".join(lines) + "\n\n" + stats_line
 
 

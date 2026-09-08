@@ -81,14 +81,18 @@ def update_position_protection(
             take_profit=payload.take_profit,
             clear_stop_loss=payload.clear_stop_loss,
             clear_take_profit=payload.clear_take_profit,
+            expected_revision=payload.expected_revision,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        from backend.utils.position_protection import ConcurrentProtectionUpdate
+        if isinstance(exc, ConcurrentProtectionUpdate):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=f"Failed to update position protection: {exc}") from exc
-    return {"success": True, **data}
+    return {"success": not bool(data.get('error')) and data.get('state') in {'ACTIVE', 'WAITING'}, **data}
 
 
 

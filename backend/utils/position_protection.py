@@ -218,28 +218,40 @@ class PositionProtection:
             market = self._market(symbol)
             symbol = market["symbol"]
             side = "LONG" if op.action == "BUY_LIMIT" else "SHORT"
+            protection_changed = False
             price = float(self.ex.price_to_precision(symbol, op.entry_price))
             sl = float(self.ex.price_to_precision(symbol, op.stop_loss)) if op.stop_loss is not None else None
             tp = float(self.ex.price_to_precision(symbol, op.take_profit)) if op.take_profit is not None else None
             self._validate(side, price, sl, tp)
+            amount = float(self.ex.amount_to_precision(symbol, op.amount / float(market.get("contractSize") or 1)))
+            if amount <= 0:
+                raise ValueError("Order quantity rounds to zero")
             plan = self._load(symbol, side)
             if plan and plan["state"] != "DONE":
                 self._reconcile(plan)
+            if plan and plan["state"] != "DONE":
                 if plan.get("error") or plan["state"] == "EXITING":
                     raise ValueError("Existing protection needs reconciliation before adding exposure")
                 if any(not e.get("id") and e.get('status') not in TERMINAL for e in plan["entries"]):
                     raise ValueError("An entry submission is unresolved; do not duplicate it")
                 if any(e.get('amendment', {}).get('state') == 'pending' for e in plan['entries']):
                     raise ValueError('An entry amendment is unresolved; wait for reconciliation')
+                sl = plan['stop_loss'] if sl is None else sl
+                tp = plan['take_profit'] if tp is None else tp
+                self._validate(side, price, sl, tp)
                 if (plan["stop_loss"], plan["take_profit"]) != (sl, tp):
-                    raise ValueError("Same-side position uses one TP/SL plan; adjust it before adding with different prices")
+                    try:
+                        plan = self.adjust(symbol, side, sl, tp)
+                    except Exception as exc:
+                        raise ValueError(f'Protection update failed; no additional entry submitted: {exc}') from exc
+                    if plan.get('error') or plan['state'] in {'EXITING', 'DONE'}:
+                        raise ValueError('Protection update not verified; no additional entry submitted: '
+                                         + str(plan.get('error') or plan['state']))
+                    protection_changed = True
             if not plan or plan["state"] == "DONE":
                 plan = self._new(symbol, side, sl, tp)
             if self._position(plan):
                 self._validate(side, self._trigger_reference(plan), sl, tp)
-            amount = float(self.ex.amount_to_precision(symbol, op.amount / float(market.get("contractSize") or 1)))
-            if amount <= 0:
-                raise ValueError("Order quantity rounds to zero")
             hedged = bool(self.ex.fetch_position_mode(symbol).get("hedged"))
             if not hedged:
                 for position in self.ex.fetch_positions([symbol]):
@@ -260,10 +272,14 @@ class PositionProtection:
                 entry["status"] = "rejected"
                 plan["error"] = f"Entry rejected: {exc}"
                 self._save(plan)
+                if protection_changed:
+                    raise RuntimeError(f'整仓保护已更新（SL={sl}, TP={tp}），加仓委托被拒绝: {exc}') from exc
                 raise
             except Exception as exc:
                 plan["error"] = f"Entry submission unresolved: {exc}"
                 self._save(plan)
+                if protection_changed:
+                    raise RuntimeError(f'整仓保护已更新（SL={sl}, TP={tp}），加仓结果待核验，不可重复提交: {exc}') from exc
                 raise
             try:
                 self._reconcile(plan)
@@ -337,11 +353,17 @@ class PositionProtection:
                     'filled_contracts': entry.get('filled', 0), 'protection_state': plan['state'],
                     'error': plan.get('error')}
 
-    def adjust(self, symbol, side, sl=None, tp=None, clear_sl: bool = False, clear_tp: bool = False):
+    def adjust(self, symbol, side, sl=None, tp=None, clear_sl: bool = False, clear_tp: bool = False,
+               expected_revision: int | None = None):
         """Replace desired position-wide prices, installing the new SL before retiring the old one."""
         with _lock(self.account_scope):
             symbol = self._market(symbol)["symbol"]
             plan = self._load(symbol, side)
+            current_revision = plan.get('revision', 0) if plan and plan['state'] != 'DONE' else 0
+            if expected_revision is not None and current_revision != expected_revision:
+                raise ConcurrentProtectionUpdate('保护计划已更新，请刷新后重新调整')
+            if (clear_sl and sl is not None) or (clear_tp and tp is not None):
+                raise ValueError('不能同时修改和取消同一项保护')
             if plan and plan['state'] != 'DONE':
                 self._reconcile(plan)
             if not plan or plan["state"] == "DONE":
@@ -393,12 +415,30 @@ class PositionProtection:
             raise RuntimeError("Order absent during cleanup; keep plan blocked for reconciliation")
         if record.get("status") in TERMINAL:
             return
-        self.ex.cancel_order(record["id"], plan["symbol"], params={"trigger": True} if trigger else {})
-        # Do not treat an ACK as proof. Next query also detects fills racing cancellation.
-        confirmed = self._query(record, plan["symbol"], trigger)
-        if not confirmed or record.get("status") not in TERMINAL:
-            raise RuntimeError(f"Cancellation not confirmed: {record['id']}")
-        self._save(plan)
+        if not record.get('cancel_requested_at') or time.time() - record['cancel_requested_at'] >= 15:
+            record['cancel_requested_at'] = time.time()
+            self._save(plan)
+            try:
+                self.ex.cancel_order(record["id"], plan["symbol"], params={"trigger": True} if trigger else {})
+            except ccxt.NetworkError:
+                pass  # A lost ACK is ambiguous; query without sending another cancel.
+            except Exception:
+                record.pop('cancel_requested_at', None)
+                self._save(plan)
+                raise
+        # Exchange reads may lag a successful cancel. Finish confirmation in this call.
+        # A filled order is terminal too; callers must handle an exit racing replacement.
+        for delay in (0, 0.15, 0.35, 0.75, 1.5, 2):
+            if delay:
+                time.sleep(delay)
+            try:
+                confirmed = self._query(record, plan['symbol'], trigger)
+            except ccxt.NetworkError:
+                continue
+            if confirmed and record.get('status') in TERMINAL:
+                self._save(plan)
+                return
+        raise RuntimeError(f"Cancellation not confirmed: {record['id']}")
 
     def _finish(self, plan, reason=None):
         if reason:
@@ -469,41 +509,32 @@ class PositionProtection:
         symbol = plan["symbol"]
         hedged = bool(self.ex.fetch_position_mode(symbol).get("hedged"))
         target_pos_side = plan["side"] if hedged else "BOTH"
-        try:
-            open_orders = self.ex.fetch_open_orders(symbol, params={"trigger": True})
-        except Exception:
-            return
+        open_orders = self.ex.fetch_open_orders(symbol, params={"trigger": True})
         for o in (open_orders or []):
             info = o.get("info", {})
             pos_side = str(info.get("positionSide") or o.get("positionSide") or "BOTH").upper()
-            if pos_side != target_pos_side and pos_side != "BOTH":
+            if pos_side != target_pos_side:
+                continue
+            expected_side = 'sell' if plan['side'] == 'LONG' else 'buy'
+            if str(o.get('side') or info.get('side') or '').lower() != expected_side:
                 continue
             close_all = str(info.get("closePosition", "")).lower() == "true" or o.get("closePosition") is True
             if not close_all:
                 continue
-            order_type = str(info.get("orderType") or o.get("type") or "").upper()
+            order_type = str(info.get("orderType") or info.get('type') or o.get("type") or "").upper()
             is_sl = "STOP" in order_type and "TAKE" not in order_type
             is_tp = "TAKE_PROFIT" in order_type
             if (kind == "sl" and is_sl) or (kind == "tp" and is_tp):
                 oid = str(o.get("id"))
-                try:
-                    self.ex.cancel_order(oid, symbol, params={"trigger": True})
-                except Exception:
-                    pass
+                self._cancel({'id': oid, 'status': 'open'}, plan, True)
 
     def _cleanup_conflicting_legs(self, plan, kind, current_leg):
         """Clean up older legs of the same kind and side when conflicting with exchange constraints."""
         for old in list(plan.get("legs", [])):
             if old is not current_leg and old.get("kind") == kind and old.get("status") not in TERMINAL:
-                try:
-                    self._cancel(old, plan, True)
-                except Exception:
-                    if old.get("id"):
-                        try:
-                            self.ex.cancel_order(old["id"], plan["symbol"], params={"trigger": True})
-                            old["status"] = "canceled"
-                        except Exception:
-                            pass
+                self._cancel(old, plan, True)
+                if old.get('status') == 'closed':
+                    raise RuntimeError('保护单在撤换时触发，等待退出核验')
         self._cancel_conflicting_exchange_triggers(plan, kind)
 
     def _ensure_leg(self, plan, pos, kind):
@@ -549,7 +580,11 @@ class PositionProtection:
             order = self.ex.create_order(symbol, "market", "sell" if plan["side"] == "LONG" else "buy", amount, None, params)
         except ccxt.ExchangeError as exc:
             if ("-4130" in str(exc) or "closePosition in the direction is existing" in str(exc)) and self.ex.id in {"binance", "binanceusdm"}:
+                leg['status'] = 'rejected'  # Explicit rejection; no ambiguous submission to recover.
+                self._save(plan)
                 self._cleanup_conflicting_legs(plan, kind, leg)
+                leg['status'] = 'submitting'
+                self._save(plan)
                 try:
                     order = self.ex.create_order(symbol, "market", "sell" if plan["side"] == "LONG" else "buy", amount, None, params)
                 except ccxt.ExchangeError:

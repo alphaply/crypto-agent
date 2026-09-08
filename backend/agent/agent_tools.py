@@ -192,8 +192,8 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
                 cost = price * op.amount
                 side_str = "多" if "BUY" in action else "空"
                 enhanced_reason = f"🚀 实盘开{side_str}: {op.amount} {symbol.split('/')[0]} @ {price} (价值: ${cost:.2f}) | {op.reason}"
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, op.take_profit or 0, op.stop_loss or 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
-                protection = f"TP={op.take_profit or '未设置'} SL={op.stop_loss or '未设置'}"
+                database.save_order_log(str(res['id']), symbol, agent_name, 'buy' if 'BUY' in action else 'sell', price, res.get('take_profit') or 0, res.get('stop_loss') or 0, enhanced_reason, trade_mode="REAL", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
+                protection = f"TP={res.get('take_profit') or '未设置'} SL={res.get('stop_loss') or '未设置'}（同方向整个仓位）"
                 execution_results.append(f"✅ [入场委托已提交，非成交确认] {action} {symbol} @ {price} | ID: {res['id']} | {protection} | 计划状态={res.get('protection_state')} | 异常={res.get('protection_error') or '无'}")
             else:
                 execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")

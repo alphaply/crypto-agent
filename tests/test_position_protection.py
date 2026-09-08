@@ -112,6 +112,110 @@ def test_pending_then_partial_fill_installs_full_position_protection(service):
     assert len(ex.calls) == 3  # closePosition covers incremental fills, no duplicate legs.
 
 
+def test_add_inherits_and_partial_update_changes_whole_position(service):
+    svc, ex = service
+    first = svc.open('ETH/USDT', entry())
+    ex.orders[first['id']].update(status='closed', filled=1)
+    ex.quantity = 1
+    svc.reconcile_all()
+    add = OpenOrderReal(action='BUY_LIMIT', entry_price=100, amount=.5, reason='add')
+    result = svc.open('ETH/USDT', add)
+    assert (result['stop_loss'], result['take_profit']) == (90, 120)
+    assert [c[1] for c in ex.calls].count('sl') == 1
+    add.take_profit = 125
+    result = svc.open('ETH/USDT', add)
+    assert (result['stop_loss'], result['take_profit']) == (90, 125)
+    assert [c[1] for c in ex.calls if c[0] == 'create'][-2:] == ['tp', 'entry']
+
+
+def test_failed_protection_update_does_not_add_exposure(service):
+    svc, ex = service
+    ex.quantity = 1
+    svc.open('ETH/USDT', entry())
+    ex.fail_kind = 'tp'
+    count = len([c for c in ex.calls if c[:2] == ('create', 'entry')])
+    add = OpenOrderReal(action='BUY_LIMIT', entry_price=100, amount=1, take_profit=125, reason='add')
+    with pytest.raises(ValueError, match='no additional entry'):
+        svc.open('ETH/USDT', add)
+    assert len([c for c in ex.calls if c[:2] == ('create', 'entry')]) == count
+
+
+def test_stale_revision_and_conflicting_clear_are_rejected(service):
+    svc, ex = service
+    svc.open('ETH/USDT', entry())
+    with pytest.raises(RuntimeError, match='刷新'):
+        svc.adjust('ETH/USDT', 'LONG', sl=95, expected_revision=0)
+    with pytest.raises(ValueError, match='同时'):
+        svc.adjust('ETH/USDT', 'LONG', sl=95, clear_sl=True)
+
+
+def test_add_does_not_change_opposite_waiting_plan(service):
+    svc, ex = service
+    svc.open('ETH/USDT', entry())
+    svc.open('ETH/USDT', OpenOrderReal(action='SELL_LIMIT', entry_price=100, amount=1,
+                                     stop_loss=110, take_profit=80, reason='short'))
+    svc.open('ETH/USDT', OpenOrderReal(action='BUY_LIMIT', entry_price=100, amount=.2, reason='add long'))
+    assert svc._load('ETH/USDT:USDT', 'SHORT')['take_profit'] == 80
+    assert svc._load('ETH/USDT:USDT', 'LONG')['take_profit'] == 120
+
+
+def test_zero_rounded_add_does_not_modify_protection(service):
+    svc, ex = service
+    svc.open('ETH/USDT', entry())
+    with pytest.raises(ValueError, match='rounds to zero'):
+        svc.open('ETH/USDT', OpenOrderReal(action='BUY_LIMIT', entry_price=100, amount=.0000001,
+                                         take_profit=125, reason='too small'))
+    assert svc._load('ETH/USDT:USDT', 'LONG')['take_profit'] == 120
+
+
+def test_conflict_cancel_timeout_preserves_old_leg_and_stops_retry(service):
+    svc, ex = service
+    ex.quantity = 1
+    svc.open('ETH/USDT', entry())
+    original = ex.create_order
+    def conflict(*args):
+        if 'takeProfitPrice' in args[-1]:
+            raise ccxt.ExchangeError('-4130 closePosition in the direction is existing')
+        return original(*args)
+    ex.create_order = conflict
+    def timeout(*args, **kwargs):
+        raise ccxt.RequestTimeout('cancel timeout')
+    ex.cancel_order = timeout
+    with patch('backend.utils.position_protection.time.sleep'), pytest.raises(RuntimeError, match='Cancellation not confirmed'):
+        svc.adjust('ETH/USDT', 'LONG', tp=125)
+    plan = svc._load('ETH/USDT:USDT', 'LONG')
+    assert any(l['kind'] == 'tp' and l['trigger_price'] == 120 and l['status'] == 'open' for l in plan['legs'])
+    assert plan['error']
+    assert not any(l['kind'] == 'tp' and l['trigger_price'] == 125 and l['status'] == 'submitting' for l in plan['legs'])
+
+
+@pytest.mark.parametrize('lost_ack', [False, True])
+def test_adjust_waits_for_cancel_visibility_in_one_call(service, lost_ack):
+    svc, ex = service
+    ex.quantity = 1
+    svc.open('ETH/USDT', entry())
+    cancel, query = ex.cancel_order, ex.fetch_order
+    delayed = {}
+    def delayed_cancel(oid, symbol, params):
+        result = cancel(oid, symbol, params)
+        delayed[oid] = 3
+        if lost_ack:
+            raise ccxt.RequestTimeout('ACK lost after successful cancel')
+        return result
+    def delayed_query(oid, symbol, params):
+        result = query(oid, symbol, params)
+        if delayed.get(oid, 0):
+            delayed[oid] -= 1
+            result['status'] = 'open'
+        return result
+    ex.cancel_order, ex.fetch_order = delayed_cancel, delayed_query
+    with patch('backend.utils.position_protection.time.sleep'):
+        plan = svc.adjust('ETH/USDT', 'LONG', sl=95, tp=125)
+    assert plan['state'] == 'ACTIVE' and not plan['error']
+    assert len([c for c in ex.calls if c[0] == 'cancel']) == 2
+    assert len([l for l in plan['legs'] if l['status'] == 'open']) == 2
+
+
 @pytest.mark.parametrize(('kwargs', 'expected_kinds'), [
     ({'stop_loss': 90}, ['entry', 'sl']),
     ({'take_profit': 120}, ['entry', 'tp']),
@@ -373,4 +477,3 @@ def test_binance_4130_auto_conflict_resolution(service):
     tp_orders = [o for o in ex.orders.values() if o["kind"] == "tp"]
     assert any(o["status"] == "canceled" for o in tp_orders)
     assert any(o["status"] == "open" for o in tp_orders)
-

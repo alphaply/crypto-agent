@@ -376,17 +376,17 @@ def parse_execution_facts_to_text(raw_data: str | dict) -> str:
         for c in completed:
             symbol = c.get("symbol", "")
             side = c.get("side", "")
-            pnl = c.get("realized_pnl_before_fees", 0.0)
+            pnl = c.get("realized_pnl_before_fees")
             reasons = c.get("exit_reasons", []) or []
             reason_desc = []
             if "stop_loss" in reasons:
                 reason_desc.append("止损出场")
-            elif "take_profit" in reasons:
+            if "take_profit" in reasons:
                 reason_desc.append("止盈出场")
-            else:
-                reason_desc.append("正常平仓")
+            reason_desc.extend(r for r in reasons if r not in {'stop_loss', 'take_profit'})
             reason_str = " | " + " ".join(reason_desc) if reason_desc else ""
-            pnl_str = f"盈利 +{pnl:.2f} USDT" if pnl > 0 else (f"亏损 {pnl:.2f} USDT" if pnl < 0 else f"盈亏 {pnl:.2f} USDT")
+            currency = c.get('settlement_currency', 'USDT')
+            pnl_str = '盈亏未知' if pnl is None else f"手续费前盈亏 {pnl:+.2f} {currency}"
             entry_vwap = c.get("entry_vwap", 0.0)
             exit_vwap = c.get("exit_vwap", 0.0)
             amount = c.get("entered_base", 0.0)
@@ -446,7 +446,14 @@ def format_recent_position_history_for_memory(config_id: str, agent_config: dict
             days=7,
             mode=agent_config.get('mode'),
         )
-        return database.format_closed_positions_summary(positions, days=7)
+        result = database.format_closed_positions_summary(positions, days=7)
+        if str(agent_config.get('mode', '')).upper() == 'REAL':
+            from backend.utils.execution_ledger import recent_activity_summary
+            try:
+                result += '\n' + recent_activity_summary(config_id, symbol)
+            except Exception:
+                result += '\n最近7天成交活动暂不可用，不能据此断言历史完整。'
+        return result
     except Exception as e:
         logger.warning(f"Failed to fetch local closed positions for memory: {e}")
         return ""
@@ -466,11 +473,6 @@ def update_turn_memory(config_id: str, agent_config: dict, strategy_logic: str, 
     now = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
     pos_history_text = format_recent_position_history_for_memory(config_id, agent_config)
     source = (
-        "更新工作记忆，最多600字，替换而非无限追加。分为【当前假设】【候选计划与失效条件】"
-        "【近期仓位历史与盈亏教训】【本轮执行事实】【废弃观点/待核实】。最新证据优先；删除过期和重复观点。"
-        "将近期持仓平仓、止损止盈等关键记录（开平时间、入场价、离场价、盈亏）简明提炼保留在【近期仓位历史与盈亏教训】中。"
-        "策略中的持仓/挂单是意图，只有工具成功结果支持本轮操作，挂单成功仍不代表成交。"
-        "下轮交易所账户快照始终优先。不得杜撰订单ID、有效期或盈亏。\n"
         f"更新时间：{now}\n旧记忆：\n{previous}\n新策略逻辑：\n{strategy_logic}\n"
         f"本轮工具结果：\n{execution or '无工具执行，不得声称新交易已执行。'}"
     )
@@ -482,7 +484,7 @@ def update_turn_memory(config_id: str, agent_config: dict, strategy_logic: str, 
         summary = f"【最新策略（压缩失败，待核实执行）】{strategy_logic[:1200]}\n历史计划须重新验证，账户以实时快照为准。"
     if len(summary) > 2400:
         summary = '【压缩输出过长，最新策略待核实】' + strategy_logic[:1200] + '\n账户以实时快照为准。'
-    save_short_memory(now, now, agent_config.get("symbol", "Unknown"), config_id, summary, "", 1)
+    save_short_memory(now, now, agent_config.get("symbol", "Unknown"), config_id, summary, pos_history_text, 1)
     return True
 
 

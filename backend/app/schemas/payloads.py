@@ -262,8 +262,9 @@ class UpdatePositionProtectionRequest(BaseModel):
     config_id: str
     symbol: str
     side: Literal["LONG", "SHORT"]
-    stop_loss: float | None = None
-    take_profit: float | None = None
+    stop_loss: float | None = Field(None, gt=0, allow_inf_nan=False)
+    take_profit: float | None = Field(None, gt=0, allow_inf_nan=False)
     clear_stop_loss: bool = False
     clear_take_profit: bool = False
+    expected_revision: int | None = Field(None, ge=0)
 

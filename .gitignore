@@ -13,6 +13,7 @@ docker-compose.override.yml
 
 # Runtime state
 data/
+maintenance-backups/
 logs/
 trading_data.db
 chat_checkpoints.sqlite

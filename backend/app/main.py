@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.api import auth, chat, config, dashboard, history, public, setup, stats
+from backend.app.api import auth, chat, config, dashboard, history, public, setup, stats, database_admin
 from backend.app.core.runtime import lifespan
 
 
@@ -28,6 +28,7 @@ app.include_router(dashboard.router)
 app.include_router(history.router)
 app.include_router(public.router)
 app.include_router(stats.router)
+app.include_router(database_admin.router)
 
 
 DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
