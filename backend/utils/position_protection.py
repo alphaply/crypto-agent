@@ -419,16 +419,34 @@ class PositionProtection:
             record['cancel_requested_at'] = time.time()
             self._save(plan)
             try:
-                self.ex.cancel_order(record["id"], plan["symbol"], params={"trigger": True} if trigger else {})
+                result = self.ex.cancel_order(record["id"], plan["symbol"], params={"trigger": True} if trigger else {})
             except ccxt.NetworkError:
                 pass  # A lost ACK is ambiguous; query without sending another cancel.
             except Exception:
                 record.pop('cancel_requested_at', None)
                 self._save(plan)
                 raise
+            else:
+                # Binance algo cancellation returns code=200 and algoId, but no
+                # status. CCXT preserves these in info; do not discard this proof
+                # and require an eventually consistent GET to confirm it again.
+                result = result or {}
+                info = result.get('info') or {}
+                same_order = str(result.get('id') or info.get('algoId') or '') == str(record['id'])
+                status = result.get('status')
+                if (same_order and trigger and self.ex.id in {'binance', 'binanceusdm'}
+                        and str(info.get('code')) == '200' and status is None):
+                    status = 'canceled'
+                if same_order and status in TERMINAL:
+                    record['status'] = status
+                    if result.get('filled') is not None:
+                        record['filled'] = float(result['filled'])
+                    record['cancel_confirmed_at'] = time.time()
+                    self._save(plan)
+                    return
         # Exchange reads may lag a successful cancel. Finish confirmation in this call.
         # A filled order is terminal too; callers must handle an exit racing replacement.
-        for delay in (0, 0.15, 0.35, 0.75, 1.5, 2):
+        for delay in (0, 0.15, 0.35, 0.75, 1.5, 2, 2, 2, 3, 3):
             if delay:
                 time.sleep(delay)
             try:
@@ -436,6 +454,7 @@ class PositionProtection:
             except ccxt.NetworkError:
                 continue
             if confirmed and record.get('status') in TERMINAL:
+                record['cancel_confirmed_at'] = time.time()
                 self._save(plan)
                 return
         raise RuntimeError(f"Cancellation not confirmed: {record['id']}")
@@ -526,6 +545,10 @@ class PositionProtection:
             is_tp = "TAKE_PROFIT" in order_type
             if (kind == "sl" and is_sl) or (kind == "tp" and is_tp):
                 oid = str(o.get("id"))
+                # The open-order list can lag the cancellation ACK as well.
+                if any(str(leg.get('id')) == oid and leg.get('status') in TERMINAL
+                       for leg in plan.get('legs', [])):
+                    continue
                 self._cancel({'id': oid, 'status': 'open'}, plan, True)
 
     def _cleanup_conflicting_legs(self, plan, kind, current_leg):

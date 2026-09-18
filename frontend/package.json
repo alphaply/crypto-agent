@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test:chat": "node --test tests/chatStreamLifecycle.test.js tests/markdown.test.js tests/reasoning.test.js tests/thinking.test.js",
+    "test:chat": "node --test tests/chatStreamLifecycle.test.js tests/markdown.test.js tests/reasoning.test.js tests/thinking.test.js tests/sse.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

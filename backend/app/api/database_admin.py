@@ -23,6 +23,11 @@ def analysis():
     return service.inspect_database()
 
 
+@router.get('/cleanup-targets')
+def cleanup_targets():
+    return service.cleanup_targets()
+
+
 @router.post('/analyze-import')
 async def analyze_import(request: Request):
     # Stream to a temporary file; never replace or execute anything from the uploaded DB.

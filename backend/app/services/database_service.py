@@ -47,7 +47,7 @@ def inspect_database(path: str | Path | None = None) -> dict:
             span = conn.execute(f'SELECT MIN("{time_col}"),MAX("{time_col}") FROM {quoted}').fetchone() if time_col else (None, None)
             rows.append({'table': name, 'rows': conn.execute(f'SELECT COUNT(*) FROM {quoted}').fetchone()[0],
                          'bytes': sizes.get(name), 'oldest': span[0], 'newest': span[1],
-                         'cleanable': name in CLEANABLE and CLEANABLE[name] in columns})
+                         'task_scoped': 'config_id' in columns, 'cleanable': name in CLEANABLE and CLEANABLE[name] in columns})
         unlinked = None
         if {'execution_fills', 'execution_order_links'} <= set(names):
             unlinked = conn.execute('SELECT COUNT(*) FROM execution_fills f LEFT JOIN execution_order_links l '
@@ -83,9 +83,14 @@ def _selection(conn, tables: list[str], before: str, config_id: str | None):
             args.append(config_id)
         if table == 'short_memories':
             predicate += ' AND rowid NOT IN (SELECT MAX(rowid) FROM short_memories GROUP BY config_id)'
-        ids = [r[0] for r in conn.execute(f'SELECT rowid FROM "{table}" WHERE {predicate} ORDER BY rowid', args)]
-        digest.update(json.dumps([table, ids]).encode())
-        selected[table] = {'count': len(ids), 'predicate': predicate, 'args': args}
+        digest.update(table.encode())
+        count = 0
+        cursor = conn.execute(f'SELECT rowid FROM "{table}" WHERE {predicate} ORDER BY rowid', args)
+        while batch := cursor.fetchmany(4096):
+            for row in batch:
+                digest.update(f'{row[0]},'.encode())
+            count += len(batch)
+        selected[table] = {'count': count, 'predicate': predicate, 'args': args}
     return selected, digest.hexdigest()
 
 
@@ -94,6 +99,25 @@ def preview_cleanup(tables: list[str], before: str, config_id: str | None = None
         selected, token = _selection(conn, tables, before, config_id)
     return {'counts': {t: s['count'] for t, s in selected.items()}, 'preview_token': token,
             'notice': '将先备份再删除；历史分析和统计可能减少，成交账本与活跃保护保留。'}
+
+
+def cleanup_targets() -> dict:
+    """Include removed task IDs so legacy runtime data remains discoverable."""
+    counts = {}
+    with database.get_db_conn() as conn:
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        active = {row[0] for row in conn.execute('SELECT config_id FROM agent_configs')} if 'agent_configs' in names else set()
+        for table in CLEANABLE:
+            if table not in names:
+                continue
+            columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+            if 'config_id' not in columns:
+                continue
+            for task_id, count in conn.execute(f'SELECT config_id, COUNT(*) FROM "{table}" GROUP BY config_id'):
+                if task_id:
+                    counts[task_id] = counts.get(task_id, 0) + count
+    return {'targets': [{'config_id': task_id, 'rows': count, 'orphaned': task_id not in active}
+                        for task_id, count in sorted(counts.items(), key=lambda item: (item[0] in active, item[0]))]}
 
 
 def _backup() -> str:

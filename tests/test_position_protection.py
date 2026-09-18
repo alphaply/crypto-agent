@@ -190,7 +190,8 @@ def test_conflict_cancel_timeout_preserves_old_leg_and_stops_retry(service):
 
 
 @pytest.mark.parametrize('lost_ack', [False, True])
-def test_adjust_waits_for_cancel_visibility_in_one_call(service, lost_ack):
+@pytest.mark.parametrize('stale_reads', [3, 8])
+def test_adjust_waits_for_cancel_visibility_in_one_call(service, lost_ack, stale_reads):
     svc, ex = service
     ex.quantity = 1
     svc.open('ETH/USDT', entry())
@@ -198,7 +199,7 @@ def test_adjust_waits_for_cancel_visibility_in_one_call(service, lost_ack):
     delayed = {}
     def delayed_cancel(oid, symbol, params):
         result = cancel(oid, symbol, params)
-        delayed[oid] = 3
+        delayed[oid] = stale_reads
         if lost_ack:
             raise ccxt.RequestTimeout('ACK lost after successful cancel')
         return result
@@ -214,6 +215,62 @@ def test_adjust_waits_for_cancel_visibility_in_one_call(service, lost_ack):
     assert plan['state'] == 'ACTIVE' and not plan['error']
     assert len([c for c in ex.calls if c[0] == 'cancel']) == 2
     assert len([l for l in plan['legs'] if l['status'] == 'open']) == 2
+
+
+def test_binance_algo_cancel_ack_completes_replacement_despite_stale_reads(service):
+    svc, ex = service
+    ex.quantity = 1
+    svc.open('ETH/USDT', entry())
+    old_sl = next(dict(o) for o in ex.orders.values() if o['kind'] == 'sl')
+    original_create, original_cancel, original_query = ex.create_order, ex.cancel_order, ex.fetch_order
+
+    def create(*args):
+        if 'stopLossPrice' in args[-1] and ex.orders[old_sl['id']]['status'] == 'open':
+            raise ccxt.ExchangeError('-4130 closePosition in the direction is existing')
+        return original_create(*args)
+
+    def cancel(oid, symbol, params):
+        original_cancel(oid, symbol, params)
+        # Exercise the installed CCXT parser with Binance's documented response.
+        return ccxt.binanceusdm().parse_order({
+            'algoId': int(oid), 'clientAlgoId': old_sl['clientOrderId'],
+            'code': '200', 'msg': 'success',
+        })
+
+    def query(oid, symbol, params):
+        if oid == old_sl['id']:
+            return dict(old_sl)  # GET continues returning stale NEW indefinitely.
+        return original_query(oid, symbol, params)
+
+    ex.create_order, ex.cancel_order, ex.fetch_order = create, cancel, query
+    ex.fetch_open_orders = lambda *args, **kwargs: [{
+        **old_sl, 'side': 'sell',
+        'info': {'positionSide': 'LONG', 'closePosition': True, 'orderType': 'STOP_MARKET'},
+    }]
+    with patch('backend.utils.position_protection.time.sleep') as sleep:
+        plan = svc.adjust('ETH/USDT', 'LONG', sl=95)
+    assert plan['state'] == 'ACTIVE' and plan['error'] is None
+    assert len([c for c in ex.calls if c[0] == 'cancel']) == 1
+    assert next(l for l in plan['legs'] if l.get('id') == old_sl['id'])['status'] == 'canceled'
+    assert len([l for l in plan['legs'] if l['status'] == 'open']) == 2
+    sleep.assert_not_called()
+
+
+@pytest.mark.parametrize('response', [
+    {'id': 'wrong-order', 'status': 'canceled'},
+    {'info': {'code': '200', 'msg': 'success'}},
+    {'id': '2', 'info': {'algoId': 2, 'code': '-2011'}},
+])
+def test_cancel_does_not_accept_unverified_ack(service, response):
+    svc, ex = service
+    ex.quantity = 1
+    svc.open('ETH/USDT', entry())
+    plan = svc._load('ETH/USDT:USDT', 'LONG')
+    leg = next(l for l in plan['legs'] if l['kind'] == 'sl')
+    ex.cancel_order = lambda *args, **kwargs: response
+    with patch('backend.utils.position_protection.time.sleep'), pytest.raises(RuntimeError, match='Cancellation not confirmed'):
+        svc._cancel(leg, plan, True)
+    assert leg['status'] == 'open'
 
 
 @pytest.mark.parametrize(('kwargs', 'expected_kinds'), [

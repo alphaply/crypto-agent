@@ -2,6 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Button, Card, Input, Popconfirm, Select, Space, Table, Typography, Upload, message } from 'antd';
 import { api } from '../lib/api';
 
+const retentionDate = (days) => {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+};
+
 const bytes = (n) => n == null ? '未知' : `${(n / 1024 / 1024).toFixed(2)} MiB`;
 
 export default function DatabaseMaintenance() {
@@ -10,12 +16,20 @@ export default function DatabaseMaintenance() {
   const [tables, setTables] = useState([]);
   const [before, setBefore] = useState('');
   const [configId, setConfigId] = useState('');
+  const [targets, setTargets] = useState([]);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
+  const chooseRetention = (days) => {
+    setBefore(retentionDate(days));
+    setTables((report?.tables || []).filter((row) => row.cleanable && ['scheduler_runs', 'news_snapshots', 'token_usage'].includes(row.table)).map((row) => row.table));
+    setConfigId('');
+    setPreview(null);
+  };
   const fail = (e) => message.error(e.response?.data?.detail || e.message);
   const load = async () => setReport((await api.get('/database/analysis')).data);
   useEffect(() => {
     let mounted = true;
+    api.get('/database/cleanup-targets').then((response) => { if (mounted) setTargets(response.data.targets || []); }).catch(fail);
     api.get('/database/analysis').then((response) => { if (mounted) setReport(response.data); }).catch(fail);
     return () => { mounted = false; };
   }, []);
@@ -63,11 +77,13 @@ export default function DatabaseMaintenance() {
     </Card>}
     {!imported && <Card title="清理当前库历史数据">
       <Space direction="vertical" style={{ width: '100%' }}>
+        <Typography.Paragraph type="secondary">快捷选择旧任务运行记录、新闻缓存与用量明细。先预览，再备份清除。</Typography.Paragraph>
+        <Space wrap>{[7, 30, 90].map((days) => <Button key={days} disabled={busy || !report} onClick={() => chooseRetention(days)}>保留最近 {days} 天</Button>)}</Space>
         <Select mode="multiple" placeholder="选择数据类别" value={tables} onChange={(v) => { setTables(v); setPreview(null); }} style={{ width: '100%' }}
-          options={(report?.tables || []).filter((r) => r.cleanable).map((r) => ({ value: r.table, label: `${r.table}（${r.rows} 条）` }))} />
+          options={(report?.tables || []).filter((r) => r.cleanable).map((r) => ({ value: r.table, disabled: !!configId && !r.task_scoped, label: `${r.table}（${r.rows} 条）` }))} />
         <Space wrap>
           <Input type="date" aria-label="清理截止日期" value={before} onChange={(e) => { setBefore(e.target.value); setPreview(null); }} />
-          <Input placeholder="任务 ID，可选；留空为全部" value={configId} onChange={(e) => { setConfigId(e.target.value); setPreview(null); }} />
+          <Select showSearch optionFilterProp="label" allowClear placeholder="全部任务 / 选择历史遗留任务" style={{ minWidth: 220, maxWidth: "100%" }} value={configId || undefined} options={targets.map((target) => ({ value: target.config_id, label: `${target.orphaned ? "历史遗留 · " : ""}${target.config_id}（${target.rows} 条）` }))} onChange={(value) => { setConfigId(value || ""); if (value) setTables((current) => current.filter((table) => report?.tables?.find((row) => row.table === table)?.task_scoped)); setPreview(null); }} />
           <Button disabled={busy || !tables.length || !before} onClick={() => run(async () => {
             setPreview((await api.post('/database/cleanup-preview', payload)).data);
           })}>预览影响</Button>
@@ -77,7 +93,7 @@ export default function DatabaseMaintenance() {
           <Popconfirm title="按此预览备份并删除？" onConfirm={() => run(async () => {
             const result = (await api.post('/database/cleanup', { ...payload, preview_token: preview.preview_token })).data;
             setPreview(null); await load(); message.success(`已清理。备份：${result.backup}`, 10);
-          })}><Button danger disabled={busy}>备份并删除所选历史</Button></Popconfirm>
+          })}><Button danger loading={busy} disabled={busy || !Object.values(preview.counts).some((count) => count > 0)}>备份并删除所选历史</Button></Popconfirm>
         </>}
       </Space>
     </Card>}

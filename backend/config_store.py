@@ -314,6 +314,13 @@ def _normalize_agents(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         payload["mode"] = str(payload.get("mode", "STRATEGY")).upper()
         payload['run_schedule'] = validate_run_schedule(payload.get('run_schedule'))
         payload.pop('futures_risk', None)
+        fallback_pids = payload.get("fallback_llm_provider_ids") or []
+        if isinstance(fallback_pids, list):
+            payload["fallback_llm_provider_ids"] = [
+                str(pid).strip() for pid in fallback_pids if str(pid).strip()
+            ]
+        else:
+            payload["fallback_llm_provider_ids"] = []
         normalized.append(payload)
 
     return normalized
@@ -475,6 +482,30 @@ def _derive_referenced_configs(
             if provider:
                 providers.append(provider)
                 next_agent["llm_provider_id"] = provider["provider_id"]
+        if next_agent.get("fallback_models") and not next_agent.get("fallback_llm_provider_ids"):
+            fb_pids = []
+            for fb in next_agent.get("fallback_models", []):
+                if isinstance(fb, dict) and fb.get("model"):
+                    fb_prov_id = fb.get("provider_id") or _stable_id("llm", ["fallback", fb.get("model"), fb.get("api_base"), fb.get("temperature"), fb.get("api_key")])
+                    fb_prov = _provider_payload(
+                        provider_id=fb_prov_id,
+                        name=fb.get("name") or f"{fb.get('model')} (fallback)",
+                        model=str(fb.get("model") or ""),
+                        api_base=str(fb.get("api_base") or ""),
+                        temperature=fb.get("temperature"),
+                        role="agent",
+                        extra_body=fb.get("extra_body") if isinstance(fb.get("extra_body"), dict) else {},
+                        compatibility_mode=fb.get("compatibility_mode", "auto"),
+                        thinking_enabled=fb.get("thinking_enabled"),
+                        reasoning_effort=fb.get("reasoning_effort", ""),
+                        system_prompt_role=fb.get("system_prompt_role", "system"),
+                    )
+                    if fb.get("api_key"):
+                        fb_prov["api_key"] = fb["api_key"]
+                    providers.append(fb_prov)
+                    fb_pids.append(fb_prov_id)
+            if fb_pids:
+                next_agent["fallback_llm_provider_ids"] = fb_pids
         if not next_agent.get("summarizer_provider_id"):
             provider = _derive_provider_from_agent(next_agent, "summarizer")
             if provider:
@@ -707,6 +738,28 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
                     payload["system_prompt_role"] = provider.get("system_prompt_role", "system")
                 if provider.get("api_key"):
                     payload["api_key"] = provider.get("api_key")
+
+            fallback_models = []
+            for fb_pid in payload.get("fallback_llm_provider_ids") or []:
+                fb_provider = provider_map.get(str(fb_pid).strip())
+                if fb_provider:
+                    fallback_models.append({
+                        "provider_id": fb_provider.get("provider_id"),
+                        "name": fb_provider.get("name") or fb_provider.get("model") or fb_pid,
+                        "model": fb_provider.get("model") or "",
+                        "api_base": fb_provider.get("api_base") or "",
+                        "api_key": fb_provider.get("api_key") or "",
+                        "temperature": fb_provider.get("temperature", payload.get("temperature", 0.5)),
+                        "extra_body": fb_provider.get("extra_body") or {},
+                        "compatibility_mode": fb_provider.get("compatibility_mode") or "auto",
+                        "thinking_enabled": fb_provider.get("thinking_enabled"),
+                        "reasoning_effort": fb_provider.get("reasoning_effort") or "",
+                        "system_prompt_role": fb_provider.get("system_prompt_role") if fb_provider.get("system_prompt_role") in {"system", "user"} else "system",
+                    })
+            if fallback_models:
+                payload["fallback_models"] = fallback_models
+            elif "fallback_models" not in payload:
+                payload["fallback_models"] = []
 
             summary_provider = provider_map.get(str(payload.get("summarizer_provider_id") or ""))
             if summary_provider:

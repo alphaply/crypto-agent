@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -85,7 +85,9 @@ if DIST_DIR.exists():
     def serve_spa(full_path: str):
         if full_path.startswith("api/"):
             return {"success": False, "message": "Not found"}
-        target = DIST_DIR / full_path
+        target = (DIST_DIR / full_path).resolve()
+        if not target.is_relative_to(DIST_DIR.resolve()):
+            raise HTTPException(404, "Not found")
         if target.exists() and target.is_file():
             return FileResponse(target)
         return FileResponse(DIST_DIR / "index.html")

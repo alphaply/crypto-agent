@@ -28,53 +28,39 @@ def calc_emas(series, spans=(20, 50, 100, 200)):
     """Calculate multiple EMA spans in one compact helper."""
     return {int(span): calc_ema(series, int(span)) for span in spans}
 
+def wilder_rma(series, period=14):
+    """SMA-seeded Wilder smoothing; missing values restart the warm-up window."""
+    if period < 1:
+        raise ValueError("period must be positive")
+    values = pd.to_numeric(series, errors='coerce').to_numpy(dtype=float)
+    result = np.full(len(values), np.nan)
+    seed = []
+    previous = np.nan
+    for index, value in enumerate(values):
+        if not np.isfinite(value):
+            seed = []
+            previous = np.nan
+            continue
+        if np.isnan(previous):
+            seed.append(value)
+            if len(seed) < period:
+                continue
+            previous = float(np.mean(seed))
+        else:
+            previous = (previous * (period - 1) + value) / period
+        result[index] = previous
+    return pd.Series(result, index=series.index)
+
+
 def calc_rsi(series, period=14):
-    """
-    计算 RSI (对齐 TradingView / Wilder's Smoothing)
-    """
-    if len(series) <= period:
-        return pd.Series(np.nan, index=series.index)
+    """Wilder RSI: unknown during warm-up, neutral for a truly flat series."""
     delta = series.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    
-    # Wilder's Smoothing (RMA): alpha = 1/period
-    # 逻辑：第一个值是 SMA，之后是 EMA
-    avg_gain = gain.rolling(window=period, min_periods=period).mean()
-    avg_loss = loss.rolling(window=period, min_periods=period).mean()
-    
-    # 获取第一个有效索引
-    first_valid = avg_gain.first_valid_index()
-    if first_valid is None:
-        return pd.Series(50.0, index=series.index)
-        
-    # 从第一个 SMA 开始进行 RMA (Wilder's EMA)
-    # ewm 的 alpha = 1/period 对应 Wilder's Smoothing
-    # 我们只对 first_valid 之后的数据进行 ewm
-    alpha = 1 / period
-    
-    # 为了简化且保证准确，直接使用 ewm(alpha) 其实在长序列下会收敛到 Wilder
-    # 但由于我们 ohlcv 长度有限 (500-1000)，我们需要更精确的初始化
-    # 这里采用 pandas 推荐的 ewm 方式
-    avg_gain = gain.copy()
-    avg_loss = loss.copy()
-    
-    # 初始化
-    avg_gain.iloc[period] = gain.iloc[1:period+1].mean()
-    avg_loss.iloc[period] = loss.iloc[1:period+1].mean()
-    
-    # 计算后续值
-    for i in range(period + 1, len(series)):
-        avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (period - 1) + gain.iloc[i]) / period
-        avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (period - 1) + loss.iloc[i]) / period
-    
-    avg_loss = avg_loss.replace(0, 1e-10)
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    
-    # 前 period 个值为 NaN
-    rsi.iloc[:period] = np.nan
-    return rsi.fillna(50.0)
+    gain = wilder_rma(delta.clip(lower=0), period)
+    loss = wilder_rma(-delta.clip(upper=0), period)
+    rsi = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
+    return rsi.mask((loss == 0) & (gain == 0), 50.0)
+
 
 def calc_stoch_rsi(rsi, period=14, k_period=3, d_period=3):
     """计算 StochRSI"""
@@ -109,14 +95,14 @@ def calc_adx(df, period=14):
         (high - close.shift()).abs(),
         (low - close.shift()).abs(),
     ], axis=1).max(axis=1)
-    atr = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    atr = wilder_rma(tr, period)
 
-    plus_di = 100 * plus_dm.ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr
-    minus_di = 100 * minus_dm.ewm(alpha=1 / period, min_periods=period, adjust=False).mean() / atr
+    plus_di = 100 * wilder_rma(plus_dm, period) / atr
+    minus_di = 100 * wilder_rma(minus_dm, period) / atr
     di_sum = (plus_di + minus_di).replace(0, np.nan)
-    dx = 100 * (plus_di - minus_di).abs() / di_sum
-    adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    return adx.fillna(0.0), plus_di.fillna(0.0), minus_di.fillna(0.0)
+    dx = (100 * (plus_di - minus_di).abs() / di_sum).mask(di_sum.isna() & atr.notna(), 0.0)
+    adx = wilder_rma(dx, period)
+    return adx, plus_di.mask(atr == 0, 0.0), minus_di.mask(atr == 0, 0.0)
 
 def calc_vwap(df):
     """UTC session VWAP when candle timestamps exist; otherwise explicit window VWAP."""
@@ -140,7 +126,7 @@ def calc_cci(df, period=20):
 def calc_atr(df, period=14):
     high, low, close = df['high'], df['low'], df['close']
     tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-    return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    return wilder_rma(tr, period)
 
 def calc_macd(close, fast=12, slow=26, signal=9):
     """计算 MACD, Signal, Histogram"""

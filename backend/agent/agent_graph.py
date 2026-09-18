@@ -16,6 +16,7 @@ from langchain_core.messages import (
     BaseMessageChunk,
     ToolMessage,
     HumanMessage,
+    SystemMessage,
     message_chunk_to_message,
 )
 from langchain_core.runnables import RunnableConfig
@@ -62,6 +63,42 @@ def _emit_task_progress(configurable: dict, *, phase: str, message: str, **paylo
         callback({"phase": phase, "message": message, **payload})
     except Exception as exc:
         logger.warning("Task progress callback failed: %s", exc)
+
+
+def _emit_agent_retry(configurable, messages, attempt, total, error_type, exc, model_name: str = ""):
+    model_prefix = f"[{model_name}] " if model_name else ""
+    _emit_task_progress(
+        configurable, phase="thinking",
+        message=f"{model_prefix}模型请求失败，正在重试（第 {attempt}/{total} 次请求，{error_type}）",
+        retry_attempt=attempt, total_attempts=total, error_type=error_type,
+        reasoning_content=_collect_agent_reasoning(messages),
+        reasoning_tokens=_collect_agent_reasoning_token_count(messages),
+        tool_calls=[],
+    )
+
+
+def _has_complete_tool_arguments(chunk: BaseMessageChunk, response: AIMessage) -> bool:
+    """Do not trust LangChain's partial-JSON repair for a length-limited turn."""
+    raw_calls = getattr(chunk, "tool_call_chunks", None) or []
+    calls = response.tool_calls or []
+    if not calls or response.invalid_tool_calls or len(raw_calls) != len(calls):
+        return False
+    seen_ids = set()
+    for raw, call in zip(raw_calls, calls):
+        call_id = raw.get("id")
+        if not call_id or call_id in seen_ids or call_id != call.get("id"):
+            return False
+        seen_ids.add(call_id)
+        if not raw.get("name") or raw["name"] != call.get("name"):
+            return False
+        try:
+            # json.loads requires closed braces/strings; parse_partial_json does not.
+            args = json.loads(raw.get("args"))
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(args, dict) or args != call.get("args"):
+            return False
+    return True
 
 
 def _stream_agent_response(
@@ -112,11 +149,29 @@ def _stream_agent_response(
             last_progress_size = len(streamed_reasoning)
 
     if combined_chunk is None:
-        raise RuntimeError("Model stream completed without returning a message")
+        raise LLMInvocationError("模型响应流为空，未收到结果。", error_type="empty_response", retryable=True, attempts=1)
 
     response = message_chunk_to_message(combined_chunk)
     if streamed_reasoning and not extract_reasoning_content(response):
         response.additional_kwargs["reasoning_content"] = streamed_reasoning
+    finish_reason = response.response_metadata.get("finish_reason")
+    if finish_reason in {"length", "max_tokens"} and _has_complete_tool_arguments(combined_chunk, response):
+        # The gateway can finish with length after a complete tool call and a
+        # truncated narrative. Keep the call; tools_node still applies normal
+        # validation and the following agent turn receives the execution result.
+        warning = "模型正文因输出上限截断；工具参数完整，继续工具校验与执行。"
+        response.additional_kwargs["output_warning"] = warning
+        logger.warning("[LLM] %s finish_reason=%s", warning, finish_reason)
+        return response
+    if finish_reason in {"length", "max_tokens", "content_filter"} or response.invalid_tool_calls or (
+        not extract_message_text(response).strip() and not response.tool_calls
+    ):
+        detail = "输出额度耗尽" if finish_reason in {"length", "max_tokens"} else "未返回有效正文或工具调用"
+        raise LLMInvocationError(
+            f"模型响应未完成：{detail}（finish_reason={finish_reason or '未知'}）。",
+            error_type="incomplete_response",
+            retryable=finish_reason not in {"length", "max_tokens", "content_filter"}, attempts=1,
+        )
     return response
 
 
@@ -643,7 +698,7 @@ def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = N
 # 2. Nodes
 # ==========================================
 
-def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
+def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool = False) -> AgentState:
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id", "unknown")
     agent_config = configurable.get("agent_config", {})
@@ -691,6 +746,14 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         timeframes_to_fetch = resolve_market_timeframes(agent_config)
         market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
         account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
+        if require_fresh:
+            analysis = market_full.get("analysis", {})
+            if any(not analysis.get(tf) or not analysis[tf].get("price")
+                   or (analysis[tf].get("data_quality") or {}).get("stale")
+                   for tf in timeframes_to_fetch):
+                raise ValueError("重试行情刷新不完整，停止本轮决策")
+            if account_data.get("error"):
+                raise ValueError("重试账户刷新失败，停止本轮决策")
         news_context = fetch_news_risk_context(symbol)
         database.save_news_snapshot(symbol, config_id, news_context)
         daily_history = get_daily_summaries(config_id, days=7)
@@ -699,6 +762,11 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
     except Exception as e:
+        if require_fresh:
+            raise LLMInvocationError(
+                "重试数据刷新失败，已停止本轮决策。",
+                error_type="data_refresh_error", retryable=False, attempts=0, original=e,
+            ) from e
         logger.error(f"❌ [Data Fetch Error]: {e}")
         import traceback
         logger.error(f"Traceback:\n{traceback.format_exc()}")
@@ -875,8 +943,9 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
         system_prompt += '\n\n## Short-term memory\n' + short_memory_text
     prompt_role = agent_config.get("system_prompt_role", "system")
     instruction = instruction_message(system_prompt, prompt_role)
+    instruction.additional_kwargs["is_instruction"] = True
     if isinstance(instruction, HumanMessage) and state.human_message:
-        messages = [HumanMessage(content=f"{system_prompt}\n\n## User request\n{state.human_message}")]
+        messages = [HumanMessage(content=f"{system_prompt}\n\n## User request\n{state.human_message}", additional_kwargs={"is_instruction": True})]
     else:
         messages = [instruction]
         if state.human_message:
@@ -891,104 +960,286 @@ def start_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
  
 
+def refresh_decision_context(state: AgentState, config: RunnableConfig) -> AgentState:
+    """Replace the snapshot, retaining completed tool calls/results without replaying them."""
+    _emit_task_progress(config.get("configurable", {}), phase="thinking",
+                        message="正在重新获取行情、计算指标并刷新账户状态")
+    try:
+        refreshed = start_node(state, config, require_fresh=True)
+    except Exception as exc:
+        raise LLMInvocationError(
+            "重试数据刷新失败，已停止本轮决策。",
+            error_type="data_refresh_error", retryable=False, attempts=0, original=exc,
+        ) from exc
+    # start_node owns the instruction and original user request. Keep subsequent
+    # completed conversation turns, including each tool call/result pair.
+    history_start = next((i for i, msg in enumerate(state.messages)
+                          if isinstance(msg, (AIMessage, ToolMessage))), len(state.messages))
+    history = state.messages[history_start:]
+    notice = HumanMessage(
+        content="行情、指标和账户已刷新，以最新指令中的快照为准。之前的工具结果是执行历史，不要重复执行已完成的交易；重新评估价格和止盈止损。",
+        additional_kwargs={"decision_refresh_notice": True},
+    )
+    history = [msg for msg in history if not msg.additional_kwargs.get("decision_refresh_notice")]
+    return refreshed.model_copy(update={"messages": refreshed.messages + history + [notice]})
+
+
+def adapt_messages_for_prompt_role(messages: list[BaseMessage], system_prompt_role: str | None) -> list[BaseMessage]:
+    """Adapt instruction message class (SystemMessage vs HumanMessage) if target provider requires user role."""
+    target_role = str(system_prompt_role or "system").strip().lower()
+    if not messages:
+        return messages
+    first = messages[0]
+    if target_role == "user" and isinstance(first, SystemMessage):
+        kwargs = dict(first.additional_kwargs)
+        kwargs["is_instruction"] = True
+        return [HumanMessage(content=first.content, additional_kwargs=kwargs)] + list(messages[1:])
+    elif target_role == "system" and isinstance(first, HumanMessage) and first.additional_kwargs.get("is_instruction"):
+        kwargs = dict(first.additional_kwargs)
+        return [SystemMessage(content=first.content, additional_kwargs=kwargs)] + list(messages[1:])
+    return messages
+
+
+def resolve_decision_model_chain(agent_config: dict) -> list[dict]:
+    """
+    Resolve the ordered list of decision model configurations for an agent:
+    [primary_model, fallback_1, fallback_2, ...]
+    """
+    chain: list[dict] = []
+
+    primary_model = agent_config.get("model")
+    if primary_model:
+        chain.append({
+            "model": primary_model,
+            "api_key": agent_config.get("api_key"),
+            "api_base": agent_config.get("api_base") or "",
+            "temperature": agent_config.get("temperature", 0.5),
+            "extra_body": agent_config.get("extra_body") or {},
+            "thinking_enabled": agent_config.get("thinking_enabled"),
+            "reasoning_effort": agent_config.get("reasoning_effort") or "",
+            "compatibility_mode": agent_config.get("compatibility_mode") or "auto",
+            "system_prompt_role": agent_config.get("system_prompt_role", "system"),
+            "provider_id": agent_config.get("llm_provider_id"),
+            "name": agent_config.get("model_name") or primary_model,
+        })
+
+    fallback_models = agent_config.get("fallback_models") or []
+    for item in fallback_models:
+        if isinstance(item, dict) and item.get("model"):
+            chain.append({
+                "model": item.get("model"),
+                "api_key": item.get("api_key") or agent_config.get("api_key"),
+                "api_base": item.get("api_base") or "",
+                "temperature": item.get("temperature", agent_config.get("temperature", 0.5)),
+                "extra_body": item.get("extra_body") or {},
+                "thinking_enabled": item.get("thinking_enabled"),
+                "reasoning_effort": item.get("reasoning_effort") or "",
+                "compatibility_mode": item.get("compatibility_mode") or "auto",
+                "system_prompt_role": item.get("system_prompt_role", "system"),
+                "provider_id": item.get("provider_id"),
+                "name": item.get("name") or item.get("model"),
+            })
+
+    if len(chain) <= 1 and agent_config.get("fallback_llm_provider_ids"):
+        try:
+            from backend.config_store import load_runtime_snapshot
+            snapshot = load_runtime_snapshot()
+            if snapshot:
+                provider_map = {p["provider_id"]: p for p in snapshot.get("llm_providers", [])}
+                for pid in agent_config.get("fallback_llm_provider_ids", []):
+                    prov = provider_map.get(str(pid).strip())
+                    if prov and prov.get("model"):
+                        chain.append({
+                            "model": prov.get("model"),
+                            "api_key": prov.get("api_key"),
+                            "api_base": prov.get("api_base") or "",
+                            "temperature": prov.get("temperature", 0.5),
+                            "extra_body": prov.get("extra_body") or {},
+                            "thinking_enabled": prov.get("thinking_enabled"),
+                            "reasoning_effort": prov.get("reasoning_effort") or "",
+                            "compatibility_mode": prov.get("compatibility_mode") or "auto",
+                            "system_prompt_role": prov.get("system_prompt_role", "system"),
+                            "provider_id": prov.get("provider_id"),
+                            "name": prov.get("name") or prov.get("model"),
+                        })
+        except Exception as resolve_err:
+            logger.warning(f"Failed to resolve fallback_llm_provider_ids: {resolve_err}")
+
+    return chain
+
+
 def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     configurable = config.get("configurable", {})
     config_id = configurable.get("config_id", "unknown")
     agent_config = configurable.get("agent_config", {})
-    
-    symbol = state.symbol
-    trade_mode = agent_config.get('mode', 'STRATEGY').upper()
-    logger.info(f"--- [Node] Agent: {agent_config.get('model')} (Mode: {trade_mode}) ---")
 
-    messages = list(state.messages)
-    _emit_task_progress(
-        configurable,
-        phase="thinking",
-        message="模型正在分析市场并规划工具调用",
-        reasoning_content=_collect_agent_reasoning(messages),
-        reasoning_tokens=_collect_agent_reasoning_token_count(messages),
+    symbol = state.symbol
+    trade_mode = agent_config.get("mode", "STRATEGY").upper()
+
+    chain = resolve_decision_model_chain(agent_config)
+    if not chain:
+        chain = [{
+            "model": agent_config.get("model", "default"),
+            "api_key": agent_config.get("api_key"),
+            "api_base": agent_config.get("api_base") or "",
+            "temperature": agent_config.get("temperature", 0.5),
+            "extra_body": agent_config.get("extra_body") or {},
+            "thinking_enabled": agent_config.get("thinking_enabled"),
+            "reasoning_effort": agent_config.get("reasoning_effort"),
+            "compatibility_mode": agent_config.get("compatibility_mode"),
+            "system_prompt_role": agent_config.get("system_prompt_role", "system"),
+            "name": agent_config.get("model", "default"),
+        }]
+
+    tools = get_trade_tools_for_mode(trade_mode)
+    logger.info(
+        "[ToolRegistry] Bound tools for mode=%s: %s",
+        trade_mode,
+        [tool.name for tool in tools],
     )
 
-    try:
-        kwargs = {}
-        if agent_config.get('extra_body'):
-            kwargs["extra_body"] = agent_config.get('extra_body')
+    total_models = len(chain)
+    start_idx = state.active_model_idx if (state.active_model_idx is not None and 0 <= state.active_model_idx < total_models) else 0
 
-        # 根据模式选择工具集
-        tools = get_trade_tools_for_mode(trade_mode)
+    attempted_errors: list[tuple[str, str]] = []
+    request_attempts = 0
+
+    for chain_idx in range(start_idx, total_models):
+        current_cfg = chain[chain_idx]
+        current_model = current_cfg.get("model") or "unknown"
+        current_name = current_cfg.get("name") or current_model
+        is_fallback = (chain_idx > 0)
+
         logger.info(
-            "[ToolRegistry] Bound tools for mode=%s: %s",
-            trade_mode,
-            [tool.name for tool in tools],
+            f"--- [Node] Agent turn: {current_name} ({current_model}) "
+            f"[Chain {chain_idx + 1}/{total_models}, Mode: {trade_mode}] ---"
         )
-        
-        # if trade_mode == 'REAL':
-        #     tools += [analyze_event_contract, format_event_contract_order]
 
-        reasoning_llm = build_chat_model(
-            model=agent_config.get('model'),
-            api_key=agent_config.get('api_key'),
-            base_url=agent_config.get('api_base'),
-            temperature=agent_config.get('temperature', 0.5),
-            extra_body=kwargs.get("extra_body"),
-            thinking_enabled=agent_config.get("thinking_enabled"),
-            reasoning_effort=agent_config.get("reasoning_effort"),
-            compatibility_mode=agent_config.get("compatibility_mode"),
-            streaming=True,
-        )
-        llm = reasoning_llm.bind_tools(tools)
+        turn_messages = adapt_messages_for_prompt_role(state.messages, current_cfg.get("system_prompt_role"))
 
-        response = invoke_with_retry(
-            lambda: _stream_agent_turn(
-                llm,
-                messages,
-                configurable=configurable,
-                run_config=config,
-            ),
-            logger=logger,
-            context=f"agent symbol={symbol} config_id={config_id} model={agent_config.get('model')}",
-        )
-        response_tool_calls = [
-            {
-                "id": str(call.get("id") or ""),
-                "name": str(call.get("name") or ""),
-                "args": call.get("args") or {},
-                "status": "planned",
-            }
-            for call in (response.tool_calls or [])
-        ]
         _emit_task_progress(
             configurable,
-            phase="tool_planning" if response_tool_calls else "finalizing",
-            message="模型已生成工具调用计划" if response_tool_calls else "模型分析完成，正在整理结果",
-            reasoning_content=_collect_agent_reasoning(messages + [response]),
-            reasoning_tokens=_collect_agent_reasoning_token_count(messages + [response]),
-            tool_calls=response_tool_calls,
+            phase="thinking",
+            message=(
+                f"使用兜底模型 [{current_name}] 分析市场并规划工具调用（链路第 {chain_idx + 1}/{total_models} 个模型）"
+                if is_fallback
+                else "模型正在分析市场并规划工具调用"
+            ),
+            reasoning_content=_collect_agent_reasoning(turn_messages),
+            reasoning_tokens=_collect_agent_reasoning_token_count(turn_messages),
         )
-        
+
         try:
-            usage = response.response_metadata.get("token_usage", {})
-            if usage:
-                database.save_token_usage(
-                    symbol=symbol,
-                    config_id=config_id,
-                    model=agent_config.get('model'),
-                    prompt_tokens=usage.get("prompt_tokens", 0),
-                    completion_tokens=usage.get("completion_tokens", 0)
+            kwargs = {}
+            if current_cfg.get("extra_body"):
+                kwargs["extra_body"] = current_cfg.get("extra_body")
+
+            reasoning_llm = build_chat_model(
+                model=current_cfg.get("model"),
+                api_key=current_cfg.get("api_key"),
+                base_url=current_cfg.get("api_base"),
+                temperature=current_cfg.get("temperature", 0.5),
+                extra_body=kwargs.get("extra_body"),
+                thinking_enabled=current_cfg.get("thinking_enabled"),
+                reasoning_effort=current_cfg.get("reasoning_effort"),
+                compatibility_mode=current_cfg.get("compatibility_mode"),
+                streaming=True,
+            )
+            llm = reasoning_llm.bind_tools(tools)
+
+            def invoke_decision():
+                nonlocal state, turn_messages, request_attempts
+                if request_attempts:
+                    state = refresh_decision_context(state, config)
+                request_attempts += 1
+                turn_messages = adapt_messages_for_prompt_role(state.messages, current_cfg.get("system_prompt_role"))
+                return _stream_agent_turn(llm, turn_messages, configurable=configurable, run_config=config)
+
+            response = invoke_with_retry(
+                invoke_decision,
+                logger=logger,
+                context=f"agent symbol={symbol} config_id={config_id} model={current_model} chain={chain_idx + 1}/{total_models}",
+                on_retry=lambda attempt, total, error_type, exc: _emit_agent_retry(
+                    configurable, turn_messages, attempt, total, error_type, exc, model_name=current_name,
+                ),
+            )
+
+            response_tool_calls = [
+                {
+                    "id": str(call.get("id") or ""),
+                    "name": str(call.get("name") or ""),
+                    "args": call.get("args") or {},
+                    "status": "planned",
+                }
+                for call in (response.tool_calls or [])
+            ]
+            _emit_task_progress(
+                configurable,
+                phase="tool_planning" if response_tool_calls else "finalizing",
+                message=response.additional_kwargs.get("output_warning") or ("模型已生成工具调用计划" if response_tool_calls else "模型分析完成，正在整理结果"),
+                reasoning_content=_collect_agent_reasoning(turn_messages + [response]),
+                reasoning_tokens=_collect_agent_reasoning_token_count(turn_messages + [response]),
+                tool_calls=response_tool_calls,
+            )
+
+            try:
+                usage = response.response_metadata.get("token_usage", {})
+                if usage:
+                    database.save_token_usage(
+                        symbol=symbol,
+                        config_id=config_id,
+                        model=current_model,
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                    )
+            except Exception as usage_e:
+                logger.warning(f"⚠️ [Agent] Failed to save token usage: {usage_e}")
+
+            return state.model_copy(update={
+                "messages": turn_messages + [response],
+                "active_agent": "MASTER",
+                "active_model_idx": chain_idx,
+                "active_model_name": current_model,
+            })
+
+        except Exception as e:
+            err_desc = str(e)
+            attempted_errors.append((current_name, err_desc))
+            has_next = (chain_idx + 1 < total_models)
+            if isinstance(e, LLMInvocationError) and e.error_type == "data_refresh_error":
+                break
+
+            if has_next:
+                next_model_cfg = chain[chain_idx + 1]
+                next_name = next_model_cfg.get("name") or next_model_cfg.get("model")
+                logger.warning(
+                    f"⚠️ [Fallback Triggered] Model [{current_name}] failed: {e}. "
+                    f"Switching to fallback model [{next_name}] ({chain_idx + 2}/{total_models}) for {symbol}."
                 )
-        except Exception as usage_e:
-            logger.warning(f"⚠️ [Agent] Failed to save token usage: {usage_e}")
+                _emit_task_progress(
+                    configurable,
+                    phase="thinking",
+                    message=f"决策模型 [{current_name}] 请求失败，正在切换至兜底模型 [{next_name}]（第 {chain_idx + 2}/{total_models} 个模型）...",
+                    reasoning_content=_collect_agent_reasoning(turn_messages),
+                    reasoning_tokens=_collect_agent_reasoning_token_count(turn_messages),
+                )
+                continue
+            else:
+                logger.error(
+                    f"❌ [All Models Failed] All {total_models} models in fallback chain failed for {symbol}: {attempted_errors}"
+                )
 
-        return state.model_copy(update={"messages": state.messages + [response], "active_agent": "MASTER"})
-
-    except LLMInvocationError as e:
-        _emit_task_progress(configurable, phase="failed", message=str(e))
-        logger.error(f"[LLM Error] ({symbol}) type={e.error_type}: {e}")
-        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
-    except Exception as e:
-        _emit_task_progress(configurable, phase="failed", message=str(e))
-        logger.error(f"❌ [LLM Error] ({symbol}): {e}")
-        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
+    from backend.utils.llm_utils import get_llm_max_retries
+    retries_per_model = max(get_llm_max_retries(), 0)
+    attempts_per_model = retries_per_model + 1
+    err_summary = "; ".join([f"[{m}]: {err}" for m, err in attempted_errors])
+    final_error_msg = f"决策模型链路失败或中止（已尝试 {len(attempted_errors)} 个模型，每模型最多 {attempts_per_model} 次）：{err_summary}"
+    _emit_task_progress(configurable, phase="failed", message=final_error_msg)
+    logger.error(f"[LLM Error] ({symbol}): {final_error_msg}")
+    return state.model_copy(update={
+        "messages": state.messages + [AIMessage(content=f"Error: {final_error_msg}", additional_kwargs={"invocation_failed": True})],
+        "active_agent": "MASTER",
+    })
 
 def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
     configurable = config.get("configurable", {})
@@ -1034,15 +1285,23 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         )
         llm = reasoning_llm.bind_tools(tools)
 
+        request_attempts = 0
+
+        def invoke_decision():
+            nonlocal state, messages, request_attempts
+            if request_attempts:
+                state = refresh_decision_context(state, config)
+            request_attempts += 1
+            messages = state.messages
+            return _stream_agent_turn(llm, messages, configurable=configurable, run_config=config)
+
         response = invoke_with_retry(
-            lambda: _stream_agent_turn(
-                llm,
-                messages,
-                configurable=configurable,
-                run_config=config,
-            ),
+            invoke_decision,
             logger=logger,
             context=f"small-agent symbol={symbol} config_id={config_id} model={model_name}",
+            on_retry=lambda attempt, total, error_type, exc: _emit_agent_retry(
+                configurable, messages, attempt, total, error_type, exc,
+            ),
         )
         
         try:
@@ -1062,10 +1321,10 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
     except LLMInvocationError as e:
         logger.error(f"[Small Agent Error] ({symbol}) type={e.error_type}: {e}")
-        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
+        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}", additional_kwargs={"invocation_failed": True})], "active_agent": "MASTER"})
     except Exception as e:
         logger.error(f"❌ [Small Agent Error] ({symbol}): {e}")
-        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}")], "active_agent": "MASTER"})
+        return state.model_copy(update={"messages": state.messages + [AIMessage(content=f"Error: {str(e)}", additional_kwargs={"invocation_failed": True})], "active_agent": "MASTER"})
 
 def _collect_agent_reasoning(messages: list[BaseMessage]) -> str:
     sections: list[tuple[str, list[str]]] = []
@@ -1114,12 +1373,12 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent_config = configurable.get("agent_config", {})
     
     symbol = state.symbol
-    agent_name = agent_config.get('model', 'Unknown')
+    agent_name = state.active_model_name or agent_config.get('model', 'Unknown')
     
     all_ai_messages = [
-        (msg, extract_message_text(msg))
+        (msg, (f"[输出提示] {msg.additional_kwargs['output_warning']}\n\n" if msg.additional_kwargs.get("output_warning") else "") + extract_message_text(msg))
         for msg in state.messages
-        if isinstance(msg, AIMessage) and extract_message_text(msg)
+        if isinstance(msg, AIMessage) and (extract_message_text(msg) or msg.additional_kwargs.get("output_warning"))
     ]
     
     full_content = ""
@@ -1131,10 +1390,14 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     reasoning_content = _collect_agent_reasoning(state.messages)
     reasoning_tokens = _collect_agent_reasoning_token_count(state.messages)
 
+    failed = any(isinstance(msg, AIMessage) and msg.additional_kwargs.get("invocation_failed") for msg in state.messages)
+    if not final_full_content:
+        failed = True
+        final_full_content = "Error: 模型未返回有效结果，本次分析未完成。"
     if final_full_content:
         # 汇总逻辑仅针对主要内容
         logic_source = full_content if full_content else final_full_content
-        strategy_logic = summarize_content(logic_source, agent_config)
+        strategy_logic = final_full_content if failed else summarize_content(logic_source, agent_config)
         
         try:
             database.save_summary(
@@ -1147,7 +1410,8 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 reasoning_content=reasoning_content,
                 reasoning_tokens=reasoning_tokens,
             )
-            update_turn_memory(config_id, agent_config, strategy_logic, state.messages)
+            if not failed:
+                update_turn_memory(config_id, agent_config, strategy_logic, state.messages)
             
             # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
             trade_mode = agent_config.get('mode', 'STRATEGY').upper()
@@ -1168,15 +1432,19 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     logger.info(f"SPOT_DCA no order generated for {config_id}; summary saved without order log.")
         except Exception as e:
             logger.warning(f"⚠️ Save summary/DCA log failed: {e}")
+            _emit_task_progress(configurable, phase="failed", message=f"结果保存失败：{e}")
+            raise
 
     _emit_task_progress(
         configurable,
-        phase="completed",
-        message="分析与工具执行结果已保存",
+        phase="failed" if failed else "completed",
+        message="分析失败，错误记录已保存" if failed else "分析与工具执行结果已保存",
         reasoning_content=reasoning_content,
         reasoning_tokens=reasoning_tokens,
     )
 
+    if failed:
+        raise RuntimeError(final_full_content)
     return state
 
 def should_continue(state: AgentState):
@@ -1302,3 +1570,4 @@ def run_agent_for_config(config: dict, human_message: str = None, progress_callb
         )
     except Exception as e:
         logger.error(f"❌ Critical Graph Error for [{config_id}] {symbol}: {e}")
+        raise

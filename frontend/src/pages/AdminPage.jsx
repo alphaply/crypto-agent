@@ -13,6 +13,7 @@ import {
   Input,
   InputNumber,
   List,
+  Modal,
   Popconfirm,
   Select,
   Space,
@@ -26,7 +27,7 @@ import {
   Upload,
   message,
 } from 'antd';
-import { ArrowDownOutlined, ArrowUpOutlined, DownloadOutlined, HolderOutlined, FileTextOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
+import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, DownloadOutlined, HolderOutlined, FileTextOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
 import { usePreferences } from '../app/usePreferences';
 import { DailySummaryPanel, ShortMemoryPanel } from './DashboardPage';
@@ -109,6 +110,7 @@ function buildBlankAgent(promptFiles = []) {
     manual_avg_cost: 0,
     extra_body: {},
     llm_provider_id: '',
+    fallback_llm_provider_ids: [],
     summarizer_provider_id: '',
     exchange_profile_id: '',
     strategy_prompt: DEFAULT_STRATEGY_PROMPT,
@@ -249,7 +251,7 @@ function highlightPrompt(value) {
   return escaped.replace(/(\{[a-zA-Z_][a-zA-Z0-9_]*(?::[^}]*)?\})/g, '<mark class="prompt-placeholder">$1</mark>');
 }
 
-function PromptCodeEditor({ value, onChange, placeholder, height = 420 }) {
+function PromptCodeEditor({ value, onChange, placeholder, height = 420, onSave, disabled = false }) {
   const textRef = useRef(null);
   const gutterRef = useRef(null);
   const highlightRef = useRef(null);
@@ -288,6 +290,13 @@ function PromptCodeEditor({ value, onChange, placeholder, height = 420 }) {
             onScroll={syncScroll}
             placeholder={placeholder}
             spellCheck={false}
+            aria-label="Prompt editor"
+            disabled={disabled}
+            onKeyDown={(event) => {
+              if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+                event.preventDefault(); onSave?.();
+              }
+            }}
           />
         </div>
       </div>
@@ -382,6 +391,27 @@ export default function AdminPage() {
   const [saveState, setSaveState] = useState('idle');
   const [selectedPrompt, setSelectedPrompt] = useState('');
   const [promptContent, setPromptContent] = useState('');
+  const [savedPrompt, setSavedPrompt] = useState('');
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptSaving, setPromptSaving] = useState(false);
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [promptQuery, setPromptQuery] = useState('');
+  const promptDirty = promptContent !== savedPrompt;
+  const updatePromptContent = (content) => {
+    setPromptContent(content);
+    try { sessionStorage.setItem(`crypto-prompt-draft:${selectedPrompt}`, content); } catch { /* Editor remains usable when storage is full. */ }
+  };
+  useEffect(() => {
+    if (!promptDirty) return undefined;
+    const warn = (event) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [promptDirty]);
+  const selectPrompt = (name) => {
+    if (name === selectedPrompt) return;
+    if (promptDirty) Modal.confirm({ title: locale === 'zh' ? '放弃未保存的 Prompt 修改？' : 'Discard unsaved prompt changes?', onOk: () => { try { sessionStorage.removeItem(`crypto-prompt-draft:${selectedPrompt}`); } catch { /* Storage unavailable. */ } setSelectedPrompt(name); } });
+    else setSelectedPrompt(name);
+  };
   const [newPromptName, setNewPromptName] = useState('');
 
   // Task (agent) drawer state
@@ -441,13 +471,19 @@ export default function AdminPage() {
   useEffect(() => {
     let mounted = true;
     async function fetchPromptContent() {
-      if (!selectedPrompt) { setPromptContent(''); return; }
+      if (!selectedPrompt) { setPromptContent(''); setSavedPrompt(''); return; }
+      setPromptLoading(true);
       try {
         const response = await api.get('/config/prompts/content', { params: { name: selectedPrompt } });
-        if (mounted) setPromptContent(response.data.content || '');
+        if (mounted) {
+          let draft = null;
+          try { draft = sessionStorage.getItem(`crypto-prompt-draft:${selectedPrompt}`); } catch { /* Storage unavailable. */ }
+          setPromptContent(draft ?? response.data.content ?? '');
+          setSavedPrompt(response.data.content || '');
+        }
       } catch (err) {
         if (mounted) setError(err.message || 'Failed to load prompt');
-      }
+      } finally { if (mounted) setPromptLoading(false); }
     }
     fetchPromptContent();
     return () => { mounted = false; };
@@ -533,6 +569,7 @@ export default function AdminPage() {
     const manualAvg = Number(agent.manual_avg_cost || 0);
     setEditingTask({
       ...agent,
+      fallback_llm_provider_ids: Array.isArray(agent.fallback_llm_provider_ids) ? agent.fallback_llm_provider_ids : [],
       manual_avg_cost: manualAvg || (initialQty > 0 ? Number(agent.initial_cost || 0) / initialQty : 0),
     });
     setEditingTaskId(agent.config_id);
@@ -541,6 +578,7 @@ export default function AdminPage() {
 
   const normalizeTaskForSave = (task) => {
     const next = { ...task };
+    next.fallback_llm_provider_ids = (next.fallback_llm_provider_ids || []).filter(Boolean);
     if (String(next.mode || '').toUpperCase() === 'SPOT_DCA') {
       const qty = Number(next.initial_qty || 0);
       const avg = Number(next.manual_avg_cost || 0);
@@ -784,27 +822,42 @@ export default function AdminPage() {
 
   // --- Prompt CRUD ---
   const savePrompt = async () => {
-    if (!selectedPrompt) return;
-    await api.put('/config/prompts', { name: selectedPrompt, content: promptContent });
-    await loadAll();
+    if (!selectedPrompt || promptSaving || promptLoading) return;
+    setPromptSaving(true);
+    const content = promptContent;
+    try {
+      await api.put('/config/prompts', { name: selectedPrompt, content });
+      setSavedPrompt(content);
+      try { sessionStorage.removeItem(`crypto-prompt-draft:${selectedPrompt}`); } catch { /* Storage unavailable. */ }
+      message.success(locale === 'zh' ? 'Prompt 已保存' : 'Prompt saved');
+    } catch (err) { setError(err.message); }
+    finally { setPromptSaving(false); }
   };
 
   const deletePrompt = async () => {
     if (!selectedPrompt) return;
-    await api.delete('/config/prompts', { data: { name: selectedPrompt } });
-    setSelectedPrompt('');
-    setPromptContent('');
-    await loadAll();
+    try {
+      await api.delete('/config/prompts', { data: { name: selectedPrompt } });
+      try { sessionStorage.removeItem(`crypto-prompt-draft:${selectedPrompt}`); } catch { /* Storage unavailable. */ }
+      setSelectedPrompt('');
+      setPromptContent('');
+      setSavedPrompt('');
+      await loadAll();
+    } catch (err) { setError(err.message); }
   };
 
   const createPrompt = async () => {
     const name = newPromptName.trim();
     if (!name) return;
     const filename = name.endsWith('.txt') ? name : `${name}.txt`;
-    await api.put('/config/prompts', { name: filename, content: DEFAULT_PROMPT_FILE_CONTENT });
-    setNewPromptName('');
-    await loadAll();
-    setSelectedPrompt(filename);
+    if (payload.prompts?.files?.includes(filename)) { message.error(locale === 'zh' ? '文件已存在，请选择后编辑' : 'File already exists'); return; }
+    if (promptDirty) { message.warning(locale === 'zh' ? '请先保存当前 Prompt' : 'Save the current prompt first'); return; }
+    try {
+      await api.put('/config/prompts', { name: filename, content: DEFAULT_PROMPT_FILE_CONTENT });
+      setNewPromptName('');
+      await loadAll();
+      setSelectedPrompt(filename);
+    } catch (err) { setError(err.message); }
   };
 
   // --- Import/Export ---
@@ -827,22 +880,14 @@ export default function AdminPage() {
   const handleExportDatabase = async () => {
     setExportingDb(true);
     try {
-      const response = await api.get('/config/database/export', { responseType: 'blob' });
-      const disposition = response.headers?.['content-disposition'] || '';
-      let filename = 'trading_data.db';
-      const match = disposition.match(/filename="?([^";]+)"?/);
-      if (match && match[1]) {
-        filename = match[1];
-      }
-      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/x-sqlite3' }));
+      await api.post('/config/database/download-ticket');
       const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
+      a.href = '/api/config/database/download';
+      a.download = 'trading_data.db';
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
-      message.success(locale === 'zh' ? '数据库导出成功' : 'Database exported successfully');
+      message.success(locale === 'zh' ? '已交给浏览器下载，快照准备后可在下载列表查看进度' : 'Download requested; track progress in your browser after snapshot preparation');
     } catch (err) {
       setError(err.message || 'Database export failed');
     } finally {
@@ -880,7 +925,7 @@ export default function AdminPage() {
     const providers = payload?.llm_providers || [];
     const taskUsage = new Map();
     (payload?.agents || []).forEach((agent) => {
-      [agent.llm_provider_id, agent.summarizer_provider_id]
+      [agent.llm_provider_id, agent.summarizer_provider_id, ...(agent.fallback_llm_provider_ids || [])]
         .filter(Boolean)
         .forEach((providerId) => {
           const tasks = taskUsage.get(providerId) || new Set();
@@ -1094,6 +1139,13 @@ export default function AdminPage() {
                           <Text type="secondary">Config</Text><Text>{record.config_id}</Text>
                           <Text type="secondary">{t('symbol')}</Text><Text>{record.symbol || '-'}</Text>
                           <Text type="secondary">Mode</Text><Tag>{record.mode}</Tag>
+                          <Text type="secondary">{locale === 'zh' ? '决策模型' : 'Model'}</Text>
+                          <div>
+                            <Tag color="blue">{getProviderInfo(record.llm_provider_id)?.name || record.model || '-'}</Tag>
+                            {(record.fallback_llm_provider_ids || []).length > 0 && (
+                              <Tag color="cyan">+{record.fallback_llm_provider_ids.length} {locale === 'zh' ? '兜底' : 'fallbacks'}</Tag>
+                            )}
+                          </div>
                           <Text type="secondary">Prompt</Text><Text className="text-break">{record.prompt_file || '-'}</Text>
                         </div>
                         <Space className="admin-mobile-actions" wrap>
@@ -1142,6 +1194,41 @@ export default function AdminPage() {
                       { title: 'Title', dataIndex: 'title', width: 180, ellipsis: true },
                       { title: t('symbol'), dataIndex: 'symbol', width: 120 },
                       { title: 'Mode', dataIndex: 'mode', width: 120, render: (v) => <Tag>{v}</Tag> },
+                      {
+                        title: locale === 'zh' ? '决策模型 / 兜底' : 'Model / Fallback',
+                        key: 'decision_model',
+                        width: 200,
+                        render: (_, record) => {
+                          const primaryInfo = getProviderInfo(record.llm_provider_id);
+                          const primaryLabel = primaryInfo ? (primaryInfo.name || primaryInfo.model) : (record.model || '-');
+                          const fallbackCount = (record.fallback_llm_provider_ids || []).length;
+                          const fallbackLabels = (record.fallback_llm_provider_ids || []).map((id, idx) => {
+                            const fbInfo = getProviderInfo(id);
+                            return `${idx + 1}. ${fbInfo ? (fbInfo.name || fbInfo.model) : id || (locale === 'zh' ? '未配置' : 'Not configured')}`;
+                          });
+                          return (
+                            <Space direction="vertical" size={2}>
+                              <Tag color="blue">{primaryLabel}</Tag>
+                              {fallbackCount > 0 && (
+                                <Tooltip title={
+                                  <div>
+                                    <div style={{ fontWeight: 'bold', marginBottom: 4 }}>
+                                      {locale === 'zh' ? '兜底链路：' : 'Fallback Chain:'}
+                                    </div>
+                                    {fallbackLabels.map((item, i) => (
+                                      <div key={i}>{item}</div>
+                                    ))}
+                                  </div>
+                                }>
+                                  <Tag color="cyan" style={{ cursor: 'pointer' }}>
+                                    +{fallbackCount} {locale === 'zh' ? '级兜底' : 'fallbacks'}
+                                  </Tag>
+                                </Tooltip>
+                              )}
+                            </Space>
+                          );
+                        },
+                      },
                       { title: 'Enabled', dataIndex: 'enabled', width: 110, render: (v) => <Tag color={v ? 'green' : 'default'}>{v ? 'ON' : 'OFF'}</Tag> },
                       { title: 'Prompt', dataIndex: 'prompt_file', width: 180, ellipsis: true },
                       {
@@ -1268,7 +1355,7 @@ export default function AdminPage() {
                             >
                               <div className="admin-mobile-meta">
                                 <Text type="secondary">Model</Text><Text className="text-break">{record.model || '-'}</Text>
-                                <Text type="secondary">{locale === 'zh' ? '任务引用' : 'Task usage'}</Text><Text>{[...(new Set((payload.agents || []).filter((agent) => agent.llm_provider_id === record.provider_id || agent.summarizer_provider_id === record.provider_id).map((agent) => agent.config_id)))].length}</Text>
+                                <Text type="secondary">{locale === 'zh' ? '任务引用' : 'Task usage'}</Text><Text>{[...(new Set((payload.agents || []).filter((agent) => agent.llm_provider_id === record.provider_id || agent.summarizer_provider_id === record.provider_id || (agent.fallback_llm_provider_ids || []).includes(record.provider_id)).map((agent) => agent.config_id)))].length}</Text>
                                 <Text type="secondary">{t('thinkingMode')}</Text><Text>{record.thinking_enabled === true ? (locale === 'zh' ? '已启用' : 'Enabled') : (locale === 'zh' ? '标准' : 'Standard')}</Text>
                                 <Text type="secondary">{t('reasoningEffort')}</Text><Text>{record.reasoning_effort || '-'}</Text>
                               </div>
@@ -1307,7 +1394,7 @@ export default function AdminPage() {
                             {
                               title: locale === 'zh' ? '任务引用' : 'Task usage', width: 105,
                               render: (_, record) => {
-                                const usages = (payload.agents || []).filter((agent) => agent.llm_provider_id === record.provider_id || agent.summarizer_provider_id === record.provider_id);
+                                const usages = (payload.agents || []).filter((agent) => agent.llm_provider_id === record.provider_id || agent.summarizer_provider_id === record.provider_id || (agent.fallback_llm_provider_ids || []).includes(record.provider_id));
                                 return usages.length ? <Tooltip title={usages.map((agent) => agent.title || agent.config_id).join(', ')}><Tag color="blue">{usages.length}</Tag></Tooltip> : '-';
                               },
                             },
@@ -1395,7 +1482,7 @@ export default function AdminPage() {
             key: 'prompts',
             label: t('prompts'),
             children: (
-              <div className="config-editor prompt-config-editor">
+              <div className={`config-editor prompt-config-editor ${promptExpanded ? "is-expanded" : ""}`}>
                 <Card className="panel-card config-sidebar prompt-sidebar-card" title={t('promptEditor')} extra={
                   <Space.Compact className="prompt-create">
                     <Input
@@ -1410,15 +1497,16 @@ export default function AdminPage() {
                     </Tooltip>
                   </Space.Compact>
                 }>
+                  <Input.Search aria-label="Search prompts" placeholder={locale === 'zh' ? '搜索 Prompt' : 'Search prompts'} value={promptQuery} onChange={(event) => setPromptQuery(event.target.value)} allowClear />
                   <List
                     className="prompt-file-list"
-                    dataSource={payload.prompts?.files || []}
+                    dataSource={(payload.prompts?.files || []).filter((name) => name.toLowerCase().includes(promptQuery.toLowerCase()))}
                     renderItem={(item) => (
                       <List.Item>
                         <button
                           type="button"
                           className={`prompt-file-row ${item === selectedPrompt ? 'active' : ''}`}
-                          onClick={() => setSelectedPrompt(item)}
+                          disabled={promptSaving} onClick={() => selectPrompt(item)}
                         >
                           <FileTextOutlined />
                           <span>{item}</span>
@@ -1427,14 +1515,16 @@ export default function AdminPage() {
                     )}
                   />
                 </Card>
-                <Card className="panel-card" title={selectedPrompt || t('promptEditor')}>
+                <Card className="panel-card" title={<Space wrap>{selectedPrompt || t('promptEditor')}<Tag title={locale === 'zh' ? '未保存的编辑会在当前浏览器标签页中保留为草稿' : 'Unsaved edits are retained as drafts in this browser tab'} color={promptDirty ? 'orange' : 'green'}>{promptLoading ? 'Loading…' : promptDirty ? (locale === 'zh' ? '未保存' : 'Unsaved') : (locale === 'zh' ? '已保存' : 'Saved')}</Tag></Space>} extra={<Space wrap><Button type="primary" loading={promptSaving} disabled={!selectedPrompt || promptLoading || !promptDirty} onClick={savePrompt}>{t('savePrompt')}</Button><Button onClick={() => setPromptExpanded(!promptExpanded)}>{promptExpanded ? (locale === 'zh' ? '退出专注' : 'Exit focus') : (locale === 'zh' ? '专注编辑' : 'Focus editor')}</Button></Space>}>
                   <Space direction="vertical" style={{ width: '100%' }} size="middle">
                     <div className="prompt-editor-container">
                       <PromptCodeEditor
                         value={promptContent}
-                        onChange={setPromptContent}
+                        onChange={updatePromptContent}
                         placeholder="Use {current_time}, {symbol}, {formatted_market_data}, {positions_text}, {orders_text}, {history_text}, {short_memory_text}"
-                        height={520}
+                        height={promptExpanded ? "calc(100dvh - 290px)" : 520}
+                        onSave={savePrompt}
+                        disabled={promptLoading || promptSaving}
                       />
                       <div className="prompt-editor-stats">
                         <Text type="secondary">{(promptContent || '').split('\n').length} {locale === 'zh' ? '行' : 'lines'}</Text>
@@ -1443,9 +1533,9 @@ export default function AdminPage() {
                     </div>
                     <PromptVarHints content={promptContent} vars={AGENT_PROMPT_VARS} locale={locale} />
                     <Space>
-                      <Button type="primary" onClick={savePrompt} disabled={!selectedPrompt}>{t('savePrompt')}</Button>
+                      <Button type="primary" loading={promptSaving} onClick={savePrompt} disabled={!selectedPrompt || promptLoading || !promptDirty}>{t('savePrompt')} · Ctrl/⌘ S</Button>
                       <Popconfirm title={t('confirmDelete')} onConfirm={deletePrompt} disabled={!selectedPrompt}>
-                        <Button danger disabled={!selectedPrompt}>{t('deletePrompt')}</Button>
+                        <Button danger disabled={!selectedPrompt || promptSaving || promptLoading}>{t('deletePrompt')}</Button>
                       </Popconfirm>
                     </Space>
                   </Space>
@@ -1636,25 +1726,162 @@ export default function AdminPage() {
               key: 'model',
               label: t('decisionModel'),
               children: (
-                <div className="field-grid">
-                  <div className="form-field field-span-2">
-                    <label>{t('selectProvider')} *</label>
-                    <ProviderSelect providers={payload.llm_providers} value={editingTask.llm_provider_id} onChange={(v) => updateEditingTask('llm_provider_id', v)} allowEmpty />
-                  </div>
-                  {(() => {
-                    const info = getProviderInfo(editingTask.llm_provider_id);
-                    if (!info) return null;
-                    return (
-                      <>
-                        <div className="form-field"><label>Model</label><Input value={info.model} disabled /></div>
-                        <div className="form-field"><label>Temperature</label><InputNumber value={info.temperature} disabled style={{ width: '100%' }} /></div>
-                        <div className="form-field"><label>{locale === 'zh' ? '提示词角色' : 'Prompt role'}</label><Input value={info.system_prompt_role === 'user' ? (locale === 'zh' ? '用户消息' : 'User message') : 'System message'} disabled /></div>
-                        <div className="form-field"><label>{locale === 'zh' ? '任务提示词角色' : 'Task prompt role'}</label><Select value={editingTask.system_prompt_role || info.system_prompt_role || 'system'} options={[{ value: 'system', label: 'System message' }, { value: 'user', label: 'User message (compatibility)' }]} onChange={(value) => updateEditingTask('system_prompt_role', value)} /></div>
-                        <div className="form-field field-span-2"><label>API Base</label><Input value={info.api_base} disabled /></div>
-                      </>
-                    );
-                  })()}
-                </div>
+                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <Card size="small" title={t('primaryDecisionModel')} type="inner">
+                    <div className="field-grid">
+                      <div className="form-field field-span-2">
+                        <label>{t('selectProvider')} *</label>
+                        <ProviderSelect providers={payload.llm_providers} value={editingTask.llm_provider_id} onChange={(v) => updateEditingTask('llm_provider_id', v)} allowEmpty />
+                      </div>
+                      {(() => {
+                        const info = getProviderInfo(editingTask.llm_provider_id);
+                        if (!info) return null;
+                        return (
+                          <>
+                            <div className="form-field"><label>Model</label><Input value={info.model} disabled /></div>
+                            <div className="form-field"><label>Temperature</label><InputNumber value={info.temperature} disabled style={{ width: '100%' }} /></div>
+                            <div className="form-field"><label>{locale === 'zh' ? '提示词角色' : 'Prompt role'}</label><Input value={info.system_prompt_role === 'user' ? (locale === 'zh' ? '用户消息' : 'User message') : 'System message'} disabled /></div>
+                            <div className="form-field"><label>{locale === 'zh' ? '任务提示词角色' : 'Task prompt role'}</label><Select value={editingTask.system_prompt_role || info.system_prompt_role || 'system'} options={[{ value: 'system', label: 'System message' }, { value: 'user', label: 'User message (compatibility)' }]} onChange={(value) => updateEditingTask('system_prompt_role', value)} /></div>
+                            <div className="form-field field-span-2"><label>API Base</label><Input value={info.api_base} disabled /></div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </Card>
+
+                  <Card
+                    size="small"
+                    title={
+                      <Space>
+                        <span>{t('fallbackModels')}</span>
+                        <Tag color="cyan">{(editingTask.fallback_llm_provider_ids || []).length} {locale === 'zh' ? '级兜底' : 'fallbacks'}</Tag>
+                      </Space>
+                    }
+                    extra={
+                      <Button
+                        type="dashed"
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={() => {
+                          const current = editingTask.fallback_llm_provider_ids || [];
+                          updateEditingTask('fallback_llm_provider_ids', [...current, '']);
+                        }}
+                      >
+                        {t('addFallbackModel')}
+                      </Button>
+                    }
+                    type="inner"
+                  >
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 16 }}
+                      message={t('fallbackChainTip')}
+                    />
+
+                    {!(editingTask.fallback_llm_provider_ids || []).length ? (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={t('noFallbackModels')}
+                      >
+                        <Button
+                          type="primary"
+                          size="small"
+                          icon={<PlusOutlined />}
+                          onClick={() => {
+                            updateEditingTask('fallback_llm_provider_ids', ['']);
+                          }}
+                        >
+                          {t('addFallbackModel')}
+                        </Button>
+                      </Empty>
+                    ) : (
+                      <div className="fallback-chain-list">
+                        {(editingTask.fallback_llm_provider_ids || []).map((fbId, idx) => {
+                          const info = getProviderInfo(fbId);
+                          return (
+                            <div key={`fallback-${idx}`} style={{ marginBottom: 12 }}>
+                              <div style={{ textAlign: 'center', margin: '4px 0 8px', color: '#1890ff', fontSize: 12 }}>
+                                ↓ {t('fallbackOnError')}（{t('fallbackStep')}{idx + 1}）
+                              </div>
+                              <Card
+                                size="small"
+                                style={{ background: 'var(--ant-color-bg-container, #fafafa)', border: '1px solid var(--ant-color-border-secondary, #e8e8e8)' }}
+                                title={
+                                  <Space>
+                                    <Tag color="blue">{t('fallbackStep')}{idx + 1}</Tag>
+                                    <span>{info ? (info.name || info.model) : (locale === 'zh' ? '请选择兜底服务商' : 'Select fallback provider')}</span>
+                                  </Space>
+                                }
+                                extra={
+                                  <Space size="small">
+                                    <Button
+                                      size="small"
+                                      icon={<ArrowUpOutlined />}
+                                      disabled={idx === 0}
+                                      onClick={() => {
+                                        const list = [...(editingTask.fallback_llm_provider_ids || [])];
+                                        const temp = list[idx - 1];
+                                        list[idx - 1] = list[idx];
+                                        list[idx] = temp;
+                                        updateEditingTask('fallback_llm_provider_ids', list);
+                                      }}
+                                    />
+                                    <Button
+                                      size="small"
+                                      icon={<ArrowDownOutlined />}
+                                      disabled={idx === (editingTask.fallback_llm_provider_ids || []).length - 1}
+                                      onClick={() => {
+                                        const list = [...(editingTask.fallback_llm_provider_ids || [])];
+                                        const temp = list[idx + 1];
+                                        list[idx + 1] = list[idx];
+                                        list[idx] = temp;
+                                        updateEditingTask('fallback_llm_provider_ids', list);
+                                      }}
+                                    />
+                                    <Button
+                                      size="small"
+                                      danger
+                                      icon={<DeleteOutlined />}
+                                      onClick={() => {
+                                        const list = [...(editingTask.fallback_llm_provider_ids || [])];
+                                        list.splice(idx, 1);
+                                        updateEditingTask('fallback_llm_provider_ids', list);
+                                      }}
+                                    />
+                                  </Space>
+                                }
+                              >
+                                <div className="field-grid">
+                                  <div className="form-field field-span-2">
+                                    <label>{t('selectProvider')}</label>
+                                    <ProviderSelect
+                                      providers={payload.llm_providers}
+                                      value={fbId}
+                                      onChange={(val) => {
+                                        const list = [...(editingTask.fallback_llm_provider_ids || [])];
+                                        list[idx] = val;
+                                        updateEditingTask('fallback_llm_provider_ids', list);
+                                      }}
+                                      allowEmpty
+                                    />
+                                  </div>
+                                  {info && (
+                                    <>
+                                      <div className="form-field"><label>Model</label><Input value={info.model} disabled /></div>
+                                      <div className="form-field"><label>Temperature</label><InputNumber value={info.temperature} disabled style={{ width: '100%' }} /></div>
+                                      <div className="form-field field-span-2"><label>API Base</label><Input value={info.api_base} disabled /></div>
+                                    </>
+                                  )}
+                                </div>
+                              </Card>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </Card>
+                </Space>
               ),
             },
             {

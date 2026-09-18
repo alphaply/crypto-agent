@@ -36,6 +36,7 @@ import {
 import { Bubble, Conversations, Sender, XProvider } from '@ant-design/x';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
+import ChatRunProgress from '../components/ChatRunProgress';
 import { api, streamSse } from '../lib/api';
 import { createChatStreamLifecycle, reduceChatStreamLifecycle } from '../lib/chatStreamLifecycle';
 import { splitThinkingContent } from '../lib/thinking';
@@ -269,10 +270,10 @@ function buildInitialRuntime(data) {
   const provider = providers.find((item) => item.provider_id === last.llm_provider_id) || providers[0] || {};
   return {
     exchange_profile_id: profile.profile_id || '',
-    market_type: profile.supported_market_types?.includes(last.market_type) ? last.market_type : 'spot',
+    market_type: profile.supported_market_types?.includes(last.market_type) ? last.market_type : (profile.supported_market_types?.[0] || 'spot'),
     symbol: '',
     llm_provider_id: provider.provider_id || '',
-    global_requirement: last.global_requirement || '',
+    global_requirement: last.global_requirement || '分析趋势、关键价位、多空证据和失效条件。优先说明数据质量与风险，不确定时明确说明。',
     system_prompt_role: last.system_prompt_role || provider.system_prompt_role || 'system',
   };
 }
@@ -297,6 +298,10 @@ export default function ChatPage({ token }) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [streaming, setStreaming] = useState(false);
+  const [run, setRun] = useState(null);
+  const [sessionQuery, setSessionQuery] = useState('');
+  const sendingRef = useRef(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
   const [streamStatus, setStreamStatus] = useState('');
   const [streamFailure, setStreamFailure] = useState(null);
   const [persistenceWarning, setPersistenceWarning] = useState('');
@@ -316,6 +321,8 @@ export default function ChatPage({ token }) {
   const [symbolOptions, setSymbolOptions] = useState([]);
   const [symbolLoading, setSymbolLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const symbolSearchTimerRef = useRef(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const draftRef = useRef({ content: '', reasoning_content: '', reasoning_tokens: 0, reasoning_started_at: null, pending: false });
@@ -425,6 +432,7 @@ export default function ChatPage({ token }) {
       mounted = false;
       if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
       abortRef.current?.abort();
+      window.clearTimeout(symbolSearchTimerRef.current);
     };
   }, []);
 
@@ -441,6 +449,10 @@ export default function ChatPage({ token }) {
         pendingBranchSessionRef.current = '';
         return;
       }
+      setSessionLoading(true);
+      setMessages([]);
+      setRun(null);
+      setInput('');
       try {
         const response = await api.get(`/chat/sessions/${currentSessionId}`);
         if (!mounted) return;
@@ -457,6 +469,8 @@ export default function ChatPage({ token }) {
         }
       } catch (err) {
         if (mounted) setError(err.message || 'Failed to load session');
+      } finally {
+        if (mounted) setSessionLoading(false);
       }
     }
     loadMessages();
@@ -544,7 +558,7 @@ export default function ChatPage({ token }) {
   }, [currentSession, messages, sessionItems]);
 
   const conversationItems = useMemo(
-    () => sessionItems.map((item) => ({
+    () => sessionItems.filter((item) => `${item.title || ''} ${item.symbol || ''} ${item.config_id || ''}`.toLowerCase().includes(sessionQuery.toLowerCase())).map((item) => ({
       key: item.session_id,
       label: item.title || item.session_id,
       timestamp: item.updated_at,
@@ -552,7 +566,7 @@ export default function ChatPage({ token }) {
         ? `${item.runtime?.symbol || item.symbol || 'Chat'} · ${isZh ? '临时' : 'Temporary'}`
         : (item.symbol || item.config_id),
     })),
-    [isZh, sessionItems],
+    [isZh, sessionItems, sessionQuery],
   );
 
   const bubbleItems = useMemo(
@@ -568,12 +582,12 @@ export default function ChatPage({ token }) {
           reasoningTokens: Number(message.reasoning_tokens || 0),
           reasoningStartedAt: message.reasoning_started_at || null,
           originalRole: message.role,
-          streaming: streaming && index === messages.length - 1 && message.role === 'assistant',
+          streaming: streaming && message === messages.at(-1) && message.role === 'assistant',
           status: streamStatus,
           messageIndex,
           branches: messageIndex === null ? [] : (branchFamilies.get(messageIndex) || []),
         },
-        streaming: streaming && index === messages.length - 1 && message.role === 'assistant',
+        streaming: streaming && message === messages.at(-1) && message.role === 'assistant',
       };
     }),
     [branchFamilies, messages, streaming, streamStatus],
@@ -617,6 +631,9 @@ export default function ChatPage({ token }) {
 
   const runStream = async (url, messageText = '', requestBody = null) => {
     setStreaming(true);
+    const startedAt = Date.now();
+    setRun({ startedAt, endedAt: null, characters: 0, events: [{ at: startedAt, label: isZh ? '整理上下文与行情' : 'Preparing context and market data' }] });
+    const recordStage = (label, characters = 0) => setRun((prev) => prev ? ({ ...prev, characters: prev.characters + characters, events: prev.events.at(-1)?.label === label ? prev.events : [...prev.events.slice(-49), { at: Date.now(), label }] }) : prev);
     setStreamStatus(isZh ? '正在整理上下文' : 'Preparing context');
     setStreamFailure(null);
     setPersistenceWarning('');
@@ -628,6 +645,8 @@ export default function ChatPage({ token }) {
     try {
       await streamSse(url, token, (event) => {
         lifecycle = reduceChatStreamLifecycle(lifecycle, event);
+        const labels = { token: isZh ? '生成回答' : 'Writing answer', reasoning_token: isZh ? '接收推理摘要' : 'Receiving reasoning', tool_calls: isZh ? '准备工具调用' : 'Preparing tools', approval_required: isZh ? '等待工具审批' : 'Awaiting approval', tool_result: isZh ? '工具已返回结果' : 'Tool result received', done: isZh ? '本轮请求完成' : 'Request completed', error: isZh ? '请求遇到错误' : 'Request error' };
+        if (event.type === 'status' || labels[event.type]) recordStage(event.type === 'status' ? event.message : labels[event.type], ['token', 'reasoning_token'].includes(event.type) ? String(event.token || '').length : 0);
         if (event.type === 'token') {
           incomingDraftRef.current.content += event.token;
           setStreamStatus(isZh ? '正在生成回答' : 'Writing the answer');
@@ -685,6 +704,7 @@ export default function ChatPage({ token }) {
         if (last?.role === 'assistant' && last.draft && !last.content && !last.reasoning_content) return prev.slice(0, -1);
         return prev;
       });
+      setRun((prev) => prev ? ({ ...prev, endedAt: Date.now(), events: [...prev.events, { at: Date.now(), label: aborted ? (isZh ? '已停止' : 'Stopped') : lifecycle.completed ? (isZh ? '完成' : 'Complete') : (isZh ? '请求结束，请查看结果状态' : 'Request ended; review result') }] }) : prev);
       abortRef.current = null;
       setStreaming(false);
       setStreamStatus('');
@@ -693,7 +713,9 @@ export default function ChatPage({ token }) {
   };
 
   const handleSend = async (value = input, { appendUserMessage = true, retryBackend = false, replaceLastUserMessage = false } = {}) => {
-    if (!value.trim() || streaming) return;
+    if (!value.trim() || streaming || sendingRef.current || sessionLoading) return;
+    if (!currentSessionId) { openCreateSessionModal(); return; }
+    sendingRef.current = true;
     const message = value.trim();
     const replacingFailedMessage = replaceLastUserMessage || Boolean(editingFailedMessage);
     setInput('');
@@ -714,6 +736,8 @@ export default function ChatPage({ token }) {
     } catch (err) {
       setError(err.message || 'Failed to start chat');
       setInput(message);
+    } finally {
+      sendingRef.current = false;
     }
   };
 
@@ -798,6 +822,8 @@ export default function ChatPage({ token }) {
   };
 
   const createSession = async () => {
+    if (creating) return;
+    setCreateError('');
     try {
       setCreating(true);
       let payload;
@@ -842,7 +868,7 @@ export default function ChatPage({ token }) {
       setStreamFailure(null);
       setPersistenceWarning('');
     } catch (err) {
-      setError(err.message || 'Failed to create chat');
+      setCreateError(err.message || 'Failed to create chat');
     } finally {
       setCreating(false);
     }
@@ -882,6 +908,8 @@ export default function ChatPage({ token }) {
   };
 
   const openCreateSessionModal = () => {
+    if (streaming || sendingRef.current) return;
+    setCreateError('');
     setCreatingConfigId(currentConfigId || configOptions[0]?.config_id || '');
     setTemporaryRuntime((prev) => ({ ...buildInitialRuntime(bootstrap), ...prev, symbol: '' }));
     setSymbolOptions([]);
@@ -900,7 +928,7 @@ export default function ChatPage({ token }) {
           <Text strong>{t('chat')}</Text>
           <Text type="secondary">{isZh ? '实时行情、消息面与对话历史' : 'Live market, news, and chat history'}</Text>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} block onClick={openCreateSessionModal}>{t('createSession')}</Button>
+        <Button type="primary" icon={<PlusOutlined />} block disabled={streaming} onClick={openCreateSessionModal}>{t('createSession')}</Button>
         <div className="x-chat-active-config">
           <Text type="secondary">{activeRuntime ? (isZh ? '临时只读上下文' : 'Temporary read-only context') : t('symbol')}</Text>
           <Text strong>{activeSubtitle || '-'}</Text>
@@ -917,7 +945,8 @@ export default function ChatPage({ token }) {
         </div>
       </div>
       <div className="x-chat-sidebar-list">
-        <Conversations items={conversationItems} activeKey={currentSessionId} onActiveChange={(id) => { setCurrentSessionId(id); if (isMobile) setSidebarOpen(false); }} groupable />
+        <Input.Search aria-label={isZh ? '搜索会话' : 'Search conversations'} placeholder={isZh ? '搜索会话、标的' : 'Search chats or symbols'} value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} allowClear />
+        <Conversations items={conversationItems} activeKey={currentSessionId} onActiveChange={(id) => { if (streaming || sendingRef.current) return; setCurrentSessionId(id); if (isMobile) setSidebarOpen(false); }} groupable />
       </div>
     </div>
   );
@@ -945,7 +974,7 @@ export default function ChatPage({ token }) {
               <section className="x-chat-main">
                 <div className="x-chat-main-header">
                   <Space size="middle" className="x-chat-main-heading">
-                    {isMobile ? <Button icon={<MenuOutlined />} onClick={() => setSidebarOpen(true)} /> : null}
+                    {isMobile ? <Button aria-label={t('history')} icon={<MenuOutlined />} onClick={() => setSidebarOpen(true)} /> : null}
                     <div className="x-chat-main-titles">
                       <Space size={8} wrap>
                         <Title level={4} style={{ margin: 0 }}>{isZh ? '即时市场研究' : 'Live market research'}</Title>
@@ -961,13 +990,13 @@ export default function ChatPage({ token }) {
                     </div>
                   </Space>
                   <Space size={8}>
-                    {isMobile ? <Button icon={<DatabaseOutlined />} onClick={() => setMemoryOpen(true)} /> : null}
-                    <Button icon={<PlusOutlined />} onClick={openCreateSessionModal}>{isMobile ? null : t('createSession')}</Button>
+                    {isMobile ? <Button aria-label={isZh ? '会话记忆' : 'Conversation memory'} icon={<DatabaseOutlined />} onClick={() => setMemoryOpen(true)} /> : null}
+                    <Button aria-label={t('createSession')} disabled={streaming} icon={<PlusOutlined />} onClick={openCreateSessionModal}>{isMobile ? null : t('createSession')}</Button>
                   </Space>
                 </div>
                 <div className="x-chat-main-body">
                   <div className="x-chat-window" ref={chatWindowRef}>
-                    {bubbleItems.length ? (
+                    {sessionLoading ? <div className="loading-card"><Spin /></div> : bubbleItems.length ? (
                       <Bubble.List
                         items={bubbleItems}
                         role={{
@@ -1002,9 +1031,9 @@ export default function ChatPage({ token }) {
                       />
                     ) : (
                       <div className="x-chat-empty">
-                        <Empty description={t('emptySessions')}>
+                        <Empty description={currentSessionId ? (isZh ? '从一个好问题开始' : 'Start with a question') : t('emptySessions')}>
                           <Paragraph type="secondary">{isZh ? '选择交易所、市场、标的与模型后即可开始。每次提问都会刷新行情、技术面与最新消息。' : 'Choose an exchange, market, symbol, and model. Each message refreshes live market, technical, and news context.'}</Paragraph>
-                          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateSessionModal}>{t('createSession')}</Button>
+                          {currentSessionId ? <div className="chat-starters">{(isZh ? ['分析当前趋势、关键价位与失效条件', '对比多空证据，哪些信号存在冲突？', '复盘近期交易，区分数据问题与执行问题'] : ['Analyze trend, levels and invalidation', 'Compare bullish and bearish evidence', 'Review recent trades and execution']).map((text) => <Button key={text} onClick={() => setInput(text)}>{text}</Button>)}</div> : <Button type="primary" icon={<PlusOutlined />} onClick={openCreateSessionModal}>{t('createSession')}</Button>}
                         </Empty>
                       </div>
                     )}
@@ -1013,8 +1042,10 @@ export default function ChatPage({ token }) {
                   <ToolApproval approval={pendingApproval} loading={streaming} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} locale={locale} />
                   <PersistenceWarning warning={persistenceWarning} locale={locale} onDismiss={() => setPersistenceWarning('')} />
                   <StreamFailureCard failure={streamFailure} onRetry={retryFailedMessage} onEdit={editFailedMessage} locale={locale} />
+                  <ChatRunProgress run={run} streaming={streaming} locale={locale} />
                   <div className="x-chat-sender-wrap">
-                    <Sender value={input} onChange={setInput} onSubmit={handleSend} onCancel={stopStreaming} loading={streaming} placeholder={t('chatPlaceholder')} autoSize={{ minRows: 1, maxRows: isMobile ? 5 : 7 }} submitType="enter" />
+                    <Sender disabled={sessionLoading || !!pendingApproval} value={input} onChange={setInput} onSubmit={handleSend} onCancel={stopStreaming} loading={streaming} placeholder={t('chatPlaceholder')} autoSize={{ minRows: 1, maxRows: isMobile ? 5 : 7 }} submitType={isMobile ? "shiftEnter" : "enter"} />
+                    <div className="chat-composer-hint">{pendingApproval ? (isZh ? "请先处理工具审批" : "Review the pending tool approval") : isZh ? (isMobile ? "点击发送 · 回车换行" : "Enter 发送 · Shift+Enter 换行") : (isMobile ? "Tap to send · Enter for newline" : "Enter to send · Shift+Enter for newline")}</div>
                   </div>
                 </div>
               </section>
@@ -1056,7 +1087,12 @@ export default function ChatPage({ token }) {
           onCancel={() => setCreateModalOpen(false)}
           confirmLoading={creating}
           okText={isZh ? '创建并开始' : 'Create chat'}
+          maskClosable={!creating}
+          closable={!creating}
+          cancelButtonProps={{ disabled: creating }}
+          okButtonProps={{ disabled: createMode === 'task' ? !creatingConfigId : !temporaryRuntime.exchange_profile_id || !temporaryRuntime.symbol || !temporaryRuntime.llm_provider_id || !temporaryRuntime.global_requirement.trim() }}
         >
+          {createError ? <Alert type="error" showIcon message={createError} style={{ marginBottom: 12 }} /> : null}
           <div className="chat-create-mode">
             <Segmented
               block
@@ -1071,7 +1107,7 @@ export default function ChatPage({ token }) {
           {createMode === 'task' ? (
             <div className="chat-create-section">
               <Text type="secondary">{isZh ? '继续使用现有任务的标的、模型、Prompt 与工具审批规则。' : 'Use the existing task symbol, model, prompt, and tool-approval rules.'}</Text>
-              <Select style={{ width: '100%' }} value={creatingConfigId || undefined} options={configOptions.map((item) => ({ label: `${item.symbol} / ${item.mode} · ${item.model || '-'}`, value: item.config_id }))} onChange={setCreatingConfigId} />
+              <Select showSearch optionFilterProp="label" placeholder={isZh ? '选择已有任务' : 'Select a task'} style={{ width: '100%' }} value={creatingConfigId || undefined} options={configOptions.map((item) => ({ label: `${item.symbol} / ${item.mode} · ${item.model || '-'}`, value: item.config_id }))} onChange={setCreatingConfigId} />
             </div>
           ) : (
             <div className="chat-create-section">
@@ -1123,7 +1159,7 @@ export default function ChatPage({ token }) {
                     options={symbolOptions.map((item) => ({ value: item.symbol, label: item.display_name || item.symbol }))}
                     placeholder={isZh ? '先选择账户，然后搜索或展开标的列表' : 'Choose an account, then search symbols'}
                     onFocus={() => searchSymbols('')}
-                    onSearch={searchSymbols}
+                    onSearch={(keyword) => { window.clearTimeout(symbolSearchTimerRef.current); symbolSearchTimerRef.current = window.setTimeout(() => searchSymbols(keyword), 300); }}
                     onChange={(value) => updateRuntime({ symbol: value })}
                   />
                 </label>
@@ -1148,7 +1184,7 @@ export default function ChatPage({ token }) {
                   </Text>
                   {selectedProvider ? <Text type="secondary" className="chat-create-select-note">{isZh ? `服务商默认使用${selectedProvider.system_prompt_role === 'user' ? '用户消息（兼容模式）' : 'System 消息'}。` : `Provider default: ${selectedProvider.system_prompt_role === 'user' ? 'user message (compatibility mode)' : 'system message'}.`}</Text> : null}
                 </label>
-                <label className="form-field">
+                <details className="field-span-2 chat-advanced-options"><summary>{isZh ? '高级选项 · 模型与兼容性' : 'Advanced · Model and compatibility'}</summary><div className="chat-create-grid">                <label className="form-field">
                   <span>{isZh ? '当前模型' : 'Model'}</span>
                   <Input value={selectedProvider?.model || ''} disabled placeholder={isZh ? '选择模型服务商后显示' : 'Choose a provider'} />
                 </label>
@@ -1164,6 +1200,7 @@ export default function ChatPage({ token }) {
                   />
                   <Text type="secondary" className="chat-create-select-note">{isZh ? '模型不支持 system role 时请选择 User。' : 'Choose User if the model rejects system roles.'}</Text>
                 </label>
+</div></details>
                 <label className="form-field field-span-2">
                   <span>{isZh ? '全局需求' : 'Global requirement'}</span>
                   <TextArea value={temporaryRuntime.global_requirement} onChange={(event) => updateRuntime({ global_requirement: event.target.value })} autoSize={{ minRows: 3, maxRows: 6 }} maxLength={4000} placeholder={isZh ? '例如：以 1–3 天的持仓决策为目标，优先分析风险、关键价位和失效条件。此需求会用于本设备后续创建的临时聊天。' : 'For example: focus on 1–3 day holding decisions, risk, key levels, and invalidation. This will be reused for future temporary chats on this device.'} />

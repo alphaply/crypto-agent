@@ -1,5 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
+import time
+import jwt
+
+from backend.app.core.security import JWT_SECRET, JWT_ALGORITHM
+from backend.app.services.database_export import database_file_response
 
 from backend.app.core.deps import get_current_user
 from backend.app.schemas.payloads import FullImportRequest, PromptDeleteRequest, PromptSaveRequest, SaveConfigRequest
@@ -8,7 +13,6 @@ from backend.app.services.config_service import (
     delete_config_payload,
     delete_prompt_payload,
     export_config_payload,
-    export_database_payload,
     full_export_payload,
     full_import_payload,
     get_config_dependencies_payload,
@@ -21,6 +25,13 @@ from backend.app.services.config_service import (
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
+
+
+def validate_prompt_name(name: str) -> None:
+    if (not name or name in {".", ".."} or ".." in name
+            or any(char in name for char in ('/', '\\', ':', '\x00'))
+            or not name.endswith('.txt')):
+        raise HTTPException(400, "Invalid prompt filename")
 
 
 @router.post("/polymarket/test")
@@ -76,12 +87,31 @@ def full_export(include_secrets: bool = Query(default=True), _: dict = Depends(g
 
 @router.get("/database/export")
 def export_database(_: dict = Depends(get_current_user)):
-    content, filename = export_database_payload()
-    headers = {
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Content-Type": "application/x-sqlite3",
-    }
-    return Response(content=content, media_type="application/x-sqlite3", headers=headers)
+    return database_file_response()
+
+
+@router.post("/database/download-ticket")
+def database_download_ticket(request: Request, user: dict = Depends(get_current_user)):
+    # A short-lived, download-only cookie lets the browser stream straight to disk.
+    # Audience isolation prevents this ticket from authorizing other API routes.
+    token = jwt.encode({"sub": user["sub"], "aud": "database-download",
+                        "exp": int(time.time()) + 120}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+    response.set_cookie("db_download", token, max_age=120, httponly=True,
+                        secure=request.url.scheme == "https", samesite="strict",
+                        path="/api/config/database/download")
+    return response
+
+
+@router.get("/database/download")
+def download_database(request: Request):
+    try:
+        jwt.decode(request.cookies.get("db_download", ""), JWT_SECRET,
+                   algorithms=[JWT_ALGORITHM], audience="database-download",
+                   options={"require": ["exp", "sub", "aud"]})
+    except jwt.PyJWTError as exc:
+        raise HTTPException(401, "Download expired; request a new export") from exc
+    return database_file_response()
 
 
 
@@ -103,6 +133,7 @@ def list_prompts(_: dict = Depends(get_current_user)):
 
 @router.get("/prompts/content")
 def read_prompt(name: str = Query(...), _: dict = Depends(get_current_user)):
+    validate_prompt_name(name)
     if not name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid filename")
     if name in BLOCKED_PROMPT_FILES:
@@ -112,6 +143,7 @@ def read_prompt(name: str = Query(...), _: dict = Depends(get_current_user)):
 
 @router.put("/prompts")
 def save_prompt(payload: PromptSaveRequest, _: dict = Depends(get_current_user)):
+    validate_prompt_name(payload.name)
     if not payload.name or ".." in payload.name or not payload.name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Invalid prompt filename")
     if payload.name in BLOCKED_PROMPT_FILES:
@@ -121,6 +153,7 @@ def save_prompt(payload: PromptSaveRequest, _: dict = Depends(get_current_user))
 
 @router.delete("/prompts")
 def delete_prompt(payload: PromptDeleteRequest, _: dict = Depends(get_current_user)):
+    validate_prompt_name(payload.name)
     if payload.name in BLOCKED_PROMPT_FILES:
         raise HTTPException(status_code=403, detail="Prompt is blocked")
     if not payload.name or payload.name in ["real.txt", "strategy.txt"]:

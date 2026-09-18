@@ -515,7 +515,9 @@ def classify_llm_error(exc: BaseException) -> str:
         return "permission_error"
     if isinstance(exc, BadRequestError):
         return "bad_request"
-    if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.NetworkError)):
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return "stream_protocol_error"
+    if isinstance(exc, (ConnectionError, httpx.ConnectError, httpx.ReadError, httpx.NetworkError)):
         return "api_error"
     if isinstance(exc, APIError):
         status_code = getattr(exc, "status_code", None)
@@ -534,7 +536,7 @@ def classify_llm_error(exc: BaseException) -> str:
 def is_retryable_llm_error(error_type: str, exc: BaseException) -> bool:
     if isinstance(exc, LLMInvocationError):
         return exc.retryable
-    if error_type in {"timeout", "rate_limit"}:
+    if error_type in {"timeout", "rate_limit", "stream_protocol_error"}:
         return True
     if error_type == "api_error":
         status_code = getattr(exc, "status_code", None)
@@ -576,6 +578,11 @@ def invoke_with_retry(
     started_at = time.time()
 
     for attempt in range(1, total_attempts + 1):
+        attempt_started_at = time.monotonic()
+        logger.info(
+            f"[LLM] {context} attempt={attempt}/{total_attempts} "
+            f"configured_timeout={get_llm_timeout_seconds():g}s"
+        )
         try:
             result = operation()
             logger.info(
@@ -589,12 +596,14 @@ def invoke_with_retry(
             log_fn = logger.error if is_last_attempt or not retryable else logger.warning
             log_fn(
                 f"[LLM] {context} failed on attempt {attempt}/{total_attempts} "
-                f"type={error_type} exc={type(exc).__name__}: {exc!r}"
+                f"elapsed={time.monotonic() - attempt_started_at:.2f}s "
+                f"type={error_type} exc={type(exc).__name__}: {exc!r} "
+                f"cause={type(exc.__cause__).__name__ if exc.__cause__ else '-'}"
             )
 
             if not retryable or is_last_attempt:
                 raise LLMInvocationError(
-                    format_llm_error_message(error_type),
+                    (str(exc) if isinstance(exc, LLMInvocationError) else format_llm_error_message(error_type)),
                     error_type=error_type,
                     retryable=retryable,
                     attempts=attempt,

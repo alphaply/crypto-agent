@@ -454,10 +454,15 @@ def execution_context(config_id: str, hours=24, limit=20, now=None, scope=None, 
             + json.dumps(payload, ensure_ascii=False, default=str))
 
 
-def recent_activity_summary(config_id: str, symbol: str, now=None) -> str:
+def recent_activity_data(config_id: str, symbol: str, now=None) -> dict:
     canonical = symbol if ':' in symbol else f'{symbol}:USDT'
     raw = execution_context(config_id, hours=168, limit=5, now=now, symbol=canonical)
     data = json.loads(raw[raw.index('\n{') + 1:])
+    return data
+
+
+def recent_activity_summary(config_id: str, symbol: str, now=None) -> str:
+    data = recent_activity_data(config_id, symbol, now)
     cycles = data['position_cycles']
     return ('【最近7天成交活动（按成交时间，与完整周期盈亏不可相加）】\n'
             f"已归属成交: {data['fill_count']} 条；已确认手续费前盈亏: {data['known_realized_pnl_before_fees']}；"

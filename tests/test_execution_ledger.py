@@ -295,3 +295,26 @@ def test_stream_missing_fields_do_not_erase_rest_pnl(local_db):
     with database.get_db_conn() as conn:
         value = json.loads(conn.execute('SELECT payload FROM execution_fills').fetchone()[0])
     assert value['realized_pnl'] == 3
+
+
+@pytest.mark.parametrize('currency,missing,expected', [('USDT', False, -7.82), ('BNB', False, None), ('USDT', True, None)])
+def test_history_net_pnl_deducts_both_fees_once(local_db, currency, missing, expected):
+    from datetime import datetime
+    ledger = ExecutionLedger(Exchange([]), 'cfg', 'ETH/USDT')
+    register_order(ledger.scope, ledger.symbol, 'entry', 'cfg', 'entry', side='LONG')
+    register_order(ledger.scope, ledger.symbol, 'close', 'cfg', 'stop_loss', side='LONG')
+    now = datetime.now(database.TZ_CN)
+    timestamp = int(now.timestamp() * 1000) - 10000
+    trades = [
+        {**fill(1), 'timestamp': timestamp, 'realizedPnl': 0, 'fee': None if missing else {'currency': currency, 'cost': .3}},
+        {**fill(2), 'timestamp': timestamp + 1000, 'order': 'close', 'side': 'sell', 'realizedPnl': -7.124, 'fee': {'currency': currency, 'cost': .396}},
+    ]
+    ledger.ingest(trades)
+    ledger.ingest(trades)
+    rows = database.get_closed_positions_7d('cfg', 'ETH/USDT', mode='REAL')
+    assert len(rows) == 1
+    assert rows[0]['realized_pnl'] == -7.124
+    if expected is None:
+        assert rows[0]['net_realized_pnl'] is None
+    else:
+        assert rows[0]['net_realized_pnl'] == pytest.approx(expected)

@@ -208,6 +208,8 @@ def format_market_data_to_text(data: dict) -> str:
         vol_stat = timeframe_data.get("volume_status") or timeframe_data.get("volume_analysis", {}).get("status", "N/A")
         output.append(f"[{tf}] ADX={adx} DI+={di_plus} DI-={di_minus} | ATR={atr} | Vol={vol_stat}")
         quality = timeframe_data.get('data_quality') or {}
+        if quality.get('stale') or quality.get('gap_count') or quality.get('invalid_candles_excluded'):
+            output.append(f"- DATA QUALITY WARNING: stale={quality.get('stale')}, gaps={quality.get('gap_count', 0)}, invalid bars={quality.get('invalid_candles_excluded', 0)}. Refresh/verify data before considering new entries; indicators may be unreliable.")
         if quality:
             output.append(f"- Data: {quality.get('basis')} | last close={quality.get('last_closed_at')} | stale={quality.get('stale')} | excluded forming={quality.get('forming_candles_excluded')}")
             if quality.get('ema_warmup_bars'):

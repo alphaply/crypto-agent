@@ -1,13 +1,18 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Grid } from 'antd';
-import { init } from 'echarts';
+import { init, use as registerCharts } from 'echarts/core';
+import { LineChart as EchartsLineChart } from 'echarts/charts';
+import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
+import { SVGRenderer } from 'echarts/renderers';
 import { usePreferences } from '../app/usePreferences';
+
+registerCharts([EchartsLineChart, GridComponent, LegendComponent, TooltipComponent, SVGRenderer]);
 
 function LineChart({
   series = [],
   yName,
   xName,
-  smooth = true,
+  smooth = false,
   area = false,
   valueFormatter,
   tooltipFormatter,

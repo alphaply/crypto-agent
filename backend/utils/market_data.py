@@ -679,6 +679,7 @@ class MarketTool:
                 except Exception as e:
                     logger.warning(f"Fetch real positions error (maybe spot market?): {e}")
                     status_data["real_positions"] = []
+                    status_data["error"] = "Failed to refresh real positions"
 
                 # 实盘挂单
                 try:
@@ -767,6 +768,7 @@ class MarketTool:
                     status_data["real_open_orders"] = filtered_orders
                 except Exception as e:
                     logger.warning(f"Fetch real orders error: {e}")
+                    status_data["error"] = "Failed to refresh real open orders"
             else:
                 # 模拟模式
                 # 获取策略沙盒内的资金（破产会自动重置回10000并在数据库记1笔failures）
@@ -857,6 +859,16 @@ class MarketTool:
 
             logger.debug(f"    ✅ [{tf}] Got {len(ohlcv)} candles, calculating indicators...")
             df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
+            numeric = ['open', 'high', 'low', 'close', 'volume']
+            df[numeric] = df[numeric].apply(pd.to_numeric, errors='coerce')
+            valid = (df[numeric].notna().all(axis=1)
+                     & df[numeric].apply(lambda col: col.map(lambda value: math.isfinite(value))).all(axis=1)
+                     & (df[['open', 'high', 'low', 'close']] > 0).all(axis=1)
+                     & (df['volume'] >= 0)
+                     & (df['high'] >= df[['open', 'close', 'low']].max(axis=1))
+                     & (df['low'] <= df[['open', 'close', 'high']].min(axis=1)))
+            invalid_count = int((~valid).sum())
+            df = df.loc[valid].copy()
             df['time'] = pd.to_datetime(df['time'], unit='ms')
             df = df.sort_values('time').drop_duplicates('time', keep='last').reset_index(drop=True)
             now_utc = pd.Timestamp.now(tz='UTC').tz_localize(None)
@@ -873,6 +885,9 @@ class MarketTool:
             quality = {
                 'basis': 'closed_candles_only', 'last_closed_at': str(last_closed_at) + ' UTC',
                 'forming_candles_excluded': forming_count, 'bars': len(df),
+                'invalid_candles_excluded': invalid_count,
+                'gap_count': int((df['time'].diff().dropna() > pd.Timedelta(seconds=durations.get(tf, 32 * 86400))).sum()),
+                'indicator_method': 'SMA-seeded Wilder RSI/ATR/ADX',
                 'age_seconds': max(0, int((now_utc - last_closed_at).total_seconds())),
                 'stale': (now_utc - last_closed_at).total_seconds() > durations.get(tf, 2678400) * 2,
                 'ema_warmup_bars': {str(span): len(df) for span in (20, 50, 100, 200) if len(df) < span * 3},
@@ -914,8 +929,8 @@ class MarketTool:
             bb_up, bb_mid, bb_low, bb_width = calc_bollinger_bands(close)
             
             # 6. 成交量分析
-            vol_ma20 = volume.rolling(window=20).mean()
-            vol_ratio = (volume / vol_ma20).fillna(0)
+            vol_ma20 = volume.shift(1).rolling(window=20).mean().replace(0, float('nan'))
+            vol_ratio = volume / vol_ma20
             
             # 7. VP 分布 (自适应回看长度)
             vp_length = self.VP_LENGTH_MAP.get(tf, 360)
@@ -1004,8 +1019,9 @@ class MarketTool:
 
                 "volume_analysis": {
                     "current": smart_fmt(volume.iloc[-1]),
-                    "ratio": round(float(vol_ratio.iloc[-1]), 2),
-                    "status": "High" if float(vol_ratio.iloc[-1]) > 1.5 else ("Low" if float(vol_ratio.iloc[-1]) < 0.5 else "Normal")
+                    "ratio": round(float(vol_ratio.iloc[-1]), 2) if pd.notna(vol_ratio.iloc[-1]) else None,
+                    "baseline": "previous 20 closed candles, excluding current",
+                    "status": "Unavailable" if pd.isna(vol_ratio.iloc[-1]) else "High" if float(vol_ratio.iloc[-1]) > 1.5 else ("Low" if float(vol_ratio.iloc[-1]) < 0.5 else "Normal")
                 },
 
                 "vp": vp,
@@ -1023,6 +1039,8 @@ class MarketTool:
             for span in (20, 50, 100, 200):
                 if len(df) < span:
                     result['ema'][f'ema_{span}'] = None
+            if len(df) < 27:
+                result['trend'] = {'available': False, 'adx': None, 'di_plus': None, 'di_minus': None, 'reason': 'ADX requires 27 closed candles'}
             if len(df) <= 14:
                 result['rsi_analysis']['rsi'] = None
                 result['atr'] = None

@@ -7,7 +7,7 @@ import RunScheduleEditor from '../src/components/RunScheduleEditor';
 import { PreferencesContext } from '../src/app/preferences-context';
 import '../src/index.css';
 
-function Fixture() {
+export default function Fixture() {
   const [tick, setTick] = useState(0);
   const [dark, setDark] = useState(false);
   const [rules, setRules] = useState([]);

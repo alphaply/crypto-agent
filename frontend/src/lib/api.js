@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { createSseParser } from './sse';
 
 export const api = axios.create({
   baseURL: '/api',
@@ -16,7 +17,10 @@ function normalizeApiError(error) {
   }
 
   const prefix = status ? `Request failed (${status})` : 'Request failed';
-  return new Error(detail && detail !== error.message ? `${prefix}: ${detail}` : `${prefix}: ${detail}`);
+  const normalized = new Error(`${prefix}: ${detail}`);
+  normalized.response = error.response;
+  normalized.code = error.code;
+  return normalized;
 }
 
 // 全局加载进度条：通过自定义事件与 GlobalLoader 通信
@@ -57,19 +61,6 @@ export async function fullImport(data, writeEnv = false) {
   return response.data;
 }
 
-function consumeSseBuffer(buffer, onEvent) {
-  const parts = buffer.split('\n\n');
-  const remainder = parts.pop() || '';
-  for (const part of parts) {
-    const lines = part.split('\n').filter((line) => line.startsWith('data:'));
-    for (const line of lines) {
-      const payload = line.slice(5).trim();
-      if (payload) onEvent(JSON.parse(payload));
-    }
-  }
-  return remainder;
-}
-
 export async function streamSse(url, token, onEvent, signal, body = null) {
   const response = await fetch(url, {
     headers: {
@@ -89,18 +80,16 @@ export async function streamSse(url, token, onEvent, signal, body = null) {
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
+  const consume = createSseParser(onEvent);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      consume(decoder.decode(value, { stream: true }));
     }
-    buffer += decoder.decode(value, { stream: true });
-    buffer = consumeSseBuffer(buffer, onEvent);
-  }
-
-  if (buffer.trim()) {
-    consumeSseBuffer(`${buffer}\n\n`, onEvent);
+    consume(decoder.decode(), true);
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }

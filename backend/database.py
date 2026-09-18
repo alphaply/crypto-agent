@@ -729,7 +729,14 @@ def get_closed_positions_7d(
 
             for r in cursor.execute(query, params).fetchall():
                 cycle = json.loads(r['payload'] or '{}')
+                fees = json.loads(r["fees_json"] or "{}")
+                currency = cycle.get('settlement_currency', 'USDT')
+                fees_complete = bool(fees) and not cycle.get('missing_fees', True)
+                gross = float(r["realized_pnl"]) if r["realized_pnl"] is not None else None
+                net = gross - fees.get(currency, 0) if gross is not None and fees_complete and set(fees) <= {currency} else None
                 results.append({
+                    "net_realized_pnl": net,
+                    "fees_complete": fees_complete,
                     "position_id": r["position_id"],
                     "opened_at": datetime.fromtimestamp(r["opened_at_ms"] / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),
                     "closed_at": datetime.fromtimestamp(r["closed_at_ms"] / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),

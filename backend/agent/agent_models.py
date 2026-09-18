@@ -44,6 +44,7 @@ class OpenOrderStrategy(OpenOrderReal):
     take_profit: float = Field(gt=0, allow_inf_nan=False, description="止盈触发价")
     valid_duration_hours: int = Field(24, gt=0, le=168, description="挂单有效期(小时)，过期自动撤销")
 
+
 class CloseOrder(BaseModel):
     """平仓的精确参数"""
     action: Literal["CLOSE"] = Field("CLOSE", description="固定为 CLOSE")
@@ -65,3 +66,5 @@ class AgentState(BaseModel):
     full_analysis: str = ""
     human_message: Optional[str] = None
     active_agent: Optional[str] = "MASTER"
+    active_model_idx: Optional[int] = 0
+    active_model_name: Optional[str] = ""

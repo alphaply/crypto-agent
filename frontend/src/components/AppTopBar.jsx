@@ -119,7 +119,7 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions, extra
         ) : (
           <Space size={8} className="app-topbar__mobile-actions">
             {extraActions}
-            <Button className="app-topbar__menu" icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)} />
+            <Button className="app-topbar__menu" aria-label={t('openConsole')} icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)} />
           </Space>
         )}
       </header>

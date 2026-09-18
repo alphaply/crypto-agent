@@ -3096,3 +3096,91 @@ a {
     padding: 12px;
   }
 }
+
+/* Workbench refinements: readable surfaces, accessible controls and bounded scrolling. */
+:root { --radius-panel: 14px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+::selection { background: var(--accent-soft); color: var(--text-primary); }
+.panel-card { border-radius: var(--radius-panel); }
+.app-topbar__logo::before { content: ''; display: inline-block; width: 9px; height: 22px; border-radius: 4px; background: var(--accent); vertical-align: -4px; margin-right: 10px; }
+.dashboard-hero .ant-typography-secondary { color: var(--text-secondary); }
+.metric-grid, .dashboard-fact-grid { font-variant-numeric: tabular-nums; }
+.intelligence-rail { max-height: calc(100dvh - 100px); overflow-y: auto; scrollbar-width: thin; padding-right: 3px; }
+.x-chat-shell { border-radius: 16px; box-shadow: none; }
+.x-chat-sidebar { background: var(--bg-surface-strong); }
+.x-chat-sidebar-list { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.x-chat-sidebar-list .ant-conversations { flex: 1; min-height: 0; height: auto; }
+.x-chat-main-body { max-width: 1100px; width: 100%; margin: 0 auto; }
+.x-chat-main-heading > .ant-space-item { min-width: 0; }
+.x-chat-main-header > .ant-space:last-child { flex-shrink: 0; }
+.x-chat-main-titles .ant-typography { max-width: 100%; }
+.x-chat-window .ant-bubble-list { overscroll-behavior: contain; scrollbar-gutter: stable; }
+.x-bubble-ai .ant-bubble-content { box-shadow: none; border: 0; padding: 14px 4px; line-height: 1.8; }
+.x-bubble-user .ant-bubble-content { border-radius: 16px 16px 4px 16px; }
+.chat-answer-content { overflow-wrap: anywhere; }
+.chat-answer-content pre { max-width: 100%; overflow: auto; }
+.chat-composer-hint { text-align: center; padding-top: 7px; font-size: 11px; color: var(--text-muted); }
+.chat-starters { display: grid; gap: 10px; width: min(100%, 560px); margin: 20px auto 0; }
+.chat-starters .ant-btn { height: auto; min-height: 44px; padding: 10px 16px; white-space: normal; text-align: left; }
+.chat-run-progress { flex-shrink: 0; }
+.chat-run-progress .ant-collapse { background: var(--bg-surface-strong); border-color: var(--border-soft); }
+.chat-run-summary { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); }
+.chat-run-summary strong { color: var(--text-primary); font-weight: 500; }
+.chat-run-time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.chat-run-timeline { margin: 0; padding: 0; list-style: none; max-height: 160px; overflow: auto; }
+.chat-run-timeline li { display: flex; gap: 14px; font-size: 12px; padding: 5px 0; }
+.chat-run-timeline time { min-width: 52px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.chat-run-note { color: var(--text-muted); border-top: 1px solid var(--border-soft); margin-top: 6px; }
+.prompt-config-editor.is-expanded { position: fixed; inset: 12px; z-index: 100; padding: 12px; background: var(--bg-base); overflow: auto; border: 1px solid var(--border-soft); border-radius: 14px; }
+.prompt-editor__textarea:disabled { opacity: .55; }
+.prompt-editor-wrapper { min-width: 0; }
+.prompt-editor__textarea { tab-size: 2; }
+.admin-page .ant-tabs-nav { margin-bottom: 20px; }
+.admin-page .ant-tabs-tab { padding: 13px 2px; }
+@media (min-width: 1200px) {
+  .page-wrap { padding: 24px 32px; }
+  .x-chat-shell { grid-template-columns: 264px minmax(0, 1fr); }
+}
+@media (max-width: 1150px) { .intelligence-rail { max-height: none; overflow: visible; } }
+@media (max-width: 767px) {
+  .app-topbar { min-height: 56px; padding: 8px 12px; }
+  .app-topbar .ant-btn { min-width: 36px; min-height: 36px; }
+  .page-wrap:has(.chat-console-page) { padding-inline: 0; }
+  .chat-console-page { height: calc(100dvh - 56px); gap: 4px; }
+  .x-chat-shell { border: 0; border-radius: 0; }
+  .x-chat-main-body { padding: 0 12px max(8px, env(safe-area-inset-bottom)); gap: 8px; }
+  .x-chat-main-header { padding: 10px 12px; }
+  .x-chat-main-heading { flex: 1; overflow: hidden; }
+  .x-chat-main-titles h4.ant-typography { font-size: 15px; }
+  .x-chat-main-titles .ant-tag { display: none; }
+  .x-chat-main-header .ant-btn { min-width: 36px; min-height: 36px; }
+  .x-chat-sender-wrap textarea { font-size: 16px; }
+  .chat-run-summary { gap: 5px; font-size: 11px; }
+  .chat-run-summary .ant-tag { display: none; }
+  .chat-composer-hint { font-size: 10px; padding-top: 4px; }
+  .chat-create-modal { top: 12px; padding-bottom: 12px; max-width: calc(100vw - 20px); }
+  .chat-create-modal .ant-modal-body { max-height: calc(100dvh - 170px); overflow-y: auto; overscroll-behavior: contain; }
+  .prompt-config-editor, .config-editor { grid-template-columns: minmax(0, 1fr); }
+  .prompt-file-list { max-height: 160px; overflow-y: auto; }
+  .prompt-config-editor.is-expanded { inset: 0; padding: 8px; border-radius: 0; }
+  .prompt-config-editor.is-expanded .prompt-sidebar-card { display: none; }
+  .prompt-editor { max-height: 60dvh; }
+  .prompt-editor__textarea, .prompt-editor__highlight { font-size: 14px; }
+  .admin-page .ant-card-head { padding: 0 12px; }
+  .admin-page .ant-card-body { padding: 12px; }
+  .admin-page .ant-card-head-wrapper { flex-wrap: wrap; gap: 8px; padding-block: 10px; }
+  .admin-page .ant-card-head-title { white-space: normal; }
+  .tool-approval-card { flex-wrap: wrap; gap: 8px; }
+  .tool-approval-card .ant-alert-action { margin-left: 0; }
+  .provider-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+.x-chat-window .ant-bubble { min-width: 0; }
+.x-chat-window .ant-bubble-content { min-width: 0; max-width: 100%; }
+.chat-message-content { width: 100%; max-width: 100%; min-width: 0; }
+.chat-message-content > * { min-width: 0; }
+.chat-advanced-options summary { cursor: pointer; color: var(--text-secondary); padding: 8px 0; }
+.chat-advanced-options[open] summary { margin-bottom: 10px; }

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from backend.utils.polymarket import PolymarketSettings
@@ -158,6 +158,8 @@ class ConfigAgentPayload(BaseModel):
     extra_body: dict = Field(default_factory=dict)
     system_prompt_role: Literal["system", "user"] | None = None
     llm_provider_id: str | None = None
+    fallback_llm_provider_ids: list[str] = Field(default_factory=list)
+    fallback_models: list[dict[str, Any]] = Field(default_factory=list)
     summarizer_provider_id: str | None = None
     exchange_profile_id: str | None = None
     summarizer: AgentSummarizerPayload = Field(default_factory=AgentSummarizerPayload)

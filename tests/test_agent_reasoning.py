@@ -219,3 +219,139 @@ def test_collect_agent_reasoning_reports_hidden_reasoning_usage():
     assert _collect_agent_reasoning_token_count([message]) == 5
     assert "5 个推理 token" in reasoning
     assert "没有返回可展示的思考摘要" in reasoning
+
+
+def test_empty_and_exhausted_responses_are_not_successful():
+    import pytest
+    from backend.utils.llm_utils import LLMInvocationError
+    for chunks in [[], [AIMessageChunk(content="")], [AIMessageChunk(content="partial", response_metadata={"finish_reason": "length"})]]:
+        class Model:
+            def stream(self, *args, **kwargs):
+                yield from chunks
+        with pytest.raises(LLMInvocationError):
+            _stream_agent_response(Model(), [HumanMessage(content="analyze")], configurable={})
+
+
+def test_failure_is_saved_without_summary_request_or_success_progress():
+    import pytest
+    progress = []
+    state = AgentState(symbol="BTC/USDT", messages=[AIMessage(content="Error: disconnected", additional_kwargs={"invocation_failed": True})], market_context={}, account_context={}, history_context=[])
+    with patch("backend.agent.agent_graph.database.save_summary") as save, patch("backend.agent.agent_graph.summarize_content") as summarize, patch("backend.agent.agent_graph.update_turn_memory") as memory:
+        with pytest.raises(RuntimeError, match="disconnected"):
+            finalize_node(state, {"configurable": {"progress_callback": progress.append}})
+    assert "disconnected" in save.call_args.args[2]
+    summarize.assert_not_called()
+    memory.assert_not_called()
+    assert progress[-1]["phase"] == "failed"
+
+
+def test_agent_retries_partial_disconnection_without_replaying_tools():
+    import httpx
+    class FlakyModel(_BindableModel):
+        calls = 0
+        def bind_tools(self, tools):
+            return self
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield AIMessageChunk(content="", tool_call_chunks=[{"id": "discard", "name": "trade_tool", "args": "{}", "index": 0}])
+                raise httpx.RemoteProtocolError("peer closed connection")
+            yield AIMessageChunk(content="recovered")
+    model = FlakyModel()
+    progress = []
+    state = AgentState(symbol="BTC/USDT", messages=[HumanMessage(content="analyze")], market_context={}, account_context={}, history_context=[])
+    with patch("backend.agent.agent_graph.refresh_decision_context", side_effect=lambda state, config: state), patch("backend.agent.agent_graph.build_chat_model", return_value=model), patch("backend.agent.agent_graph.get_trade_tools_for_mode", return_value=[]), patch("backend.agent.agent_graph.run_trade_tool") as trade, patch("backend.utils.llm_utils.get_llm_max_retries", return_value=2), patch("backend.utils.llm_utils.time.sleep"):
+        result = agent_node(state, {"configurable": {"agent_config": {"model": "test"}, "progress_callback": progress.append}})
+    assert model.calls == 2
+    assert result.messages[-1].content == "recovered"
+    assert not result.messages[-1].tool_calls
+    trade.assert_not_called()
+    assert any(event.get("retry_attempt") == 2 for event in progress)
+
+
+def test_empty_message_retries_until_budget_exhausted():
+    import pytest
+    from unittest.mock import Mock
+    from backend.utils.llm_utils import invoke_with_retry, LLMInvocationError
+    class EmptyModel:
+        calls = 0
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            yield AIMessageChunk(content="")
+    model = EmptyModel()
+    with patch("backend.utils.llm_utils.get_llm_max_retries", return_value=2), patch("backend.utils.llm_utils.time.sleep") as sleep:
+        with pytest.raises(LLMInvocationError) as caught:
+            invoke_with_retry(lambda: _stream_agent_response(model, [], configurable={}), logger=Mock(), context="test")
+    assert model.calls == 3
+    assert caught.value.attempts == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+
+
+def test_output_limit_does_not_retry_identical_request():
+    import pytest
+    from unittest.mock import Mock
+    from backend.utils.llm_utils import invoke_with_retry, LLMInvocationError
+    class LimitedModel:
+        calls = 0
+        def stream(self, *args, **kwargs):
+            self.calls += 1
+            yield AIMessageChunk(content="", response_metadata={"finish_reason": "length"})
+    model = LimitedModel()
+    with patch("backend.utils.llm_utils.get_llm_max_retries", return_value=2), patch("backend.utils.llm_utils.time.sleep") as sleep:
+        with pytest.raises(LLMInvocationError):
+            invoke_with_retry(lambda: _stream_agent_response(model, [], configurable={}), logger=Mock(), context="test")
+    assert model.calls == 1
+    sleep.assert_not_called()
+
+
+def test_length_with_complete_tool_call_continues_and_saves_warning():
+    import json
+    from backend.agent.agent_graph import should_continue, tools_node
+    args = {"orders": [{"action": "BUY_LIMIT", "amount": 0.3, "entry_price": 2476, "reason": "test", "stop_loss": 2462, "take_profit": 2506}]}
+    class Model:
+        calls = 0
+        def bind_tools(self, tools):
+            return self
+        def stream(self, *a, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                raw = json.dumps(args)
+                yield AIMessageChunk(content="行情解析", tool_call_chunks=[{"id": "call-trace", "name": "open_position_real", "args": raw[:30], "index": 0}])
+                yield AIMessageChunk(content="\n交易决策：当", tool_call_chunks=[{"id": None, "name": None, "args": raw[30:], "index": 0}], response_metadata={"finish_reason": "length"})
+            else:
+                yield AIMessageChunk(content="工具执行结果已确认", response_metadata={"finish_reason": "stop"})
+    model = Model()
+    state = AgentState(symbol="ETH/USDT", messages=[HumanMessage(content="analyze")], market_context={}, account_context={}, history_context=[])
+    progress = []
+    config = {"configurable": {"agent_config": {"mode": "REAL", "model": "test"}, "progress_callback": progress.append}}
+    with patch("backend.agent.agent_graph.build_chat_model", return_value=model), patch("backend.agent.agent_graph.run_trade_tool", return_value="test execution result") as trade, patch("backend.agent.agent_graph.database.save_summary") as save, patch("backend.agent.agent_graph.summarize_content", return_value="summary"), patch("backend.agent.agent_graph.update_turn_memory"), patch("backend.utils.llm_utils.time.sleep") as sleep:
+        state = agent_node(state, config)
+        assert should_continue(state) == "tools"
+        assert state.messages[-1].response_metadata['finish_reason'] == 'length'
+        assert state.messages[-1].additional_kwargs['output_warning']
+        assert model.calls == 1
+        state = tools_node(state, config)
+        state = agent_node(state, config)
+        assert should_continue(state) == "finalize"
+        finalize_node(state, config)
+    trade.assert_called_once_with("open_position_real", args, "unknown", "ETH/USDT")
+    sleep.assert_not_called()
+    assert model.calls == 2
+    assert "[输出提示]" in save.call_args.args[2]
+    assert "工具执行结果已确认" in save.call_args.args[2]
+    assert progress[-1]['phase'] == 'completed'
+
+
+def test_length_rejects_auto_repaired_or_partially_complete_tool_batch():
+    import pytest
+    from backend.utils.llm_utils import LLMInvocationError
+    for raw in ['{"amount":0.3', '{"reason":"unfinished', '{"amount":0.3} trailing']:
+        for extra_complete_call in [False, True]:
+            class Model:
+                def stream(self, *args, **kwargs):
+                    calls = [{"id": "broken", "name": "open_position_real", "args": raw, "index": 0}]
+                    if extra_complete_call:
+                        calls.insert(0, {"id": "complete", "name": "close_position_real", "args": '{}', "index": 1})
+                    yield AIMessageChunk(content="partial", tool_call_chunks=calls, response_metadata={"finish_reason": "length"})
+            with pytest.raises(LLMInvocationError):
+                _stream_agent_response(Model(), [], configurable={})
