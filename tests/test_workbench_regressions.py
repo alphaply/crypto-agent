@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from backend.app.core.security import JWT_ALGORITHM, JWT_SECRET, create_access_token
 from backend.app.main import app
 from backend.app.services import database_export
-from backend.utils.indicators import calc_atr, calc_rsi, wilder_rma
+from backend.utils.indicators import calc_adx, calc_atr, calc_rsi, wilder_rma
 
 
 def test_wilder_seed_and_recurrence():
@@ -28,6 +28,18 @@ def test_rsi_flat_and_monotonic_series():
     assert flat.iloc[14:].eq(50).all()
     assert calc_rsi(pd.Series(np.arange(30, dtype=float))).iloc[-1] == 100
     assert calc_rsi(pd.Series(np.arange(30, 0, -1, dtype=float))).iloc[-1] == 0
+
+
+def test_rsi_and_adx_match_hand_calculated_wilder_seeds():
+    rsi = calc_rsi(pd.Series([1., 2., 1., 3., 2.]), period=3)
+    assert rsi.iloc[3] == pytest.approx(75)
+    assert rsi.iloc[4] == pytest.approx(100 - 100 / 2.2)
+    frame = pd.DataFrame({'high': [10, 12, 13, 12, 15, 14],
+                          'low': [8, 9, 10, 8, 12, 11],
+                          'close': [9, 11, 12, 10, 14, 12]})
+    adx, _, _ = calc_adx(frame, period=3)
+    assert adx.iloc[:4].isna().all()
+    assert adx.iloc[4] == pytest.approx((100 + 0 + 900 / 17) / 3)
 
 
 def test_download_cookie_scope_expiry_and_consistent_snapshot(tmp_path, monkeypatch):

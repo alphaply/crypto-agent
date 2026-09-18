@@ -38,8 +38,10 @@ Prompt 可搜索、专注编辑、快捷保存；保存结果与未保存状态�
 - `uv run pytest -q`：完整后端回归（含新增 Wilder 边界、WAL 快照、下载鉴权与过期、Prompt 路径限制测试）。
 - `npm run build --prefix frontend`、`npm run lint --prefix frontend`、`npm run test:chat --prefix frontend`。
 - 真实浏览器读取线上公开看板；本地隔离 SQLite、关闭调度器，使用明确标注的模拟聊天事件验证桌面与 390px 手机布局、创建临时会话、阶段可视化、Prompt 快捷保存/专注编辑及清理预览。未向实际模型发出测试交易指令。
-- ECharts 按需注册后相关资源由约 1,141 kB 降至 544 kB（gzip 374 kB → 182 kB）；仍有 React/Ant Design 大包构建提醒，不影响构建通过。
+- ECharts 按需注册后相关资源由约 1,141 kB 降至 548 kB（gzip 374 kB → 185 kB）；仍有 React/Ant Design 大包构建提醒，不影响构建通过。
 
 镜像发布目标：`alphaply712/crypto-agent:latest`。推送镜像不会自动替换线上正在运行的容器。
 
 验证结果：346 项后端测试通过（另有 16 个 subtests），17 项前端测试通过；生产构建、ESLint 与 `git diff --check` 通过。现有模型连接测试有一个返回值风格警告。对本地 218.79 MiB 数据库的一致性快照实测约 0.728 秒（仅本机磁盘准备耗时，不代表公网下载速度）。
+
+发布前依赖审计发现 15 项已知问题，已通过兼容版本更新锁定依赖；官方 npm registry 审计结果为 0 vulnerabilities。更新后的构建、lint 和 17 项前端测试重新通过，并补充 RSI/ADX 手算参考值回归测试。
