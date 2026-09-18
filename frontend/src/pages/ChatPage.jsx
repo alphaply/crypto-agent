@@ -301,6 +301,7 @@ export default function ChatPage({ token }) {
   const [run, setRun] = useState(null);
   const [sessionQuery, setSessionQuery] = useState('');
   const sendingRef = useRef(false);
+  const pendingQuestionRef = useRef('');
   const [sessionLoading, setSessionLoading] = useState(false);
   const [streamStatus, setStreamStatus] = useState('');
   const [streamFailure, setStreamFailure] = useState(null);
@@ -452,7 +453,8 @@ export default function ChatPage({ token }) {
       setSessionLoading(true);
       setMessages([]);
       setRun(null);
-      setInput('');
+      setInput(pendingQuestionRef.current);
+      pendingQuestionRef.current = '';
       try {
         const response = await api.get(`/chat/sessions/${currentSessionId}`);
         if (!mounted) return;
@@ -714,7 +716,7 @@ export default function ChatPage({ token }) {
 
   const handleSend = async (value = input, { appendUserMessage = true, retryBackend = false, replaceLastUserMessage = false } = {}) => {
     if (!value.trim() || streaming || sendingRef.current || sessionLoading) return;
-    if (!currentSessionId) { openCreateSessionModal(); return; }
+    if (!currentSessionId) { pendingQuestionRef.current = value; openCreateSessionModal(); return; }
     sendingRef.current = true;
     const message = value.trim();
     const replacingFailedMessage = replaceLastUserMessage || Boolean(editingFailedMessage);
