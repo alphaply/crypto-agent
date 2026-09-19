@@ -21,6 +21,7 @@ from backend.database import get_short_memory, init_db
 from backend.utils.logger import setup_logger
 from backend.utils.llm_utils import sync_langsmith_environment
 from backend.utils.market_data import MarketTool
+from backend.utils.run_schedule import normalize_dca_freq, parse_dca_time
 
 
 load_dotenv()
@@ -199,29 +200,6 @@ def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> 
         conn.commit()
 
 
-def normalize_dca_freq(raw_freq):
-    freq = str(raw_freq or "1d").strip().lower()
-    if freq in {"1w", "weekly", "week", "w"}:
-        return "1w"
-    return "1d"
-
-
-def parse_dca_time(raw_time):
-    text = str(raw_time or "08:00").strip()
-    if not text:
-        return 8, 0
-
-    try:
-        parts = text.split(":")
-        hour = int(parts[0])
-        minute = int(parts[1]) if len(parts) > 1 else 0
-    except Exception:
-        return 8, 0
-
-    hour = min(max(hour, 0), 23)
-    minute = min(max(minute, 0), 59)
-    return hour, minute
-
 
 def parse_daily_summary_time(raw_time: str | None = None) -> tuple[int, int]:
     text = str(raw_time or os.getenv("DAILY_SUMMARY_TIME", DAILY_SUMMARY_DEFAULT_TIME)).strip()
@@ -297,6 +275,15 @@ def check_dca_executed(config_id, now, freq="1d"):
         return False
 
 
+def dca_was_dispatched(config_id, now, freq):
+    last_run = _last_run_times.get(config_id)
+    if not last_run:
+        return False
+    if normalize_dca_freq(freq) == "1w":
+        return last_run.isocalendar()[:2] == now.isocalendar()[:2]
+    return last_run.date() == now.date()
+
+
 def is_time_to_run(config, now):
     mode = config.get("mode", "STRATEGY").upper()
     config_id = config.get("config_id")
@@ -315,16 +302,8 @@ def is_time_to_run(config, now):
             if now.weekday() != target_weekday:
                 return False
 
-        last_run = _last_run_times.get(config_id)
-        if last_run:
-            if freq == "1d" and last_run.date() == now.date():
-                return False
-            if (
-                freq == "1w"
-                and last_run.year == now.year
-                and last_run.isocalendar()[1] == now.isocalendar()[1]
-            ):
-                return False
+        if dca_was_dispatched(config_id, now, freq):
+            return False
 
         if check_dca_executed(config_id, now, freq):
             return False

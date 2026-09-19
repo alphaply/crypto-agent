@@ -99,6 +99,7 @@ def test_dashboard_data_includes_spot_dca_configs(tmp_path, monkeypatch):
         )
         """
     )
+    conn.execute("CREATE TABLE orders (config_id TEXT, trade_mode TEXT, timestamp TEXT)")
     conn.commit()
     conn.close()
 

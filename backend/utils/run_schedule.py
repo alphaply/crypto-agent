@@ -104,3 +104,62 @@ def next_scheduled_run(config, now):
             return local
         candidate += timedelta(minutes=1)
     return None
+
+
+def normalize_dca_freq(raw_freq):
+    return '1w' if str(raw_freq or '1d').strip().lower() in {'1w', 'weekly', 'week', 'w'} else '1d'
+
+
+def parse_dca_time(raw_time):
+    try:
+        parts = str(raw_time or '08:00').strip().split(':')
+        return min(23, max(0, int(parts[0]))), min(59, max(0, int(parts[1]) if len(parts) > 1 else 0))
+    except (ValueError, TypeError):
+        return 8, 0
+
+
+def schedule_preview(config, now, *, scheduler_enabled=True, dca_executed=False):
+    """Describe nominal dispatch times, not a guarantee of worker completion."""
+    mode = str(config.get('mode', 'STRATEGY')).upper()
+    state = 'scheduled' if scheduler_enabled and config.get('enabled', True) else 'paused'
+    if mode == 'SPOT_DCA':
+        weekly = normalize_dca_freq(config.get('dca_freq')) == '1w'
+        hour, minute = parse_dca_time(config.get('dca_time'))
+        frequency = f"{'Weekly' if weekly else 'Daily'} {hour:02d}:{minute:02d}"
+        if weekly:
+            frequency += f" · {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][int(config.get('dca_weekday', 0))]}"
+        next_run = None
+        # Follow the scheduler's same-day catch-up behavior after a missed slot.
+        for offset in range(15):
+            date = now.date() + timedelta(days=offset)
+            if weekly and date.weekday() != int(config.get('dca_weekday', 0)):
+                continue
+            if dca_executed and (date.isocalendar()[:2] == now.date().isocalendar()[:2] if weekly else offset == 0):
+                continue
+            naive = datetime.combine(date, datetime.min.time()).replace(hour=hour, minute=minute)
+            target = now.tzinfo.localize(naive) if hasattr(now.tzinfo, 'localize') else naive.replace(tzinfo=now.tzinfo)
+            candidate = max(target, now.replace(second=0, microsecond=0) + timedelta(minutes=1))
+            if candidate.date() != date:
+                continue
+            next_run = candidate
+            break
+        rule_name = 'DCA'
+        rule_index = None
+    else:
+        policy = effective_schedule(config, now)
+        frequency = f"{policy['interval']}m"
+        rule_name, rule_index = policy['name'], policy['rule_index']
+        next_run = next_scheduled_run(config, now)
+    if state == 'paused':
+        next_run = None
+    return {
+        'state': state,
+        'frequency': frequency,
+        'rule_name': rule_name,
+        'rule_index': rule_index,
+        'timezone': str(now.tzinfo),
+        'next_run_at': next_run.isoformat() if next_run else None,
+        'next_run': next_run.strftime('%m-%d %H:%M') if next_run else '—',
+        'rules': (config.get('run_schedule') or []) if mode != 'SPOT_DCA' else [],
+        'default_interval': effective_schedule({**config, 'run_schedule': []}, now)['interval'],
+    }

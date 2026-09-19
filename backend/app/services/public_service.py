@@ -3,6 +3,7 @@ from backend.database import get_latest_news_snapshot
 
 from backend.app.services.dashboard_service import (
     build_dashboard_overview,
+    get_dashboard_data,
     build_history_payload,
     get_daily_summaries_payload,
     get_short_memories_payload,
@@ -96,11 +97,8 @@ def build_public_workspace_payload(config_id: str, timeframe: str = "1h") -> dic
         raise FileNotFoundError(f"Workspace not found: {config_id}")
 
     symbol = cfg.get("symbol")
-    overview = build_dashboard_overview(symbol=symbol)
-    agent = next(
-        (item for item in overview.get("agent_summaries", []) if item.get("config_id") == config_id),
-        None,
-    )
+    agents = get_dashboard_data(symbol, config_id=config_id)
+    agent = agents[0] if agents else None
     if not agent:
         raise FileNotFoundError(f"Workspace not found: {config_id}")
 

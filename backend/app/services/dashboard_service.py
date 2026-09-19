@@ -36,6 +36,7 @@ from backend.database import (
     upsert_spot_order_fill,
 )
 from backend.utils.market_data import MarketTool
+from backend.utils.run_schedule import schedule_preview, normalize_dca_freq
 
 from backend.app.services.common import TZ_CN, get_scheduler_status, get_symbol_specific_status, list_symbols, logger
 
@@ -433,38 +434,7 @@ def build_config_compare_rows(symbol: str, agent_summaries: list[dict]) -> list[
 
 
 def calculate_next_run(config, latest_summary=None):
-    mode = str(config.get("mode", "STRATEGY")).upper()
-    now = datetime.now(TZ_CN)
-
-    if mode in ["REAL", "STRATEGY"]:
-        default_interval = 60 if mode == "STRATEGY" else 15
-        interval = int(config.get("run_interval", default_interval))
-        if interval < 15:
-            interval = 15
-        minutes_since_midnight = now.hour * 60 + now.minute
-        next_total_minutes = ((minutes_since_midnight // interval) + 1) * interval
-        next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_total_minutes)
-        return next_run.strftime("%H:%M")
-
-    if mode == "SPOT_DCA":
-        dca_time_str = config.get("dca_time", "08:00")
-        try:
-            hour, minute = map(int, dca_time_str.split(":"))
-        except Exception:
-            hour, minute = 8, 0
-
-        next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if config.get("dca_freq", "1d") == "1w":
-            target_weekday = int(config.get("dca_weekday", 0))
-            days_ahead = target_weekday - now.weekday()
-            if days_ahead < 0 or (days_ahead == 0 and now > next_run):
-                days_ahead += 7
-            next_run += timedelta(days=days_ahead)
-        elif now > next_run:
-            next_run += timedelta(days=1)
-        return next_run.strftime("%m-%d %H:%M")
-
-    return "N/A"
+    return schedule_preview(config, datetime.now(TZ_CN), scheduler_enabled=get_scheduler_status())["next_run"]
 
 
 def calculate_dca_stats(config_id, force_sync=False):
@@ -649,7 +619,7 @@ def calculate_dca_stats(config_id, force_sync=False):
         return None
 
 
-def get_dashboard_data(symbol, page=1, per_page=10):
+def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
     try:
         with get_db_conn() as conn:
             configs = global_config.get_all_symbol_configs()
@@ -657,6 +627,7 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 conf
                 for conf in configs
                 if conf["symbol"] == symbol
+                and (config_id is None or conf.get("config_id") == config_id)
                 and conf.get("enabled", True)
                 and str(conf.get("mode", "STRATEGY")).upper() in DASHBOARD_VISIBLE_MODES
             ]
@@ -704,10 +675,22 @@ def get_dashboard_data(symbol, page=1, per_page=10):
                 summary_dict["model"] = model_name
                 summary_dict["mode"] = mode
                 summary_dict["enabled"] = enabled
-                summary_dict["next_run"] = calculate_next_run(config, latest_summary_row)
-                default_interval = 60 if mode == "STRATEGY" else 15
-                interval = config.get("run_interval", default_interval)
-                summary_dict["freq"] = f"{interval}m"
+                now = datetime.now(TZ_CN)
+                dca_executed = False
+                if mode == "SPOT_DCA":
+                    start = now - timedelta(days=now.weekday()) if normalize_dca_freq(config.get("dca_freq")) == "1w" else now
+                    row = conn.execute(
+                        "SELECT count(*) FROM orders WHERE config_id = ? AND trade_mode = 'SPOT_DCA' AND timestamp >= ?",
+                        (config_id, start.strftime("%Y-%m-%d 00:00:00")),
+                    ).fetchone()
+                    dca_executed = bool(row[0])
+                    from backend.app.core.scheduler import dca_was_dispatched
+                    dca_executed = dca_executed or dca_was_dispatched(config_id, now, config.get("dca_freq"))
+                schedule = schedule_preview(config, now, scheduler_enabled=get_scheduler_status(), dca_executed=dca_executed)
+                summary_dict["schedule"] = schedule
+                summary_dict["next_run"] = schedule["next_run"]
+                summary_dict["next_run_at"] = schedule["next_run_at"]
+                summary_dict["freq"] = schedule["frequency"]
 
                 summary_dict["leverage"] = global_config.get_leverage(config_id)
                 summary_dict["market_timeframes"] = resolve_market_timeframes(config)
@@ -744,6 +727,8 @@ def build_dashboard_overview(symbol: str | None = None, page: int = 1):
     agent_summaries = get_dashboard_data(current_symbol, page)
     symbol_mode, symbol_freq, symbol_enabled = get_symbol_specific_status(current_symbol)
     return {
+        "generated_at": datetime.now(TZ_CN).isoformat(),
+        "timezone": str(TZ_CN),
         "symbols": symbols,
         "current_symbol": current_symbol,
         "agent_summaries": agent_summaries,

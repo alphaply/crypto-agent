@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "test:chat": "node --test tests/chatStreamLifecycle.test.js tests/markdown.test.js tests/reasoning.test.js tests/thinking.test.js tests/sse.test.js",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:dashboard": "node --test tests/dashboard.test.js"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.1",

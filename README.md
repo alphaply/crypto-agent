@@ -244,3 +244,5 @@ uv run backend/utils/test_agent_connection.py
 - 指标采用 SMA 初始化的 Wilder 平滑；剔除异常 OHLCV、提示时间缺口及陈旧数据，成交量倍数使用之前 20 根已收盘 K 线作基准。修正不等同于胜率保证，需要独立样本和后续实盘评估。
 
 详见 [工作台改造与验证记录](docs/WORKBENCH_UPGRADE.md)。
+
+Dashboard 已重做交易总览与运行计划区域：下一次运行遵循实际分时段规则，并显示日期、时区、当前频率与暂停状态；自动更新完整快照，行情失败保留旧数据并明确提示。详见 [Dashboard 修复与验证](docs/DASHBOARD_REFRESH.md)。

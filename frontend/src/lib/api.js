@@ -25,17 +25,17 @@ function normalizeApiError(error) {
 
 // 全局加载进度条：通过自定义事件与 GlobalLoader 通信
 api.interceptors.request.use((config) => {
-  window.dispatchEvent(new Event('global-loading-start'));
+  if (!config.silent) window.dispatchEvent(new Event('global-loading-start'));
   return config;
 });
 
 api.interceptors.response.use(
   (response) => {
-    window.dispatchEvent(new Event('global-loading-end'));
+    if (!response.config?.silent) window.dispatchEvent(new Event('global-loading-end'));
     return response;
   },
   (error) => {
-    window.dispatchEvent(new Event('global-loading-end'));
+    if (!error.config?.silent) window.dispatchEvent(new Event('global-loading-end'));
     return Promise.reject(normalizeApiError(error));
   },
 );

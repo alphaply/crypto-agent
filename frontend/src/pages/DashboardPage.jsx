@@ -32,10 +32,13 @@ import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
 import PositionCycleHistory from '../components/PositionCycleHistory';
 import EquityCompareChart from '../components/EquityCompareChart';
-import { EditOutlined } from '@ant-design/icons';
+import { EditOutlined, ReloadOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
+import { workspaceSignature as getWorkspaceSignature, selectDashboardTab } from '../lib/dashboard';
 import { splitThinkingContent } from '../lib/thinking';
 import { usePreferences } from '../app/usePreferences';
+import ScheduleDetails from '../components/ScheduleDetails';
+import './DashboardPage.css';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -248,9 +251,9 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
                 <Skeleton active title={false} paragraph={{ rows: 2 }} className="agent-overview-skeleton" />
               ) : (
                 <>
-                  <FactGrid items={keyFacts} />
+                  {workspace ? <FactGrid items={keyFacts} /> : <Text type="secondary">{t('loading')} / —</Text>}
                   <span className="agent-overview-footer">
-                    <Text type="secondary">{t('nextRun')}: {agent.next_run || '-'}</Text>
+                    <Text type="secondary">{t('nextRun')}: {agent.schedule?.state === 'paused' ? '—' : agent.next_run || '-'} · {agent.freq} · {agent.schedule?.timezone || ''}</Text>
                   </span>
                 </>
               )}
@@ -474,7 +477,8 @@ function PaginatedOrderList({ orders, t }) {
   const [currentPage, setCurrentPage] = useState(1);
   if (!orders?.length) return <Empty description={t('noData')} />;
   const totalPages = Math.ceil(orders.length / ORDERS_PER_PAGE);
-  const pageOrders = orders.slice((currentPage - 1) * ORDERS_PER_PAGE, currentPage * ORDERS_PER_PAGE);
+  const safePage = Math.min(currentPage, totalPages);
+  const pageOrders = orders.slice((safePage - 1) * ORDERS_PER_PAGE, safePage * ORDERS_PER_PAGE);
   return (
     <div className="paginated-order-list">
       <div className="paginated-order-cards">
@@ -484,7 +488,7 @@ function PaginatedOrderList({ orders, t }) {
         <div className="order-pagination">
           <Pagination
             size="small"
-            current={currentPage}
+            current={safePage}
             total={orders.length}
             pageSize={ORDERS_PER_PAGE}
             onChange={setCurrentPage}
@@ -856,7 +860,7 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
           <TaskExecutionPanel execution={agent.execution} locale={locale} />
           <Descriptions size="small" column={1} bordered>
             <Descriptions.Item label={t('executedAt')}>{agent.timestamp || '-'}</Descriptions.Item>
-            <Descriptions.Item label={t('nextRun')}>{agent.next_run || '-'}</Descriptions.Item>
+            <Descriptions.Item label={t('nextRun')}>{agent.next_run || '-'} · {agent.schedule?.timezone || ''}</Descriptions.Item>
           </Descriptions>
           <MarkdownBlock content={normalizedAnalysis.content || ''} />
           {!historyReasoningDuplicated ? (
@@ -1032,6 +1036,7 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
 export function DailySummaryPanel({ dashboard, authenticated, embedded = false }) {
   const { t } = usePreferences();
   const [rows, setRows] = useState([]);
+  const requestIdRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState({ symbol: '', config_id: 'ALL', days: 30 });
   const [modalOpen, setModalOpen] = useState(false);
@@ -1049,6 +1054,7 @@ export function DailySummaryPanel({ dashboard, authenticated, embedded = false }
   const loadRows = async (nextFilter = filter) => {
     const symbol = nextFilter.symbol || dashboard?.current_symbol;
     if (!symbol) return;
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     try {
       const response = await api.get('/public/daily-summaries', {
@@ -1059,18 +1065,23 @@ export function DailySummaryPanel({ dashboard, authenticated, embedded = false }
           limit: 200,
         },
       });
+      if (requestId !== requestIdRef.current) return;
       setRows(response.data.daily_summaries || []);
+    } catch (err) {
+      if (requestId === requestIdRef.current) message.error(err.message);
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    const next = { ...filter, symbol: filter.symbol || dashboard?.current_symbol || '' };
+    const next = { ...filter, symbol: dashboard?.current_symbol || '', config_id: 'ALL' };
     const timer = window.setTimeout(() => {
+      setFilter(next);
+      setRows([]);
       loadRows(next);
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => { window.clearTimeout(timer); requestIdRef.current += 1; };
     // Refresh when the selected dashboard symbol changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard?.current_symbol]);
@@ -1153,7 +1164,7 @@ export function DailySummaryPanel({ dashboard, authenticated, embedded = false }
               loadRows(next);
             }}
           />
-          <Button onClick={() => loadRows()} loading={loading}>{t('loading')}</Button>
+          <Button onClick={() => loadRows()} loading={loading}>{t('refresh')}</Button>
         </Space>
         <Table
           size="small"
@@ -1218,6 +1229,7 @@ export function DailySummaryPanel({ dashboard, authenticated, embedded = false }
 export function ShortMemoryPanel({ dashboard, authenticated, embedded = false }) {
   const { t } = usePreferences();
   const [rows, setRows] = useState([]);
+  const requestIdRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState({ symbol: '', config_id: 'ALL', limit: 100 });
   const [modalOpen, setModalOpen] = useState(false);
@@ -1236,6 +1248,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
   const loadRows = async (nextFilter = filter) => {
     const symbol = nextFilter.symbol || dashboard?.current_symbol;
     if (!symbol) return;
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     try {
       const response = await api.get('/public/short-memories', {
@@ -1245,19 +1258,24 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
           limit: nextFilter.limit || 100,
         },
       });
+      if (requestId !== requestIdRef.current) return;
       setRows(response.data.short_memories || []);
       setSelectedRowKeys([]);
+    } catch (err) {
+      if (requestId === requestIdRef.current) message.error(err.message);
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    const next = { ...filter, symbol: filter.symbol || dashboard?.current_symbol || '' };
+    const next = { ...filter, symbol: dashboard?.current_symbol || '', config_id: 'ALL' };
     const timer = window.setTimeout(() => {
+      setFilter(next);
+      setRows([]);
       loadRows(next);
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => { window.clearTimeout(timer); requestIdRef.current += 1; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard?.current_symbol]);
 
@@ -1346,7 +1364,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
               loadRows(next);
             }}
           />
-          <Button onClick={() => loadRows()} loading={loading}>{t('loading')}</Button>
+          <Button onClick={() => loadRows()} loading={loading}>{t('refresh')}</Button>
           {authenticated ? (
             <>
               <Popconfirm title={t('confirmDelete')} onConfirm={deleteSelected} disabled={!selectedRowKeys.length}>
@@ -1413,19 +1431,21 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
 }
 
 export default function DashboardPage() {
-  const { t, selectedSymbol, setSelectedSymbol } = usePreferences();
+  const { t, locale, selectedSymbol, setSelectedSymbol } = usePreferences();
   const [timeframe, setTimeframe] = useState('1h');
   const [dashboard, setDashboard] = useState(null);
   const [compareIds, setCompareIds] = useState([]);
   const [comparePayload, setComparePayload] = useState(null);
   const [workspaceMap, setWorkspaceMap] = useState({});
-  const [requestedActiveTab, setRequestedActiveTab] = useState('compare');
+  const [requestedActiveTab, setRequestedActiveTab] = useState(null);
   const [loading, setLoading] = useState(true);
   const [compareLoading, setCompareLoading] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [error, setError] = useState('');
-  const lastDashboardLoadRef = useRef({ symbol: null, refreshNonce: -1 });
+  const [pollError, setPollError] = useState(false);
+  const [workspaceErrors, setWorkspaceErrors] = useState([]);
+  const [marketRefresh, setMarketRefresh] = useState(0);
 
   useEffect(() => {
     const refresh = () => setRefreshNonce((value) => value + 1);
@@ -1434,84 +1454,57 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const lastLoad = lastDashboardLoadRef.current;
-    if (selectedSymbol && lastLoad.symbol === selectedSymbol && lastLoad.refreshNonce === refreshNonce) {
-      return undefined;
-    }
     let mounted = true;
-    async function loadDashboard() {
-      setLoading(true);
-      setError('');
+    let inFlight = false;
+    let successfulPolls = 0;
+    const controller = new AbortController();
+    async function loadDashboard(initial = false) {
+      if (inFlight || (!initial && document.hidden)) return;
+      inFlight = true;
+      if (initial) { setLoading(true); setError(''); }
       try {
-        const response = await api.get('/public/dashboard', { params: selectedSymbol ? { symbol: selectedSymbol } : {} });
+        const response = await api.get('/public/dashboard', {
+          params: selectedSymbol ? { symbol: selectedSymbol } : {}, signal: controller.signal, timeout: 25000, silent: !initial,
+        });
         if (!mounted) return;
-        lastDashboardLoadRef.current = {
-          symbol: response.data.current_symbol || selectedSymbol || null,
-          refreshNonce,
-        };
         setDashboard(response.data);
-        if (!selectedSymbol && response.data.current_symbol) {
-          setSelectedSymbol(response.data.current_symbol);
-        }
+        setError('');
+        setPollError(false);
+        if (!selectedSymbol && response.data.current_symbol) setSelectedSymbol(response.data.current_symbol);
         setCompareIds((prev) => {
           const allowed = new Set((response.data.compare_candidates || []).map((item) => item.config_id));
           const filtered = prev.filter((item) => allowed.has(item));
           const next = filtered.length ? filtered : response.data.default_compare_ids || [];
           return next.length === prev.length && next.every((item, index) => item === prev[index]) ? prev : next;
         });
+        if (!initial && ++successfulPolls % 4 === 0) setMarketRefresh((value) => value + 1);
       } catch (err) {
-        if (mounted) setError(err.message || 'Failed to load dashboard');
+        if (!mounted) return;
+        if (initial) setError(err.message || 'Failed to load dashboard');
+        else setPollError(true);
       } finally {
-        if (mounted) setLoading(false);
+        inFlight = false;
+        if (mounted && initial) setLoading(false);
       }
     }
-    loadDashboard();
-    return () => {
-      mounted = false;
-    };
+    loadDashboard(true);
+    const timer = window.setInterval(() => loadDashboard(), 8000);
+    return () => { mounted = false; controller.abort(); window.clearInterval(timer); };
   }, [selectedSymbol, setSelectedSymbol, refreshNonce]);
 
-  useEffect(() => {
-    let mounted = true;
-    const refreshExecutionState = async () => {
-      try {
-        const response = await api.get('/public/dashboard', { params: selectedSymbol ? { symbol: selectedSymbol } : {} });
-        if (mounted) {
-          setDashboard((previous) => {
-            if (!previous) return response.data;
-            const executionByConfig = new Map(
-              (response.data.agent_summaries || []).map((agent) => [agent.config_id, agent.execution]),
-            );
-            let changed = false;
-            const nextAgents = (previous.agent_summaries || []).map((agent) => {
-              const nextExecution = executionByConfig.get(agent.config_id) ?? null;
-              if (JSON.stringify(agent.execution || null) === JSON.stringify(nextExecution)) return agent;
-              changed = true;
-              return { ...agent, execution: nextExecution };
-            });
-            return changed ? { ...previous, agent_summaries: nextAgents } : previous;
-          });
-        }
-      } catch {
-        // Keep the last good dashboard snapshot; the main loader owns visible errors.
-      }
-    };
-    const timer = window.setInterval(refreshExecutionState, 8000);
-    return () => {
-      mounted = false;
-      window.clearInterval(timer);
-    };
-  }, [selectedSymbol]);
+  // Execution streaming must not refetch every exchange workspace on every token.
+  const workspaceSignature = getWorkspaceSignature(dashboard?.agent_summaries);
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
     async function loadCompare() {
-      const currentSymbol = dashboard?.current_symbol || selectedSymbol;
+      const currentSymbol = selectedSymbol || dashboard?.current_symbol;
       if (!currentSymbol) return;
       setCompareLoading(true);
       try {
         const response = await api.get('/public/compare', {
-          params: { symbol: currentSymbol, config_ids: compareIds.join(',') },
+          params: { symbol: currentSymbol, config_ids: compareIds.join(',') }, signal: controller.signal, timeout: 25000,
         });
         if (mounted) setComparePayload(response.data);
       } catch (err) {
@@ -1523,21 +1516,25 @@ export default function DashboardPage() {
     loadCompare();
     return () => {
       mounted = false;
+      controller.abort();
     };
-  }, [compareIds, dashboard?.current_symbol, selectedSymbol, refreshNonce]);
+  }, [compareIds, dashboard?.current_symbol, selectedSymbol, refreshNonce, marketRefresh]);
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
     async function loadWorkspaces() {
-      const configs = dashboard?.agent_summaries || [];
+      const configs = JSON.parse(workspaceSignature).map(([config_id]) => ({ config_id }));
       if (!configs.length) {
         setWorkspaceMap({});
+        setWorkspaceLoading(false);
+        setWorkspaceErrors([]);
         return;
       }
       setWorkspaceLoading(true);
       try {
         const responses = await Promise.allSettled(
-          configs.map((item) => api.get(`/public/workspace/${item.config_id}`, { params: { timeframe } })),
+          configs.map((item) => api.get(`/public/workspace/${item.config_id}`, { params: { timeframe }, signal: controller.signal, timeout: 30000 })),
         );
         if (!mounted) return;
         setWorkspaceMap((previous) => {
@@ -1552,9 +1549,7 @@ export default function DashboardPage() {
           });
           return nextMap;
         });
-        if (responses.every((result) => result.status === 'rejected')) {
-          setError('Failed to load workspace data');
-        }
+        setWorkspaceErrors(responses.flatMap((result, index) => result.status === 'rejected' ? [configs[index].config_id] : []));
       } catch (err) {
         if (mounted) setError(err.message || 'Failed to load workspace data');
       } finally {
@@ -1564,23 +1559,20 @@ export default function DashboardPage() {
     loadWorkspaces();
     return () => {
       mounted = false;
+      controller.abort();
     };
-  }, [dashboard?.agent_summaries, dashboard?.market_timeframes, timeframe, refreshNonce]);
+  }, [workspaceSignature, timeframe, refreshNonce, marketRefresh]);
 
   const compareSeries = useMemo(() => comparePayload?.series || [], [comparePayload]);
-  const activeTab = useMemo(() => {
-    if (requestedActiveTab === 'compare') return 'compare';
-    return (dashboard?.agent_summaries || []).some((agent) => agent.config_id === requestedActiveTab)
-      ? requestedActiveTab
-      : 'compare';
-  }, [dashboard?.agent_summaries, requestedActiveTab]);
+  const activeTab = selectDashboardTab(dashboard?.agent_summaries, requestedActiveTab);
 
-  const overviewMetrics = dashboard?.overview_metrics || {};
+  const symbolMatches = !selectedSymbol || dashboard?.current_symbol === selectedSymbol;
+  const overviewMetrics = symbolMatches ? dashboard?.overview_metrics || {} : {};
   const heroFacts = [
-    { label: t('agents'), value: overviewMetrics.agent_count ?? (dashboard?.agent_summaries || []).length },
-    { label: t('totalTrades'), value: overviewMetrics.total_trades ?? 0 },
-    { label: t('winRate'), value: formatPercentValue(overviewMetrics.win_rate) },
-    { label: t('totalPnl'), value: formatPositionValue(overviewMetrics.total_pnl ?? 0) },
+    { label: t('agents'), value: overviewMetrics.agent_count ?? '—' },
+    { label: t('totalTrades'), value: overviewMetrics.total_trades ?? '—' },
+    { label: t('winRate'), value: formatPercentValue(overviewMetrics.total_trades ? overviewMetrics.win_rate : null) },
+    { label: t('totalPnl'), value: formatPositionValue(overviewMetrics.total_pnl) },
   ];
 
   const authenticated = Boolean(localStorage.getItem('crypto-agent-token'));
@@ -1607,32 +1599,38 @@ export default function DashboardPage() {
       items.push({
         key: agent.config_id,
         label: agent.config_id,
-        children: <WorkspacePanel workspace={workspace ? { ...workspace, agent } : { agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} />,
+        children: workspace
+          ? <WorkspacePanel workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} />
+          : <Card className="panel-card"><Skeleton active loading={workspaceLoading}><Empty description={locale === 'zh' ? '持仓与行情未能加载，请刷新重试。' : 'Workspace unavailable. Please refresh.'} /></Skeleton></Card>,
       });
     });
     return items;
-  }, [authenticated, compareIds, compareLoading, compareSeries, dashboard, t, timeframe, workspaceMap]);
+  }, [authenticated, compareIds, compareLoading, compareSeries, dashboard, t, timeframe, workspaceMap, workspaceLoading, locale]);
 
   return (
-    <div className="boxed-page dashboard-page">
+    <div className="boxed-page dashboard-page dashboard-v2">
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card className="admin-hero dashboard-hero">
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          <div className="dashboard-hero-layout">
-            <div className="dashboard-hero-copy">
-              <Title level={2} style={{ margin: 0 }}>
-                {dashboard?.current_symbol || selectedSymbol || t('publicHeadline')}
-              </Title>
-              <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                {t('publicSubhead')}
-              </Paragraph>
-            </div>
-            <FactGrid items={heroFacts} />
+      <section className="dashboard-command-center">
+        <div className="dashboard-command-top">
+          <div>
+            <div className="dashboard-eyebrow">{locale === 'zh' ? '交易工作台' : 'TRADING WORKSPACE'}</div>
+            <Title level={2}>{selectedSymbol || dashboard?.current_symbol || t('publicHeadline')}</Title>
+            <Space wrap size={8}>
+              <Tag color={dashboard?.scheduler_enabled ? 'green' : 'default'}>{locale === 'zh' ? (dashboard?.scheduler_enabled ? '自动调度已启用' : '自动调度已暂停') : (dashboard?.scheduler_enabled ? 'Scheduler enabled' : 'Scheduler paused')}</Tag>
+              <Text type="secondary">{dashboard?.timezone || '—'}</Text>
+            </Space>
           </div>
-
-          {error ? <Alert type="error" message={error} showIcon /> : null}
-        </Space>
-      </Card>
+          <div className="dashboard-refresh-controls">
+            <Button icon={<ReloadOutlined />} loading={loading || workspaceLoading} onClick={() => setRefreshNonce((value) => value + 1)}>{locale === 'zh' ? '刷新数据' : 'Refresh'}</Button>
+            <Text type="secondary"><ClockCircleOutlined /> {locale === 'zh' ? '更新于 ' : 'Updated '}{dashboard?.generated_at ? dayjs(dashboard.generated_at).format('HH:mm:ss') : '—'} · {locale === 'zh' ? '本地时间' : 'local time'}</Text>
+          </div>
+        </div>
+        <FactGrid items={heroFacts} />
+        <Text type="secondary" className="dashboard-metric-note">{locale === 'zh' ? '累计统计 · 胜率按已平仓交易计算；账户权益与已实现盈亏口径不同。' : 'All-time statistics · Win rate uses closed trades; account equity differs from realized P&L.'}</Text>
+      </section>
+      {error ? <Alert type="error" title={error} showIcon /> : null}
+      {pollError ? <Alert type="warning" title={locale === 'zh' ? '自动刷新失败，当前显示上次成功的数据。' : 'Refresh failed. Showing the last successful snapshot.'} showIcon /> : null}
+      {workspaceErrors.length ? <Alert type="warning" title={locale === 'zh' ? '部分持仓或行情暂时不可用，保留上次数据；请重试。' : 'Some positions or prices are unavailable. Previous data retained; please retry.'} description={workspaceErrors.join(' · ')} showIcon /> : null}
 
       {loading && !dashboard ? (
         <Card className="panel-card loading-card">
@@ -1646,7 +1644,7 @@ export default function DashboardPage() {
         </Card>
       ) : null}
 
-      {(dashboard?.agent_summaries || []).length ? (
+      {(!selectedSymbol || dashboard?.current_symbol === selectedSymbol) && (dashboard?.agent_summaries || []).length ? (
         <div className="dashboard-workspace">
           <div className="dashboard-agent-overview-wrap">
             <AgentOverview
@@ -1657,6 +1655,7 @@ export default function DashboardPage() {
               loading={workspaceLoading}
             />
           </div>
+          <ScheduleDetails agents={dashboard?.agent_summaries || []} activeTab={activeTab} locale={locale} />
           <div className="market-workbench">
             <Tabs activeKey={activeTab} onChange={setRequestedActiveTab} items={tabItems} className="dashboard-main-tabs" renderTabBar={() => null} />
             <aside className="intelligence-rail" aria-label="Market intelligence">

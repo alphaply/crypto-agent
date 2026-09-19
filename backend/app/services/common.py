@@ -37,41 +37,14 @@ def get_symbol_specific_status(symbol: str):
     if not configs:
         return "Unknown", "N/A", False
 
-    has_real = False
-    has_strategy = False
-    has_dca = False
-    enabled = False
-
-    for cfg in configs:
-        if not cfg.get("enabled", True):
-            continue
-        enabled = True
-        mode = str(cfg.get("mode", "STRATEGY")).upper()
-        if mode == "REAL":
-            has_real = True
-        elif mode == "SPOT_DCA":
-            has_dca = True
-        else:
-            has_strategy = True
-
-    if not enabled:
+    from datetime import datetime
+    from backend.utils.run_schedule import schedule_preview
+    active = [cfg for cfg in configs if cfg.get("enabled", True)]
+    if not active:
         return "Disabled", "No active jobs", False
-
-    status_parts = []
-    freq_parts = []
-    if has_real:
-        status_parts.append("REAL")
-        freq_parts.append("15m")
-    if has_dca:
-        status_parts.append("SPOT_DCA")
-        freq_parts.append("Daily")
-    if has_strategy:
-        status_parts.append("STRATEGY")
-        freq_parts.append("1h")
-
-    status_text = " + ".join(status_parts)
-    freq_text = " / ".join(freq_parts) if len(freq_parts) > 1 else (freq_parts[0] if freq_parts else "N/A")
-    return status_text, freq_text, True
+    modes = list(dict.fromkeys(str(cfg.get("mode", "STRATEGY")).upper() for cfg in active))
+    frequencies = list(dict.fromkeys(schedule_preview(cfg, datetime.now(TZ_CN))["frequency"] for cfg in active))
+    return " + ".join(modes), " / ".join(frequencies), True
 
 
 def serialize_message(msg):
