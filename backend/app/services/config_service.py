@@ -158,6 +158,9 @@ def save_config_payload(
             provider.get("pricing_currency") or "USD",
     )
     global_config.reload_config()
+    from backend.utils.llm_utils import sync_langsmith_environment
+
+    sync_langsmith_environment()
     return {
         "message": "Configuration saved.",
         "langsmith": {

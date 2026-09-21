@@ -1,5 +1,6 @@
 import os
 import time
+from threading import RLock
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -18,6 +19,8 @@ from openai import (
 )
 
 _LANGSMITH_LOGGED_STATE: tuple[str, str, bool] | None = None
+_LANGSMITH_APPLIED_STATE: tuple[str, ...] | None = None
+_LANGSMITH_LOCK = RLock()
 _BAI_API_HOSTS = {"api.b.ai", "api.bankofai.io"}
 _BAI_DEFAULT_HEADERS = {"User-Agent": "crypto-agent/0.1.0"}
 
@@ -30,7 +33,13 @@ def instruction_message(content: str, prompt_role: str | None = "system"):
 
 
 def sync_langsmith_environment() -> Dict[str, str]:
+    with _LANGSMITH_LOCK:
+        return _sync_langsmith_environment()
+
+
+def _sync_langsmith_environment() -> Dict[str, str]:
     global _LANGSMITH_LOGGED_STATE
+    global _LANGSMITH_APPLIED_STATE
     try:
         from backend.config import config as global_config
 
@@ -59,6 +68,21 @@ def sync_langsmith_environment() -> Dict[str, str]:
     else:
         os.environ.pop("LANGSMITH_API_KEY", None)
         os.environ.pop("LANGCHAIN_API_KEY", None)
+
+    # The SDK caches both environment reads and its default client. Updating
+    # os.environ alone leaves a running server using its previous settings.
+    applied_state = (
+        tracing_value, project_name, api_key,
+        os.getenv("LANGSMITH_ENDPOINT", ""), os.getenv("LANGCHAIN_ENDPOINT", ""),
+        os.getenv("LANGSMITH_WORKSPACE_ID", ""), os.getenv("LANGCHAIN_WORKSPACE_ID", ""),
+    )
+    if applied_state != _LANGSMITH_APPLIED_STATE:
+        from langsmith import configure, utils as langsmith_utils
+
+        langsmith_utils.get_env_var.cache_clear()
+        langsmith_utils.get_tracer_project.cache_clear()
+        configure(client=None)
+        _LANGSMITH_APPLIED_STATE = applied_state
 
     state = (tracing_value, project_name, bool(api_key))
     if state != _LANGSMITH_LOGGED_STATE:

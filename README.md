@@ -225,6 +225,14 @@ uv run backend/utils/test_agent_connection.py
 持仓周期表分别展示手续费前盈亏、开平仓手续费和净盈亏（不含资金费）；费用缺失或跨币种时净盈亏保持未知。成交活动按成交时间单独统计，同步覆盖与未闭合周期可展开查看。模型空响应、断连或无法恢复的输出截断会保存失败记录，调度任务标记失败。正文截断但全部工具参数 JSON 完整时，保留截断提示并继续工具校验和执行。
 
 
+### LangSmith 追踪
+
+后台需要同时启用 `langchain_tracing`、设置项目名称并保存 LangSmith API Key；只填写 key 不会自动开启追踪。保存后会刷新 SDK 的环境变量、项目和客户端缓存，后续新运行使用最新配置，无需重启 Web 进程。独立调度进程在下一次运行前同步配置。
+
+环境变量配置支持 `LANGSMITH_TRACING=true`、`LANGSMITH_PROJECT=crypto-agent`、`LANGSMITH_API_KEY`，也兼容旧版 `LANGCHAIN_*` 名称。美国区使用默认地址；欧洲区需在部署环境设置 `LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com`。不要将 key 提交到仓库。
+
+排查时查看日志中的 `LangSmith tracing=true ... api_key_set=True`，并确认 LangSmith 所选项目和区域。SDK 缓存问题参见 [官方排查文档](https://docs.langchain.com/langsmith/troubleshooting-variable-caching)。
+
 ### LLM 断线重试与数据刷新
 
 - 后台 `llm_timeout_seconds` 是每次请求的客户端超时（秒），首次请求和重试使用同一设置；`llm_max_retries` 是每个模型的额外重试次数。SDK 内部重试关闭，由应用统一重试。

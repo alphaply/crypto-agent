@@ -31,6 +31,40 @@ class _DisabledDummyConfig:
 
 
 class LangSmithEnvironmentTests(unittest.TestCase):
+    def test_runtime_changes_refresh_sdk_caches_and_client(self):
+        from langsmith import configure, run_trees, utils
+        from backend.utils import llm_utils
+
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            llm_utils, "_LANGSMITH_APPLIED_STATE", None
+        ):
+            try:
+                with patch("backend.config.config", _DisabledDummyConfig()):
+                    sync_langsmith_environment()
+                self.assertFalse(utils.tracing_is_enabled())
+                self.assertEqual(utils.get_tracer_project(), "crypto-agent")
+                with patch("backend.config.config", _DummyConfig()):
+                    sync_langsmith_environment()
+                    self.assertTrue(utils.tracing_is_enabled())
+                    self.assertEqual(utils.get_tracer_project(), "unit-project")
+                    first_client = run_trees.get_cached_client()
+                    self.assertEqual(first_client.api_key, "unit-key")
+                    sync_langsmith_environment()
+                    self.assertIs(run_trees.get_cached_client(), first_client)
+                rotated = _DummyConfig()
+                rotated.langchain_api_key = "rotated-key"
+                with patch("backend.config.config", rotated):
+                    sync_langsmith_environment()
+                    self.assertEqual(run_trees.get_cached_client().api_key, "rotated-key")
+                    self.assertIsNot(run_trees.get_cached_client(), first_client)
+                with patch("backend.config.config", _DisabledDummyConfig()):
+                    sync_langsmith_environment()
+                self.assertFalse(utils.tracing_is_enabled())
+            finally:
+                configure(client=None)
+                utils.get_env_var.cache_clear()
+                utils.get_tracer_project.cache_clear()
+
     def test_sync_langsmith_environment_sets_new_and_legacy_vars(self):
         with patch("backend.config.config", _DummyConfig()):
             with patch.dict(os.environ, {}, clear=False):
