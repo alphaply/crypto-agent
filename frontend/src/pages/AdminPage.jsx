@@ -2089,8 +2089,18 @@ export default function AdminPage() {
             </div>
             {editingProvider.thinking_enabled !== false && (
               <div className="form-field">
-                <label>{t('reasoningEffort')}</label>
-                <Select value={editingProvider.reasoning_effort || undefined} options={(payload.options?.reasoning_efforts || ['none', 'low', 'medium', 'high', 'xhigh', 'max']).filter((v) => !String(editingProvider.model || '').toLowerCase().startsWith('gemini-3.8') || ['low', 'medium', 'high'].includes(v)).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingProvider('reasoning_effort', v)} allowClear placeholder={locale === 'zh' ? '跟随模型默认' : 'Use model default'} style={{ width: '100%' }} />
+                <label htmlFor="provider-reasoning-effort">{t('reasoningEffort')}</label>
+                <Select
+                  id="provider-reasoning-effort"
+                  value={editingProvider.reasoning_effort || ''}
+                  options={[
+                    { value: '', label: locale === 'zh' ? '跟随模型默认' : 'Use model default' },
+                    ...(payload.options?.reasoning_efforts || ['none', 'low', 'medium', 'high', 'xhigh', 'max']).filter((v) => !String(editingProvider.model || '').toLowerCase().startsWith('gemini-3.8') || ['low', 'medium', 'high'].includes(v)).map((v) => ({ label: v, value: v })),
+                  ]}
+                  onChange={(v) => updateEditingProvider('reasoning_effort', v || undefined)}
+                  placeholder={locale === 'zh' ? '跟随模型默认' : 'Use model default'}
+                  style={{ width: '100%' }}
+                />
                 <Text type="secondary">{String(editingProvider.model || '').toLowerCase().startsWith('gemini-3.8')
                   ? (locale === 'zh' ? 'Gemini 3.8 支持 low / medium / high。BAI Chat Completions 会返回推理 token 数，但不提供可展示的 reasoning 文本。' : 'Gemini 3.8 supports low / medium / high. BAI Chat Completions reports reasoning-token usage but does not expose displayable reasoning text.')
                   : editingProvider.compatibility_mode === 'deepseek'
