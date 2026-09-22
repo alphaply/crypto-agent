@@ -3175,7 +3175,11 @@ a {
   .provider-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  /* Ant Design motion is disabled through ConfigProvider, not CSS timing overrides.
+     Near-zero durations can finish before popup alignment and strand menus offscreen. */
+  *, *::before, *::after { scroll-behavior: auto !important; }
+  .chat-message-content.is-streaming .chat-answer-content > .markdown-block::after,
+  .chat-stream-status-dot { animation: none !important; }
 }
 
 .x-chat-window .ant-bubble { min-width: 0; }

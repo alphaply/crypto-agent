@@ -1,7 +1,8 @@
 /* eslint-disable react-refresh/only-export-components */
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { App as AntdApp, ConfigProvider, theme as antdTheme } from 'antd';
+import { App as AntdApp, theme as antdTheme } from 'antd';
+import AccessibleConfigProvider from './components/AccessibleConfigProvider';
 import enUS from 'antd/locale/en_US';
 import zhCN from 'antd/locale/zh_CN';
 import { BrowserRouter } from 'react-router-dom';
@@ -15,7 +16,7 @@ function ConfiguredApp() {
   const { locale, isDark } = usePreferences();
 
   return (
-    <ConfigProvider
+    <AccessibleConfigProvider
       locale={locale === 'zh' ? zhCN : enUS}
       theme={{
         algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
@@ -40,7 +41,7 @@ function ConfiguredApp() {
           <App />
         </BrowserRouter>
       </AntdApp>
-    </ConfigProvider>
+    </AccessibleConfigProvider>
   );
 }
 
