@@ -64,3 +64,32 @@ def test_amend_rejects_invalid_protection_price_and_unowned_order(service):
         svc.amend_entry('ETH/USDT', oid, price=89, reason='move entry')
     with pytest.raises(ValueError, match='configuration'):
         svc.amend_entry('ETH/USDT', 'manual-order', price=101, reason='move entry')
+
+
+def test_amend_rejects_wrong_position_direction_before_exchange_write(service):
+    svc, ex = service
+    oid = svc.open('ETH/USDT', entry())['id']
+    setup_exchange(ex, oid)
+    calls = list(ex.calls)
+    with pytest.raises(ValueError, match='side mismatch'):
+        svc.amend_entry('ETH/USDT', oid, price=101, reason='move', pos_side='SHORT')
+    assert ex.calls == calls
+    assert svc.amend_entry('ETH/USDT', oid, price=101, reason='move', pos_side='LONG')['amendment_state'] == 'confirmed'
+
+
+def test_short_amend_sends_sell_and_preserves_short_protection(service):
+    from backend.agent.agent_models import OpenOrderReal
+    svc, ex = service
+    op = OpenOrderReal(action='SELL_LIMIT', entry_price=100, amount=1, stop_loss=120, take_profit=90, reason='test')
+    oid = svc.open('ETH/USDT', op)['id']
+    setup_exchange(ex, oid)
+    edit = ex.edit_order
+
+    def checked_edit(oid, symbol, kind, side, amount, price):
+        assert side == 'sell'
+        return edit(oid, symbol, kind, side, amount, price)
+
+    ex.edit_order = checked_edit
+    assert svc.amend_entry('ETH/USDT', oid, price=105, reason='resistance', pos_side='SHORT')['amendment_state'] == 'confirmed'
+    with pytest.raises(ValueError, match='reference'):
+        svc.amend_entry('ETH/USDT', oid, price=121, reason='invalid', pos_side='SHORT')

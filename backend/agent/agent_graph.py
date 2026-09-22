@@ -932,6 +932,9 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         dca_budget=dca_budget
     )
 
+    from backend.utils.performance_context import performance_context
+    system_prompt += '\n\n' + performance_context(config_id, symbol, trade_mode)
+
     from backend.utils.trading_policy import trading_policy, protection_context
     system_prompt += '\n\n' + trading_policy(trade_mode)
     if trade_mode == 'REAL':

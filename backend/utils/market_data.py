@@ -385,26 +385,26 @@ class MarketTool:
             return sentiment
 
         try:
-            # 去掉 symbol 中的 :USDT 等后缀，币安 API 通常只需要 BTCUSDT
+            from backend.utils.sentiment_context import ratio_evidence
+
             clean_symbol = self.exchange.market(symbol)['id']
-            
-            # 1. 全球多空人数比 (Global Long/Short Account Ratio)
-            try:
-                ls_data = self.exchange.fapiDataGetGlobalLongShortAccountRatio({'symbol': clean_symbol, 'period': '5m'})
-                if ls_data and len(ls_data) > 0:
-                    sentiment["ls_accounts"] = float(ls_data[-1]['longShortRatio'])
-            except: pass
+            sentiment['ratio_details'] = {}
+            endpoints = (
+                ('ls_accounts', 'fapiDataGetGlobalLongShortAccountRatio', 'longShortRatio'),
+                ('ls_ratio', 'fapiDataGetTopLongShortPositionRatio', 'longShortRatio'),
+                ('top_ls_accounts', 'fapiDataGetTopLongShortAccountRatio', 'longShortRatio'),
+                ('taker_buy_sell_ratio', 'fapiDataGetTakerlongshortRatio', 'buySellRatio'),
+            )
+            for key, method, field in endpoints:
+                try:
+                    rows = getattr(self.exchange, method)({'symbol': clean_symbol, 'period': '5m', 'limit': 2})
+                    detail = ratio_evidence(rows, field, int(time.time() * 1000))
+                except Exception as exc:
+                    logger.debug(f'Binance ratio {key} unavailable: {type(exc).__name__}')
+                    detail = {'available': False, 'reason': 'fetch failed'}
+                sentiment['ratio_details'][key] = detail
+                sentiment[key] = detail['value'] if detail['available'] else 'N/A'
 
-            # 2. 大户持仓多空比 (Top Trader Long/Short Ratio)
-            try:
-                ls_positions = self.exchange.fapiDataGetTopLongShortPositionRatio({'symbol': clean_symbol, 'period': '5m'})
-                if ls_positions and len(ls_positions) > 0:
-                    sentiment["ls_ratio"] = float(ls_positions[-1]['longShortRatio'])
-            except: pass
-
-            # 3. 24h 爆仓数据 (通常需要从 WebSocket 或专门爬取，但 CCXT 部分交易所支持 fetch_liquidations)
-            # 币安没有直接的 API 获取全量历史爆仓，通常需要订阅。这里暂留或尝试 ticker 中的隐含信息。
-            
         except Exception as e:
             logger.debug(f"Binance Specific Sentiment Fetch Failed: {e}")
             

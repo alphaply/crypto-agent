@@ -289,7 +289,7 @@ class PositionProtection:
             return {**order, "protection_state": plan["state"], "protection_error": plan.get("error"),
                     "stop_loss": sl, "take_profit": tp}
 
-    def amend_entry(self, symbol, order_id, price=None, amount=None, reason=''):
+    def amend_entry(self, symbol, order_id, price=None, amount=None, reason='', pos_side=None):
         """Amend a managed perpetual limit entry. Amount means TOTAL base quantity."""
         if price is None and amount is None:
             raise ValueError('Provide a new entry price or total quantity')
@@ -309,6 +309,8 @@ class PositionProtection:
                     break
             if entry is None:
                 raise ValueError('Only this configuration\'s managed perpetual entry may be amended')
+            if pos_side is not None and pos_side != plan['side']:
+                raise ValueError('Position side mismatch; amendment cannot change LONG/SHORT direction')
             self._reconcile(plan)
             if plan['state'] in {'DONE', 'EXITING'} or entry.get('status') in TERMINAL:
                 raise ValueError('Order already ended; do not reopen it as an amendment')

@@ -159,6 +159,18 @@ def format_market_data_to_text(data: dict) -> str:
         "- OI is a snapshot (exchange quantity units); without changes/contract size it is not a directional signal.",
     ]
 
+    ratio_labels = {'ls_accounts': 'Global account L/S', 'ls_ratio': 'Top trader position L/S',
+                    'top_ls_accounts': 'Top trader account L/S', 'taker_buy_sell_ratio': 'Taker buy/sell volume'}
+    for key, detail in (sentiment.get('ratio_details') or {}).items():
+        label = ratio_labels.get(key, key)
+        if not detail.get('available'):
+            output.append(f"- Binance {label} (5m): N/A ({'stale >15m' if detail.get('stale') else detail.get('reason', 'unavailable')})")
+            continue
+        change = detail.get('change_5m_pct')
+        change_text = f'{change:+.2f}%' if change is not None else 'N/A'
+        output.append(f"- Binance {label} (5m): {detail['value']:.4f} | 5m relative change: {change_text} | timestamp_ms: {detail['timestamp_ms']} | age: {detail['age_seconds']}s")
+    output.append('- L/S account ratios measure account counts, top-position ratios measure top-trader positioning, and taker ratios measure aggressive volume. They are different populations, not win probabilities or standalone entry/reversal signals; N/A is not neutral.')
+
     news_context = data.get("news_context") or {}
     if news_context:
         digest = str(news_context.get("digest") or "").strip()

@@ -15,6 +15,7 @@ from backend.agent.agent_tools import (
     update_position_protection_real,
     update_position_protection_strategy,
     update_entry_order_real,
+    update_entry_order_strategy,
 )
 from backend.utils.logger import setup_logger
 
@@ -27,7 +28,7 @@ _CANCEL_TOOL_NAMES = {"cancel_orders_real", "cancel_orders_strategy"}
 _TOOLS_BY_MODE = {
     "REAL": [open_position_real, close_position_real, cancel_orders_real, update_position_protection_real, update_entry_order_real],
     "SPOT_DCA": [open_position_spot_dca, cancel_orders_real],
-    "STRATEGY": [open_position_strategy, cancel_orders_strategy, close_position_strategy, update_position_protection_strategy],
+    "STRATEGY": [open_position_strategy, cancel_orders_strategy, close_position_strategy, update_position_protection_strategy, update_entry_order_strategy],
 }
 
 _TOOL_BY_NAME = {
@@ -111,7 +112,7 @@ def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str) -> st
         )
 
     call_args = _normalize_tool_args(tool_name, args)
-    if tool_name in {'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real'}:
+    if tool_name in {'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy'}:
         # Dispatch uses .func(), so these scalar arguments need explicit schema validation.
         call_args = tool_obj.args_schema.model_validate(call_args).model_dump()
     call_args["config_id"] = config_id

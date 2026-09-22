@@ -96,6 +96,16 @@ class UpdateEntrySchema(BaseModel):
     amount: Optional[float] = Field(None, gt=0, allow_inf_nan=False,
                                    description="修改后的总标的币数量，包含已成交部分，不是剩余数量")
     reason: str = Field(min_length=1, description="新的入场条件及改单理由；不能仅因价格移动而追单")
+    pos_side: Optional[Literal["LONG", "SHORT"]] = Field(None, description="预期持仓方向：LONG开多、SHORT开空；传入后必须与托管订单一致，不会改变方向")
+
+
+class UpdateStrategyEntrySchema(BaseModel):
+    order_id: str = Field(min_length=1, description="本配置尚未成交的模拟入场订单ID")
+    pos_side: Literal["LONG", "SHORT"] = Field(description="LONG对应BUY开多，SHORT对应SELL开空；必须与原订单一致")
+    entry_price: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    stop_loss: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    take_profit: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    reason: str = Field(min_length=1, description="入场或保护条件变化的理由")
 
 
 class UpdateStrategyProtectionSchema(BaseModel):
@@ -322,18 +332,73 @@ def update_position_protection_real(pos_side: str, reason: str, config_id: str, 
 
 @tool(args_schema=UpdateEntrySchema)
 def update_entry_order_real(order_id: str, reason: str, config_id: str, symbol: str,
-                            entry_price: Optional[float] = None, amount: Optional[float] = None):
-    """【合约限价改单】原生修改本配置创建的入场单；已有TP/SL保持不变。数量为含已成交的总币数。"""
+                            entry_price: Optional[float] = None, amount: Optional[float] = None,
+                            pos_side: Optional[str] = None):
+    """【修改实盘入场价/数量】保持原多空方向；TP/SL用update_position_protection_real调整，不可用本工具改保护单或平仓单。"""
     from backend.config import config as global_config
     from backend.utils.position_protection import PositionProtection
     if (global_config.get_config_by_id(config_id) or {}).get('mode', '').upper() != 'REAL':
         return '❌ 仅实盘合约可使用限价改单工具'
     try:
         result = PositionProtection(MarketTool(config_id=config_id)).amend_entry(
-            symbol, order_id, entry_price, amount, reason)
+            symbol, order_id, entry_price, amount, reason, pos_side=pos_side)
         return json.dumps(result, ensure_ascii=False) + '；仅confirmed表示改单已核验，pending不得重复提交。'
     except Exception as exc:
         return f'❌ 改单未确认：{exc}；查询当前订单和成交，不能直接重新开单。'
+
+
+@tool(args_schema=UpdateStrategyEntrySchema)
+def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, config_id: str, symbol: str,
+                                entry_price: Optional[float] = None, stop_loss: Optional[float] = None,
+                                take_profit: Optional[float] = None):
+    """【修改模拟入场价及TP/SL】仅未成交入场单；保持数量和多空方向，省略的价格保留。已成交仓位只能调整保护。"""
+    from backend.utils.position_protection import PositionProtection
+    if all(value is None for value in (entry_price, stop_loss, take_profit)):
+        return '❌ 至少提供入场价、止盈或止损之一'
+    if not reason.strip():
+        return '❌ 必须提供修改理由'
+    try:
+        with database.get_db_conn() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute(
+                "SELECT * FROM mock_orders WHERE order_id=? AND config_id=? AND symbol=? AND status='OPEN' AND is_filled=0",
+                (order_id, config_id, symbol),
+            ).fetchone()
+            if not row:
+                return '❌ 未找到本配置未成交模拟挂单；已成交仓位不可修改入场价'
+            side = {'BUY': 'LONG', 'SELL': 'SHORT'}.get(str(row['side']).upper())
+            if side is None or side != pos_side:
+                return '❌ 多空方向不匹配，禁止修改订单方向'
+            if row['expire_at'] is not None and float(row['expire_at']) <= time.time():
+                return '❌ 订单已过期，不能改单'
+            price = entry_price if entry_price is not None else float(row['price'])
+            sl = stop_loss if stop_loss is not None else row['stop_loss']
+            tp = take_profit if take_profit is not None else row['take_profit']
+            PositionProtection._validate(side, price, sl, tp)
+            # Simulation reserves full order notional. Check all open orders while holding the write lock.
+            account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=?', (config_id,)).fetchone()
+            reserved = conn.execute(
+                "SELECT COALESCE(SUM(price*amount),0) FROM mock_orders WHERE config_id=? AND status='OPEN' AND order_id!=?",
+                (config_id, order_id),
+            ).fetchone()[0]
+            if not account or price * float(row['amount']) > max(0, float(account['balance']) - reserved):
+                return '❌ 修改后订单名义金额超过模拟可用余额'
+            conn.execute('UPDATE mock_orders SET price=?,stop_loss=?,take_profit=? WHERE order_id=? AND config_id=? AND symbol=?',
+                         (price, sl, tp, order_id, config_id, symbol))
+            conn.commit()
+        audit_warning = ''
+        try:
+            database.save_order_log(
+                f'amend:{uuid.uuid4().hex}', symbol, config_id, side, price, tp or 0, sl or 0,
+                f'原入场={row["price"]} TP={row["take_profit"]} SL={row["stop_loss"]}；{reason}',
+                trade_mode='STRATEGY', config_id=config_id, amount=row['amount'],
+                event_type='ORDER_AMENDED', parent_order_id=order_id,
+            )
+        except Exception:
+            audit_warning = '；改单已生效但审计日志写入失败，不要重复提交'
+        return f'✅ 模拟改单已确认：ID={order_id} {side} Entry={price} TP={tp} SL={sl}；数量与有效期保持不变。理由：{reason}{audit_warning}'
+    except Exception as exc:
+        return f'❌ 模拟改单失败：{exc}'
 
 
 @tool(args_schema=UpdateStrategyProtectionSchema)
@@ -354,12 +419,14 @@ def update_position_protection_strategy(order_id: str, reason: str, config_id: s
             reference = float(MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
         sl = stop_loss if stop_loss is not None else row['stop_loss']
         tp = take_profit if take_profit is not None else row['take_profit']
-        side = 'LONG' if 'BUY' in str(row['side']).upper() else 'SHORT'
+        side = {'BUY': 'LONG', 'SELL': 'SHORT'}.get(str(row['side']).upper())
+        if side is None:
+            return '❌ 无法确认模拟订单多空方向'
         PositionProtection._validate(side, reference, sl, tp)
         with database.get_db_conn() as conn:
             changed = conn.execute(
-                "UPDATE mock_orders SET stop_loss=?,take_profit=? WHERE order_id=? AND config_id=? AND status='OPEN' AND is_filled=? AND stop_loss IS ? AND take_profit IS ?",
-                (sl, tp, order_id, config_id, row['is_filled'], row['stop_loss'], row['take_profit']),
+                "UPDATE mock_orders SET stop_loss=?,take_profit=? WHERE order_id=? AND config_id=? AND symbol=? AND status='OPEN' AND is_filled=? AND price=? AND stop_loss IS ? AND take_profit IS ?",
+                (sl, tp, order_id, config_id, symbol, row['is_filled'], row['price'], row['stop_loss'], row['take_profit']),
             ).rowcount
             conn.commit()
         if not changed:

@@ -35,6 +35,7 @@ def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
         "cancel_orders_strategy",
         "close_position_strategy",
         "update_position_protection_strategy",
+        "update_entry_order_strategy",
     ]
 
 

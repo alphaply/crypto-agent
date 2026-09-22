@@ -58,7 +58,37 @@ close_position_real负责主动部分/全部退出；entry_price=0表示立即�
 
 
 def trading_policy(mode: str) -> str:
-    return ""
+    from backend.agent.tool_registry import get_trade_tools_for_mode
+
+    mode = str(mode or 'STRATEGY').upper()
+    names = ', '.join(tool.name for tool in get_trade_tools_for_mode(mode))
+    text = (
+        f'## 本轮交易工具接口（模式 {mode}）\n已绑定：{names}。\n'
+        '有执行决定时应调用对应工具；等待无需调用。不能仅凭历史摘要声称“环境没有下单/改单接口”。'
+        '工具绑定不保证交易所可用；接口失败时报告实际错误，不把文字计划当成已执行。'
+        '用户明确要求保持某挂单不变时尊重该限制。\n'
+        'LONG表示持仓做多（入场BUY、平仓SELL），SHORT表示持仓做空（入场SELL、平仓BUY）；'
+        '不得把平仓买卖方向当作持仓方向。改单保持原方向，不能用改单翻多/翻空。\n'
+    )
+    if mode == 'REAL':
+        text += (
+            '修改入场价/总数量：update_entry_order_real(order_id, entry_price和/或amount, pos_side, reason)。'
+            '只处理本配置托管未完全成交的合约限价入场单；amount包含已成交数量，不能小于等于已成交量。\n'
+            '修改止盈止损：update_position_protection_real(pos_side, stop_loss和/或take_profit, reason)。'
+            '省略字段保留；作用于同方向整个仓位及待成交计划，不能当作单笔订单独立保护。\n'
+            '待成交多单SL<入场<TP，空单TP<入场<SL（仅校验已设置的价格）；已有仓位按当前触发参考价校验，'
+            '因此允许保护盈利的移动止损。入场改单仍须满足保留的TP/SL；若需先调保护，先验证其同时兼容旧入场、新入场和现有仓位。'
+            '两个调用不是原子事务，任一步失败立即停止并核对，不能取消保护绕过校验。\n'
+            'confirmed才表示入场改单确认；pending不可重复提交，unchanged表示原值未变。'
+            '保护WAITING表示等待成交；ACTIVE且error为空表示最近核验通过，不是未来保证。\n'
+        )
+    elif mode == 'STRATEGY':
+        text += (
+            '未成交模拟单：update_entry_order_strategy(order_id, pos_side, entry_price和/或stop_loss和/或take_profit, reason)，'
+            '同时校验并修改，省略价格保留，数量和有效期不变。多单SL<入场<TP，空单TP<入场<SL。\n'
+            '已成交模拟仓位不能修改历史入场价；使用update_position_protection_strategy(order_id, stop_loss和/或take_profit, reason)管理保护。\n'
+        )
+    return text
 
 
 def protection_context(config_id: str) -> str:
