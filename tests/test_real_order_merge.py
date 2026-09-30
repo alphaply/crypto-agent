@@ -64,7 +64,8 @@ class RealOrderMergeTests(unittest.TestCase):
         tool.exchange = exchange
         return tool
 
-    def test_cancel_order_falls_back_to_trigger_when_regular_reports_closed(self):
+    @patch('backend.utils.order_ownership.assert_owned_perpetual_order', return_value={'role':'legacy'})
+    def test_cancel_order_falls_back_to_trigger_when_regular_reports_closed(self, _ownership):
         exchange = FakeExchange(
             cancel_responses=[
                 {"id": "stop-1", "status": "closed"},
@@ -83,7 +84,7 @@ class RealOrderMergeTests(unittest.TestCase):
         self.assertEqual(exchange.cancelled, [("stop-1", {}), ("stop-1", {"trigger": True})])
 
     @patch("backend.utils.market_data.database.get_db_conn", side_effect=RuntimeError("no db"))
-    def test_close_short_stop_order_merges_same_price_same_direction(self, _mock_db):
+    def test_close_short_stop_does_not_merge_or_cancel_same_price_order(self, _mock_db):
         exchange = FakeExchange(
             open_orders=[
                 {
@@ -108,16 +109,16 @@ class RealOrderMergeTests(unittest.TestCase):
         )
 
         self.assertEqual(result["id"], "new-1")
-        self.assertEqual(exchange.cancelled, [("a", {"trigger": True})])
+        self.assertEqual(exchange.cancelled, [])
         self.assertEqual(exchange.created[0]["type"], "STOP_MARKET")
         self.assertEqual(exchange.created[0]["side"], "buy")
-        self.assertAlmostEqual(exchange.created[0]["amount"], 0.3)
+        self.assertAlmostEqual(exchange.created[0]["amount"], 0.2)
         self.assertEqual(exchange.created[0]["params"]["positionSide"], "SHORT")
         self.assertEqual(exchange.created[0]["params"]["stopPrice"], 1600.0)
         self.assertNotIn("closePosition", exchange.created[0]["params"])
 
     @patch("backend.utils.market_data.database.get_db_conn", side_effect=RuntimeError("no db"))
-    def test_close_short_full_stop_uses_close_position_without_quantity(self, _mock_db):
+    def test_close_short_partial_stop_does_not_absorb_existing_stop_and_become_full_close(self, _mock_db):
         exchange = FakeExchange(
             open_orders=[
                 {
@@ -142,16 +143,16 @@ class RealOrderMergeTests(unittest.TestCase):
         )
 
         self.assertEqual(result["id"], "new-1")
-        self.assertEqual(exchange.cancelled, [("a", {"trigger": True})])
+        self.assertEqual(exchange.cancelled, [])
         self.assertEqual(exchange.created[0]["type"], "STOP_MARKET")
         self.assertEqual(exchange.created[0]["side"], "buy")
-        self.assertIsNone(exchange.created[0]["amount"])
+        self.assertEqual(exchange.created[0]["amount"], 0.2)
         self.assertEqual(exchange.created[0]["params"]["positionSide"], "SHORT")
         self.assertEqual(exchange.created[0]["params"]["stopPrice"], 1600.0)
-        self.assertTrue(exchange.created[0]["params"]["closePosition"])
+        self.assertNotIn("closePosition", exchange.created[0]["params"])
 
     @patch("backend.utils.market_data.database.get_db_conn", side_effect=RuntimeError("no db"))
-    def test_open_limit_order_merges_same_price_same_direction(self, _mock_db):
+    def test_open_perpetual_limit_does_not_merge_same_price_order(self, _mock_db):
         exchange = FakeExchange(
             open_orders=[
                 {
@@ -173,12 +174,24 @@ class RealOrderMergeTests(unittest.TestCase):
         )
 
         self.assertEqual(result["id"], "new-1")
-        self.assertEqual(exchange.cancelled, [("a", {})])
+        self.assertEqual(exchange.cancelled, [])
         self.assertEqual(exchange.created[0]["type"], "LIMIT")
         self.assertEqual(exchange.created[0]["side"], "buy")
-        self.assertAlmostEqual(exchange.created[0]["amount"], 0.3)
+        self.assertAlmostEqual(exchange.created[0]["amount"], 0.2)
         self.assertEqual(exchange.created[0]["price"], 1600.0)
         self.assertEqual(exchange.created[0]["params"]["positionSide"], "LONG")
+
+    @patch("backend.utils.market_data.database.get_db_conn", side_effect=RuntimeError("no db"))
+    def test_spot_dca_keeps_existing_same_price_merge_behavior(self, _mock_db):
+        exchange = FakeExchange(open_orders=[{
+            'id':'spot-1','type':'LIMIT','side':'buy','price':1600,'amount':.1,
+            'info':{'type':'LIMIT'},
+        }])
+        exchange.options['defaultType']='spot'
+        tool=self.make_tool(exchange)
+        tool.place_real_order('BTC/USDT','BUY_LIMIT',{'entry_price':1600,'amount':.2})
+        self.assertEqual(exchange.cancelled,[('spot-1',{})])
+        self.assertAlmostEqual(exchange.created[0]['amount'],.3)
 
     @patch("backend.utils.market_data.database.get_db_conn", side_effect=RuntimeError("no db"))
     def test_open_short_limit_uses_sell_and_short_position_side(self, _mock_db):

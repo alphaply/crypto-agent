@@ -24,6 +24,7 @@ class TemporaryChatRuntimeRequest(BaseModel):
     market_type: Literal["spot", "swap"] = "spot"
     symbol: str
     llm_provider_id: str
+    temperature: float | None = None
     global_requirement: str | None = None
     system_prompt_role: Literal["system", "user"] | None = None
     read_only: bool = True
@@ -138,6 +139,7 @@ class ConfigAgentPayload(BaseModel):
     symbol: str
     enabled: bool = True
     mode: str = "STRATEGY"
+    exit_mode: Literal["attached_required", "attached_optional", "independent_exits"] | None = None
     model: str = ""
     api_base: str | None = None
     temperature: float | None = None

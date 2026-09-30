@@ -153,7 +153,7 @@ class DailySummaryTests(unittest.TestCase):
         database.save_daily_summary("2026-05-06", "BTC/USDT", "btc-a", "second", 2)
         database.save_daily_summary("2026-05-05", "BTC/USDT", "btc-a", "updated", 3)
 
-        rows = database.get_daily_summaries("btc-a", days=10)
+        rows = database.list_daily_summaries(config_id="btc-a", limit=10)
 
         self.assertEqual([(row["date"], row["summary"], row["source_count"]) for row in rows], [
             ("2026-05-06", "second", 2),
@@ -262,7 +262,7 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual(deleted["deleted"], 1)
         self.assertEqual([row["market_summary"] for row in database.get_short_memories("btc-a", limit=10)], ["A"])
         self.assertEqual([row["market_summary"] for row in database.get_short_memories("eth-a", limit=10)], ["C"])
-        self.assertEqual(len(database.get_daily_summaries("btc-a", days=10)), 1)
+        self.assertEqual(len(database.list_daily_summaries(config_id="btc-a", limit=10)), 1)
         self.assertEqual(database.get_summary_count("BTC/USDT", config_id="btc-a"), 1)
 
     def test_summary_queries_respect_config_agent_type_and_pagination(self):

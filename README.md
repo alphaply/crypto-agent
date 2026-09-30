@@ -8,14 +8,16 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 
 - FastAPI 后端和 React + Vite 前端
 - 多 Agent 策略配置和定时调度
-- 实盘合约限价开仓可选 TP/SL、成交后保护维护与原生限价改单；最近 24 小时成交事实、每轮工作记忆与每日交易复盘（[流程说明](docs/TRADING_WORKFLOW.md)）
-- Agent 决策补充历史起点收益率、回撤、7 天平仓战绩及带时间戳和变化的市场多空指标（[指标口径](docs/agent-performance-context.md)）。
-- 每轮明确当前可用交易工具；实盘入场改单支持多空方向校验，模拟未成交单支持联合修改入场价和 TP/SL，已成交仓位单独管理保护。
+- 合约开仓、加仓、按数量减仓和批量顺序操作；退出方式可选必填 TP/SL、可选 TP/SL 或独立退出单，实盘与模拟均支持（[流程说明](docs/TRADING_WORKFLOW.md)）。
+- 模型可主动新增、修改或停用任务交易规则；后台记忆中心支持人工编辑、锁定和版本记录。每轮同时读取最近三轮摘要、有界短期记忆和每日复盘。
+- 收益、回撤和最近 7 天平仓复盘纳入短期记忆更新；每轮决策读取压缩记忆、当前账户状态和行情，减少重复账本（[指标口径](docs/agent-performance-context.md)）。
+- 交易接口及改单约束随工具描述提供；每轮保留精简的 TP/SL 状态。实盘入场改单支持多空方向校验，模拟未成交单支持联合修改入场价和 TP/SL，已成交仓位单独管理保护。
+- 行情上下文展示最近 10 根已收盘 K 线及时间、成交量，包含 CHOP14、CMF20、Squeeze 收缩/释放状态及趋势、动量、相对波动与量能参考；指标仍使用完整历史计算和预热。
 - K 线、均线、持仓、订单和盈亏展示
 - 聊天控制台、运行配置页、公开用量统计页
 - 消息情报：官方宏观经济日历、美联储/美国财政部政策、美债流动性与加密新闻（默认每轮最多 10 项，支持全局 LLM 压缩和缓存回退）
 - SQLite 本地状态存储
-- Docker Compose 部署，Web 服务和调度器分容器运行
+- Docker 部署，Web 服务和调度器分容器运行
 
 ## 项目结构
 
@@ -66,8 +68,7 @@ Copy-Item .env.template .env
 ADMIN_PASSWORD=your-strong-password
 JWT_SECRET=your-long-random-jwt-secret
 CONFIG_MASTER_KEY=your-long-stable-config-master-key
-HOST_PORT=31421
-APP_PORT=7860
+PORT=7860
 RUN_SCHEDULER_IN_WEB=true
 SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
@@ -116,7 +117,6 @@ npm run build --prefix frontend
 ```bash
 mkdir crypto-agent
 cd crypto-agent
-curl -O https://raw.githubusercontent.com/alphaply/crypto-agent/beta/docker-compose.yml
 curl -O https://raw.githubusercontent.com/alphaply/crypto-agent/beta/.env.template
 cp .env.template .env
 ```
@@ -127,8 +127,7 @@ cp .env.template .env
 ADMIN_PASSWORD=your-strong-password
 JWT_SECRET=your-long-random-jwt-secret
 CONFIG_MASTER_KEY=your-long-stable-config-master-key
-HOST_PORT=31421
-APP_PORT=7860
+PORT=7860
 SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
 DAILY_SUMMARY_TIME=00:05
@@ -139,9 +138,15 @@ SHORT_MEMORY_RETRY_MINUTES=15
 ### 启动服务
 
 ```bash
-docker compose pull
-docker compose up -d
-docker compose logs -f crypto-agent crypto-agent-scheduler
+docker pull alphaply712/crypto-agent:latest
+docker run -d --name crypto-agent --restart unless-stopped \
+  --env-file .env -e RUN_SCHEDULER_IN_WEB=false \
+  -p 31421:7860 -v crypto_agent_data:/app/data \
+  alphaply712/crypto-agent:latest
+docker run -d --name crypto-agent-scheduler --restart unless-stopped --no-healthcheck \
+  --env-file .env -e RUN_SCHEDULER_IN_WEB=false \
+  -v crypto_agent_data:/app/data \
+  alphaply712/crypto-agent:latest uv run --no-sync python -m backend.app.core.scheduler
 ```
 
 默认访问地址：
@@ -156,7 +161,7 @@ http://localhost:31421/
 curl http://localhost:31421/health
 ```
 
-Docker Compose 会启动两个容器：
+以上命令启动两个容器，共用数据卷和密钥，且只有一个调度器：
 
 - `crypto-agent`：Web API 和前端静态资源
 - `crypto-agent-scheduler`：后台调度器
@@ -166,22 +171,41 @@ Docker Compose 会启动两个容器：
 ### 常用 Docker 命令
 
 ```bash
-docker compose logs -f
-docker compose pull
-docker compose up -d
-docker compose down
+docker logs -f crypto-agent
+docker logs -f crypto-agent-scheduler
+docker restart crypto-agent crypto-agent-scheduler
 ```
 
-不要在正常升级时执行 `docker compose down -v`，它会删除数据库和运行状态。
+升级需拉取镜像、备份数据并重新创建容器，详见 [部署指南](docs/DEPLOYMENT_GUIDE.md)。不要删除 `crypto_agent_data` 数据卷。仓库不提供 Compose 文件；已有自维护 Compose 可继续使用相同镜像、数据卷和环境变量。
 
 ### 从源码构建镜像
 
+当前发布镜像为 `alphaply712/crypto-agent:latest`。构建并验证后推送同一标签：
+
+- **极速构建（推荐，本地已有前端编译产物）**：
+  ```bash
+  npm run build --prefix frontend
+  docker build -f Dockerfile.prebuilt -t alphaply712/crypto-agent:latest .
+  ```
+- **全量多阶段构建（自动在容器内编译前端）**：
+  ```bash
+  docker build -t alphaply712/crypto-agent:latest .
+  # 若网络受限拉取 Docker Hub 慢或 EOF，可传入镜像源加速：
+  # docker build --build-arg NODE_IMAGE=dockerpull.cn/library/node:22-bookworm-slim -t alphaply712/crypto-agent:latest .
+  ```
+
 ```bash
-docker build -t alphaply712/crypto-agent:latest .
+docker push alphaply712/crypto-agent:latest
+```
+
+宝塔容器或已有 Compose 服务须使用完整镜像名 `alphaply712/crypto-agent:latest`，拉取新镜像后重新创建容器才会生效。更新时保留原有端口、环境变量、数据卷和 `CONFIG_MASTER_KEY`；只执行 `docker push` 不会更新运行中的容器。
+
+```bash
 docker run --rm -p 31421:7860 \
   -e ADMIN_PASSWORD=local-password \
   -e JWT_SECRET=local-jwt-secret \
   -e CONFIG_MASTER_KEY=local-config-master-key \
+  -e RUN_SCHEDULER_IN_WEB=false \
   alphaply712/crypto-agent:latest
 ```
 
@@ -197,16 +221,22 @@ docker run --rm -p 31421:7860 \
 - LLM 模型、API Base、API Key、temperature 和扩展参数
 - 交易所 API Key、Secret 和 Passphrase
 - 汇总提示词、短期记忆、模型价格和统计配置
+- 任务退出管理方式；记忆中心的长期交易规则、人工锁定和修改记录
 
 密钥会通过 `CONFIG_MASTER_KEY` 加密后保存在 SQLite 中。
+
+新建任务默认要求止盈和止损；旧 REAL 任务未配置 `exit_mode` 时保持可选，旧 STRATEGY 保持必填。选择「独立退出单」后，开仓不附带整仓 TP/SL，模型通过带数量的市价退出、限价止盈或触发市价止损分批管理仓位。看板展示退出单及未被有效止损覆盖的数量。有持仓、挂单或待核验操作时不能切换退出方式。
 
 REAL / STRATEGY 任务的「调度设置」支持默认间隔加自定义时段：选择星期、时区、开始/结束时间和运行间隔（15–1440 分钟），按列表从上到下匹配第一条，其余时间沿用默认间隔。可一键填入「亚盘 30 / 美盘 20 / 周末 30 分钟」预设，再修改、保存任务，最后点击页面上的「保存配置」生效。规则从时段开始时间对齐，例如 09:30 起每 20 分钟在 09:30、09:50、10:10 运行；跨午夜的星期指开始那一天，全天使用 00:00–24:00。纽约时区自动适配夏令时。详见 [交易执行与证据说明](docs/TRADING_WORKFLOW.md)。
 
 ## 验证
 
 ```bash
-uv run python -m unittest discover -s tests
+uv run pytest -q
 npm run build --prefix frontend
+npm run lint --prefix frontend
+npm run test:chat --prefix frontend
+npm run test:dashboard --prefix frontend
 uv run backend/utils/test_agent_connection.py
 ```
 
@@ -224,7 +254,7 @@ uv run backend/utils/test_agent_connection.py
 支持在后台「配置 → 消息源」添加 Polymarket 事件监控，无需 API key。公开看板以行情主区与消息侧栏并列展示，预测概率也会进入 Agent 的消息上下文。配置及采集机制见 [Polymarket 监控说明](docs/POLYMARKET.md)。
 ## TP/SL、持仓周期与数据库维护
 
-同方向加仓未填写 TP/SL 时继承现有保护；填写时先更新整仓保护再加仓。Dashboard 支持手动调整、明确取消单项保护，并查看最近 7 天持仓周期。后台「数据库管理」支持只读副本分析、历史清理预览、自动备份、周期重建与空间回收。
+可选附带保护模式下，同方向加仓未填写 TP/SL 时继承现有保护；填写时先更新整仓保护再加仓。独立退出模式下，加仓不会扩大已有退出单数量。Dashboard 支持查看退出单和覆盖数量、调整附带保护，以及查看最近 7 天持仓周期。后台「数据库管理」支持只读副本分析、历史清理预览、自动备份、周期重建与空间回收。
 
 数据库默认使用 `data/trading_data.db`；根目录同名文件仅在目标不存在时迁移。详见 [同步库核查与维护说明](docs/DB_AUDIT_2026-09-08.md)。
 

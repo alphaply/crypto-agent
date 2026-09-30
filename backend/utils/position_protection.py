@@ -212,8 +212,11 @@ class PositionProtection:
         if tp is not None and not (reference < tp if side == "LONG" else tp < reference):
             raise ValueError("LONG requires reference < TP; SHORT requires TP < reference")
 
-    def open(self, symbol, op):
+    def open(self, symbol, op, operation_id=None):
         """Open with protection intent persisted before submitting the entry order."""
+        if operation_id is None:
+            from backend.utils.trade_operations import current_operation_id
+            operation_id = current_operation_id.get()
         with _lock(self.account_scope):
             market = self._market(symbol)
             symbol = market["symbol"]
@@ -258,7 +261,7 @@ class PositionProtection:
                     if float(position.get('contracts') or 0) > 0 and str(position.get('side', '')).upper() != side:
                         raise ValueError('One-way mode has opposite exposure; close it explicitly before opening a new direction')
             entry = dict(client_id="cae" + uuid.uuid4().hex[:28], status="submitting", id=None,
-                         created_at=time.time(), price=price, amount=amount)
+                         created_at=time.time(), price=price, amount=amount, operation_id=operation_id)
             plan["entries"].append(entry)
             self._save(plan)
             params = {**self._params(side, hedged), "clientOrderId": entry["client_id"], "timeInForce": "GTC"}
@@ -289,8 +292,11 @@ class PositionProtection:
             return {**order, "protection_state": plan["state"], "protection_error": plan.get("error"),
                     "stop_loss": sl, "take_profit": tp}
 
-    def amend_entry(self, symbol, order_id, price=None, amount=None, reason='', pos_side=None):
+    def amend_entry(self, symbol, order_id, price=None, amount=None, reason='', pos_side=None, operation_id=None):
         """Amend a managed perpetual limit entry. Amount means TOTAL base quantity."""
+        if operation_id is None:
+            from backend.utils.trade_operations import current_operation_id
+            operation_id = current_operation_id.get()
         if price is None and amount is None:
             raise ValueError('Provide a new entry price or total quantity')
         if not str(reason).strip():
@@ -331,7 +337,7 @@ class PositionProtection:
             if new_price == entry['price'] and new_amount == entry['amount']:
                 return {'id': str(order_id), 'amendment_state': 'unchanged', 'protection_state': plan['state']}
             entry['amendment'] = dict(state='pending', price=new_price, amount=new_amount,
-                                      reason=reason, requested_at=time.time())
+                                      reason=reason, requested_at=time.time(), operation_id=operation_id)
             entry['last_amended_at'] = entry['amendment']['requested_at']
             self._save(plan)  # Persist intent before the exchange write, including timeouts.
             try:
@@ -551,6 +557,13 @@ class PositionProtection:
                 if any(str(leg.get('id')) == oid and leg.get('status') in TERMINAL
                        for leg in plan.get('legs', [])):
                     continue
+                from backend.utils.order_ownership import assert_owned_perpetual_order
+                try:
+                    assert_owned_perpetual_order(self.mt, symbol, oid, self.config_id)
+                except ValueError:
+                    # An exchange conflict does not authorize cancelling a manual
+                    # or another configuration's close-position trigger.
+                    continue
                 self._cancel({'id': oid, 'status': 'open'}, plan, True)
 
     def _cleanup_conflicting_legs(self, plan, kind, current_leg):
@@ -728,7 +741,11 @@ class PositionProtection:
                                     'error': 'Exchange credentials changed; protection plan requires its original account'})
                     continue
                 try:
-                    self._reconcile(plan)
+                    if plan.get('execution_mode') == 'independent_exits':
+                        from backend.utils.independent_exits import IndependentExits
+                        IndependentExits(self.mt)._reconcile(plan)
+                    else:
+                        self._reconcile(plan)
                 except Exception:
                     pass  # Persisted and returned as an actionable maintenance error.
                 results.append({"symbol": plan["symbol"], "side": plan["side"], "state": plan["state"], "error": plan.get("error")})

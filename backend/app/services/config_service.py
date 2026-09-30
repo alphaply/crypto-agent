@@ -20,6 +20,7 @@ from backend.database import (
     update_model_pricing,
 )
 from backend.utils.prompt_utils import normalize_prompt_reference, resolve_prompt_path
+from backend.utils.exit_policy import assert_exit_mode_change_allowed, effective_exit_mode
 
 from backend.app.services.common import logger, prompt_dir
 
@@ -135,6 +136,17 @@ def save_config_payload(
     normalized_agents_payload = []
     for agent_payload in agents_payload or []:
         config_id = str(agent_payload.get("config_id") or "agent")
+        agent_payload = dict(agent_payload)
+        previous = global_config.get_config_by_id(config_id)
+        if previous:
+            # Omitted fields preserve the policy of existing clients/configurations.
+            if agent_payload.get("exit_mode") is None:
+                agent_payload["exit_mode"] = effective_exit_mode(previous)
+            assert_exit_mode_change_allowed(previous, agent_payload)
+        else:
+            if agent_payload.get("exit_mode") is None:
+                agent_payload["exit_mode"] = "attached_required"
+        effective_exit_mode(agent_payload)
         _validate_market_timeframes(
             agent_payload.get("market_timeframes"),
             field_name=f"agents[{config_id}].market_timeframes",
@@ -210,6 +222,13 @@ def export_database_payload() -> tuple[bytes, str]:
 
 def full_import_payload(data: dict, write_env: bool = False) -> dict:
     """导入完整配置包，包括 prompts 和 model_pricing。"""
+    for agent in data.get('agents') or []:
+        previous = global_config.get_config_by_id(agent.get('config_id'))
+        if previous:
+            if agent.get('exit_mode') is None:
+                agent['exit_mode'] = effective_exit_mode(previous)
+            assert_exit_mode_change_allowed(previous, agent)
+        effective_exit_mode(agent)
     prompt_files: dict[str, str] = data.pop("prompts", None) or {}
     model_pricing: list[dict] = data.pop("model_pricing", None) or []
     result = import_full_snapshot(

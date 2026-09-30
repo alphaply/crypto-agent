@@ -75,10 +75,10 @@ class MarketSmcFormattingTests(unittest.TestCase):
                         "rsi_analysis": {"rsi": 32.4, "divergence": "bearish divergence 馃敶"},
                         "macd": {"diff": -6.379, "hist": -3.044, "momentum": "hist down 鈿狅笍"},
                         "bollinger": {"up": 2308.4, "low": 2265.2, "width": 0.0189},
-                        "recent_opens": list(range(1, 12)),
-                        "recent_highs": list(range(2, 13)),
-                        "recent_lows": list(range(0, 11)),
-                        "recent_closes": [x + 0.5 for x in range(1, 12)],
+                        "recent_opens": list(range(1, 17)),
+                        "recent_highs": list(range(2, 18)),
+                        "recent_lows": list(range(0, 16)),
+                        "recent_closes": [x + 0.5 for x in range(1, 17)],
                         "smc": {
                             "structure": {"scope": "internal", "type": "CHoCH", "bias": "bearish", "level": 2260},
                             "internal_structure": {"scope": "internal", "type": "CHoCH", "bias": "bearish", "level": 2260},
@@ -104,7 +104,8 @@ class MarketSmcFormattingTests(unittest.TestCase):
         self.assertIn("Liquidity/IFVG:", text)
         self.assertIn("100=2284.2", text)
         self.assertIn("Recent 10 candles", text)
-        self.assertIn("[2,3,1,2.5]", text)
+        self.assertIn("[7,8,6,7.5]", text)
+        self.assertNotIn("[6,7,5,6.5]", text)
         self.assertNotIn("[1,2,0,1.5]", text)
         for removed_label in ["上涨排列", "下跌排列", "震荡偏多", "震荡偏空", "区间震荡", "Strong Uptrend", "Bearish Neutral"]:
             self.assertNotIn(removed_label, text)

@@ -46,6 +46,7 @@ _protection_thread = None
 _protection_futures = {}
 _protection_executor = None
 _protection_clients = {}
+_disabled_mock_maintenance_at = {}
 _execution_sync_futures = {}
 _execution_sync_executor = None
 _execution_sync_last = {}
@@ -936,6 +937,12 @@ def protection_tick():
     from backend.database import get_db_conn
     with get_db_conn() as conn:
         rows = conn.execute('SELECT config_id,payload FROM real_protection_plans').fetchall()
+        mock_ids = {r[0] for r in conn.execute("SELECT DISTINCT config_id FROM mock_orders WHERE status='OPEN'")}
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'mock_positions' in tables:
+            mock_ids.update(r[0] for r in conn.execute('SELECT DISTINCT config_id FROM mock_positions WHERE quantity>0'))
+        if 'mock_exit_orders' in tables:
+            mock_ids.update(r[0] for r in conn.execute("SELECT DISTINCT config_id FROM mock_exit_orders WHERE status='OPEN'"))
     ids = {row['config_id'] for row in rows if json.loads(row['payload'])['state'] != 'DONE'}
     configs = {cfg['config_id']: cfg for cfg in global_config.get_all_symbol_configs()}
     # Data accounting continues for recently active plans even when decision making
@@ -957,6 +964,16 @@ def protection_tick():
             logger.error(f'[PositionProtection] {config_id}: live plan has no REAL exchange configuration; manual attention required')
             continue
         _protection_futures[config_id] = _protection_executor.submit(run_config_maintenance, cfg)
+    # Decision scheduling may be disabled while a simulated position still needs
+    # entry/exit reconciliation. Reuse the same in-flight guard as live plans.
+    for config_id in mock_ids:
+        if config_id in _protection_futures:
+            continue
+        cfg = configs.get(config_id)
+        if (cfg and cfg.get('mode', '').upper() == 'STRATEGY' and not cfg.get('enabled', True)
+                and time.monotonic() - _disabled_mock_maintenance_at.get(config_id, -60) >= 60):
+            _disabled_mock_maintenance_at[config_id] = time.monotonic()
+            _protection_futures[config_id] = _protection_executor.submit(run_config_maintenance, cfg)
 
 
 def _start_protection_monitor():

@@ -134,14 +134,15 @@ class ExecutionLedger:
                     **common,
                 )
                 indexed = indexed or bool(item.get('id'))
-            for item in plan.get('legs', []):
+            for item in [*plan.get('legs', []), *plan.get('exits', [])]:
                 order_id = item.get('execution_order_id') or item.get('id')
                 register_order(
                     self.scope,
                     self.symbol,
                     order_id,
                     row['config_id'],
-                    'stop_loss' if item.get('kind') == 'sl' else 'take_profit',
+                    ('agent_exit' if item.get('exit_type') == 'market' else 'stop_loss'
+                     if item.get('kind') == 'sl' or item.get('exit_type') == 'stop_market' else 'take_profit'),
                     refresh=False,
                     trigger_price=item.get('trigger_price'),
                     **common,
@@ -153,7 +154,8 @@ class ExecutionLedger:
                         self.symbol,
                         item.get('id'),
                         row['config_id'],
-                        'stop_loss' if item.get('kind') == 'sl' else 'take_profit',
+                        ('agent_exit' if item.get('exit_type') == 'market' else 'stop_loss'
+                         if item.get('kind') == 'sl' or item.get('exit_type') == 'stop_market' else 'take_profit'),
                         refresh=False,
                         trigger_price=item.get('trigger_price'),
                         **common,

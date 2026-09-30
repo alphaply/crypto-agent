@@ -19,6 +19,9 @@ def test_trade_tools_for_real_mode_include_cancel_real():
         "cancel_orders_real",
         "update_position_protection_real",
         "update_entry_order_real",
+        "update_exit_order",
+        "execute_trade_actions",
+        "manage_trading_rules",
     ]
 
 
@@ -26,6 +29,7 @@ def test_trade_tools_for_spot_dca_mode_include_cancel_real():
     assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA")) == [
         "open_position_spot_dca",
         "cancel_orders_real",
+        "manage_trading_rules",
     ]
 
 
@@ -36,6 +40,9 @@ def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
         "close_position_strategy",
         "update_position_protection_strategy",
         "update_entry_order_strategy",
+        "update_exit_order",
+        "execute_trade_actions",
+        "manage_trading_rules",
     ]
 
 

@@ -174,7 +174,12 @@ def update_mock_order_filled(order_id):
 
 def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
     """平仓模拟挂单"""
-    _mock_trading_store.close_order(order_id, close_price=close_price, realized_pnl=realized_pnl)
+    return _mock_trading_store.close_order(order_id, close_price=close_price, realized_pnl=realized_pnl)
+
+
+def reduce_mock_positions(config_id: str, symbol: str, pos_side: str, amount: float, current_price: float, reason: str = ''):
+    """Reduce filled attached-mode positions atomically at the observed market price."""
+    return _mock_trading_store.reduce_positions(config_id, symbol, pos_side, amount, current_price, reason)
 
 
 def save_order_log(

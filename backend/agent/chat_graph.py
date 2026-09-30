@@ -28,7 +28,7 @@ from langgraph.types import Command, interrupt
 
 from backend.agent.agent_graph import start_node as scheduler_start_node
 from backend.agent.agent_models import AgentState
-from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool
+from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool, tool_result_status
 from backend.config import config as global_config
 from backend.config_store import load_effective_runtime_snapshot
 import backend.database as database
@@ -107,6 +107,7 @@ def _resolve_temporary_chat_config(runtime: Dict[str, Any]) -> Dict[str, Any]:
         "model": provider.get("model") or runtime.get("model") or "",
         "api_key": provider.get("api_key"),
         "api_base": provider.get("api_base") or "",
+        "temperature": runtime.get("temperature") if runtime.get("temperature") is not None else provider.get("temperature"),
         "extra_body": provider.get("extra_body") or {},
         "compatibility_mode": provider.get("compatibility_mode") or "auto",
         "thinking_enabled": provider.get("thinking_enabled"),
@@ -333,11 +334,9 @@ def _message_context_text(message: Any) -> str:
         text = "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in content)
     else:
         text = str(content or "")
-    if text.strip():
-        return text
     tool_calls = getattr(message, "tool_calls", None) or []
     if tool_calls:
-        return f"Tool calls: {json.dumps(tool_calls, ensure_ascii=False, default=str)}"
+        return f"Tool calls: {json.dumps(tool_calls, ensure_ascii=False, default=str)}\n{text}".strip()
     return text
 
 
@@ -370,6 +369,10 @@ def _context_compaction_cutoff(history: list, cursor: int, force: bool = False) 
         and pending_chars < CHAT_CONTEXT_SUMMARY_MAX_CHARS
     ):
         return cursor
+    # Keep a complete user turn together, including every AI tool call and result.
+    # Splitting here can summarize a request but silently discard its execution result.
+    while cutoff > cursor and cutoff < len(history) and not isinstance(history[cutoff], HumanMessage):
+        cutoff -= 1
     return cutoff
 
 
@@ -416,7 +419,7 @@ New conversation to incorporate:
             model=cfg.get("model"),
             api_key=cfg.get("api_key") or os.getenv("OPENAI_API_KEY"),
             base_url=cfg.get("api_base"),
-            temperature=0,
+            temperature=cfg.get("temperature"),
             streaming=False,
             extra_body=cfg.get("extra_body"),
             thinking_enabled=cfg.get("thinking_enabled"),
@@ -690,7 +693,7 @@ def model_node(state: ChatState, config: RunnableConfig):
         model=model_name,
         api_key=api_key,
         base_url=api_base,
-        temperature=0.5,
+        temperature=cfg.get("temperature"),
         streaming=True,
         extra_body=cfg.get("extra_body"),
         thinking_enabled=cfg.get("thinking_enabled"),
@@ -832,8 +835,8 @@ def model_node(state: ChatState, config: RunnableConfig):
     }
 
 
-def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str) -> str:
-    return run_trade_tool(tool_name, args, config_id, symbol)
+def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str, operation_id: str | None = None) -> str:
+    return run_trade_tool(tool_name, args, config_id, symbol, operation_id=operation_id)
 
 
 def tools_node(state: ChatState, config: RunnableConfig):
@@ -847,11 +850,21 @@ def tools_node(state: ChatState, config: RunnableConfig):
     cfg = _resolve_chat_config(configurable)
     symbol = cfg.get("symbol", "Unknown") if cfg else state.get("symbol", "Unknown")
 
+    if cfg.get('read_only'):
+        return {'messages': [ToolMessage(tool_call_id=call['id'], content='Error: Read-only chat cannot execute tools.')
+                             for call in tool_calls], 'symbol': symbol}
+
+    stopped = False
     for call in tool_calls:
         tool_name = call["name"]
         tool_args = call.get("args", {})
+        if stopped:
+            outputs.append(ToolMessage(tool_call_id=call['id'], content=json.dumps({
+                'status': 'not_executed', 'reason': '前序工具被拒绝、失败或待核验，后续操作未执行。'
+            }, ensure_ascii=False)))
+            continue
 
-        approval = interrupt(
+        approval = True if tool_name == 'manage_trading_rules' else interrupt(
             {
                 "type": "tool_approval",
                 "tool_call_id": call["id"],
@@ -870,14 +883,17 @@ def tools_node(state: ChatState, config: RunnableConfig):
 
         if not approved:
             outputs.append(ToolMessage(tool_call_id=call["id"], content="Rejected by user."))
+            stopped = True
             continue
 
         try:
-            result = _run_tool(tool_name, tool_args, config_id, symbol)
+            result = _run_tool(tool_name, tool_args, config_id, symbol, operation_id=call['id'])
             outputs.append(ToolMessage(tool_call_id=call["id"], content=result))
+            stopped = tool_result_status(result) in {'failed', 'unknown', 'pending'}
         except Exception as exc:
             logger.error(f"Tool error ({tool_name}): {exc}")
             outputs.append(ToolMessage(tool_call_id=call["id"], content=f"Error: {exc}"))
+            stopped = True
 
     return {"messages": outputs, "symbol": symbol}
 

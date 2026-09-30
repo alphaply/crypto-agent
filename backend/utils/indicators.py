@@ -2,23 +2,11 @@ import pandas as pd
 import numpy as np
 
 def smart_fmt(value):
-    """
-    智能保留小数位，防止小币种数据被 round(x,2) 抹平
-    """
+    """Keep eight significant digits without turning missing or tiny values into zero."""
     if value is None or pd.isna(value):
-        return 0.0
+        return None
     val = float(value)
-    if val == 0: return 0.0
-    
-    abs_val = abs(val)
-    if abs_val >= 1000:
-        return round(val, 1)
-    elif abs_val >= 1:
-        return round(val, 3)
-    elif abs_val >= 0.01:
-        return round(val, 5)
-    else:
-        return round(val, 8)
+    return float(f"{val:.8g}") if np.isfinite(val) else None
 
 def calc_ema(series, span):
     # Recursive EMA seeded by the first close; insufficient warm-up is reported by callers.
@@ -113,7 +101,8 @@ def calc_vwap(df):
         vwap = (p * v).groupby(sessions).cumsum() / v.groupby(sessions).cumsum().replace(0, np.nan)
     else:
         vwap = (p * v).cumsum() / v.cumsum().replace(0, np.nan)
-    return vwap.fillna(p)
+    # A session with no traded volume has no volume-weighted price.
+    return vwap
 
 def calc_cci(df, period=20):
     """计算 CCI (Commodity Channel Index)"""
@@ -148,6 +137,142 @@ def calc_bollinger_bands(close, window=20, num_std=2):
     width = width.replace([np.inf, -np.inf], 0.0)
     return upper, rolling_mean, lower, width
 
+
+def calc_choppiness(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """CHOP measures path congestion, not direction; a zero range is undefined."""
+    if period <= 1:
+        raise ValueError("CHOP period must be greater than one")
+    true_range = calc_atr(df, 1)
+    price_range = df['high'].rolling(period).max() - df['low'].rolling(period).min()
+    ratio = true_range.rolling(period).sum() / price_range.where(price_range > 0)
+    return 100 * np.log10(ratio.where(ratio > 0)) / np.log10(period)
+
+
+def calc_cmf(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """OHLCV pressure proxy, not actual net capital flow; flat bars contribute zero."""
+    price_range = df['high'] - df['low']
+    multiplier = ((2 * df['close'] - df['high'] - df['low']) / price_range.where(price_range > 0))
+    multiplier = multiplier.mask(price_range == 0, 0.0)
+    volume_sum = df['volume'].rolling(period).sum()
+    return (multiplier * df['volume']).rolling(period).sum() / volume_sum.where(volume_sum > 0)
+
+
+def calc_squeeze_state(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """BB SMA/2 population std vs KC SMA/1.5 SMA(TR), without a second momentum oscillator."""
+    upper, middle, lower, _ = calc_bollinger_bands(df['close'], period, 2)
+    range_mean = calc_atr(df, 1).rolling(period).mean()
+    kc_upper, kc_lower = middle + 1.5 * range_mean, middle - 1.5 * range_mean
+    result = pd.Series('unavailable', index=df.index, dtype=object)
+    valid = upper.notna() & lower.notna() & (range_mean > 0)
+    result.loc[valid] = 'neutral'
+    result.loc[valid & (lower > kc_lower) & (upper < kc_upper)] = 'on'
+    result.loc[valid & (lower < kc_lower) & (upper > kc_upper)] = 'off'
+    return result
+
+
+def build_market_regime_context(df: pd.DataFrame) -> dict:
+    """Compact observations; durations are bounded by the available calculation history."""
+    chop, cmf, squeeze = calc_choppiness(df), calc_cmf(df), calc_squeeze_state(df)
+
+    def suffix_count(values):
+        current = values.iloc[-1]
+        if current == 'unavailable':
+            return None
+        count = 0
+        for value in reversed(values.tolist()):
+            if value != current:
+                break
+            count += 1
+        return count
+
+    def change(series):
+        return smart_fmt(series.iloc[-1] - series.iloc[-4]) if len(series) >= 4 else None
+
+    chop_states = chop.map(lambda value: 'unavailable' if pd.isna(value) else
+                           'choppy' if value > 61.8 else 'trending' if value < 38.2 else 'transition')
+    cmf_signs = cmf.map(lambda value: 'unavailable' if pd.isna(value) else
+                       'positive' if value > 0 else 'negative' if value < 0 else 'neutral')
+    release_age = None
+    previous = 'unavailable'
+    for state in squeeze:
+        if state in {'on', 'unavailable'}:
+            release_age = None
+        elif previous == 'on' and state == 'off':
+            release_age = 0
+        elif release_age is not None:
+            release_age += 1
+        previous = state
+    return {
+        'chop': {'value': smart_fmt(chop.iloc[-1]), 'change_3_bars': change(chop),
+                 'state': chop_states.iloc[-1], 'state_bars': suffix_count(chop_states)},
+        'cmf': {'value': smart_fmt(cmf.iloc[-1]), 'change_3_bars': change(cmf),
+                'sign': cmf_signs.iloc[-1], 'sign_bars': suffix_count(cmf_signs)},
+        'squeeze': {'state': squeeze.iloc[-1],
+                    'on_bars': (suffix_count(squeeze) if squeeze.iloc[-1] == 'on' else
+                                None if squeeze.iloc[-1] == 'unavailable' else 0),
+                    'bars_since_release': release_age},
+    }
+
+
+def build_agent_indicator_context(
+    df: pd.DataFrame,
+    emas: dict[int, pd.Series],
+    rsi: pd.Series,
+    atr: pd.Series,
+    macd_hist: pd.Series,
+) -> dict:
+    """Describe closed-bar changes in comparable units; these are observations, not forecasts."""
+    close = df['close']
+    price = float(close.iloc[-1])
+    atr_value = float(atr.iloc[-1])
+
+    def rounded(value, digits=3):
+        return round(float(value), digits) if pd.notna(value) and np.isfinite(value) else None
+
+    def in_atr(value):
+        return rounded(value / atr_value) if np.isfinite(atr_value) and atr_value > 0 else None
+
+    def change_pct(series, bars):
+        if len(series) <= bars or series.iloc[-bars - 1] <= 0:
+            return None
+        return rounded((series.iloc[-1] / series.iloc[-bars - 1] - 1) * 100)
+
+    prior_range = {}
+    if len(df) >= 21:
+        previous = df.iloc[-21:-1]
+        previous_high = float(previous['high'].max())
+        previous_low = float(previous['low'].min())
+        prior_range = {
+            'high': smart_fmt(previous_high),
+            'low': smart_fmt(previous_low),
+            # Signed distances: a negative distance means price has crossed that edge.
+            'to_high_atr': in_atr(previous_high - price),
+            'to_low_atr': in_atr(price - previous_low),
+        }
+
+    return {
+        'regime': build_market_regime_context(df),
+        'trend': {
+            'price_minus_ema20_atr': in_atr(price - emas[20].iloc[-1]) if len(df) >= 20 else None,
+            'ema20_minus_ema50_atr': in_atr(emas[20].iloc[-1] - emas[50].iloc[-1]) if len(df) >= 50 else None,
+            'ema20_change_3_bars_pct': change_pct(emas[20], 3) if len(df) >= 23 else None,
+        },
+        'momentum': {
+            'return_1_bar_pct': change_pct(close, 1),
+            'return_3_bars_pct': change_pct(close, 3),
+            'return_15_bars_pct': change_pct(close, 15),
+            'rsi_change_3_bars': rounded(rsi.iloc[-1] - rsi.iloc[-4], 2) if len(df) >= 18 else None,
+            'macd_hist_atr': in_atr(macd_hist.iloc[-1]) if len(df) >= 35 else None,
+            'macd_hist_change_1_bar_atr': in_atr(macd_hist.iloc[-1] - macd_hist.iloc[-2]) if len(df) >= 36 else None,
+        },
+        'volatility': {
+            'atr_pct': rounded(atr_value / price * 100),
+            'last_range_atr': in_atr(float(df['high'].iloc[-1] - df['low'].iloc[-1])),
+        },
+        'prior_range_20': prior_range,
+    }
+
+
 def calc_kdj(df, n=9, m1=3, m2=3):
     """计算 KDJ 指标"""
     low_list = df['low'].rolling(n).min()
@@ -164,7 +289,7 @@ def calc_kdj(df, n=9, m1=3, m2=3):
 
 def calculate_vp(df, length=360, rows=100, va_perc=0.70):
     """
-    计算体积分布 (Volume Profile) - 严格对齐 LuxAlgo 逻辑
+    Estimate a volume profile by uniformly allocating each candle's volume across its range.
     """
     if len(df) < 50: return None
     
@@ -172,7 +297,7 @@ def calculate_vp(df, length=360, rows=100, va_perc=0.70):
     high_val = subset['high'].max()
     low_val = subset['low'].min()
     
-    if high_val == low_val: return None
+    if high_val == low_val or subset['volume'].sum() <= 0: return None
     
     price_step = (high_val - low_val) / rows
     total_volume = np.zeros(rows)

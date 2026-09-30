@@ -334,7 +334,7 @@ def test_length_with_complete_tool_call_continues_and_saves_warning():
         state = agent_node(state, config)
         assert should_continue(state) == "finalize"
         finalize_node(state, config)
-    trade.assert_called_once_with("open_position_real", args, "unknown", "ETH/USDT")
+    trade.assert_called_once_with("open_position_real", args, "unknown", "ETH/USDT", operation_id="call-trace")
     sleep.assert_not_called()
     assert model.calls == 2
     assert "[输出提示]" in save.call_args.args[2]

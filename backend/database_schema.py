@@ -405,4 +405,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_position_history_config_time ON position_history(config_id, updated_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status ON scheduler_runs(status, scheduled_at)")
 
+    from backend.database_rules import initialize_trading_rules_schema
+    from backend.database_independent import initialize_independent_schema
+    from backend.utils.trade_operations import initialize_trade_operations_schema
+    initialize_trading_rules_schema(cursor)
+    initialize_independent_schema(cursor)
+    initialize_trade_operations_schema(cursor)
     conn.commit()

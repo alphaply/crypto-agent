@@ -8,6 +8,7 @@ import {
   Empty,
   Grid,
   Input,
+  InputNumber,
   Modal,
   Popconfirm,
   Segmented,
@@ -123,10 +124,9 @@ function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningStar
   if (!normalized.content?.trim() && !normalized.reasoning?.trim()) {
     return streaming ? (
       <div className="chat-message-content is-streaming">
-        <ReasoningBlock title={t('reasoning')} content="" streaming startedAt={reasoningStartedAt} />
         <div className="chat-waiting-inline">
           <span className="chat-stream-status-dot" />
-          <span>{status || (locale === 'zh' ? '正在等待模型响应' : 'Waiting for the model')}</span>
+          <span>{status || (locale === 'zh' ? '正在等待模型响应…' : 'Waiting for model response…')}</span>
         </div>
       </div>
     ) : null;
@@ -273,6 +273,7 @@ function buildInitialRuntime(data) {
     market_type: profile.supported_market_types?.includes(last.market_type) ? last.market_type : (profile.supported_market_types?.[0] || 'spot'),
     symbol: '',
     llm_provider_id: provider.provider_id || '',
+    temperature: last.temperature ?? null,
     global_requirement: last.global_requirement || '分析趋势、关键价位、多空证据和失效条件。优先说明数据质量与风险，不确定时明确说明。',
     system_prompt_role: last.system_prompt_role || provider.system_prompt_role || 'system',
   };
@@ -317,7 +318,7 @@ export default function ChatPage({ token }) {
   const [createMode, setCreateMode] = useState('task');
   const [creatingConfigId, setCreatingConfigId] = useState('');
   const [temporaryRuntime, setTemporaryRuntime] = useState({
-    exchange_profile_id: '', market_type: 'spot', symbol: '', llm_provider_id: '', global_requirement: '', system_prompt_role: 'system',
+    exchange_profile_id: '', market_type: 'spot', symbol: '', llm_provider_id: '', temperature: null, global_requirement: '', system_prompt_role: 'system',
   });
   const [symbolOptions, setSymbolOptions] = useState([]);
   const [symbolLoading, setSymbolLoading] = useState(false);
@@ -855,6 +856,7 @@ export default function ChatPage({ token }) {
           exchange_profile_id: temporaryRuntime.exchange_profile_id,
           market_type: temporaryRuntime.market_type,
           llm_provider_id: temporaryRuntime.llm_provider_id,
+          temperature: temporaryRuntime.temperature,
           global_requirement: temporaryRuntime.global_requirement,
           system_prompt_role: temporaryRuntime.system_prompt_role,
         }));
@@ -937,6 +939,13 @@ export default function ChatPage({ token }) {
           {activeRuntime ? <Tag color="purple">{isZh ? '临时' : 'Temporary'}</Tag> : null}
         </div>
         {!isMobile ? memoryCard : null}
+      </div>
+      <div className="x-chat-sidebar-list">
+        <Input.Search aria-label={isZh ? '搜索会话' : 'Search conversations'} placeholder={isZh ? '搜索会话、标的' : 'Search chats or symbols'} value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} allowClear />
+        <Conversations items={conversationItems} activeKey={currentSessionId} onActiveChange={(id) => { if (streaming || sendingRef.current) return; setCurrentSessionId(id); if (isMobile) setSidebarOpen(false); }} groupable />
+      </div>
+      <details className="content-disclosure chat-session-management">
+        <summary>{isZh ? '管理当前会话' : 'Manage this conversation'}</summary>
         <div className="x-chat-session-actions">
           <Popconfirm title={t('confirmDelete')} onConfirm={clearSession} disabled={!currentSessionId || streaming}>
             <Button icon={<ClearOutlined />} disabled={!currentSessionId || streaming} block>{t('clearMessages')}</Button>
@@ -945,11 +954,7 @@ export default function ChatPage({ token }) {
             <Button icon={<DeleteOutlined />} disabled={!currentSessionId || streaming} danger block>{t('deleteSession')}</Button>
           </Popconfirm>
         </div>
-      </div>
-      <div className="x-chat-sidebar-list">
-        <Input.Search aria-label={isZh ? '搜索会话' : 'Search conversations'} placeholder={isZh ? '搜索会话、标的' : 'Search chats or symbols'} value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} allowClear />
-        <Conversations items={conversationItems} activeKey={currentSessionId} onActiveChange={(id) => { if (streaming || sendingRef.current) return; setCurrentSessionId(id); if (isMobile) setSidebarOpen(false); }} groupable />
-      </div>
+      </details>
     </div>
   );
 
@@ -979,7 +984,7 @@ export default function ChatPage({ token }) {
                     {isMobile ? <Button aria-label={t('history')} icon={<MenuOutlined />} onClick={() => setSidebarOpen(true)} /> : null}
                     <div className="x-chat-main-titles">
                       <Space size={8} wrap>
-                        <Title level={4} style={{ margin: 0 }}>{isZh ? '即时市场研究' : 'Live market research'}</Title>
+                        <Title level={4} style={{ margin: 0 }} title={currentSession?.title || undefined}>{currentSession?.title || (isZh ? '即时市场研究' : 'Live market research')}</Title>
                         {activeRuntime ? <Tag color="purple">{isZh ? '临时只读' : 'Temporary read-only'}</Tag> : null}
                         {activeModelConfig?.thinking_enabled ? (
                           <Tag color="geekblue" icon={<BulbOutlined />}>
@@ -988,7 +993,7 @@ export default function ChatPage({ token }) {
                           </Tag>
                         ) : null}
                       </Space>
-                      <Text type="secondary">{activeSubtitle}</Text>
+                      <Text type="secondary" title={activeSubtitle}>{activeSubtitle}</Text>
                     </div>
                   </Space>
                   <Space size={8}>
@@ -1201,6 +1206,19 @@ export default function ChatPage({ token }) {
                     onChange={(value) => updateRuntime({ system_prompt_role: value })}
                   />
                   <Text type="secondary" className="chat-create-select-note">{isZh ? '模型不支持 system role 时请选择 User。' : 'Choose User if the model rejects system roles.'}</Text>
+                </label>
+                <label className="form-field">
+                  <span>{isZh ? '采样温度 (Temperature)' : 'Temperature'}</span>
+                  <InputNumber
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    placeholder={selectedProvider?.temperature !== undefined ? `${selectedProvider.temperature} (${isZh ? '服务商默认' : 'Default'})` : (isZh ? '服务商默认 (0.5)' : 'Default (0.5)')}
+                    value={temporaryRuntime.temperature}
+                    onChange={(value) => updateRuntime({ temperature: value })}
+                    style={{ width: '100%' }}
+                  />
+                  <Text type="secondary" className="chat-create-select-note">{isZh ? '留空使用服务商默认值；推理模型自动兼容。' : 'Leave empty for provider default; auto-adapted for reasoning models.'}</Text>
                 </label>
 </div></details>
                 <label className="form-field field-span-2">

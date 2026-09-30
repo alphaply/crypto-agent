@@ -5,7 +5,6 @@ import pytest
 import backend.database as database
 from backend.agent.agent_tools import update_entry_order_strategy
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool
-from backend.utils.trading_policy import trading_policy
 
 
 @pytest.fixture
@@ -68,13 +67,20 @@ def test_short_price_ordering(mock_order):
     assert '❌' in amend(pos_side='SHORT', stop_loss=100)
 
 
-def test_policies_match_registered_tools_and_explain_direction():
+def test_registered_tool_descriptions_carry_execution_contracts():
     for mode in ('REAL', 'STRATEGY', 'SPOT_DCA'):
-        text = trading_policy(mode)
         for tool in get_trade_tools_for_mode(mode):
-            assert tool.name in text
+            assert tool.description.strip()
+            assert '返回' in tool.description or '结果' in tool.description
+    real_tools = {tool.name: tool for tool in get_trade_tools_for_mode('REAL')}
+    for name in ('update_entry_order_real', 'update_position_protection_real'):
+        text = real_tools[name].description
         assert 'LONG' in text and 'SHORT' in text
-    assert '不是原子事务' in trading_policy('REAL')
+        assert '不是原子事务' in text
+        assert '不能取消保护绕过校验' in text
+    assert 'pending不可重复提交' in real_tools['update_entry_order_real'].description
+    assert '总标的币数量' in real_tools['update_entry_order_real'].description
+    assert '整个仓位' in real_tools['update_position_protection_real'].description
 
 
 def test_dispatch_validates_direction_and_nonfinite_prices(mock_order, monkeypatch):

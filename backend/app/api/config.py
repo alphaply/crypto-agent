@@ -25,6 +25,7 @@ from backend.app.services.config_service import (
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
+from backend.utils.exit_policy import ExitModeConflict
 
 
 def validate_prompt_name(name: str) -> None:
@@ -67,6 +68,8 @@ def save_config(payload: SaveConfigRequest, _: dict = Depends(get_current_user))
                 [item.model_dump(mode="json", exclude_none=True) for item in payload.exchange_profiles],
             ),
         }
+    except ExitModeConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -119,6 +122,8 @@ def download_database(request: Request):
 def full_import(payload: FullImportRequest, _: dict = Depends(get_current_user)):
     try:
         result = full_import_payload(data=dict(payload.data), write_env=payload.write_env)
+    except ExitModeConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

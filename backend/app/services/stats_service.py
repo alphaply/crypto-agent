@@ -253,7 +253,8 @@ def _fetch_real_position_data(mt, symbol, cfg):
                 continue
             entry = float(position.get("entryPrice", 0))
             unrealized = float(position.get("unrealizedPnl", 0))
-            notional = float(position.get("notional", 0)) or (entry * contracts)
+            base_quantity = contracts * float(position.get('contractSize') or 1)
+            notional = float(position.get("notional", 0)) or (entry * base_quantity)
             leverage = _resolve_leverage(position, cfg, fallback_leverage)
             pnl_pct = (unrealized / abs(notional) * 100) if notional != 0 else 0
             roi_pct = pnl_pct * leverage
@@ -265,7 +266,8 @@ def _fetch_real_position_data(mt, symbol, cfg):
                     "symbol": position.get("symbol", symbol),
                     "side": pos_side,
                     "contracts": contracts,
-                    "qty": contracts,
+                    "qty": base_quantity,
+                    "amount": base_quantity,
                     "entry_price": entry,
                     "mark_price": float(position.get("markPrice", 0)),
                     "unrealized_pnl": round(unrealized, 4),
@@ -393,6 +395,11 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
             "SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN'",
             (config_id, symbol),
         ).fetchall()
+        from backend.utils.exit_policy import effective_exit_mode
+        if effective_exit_mode(cfg) == 'independent_exits':
+            from backend.database_independent import MockIndependentTrading
+            open_mocks = [{**row, 'stop_loss': None, 'take_profit': None}
+                          for row in MockIndependentTrading(config_id, symbol).snapshot()['positions']]
         for order in open_mocks:
             if not int(order["is_filled"] or 0):
                 continue
@@ -401,7 +408,7 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
             side = str(order["side"]).upper()
             unrealized = 0
             if current_price > 0:
-                if "BUY" in side:
+                if "BUY" in side or side == "LONG":
                     unrealized = (current_price - entry) * amount
                 else:
                     unrealized = (entry - current_price) * amount
@@ -413,7 +420,7 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
             positions.append(
                 {
                     "symbol": symbol,
-                    "side": "LONG" if "BUY" in side else "SHORT",
+                    "side": "LONG" if "BUY" in side or side == "LONG" else "SHORT",
                     "contracts": amount,
                     "qty": amount,
                     "entry_price": entry,
@@ -454,6 +461,14 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
             }
             for trade in closed_mocks[-5:]
         ]
+        if effective_exit_mode(cfg) == 'independent_exits':
+            history = cursor.execute("SELECT * FROM position_history WHERE config_id=? AND symbol=? AND source='mock_aggregate'", (config_id, symbol)).fetchall()
+            trade_summary['realized_pnl'] += sum(float(r['realized_pnl'] or 0) for r in history)
+            closed = [r for r in history if r['status'] == 'CLOSED']
+            trade_summary['total_trades'] += len(closed)
+            trade_summary['win_count'] += sum(float(r['realized_pnl'] or 0) > 0 for r in closed)
+            trade_summary['lose_count'] += sum(float(r['realized_pnl'] or 0) < 0 for r in closed)
+            _calculate_win_rate(trade_summary)
 
     return positions, balance, recent_trades, trade_summary
 
@@ -505,6 +520,19 @@ def get_position_stats_payload(config_id: str):
 
     unrealized_total = sum(float(item.get("unrealized_pnl", 0) or 0) for item in positions)
     margin_balance = balance if mode == "REAL" else balance + unrealized_total
+    from backend.utils.exit_policy import effective_exit_mode
+    exit_management = {'mode': effective_exit_mode(cfg), 'exits': [], 'uncovered': {'LONG': 0, 'SHORT': 0}, 'pending': False}
+    if exit_management['mode'] == 'independent_exits':
+        try:
+            if mode == 'REAL':
+                from backend.utils.independent_exits import IndependentExits
+                exit_management = IndependentExits(mt).snapshot(symbol)
+            else:
+                from backend.database_independent import MockIndependentTrading
+                exit_management = MockIndependentTrading(config_id, symbol).snapshot()
+                exit_management['mode'] = 'independent_exits'
+        except Exception as exc:
+            exit_management.update(pending=True, error=str(exc), uncovered={'LONG': None, 'SHORT': None})
 
     return {
         "mode": mode,
@@ -515,6 +543,7 @@ def get_position_stats_payload(config_id: str):
         "recent_trades": recent_trades,
         "summary": trade_summary,
         "errors": fetch_errors,
+        "exit_management": exit_management,
     }
 
 
@@ -958,6 +987,27 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
     except Exception as exc:
         logger.warning(f"Kline pending orders fetch failed: {exc}")
 
+    from backend.utils.exit_policy import effective_exit_mode
+    if mode in {'REAL', 'STRATEGY'} and effective_exit_mode(cfg) == 'independent_exits':
+        try:
+            if mode == 'STRATEGY':
+                from backend.database_independent import MockIndependentTrading
+                snapshot = MockIndependentTrading(config_id, symbol).snapshot()
+                positions = [{**p, 'side': p['pos_side'], 'entry_price': p['price'],
+                              'mark_price': float(candles[-1]['close']) if candles else 0}
+                             for p in snapshot['positions']]
+                position = positions[0] if positions else None
+            else:
+                from backend.utils.independent_exits import IndependentExits
+                snapshot = IndependentExits(mt).snapshot(symbol)
+            risk_lines = [{'price': e.get('trigger_price') or e.get('price'),
+                           'type': 'stop_loss' if e['exit_type'] == 'stop_market' else 'take_profit',
+                           'label': 'SL' if e['exit_type'] == 'stop_market' else 'TP',
+                           'amount': e['remaining'], 'side': e['pos_side'], 'order_id': e['order_id']}
+                          for e in snapshot['exits'] if e.get('trigger_price') or e.get('price')]
+        except Exception as exc:
+            logger.warning(f'Independent exit chart refresh failed: {exc}')
+
     return {
         "candles": candles,
         "volume": volumes,
@@ -983,6 +1033,10 @@ def update_position_protection_payload(
     cfg = global_config.get_config_by_id(config_id)
     if not cfg:
         raise FileNotFoundError(f"Config not found: {config_id}")
+
+    from backend.utils.exit_policy import effective_exit_mode
+    if effective_exit_mode(cfg) == 'independent_exits':
+        raise ValueError('独立退出模式请修改各档退出单，不使用整仓 TP/SL')
 
     mode = str(cfg.get("mode", "STRATEGY")).upper()
     side = str(side).upper()

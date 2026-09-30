@@ -1,4 +1,4 @@
-"""Execution semantics appended to every trading prompt, including user templates."""
+"""Decision templates and market interpretation guidance. Tool contracts live on tools."""
 
 TRADE_PROMPT_BODY = """
 目标：在可承受风险内寻找扣除成本后的交易机会；先管理已有风险，再判断是否开仓，允许等待。
@@ -42,66 +42,3 @@ Volume Profile为OHLCV成交量分配近似，并非真实持仓成本或筹码�
 新闻区分发布时间、事件时间和预期差。没有新消息不需要编造交易理由。预测市场价格不是本策略的胜率。
 只报告可核验的条件和风险，不输出自评“80%胜率”或保证盈利。允许NO_ACTION。
 """
-
-REAL_EXECUTION_POLICY = """## 实盘工具执行约定
-open_position_real：限价入场必须包含amount（标的币数量）、entry_price、reason；stop_loss和take_profit均可省略或单独提供。提供SL时，多单SL<入场、空单SL>入场；提供TP时，多单TP>入场、空单TP<入场。首次开仓未提供的保护不会自动创建；同方向加仓省略TP/SL则继承现有计划，填写则先更新整个同方向仓位的对应保护，另一项保留。加仓不自动按均价移动保护。不得声称未核验的保护已生效。
-TP/SL管理同方向整个仓位。独立调整使用update_position_protection_real；加仓同时提供新价格时由开仓工具先完成保护更新，加仓失败不回滚已更新保护。
-update_position_protection_real：指定pos_side及新的stop_loss和/或take_profit；未传的价格保留。可首次只设置其中一个。优先新单确认后撤旧单；交易所拒绝并存时核验撤旧再重建，期间存在保护空窗，异常必须报告。
-开仓委托成功不等于成交；WAITING表示待成交，ACTIVE且error为空仅表示最近一次已核验保护单，EXITING表示退出清理尚未完成。
-系统在成交后由独立维护任务安装交易所条件市价TP/SL；部分成交同样受监控。首次安装有轮询和网络延迟，不能说已原子绑定。
-修改本配置创建的限价入场价格/数量：调用update_entry_order_real，amount是含已成交部分的总币数。只在confirmed时认为改单成功；pending先查询，不撤单重开来绕过未知状态。已有TP/SL沿用原计划，新入场必须仍满足已设置保护价；调整保护用专用工具。现货定投不使用合约改单。
-close_position_real负责主动部分/全部退出；entry_price=0表示立即市价退出，正值是平仓委托，不代表已成交。失效后不能靠等待更优退出价延长风险。
-不得把扩大止损、浮亏加仓当作默认解套手段；任何调整都必须解释新的失效条件和风险变化。
-工具失败/状态不确定时必须如实报告，不重复开仓。最终简述策略逻辑、工具实际结果、未完成事项和下一触发/失效条件。
-每轮直接执行事实区优先于短期摘要。是否开仓由Agent依据当前数据和用户提示词判断；系统不额外注入固定保证金、风险比例、盈亏比或冷却阈值。
-"""
-
-
-def trading_policy(mode: str) -> str:
-    from backend.agent.tool_registry import get_trade_tools_for_mode
-
-    mode = str(mode or 'STRATEGY').upper()
-    names = ', '.join(tool.name for tool in get_trade_tools_for_mode(mode))
-    text = (
-        f'## 本轮交易工具接口（模式 {mode}）\n已绑定：{names}。\n'
-        '有执行决定时应调用对应工具；等待无需调用。不能仅凭历史摘要声称“环境没有下单/改单接口”。'
-        '工具绑定不保证交易所可用；接口失败时报告实际错误，不把文字计划当成已执行。'
-        '用户明确要求保持某挂单不变时尊重该限制。\n'
-        'LONG表示持仓做多（入场BUY、平仓SELL），SHORT表示持仓做空（入场SELL、平仓BUY）；'
-        '不得把平仓买卖方向当作持仓方向。改单保持原方向，不能用改单翻多/翻空。\n'
-    )
-    if mode == 'REAL':
-        text += (
-            '修改入场价/总数量：update_entry_order_real(order_id, entry_price和/或amount, pos_side, reason)。'
-            '只处理本配置托管未完全成交的合约限价入场单；amount包含已成交数量，不能小于等于已成交量。\n'
-            '修改止盈止损：update_position_protection_real(pos_side, stop_loss和/或take_profit, reason)。'
-            '省略字段保留；作用于同方向整个仓位及待成交计划，不能当作单笔订单独立保护。\n'
-            '待成交多单SL<入场<TP，空单TP<入场<SL（仅校验已设置的价格）；已有仓位按当前触发参考价校验，'
-            '因此允许保护盈利的移动止损。入场改单仍须满足保留的TP/SL；若需先调保护，先验证其同时兼容旧入场、新入场和现有仓位。'
-            '两个调用不是原子事务，任一步失败立即停止并核对，不能取消保护绕过校验。\n'
-            'confirmed才表示入场改单确认；pending不可重复提交，unchanged表示原值未变。'
-            '保护WAITING表示等待成交；ACTIVE且error为空表示最近核验通过，不是未来保证。\n'
-        )
-    elif mode == 'STRATEGY':
-        text += (
-            '未成交模拟单：update_entry_order_strategy(order_id, pos_side, entry_price和/或stop_loss和/或take_profit, reason)，'
-            '同时校验并修改，省略价格保留，数量和有效期不变。多单SL<入场<TP，空单TP<入场<SL。\n'
-            '已成交模拟仓位不能修改历史入场价；使用update_position_protection_strategy(order_id, stop_loss和/或take_profit, reason)管理保护。\n'
-        )
-    return text
-
-
-def protection_context(config_id: str) -> str:
-    import json
-    from backend.database import get_db_conn
-    with get_db_conn() as conn:
-        rows = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=?', (config_id,)).fetchall()
-    items = []
-    for row in rows:
-        plan = json.loads(row['payload'])
-        if plan['state'] == 'DONE':
-            continue
-        items.append({key: plan.get(key) for key in ('symbol', 'side', 'stop_loss', 'take_profit', 'state', 'verified_at', 'error')})
-        items[-1]['protection_orders'] = [{key: leg.get(key) for key in ('kind', 'id', 'status', 'trigger_price')}
-                                         for leg in plan.get('legs', []) if leg.get('status') not in {'canceled', 'rejected', 'expired'}]
-    return '## 系统TP/SL计划（本地最近核验，非实时成交证明）\n' + json.dumps(items, ensure_ascii=False)

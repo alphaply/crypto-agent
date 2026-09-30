@@ -228,6 +228,8 @@ def _resolve_temporary_runtime(runtime: dict[str, Any]) -> tuple[dict[str, Any],
         raise ValueError("The selected OKX profile is missing its passphrase")
     if not provider.get("api_key"):
         raise ValueError("The selected LLM provider is missing an API key")
+    requested_temp = requested.get("temperature")
+    effective_temp = float(requested_temp) if requested_temp is not None else provider.get("temperature")
     stored_runtime = {
         "exchange_profile_id": exchange_profile_id,
         "exchange": exchange,
@@ -236,6 +238,7 @@ def _resolve_temporary_runtime(runtime: dict[str, Any]) -> tuple[dict[str, Any],
         "llm_provider_id": provider_id,
         "provider_name": provider.get("name") or provider_id,
         "model": provider.get("model") or "",
+        "temperature": effective_temp,
         "global_requirement": global_requirement,
         "compatibility_mode": provider.get("compatibility_mode") or "auto",
         "thinking_enabled": provider.get("thinking_enabled"),
@@ -626,7 +629,7 @@ def summarize_chat_title_payload(session_id: str):
         model=cfg.get("model"),
         api_key=cfg.get("api_key"),
         base_url=cfg.get("api_base"),
-        temperature=0,
+        temperature=cfg.get("temperature"),
         extra_body=cfg.get("extra_body"),
         thinking_enabled=cfg.get("thinking_enabled"),
         reasoning_effort=cfg.get("reasoning_effort"),

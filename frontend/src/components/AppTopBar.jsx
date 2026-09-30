@@ -42,7 +42,7 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions, extra
   const isMobile = !screens.lg;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [symbols, setSymbols] = useState([]);
-  const { selectedSymbol, setSelectedSymbol, t } = usePreferences();
+  const { selectedSymbol, setSelectedSymbol, t, locale } = usePreferences();
 
   useEffect(() => {
     let mounted = true;
@@ -71,6 +71,7 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions, extra
         <Button
           key={item.key}
           type={activeKey === item.key ? 'primary' : 'text'}
+          aria-current={activeKey === item.key ? 'page' : undefined}
           onClick={() => {
             setDrawerOpen(false);
             onNavigate(item.key);
@@ -118,8 +119,16 @@ export default function AppTopBar({ items, activeKey, onNavigate, actions, extra
           </>
         ) : (
           <Space size={8} className="app-topbar__mobile-actions">
+            <Select
+              className="app-topbar__route"
+              aria-label={locale === 'zh' ? '切换页面' : 'Navigate to page'}
+              value={activeKey}
+              options={items.map((item) => ({ value: item.key, label: item.label }))}
+              onChange={onNavigate}
+              popupMatchSelectWidth={false}
+            />
             {extraActions}
-            <Button className="app-topbar__menu" aria-label={t('openConsole')} icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)} />
+            <Button className="app-topbar__menu" aria-label={locale === 'zh' ? '打开导航与设置' : 'Open navigation and settings'} icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)} />
           </Space>
         )}
       </header>

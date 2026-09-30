@@ -16,6 +16,84 @@ logger = setup_logger("AgentTools")
 DEFAULT_CANCEL_REASON = "未提供撤单原因"
 
 
+def _exit_mode(config_id):
+    from backend.config import config
+    from backend.utils.exit_policy import effective_exit_mode
+    return effective_exit_mode(config.get_config_by_id(config_id))
+
+
+def _independent_service(config_id, symbol):
+    from backend.config import config
+    if (config.get_config_by_id(config_id) or {}).get('mode', 'STRATEGY').upper() == 'REAL':
+        from backend.utils.independent_exits import IndependentExits
+        return IndependentExits(MarketTool(config_id=config_id)), True
+    from backend.database_independent import MockIndependentTrading
+    return MockIndependentTrading(config_id, symbol), False
+
+
+def _independent_call(config_id, symbol, action, **kwargs):
+    from backend.utils.trade_operations import current_operation_id
+    try:
+        service, real = _independent_service(config_id, symbol)
+        if not real and action == 'amend_exit':
+            kwargs['current_price'] = float(MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
+        kwargs['operation_id'] = current_operation_id.get()
+        method = getattr(service, action)
+        result = method(symbol, **kwargs) if real else method(**kwargs)
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except ValueError as exc:
+        return json.dumps({'status': 'failed', 'error': str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({'status': 'unknown', 'error': str(exc)}, ensure_ascii=False)
+
+
+def _independent_orders(orders, config_id, symbol, opening=False):
+    from backend.config import config
+    from backend.utils.exit_policy import validate_entry_protection
+    from backend.utils.trade_operations import current_operation_id, tool_result_status
+    model = OpenOrderStrategy if opening else CloseOrder
+    try:
+        ops = _normalize_order_models(orders, model)
+        if opening:
+            for op in ops:
+                validate_entry_protection(config.get_config_by_id(config_id) or {}, op)
+    except Exception as exc:
+        return json.dumps({'status': 'failed', 'error': str(exc)}, ensure_ascii=False)
+    results = []
+    parent_id = current_operation_id.get() or uuid.uuid4().hex
+    for index, op in enumerate(ops):
+        token = current_operation_id.set(f'{parent_id}:{index}')
+        try:
+            if opening:
+                result = _independent_call(config_id, symbol, 'open', op=op)
+            else:
+                current_price = float(MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
+                exit_type = op.exit_type
+                price, trigger = op.price, op.trigger_price
+                if exit_type is None:
+                    if op.entry_price == 0:
+                        exit_type = 'market'
+                    elif (op.pos_side == 'LONG' and op.entry_price < current_price) or (op.pos_side == 'SHORT' and op.entry_price > current_price):
+                        exit_type, trigger = 'stop_market', op.entry_price
+                    else:
+                        exit_type, price = 'take_profit_limit', op.entry_price
+                args = dict(pos_side=op.pos_side, amount=op.amount, exit_type=exit_type, price=price, trigger_price=trigger, reason=op.reason)
+                if (config.get_config_by_id(config_id) or {}).get('mode', 'STRATEGY').upper() != 'REAL':
+                    args['current_price'] = current_price
+                result = _independent_call(config_id, symbol, 'close', **args)
+            results.append(json.loads(result))
+            if tool_result_status(result) in {'failed', 'unknown'}:
+                break
+        except Exception as exc:
+            results.append({'status': 'unknown', 'error': str(exc)})
+            break
+        finally:
+            current_operation_id.reset(token)
+    results.extend({'status': 'not_executed', 'index': index} for index in range(len(results), len(ops)))
+    status = tool_result_status(results)
+    return json.dumps({'status': status, 'results': results}, ensure_ascii=False)
+
+
 def _normalize_order_models(orders, model_type):
     """Accept structured lists and JSON-encoded lists from model tool calls."""
     value = orders
@@ -103,6 +181,7 @@ class UpdateStrategyEntrySchema(BaseModel):
     order_id: str = Field(min_length=1, description="本配置尚未成交的模拟入场订单ID")
     pos_side: Literal["LONG", "SHORT"] = Field(description="LONG对应BUY开多，SHORT对应SELL开空；必须与原订单一致")
     entry_price: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    amount: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     stop_loss: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     take_profit: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     reason: str = Field(min_length=1, description="入场或保护条件变化的理由")
@@ -128,6 +207,27 @@ class CancelStrategySchema(BaseModel):
 class CloseStrategySchema(BaseModel):
     orders: List[CloseOrder] = Field(description="平仓模拟挂单指令列表")
 
+
+class UpdateExitSchema(BaseModel):
+    order_id: str = Field(min_length=1)
+    amount: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    price: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    trigger_price: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    reason: str = Field(min_length=1)
+
+
+@tool(args_schema=UpdateExitSchema)
+def update_exit_order(order_id: str, reason: str, config_id: str, symbol: str,
+                      amount: Optional[float] = None, price: Optional[float] = None,
+                      trigger_price: Optional[float] = None):
+    """修改独立退出单的剩余标的币数量或价格；省略字段保留。只管理本任务当前仓位周期的订单，返回实际修改结果；待核验时不得重复提交。"""
+    if _exit_mode(config_id) != 'independent_exits':
+        return '❌ 仅独立退出模式支持退出改单'
+    if all(v is None for v in (amount, price, trigger_price)):
+        return '❌ 至少提供一个修改字段'
+    return _independent_call(config_id, symbol, 'amend_exit', order_id=order_id, amount=amount,
+                             price=price, trigger_price=trigger_price, reason=reason)
+
 class EventContractOrderSchema(BaseModel):
     direction: Literal["Long", "Short"] = Field(description="开仓方向，多 (Long) 或者 空 (Short)")
     duration: str = Field(description="合约时间期限，例如：30min, 1h, 1d")
@@ -142,7 +242,10 @@ class AnalyzeEventContractSchema(BaseModel):
 
 @tool(args_schema=OpenSpotDCASchema)
 def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbol: str):
-    """【开仓：现货限价定投买入】仅在执行 BUY_LIMIT (买入) 时调用。"""
+    """【现货限价定投买入】仅支持BUY_LIMIT，amount为标的币数量，需entry_price和reason。
+    有执行决定时调用，等待无需调用；用户要求保持的挂单不得改动。
+    返回委托不等于成交，接口失败如实报告，不把文字计划当作已执行，不重复提交未知结果。
+    """
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
@@ -176,7 +279,17 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
 
 @tool(args_schema=OpenRealSchema)
 def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str):
-    """【实盘合约限价开仓】TP、SL 均可选；提供后，成交时自动挂对应的条件市价保护单。"""
+    """【实盘合约限价开仓】有执行决定时调用，等待无需调用；接口失败如实报告，不把计划当作已执行。
+    BUY_LIMIT开多LONG，SELL_LIMIT开空SHORT；必填amount（标的币数量）、entry_price、reason。
+    TP/SL要求由退出模式决定：attached_required必填，attached_optional选填，independent_exits禁止附带，成交后用close设置分批退出。
+    首次开仓省略的保护不会创建。同方向加仓省略TP/SL则继承现有计划；填写则先更新同方向整个仓位的对应保护，另一项保留，非单笔独立保护。
+    加仓不自动按均价移动保护，加仓失败不回滚已更新的保护。不得把浮亏加仓/扩大止损作为默认解套手段。
+    返回入场委托不等于成交；成交后独立维护任务安装交易所条件市价TP/SL（含部分成交），存在轮询及网络延迟，并非原子绑定。
+    WAITING为待成交；ACTIVE且error为空仅代表最近核验通过；EXITING为退出清理未完成。不得声称未核验保护已生效。
+    用户要求保持的挂单不得改动；失败/结果未知时停止并核对，不重复开仓。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return _independent_orders(orders, config_id, symbol, opening=True)
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
@@ -185,16 +298,15 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
 
     try:
         orders = _normalize_order_models(orders, OpenOrderReal)
+        from backend.utils.exit_policy import validate_entry_protection
+        for order in orders:
+            validate_entry_protection(agent_config, order)
     except Exception as exc:
         return f"❌ [Error] 开仓参数无效: {exc}"
 
     for op in orders:
         try:
             action, price = op.action, op.entry_price
-            latest = market_tool.get_account_status(symbol, is_real=True, agent_name=config_id)
-            if _is_duplicate_real_order(action, price, latest.get('real_open_orders', [])):
-                execution_results.append(f"⚠️ [Duplicate] {action} @ {price} 已存在。")
-                continue
             from backend.utils.position_protection import PositionProtection
             res = PositionProtection(market_tool).open(symbol, op)
             if res and 'id' in res:
@@ -209,11 +321,18 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
                 execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")
         except Exception as e:
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
+            break
     return "\n".join(execution_results)
 
 @tool(args_schema=CloseRealSchema)
 def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
-    """【平仓：挂单平掉现有持仓】。"""
+    """【实盘部分/全部平仓】pos_side是持仓方向：LONG平多（卖出），SHORT平空（买入），不能把买卖方向当作持仓方向。
+    amount为标的币数量，0解析为提交时该方向数量。显式exit_type=market立即退出，take_profit_limit配price限价止盈，stop_market配trigger_price触发市价止损。
+    独立退出模式每档数量固定，加仓不扩大旧退出单；退出委托仅针对已成交仓位。旧entry_price参数仍兼容。
+    订单提交不等于已成交；策略失效后不能靠等待更优价格延长风险。返回错误或未知结果需报告并核对，不把文字计划当作已执行。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return _independent_orders(orders, config_id, symbol)
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
@@ -243,7 +362,7 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             
             if not order_ids:
                 execution_results.append(f"❌ [平仓失败] 无法获取订单 ID，请检查持仓状态。")
-                continue
+                break
 
             from backend.utils.execution_ledger import account_scope, register_order
             from backend.utils.position_protection import PositionProtection
@@ -269,11 +388,17 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             execution_results.append(f"✅ 下单成功 ({op.pos_side}) @ {op.entry_price} | ID: {final_log_id}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 下单失败: {str(e)}")
+            break
     return "\n".join(execution_results)
 
 @tool(args_schema=CancelRealSchema)
 def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
-    """【撤单：撤销一个现有真实挂单】每次只传一个 order_id。"""
+    """【撤销真实挂单】每次只传一个order_id及reason。用户明确要求保持的挂单不得撤销。
+    不得取消保护来绕过入场/TP/SL校验，不用撤单重开绕过改单pending/未知状态。
+    撤单结果以工具返回为准，失败或不确定需核对当前订单和成交，不声称已完成。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return _independent_call(config_id, symbol, 'cancel', order_id=order_id)
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
@@ -285,13 +410,20 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
     try:
         latest_row = None
         base_row = None
+        from backend.utils.order_ownership import symbol_aliases
+        if agent_config.get('mode', '').upper() == 'REAL':
+            from backend.utils.order_ownership import assert_owned_perpetual_order
+            assert_owned_perpetual_order(market_tool, symbol, oid, config_id)
+        aliases = symbol_aliases(market_tool, symbol)
+        placeholders = ','.join('?' for _ in aliases)
         with database.get_db_conn() as _conn:
             latest_row = _conn.execute(
-                "SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? ORDER BY id DESC LIMIT 1", (oid, config_id)
+                f"SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? AND symbol IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+                (oid, config_id, *aliases)
             ).fetchone()
             base_row = _conn.execute(
-                "SELECT side FROM orders WHERE order_id = ? AND config_id = ? AND LOWER(side) NOT LIKE 'cancel%' ORDER BY id DESC LIMIT 1",
-                (oid, config_id),
+                f"SELECT side FROM orders WHERE order_id = ? AND config_id = ? AND symbol IN ({placeholders}) AND LOWER(side) NOT LIKE 'cancel%' ORDER BY id DESC LIMIT 1",
+                (oid, config_id, *aliases),
             ).fetchone()
         latest_side = str((latest_row["side"] if latest_row else "") or "").upper()
         latest_status = str((latest_row["status"] if latest_row else "") or "").upper()
@@ -302,7 +434,9 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
         orig_side = _cancel_side_from_value(base_row["side"] if base_row else (latest_row["side"] if latest_row else None))
         market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=config_id)
         with database.get_db_conn() as _conn:
-            _conn.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ? AND status = 'OPEN' AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'", (oid,))
+            _conn.execute(f"UPDATE orders SET status = 'CANCELLED' WHERE order_id = ? AND config_id=? AND symbol IN ({placeholders}) "
+                          "AND status = 'OPEN' AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
+                          (oid, config_id, *aliases))
             _conn.commit()
         database.save_order_log(oid, symbol, agent_name, orig_side, 0, 0, 0, f"撤单成功: {oid} | {cancel_reason}", trade_mode="REAL", config_id=config_id, status="CANCELLED", event_type="CANCELLED")
         execution_results.append(f"✅ [Cancelled Real] 订单 {oid} 已撤回。")
@@ -314,7 +448,16 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
 @tool(args_schema=UpdateProtectionSchema)
 def update_position_protection_real(pos_side: str, reason: str, config_id: str, symbol: str,
                                     stop_loss: Optional[float] = None, take_profit: Optional[float] = None):
-    """【调整实盘TP/SL】管理同方向整个仓位或已托管待成交计划；可只设置或调整其中一个。"""
+    """【调整实盘TP/SL】pos_side=LONG或SHORT表示持仓方向；管理同方向整个仓位及托管待成交计划，非单笔订单独立保护。
+    至少提供stop_loss或take_profit及reason；省略字段保留，可首次只设置其中一个。
+    待成交多单SL<入场<TP、空单TP<入场<SL（只校验已设置价格）；已有仓位按当前触发参考价校验，允许保护盈利的移动止损。
+    若为入场改单先调保护，须同时兼容旧入场、新入场及现有仓位。两个调用不是原子事务，任一步失败立即停止并核对，不能取消保护绕过校验。
+    优先新单确认后撤旧单；交易所拒绝并存时会核验撤旧再重建，期间存在保护空窗，异常必须报告。
+    以实际返回确认结果；WAITING为等待成交；ACTIVE且error为空只表示最近核验通过，不是未来保证；EXITING表示退出清理未完成。
+    用户要求保持的订单不得改动；不得把扩大止损作为默认解套手段，说明新的失效条件和风险变化。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return '❌ 独立退出模式通过 close/update_exit_order 管理退出，不使用整仓 TP/SL'
     if stop_loss is None and take_profit is None:
         return "❌ 至少提供一个要调整的止盈或止损价格"
     from backend.utils.position_protection import PositionProtection
@@ -334,7 +477,17 @@ def update_position_protection_real(pos_side: str, reason: str, config_id: str, 
 def update_entry_order_real(order_id: str, reason: str, config_id: str, symbol: str,
                             entry_price: Optional[float] = None, amount: Optional[float] = None,
                             pos_side: Optional[str] = None):
-    """【修改实盘入场价/数量】保持原多空方向；TP/SL用update_position_protection_real调整，不可用本工具改保护单或平仓单。"""
+    """【修改实盘入场价/数量】只处理本配置托管、未完全成交的合约限价入场单，不能改保护单/平仓单，不适用于现货定投。
+    指定order_id、reason及entry_price和/或amount；amount为含已成交部分的总标的币数量，必须大于已成交量。省略字段保留。
+    pos_side=LONG为BUY开多、SHORT为SELL开空，必须与原单一致；改单保持方向，不能翻多/翻空。用户要求保持的挂单不得改动。
+    保留原TP/SL，新入场仍须满足多单SL<入场<TP、空单TP<入场<SL（仅校验已设置价格）。
+    TP/SL用update_position_protection_real管理整个同方向仓位；若先调保护，须同时兼容旧入场、新入场及现有仓位。
+    两个调用不是原子事务，任一步失败立即停止并核对，不能取消保护绕过校验。
+    仅confirmed表示改单确认；pending不可重复提交，需核对订单与成交，不可撤单重开；unchanged表示原值未变。报告实际返回，不能把计划当作执行结果。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return _independent_call(config_id, symbol, 'amend_entry', order_id=order_id, entry_price=entry_price,
+                                 amount=amount, reason=reason, pos_side=pos_side)
     from backend.config import config as global_config
     from backend.utils.position_protection import PositionProtection
     if (global_config.get_config_by_id(config_id) or {}).get('mode', '').upper() != 'REAL':
@@ -342,7 +495,7 @@ def update_entry_order_real(order_id: str, reason: str, config_id: str, symbol: 
     try:
         result = PositionProtection(MarketTool(config_id=config_id)).amend_entry(
             symbol, order_id, entry_price, amount, reason, pos_side=pos_side)
-        return json.dumps(result, ensure_ascii=False) + '；仅confirmed表示改单已核验，pending不得重复提交。'
+        return json.dumps(result, ensure_ascii=False)
     except Exception as exc:
         return f'❌ 改单未确认：{exc}；查询当前订单和成交，不能直接重新开单。'
 
@@ -350,10 +503,19 @@ def update_entry_order_real(order_id: str, reason: str, config_id: str, symbol: 
 @tool(args_schema=UpdateStrategyEntrySchema)
 def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, config_id: str, symbol: str,
                                 entry_price: Optional[float] = None, stop_loss: Optional[float] = None,
-                                take_profit: Optional[float] = None):
-    """【修改模拟入场价及TP/SL】仅未成交入场单；保持数量和多空方向，省略的价格保留。已成交仓位只能调整保护。"""
+                                take_profit: Optional[float] = None, amount: Optional[float] = None):
+    """【修改模拟入场价及TP/SL】仅本配置尚未成交的模拟入场单；指定order_id、pos_side、reason及entry_price/stop_loss/take_profit至少一项。
+    同时校验并修改入场价、数量和保护；省略字段保留，有效期不变。LONG对应BUY开多、SHORT对应SELL开空，必须与原单一致，不可翻多/翻空。
+    多单SL<入场<TP、空单TP<入场<SL；用户要求保持的挂单不得改动。
+    已成交仓位不可修改历史入场价，只能用update_position_protection_strategy管理保护。以返回结果为准，失败不能当作已修改。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        if stop_loss is not None or take_profit is not None:
+            return '❌ 独立退出模式不在入场单附带 TP/SL'
+        return _independent_call(config_id, symbol, 'amend_entry', order_id=order_id, entry_price=entry_price,
+                                 amount=amount, reason=reason, pos_side=pos_side)
     from backend.utils.position_protection import PositionProtection
-    if all(value is None for value in (entry_price, stop_loss, take_profit)):
+    if all(value is None for value in (entry_price, stop_loss, take_profit, amount)):
         return '❌ 至少提供入场价、止盈或止损之一'
     if not reason.strip():
         return '❌ 必须提供修改理由'
@@ -372,6 +534,7 @@ def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, confi
             if row['expire_at'] is not None and float(row['expire_at']) <= time.time():
                 return '❌ 订单已过期，不能改单'
             price = entry_price if entry_price is not None else float(row['price'])
+            new_amount = amount if amount is not None else float(row['amount'])
             sl = stop_loss if stop_loss is not None else row['stop_loss']
             tp = take_profit if take_profit is not None else row['take_profit']
             PositionProtection._validate(side, price, sl, tp)
@@ -381,22 +544,22 @@ def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, confi
                 "SELECT COALESCE(SUM(price*amount),0) FROM mock_orders WHERE config_id=? AND status='OPEN' AND order_id!=?",
                 (config_id, order_id),
             ).fetchone()[0]
-            if not account or price * float(row['amount']) > max(0, float(account['balance']) - reserved):
+            if not account or price * new_amount > max(0, float(account['balance']) - reserved):
                 return '❌ 修改后订单名义金额超过模拟可用余额'
-            conn.execute('UPDATE mock_orders SET price=?,stop_loss=?,take_profit=? WHERE order_id=? AND config_id=? AND symbol=?',
-                         (price, sl, tp, order_id, config_id, symbol))
+            conn.execute('UPDATE mock_orders SET price=?,stop_loss=?,take_profit=?,amount=? WHERE order_id=? AND config_id=? AND symbol=?',
+                         (price, sl, tp, new_amount, order_id, config_id, symbol))
             conn.commit()
         audit_warning = ''
         try:
             database.save_order_log(
                 f'amend:{uuid.uuid4().hex}', symbol, config_id, side, price, tp or 0, sl or 0,
                 f'原入场={row["price"]} TP={row["take_profit"]} SL={row["stop_loss"]}；{reason}',
-                trade_mode='STRATEGY', config_id=config_id, amount=row['amount'],
+                trade_mode='STRATEGY', config_id=config_id, amount=new_amount,
                 event_type='ORDER_AMENDED', parent_order_id=order_id,
             )
         except Exception:
             audit_warning = '；改单已生效但审计日志写入失败，不要重复提交'
-        return f'✅ 模拟改单已确认：ID={order_id} {side} Entry={price} TP={tp} SL={sl}；数量与有效期保持不变。理由：{reason}{audit_warning}'
+        return f'✅ 模拟改单已确认：ID={order_id} {side} Entry={price} Amount={new_amount} TP={tp} SL={sl}；有效期保持不变。理由：{reason}{audit_warning}'
     except Exception as exc:
         return f'❌ 模拟改单失败：{exc}'
 
@@ -404,7 +567,12 @@ def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, confi
 @tool(args_schema=UpdateStrategyProtectionSchema)
 def update_position_protection_strategy(order_id: str, reason: str, config_id: str, symbol: str,
                                         stop_loss: Optional[float] = None, take_profit: Optional[float] = None):
-    """【调整模拟TP/SL】按订单ID更新待成交或已成交模拟仓位；未指定的价格不变。"""
+    """【调整模拟TP/SL】按order_id更新本配置待成交或已成交模拟仓位；至少提供stop_loss或take_profit及reason，省略字段保留。
+    BUY为LONG多仓，SELL为SHORT空仓；未成交按入场价校验多单SL<入场<TP、空单TP<入场<SL，已成交按当前价校验，允许保护盈利的移动止损。
+    用户要求保持的订单不得改动；报告实际返回，失败不能当作已更新。调整需说明新的失效条件和风险变化。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return '❌ 独立退出模式通过 close/update_exit_order 管理退出'
     if stop_loss is None and take_profit is None:
         return '❌ 至少提供止盈或止损价格'
     from backend.utils.position_protection import PositionProtection
@@ -439,7 +607,14 @@ def update_position_protection_strategy(order_id: str, reason: str, config_id: s
 
 @tool(args_schema=OpenStrategySchema)
 def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symbol: str):
-    """【策略开仓：记录模拟交易】。"""
+    """【模拟合约限价开仓/加仓】BUY_LIMIT开多LONG，SELL_LIMIT开空SHORT；amount为标的币数量，需entry_price和reason。
+    TP/SL要求由任务退出模式决定；独立退出模式不附带整仓TP/SL，成交后用close设置不同价格和数量的退出单。
+    多单SL<入场<TP，空单TP<入场<SL；valid_duration_hours为挂单有效期，默认24小时。
+    有执行决定时调用，等待无需调用。记录挂单不等于成交，以工具返回为准；失败如实报告，不能把文字计划当作已执行。
+    用户要求保持的挂单不得改动，不盲目叠加同方向挂单/仓位。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return _independent_orders(orders, config_id, symbol, opening=True)
     agent_name = config_id
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
@@ -448,6 +623,10 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
 
     try:
         orders = _normalize_order_models(orders, OpenOrderStrategy)
+        from backend.config import config
+        from backend.utils.exit_policy import validate_entry_protection
+        for order in orders:
+            validate_entry_protection(config.get_config_by_id(config_id) or {}, order)
     except Exception as exc:
         return f"❌ [Error] 策略开仓参数无效: {exc}"
 
@@ -464,24 +643,7 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
                 execution_results.append(
                     f"⚠️ [Insufficient Strategy Balance] 订单价值 ${order_value:.2f} 超过可用余额 ${remaining_available:.2f}。"
                 )
-                continue
-
-            # 2. 检查是否重复叠加 (Stacking)
-            mock_open_orders = latest.get('mock_open_orders', [])
-            
-            # 如果已经有同方向的单子且价格接近，视为重复
-            if _is_duplicate_real_order(action, price, mock_open_orders):
-                execution_results.append(f"⚠️ [Duplicate Strategy] {action} @ {price} 已存在。")
-                continue
-            
-            # 如果已有同方向持仓，且数量已经很大，禁止叠加
-            side_str = 'BUY' if 'BUY' in action else 'SELL'
-            exist_same_side = [o for o in mock_open_orders if side_str in o.get('side', '').upper()]
-            if len(exist_same_side) >= 1:
-                # 提示已有单子，建议先撤回或等待
-                execution_results.append(f"⚠️ [Stacking Blocked] {symbol} 已有 {side_str} 挂单/持仓，禁止盲目叠加。")
-                continue
-            # ---------------------------------------------
+                break
 
             expire_at = (datetime.now() + timedelta(hours=op.valid_duration_hours)).timestamp()
             mock_id = f"ST-{uuid.uuid4().hex[:6]}"
@@ -498,11 +660,16 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
             execution_results.append(f"✅ [Executed Strategy] {action} {symbol} @ {price} | Val: ${order_value:.2f}")
         except Exception as e:
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
+            break
     return "\n".join(execution_results)
 
 @tool(args_schema=CancelStrategySchema)
 def cancel_orders_strategy(order_id: str, reason: str, config_id: str, symbol: str):
-    """【策略撤单：撤销一个模拟挂单】每次只传一个 order_id。"""
+    """【撤销模拟挂单】每次只传一个order_id及reason；用户要求保持的挂单不得撤销。
+    以返回确认撤单结果，失败/不确定需核对，不声称已完成。保护调整使用update_position_protection_strategy。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return _independent_call(config_id, symbol, 'cancel', order_id=order_id)
     agent_name = config_id
     execution_results = []
     oid = str(order_id or "").strip()
@@ -510,7 +677,7 @@ def cancel_orders_strategy(order_id: str, reason: str, config_id: str, symbol: s
     try:
         with database.get_db_conn() as _conn:
             mock_row = _conn.execute(
-                "SELECT side FROM mock_orders WHERE order_id = ? LIMIT 1", (oid,)
+                "SELECT side FROM mock_orders WHERE order_id = ? AND config_id=? AND symbol=? AND is_filled=0 LIMIT 1", (oid, config_id, symbol)
             ).fetchone()
             latest_row = _conn.execute(
                 "SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? ORDER BY id DESC LIMIT 1",
@@ -539,57 +706,29 @@ def cancel_orders_strategy(order_id: str, reason: str, config_id: str, symbol: s
 
 @tool(args_schema=CloseStrategySchema)
 def close_position_strategy(orders: List[CloseOrder], config_id: str, symbol: str):
-    """【策略平仓：模拟平掉已有持仓】。"""
-    agent_name = config_id
-    market_tool = MarketTool(config_id=config_id)
-    execution_results = []
-    
-    # 获取当前的模拟持仓
-    latest = market_tool.get_account_status(symbol, is_real=False, agent_name=config_id)
-    open_mock_orders = latest.get('mock_open_orders', [])
-
-    # 获取当前市场价格以计算真实平仓盈亏
-    current_price = 0
+    """【模拟平仓】pos_side为要退出的持仓方向：LONG平多（原BUY）、SHORT平空（原SELL），不能把买卖方向当作持仓方向。
+    独立退出模式支持exit_type=market市价减仓、take_profit_limit配price限价止盈、stop_market配trigger_price触发止损。
+    amount为标的币数量，0解析为当前已成交数量；加仓不会自动扩大已有退出数量。旧参数兼容。
+    必须提供reason；以返回的平仓结果和盈亏为准，失败不能当作已平仓。
+    """
+    if _exit_mode(config_id) == 'independent_exits':
+        return _independent_orders(orders, config_id, symbol)
     try:
-        ticker = market_tool.exchange.fetch_ticker(symbol)
-        current_price = float(ticker.get('last', 0))
-    except Exception as e:
-        execution_results.append(f"❌ [Error] 无法获取 {symbol} 当前价格进行平仓计算: {str(e)}")
-        return "\n".join(execution_results)
-
-    try:
-        orders = _normalize_order_models(orders, CloseOrder)
+        ops = _normalize_order_models(orders, CloseOrder)
+        for op in ops:
+            if op.exit_type not in (None, 'market') or op.entry_price > 0:
+                return '❌ 附带保护的模拟模式仅支持市价减仓；条件退出单请使用独立退出模式'
+        current_price = float(MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
+        results = []
+        for op in ops:
+            result = database.reduce_mock_positions(config_id, symbol, op.pos_side, op.amount, current_price, op.reason)
+            if result.get('status') == 'no_position':
+                results.append(f'⚠️ [跳过] 没有找到对应 {op.pos_side} 的模拟持仓可平。')
+            else:
+                results.append(f"✅ [Closed Strategy] {op.pos_side} 已退出 {result['closed_amount']}，剩余 {result['remaining']}，盈亏 {result['realized_pnl']:.2f}")
+        return '\n'.join(results)
     except Exception as exc:
-        return f"❌ [Error] 策略平仓参数无效: {exc}"
-
-    for op in orders:
-        try:
-            # 用户传的是你要平的仓位方向，例如平多(LONG)，那意味着找到我们做多的单子(BUY)
-            target_side = "BUY" if op.pos_side == "LONG" else "SELL"
-            
-            # 找到对应的模拟单
-            matched_orders = [o for o in open_mock_orders if target_side in o.get('side', '').upper()]
-            if not matched_orders:
-                execution_results.append(f"⚠️ [跳过] 没有找到对应 {op.pos_side} 的模拟持仓可平。")
-                continue
-                
-            for matched in matched_orders:
-                order_id = matched.get('order_id')
-                entry_price = float(matched.get('price', 0))
-                amount = float(matched.get('amount', 0))
-                
-                # 使用真实当前市价计算盈亏，禁止 LLM 自定平仓价
-                if target_side == "BUY": # 做多
-                    pnl = (current_price - entry_price) * amount
-                else: # 做空
-                    pnl = (entry_price - current_price) * amount
-                    
-                database.close_mock_order(order_id, close_price=current_price, realized_pnl=pnl)
-                database.save_order_log(order_id, symbol, agent_name, "CLOSE", current_price, 0, 0, f"[Strategy Close] 市价平仓, 盈亏: {pnl:.2f} | {op.reason}", trade_mode="STRATEGY", config_id=config_id, amount=amount, status="CLOSED", event_type="MANUAL_CLOSE", parent_order_id=order_id, realized_pnl=pnl)
-                execution_results.append(f"✅ [Closed Strategy] {op.pos_side} 仓位已平，订单: {order_id}，模拟盈亏: {pnl:.2f}")
-        except Exception as e:
-            execution_results.append(f"❌ [Error] 策略平仓失败: {str(e)}")
-    return "\n".join(execution_results)
+        return f'❌ 模拟减仓失败：{exc}'
 
 # ==========================================
 # 2. 专用分析工具

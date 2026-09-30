@@ -25,6 +25,9 @@ def test_every_strategy_updates_bounded_memory_with_execution_evidence(local_db)
     with patch.object(agent_graph, 'summarize_content', return_value='new plan; entry rejected') as summarize:
         assert agent_graph.update_turn_memory('cfg', {'symbol': 'ETH/USDT'}, 'reverse to long', messages)
     source = summarize.call_args.args[0]
+    assert 'Agent 收益与回撤' in source
+    assert '起点收益率/回撤: N/A' in source
+    assert '未剔除出入金、划转或共享账户其他策略影响' in source
     assert 'old short plan' in source and 'reverse to long' in source
     assert '最多600字' not in source
     assert '分为【当前假设】' not in source
@@ -72,6 +75,86 @@ def test_short_memory_includes_local_7d_closed_positions_and_stats(local_db):
     assert '完整平仓周期: 1 笔' in source
     assert '胜率: 100.0%' in source
     assert '已确认累计盈亏（手续费前）: +5.00 USDT' in source
+    saved = database.get_short_memories('cfg', 1)[0]
+    assert 'Agent 收益与回撤' in saved['position_summary']
+    assert '完整平仓周期: 1 笔' in saved['position_summary']
+    assert agent_graph.format_short_memory_for_llm('cfg') == 'updated memory'
+
+
+@pytest.mark.parametrize('writer', ['turn', 'rolling', 'bucket', 'empty_bucket'])
+def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch, writer):
+    now = agent_graph.TZ_CN.localize(__import__('datetime').datetime(2026, 9, 28, 10, 0))
+    cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL'}
+    monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [cfg])
+    with database.get_db_conn() as conn:
+        conn.executemany(
+            'INSERT INTO balance_history(timestamp,symbol,config_id,total_equity) VALUES(?,?,?,?)',
+            [('2026-09-01', 'ETH/USDT', 'cfg', 100),
+             ('2026-09-02', 'ETH/USDT', 'cfg', 80),
+             ('2026-09-03', 'ETH/USDT', 'cfg', 92),
+             ('2026-09-04', 'BTC/USDT', 'cfg', 5000),
+             ('2026-09-04', 'ETH/USDT', 'other', 8000)],
+        )
+        if writer != 'empty_bucket':
+            conn.execute(
+                'INSERT INTO summaries(timestamp,symbol,config_id,strategy_logic) VALUES(?,?,?,?)',
+                ('2026-09-28 09:00:00', 'ETH/USDT', 'cfg', 'new support'),
+            )
+        conn.commit()
+    database.save_short_memory('2026-09-28 00:00:00', '2026-09-28 04:00:00',
+                               'ETH/USDT', 'cfg', 'previous strategy and lessons', '', 1)
+    with patch.object(agent_graph, 'summarize_content', return_value='compressed strategy and performance') as summarize:
+        if writer == 'turn':
+            changed = agent_graph.update_turn_memory('cfg', cfg, 'new support', [])
+        elif writer == 'rolling':
+            changed = agent_graph.generate_rolling_short_memory_for_config('cfg', cfg, now_cn=now)
+        else:
+            changed = agent_graph.generate_short_memory_for_config('cfg', now_cn=now)
+    assert changed
+    source = summarize.call_args.args[0]
+    assert source.count('## Agent 收益与回撤') == 1
+    assert source.count('【过去7天平仓记录（本地成交账本）】') == 1
+    assert '起点收益率: -8.00%' in source and '当前回撤: 8.00%' in source
+    assert '快照最大回撤: 20.00%' in source
+    assert '样本: 3' in source
+    assert 'previous strategy and lessons' in source
+    assert '成交活动与完整周期盈亏不能相加' in source
+    saved = database.get_short_memories('cfg', 1)[0]
+    assert '起点收益率: -8.00%' in saved['position_summary']
+    assert saved['market_summary'] == 'compressed strategy and performance'
+    if writer == 'empty_bucket':
+        assert saved['source_count'] == 0
+
+
+@pytest.mark.parametrize('bad_summary', ['', 'x' * 2401])
+def test_memory_compression_failure_retains_aggregate_evidence_not_full_ledger(local_db, monkeypatch, bad_summary):
+    evidence = (
+        '截至快照: 2026-09-28 09:00 | 权益: 92.00 USDT | 样本: 3\n'
+        '起点收益率: -8.00% | 当前回撤: 8.00% | 快照最大回撤: 20.00%\n'
+        '【过去7天平仓记录（本地成交账本）】\n- detail-only-position-id\n'
+        '完整平仓周期: 2 笔 | 胜率: 50% | 已确认累计盈亏（手续费前）: -1.00 USDT'
+    )
+    monkeypatch.setattr(agent_graph, 'format_recent_position_history_for_memory', lambda *_: evidence)
+    monkeypatch.setattr(agent_graph, 'summarize_content', lambda *_, **__: bad_summary)
+    assert agent_graph.update_turn_memory('cfg', {'symbol': 'ETH/USDT'}, 'cancel invalid entry', [])
+    saved = database.get_short_memories('cfg', 1)[0]
+    assert 'cancel invalid entry' in saved['market_summary']
+    assert '起点收益率: -8.00%' in saved['market_summary']
+    assert '完整平仓周期: 2 笔' in saved['market_summary']
+    assert '非实时' in saved['market_summary'] and '共享账户' in saved['market_summary']
+    assert 'detail-only-position-id' not in saved['market_summary']
+    assert saved['position_summary'] == evidence
+
+
+def test_empty_window_failed_compression_keeps_previous_memory(local_db, monkeypatch):
+    cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL'}
+    monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [cfg])
+    monkeypatch.setattr(agent_graph, 'summarize_content', lambda *_, **__: '')
+    database.save_short_memory('2026-09-28 00:00:00', '2026-09-28 04:00:00',
+                               'ETH/USDT', 'cfg', 'prior memory and risk', '', 1)
+    now = agent_graph.TZ_CN.localize(__import__('datetime').datetime(2026, 9, 28, 10, 0))
+    assert not agent_graph.generate_short_memory_for_config('cfg', now_cn=now)
+    assert agent_graph.format_short_memory_for_llm('cfg') == 'prior memory and risk'
 
 
 def test_daily_review_uses_only_requested_day_and_config_and_actual_fills(local_db):
@@ -89,7 +172,7 @@ def test_daily_review_uses_only_requested_day_and_config_and_actual_fills(local_
     with patch.object(agent_graph.global_config, 'get_all_symbol_configs', return_value=[cfg]), patch.object(agent_graph, 'summarize_content', return_value='actual fills review') as summarize:
         assert agent_graph.generate_manual_daily_summary('cfg', '2026-09-01')
     assert 'trade_history' in summarize.call_args.args[0]
-    assert database.get_daily_summaries('cfg')[0]['source_count'] == 0  # no analysis rounds, one real fill
+    assert database.list_daily_summaries(config_id='cfg')[0]['source_count'] == 0  # historical export is not limited to current seven days
 
 
 def test_parse_execution_facts_to_text_formatting():

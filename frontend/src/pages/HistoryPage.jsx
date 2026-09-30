@@ -8,8 +8,32 @@ import { usePreferences } from '../app/usePreferences';
 const { Title, Paragraph, Text } = Typography;
 const { useBreakpoint } = Grid;
 
+function HistoryReview({ record, defaultOpen = false, locale }) {
+  const preview = String(record.content || '').replace(/[#*>`]/g, '').replace(/\s+/g, ' ').trim();
+  return (
+    <details className="history-review-item" open={defaultOpen}>
+      <summary className="history-review-summary">
+        <span className="history-review-meta">
+          <strong>{record.timestamp || '-'}</strong>
+          <span className="history-review-tags">
+            <Tag>{record.config_id || 'ALL'}</Tag>
+            {record.agent_name ? <Tag color="blue">{record.agent_name}</Tag> : null}
+            {record.timeframe ? <Tag>{record.timeframe}</Tag> : null}
+          </span>
+        </span>
+        <span className="history-review-preview">{preview.slice(0, 180)}{preview.length > 180 ? '…' : ''}</span>
+        <span className="history-review-toggle">
+          <span className="when-collapsed">{locale === 'zh' ? '查看复盘' : 'Read review'}</span>
+          <span className="when-expanded">{locale === 'zh' ? '收起复盘' : 'Collapse review'}</span>
+        </span>
+      </summary>
+      <div className="history-review-content"><MarkdownBlock content={record.content || ''} /></div>
+    </details>
+  );
+}
+
 export default function HistoryPage() {
-  const { t, selectedSymbol, setSelectedSymbol } = usePreferences();
+  const { t, locale, selectedSymbol, setSelectedSymbol } = usePreferences();
   const screens = useBreakpoint();
   const isMobile = !screens.md;
   const [payload, setPayload] = useState(null);
@@ -17,7 +41,13 @@ export default function HistoryPage() {
   const [error, setError] = useState('');
   const [configId, setConfigId] = useState('ALL');
   const [compareIds, setCompareIds] = useState([]);
-  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({ symbol: selectedSymbol, page: 1 });
+  const page = pagination.symbol === selectedSymbol ? pagination.page : 1;
+  const setPage = (value) => setPagination({ symbol: selectedSymbol, page: value });
+  const changeCompareIds = (value) => {
+    setPage(1);
+    setCompareIds(value);
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -96,12 +126,14 @@ export default function HistoryPage() {
                 {t('historyPageDesc')}
               </Paragraph>
             </div>
-            <Space wrap>
+            <div className="history-filter-grid">
+              <label className="form-field">
+                <span>{locale === 'zh' ? '复盘任务' : 'Review task'}</span>
               <Select
-                style={{ minWidth: 180 }}
+                aria-label={locale === 'zh' ? '复盘任务' : 'Review task'}
                 value={configId}
                 options={[
-                  { label: 'ALL', value: 'ALL' },
+                  { label: locale === 'zh' ? '全部任务' : 'All tasks', value: 'ALL' },
                   ...((payload?.history?.active_agents || []).map((item) => ({ label: item, value: item })) || []),
                 ]}
                 onChange={(value) => {
@@ -109,18 +141,24 @@ export default function HistoryPage() {
                   setConfigId(value);
                 }}
               />
+              </label>
+              <label className="form-field">
+                <span>{locale === 'zh' ? '对比任务' : 'Compare tasks'}</span>
               <Select
                 mode="multiple"
-                style={{ minWidth: 260 }}
+                aria-label={locale === 'zh' ? '对比任务' : 'Compare tasks'}
+                maxTagCount="responsive"
+                allowClear
                 value={compareIds}
                 options={((payload?.history?.compare_candidates || []).map((item) => ({
                   label: `${item.label || item.config_id} · ${item.mode || '-'}`,
                   value: item.config_id,
                 })) || [])}
-                onChange={setCompareIds}
+                onChange={changeCompareIds}
                 placeholder={t('compare')}
               />
-            </Space>
+              </label>
+            </div>
           </Space>
         </Card>
 
@@ -150,7 +188,7 @@ export default function HistoryPage() {
             </div>
 
             <Card className="panel-card" title={t('equityCompare')}>
-              <EquityCompareChart series={compareSeries} selectedIds={compareIds} onSelectedIdsChange={setCompareIds} />
+              <EquityCompareChart series={compareSeries} selectedIds={compareIds} onSelectedIdsChange={changeCompareIds} />
             </Card>
 
             <Card className="panel-card history-review-card" title={t('historyReview')}>
@@ -167,19 +205,8 @@ export default function HistoryPage() {
                           <Tag color="blue">{cid}</Tag>
                         </div>
                         {(groupedSummaries[cid] || []).length ? (
-                          (groupedSummaries[cid] || []).map((record) => (
-                            <article className="history-review-item" key={record.id}>
-                              <div className="history-review-meta">
-                                <Text strong>{record.timestamp || '-'}</Text>
-                                <Space size={6} wrap>
-                                  {record.agent_name ? <Tag color="blue">{record.agent_name}</Tag> : null}
-                                  {record.timeframe ? <Tag>{record.timeframe}</Tag> : null}
-                                </Space>
-                              </div>
-                              <div className="history-review-content">
-                                <MarkdownBlock content={record.content || ''} />
-                              </div>
-                            </article>
+                          (groupedSummaries[cid] || []).map((record, index) => (
+                            <HistoryReview key={record.id} record={record} defaultOpen={index === 0} locale={locale} />
                           ))
                         ) : (
                           <Empty description={t('noData')} />
@@ -190,20 +217,8 @@ export default function HistoryPage() {
                 ) : (
                   // 默认竖向列表（移动端或单选）
                   <div className="history-review-list">
-                    {summaries.map((record) => (
-                      <article className="history-review-item" key={record.id}>
-                        <div className="history-review-meta">
-                          <Text strong>{record.timestamp || '-'}</Text>
-                          <Space size={6} wrap>
-                            <Tag>{record.config_id || 'ALL'}</Tag>
-                            {record.agent_name ? <Tag color="blue">{record.agent_name}</Tag> : null}
-                            {record.timeframe ? <Tag>{record.timeframe}</Tag> : null}
-                          </Space>
-                        </div>
-                        <div className="history-review-content">
-                          <MarkdownBlock content={record.content || ''} />
-                        </div>
-                      </article>
+                    {summaries.map((record, index) => (
+                      <HistoryReview key={record.id} record={record} defaultOpen={index === 0} locale={locale} />
                     ))}
                   </div>
                 )
@@ -217,6 +232,7 @@ export default function HistoryPage() {
                   pageSize={20}
                   onChange={setPage}
                   showSizeChanger={false}
+                  simple={isMobile}
                   hideOnSinglePage={false}
                 />
               </div>

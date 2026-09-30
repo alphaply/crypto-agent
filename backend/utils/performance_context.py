@@ -1,4 +1,4 @@
-"""Read-only performance evidence for scheduled and task-bound chat decisions."""
+"""Read-only historical performance evidence for short-memory updates."""
 
 import math
 

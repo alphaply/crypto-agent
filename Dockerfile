@@ -1,11 +1,15 @@
-FROM node:22-bookworm-slim AS frontend-build
+ARG NODE_IMAGE=node:22-bookworm-slim
+ARG PYTHON_IMAGE=python:3.11-slim-bookworm
+
+FROM ${NODE_IMAGE} AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm ci
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm ci --registry=${NPM_REGISTRY}
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.11-slim-bookworm AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=7860 \

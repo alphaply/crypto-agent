@@ -39,9 +39,7 @@ class OpenOrderSpotDCA(BaseModel):
     reason: str = Field(description="定投买入理由")
 
 class OpenOrderStrategy(OpenOrderReal):
-    """策略模式开仓参数：包含止盈止损和有效期"""
-    stop_loss: float = Field(gt=0, allow_inf_nan=False, description="止损触发价")
-    take_profit: float = Field(gt=0, allow_inf_nan=False, description="止盈触发价")
+    """策略开仓，TP/SL 是否必填由任务退出模式校验。"""
     valid_duration_hours: int = Field(24, gt=0, le=168, description="挂单有效期(小时)，过期自动撤销")
 
 
@@ -49,9 +47,24 @@ class CloseOrder(BaseModel):
     """平仓的精确参数"""
     action: Literal["CLOSE"] = Field("CLOSE", description="固定为 CLOSE")
     pos_side: Literal["LONG", "SHORT"] = Field(description="你要平掉哪一个方向的仓位: LONG(平多), SHORT(平空)")
-    entry_price: float = Field(ge=0, allow_inf_nan=False, description="0表示市价退出；正值为平仓委托价，非已成交价格")
+    entry_price: float = Field(0, ge=0, allow_inf_nan=False, description="旧参数兼容；新调用使用 exit_type 及 price/trigger_price")
+    exit_type: Literal["market", "take_profit_limit", "stop_market"] | None = Field(None, description="显式指定即时市价、限价止盈或触发市价止损")
+    price: float | None = Field(None, gt=0, allow_inf_nan=False, description="take_profit_limit 委托价格")
+    trigger_price: float | None = Field(None, gt=0, allow_inf_nan=False, description="stop_market 触发价格")
     amount: float = Field(ge=0, allow_inf_nan=False, description="标的币数量；0表示该方向全部仓位")
     reason: str = Field(description="理由")
+
+    @model_validator(mode="after")
+    def validate_exit(self):
+        if self.exit_type == "market" and (self.price is not None or self.trigger_price is not None or self.entry_price):
+            raise ValueError("market 退出不接受价格")
+        if self.exit_type == "take_profit_limit" and (self.price is None or self.trigger_price is not None):
+            raise ValueError("take_profit_limit 必须提供 price，不能提供 trigger_price")
+        if self.exit_type == "stop_market" and (self.trigger_price is None or self.price is not None):
+            raise ValueError("stop_market 必须提供 trigger_price，不能提供 price")
+        if self.exit_type is None and (self.price is not None or self.trigger_price is not None):
+            raise ValueError("price/trigger_price 必须配合显式 exit_type")
+        return self
 
 class SessionTitle(BaseModel):
     """会话标题总结"""

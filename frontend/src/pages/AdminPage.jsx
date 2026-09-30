@@ -1,5 +1,7 @@
 import RunScheduleEditor from '../components/RunScheduleEditor';
 import DatabaseMaintenance from '../components/DatabaseMaintenance';
+import ResponsiveTabs from '../components/ResponsiveTabs';
+import TradingRulesPanel from '../components/TradingRulesPanel';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -29,6 +31,7 @@ import {
 } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, DownloadOutlined, HolderOutlined, FileTextOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
+import { EXIT_MODES, exitModeLabel, resolveExitMode } from '../lib/exitManagement';
 import { usePreferences } from '../app/usePreferences';
 import { DailySummaryPanel, ShortMemoryPanel } from './DashboardPage';
 import { PolymarketSettings } from '../components/PolymarketPanel';
@@ -41,7 +44,7 @@ const ADMIN_TAB_KEYS = ['runtime', 'intelligence', 'tasks', 'providers', 'exchan
 
 const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}';
 const DEFAULT_DAILY_PROMPT = '请把以下一整天的交易推理压缩成一段中文日内记忆，300字以内。保留趋势演变、关键价位、决策变化、执行动作和风险结论。只输出总结文本。\n\n内容：\n{content}';
-const DEFAULT_SHORT_MEMORY_PROMPT = '请把以下最近4小时的市场与持仓信息整理成中文短期记忆，300字以内。包含市场状态、近期决策、持仓/挂单变化、已实现盈亏和风险提醒。只输出总结文本。\n\n内容：\n{content}';
+const DEFAULT_SHORT_MEMORY_PROMPT = '请把以下交易总结和历史证据滚动压缩成中文短期记忆，400-600字。保留市场状态、连续决策变化、持仓/挂单变化、关键价位和执行结果；概括收益、回撤及7天完整平仓样本、胜率、盈亏比、手续费前盈亏与主要教训，不逐笔复述账本。注明统计截至时间；权益快照非实时、未剔除出入金/共享账户影响，不归因为独立策略收益；缺失数字写未知，成交活动与完整周期盈亏不能相加。旧计划须与最新账户核对，亏损不构成加杠杆或放宽止损理由。只输出总结文本。\n\n内容：\n{content}';
 
 const DEFAULT_PROMPT_FILE_CONTENT = `Role: Crypto trading strategy analyst
 Time: {current_time}
@@ -65,6 +68,12 @@ Market Data:
 
 Short Memory:
 {short_memory_text}
+
+Recent Decisions:
+{recent_summaries_text}
+
+Trading Rules:
+{trading_rules_text}
 
 Daily History:
 {history_text}
@@ -92,6 +101,7 @@ function buildBlankAgent(promptFiles = []) {
     symbol: 'BTC/USDT',
     enabled: true,
     mode: 'STRATEGY',
+    exit_mode: 'attached_required',
     model: '',
     api_base: '',
     temperature: 0.3,
@@ -346,6 +356,7 @@ const AGENT_PROMPT_VARS = [
   'current_time', 'symbol', 'leverage', 'current_price', 'atr_15m',
   'balance', 'positions_text', 'orders_text', 'formatted_market_data',
   'short_memory_text', 'history_text', 'next_run_time',
+  'recent_summaries_text', 'trading_rules_text',
   'dca_period_text', 'dca_budget',
 ];
 
@@ -569,6 +580,7 @@ export default function AdminPage() {
     const manualAvg = Number(agent.manual_avg_cost || 0);
     setEditingTask({
       ...agent,
+      exit_mode: resolveExitMode(agent),
       fallback_llm_provider_ids: Array.isArray(agent.fallback_llm_provider_ids) ? agent.fallback_llm_provider_ids : [],
       manual_avg_cost: manualAvg || (initialQty > 0 ? Number(agent.initial_cost || 0) / initialQty : 0),
     });
@@ -1032,12 +1044,14 @@ export default function AdminPage() {
           <div>
             <Title level={2} style={{ margin: 0 }}>{t('config')}</Title>
             <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              {locale === 'zh' ? '数据库驱动的运行配置，支持加密密钥和表单编辑。' : 'Database-backed runtime config with encrypted secrets and form-first editing.'}
+              {locale === 'zh' ? '管理任务、模型和交易所。运行配置会自动保存，提示词需单独保存。' : 'Manage tasks, models and exchanges. Runtime changes save automatically; save prompts separately.'}
             </Paragraph>
           </div>
           <Space>
             <Tag color={saveState === 'failed' ? 'red' : saveState === 'saving' ? 'blue' : saveState === 'unsaved' ? 'gold' : saveState === 'saved' ? 'green' : 'default'}>
-              {saveState === 'failed' ? 'Save failed' : saveState === 'saving' ? 'Saving...' : saveState === 'unsaved' ? 'Unsaved' : saveState === 'saved' ? 'Saved' : 'Auto save'}
+              {locale === 'zh'
+                ? ({ failed: '保存失败', saving: '保存中…', unsaved: '待保存', saved: '已保存' }[saveState] || '自动保存')
+                : ({ failed: 'Save failed', saving: 'Saving…', unsaved: 'Unsaved', saved: 'Saved' }[saveState] || 'Auto save')}
             </Tag>
             <Button onClick={saveConfig} loading={saving} disabled={!payload}>{t('saveConfig')}</Button>
           </Space>
@@ -1049,7 +1063,7 @@ export default function AdminPage() {
       {loading ? (
         <Card className="panel-card loading-card"><Spin /></Card>
       ) : payload ? (
-        <Tabs activeKey={activeAdminTab} onChange={setActiveAdminTab} items={[
+        <ResponsiveTabs label={locale === 'zh' ? '配置分区' : 'Configuration section'} activeKey={activeAdminTab} onChange={setActiveAdminTab} items={[
           {
             key: 'intelligence',
             label: locale === 'zh' ? '消息源' : 'News sources',
@@ -1463,6 +1477,11 @@ export default function AdminPage() {
                 <Tabs
                   items={[
                     {
+                      key: 'rules',
+                      label: locale === 'zh' ? '交易规则' : 'Trading rules',
+                      children: <TradingRulesPanel agents={payload.agents || []} />,
+                    },
+                    {
                       key: 'daily',
                       label: t('dailySummaries'),
                       children: <DailySummaryPanel dashboard={memoryDashboard} authenticated embedded />,
@@ -1650,6 +1669,24 @@ export default function AdminPage() {
                     <label>Mode *</label>
                     <Select value={editingTask.mode} options={(payload.options?.modes || []).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingTask('mode', v)} style={{ width: '100%' }} />
                   </div>
+                  {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
+                    <div className="form-field field-span-2">
+                      <label>{locale === 'zh' ? '退出管理方式' : 'Exit management'}</label>
+                      <Select
+                        aria-label={locale === 'zh' ? '退出管理方式' : 'Exit management'}
+                        value={resolveExitMode(editingTask)}
+                        options={EXIT_MODES.map((value) => ({ value, label: exitModeLabel(value, locale) }))}
+                        onChange={(value) => updateEditingTask('exit_mode', value)}
+                        style={{ width: '100%' }}
+                      />
+                      <Text type="secondary">
+                        {locale === 'zh'
+                          ? ({ attached_required: '每次开仓需提供止盈和止损。', attached_optional: '开仓时可单独提供或省略止盈止损。', independent_exits: '通过独立退出单按数量设置止盈或止损，支持分批减仓。' }[resolveExitMode(editingTask)])
+                          : ({ attached_required: 'Each entry requires take profit and stop loss.', attached_optional: 'Entries may supply either, both, or no TP/SL.', independent_exits: 'Separate exits specify price and quantity, supporting partial reductions.' }[resolveExitMode(editingTask)])}
+                        {' '}{locale === 'zh' ? '已有持仓、挂单或待核验操作时，需先处理完毕才能切换。' : 'Close positions and resolve outstanding orders before switching modes.'}
+                      </Text>
+                    </div>
+                  )}
                   <div className="form-field">
                     <label>Prompt File *</label>
                     <Select value={editingTask.prompt_file || undefined} options={(payload.options?.prompt_files || []).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingTask('prompt_file', v)} allowClear style={{ width: '100%' }} />

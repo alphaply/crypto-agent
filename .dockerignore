@@ -12,6 +12,10 @@ __pycache__
 .env
 .env.*
 !.env.template
+data
+maintenance-backups
+logs
+tests
 trading_data.db
 *.sqlite
 *.sqlite-shm
@@ -24,7 +28,7 @@ app.log
 pricing.json
 
 frontend/node_modules
-frontend/dist
+# frontend/dist is included so Dockerfile.prebuilt can copy it directly
 frontend/.vite
 frontend/coverage
 node_modules

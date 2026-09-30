@@ -27,6 +27,8 @@ class ConfigCleanupStore:
                 "execution_position_history",
                 "real_protection_plans",
                 "real_protection_events",
+                "mock_positions", "mock_exit_orders", "mock_trade_operations",
+                "trade_action_runs", "trade_operation_requests", "trading_rules", "trading_rule_revisions", "trading_rule_operations",
             ]
             existing_tables = {
                 row[0]
@@ -147,6 +149,8 @@ class ConfigCleanupStore:
                 "execution_position_history",
                 "real_protection_plans",
                 "real_protection_events",
+                "mock_positions", "mock_exit_orders", "mock_trade_operations",
+                "trade_action_runs", "trade_operation_requests", "trading_rules", "trading_rule_revisions", "trading_rule_operations",
             ):
                 if table in existing_tables:
                     cleanup[f"{table}_deleted"] = cursor.execute(

@@ -1,5 +1,7 @@
 """Formatting helpers for compact agent-readable text."""
 
+import math
+
 
 def escape_markdown_special_chars(text: str) -> str:
     if not text:
@@ -24,10 +26,8 @@ def format_positions_to_agent_friendly(positions: list) -> str:
     return "\n".join(lines)
 
 
-def format_orders_to_agent_friendly(orders):
-    if not orders:
-        return "(No Active Orders)"
-
+def format_orders_to_agent_friendly(orders, protection_plans=None, symbol=""):
+    orders = [order for order in (orders or []) if order]
     lines = []
     for order in orders:
         if not order:
@@ -37,7 +37,7 @@ def format_orders_to_agent_friendly(orders):
         raw_type = str(order.get("type") or order.get("raw_type") or "").upper()
         price = order.get("price")
         amount = order.get("amount")
-        order_id = order.get("id", "N/A")
+        order_id = order.get("id") or order.get("order_id") or "N/A"
 
         tp = float(order.get("tp", 0) or order.get("take_profit", 0) or 0)
         sl = float(order.get("sl", 0) or order.get("stop_loss", 0) or 0)
@@ -62,11 +62,22 @@ def format_orders_to_agent_friendly(orders):
 
         lines.append(f"ID:'{order_id}' - [{action}] Amount: {amount} @ Price: {price}{extras}")
 
-    return "\n".join(lines)
+    if protection_plans is not None:
+        from backend.utils.order_context import merge_order_protection
+
+        return merge_order_protection(orders, lines, protection_plans, symbol)
+    return "\n".join(lines) or "(No Active Orders)"
 
 
 def format_market_data_to_text(data: dict) -> str:
     """Format market data into a compact agent prompt payload."""
+
+    def fmt_value(value):
+        if value is None:
+            return "N/A"
+        if isinstance(value, (int, float)) and not math.isfinite(value):
+            return "N/A"
+        return str(value)
 
     def fmt_num(num):
         try:
@@ -189,68 +200,91 @@ def format_market_data_to_text(data: dict) -> str:
     tf_order = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
     available_tfs = [tf for tf in tf_order if tf in indicators]
 
-    monthly = indicators.get("1M", {})
-    weekly = indicators.get("1w", {})
-    if monthly and weekly:
-        monthly_trend = monthly.get("trend", {})
-        weekly_trend = weekly.get("trend", {})
-        output.append("[Macro Trend]")
-        output.append(
-            f"- 1M ADX={monthly_trend.get('adx', 0)} "
-            f"DI+={monthly_trend.get('di_plus', 0)} DI-={monthly_trend.get('di_minus', 0)}"
-        )
-        output.append(
-            f"- 1w ADX={weekly_trend.get('adx', 0)} "
-            f"DI+={weekly_trend.get('di_plus', 0)} DI-={weekly_trend.get('di_minus', 0)}"
-        )
-        output.append("")
-
     if not available_tfs:
         output.append("[Technical Indicators]")
         output.append("- No timeframe data")
         return "\n".join(output).strip()
 
+    output.append("[Technical context: closed candles, oldest to newest; price is the last closed-bar reference, not a live quote. N/A means unavailable.]")
+    output.append("V uses exchange OHLCV volume units. RVOL20 compares the last candle with the previous 20 closed candles; ATR-normalized distances are signed. Indicators describe history, not independent probabilities.")
+    output.append("CHOP: <38.2 trending, >61.8 choppy (descriptive, no direction); CMF is an OHLCV pressure proxy, not net capital flow. Squeeze on=BB inside KC, off=both bands outside, neutral=mixed/touching; release_age=bars since observed on→off (0=this bar, N/A=not observed/reset). Durations are bounded by available history; release alone gives no direction.")
     for tf in available_tfs:
         timeframe_data = indicators[tf]
-        trend = timeframe_data.get("trend", {})
-        adx = trend.get("adx", 0)
-        di_plus = trend.get("di_plus", 0)
-        di_minus = trend.get("di_minus", 0)
-        atr = timeframe_data.get("atr", 0)
-        vol_stat = timeframe_data.get("volume_status") or timeframe_data.get("volume_analysis", {}).get("status", "N/A")
-        output.append(f"[{tf}] ADX={adx} DI+={di_plus} DI-={di_minus} | ATR={atr} | Vol={vol_stat}")
+        trend = timeframe_data.get("trend") or {}
+        adx = fmt_value(trend.get("adx"))
+        di_plus = fmt_value(trend.get("di_plus"))
+        di_minus = fmt_value(trend.get("di_minus"))
+        atr = fmt_value(timeframe_data.get("atr"))
+        context = timeframe_data.get('decision_context') or {}
+        trend_context = context.get('trend') or {}
+        momentum = context.get('momentum') or {}
+        volatility = context.get('volatility') or {}
+        regime = context.get('regime') or {}
+        volume = timeframe_data.get("volume_analysis") or {}
+        output.append(
+            f"[{tf}] ADX={adx} DI+={di_plus} DI-={di_minus} | Close={fmt_value(timeframe_data.get('price'))} "
+            f"| ATR={atr} ({fmt_value(volatility.get('atr_pct'))}%) | RVOL20={fmt_value(volume.get('ratio'))}x"
+        )
         quality = timeframe_data.get('data_quality') or {}
         if quality.get('stale') or quality.get('gap_count') or quality.get('invalid_candles_excluded'):
             output.append(f"- DATA QUALITY WARNING: stale={quality.get('stale')}, gaps={quality.get('gap_count', 0)}, invalid bars={quality.get('invalid_candles_excluded', 0)}. Refresh/verify data before considering new entries; indicators may be unreliable.")
         if quality:
-            output.append(f"- Data: {quality.get('basis')} | last close={quality.get('last_closed_at')} | stale={quality.get('stale')} | excluded forming={quality.get('forming_candles_excluded')}")
+            output.append(f"- Data: {quality.get('basis')} | last close={quality.get('last_closed_at')} | age={fmt_value(quality.get('age_seconds'))}s | calculation bars={fmt_value(quality.get('bars'))} | excluded forming={quality.get('forming_candles_excluded')}")
             if quality.get('ema_warmup_bars'):
                 output.append(f"- EMA warm-up warning (<3x span): {quality['ema_warmup_bars']}")
 
-        ema = timeframe_data.get("ema", {})
+        ema = timeframe_data.get("ema") or {}
         ema_line = (
-            f"- EMA: 20={ema.get('ema_20', 0)} / 50={ema.get('ema_50', 0)} / "
-            f"100={ema.get('ema_100', 0)} / 200={ema.get('ema_200', 0)}"
+            f"- EMA: 20={fmt_value(ema.get('ema_20'))} / 50={fmt_value(ema.get('ema_50'))} / "
+            f"100={fmt_value(ema.get('ema_100'))} / 200={fmt_value(ema.get('ema_200'))}"
         )
+        if trend_context:
+            ema_line += (
+                f" | (C-EMA20)/ATR={fmt_value(trend_context.get('price_minus_ema20_atr'))}"
+                f" | (EMA20-EMA50)/ATR={fmt_value(trend_context.get('ema20_minus_ema50_atr'))}"
+                f" | EMA20 Δ3bars={fmt_value(trend_context.get('ema20_change_3_bars_pct'))}%"
+            )
         if timeframe_data.get("vwap"):
             ema_line += f" | VWAP={timeframe_data.get('vwap')} anchor={timeframe_data.get('vwap_anchor') or 'unknown'}"
         output.append(ema_line)
 
-        rsi_data = timeframe_data.get("rsi_analysis", {})
-        rsi_text = f"RSI={rsi_data.get('rsi', 0)}"
+        rsi_data = timeframe_data.get("rsi_analysis") or {}
+        rsi_text = f"RSI={fmt_value(rsi_data.get('rsi'))}"
         if rsi_data.get("divergence"):
             rsi_text += f" [{clean_text(rsi_data.get('divergence'))}]"
-        macd = timeframe_data.get("macd", {})
-        output.append(
-            f"- {rsi_text} | MACD: Diff={macd.get('diff', 0)} "
-            f"Hist={macd.get('hist', 0)} ({clean_text(macd.get('momentum', ''))})"
-        )
+        macd = timeframe_data.get("macd") or {}
+        momentum_line = f"- {rsi_text} | MACD: Diff={fmt_value(macd.get('diff'))} Hist={fmt_value(macd.get('hist'))} ({clean_text(macd.get('momentum', ''))})"
+        if momentum:
+            momentum_line += (
+                f" | RSI Δ3bars={fmt_value(momentum.get('rsi_change_3_bars'))}"
+                f" | Hist/ATR={fmt_value(momentum.get('macd_hist_atr'))}"
+                f" | ΔHist1bar/ATR={fmt_value(momentum.get('macd_hist_change_1_bar_atr'))}"
+            )
+        output.append(momentum_line)
 
-        bb = timeframe_data.get("bollinger", {})
-        output.append(f"- BB(20,2σ,population): Up={bb.get('up', 'N/A')} Low={bb.get('low', 'N/A')} Width={bb.get('width', 'N/A')} %B={bb.get('percent_b', 'N/A')} width percentile(120)={bb.get('width_percentile_120', 'N/A')}")
+        bb = timeframe_data.get("bollinger") or {}
+        output.append(f"- BB(20,2σ,population): Up={fmt_value(bb.get('up'))} Low={fmt_value(bb.get('low'))} Width={fmt_value(bb.get('width'))} %B={fmt_value(bb.get('percent_b'))} width percentile(≤120)={fmt_value(bb.get('width_percentile_120'))} | last range/ATR={fmt_value(volatility.get('last_range_atr'))}")
+        if regime:
+            chop, cmf, squeeze = (regime.get(key) or {} for key in ('chop', 'cmf', 'squeeze'))
+            output.append(
+                f"- CHOP14={fmt_value(chop.get('value'))} Δ3={fmt_value(chop.get('change_3_bars'))}"
+                f" {chop.get('state', 'unavailable')}({fmt_value(chop.get('state_bars'))} bars)"
+                f" | CMF20={fmt_value(cmf.get('value'))} Δ3={fmt_value(cmf.get('change_3_bars'))}"
+                f" {cmf.get('sign', 'unavailable')}({fmt_value(cmf.get('sign_bars'))} bars)"
+                f" | Squeeze(BB20,2σ/KC20,1.5×SMA-TR)={squeeze.get('state', 'unavailable')}"
+                f" on_bars={fmt_value(squeeze.get('on_bars'))} release_age={fmt_value(squeeze.get('bars_since_release'))}"
+            )
+
+        if momentum:
+            output.append(f"- Close returns 1/3/15 bars (%): {fmt_value(momentum.get('return_1_bar_pct'))}/{fmt_value(momentum.get('return_3_bars_pct'))}/{fmt_value(momentum.get('return_15_bars_pct'))}")
+        prior_range = context.get('prior_range_20') or {}
+        if prior_range:
+            output.append(f"- Previous 20-bar range (excluding last candle): {prior_range['low']}~{prior_range['high']} | (H-C)/ATR={fmt_value(prior_range.get('to_high_atr'))} (C-L)/ATR={fmt_value(prior_range.get('to_low_atr'))}; negative means crossed edge")
 
         vp = timeframe_data.get("vp") or {}
-        if vp:
+        if vp.get('available') is False:
+            output.append(f"- Volume Profile: N/A ({vp.get('reason', 'unavailable')})")
+        elif vp:
             hvns = ", ".join(str(value) for value in (vp.get("hvns") or [])[:3]) or "none"
             output.append(
                 f"- Volume Profile: POC={vp.get('poc', 0)} VAH={vp.get('vah', 0)} "
@@ -263,12 +297,19 @@ def format_market_data_to_text(data: dict) -> str:
         opens = timeframe_data.get("recent_opens", [])
         highs = timeframe_data.get("recent_highs", [])
         lows = timeframe_data.get("recent_lows", [])
-        if tf not in {'1d', '1w', '1M'} and closes and len(closes) == len(opens) == len(highs) == len(lows):
+        if closes and len(closes) == len(opens) == len(highs) == len(lows):
+            times = timeframe_data.get('recent_times') or []
+            volumes = timeframe_data.get('recent_volumes') or []
+            has_time_volume = len(times) == len(volumes) == len(closes)
+            candle_fields = 'UTC open,O,H,L,C,V' if has_time_volume else 'O,H,L,C'
             ohlc_list = [
-                f"[{open_},{high},{low},{close}]"
-                for open_, high, low, close in zip(opens[-10:], highs[-10:], lows[-10:], closes[-10:])
+                '[' + ','.join(fmt_value(value) for value in (
+                    (times[i], opens[i], highs[i], lows[i], closes[i], volumes[i]) if has_time_volume
+                    else (opens[i], highs[i], lows[i], closes[i])
+                )) + ']'
+                for i in range(max(0, len(closes) - 10), len(closes))
             ]
-            output.append(f"- Recent {len(ohlc_list)} candles (O,H,L,C): {', '.join(ohlc_list)}")
+            output.append(f"- Recent {len(ohlc_list)} candles ({candle_fields}): {', '.join(ohlc_list)}")
 
         output.append(f"- {fmt_smc(timeframe_data.get('smc') or {})}")
         output.append(f"- {fmt_liquidity_sweep_ifvg(timeframe_data.get('liquidity_sweep_ifvg') or {})}")

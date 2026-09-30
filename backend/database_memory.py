@@ -57,17 +57,20 @@ class SummaryMemoryStore:
             return deleted
 
     def get_daily_summaries(self, config_id, days=7):
+        days = max(1, int(days or 7))
+        cutoff = (self._now_factory() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        today = self._now_factory().strftime("%Y-%m-%d")
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''
                 SELECT date, symbol, config_id, summary, source_count, created_at
                 FROM daily_summaries
-                WHERE config_id = ?
+                WHERE config_id = ? AND date >= ? AND date <= ?
                 ORDER BY date DESC
                 LIMIT ?
                 ''',
-                (config_id, days),
+                (config_id, cutoff, today, days),
             )
             return [dict(row) for row in cursor.fetchall()]
 

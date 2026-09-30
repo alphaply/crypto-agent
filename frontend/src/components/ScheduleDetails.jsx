@@ -6,8 +6,10 @@ const { Text } = Typography;
 export default function ScheduleDetails({ agents, activeTab, locale }) {
   const zh = locale === 'zh';
   const visible = activeTab === 'compare' ? agents : agents.filter((agent) => agent.config_id === activeTab);
+  const runningCount = visible.filter((agent) => ['RUNNING', 'QUEUED'].includes(String(agent.execution?.status || '').toUpperCase())).length;
+  const failedCount = visible.filter((agent) => String(agent.execution?.status || '').toUpperCase() === 'FAILED').length;
   const days = zh ? ['一', '二', '三', '四', '五', '六', '日'] : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  return (
+  const schedules = (
     <section className="dashboard-schedules" aria-label={zh ? '运行计划' : 'Run schedule'}>
       {visible.map((agent) => {
         const schedule = agent.schedule;
@@ -37,4 +39,15 @@ export default function ScheduleDetails({ agents, activeTab, locale }) {
       })}
     </section>
   );
+
+  return activeTab === 'compare' ? (
+    <details className="content-disclosure dashboard-schedule-group">
+      <summary>
+        {zh ? '运行计划' : 'Run schedules'} · {visible.length} {zh ? '个任务' : 'tasks'}
+        {runningCount ? <Tag color="processing">{runningCount} {zh ? '执行中' : 'in progress'}</Tag> : null}
+        {failedCount ? <Tag color="error">{failedCount} {zh ? '最近执行失败' : 'last run failed'}</Tag> : null}
+      </summary>
+      {schedules}
+    </details>
+  ) : schedules;
 }

@@ -16,7 +16,11 @@ from backend.agent.agent_tools import (
     update_position_protection_strategy,
     update_entry_order_real,
     update_entry_order_strategy,
+    update_exit_order,
 )
+from backend.agent.trade_batch import execute_trade_actions
+from backend.agent.rule_tools import manage_trading_rules
+from backend.utils.trade_operations import current_operation_id, run_once, tool_result_status
 from backend.utils.logger import setup_logger
 
 
@@ -30,6 +34,10 @@ _TOOLS_BY_MODE = {
     "SPOT_DCA": [open_position_spot_dca, cancel_orders_real],
     "STRATEGY": [open_position_strategy, cancel_orders_strategy, close_position_strategy, update_position_protection_strategy, update_entry_order_strategy],
 }
+for _mode, _mode_tools in _TOOLS_BY_MODE.items():
+    if _mode in {"REAL", "STRATEGY"}:
+        _mode_tools.extend([update_exit_order, execute_trade_actions])
+    _mode_tools.append(manage_trading_rules)
 
 _TOOL_BY_NAME = {
     tool.name: tool
@@ -87,7 +95,7 @@ def _summarize_result(result: Any, limit: int = 300) -> str:
     return text[:limit] + "..."
 
 
-def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str) -> str:
+def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, operation_id: str | None = None) -> str:
     from backend.config import config as runtime_config
     config = runtime_config.get_config_by_id(config_id)
     if config and tool_name not in {tool.name for tool in get_trade_tools_for_mode(config.get('mode'))}:
@@ -106,13 +114,22 @@ def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str) -> st
             symbol,
             len(legacy_order_ids),
         )
-        return "\n".join(
-            run_trade_tool(tool_name, {"order_id": order_id, "reason": DEFAULT_CANCEL_REASON}, config_id, symbol)
-            for order_id in legacy_order_ids
-        )
+        results = []
+        stopped = False
+        for index, order_id in enumerate(legacy_order_ids):
+            if stopped:
+                results.append(json.dumps({'order_id': order_id, 'status': 'not_executed'}))
+                continue
+            result = run_trade_tool(tool_name, {"order_id": order_id, "reason": DEFAULT_CANCEL_REASON}, config_id, symbol,
+                                    operation_id=f"{operation_id}:{index}" if operation_id else None)
+            results.append(result)
+            stopped = tool_result_status(result) in {'failed', 'unknown'}
+        return "\n".join(results)
 
     call_args = _normalize_tool_args(tool_name, args)
-    if tool_name in {'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy'}:
+    call_args.pop('config_id', None)
+    call_args.pop('symbol', None)
+    if tool_name in {'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy', 'update_exit_order', 'execute_trade_actions', 'manage_trading_rules'}:
         # Dispatch uses .func(), so these scalar arguments need explicit schema validation.
         call_args = tool_obj.args_schema.model_validate(call_args).model_dump()
     call_args["config_id"] = config_id
@@ -125,7 +142,16 @@ def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str) -> st
         symbol,
         sorted(call_args.keys()),
     )
-    result = str(tool_obj.func(**call_args))
+    token = current_operation_id.set(operation_id)
+    try:
+        if operation_id and tool_name != 'manage_trading_rules':
+            raw = run_once(config_id, symbol, operation_id, {'tool': tool_name, 'args': call_args},
+                           lambda: tool_obj.func(**call_args))
+        else:
+            raw = tool_obj.func(**call_args)
+        result = json.dumps(raw, ensure_ascii=False) if isinstance(raw, dict) else str(raw)
+    finally:
+        current_operation_id.reset(token)
     logger.info(
         "Tool call completed: name=%s config_id=%s symbol=%s result=%s",
         tool_name,

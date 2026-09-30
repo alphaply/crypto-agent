@@ -13,7 +13,7 @@ from backend.utils.indicators import (
     calc_macd, calc_adx, calc_vwap,
     calc_bollinger_bands, calculate_vp,
     calculate_smc, calculate_liquidity_sweep_ifvg,
-    detect_rsi_divergence
+    build_agent_indicator_context,
 )
 import uuid
 import math
@@ -417,7 +417,13 @@ class MarketTool:
     def _check_mock_orders_tp_sl(self, symbol, current_high, current_low, candle_ts_ms=0):
         """检查模拟盘订单是否触及止盈止损并自动平仓"""
         if not self.config_id: return
-        mock_orders = database.get_mock_orders(symbol=symbol, config_id=self.config_id)
+        from backend.database_independent import MockIndependentTrading
+        independent = MockIndependentTrading(self.config_id, symbol)
+        snapshot = independent.snapshot()
+        if snapshot['positions'] or snapshot['entries'] or snapshot['exits']:
+            independent.monitor(current_high, current_low, candle_ts_ms)
+        mock_orders = [order for order in database.get_mock_orders(symbol=symbol, config_id=self.config_id)
+                       if order.get('execution_mode') != 'independent_exits']
         if not mock_orders: return
         
         for o in mock_orders:
@@ -507,7 +513,11 @@ class MarketTool:
                     elif tp > 0 and math.isclose(close_price, tp, rel_tol=0, abs_tol=1e-12):
                         close_event_type = "TP_HIT"
                     realized_pnl = (close_price - entry) * amount * (1 if 'BUY' in side else -1)
-                    database.close_mock_order(o['order_id'], close_price=close_price, realized_pnl=realized_pnl)
+                    closed = database.close_mock_order(o['order_id'], close_price=close_price, realized_pnl=realized_pnl)
+                    if closed is False:
+                        continue
+                    if isinstance(closed, dict):
+                        realized_pnl, amount = closed['realized_pnl'], closed['amount']
                     logger.info(f"⚡ [Auto TP/SL] {symbol} 模拟单 {o['order_id']} 自动平仓: {reason}, PnL={realized_pnl:.4f}, candle_ts={candle_ts_ms}")
                     database.save_order_log(
                         o['order_id'],
@@ -566,6 +576,9 @@ class MarketTool:
             active_orders = database.get_mock_orders(
                 symbol=self.symbol, config_id=self.config_id
             )
+            from backend.database_independent import MockIndependentTrading
+            independent_snapshot = MockIndependentTrading(self.config_id, self.symbol).snapshot()
+            active_orders += independent_snapshot['positions']
             result["checked"] = len(active_orders)
 
             if not active_orders:
@@ -777,13 +790,13 @@ class MarketTool:
                 
                 # 同时传入 config_id 和 agent_name 以获得最佳兼容性
                 status_data["mock_open_orders"] = database.get_mock_orders(symbol, agent_name=agent_name, config_id=config_id)
-                active_pending_orders = [
-                    o for o in status_data["mock_open_orders"]
-                    if not int(o.get('is_filled', 0))
-                ]
+                from backend.database_independent import MockIndependentTrading
+                independent_snapshot = MockIndependentTrading(config_id or agent_name, symbol).snapshot()
+                status_data['mock_open_orders'] += independent_snapshot['positions']
+                status_data['independent_exits'] = independent_snapshot
                 reserved_value = sum(
                     float(o.get('price', 0) or 0) * float(o.get('amount', 0) or 0)
-                    for o in active_pending_orders
+                    for o in status_data['mock_open_orders']
                 )
                 status_data["available_balance"] = max(float(status_data["balance"] or 0) - reserved_value, 0.0)
                 
@@ -842,26 +855,25 @@ class MarketTool:
 
     # VWAP 仅在日内周期有效
     VWAP_VALID_TFS = {'1m', '5m', '15m', '30m', '1h'}
+    AGENT_CANDLE_LIMIT = 10
 
     def process_timeframe(self, symbol, tf):
-        """
-        处理单个时间周期的核心逻辑（精简优化版 v2）
-        移除冗余指标 (StochRSI/KDJ/CCI/EMA100)，新增 MACD 动量标注与 RSI 背离检测
-        """
+        """Calculate with full history; expose only the latest 10 closed candles to agents."""
         try:
             logger.debug(f"    🔍 [{tf}] Fetching OHLCV data for {symbol}...")
             fetch_limit = 60 if tf == '1M' else 1000
             min_bars = 12 if tf == '1M' else (52 if tf == '1w' else 200)
             ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=fetch_limit)
             if not ohlcv or len(ohlcv) < min_bars:
-                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles (need >= 200)")
+                logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles (need >= {min_bars})")
                 return None
 
             logger.debug(f"    ✅ [{tf}] Got {len(ohlcv)} candles, calculating indicators...")
             df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
             numeric = ['open', 'high', 'low', 'close', 'volume']
             df[numeric] = df[numeric].apply(pd.to_numeric, errors='coerce')
-            valid = (df[numeric].notna().all(axis=1)
+            df['time'] = pd.to_datetime(pd.to_numeric(df['time'], errors='coerce'), unit='ms', errors='coerce')
+            valid = (df['time'].notna() & df[numeric].notna().all(axis=1)
                      & df[numeric].apply(lambda col: col.map(lambda value: math.isfinite(value))).all(axis=1)
                      & (df[['open', 'high', 'low', 'close']] > 0).all(axis=1)
                      & (df['volume'] >= 0)
@@ -869,7 +881,7 @@ class MarketTool:
                      & (df['low'] <= df[['open', 'close', 'high']].min(axis=1)))
             invalid_count = int((~valid).sum())
             df = df.loc[valid].copy()
-            df['time'] = pd.to_datetime(df['time'], unit='ms')
+            duplicate_count = int(df['time'].duplicated().sum())
             df = df.sort_values('time').drop_duplicates('time', keep='last').reset_index(drop=True)
             now_utc = pd.Timestamp.now(tz='UTC').tz_localize(None)
             durations = {'1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600,
@@ -885,8 +897,13 @@ class MarketTool:
             quality = {
                 'basis': 'closed_candles_only', 'last_closed_at': str(last_closed_at) + ' UTC',
                 'forming_candles_excluded': forming_count, 'bars': len(df),
+                'display_bars': min(self.AGENT_CANDLE_LIMIT, len(df)),
+                'observed_at': str(now_utc.floor('s')) + ' UTC',
                 'invalid_candles_excluded': invalid_count,
-                'gap_count': int((df['time'].diff().dropna() > pd.Timedelta(seconds=durations.get(tf, 32 * 86400))).sum()),
+                'duplicate_candles_excluded': duplicate_count,
+                'gap_count': int((df['time'] > df['time'].shift(1) + (
+                    pd.DateOffset(months=1) if tf == '1M' else pd.Timedelta(seconds=durations[tf])
+                )).sum()),
                 'indicator_method': 'SMA-seeded Wilder RSI/ATR/ADX',
                 'age_seconds': max(0, int((now_utc - last_closed_at).total_seconds())),
                 'stale': (now_utc - last_closed_at).total_seconds() > durations.get(tf, 2678400) * 2,
@@ -904,7 +921,7 @@ class MarketTool:
             # in the unified backend scheduler on a 1-minute basis.
             
             # ================= 精简指标计算 =================
-            # 1. 均线 (移除 EMA100，保留 20/50/200)
+            # 1. Keep full-history EMA values independent of the visible candle window.
             emas = calc_emas(close, (20, 50, 100, 200))
             ema20 = emas[20]
             ema50 = emas[50]
@@ -935,7 +952,8 @@ class MarketTool:
             # 7. VP 分布 (自适应回看长度)
             vp_length = self.VP_LENGTH_MAP.get(tf, 360)
             vp = calculate_vp(df, length=vp_length)
-            if not vp: vp = {"poc": 0, "vah": 0, "val": 0, "hvns": []}
+            if not vp:
+                vp = {"available": False, "reason": "insufficient history, price range or traded volume"}
             vp.update(window_bars=min(vp_length, len(df)), window_start=str(df['time'].iloc[-min(vp_length, len(df))]),
                       method='OHLCV volume allocation approximation; not holder cost distribution')
             
@@ -949,9 +967,6 @@ class MarketTool:
             else:
                 macd_momentum = "hist持平"
             
-            # ================= 新增：RSI 背离检测 =================
-            rsi_divergence = detect_rsi_divergence(close, rsi, lookback=20)
-            
             # ================= 提取最新值 =================
             curr_close = close.iloc[-1]
             e20_val = ema20.iloc[-1]
@@ -964,8 +979,8 @@ class MarketTool:
             liquidity_sweep_ifvg = calculate_liquidity_sweep_ifvg(df)
             
             # 序列数据
-            def to_list(series, n=10):
-                raw = series.iloc[-n:].values.tolist()
+            def to_list(series):
+                raw = series.iloc[-self.AGENT_CANDLE_LIMIT:].values.tolist()
                 return [smart_fmt(float(x)) for x in raw]
 
             recent_opens = to_list(df['open'])
@@ -976,8 +991,6 @@ class MarketTool:
             # ================= 构建精简结果 =================
             rsi_val = round(float(rsi.iloc[-1]), 1)
             rsi_result = {"rsi": rsi_val}
-            if rsi_divergence:
-                rsi_result["divergence"] = rsi_divergence
 
             result = {
                 "data_quality": quality,
@@ -993,6 +1006,9 @@ class MarketTool:
                 "recent_closes": recent_closes,
                 "recent_highs": recent_highs,
                 "recent_lows": recent_lows,
+                "recent_volumes": to_list(volume),
+                "recent_times": df['time'].tail(self.AGENT_CANDLE_LIMIT).dt.strftime('%Y-%m-%d %H:%M').tolist(),
+                "decision_context": build_agent_indicator_context(df, emas, rsi, atr, hist),
 
                 "rsi_analysis": rsi_result,
 
@@ -1043,6 +1059,7 @@ class MarketTool:
                 result['trend'] = {'available': False, 'adx': None, 'di_plus': None, 'di_minus': None, 'reason': 'ADX requires 27 closed candles'}
             if len(df) <= 14:
                 result['rsi_analysis']['rsi'] = None
+            if len(df) < 14:
                 result['atr'] = None
             if len(df) < 20:
                 result['bollinger'] = {'available': False, 'reason': 'requires 20 closed candles'}
@@ -1071,8 +1088,17 @@ class MarketTool:
             if action == 'CANCEL':
                 cancel_id = order_params.get('cancel_order_id')
                 if cancel_id:
+                    is_spot = (getattr(self, 'market_type', None) == 'spot' or
+                               self.exchange.options.get('defaultType') == 'spot')
+                    if not is_spot:
+                        from backend.utils.order_ownership import assert_owned_perpetual_order
+                        ownership = assert_owned_perpetual_order(self, symbol, str(cancel_id),
+                                                                getattr(self, 'config_id', None) or agent_name)
+                    else:
+                        ownership = {}
                     logger.info(f"🔄 [CANCEL] 正在撤单 ID: {cancel_id} ...")
-                    res = self._cancel_real_order_with_fallbacks(cancel_id, symbol)
+                    res = self._cancel_real_order_with_fallbacks(cancel_id, symbol, prefer_trigger=
+                        ownership.get('trigger', False))
                     return {"status": "cancelled", "response": res}
                 else:
                     raise ValueError("CANCEL 指令缺失 cancel_order_id 参数")
@@ -1081,6 +1107,9 @@ class MarketTool:
             if action == 'CLOSE':
                 raw_close_amount = float(order_params.get('amount', 0))
                 raw_close_price = float(order_params.get('entry_price', 0))
+                explicit_exit_type = order_params.get('exit_type')
+                if explicit_exit_type:
+                    raw_close_price = float(order_params.get('trigger_price') or 0) if explicit_exit_type == 'stop_market' else float(order_params.get('price') or 0)
                 target_pos_side = order_params.get('pos_side', '').upper()
                 logger.info(f"🔍 [CLOSE] 检查持仓... 目标: {target_pos_side} | 量: {raw_close_amount} | 价: {raw_close_price}")
                 positions = self.exchange.fetch_positions([symbol])
@@ -1097,6 +1126,10 @@ class MarketTool:
                         continue
 
                     if amt > 0:
+                        if explicit_exit_type:
+                            from backend.utils.independent_exits import validate_exit
+                            validate_exit(explicit_exit_type, current_pos_side_str, current_price,
+                                          order_params.get('price'), order_params.get('trigger_price'))
                         # 确定交易方向：平多=Sell，平空=Buy
                         close_side = 'sell' if side == 'long' else 'buy'
                         
@@ -1120,7 +1153,9 @@ class MarketTool:
                             formatted_price = self.exchange.price_to_precision(symbol, raw_close_price)
                             is_stop_loss = False
 
-                            if side == 'long' and float(formatted_price) < current_price:
+                            if explicit_exit_type:
+                                is_stop_loss = explicit_exit_type == 'stop_market'
+                            elif side == 'long' and float(formatted_price) < current_price:
                                 is_stop_loss = True
                             # 平空(Buy): 价格高于现价 -> 止损
                             elif side == 'short' and float(formatted_price) > current_price:
@@ -1131,41 +1166,19 @@ class MarketTool:
                                 
                                 # 方案 A: 止损市价单 (推荐，保证止损触发后立刻跑路)
                                 order_type = 'STOP_MARKET' # STOP / STOP_LIMIT
-                                final_amt, merged_ids = self._merge_same_price_real_orders(
-                                    symbol,
-                                    close_side,
-                                    final_amt,
-                                    formatted_price,
-                                    current_pos_side_str,
-                                    order_type,
-                                )
-                                if merged_ids:
-                                    formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
-                                    logger.info(f"🔗 [CLOSE-MERGE] merged {len(merged_ids)} stop orders -> {formatted_amt} @ {formatted_price}")
                                 params['stopLossPrice' if is_okx else 'stopPrice'] = float(formatted_price)
                                 is_full_close_stop = final_amt >= amt
-                                if is_full_close_stop and not is_okx:
+                                if is_full_close_stop and not is_okx and not explicit_exit_type:
                                     params['closePosition'] = True
                                     params.pop('reduceOnly', None)
                                 
                                 # 注意：STOP_MARKET 通常不需要传 price 参数 (传 None)，但需要 stopPrice
-                                order_amount = None if is_full_close_stop and not is_okx else final_amt
+                                order_amount = None if is_full_close_stop and not is_okx and not explicit_exit_type else final_amt
                                 order = self.exchange.create_order(symbol, 'market' if is_okx else order_type, close_side, order_amount, None, params=params)
 
                             else:
                                 logger.info(f"💰 [CLOSE-TP] 检测到止盈场景 (现价 {current_price} -> 目标 {formatted_price})")
                                 order_type = 'LIMIT'
-                                final_amt, merged_ids = self._merge_same_price_real_orders(
-                                    symbol,
-                                    close_side,
-                                    final_amt,
-                                    formatted_price,
-                                    current_pos_side_str,
-                                    order_type,
-                                )
-                                if merged_ids:
-                                    formatted_amt = self.exchange.amount_to_precision(symbol, final_amt)
-                                    logger.info(f"🔗 [CLOSE-MERGE] merged {len(merged_ids)} limit orders -> {formatted_amt} @ {formatted_price}")
                                 params['timeInForce'] = 'GTC'
                                 order = self.exchange.create_order(symbol, order_type, close_side, final_amt, float(formatted_price), params=params)
                         else:
@@ -1207,7 +1220,7 @@ class MarketTool:
                     price,
                     params.get('positionSide', 'BOTH'),
                     'LIMIT',
-                )
+                ) if is_spot else (float(amount), [])
                 if merged_ids:
                     amount = self.exchange.amount_to_precision(symbol, merged_amount)
                     logger.info(f"🔗 [OPEN-MERGE] merged {len(merged_ids)} limit orders -> {amount} @ {price}")

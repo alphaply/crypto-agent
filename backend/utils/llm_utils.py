@@ -352,6 +352,27 @@ class ReasoningChatOpenAI(ChatOpenAI):
             pass
         return generation
 
+    def _stream(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            yield from super()._stream(*args, **kwargs)
+        except BadRequestError as exc:
+            msg = (str(exc) + " " + str(getattr(exc, "body", ""))).lower()
+            if ("only 1 is allowed" in msg or "invalid temperature" in msg) and getattr(self, "temperature", None) != 1.0:
+                self.temperature = 1.0
+                yield from super()._stream(*args, **kwargs)
+                return
+            raise
+
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super()._generate(*args, **kwargs)
+        except BadRequestError as exc:
+            msg = (str(exc) + " " + str(getattr(exc, "body", ""))).lower()
+            if ("only 1 is allowed" in msg or "invalid temperature" in msg) and getattr(self, "temperature", None) != 1.0:
+                self.temperature = 1.0
+                return super()._generate(*args, **kwargs)
+            raise
+
 
 class DeepSeekChatOpenAI(ReasoningChatOpenAI):
     """Preserve and replay DeepSeek reasoning_content across tool-call turns."""
@@ -434,12 +455,18 @@ def _anthropic_thinking_options(
     }
 
 
+def is_fixed_temperature_one_model(model: str) -> bool:
+    """Return True if the model strictly requires temperature=1.0 (or rejects non-1 temperatures)."""
+    m = str(model or "").strip().lower()
+    return any(p in m for p in ("o1-", "o1", "o3-", "o3", "o4-", "kimi-k3", "k3-", "-k3"))
+
+
 def build_chat_model(
     *,
     model: str,
     api_key: Optional[str],
     base_url: Optional[str],
-    temperature: float = 0.5,
+    temperature: Optional[float] = None,
     streaming: bool = False,
     extra_body: Optional[Dict[str, Any]] = None,
     thinking_enabled: Optional[bool] = None,
@@ -457,6 +484,14 @@ def build_chat_model(
     normalized_effort = str(reasoning_effort or "").strip().lower()
     if normalized_effort not in {"", "none", "low", "medium", "high", "xhigh", "max"}:
         raise ValueError(f"Unsupported reasoning_effort: {reasoning_effort}")
+
+    if is_fixed_temperature_one_model(model):
+        effective_temperature: float | None = 1.0
+    elif temperature is not None:
+        effective_temperature = float(temperature)
+    else:
+        effective_temperature = 0.5
+
     effective_thinking = thinking_enabled
     model_lower = str(model or "").strip().lower()
     if resolved_mode == "openai" and model_lower.startswith("gemini-3.8"):
@@ -488,7 +523,7 @@ def build_chat_model(
             **thinking_options,
         }
         if not thinking_options or thinking_options.get("thinking", {}).get("type") == "disabled":
-            anthropic_kwargs["temperature"] = temperature
+            anthropic_kwargs["temperature"] = effective_temperature
         if default_headers:
             anthropic_kwargs["default_headers"] = default_headers
         # Anthropic has no extra_body escape hatch. Forward supported native
@@ -511,7 +546,7 @@ def build_chat_model(
         "model": model,
         "api_key": api_key,
         "base_url": base_url,
-        "temperature": temperature,
+        "temperature": effective_temperature,
         "streaming": streaming,
         "timeout": get_llm_timeout_seconds(),
         # Retries are handled in invoke_with_retry so SSE status events can reflect retry progress.

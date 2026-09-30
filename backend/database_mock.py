@@ -1,6 +1,9 @@
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import timedelta
+import math
+import uuid
+import json
 
 
 def _position_side(order_side) -> str:
@@ -33,14 +36,14 @@ class MockTradingStore:
             cursor.execute("ALTER TABLE mock_balance_history ADD COLUMN unrealized_pnl REAL DEFAULT 0")
         except Exception:
             pass
-
-    @staticmethod
-    def _orders_have_event_type(cursor) -> bool:
-        return "event_type" in {row[1] for row in cursor.execute("PRAGMA table_info(orders)").fetchall()}
         try:
             cursor.execute("ALTER TABLE mock_balance_history ADD COLUMN total_equity REAL")
         except Exception:
             pass
+
+    @staticmethod
+    def _orders_have_event_type(cursor) -> bool:
+        return "event_type" in {row[1] for row in cursor.execute("PRAGMA table_info(orders)").fetchall()}
 
     def get_account(self, config_id, symbol):
         with self._conn_factory() as conn:
@@ -149,7 +152,7 @@ class MockTradingStore:
         current_ts = self._epoch_factory()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            query = "SELECT * FROM mock_orders WHERE status='OPEN' AND (expire_at IS NULL OR expire_at > ?)"
+            query = "SELECT * FROM mock_orders WHERE status='OPEN' AND (COALESCE(is_filled,0)=1 OR expire_at IS NULL OR expire_at > ?)"
             params = [current_ts]
 
             if symbol:
@@ -222,11 +225,22 @@ class MockTradingStore:
         closed_position = None
         close_time = self._timestamp()
         with self._conn_factory() as conn:
+            conn.execute('BEGIN IMMEDIATE')
             cursor = conn.cursor()
-            row = cursor.execute("SELECT * FROM mock_orders WHERE order_id=?", (order_id,)).fetchone()
+            row = cursor.execute("SELECT * FROM mock_orders WHERE order_id=? AND status='OPEN'", (order_id,)).fetchone()
             if row:
-                self.update_account_balance(row["config_id"], row["symbol"], realized_pnl)
+                if row['is_filled'] and float(close_price)>0:
+                    realized_pnl=(float(close_price)-float(row['price']))*float(row['amount'])*(1 if 'BUY' in row['side'] else -1)
+                result={'amount':float(row['amount']),'realized_pnl':realized_pnl,'close_price':close_price}
+                self._credit_balance(conn, row['config_id'], row['symbol'], realized_pnl)
                 closed_position = dict(row)
+                history=cursor.execute('SELECT amount FROM position_history WHERE config_id=? AND position_key=?',
+                                       (row['config_id'],order_id)).fetchone()
+                if history and history['amount']:
+                    closed_position['amount']=history['amount']
+                realized_pnl = float(row['realized_pnl'] or 0) + realized_pnl
+            else:
+                return False
 
             cursor.execute(
                 '''
@@ -257,11 +271,83 @@ class MockTradingStore:
                 opened_at=closed_position.get("timestamp"),
                 closed_at=close_time,
                 entry_price=closed_position.get("price"),
-                close_price=close_price,
+                close_price=(closed_position['price'] + realized_pnl / closed_position['amount'] *
+                             (1 if 'BUY' in closed_position['side'] else -1)) if closed_position['amount'] else close_price,
                 amount=closed_position.get("amount"),
                 realized_pnl=realized_pnl,
                 raw={**closed_position, "close_price": close_price, "realized_pnl": realized_pnl, "close_time": close_time},
             )
+        return result
+
+    def _credit_balance(self, conn, config_id, symbol, pnl):
+        conn.execute('INSERT OR IGNORE INTO mock_accounts(config_id,symbol,balance,failures) VALUES(?,?,10000,0)',
+                     (config_id,symbol))
+        conn.execute('UPDATE mock_accounts SET balance=balance+? WHERE config_id=?',(pnl,config_id))
+        conn.execute('UPDATE mock_accounts SET balance=10000,failures=failures+1 WHERE config_id=? AND balance<1000',(config_id,))
+        balance=conn.execute('SELECT balance FROM mock_accounts WHERE config_id=?',(config_id,)).fetchone()['balance']
+        conn.execute('INSERT INTO mock_balance_history(config_id,symbol,timestamp,balance,unrealized_pnl,total_equity) VALUES(?,?,?,?,0,?)',
+                     (config_id,symbol,self._timestamp(),balance,balance))
+
+    def reduce_positions(self, config_id, symbol, pos_side, amount, current_price, reason=''):
+        """Reduce attached simulated exposure proportionally, without FIFO lots.
+
+        Proportional reductions preserve the aggregate average entry cost while
+        retaining the existing per-entry attached protection prices.
+        """
+        if pos_side not in {'LONG','SHORT'} or not math.isfinite(float(amount)) or float(amount)<0:
+            raise ValueError('Invalid side or reduction quantity')
+        if not math.isfinite(float(current_price)) or float(current_price)<=0:
+            raise ValueError('A finite positive current price is required')
+        with self._conn_factory() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            rows=conn.execute("SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND side=? AND status='OPEN' AND is_filled=1 ORDER BY order_id",
+                              (config_id,symbol,'BUY' if pos_side=='LONG' else 'SELL')).fetchall()
+            total=sum(float(row['amount']) for row in rows)
+            if not total:
+                return {'status':'no_position','closed_amount':0,'realized_pnl':0,'orders':[]}
+            quantity=float(amount) or total
+            if quantity>total+1e-12:
+                raise ValueError('Reduction quantity exceeds filled exposure')
+            proportion=min(quantity/total,1)
+            result=[]
+            total_pnl=0.0
+            event_columns={row[1] for row in conn.execute('PRAGMA table_info(orders)')}
+            for row in rows:
+                reduced=float(row['amount'])*proportion
+                remaining=max(float(row['amount'])-reduced,0)
+                status='CLOSED' if remaining<=1e-12 else 'OPEN'
+                pnl=(float(current_price)-float(row['price']))*reduced*(1 if pos_side=='LONG' else -1)
+                cumulative=float(row['realized_pnl'] or 0)+pnl
+                total_pnl+=pnl
+                conn.execute('UPDATE mock_orders SET amount=?,status=?,close_price=?,realized_pnl=?,close_time=? WHERE order_id=?',
+                             (remaining if status=='OPEN' else row['amount'],status,current_price,cumulative,
+                              self._timestamp() if status=='CLOSED' else None,row['order_id']))
+                if status=='CLOSED':
+                    where=" AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'" if 'event_type' in event_columns else ''
+                    conn.execute("UPDATE orders SET status='CLOSED' WHERE order_id=?"+where,(row['order_id'],))
+                if 'event_type' in event_columns:
+                    conn.execute('''INSERT INTO orders(order_id,timestamp,symbol,agent_name,config_id,trade_mode,side,
+                        entry_price,amount,reason,status,event_type,parent_order_id,realized_pnl)
+                        VALUES(?,?,?,?,?,'STRATEGY',?,?,?,?,?,'MANUAL_CLOSE',?,?)''',
+                        ('reduce:'+uuid.uuid4().hex,self._timestamp(),symbol,config_id,config_id,'CLOSE_'+pos_side,
+                         current_price,reduced,reason,'CLOSED',row['order_id'],pnl))
+                payload={**dict(row),'amount':remaining,'realized_pnl':cumulative}
+                history=conn.execute('SELECT amount FROM position_history WHERE config_id=? AND position_key=?',
+                                     (config_id,row['order_id'])).fetchone()
+                history_amount=float(history['amount']) if history and history['amount'] else row['amount']
+                conn.execute('''INSERT INTO position_history(config_id,symbol,position_key,side,status,source,opened_at,
+                    closed_at,entry_price,close_price,amount,realized_pnl,raw_json,updated_at)
+                    VALUES(?,?,?,?,?,'mock_order',?,?,?,?,?,?,?,?) ON CONFLICT(config_id,position_key) DO UPDATE SET
+                    status=excluded.status,closed_at=excluded.closed_at,close_price=excluded.close_price,
+                    amount=excluded.amount,realized_pnl=excluded.realized_pnl,raw_json=excluded.raw_json,updated_at=excluded.updated_at''',
+                    (config_id,symbol,row['order_id'],pos_side,status,row['timestamp'],
+                     self._timestamp() if status=='CLOSED' else None,row['price'],current_price,
+                     history_amount,cumulative,json.dumps(payload),self._timestamp()))
+                result.append({'order_id':row['order_id'],'closed_amount':reduced,'remaining':remaining,'realized_pnl':pnl})
+            self._credit_balance(conn,config_id,symbol,total_pnl)
+            conn.commit()
+            return {'status':'closed' if proportion==1 else 'reduced','closed_amount':quantity,
+                    'remaining':total-quantity,'realized_pnl':total_pnl,'orders':result}
 
     def auto_close_expired_orders(self, config_id=None, symbol=None):
         current_ts = self._epoch_factory()
@@ -340,4 +426,12 @@ class MockTradingStore:
                 query += " AND symbol = ?"
                 params.append(symbol)
             rows = cursor.execute(query, tuple(params)).fetchall()
-            return [dict(row) for row in rows]
+            result = [dict(row) for row in rows]
+            if cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mock_positions'").fetchone():
+                query='SELECT episode_id AS order_id,symbol,CASE side WHEN \'LONG\' THEN \'BUY\' ELSE \'SELL\' END AS side,entry_price AS price,quantity AS amount,NULL AS stop_loss,NULL AS take_profit FROM mock_positions WHERE config_id=? AND quantity>0'
+                params=[str(config_id)]
+                if symbol:
+                    query+=' AND symbol=?'
+                    params.append(symbol)
+                result.extend(dict(row) for row in cursor.execute(query,params))
+            return result

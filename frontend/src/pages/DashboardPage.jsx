@@ -31,10 +31,12 @@ import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
 import PositionCycleHistory from '../components/PositionCycleHistory';
+import ExitManagementPanel from '../components/ExitManagementPanel';
 import EquityCompareChart from '../components/EquityCompareChart';
 import { EditOutlined, ReloadOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
 import { workspaceSignature as getWorkspaceSignature, selectDashboardTab } from '../lib/dashboard';
+import { exitModeLabel, resolveExitMode } from '../lib/exitManagement';
 import { splitThinkingContent } from '../lib/thinking';
 import { usePreferences } from '../app/usePreferences';
 import ScheduleDetails from '../components/ScheduleDetails';
@@ -197,17 +199,36 @@ function buildPositionFacts(t, position, pendingOrders, summary) {
 }
 
 function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
-  const { t } = usePreferences();
+  const { t, locale } = usePreferences();
+  const screens = useBreakpoint();
   if (!agents?.length) return null;
 
+  if (!screens.md) {
+    return (
+      <label className="dashboard-agent-picker">
+        <span>{locale === 'zh' ? '查看任务' : 'View task'}</span>
+        <Select
+          aria-label={locale === 'zh' ? '查看任务' : 'View task'}
+          showSearch
+          optionFilterProp="label"
+          value={activeTab}
+          onChange={onSelect}
+          options={[
+            { value: 'compare', label: `${t('compareView')} · ${agents.length}` },
+            ...agents.map((agent) => ({ value: agent.config_id, label: `${agent.title || agent.config_id} · ${agent.enabled ? (locale === 'zh' ? '已启用' : 'Enabled') : (locale === 'zh' ? '已暂停' : 'Paused')}` })),
+          ]}
+        />
+      </label>
+    );
+  }
+
   return (
-    <div className="agent-overview-shell" role="tablist" aria-label={t('agents')}>
+    <div className="agent-overview-shell" role="group" aria-label={t('agents')}>
       <button
         type="button"
-        role="tab"
         className={`agent-overview-compare-chip ${activeTab === 'compare' ? 'active' : ''}`}
         onClick={() => onSelect('compare')}
-        aria-selected={activeTab === 'compare'}
+        aria-pressed={activeTab === 'compare'}
       >
         <Text strong>{t('compareView')}</Text>
         <Text type="secondary" className="agent-overview-meta">{agents.length} agents</Text>
@@ -231,16 +252,15 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
           return (
             <button
               type="button"
-              role="tab"
               key={agent.config_id}
               className={`agent-overview-card ${activeTab === agent.config_id ? 'active' : ''}`}
               onClick={() => onSelect(agent.config_id)}
-              aria-selected={activeTab === agent.config_id}
+              aria-pressed={activeTab === agent.config_id}
             >
               <span className="agent-overview-main">
                 <span className="agent-overview-title">
                   <Text strong>{agent.title || agent.config_id}</Text>
-                  <Text type="secondary" className="agent-overview-meta">{agent.config_id}</Text>
+                  {agent.title && agent.title !== agent.config_id ? <Text type="secondary" className="agent-overview-meta">{agent.config_id}</Text> : null}
                 </span>
                 <span className="agent-overview-tags">
                   <Tag color={agent.enabled ? 'green' : 'default'}>{agent.enabled ? 'ON' : 'OFF'}</Tag>
@@ -252,9 +272,6 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
               ) : (
                 <>
                   {workspace ? <FactGrid items={keyFacts} /> : <Text type="secondary">{t('loading')} / —</Text>}
-                  <span className="agent-overview-footer">
-                    <Text type="secondary">{t('nextRun')}: {agent.schedule?.state === 'paused' ? '—' : agent.next_run || '-'} · {agent.freq} · {agent.schedule?.timezone || ''}</Text>
-                  </span>
                 </>
               )}
             </button>
@@ -573,6 +590,8 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
   const pendingOrders = kline?.pending_orders || [];
   const spotMode = isSpotMode(agent?.mode || position?.mode);
   const spotStats = position?.dca_stats || {};
+  const exitMode = position.exit_management?.mode || resolveExitMode({ ...agent, ...position });
+  const independentExits = exitMode === 'independent_exits';
 
   const [editingMemory, setEditingMemory] = useState(null);
   const [memoryEditText, setMemoryEditText] = useState('');
@@ -696,9 +715,11 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
     { label: t('unrealizedPnl'), value: formatPositionValue(pos.unrealized_pnl ?? 0) },
     { label: t('roiPct'), value: formatPositionValue(pos.roi_pct ?? 0) },
     { label: t('leverage'), value: pos.leverage ? `${pos.leverage}x` : '-' },
-    { label: t('takeProfit'), value: pos.take_profit ? <CopyNumber value={pos.take_profit} /> : '-' },
-    { label: t('stopLoss'), value: pos.stop_loss ? <CopyNumber value={pos.stop_loss} /> : '-' },
-    { label: locale === 'zh' ? '保护状态' : 'Protection', value: <Tag color={pos.protection_error ? 'red' : pos.protection_state === 'ACTIVE' ? 'green' : 'orange'}>{pos.protection_error ? (locale === 'zh' ? '待核验' : 'Unverified') : pos.protection_state || (locale === 'zh' ? '未设置' : 'Not set')}</Tag> },
+    ...(!independentExits ? [
+      { label: t('takeProfit'), value: pos.take_profit ? <CopyNumber value={pos.take_profit} /> : '-' },
+      { label: t('stopLoss'), value: pos.stop_loss ? <CopyNumber value={pos.stop_loss} /> : '-' },
+      { label: locale === 'zh' ? '保护状态' : 'Protection', value: <Tag color={pos.protection_error ? 'red' : pos.protection_state === 'ACTIVE' ? 'green' : 'orange'}>{pos.protection_error ? (locale === 'zh' ? '待核验' : 'Unverified') : pos.protection_state || (locale === 'zh' ? '未设置' : 'Not set')}</Tag> },
+    ] : []),
   ];
 
   return (
@@ -709,7 +730,8 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
             <Space size={8} wrap>
               <Text strong>{spotMode ? t('spotAccount') : t('positions')}</Text>
               {spotMode ? <Tag color="gold">SPOT_DCA</Tag> : null}
-              {!spotMode && authenticated && activePositions.length === 1 ? (
+              {!spotMode ? <Tag color={independentExits ? 'blue' : 'default'}>{exitModeLabel(exitMode, locale)}</Tag> : null}
+              {!spotMode && !independentExits && authenticated && activePositions.length === 1 ? (
                 <Button size="small" icon={<EditOutlined />} onClick={() => openProtectionModal(activePositions[0])}>
                   {t('adjustTpSl')}
                 </Button>
@@ -750,7 +772,7 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
                   <div className="position-card-badge">
                     <Space size={8}>
                       <Tag color={pos.side === 'SHORT' ? 'red' : 'green'}>{pos.side}</Tag>
-                      {authenticated ? (
+                      {authenticated && !independentExits ? (
                         <Button size="small" icon={<EditOutlined />} onClick={() => openProtectionModal(pos)}>
                           {t('adjustTpSl')}
                         </Button>
@@ -764,6 +786,7 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
           ) : (
             <FactGrid items={buildSinglePositionFacts(activePositions[0])} />
           )}
+          {!spotMode ? <ExitManagementPanel management={position.exit_management} /> : null}
         </Space>
         <Modal
           open={Boolean(editingProtection)}
@@ -871,10 +894,10 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
             />
           ) : null}
           {agent.strategy_logic ? (
-            <div className="strategy-block">
-              <Text strong>{t('strategyLogic')}</Text>
+            <details className="content-disclosure strategy-block">
+              <summary>{t('strategyLogic')}</summary>
               <MarkdownBlock content={agent.strategy_logic} />
-            </div>
+            </details>
           ) : null}
         </Space>
       </Card>
@@ -889,13 +912,16 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
         {shortMemories[0] ? (() => {
           const memory = shortMemories[0];
           return (
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Text type="secondary" style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                [window={memory.bucket_start} → {memory.bucket_end}] updated={memory.created_at} sources={memory.source_count ?? 0}
-              </Text>
-              <MarkdownBlock content={memory.market_summary || ''} />
-              {memory.position_summary ? <details><summary>本轮成交事实快照</summary><MarkdownBlock content={memory.position_summary} /></details> : null}
-            </Space>
+            <details className="content-disclosure">
+              <summary>{memory.bucket_start} → {memory.bucket_end}</summary>
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <Text type="secondary" className="memory-source-meta">
+                  {locale === 'zh' ? '更新于' : 'Updated'} {memory.created_at} · {locale === 'zh' ? '来源' : 'Sources'} {memory.source_count ?? 0}
+                </Text>
+                <MarkdownBlock content={memory.market_summary || ''} />
+                {memory.position_summary ? <details className="content-disclosure"><summary>{locale === 'zh' ? '成交事实快照' : 'Execution snapshot'}</summary><MarkdownBlock content={memory.position_summary} /></details> : null}
+              </Space>
+            </details>
           );
         })() : (
           <Empty description={t('noData')} />
@@ -1432,6 +1458,8 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
 
 export default function DashboardPage() {
   const { t, locale, selectedSymbol, setSelectedSymbol } = usePreferences();
+  const screens = useBreakpoint();
+  const isMobile = !screens.md;
   const [timeframe, setTimeframe] = useState('1h');
   const [dashboard, setDashboard] = useState(null);
   const [compareIds, setCompareIds] = useState([]);
@@ -1658,9 +1686,21 @@ export default function DashboardPage() {
           <ScheduleDetails agents={dashboard?.agent_summaries || []} activeTab={activeTab} locale={locale} />
           <div className="market-workbench">
             <Tabs activeKey={activeTab} onChange={setRequestedActiveTab} items={tabItems} className="dashboard-main-tabs" renderTabBar={() => null} />
-            <aside className="intelligence-rail" aria-label="Market intelligence">
-              <PolymarketPanel />
-              <NewsSnapshotCard snapshot={workspaceMap?.[activeTab]?.news_snapshot || dashboard?.news_snapshot} />
+            <aside className="intelligence-rail" aria-label={locale === 'zh' ? '市场消息' : 'Market intelligence'}>
+              {isMobile ? (
+                <details className="content-disclosure market-intelligence-disclosure">
+                  <summary>{locale === 'zh' ? '市场消息与预测' : 'Market news and predictions'}</summary>
+                  <div className="market-intelligence-content">
+                    <PolymarketPanel />
+                    <NewsSnapshotCard snapshot={workspaceMap?.[activeTab]?.news_snapshot || dashboard?.news_snapshot} />
+                  </div>
+                </details>
+              ) : (
+                <>
+                  <PolymarketPanel />
+                  <NewsSnapshotCard snapshot={workspaceMap?.[activeTab]?.news_snapshot || dashboard?.news_snapshot} />
+                </>
+              )}
             </aside>
           </div>
         </div>
