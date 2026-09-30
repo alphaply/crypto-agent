@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { workspaceSignature, selectDashboardTab } from '../src/lib/dashboard.js';
+import {
+  workspaceSignature,
+  selectDashboardTab,
+  CHART_TIMEFRAME_STORAGE_KEY,
+  CHART_TIMEFRAMES,
+  readChartTimeframe,
+  saveChartTimeframe,
+  chartTimeframeOptions,
+} from '../src/lib/dashboard.js';
 import { resolveExitMode, formatExitNumber } from '../src/lib/exitManagement.js';
 
 test('streaming progress and next-run ticks do not reload every workspace', () => {
@@ -33,4 +41,40 @@ test('exit quantities distinguish missing coverage from zero and retain small si
   assert.equal(formatExitNumber(0), '0');
   assert.equal(formatExitNumber(0.00000001), '0.00000001');
   assert.equal(formatExitNumber('bad snapshot'), '—');
+});
+
+test('chart interval restores the last valid choice without confusing months with minutes', () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key), setItem: (key, value) => values.set(key, value) };
+  assert.equal(readChartTimeframe(storage), '1h');
+  for (const interval of CHART_TIMEFRAMES) {
+    assert.equal(saveChartTimeframe(interval, storage), true);
+    assert.equal(values.get(CHART_TIMEFRAME_STORAGE_KEY), interval);
+    assert.equal(readChartTimeframe(storage), interval);
+  }
+  assert.equal(saveChartTimeframe('1H', storage), false);
+  assert.equal(readChartTimeframe(storage), '1M');
+  for (const invalid of ['1H', '2h', 'undefined', '"4h"', '', null]) {
+    values.set(CHART_TIMEFRAME_STORAGE_KEY, invalid);
+    assert.equal(readChartTimeframe(storage), '1h');
+  }
+});
+
+test('unavailable local storage does not prevent selecting or opening a chart', () => {
+  const blocked = {
+    getItem() { throw new Error('Storage access denied'); },
+    setItem() { throw new Error('Storage quota exceeded'); },
+  };
+  assert.equal(readChartTimeframe(blocked), '1h');
+  assert.equal(saveChartTimeframe('4h', blocked), false);
+  assert.equal(readChartTimeframe(null), '1h');
+  assert.equal(saveChartTimeframe('4h', null), false);
+});
+
+test('task-specific options include the remembered interval and reject unsupported values', () => {
+  assert.deepEqual(chartTimeframeOptions(['4h', '1d'], '15m'), ['15m', '4h', '1d']);
+  assert.deepEqual(chartTimeframeOptions(['1M', '1m', '1M', 'bad'], '1M'), ['1m', '1M']);
+  assert.deepEqual(chartTimeframeOptions(['1h'], '4h'), ['1h', '4h']);
+  assert.deepEqual(chartTimeframeOptions(['unsupported'], '5m'), ['5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']);
+  assert.deepEqual(chartTimeframeOptions(null, 'invalid'), ['15m', '30m', '1h', '4h', '1d', '1w', '1M']);
 });

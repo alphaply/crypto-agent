@@ -289,4 +289,4 @@ uv run backend/utils/test_agent_connection.py
 
 详见 [工作台改造与验证记录](docs/WORKBENCH_UPGRADE.md)。
 
-Dashboard 已重做交易总览与运行计划区域：下一次运行遵循实际分时段规则，并显示日期、时区、当前频率与暂停状态；自动更新完整快照，行情失败保留旧数据并明确提示。详见 [Dashboard 修复与验证](docs/DASHBOARD_REFRESH.md)。
+Dashboard 已重做交易总览与运行计划区域：下一次运行遵循实际分时段规则，并显示日期、时区、当前频率与暂停状态；自动更新完整快照，行情失败保留旧数据并明确提示。实时工作区 K 线会在当前浏览器记住上次选择的周期，刷新页面或切换任务时继续使用；周期切换中或加载失败时明确标注当前仍显示的数据周期，桌面和手机使用同一组周期按钮。详见 [Dashboard 修复与验证](docs/DASHBOARD_REFRESH.md)。

@@ -15,7 +15,6 @@ import {
   Pagination,
   Popconfirm,
   Select,
-  Segmented,
   Skeleton,
   Space,
   Spin,
@@ -35,10 +34,11 @@ import ExitManagementPanel from '../components/ExitManagementPanel';
 import EquityCompareChart from '../components/EquityCompareChart';
 import { EditOutlined, ReloadOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
-import { workspaceSignature as getWorkspaceSignature, selectDashboardTab } from '../lib/dashboard';
+import { workspaceSignature as getWorkspaceSignature, selectDashboardTab, chartTimeframeOptions, isChartTimeframe } from '../lib/dashboard';
 import { exitModeLabel, resolveExitMode } from '../lib/exitManagement';
 import { splitThinkingContent } from '../lib/thinking';
 import { usePreferences } from '../app/usePreferences';
+import { useChartTimeframe } from '../hooks/useChartTimeframe';
 import ScheduleDetails from '../components/ScheduleDetails';
 import './DashboardPage.css';
 
@@ -577,8 +577,18 @@ function NewsSnapshotCard({ snapshot }) {
   );
 }
 
-export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated }) {
+export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated, chartLoading = false, chartError = false }) {
   const { t, locale } = usePreferences();
+  const timeframeControlsRef = useRef(null);
+  useEffect(() => {
+    const controls = timeframeControlsRef.current;
+    const selected = controls?.querySelector('[aria-pressed="true"]');
+    if (!selected) return;
+    const offset = selected.getBoundingClientRect().left - controls.getBoundingClientRect().left;
+    if (offset < 0 || offset + selected.offsetWidth > controls.clientWidth) {
+      controls.scrollLeft += offset - (controls.clientWidth - selected.offsetWidth) / 2;
+    }
+  }, [timeframe]);
   const screens = useBreakpoint();
   const isMobile = !screens.md;
   const agent = workspace?.agent;
@@ -687,7 +697,19 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
       setSummarySaving(false);
     }
   };
-  const timeframeOptions = workspace?.market_timeframes || [];
+  const timeframeOptions = chartTimeframeOptions(workspace?.market_timeframes, timeframe);
+  const displayedTimeframe = isChartTimeframe(workspace?.timeframe) ? workspace.timeframe : null;
+  const changingTimeframe = displayedTimeframe !== timeframe;
+  const waitingForChart = chartLoading || (changingTimeframe && !chartError);
+  const chartStatus = waitingForChart
+    ? (locale === 'zh'
+      ? `${changingTimeframe ? `正在加载 ${timeframe}` : `正在更新 ${timeframe}`}，当前显示 ${displayedTimeframe || '—'}。`
+      : `${changingTimeframe ? 'Loading' : 'Updating'} ${timeframe}; showing ${displayedTimeframe || '—'}.`)
+    : chartError
+      ? (locale === 'zh'
+        ? `${timeframe} 行情加载失败，保留 ${displayedTimeframe || '—'} 数据。`
+        : `Could not load ${timeframe}. Keeping ${displayedTimeframe || '—'} data.`)
+      : (locale === 'zh' ? '自动更新 · 记住上次选择' : 'Auto refresh · Interval remembered');
 
   if (!agent) {
     return (
@@ -858,22 +880,39 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
       </Card>
 
       {authenticated && !spotMode ? <PositionCycleHistory key={agent.config_id} configId={agent.config_id} /> : null}
-      <Card
-        className="panel-card"
-        title={t('liveWorkspace')}
-        extra={isMobile ? (
-          <Select
-            value={timeframe}
-            options={(timeframeOptions.length ? timeframeOptions : ['15m', '30m', '1h', '4h', '1d', '1w', '1M']).map((value) => ({ label: value, value }))}
-            onChange={setTimeframe}
-            style={{ minWidth: 120 }}
-          />
-        ) : (
-          <Segmented value={timeframe} onChange={setTimeframe} options={timeframeOptions.length ? timeframeOptions : ['15m', '30m', '1h', '4h', '1d', '1w', '1M']} />
-        )}
-      >
-        <div className="chart-wrap chart-wrap-large">
-          <KlineChart payload={kline} chartKey={`${workspace?.agent?.config_id}:${agent?.symbol || ""}:${workspace?.timeframe || timeframe}`} />
+      <Card className="panel-card market-chart-card">
+        <div className="market-chart-toolbar">
+          <div className="market-chart-heading">
+            <Title level={5}>{t('liveWorkspace')}</Title>
+            <Text type="secondary">{agent.symbol || '—'} · {locale === 'zh' ? '当前图表 ' : 'Showing '}<strong>{displayedTimeframe || '—'}</strong></Text>
+          </div>
+          <div className="market-chart-controls">
+            <div ref={timeframeControlsRef} className="market-chart-timeframes" role="group" aria-label={locale === 'zh' ? 'K线周期' : 'Chart interval'}>
+              {timeframeOptions.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`market-chart-timeframe${value === timeframe ? ' is-active' : ''}`}
+                  aria-pressed={value === timeframe}
+                  onClick={() => setTimeframe(value)}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className={`market-chart-status${chartError && !waitingForChart ? ' is-error' : ''}`} role="status" aria-live="polite" aria-atomic="true">
+          {waitingForChart ? <Spin size="small" /> : null}
+          <span>{chartStatus}</span>
+          {chartError && !waitingForChart ? (
+            <Button type="link" size="small" icon={<ReloadOutlined />} onClick={() => window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'))}>
+              {locale === 'zh' ? '重试' : 'Retry'}
+            </Button>
+          ) : null}
+        </div>
+        <div className="chart-wrap chart-wrap-large" aria-busy={waitingForChart}>
+          <KlineChart payload={kline} chartKey={`${workspace?.agent?.config_id}:${agent?.symbol || ''}:${displayedTimeframe || 'unknown'}`} timeframe={displayedTimeframe} />
         </div>
       </Card>
 
@@ -1460,7 +1499,7 @@ export default function DashboardPage() {
   const { t, locale, selectedSymbol, setSelectedSymbol } = usePreferences();
   const screens = useBreakpoint();
   const isMobile = !screens.md;
-  const [timeframe, setTimeframe] = useState('1h');
+  const [timeframe, setTimeframe] = useChartTimeframe();
   const [dashboard, setDashboard] = useState(null);
   const [compareIds, setCompareIds] = useState([]);
   const [comparePayload, setComparePayload] = useState(null);
@@ -1560,6 +1599,7 @@ export default function DashboardPage() {
         return;
       }
       setWorkspaceLoading(true);
+      setWorkspaceErrors([]);
       try {
         const responses = await Promise.allSettled(
           configs.map((item) => api.get(`/public/workspace/${item.config_id}`, { params: { timeframe }, signal: controller.signal, timeout: 30000 })),
@@ -1628,12 +1668,12 @@ export default function DashboardPage() {
         key: agent.config_id,
         label: agent.config_id,
         children: workspace
-          ? <WorkspacePanel workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} />
+          ? <WorkspacePanel workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} chartLoading={workspaceLoading} chartError={workspaceErrors.includes(agent.config_id)} />
           : <Card className="panel-card"><Skeleton active loading={workspaceLoading}><Empty description={locale === 'zh' ? '持仓与行情未能加载，请刷新重试。' : 'Workspace unavailable. Please refresh.'} /></Skeleton></Card>,
       });
     });
     return items;
-  }, [authenticated, compareIds, compareLoading, compareSeries, dashboard, t, timeframe, workspaceMap, workspaceLoading, locale]);
+  }, [authenticated, compareIds, compareLoading, compareSeries, dashboard, t, timeframe, setTimeframe, workspaceMap, workspaceLoading, workspaceErrors, locale]);
 
   return (
     <div className="boxed-page dashboard-page dashboard-v2">
