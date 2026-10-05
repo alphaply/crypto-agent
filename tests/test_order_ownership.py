@@ -107,10 +107,12 @@ def test_tool_cancel_updates_only_owned_config_and_symbol(tool,monkeypatch):
     assert states=={('cfg','BTC/USDT'):'CANCELLED',('other','BTC/USDT'):'OPEN',('cfg','ETH/USDT'):'OPEN'}
 
 
-def test_spot_cancel_preserves_legacy_behavior_without_futures_ownership(tool):
+def test_spot_cancel_rejects_unowned_legacy_order(tool, monkeypatch):
     tool.market_type='spot'
-    tool.place_real_order('BTC/USDT','CANCEL',{'cancel_order_id':'spot-legacy'})
-    assert len(tool.exchange.cancelled)==1
+    monkeypatch.setattr('backend.config.config.get_config_by_id', lambda _: {'mode': 'SPOT_DCA', 'symbol': 'BTC/USDT'})
+    with pytest.raises(ValueError, match='不属于当前任务'):
+        tool.place_real_order('BTC/USDT','CANCEL',{'cancel_order_id':'spot-legacy'})
+    assert tool.exchange.cancelled == []
 
 
 def test_attached_conflict_cleanup_does_not_cancel_unknown_exchange_trigger(tool):

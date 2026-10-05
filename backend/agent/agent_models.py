@@ -32,10 +32,11 @@ class OpenOrderReal(BaseModel):
         return self
 
 class OpenOrderSpotDCA(BaseModel):
-    """现货定投开单参数：仅包含买入限价单核心参数"""
+    """现货定投开单参数；标的必须属于当前任务配置。"""
+    symbol: Optional[str] = Field(None, min_length=1, description="配置内现货交易对，如 BTC/USDT；多标的任务每笔必须指定，仅单标的任务可省略")
     action: Literal["BUY_LIMIT"] = Field(description="BUY_LIMIT: 限价买入现货")
-    entry_price: float = Field(description="入场的价格（限价单）")
-    amount: float = Field(description="下单数量 (币种数量)")
+    entry_price: float = Field(gt=0, allow_inf_nan=False, description="入场的价格（限价单）")
+    amount: float = Field(gt=0, allow_inf_nan=False, description="下单数量 (币种数量)")
     reason: str = Field(description="定投买入理由")
 
 class OpenOrderStrategy(OpenOrderReal):
@@ -81,3 +82,4 @@ class AgentState(BaseModel):
     active_agent: Optional[str] = "MASTER"
     active_model_idx: Optional[int] = 0
     active_model_name: Optional[str] = ""
+    spot_config_fingerprint: Optional[str] = None

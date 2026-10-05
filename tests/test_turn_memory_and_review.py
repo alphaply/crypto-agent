@@ -18,11 +18,46 @@ def local_db(tmp_path):
         yield
 
 
-def test_every_strategy_updates_bounded_memory_with_execution_evidence(local_db):
+@pytest.mark.parametrize('summary_type', ['strategy', 'daily'])
+@pytest.mark.parametrize('custom', [False, True])
+def test_summary_preserves_facts_without_forcing_rule_review(monkeypatch, summary_type, custom):
+    from unittest.mock import Mock
+    from backend.utils.trading_policy import SUMMARY_FACT_POLICY
+
+    llm = Mock()
+    llm.invoke.return_value = AIMessage(content='规则保留，尚无新增完整平仓样本。')
+    monkeypatch.setattr(agent_graph, 'build_chat_model', lambda **_: llm)
+    cfg = {'model': 'offline-test', 'summarizer': {}}
+    if custom:
+        cfg['summarizer'][f'{summary_type}_prompt'] = 'Custom summary: {content}'
+    result = agent_graph.summarize_content('source with no rule update receipt', cfg, summary_type)
+    sent = llm.invoke.call_args.args[0][0].content
+    assert 'source with no rule update receipt' in sent
+    assert sent.count(SUMMARY_FACT_POLICY) == 1
+    assert '未提供复盘结论时注明未记录' not in sent
+    assert ('Custom summary:' in sent) == custom
+    assert result == '规则保留，尚无新增完整平仓样本。'
+
+
+def test_short_memory_summary_delegates_to_memory_reviewer(local_db, monkeypatch):
+    from unittest.mock import Mock
+
+    database.save_short_memory('2026-01-01', '2026-01-02', 'ETH/USDT', 'cfg', 'prior review', '', 1)
+    reviewer = Mock(return_value='reviewed memory')
+    monkeypatch.setattr(agent_graph, '_run_memory_organizer', reviewer)
+    cfg = {'config_id': 'cfg', 'model': 'offline-test', 'summarizer': {'short_memory_prompt': 'Custom: {content}'}}
+    assert agent_graph.summarize_content('historical evidence', cfg, 'short_memory') == 'reviewed memory'
+    reviewer.assert_called_once()
+    assert reviewer.call_args.args == ('historical evidence', cfg)
+    assert reviewer.call_args.kwargs['previous'] == 'prior review'
+    assert reviewer.call_args.kwargs['operation_id'].startswith('explicit:cfg:')
+
+
+def test_explicit_turn_review_updates_bounded_memory_with_execution_evidence(local_db):
     database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg', 'old short plan', '', 1)
     messages = [AIMessage(content='new long plan', tool_calls=[{'id': 'c', 'name': 'open_position_real', 'args': {}}]),
                 ToolMessage(content='Order rejected: no funds', tool_call_id='c')]
-    with patch.object(agent_graph, 'summarize_content', return_value='new plan; entry rejected') as summarize:
+    with patch.object(agent_graph, '_run_memory_organizer', return_value='new plan; entry rejected') as summarize:
         assert agent_graph.update_turn_memory('cfg', {'symbol': 'ETH/USDT'}, 'reverse to long', messages)
     source = summarize.call_args.args[0]
     assert 'Agent 收益与回撤' in source
@@ -36,11 +71,12 @@ def test_every_strategy_updates_bounded_memory_with_execution_evidence(local_db)
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'new plan; entry rejected'
 
 
-def test_memory_failure_still_advances_latest_strategy(local_db):
-    with patch.object(agent_graph, 'summarize_content', return_value=''):
-        assert agent_graph.update_turn_memory('cfg', {}, 'old trade invalidated', [])
-    latest = database.get_short_memories('cfg', 1)[0]['market_summary']
-    assert 'old trade invalidated' in latest and '待核实' in latest
+def test_memory_failure_preserves_previous_memory_without_strategy_fallback(local_db):
+    database.save_short_memory('2026-01-01', '2026-01-02', 'ETH/USDT', 'cfg', 'previous verified memory', 'previous evidence', 1)
+    previous = database.get_short_memories('cfg', 10)
+    with patch.object(agent_graph, '_run_memory_organizer', return_value=''):
+        assert not agent_graph.update_turn_memory('cfg', {}, 'old trade invalidated', [])
+    assert database.get_short_memories('cfg', 10) == previous
 
 
 def test_short_memory_includes_local_7d_closed_positions_and_stats(local_db):
@@ -62,7 +98,7 @@ def test_short_memory_includes_local_7d_closed_positions_and_stats(local_db):
         )
         conn.commit()
 
-    with patch.object(agent_graph, 'summarize_content', return_value='updated memory') as summarize:
+    with patch.object(agent_graph, '_run_memory_organizer', return_value='updated memory') as summarize:
         assert agent_graph.update_turn_memory('cfg', {'mode': 'REAL', 'symbol': 'ETH/USDT'}, 'wait for pullbacks', [])
 
     source = summarize.call_args.args[0]
@@ -103,7 +139,7 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
         conn.commit()
     database.save_short_memory('2026-09-28 00:00:00', '2026-09-28 04:00:00',
                                'ETH/USDT', 'cfg', 'previous strategy and lessons', '', 1)
-    with patch.object(agent_graph, 'summarize_content', return_value='compressed strategy and performance') as summarize:
+    with patch.object(agent_graph, '_run_memory_organizer', return_value='compressed strategy and performance') as summarize:
         if writer == 'turn':
             changed = agent_graph.update_turn_memory('cfg', cfg, 'new support', [])
         elif writer == 'rolling':
@@ -127,7 +163,7 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
 
 
 @pytest.mark.parametrize('bad_summary', ['', 'x' * 2401])
-def test_memory_compression_failure_retains_aggregate_evidence_not_full_ledger(local_db, monkeypatch, bad_summary):
+def test_memory_compression_failure_does_not_replace_previous_review(local_db, monkeypatch, bad_summary):
     evidence = (
         '截至快照: 2026-09-28 09:00 | 权益: 92.00 USDT | 样本: 3\n'
         '起点收益率: -8.00% | 当前回撤: 8.00% | 快照最大回撤: 20.00%\n'
@@ -135,21 +171,18 @@ def test_memory_compression_failure_retains_aggregate_evidence_not_full_ledger(l
         '完整平仓周期: 2 笔 | 胜率: 50% | 已确认累计盈亏（手续费前）: -1.00 USDT'
     )
     monkeypatch.setattr(agent_graph, 'format_recent_position_history_for_memory', lambda *_: evidence)
-    monkeypatch.setattr(agent_graph, 'summarize_content', lambda *_, **__: bad_summary)
-    assert agent_graph.update_turn_memory('cfg', {'symbol': 'ETH/USDT'}, 'cancel invalid entry', [])
-    saved = database.get_short_memories('cfg', 1)[0]
-    assert 'cancel invalid entry' in saved['market_summary']
-    assert '起点收益率: -8.00%' in saved['market_summary']
-    assert '完整平仓周期: 2 笔' in saved['market_summary']
-    assert '非实时' in saved['market_summary'] and '共享账户' in saved['market_summary']
-    assert 'detail-only-position-id' not in saved['market_summary']
-    assert saved['position_summary'] == evidence
+    monkeypatch.setattr(agent_graph, '_run_memory_organizer', lambda *_, **__: bad_summary)
+    database.save_short_memory('2026-09-28 00:00:00', '2026-09-28 04:00:00',
+                               'ETH/USDT', 'cfg', 'previous reviewed risk', 'previous evidence', 1)
+    previous = database.get_short_memories('cfg', 10)
+    assert not agent_graph.update_turn_memory('cfg', {'symbol': 'ETH/USDT'}, 'cancel invalid entry', [])
+    assert database.get_short_memories('cfg', 10) == previous
 
 
 def test_empty_window_failed_compression_keeps_previous_memory(local_db, monkeypatch):
     cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL'}
     monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [cfg])
-    monkeypatch.setattr(agent_graph, 'summarize_content', lambda *_, **__: '')
+    monkeypatch.setattr(agent_graph, '_run_memory_organizer', lambda *_, **__: '')
     database.save_short_memory('2026-09-28 00:00:00', '2026-09-28 04:00:00',
                                'ETH/USDT', 'cfg', 'prior memory and risk', '', 1)
     now = agent_graph.TZ_CN.localize(__import__('datetime').datetime(2026, 9, 28, 10, 0))

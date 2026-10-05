@@ -54,9 +54,9 @@ def short_memories(config_id: str = "ALL", symbol: str | None = None, limit: int
 
 
 @router.get("/workspace/{config_id}")
-def workspace(config_id: str, timeframe: str = "1h"):
+def workspace(config_id: str, timeframe: str = "1h", symbol: str | None = None):
     try:
-        payload = build_public_workspace_payload(config_id, timeframe)
+        payload = build_public_workspace_payload(config_id, timeframe, symbol=symbol) if symbol else build_public_workspace_payload(config_id, timeframe)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

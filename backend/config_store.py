@@ -6,14 +6,16 @@ import json
 import os
 import sqlite3
 from copy import deepcopy
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 
 from backend.utils.logger import setup_logger
 from backend.utils.run_schedule import validate_run_schedule
+from backend.utils.spot_portfolio import SPOT_MARKET_TIMEFRAMES, normalize_spot_symbols
 from backend.storage_paths import DATA_DIR, PROJECT_ROOT, data_file
 
 
@@ -292,12 +294,36 @@ def _load_env_symbol_configs() -> list[dict[str, Any]]:
     return []
 
 
+def normalize_agent_market_settings(agent: dict[str, Any]) -> dict[str, Any]:
+    """Normalize portfolio fields at every config entry point, including imports."""
+    payload = deepcopy(agent)
+    mode = str(payload.get("mode") or "STRATEGY").upper()
+    payload["mode"] = mode
+    if mode == "SPOT_DCA":
+        symbols = normalize_spot_symbols(payload.get("symbols"), payload.get("symbol"))
+        payload["symbols"] = symbols
+        payload["symbol"] = symbols[0]
+        payload["market_type"] = "spot"
+        if not payload.get("market_timeframes"):
+            payload["market_timeframes"] = list(SPOT_MARKET_TIMEFRAMES)
+        if len(symbols) > 1 and any(float(payload.get(field) or 0) != 0 for field in ("initial_qty", "initial_cost")):
+            raise ValueError("Multi-symbol spot tasks require initial_qty and initial_cost to be zero; legacy starting holdings apply to one symbol only")
+    elif payload.get("symbols"):
+        symbols = payload["symbols"]
+        if not isinstance(symbols, list) or len(symbols) != 1:
+            raise ValueError("Multiple symbols are supported only for SPOT_DCA tasks")
+        if str(symbols[0]).strip().upper() != str(payload.get("symbol") or "").strip().upper():
+            raise ValueError("Non-spot task symbols must match symbol")
+        payload.pop("symbols", None)
+    return payload
+
+
 def _normalize_agents(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     for index, item in enumerate(agents):
-        payload = deepcopy(item)
+        payload = normalize_agent_market_settings(item)
         raw_config_id = str(payload.get("config_id") or "").strip()
         if not raw_config_id:
             symbol_slug = str(payload.get("symbol") or "unknown").replace("/", "-").lower()
@@ -331,6 +357,27 @@ def _default_agent_sort_key(agent: dict[str, Any]) -> tuple[str, int, str]:
     mode = str(agent.get("mode") or "STRATEGY").upper()
     config_id = str(agent.get("config_id") or "")
     return symbol, MODE_SORT_ORDER.get(mode, 99), config_id
+
+
+def _upgrade_legacy_spot_profiles(agents: list[dict], profiles: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Give old single-spot tasks their own spot profile without changing futures users."""
+    agents = deepcopy(agents)
+    profiles = deepcopy(profiles)
+    profile_map = {str(profile.get("profile_id")): profile for profile in profiles}
+    for agent in agents:
+        if str(agent.get("mode") or "").upper() != "SPOT_DCA" or agent.get("symbols"):
+            continue
+        profile = profile_map.get(str(agent.get("exchange_profile_id") or ""))
+        if not profile or str(profile.get("market_type") or "swap").lower() == "spot":
+            continue
+        spot_id = _stable_id("exchange", [profile["profile_id"], "legacy-spot"])
+        if spot_id not in profile_map:
+            spot_profile = {**profile, "profile_id": spot_id, "name": f"{profile.get('name') or profile['profile_id']} (spot)", "market_type": "spot"}
+            profiles.append(spot_profile)
+            profile_map[spot_id] = spot_profile
+        agent["exchange_profile_id"] = spot_id
+        agent["market_type"] = "spot"
+    return agents, profiles
 
 
 def _slug(value: str, fallback: str) -> str:
@@ -599,14 +646,16 @@ def ensure_runtime_config_initialized() -> None:
     logger.info("Runtime configuration migrated from .env into SQLite.")
 
 
-def load_runtime_snapshot() -> dict[str, Any] | None:
+def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> dict[str, Any] | None:
     global LAST_RUNTIME_CONFIG_ERROR
     LAST_RUNTIME_CONFIG_ERROR = None
 
-    if not DB_NAME.exists():
+    if connection is None and not DB_NAME.exists():
         return None
 
-    with _get_conn() as conn:
+    # A save can read its own uncommitted candidate without opening a second
+    # connection (which would see only the previous committed configuration).
+    with (nullcontext(connection) if connection is not None else _get_conn()) as conn:
         if not _has_runtime_storage(conn) or not _has_runtime_rows(conn):
             return None
         _ensure_agent_config_sort_order(conn)
@@ -802,10 +851,12 @@ def load_runtime_snapshot() -> dict[str, Any] | None:
         if not has_explicit_order:
             agents.sort(key=_default_agent_sort_key)
 
+        agents, profiles = _upgrade_legacy_spot_profiles(agents, profiles)
+
         return {
             **settings,
             **global_secrets,
-            "agents": agents,
+            "agents": _normalize_agents(agents),
             "llm_providers": providers,
             "exchange_profiles": profiles,
             "source": "db",
@@ -879,6 +930,8 @@ def save_runtime_snapshot(
     agents_payload: list[dict[str, Any]],
     llm_providers_payload: list[dict[str, Any]] | None = None,
     exchange_profiles_payload: list[dict[str, Any]] | None = None,
+    *,
+    validate_snapshot: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     load_dotenv(override=False)
     normalized_agents = _normalize_agents(agents_payload)
@@ -905,6 +958,13 @@ def save_runtime_snapshot(
         llm_providers_payload,
         exchange_profiles_payload,
     )
+    profiles_by_id = {str(profile.get("profile_id")): profile for profile in exchange_profiles}
+    for agent in normalized_agents:
+        if agent.get("mode") != "SPOT_DCA":
+            continue
+        profile = profiles_by_id.get(str(agent.get("exchange_profile_id") or ""))
+        if profile and str(profile.get("market_type") or "swap").lower() != "spot":
+            raise ValueError(f"SPOT_DCA task {agent['config_id']} requires a spot exchange profile")
 
     with _get_conn() as conn:
         _ensure_agent_config_sort_order(conn)
@@ -1046,6 +1106,11 @@ def save_runtime_snapshot(
                 _apply_secret_updates(conn, "agent", config_id, secret_updates)
 
             _apply_secret_updates(conn, "global", "global", global_secret_updates)
+            if validate_snapshot is not None:
+                candidate = load_runtime_snapshot(connection=conn)
+                if candidate is None:
+                    raise ValueError(LAST_RUNTIME_CONFIG_ERROR or "Unable to validate candidate runtime configuration")
+                validate_snapshot(candidate)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1102,7 +1167,9 @@ def runtime_options_payload() -> dict[str, Any]:
         "exchanges": ["binance", "okx"],
         "market_types": ["swap", "spot"],
         "dca_freqs": ["1d", "1w"],
-        "market_timeframes": ["15m", "1h", "4h", "1d", "1w"],
+        "market_timeframes": ["15m", "30m", "1h", "4h", "1d", "1w", "1M"],
+        "spot_market_timeframes": list(SPOT_MARKET_TIMEFRAMES),
+        "max_spot_symbols": 10,
         "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
         "compatibility_modes": ["auto", "openai", "anthropic", "deepseek"],
     }
@@ -1215,6 +1282,7 @@ def import_full_snapshot(
     write_env: bool = False,
     prompt_files: dict[str, str] | None = None,
     model_pricing: list[dict[str, Any]] | None = None,
+    validate_snapshot: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """
     将完整配置快照还原到数据库，可选写入 .env 引导变量。
@@ -1247,12 +1315,16 @@ def import_full_snapshot(
     agents_merged = _merge_secrets_back(agents_in)
     providers_merged = _merge_secrets_back(providers_in)
     profiles_merged = _merge_secrets_back(profiles_in)
+    agents_merged, profiles_merged = _upgrade_legacy_spot_profiles(agents_merged, profiles_merged)
 
     # 将 global_secrets 合并进 globals_payload（使用明文值，save_runtime_snapshot 内会加密）
     globals_payload: dict[str, Any] = deepcopy(app_settings)
     globals_payload.update(global_secrets_in)
 
-    save_runtime_snapshot(globals_payload, agents_merged, providers_merged, profiles_merged)
+    save_runtime_snapshot(
+        globals_payload, agents_merged, providers_merged, profiles_merged,
+        validate_snapshot=validate_snapshot,
+    )
 
     # 还原 prompt 文件
     prompts_restored: list[str] = []

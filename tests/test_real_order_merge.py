@@ -182,7 +182,7 @@ class RealOrderMergeTests(unittest.TestCase):
         self.assertEqual(exchange.created[0]["params"]["positionSide"], "LONG")
 
     @patch("backend.utils.market_data.database.get_db_conn", side_effect=RuntimeError("no db"))
-    def test_spot_dca_keeps_existing_same_price_merge_behavior(self, _mock_db):
+    def test_spot_dca_does_not_cancel_existing_same_price_orders(self, _mock_db):
         exchange = FakeExchange(open_orders=[{
             'id':'spot-1','type':'LIMIT','side':'buy','price':1600,'amount':.1,
             'info':{'type':'LIMIT'},
@@ -190,8 +190,18 @@ class RealOrderMergeTests(unittest.TestCase):
         exchange.options['defaultType']='spot'
         tool=self.make_tool(exchange)
         tool.place_real_order('BTC/USDT','BUY_LIMIT',{'entry_price':1600,'amount':.2})
-        self.assertEqual(exchange.cancelled,[('spot-1',{})])
-        self.assertAlmostEqual(exchange.created[0]['amount'],.3)
+        self.assertEqual(exchange.cancelled, [])
+        self.assertAlmostEqual(exchange.created[0]['amount'], .2)
+
+    def test_spot_precision_rounding_cannot_exceed_reserved_quote_cost(self):
+        import ccxt
+        exchange = FakeExchange()
+        exchange.options['defaultType'] = 'spot'
+        exchange.price_to_precision = lambda symbol, price: str(round(price))
+        tool = self.make_tool(exchange)
+        with self.assertRaises(ccxt.InvalidOrder):
+            tool.place_real_order('BTC/USDT', 'BUY_LIMIT', {'entry_price': 100.7, 'amount': 1})
+        self.assertEqual(exchange.created, [])
 
     @patch("backend.utils.market_data.database.get_db_conn", side_effect=RuntimeError("no db"))
     def test_open_short_limit_uses_sell_and_short_position_side(self, _mock_db):

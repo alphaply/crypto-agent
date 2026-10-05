@@ -75,19 +75,20 @@ def test_compaction_never_splits_tool_request_from_result(monkeypatch):
     assert '"amount": 0.4' in captured[0] and 'Reduce the position' in captured[0]
 
 
-def test_rule_chat_tool_needs_no_approval_and_read_only_never_executes(monkeypatch):
+def test_rule_chat_tool_is_rejected_without_approval_or_execution(monkeypatch):
     monkeypatch.setattr(chat_graph, '_resolve_chat_config', lambda _: {'symbol': 'ETH/USDT'})
-    approve = Mock(side_effect=AssertionError('Rule tool should apply directly'))
+    approve = Mock(side_effect=AssertionError('Unavailable rule tool must not request approval'))
     run = Mock(return_value='saved')
     monkeypatch.setattr(chat_graph, 'interrupt', approve)
     monkeypatch.setattr(chat_graph, '_run_tool', run)
     state = {'messages': [AIMessage(content='', tool_calls=[{'name': 'manage_trading_rules', 'args': {'action': 'list'}, 'id': 'rule-call'}])]}
-    chat_graph.tools_node(state, {'configurable': {'config_id': 'cfg'}})
-    run.assert_called_once_with('manage_trading_rules', {'action': 'list'}, 'cfg', 'ETH/USDT', operation_id='rule-call')
+    result = chat_graph.tools_node(state, {'configurable': {'config_id': 'cfg'}})
+    assert '记忆整理 Agent' in result['messages'][0].content
+    run.assert_not_called()
     monkeypatch.setattr(chat_graph, '_resolve_chat_config', lambda _: {'symbol': 'ETH/USDT', 'read_only': True})
     result = chat_graph.tools_node(state, {'configurable': {}})
     assert 'Read-only' in result['messages'][0].content
-    assert run.call_count == 1
+    run.assert_not_called()
 
 
 def test_independent_exit_context_exposes_order_ids_types_quantities_and_uncertainty():

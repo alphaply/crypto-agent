@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 import time
 import jwt
+from pydantic import BaseModel, Field
 
 from backend.app.core.security import JWT_SECRET, JWT_ALGORITHM
 from backend.app.services.database_export import database_file_response
@@ -21,11 +22,14 @@ from backend.app.services.config_service import (
     read_prompt_payload,
     save_config_payload,
     save_prompt_payload,
+    update_config_symbols_payload,
 )
+from backend.app.services.market_catalog_service import MarketCatalogUnavailable, list_market_symbols_payload
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 from backend.utils.exit_policy import ExitModeConflict
+from backend.utils.spot_config_guard import SpotConfigConflict
 
 
 def validate_prompt_name(name: str) -> None:
@@ -33,6 +37,53 @@ def validate_prompt_name(name: str) -> None:
             or any(char in name for char in ('/', '\\', ':', '\x00'))
             or not name.endswith('.txt')):
         raise HTTPException(400, "Invalid prompt filename")
+
+
+@router.get("/market-symbols")
+def market_symbols(
+    exchange_profile_id: str | None = Query(None, max_length=200),
+    exchange: str | None = Query(None, max_length=30),
+    market_type: str = Query("spot", pattern="^(spot|swap)$"),
+    keyword: str = Query("", max_length=100),
+    quote: str = Query("", max_length=30),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    symbols: str = Query("", max_length=1000),
+    _: dict = Depends(get_current_user),
+):
+    try:
+        return {"success": True, **list_market_symbols_payload(
+            exchange_profile_id, market_type, keyword, exchange=exchange,
+            quote=quote, limit=limit, offset=offset, symbols=symbols.split(","),
+            require_profile_market=True,
+        )}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except MarketCatalogUnavailable as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+class ConfigSymbolsRequest(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=10)
+    expected_symbols: list[str] | None = Field(None, min_length=1, max_length=10)
+
+
+@router.patch("/{config_id}/symbols")
+def update_config_symbols(config_id: str, payload: ConfigSymbolsRequest, _: dict = Depends(get_current_user)):
+    try:
+        return {"success": True, **update_config_symbols_payload(
+            config_id, payload.symbols, expected_symbols=payload.expected_symbols,
+        )}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ExitModeConflict, SpotConfigConflict) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except MarketCatalogUnavailable as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.post("/polymarket/test")
@@ -68,10 +119,12 @@ def save_config(payload: SaveConfigRequest, _: dict = Depends(get_current_user))
                 [item.model_dump(mode="json", exclude_none=True) for item in payload.exchange_profiles],
             ),
         }
-    except ExitModeConflict as exc:
+    except (ExitModeConflict, SpotConfigConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except MarketCatalogUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/export")
@@ -122,10 +175,12 @@ def download_database(request: Request):
 def full_import(payload: FullImportRequest, _: dict = Depends(get_current_user)):
     try:
         result = full_import_payload(data=dict(payload.data), write_env=payload.write_env)
-    except ExitModeConflict as exc:
+    except (ExitModeConflict, SpotConfigConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except MarketCatalogUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Import failed: {exc}") from exc
     return {"success": True, **result}
@@ -184,4 +239,6 @@ def delete_config(config_id: str, _: dict = Depends(get_current_user)):
         payload = delete_config_payload(config_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SpotConfigConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"success": True, **payload}

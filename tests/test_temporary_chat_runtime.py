@@ -60,21 +60,23 @@ def test_temporary_runtime_stores_references_but_not_secrets(monkeypatch):
 
 
 def test_market_symbol_catalogue_is_cached_and_filtered(monkeypatch):
+    from backend.app.services import market_catalog_service
+
     calls = []
 
-    class FakeMarketTool:
-        def __init__(self, **kwargs):
-            calls.append(kwargs)
+    class FakeExchange:
+        def __init__(self, options):
+            calls.append(options)
 
-        def list_symbols(self, market_type):
-            return [
-                {"symbol": "BTC/USDT:USDT", "base": "BTC", "quote": "USDT", "market_type": market_type, "display_name": "BTC"},
-                {"symbol": "ETH/USDT:USDT", "base": "ETH", "quote": "USDT", "market_type": market_type, "display_name": "ETH"},
-            ]
+        def load_markets(self):
+            return {
+                base: {"symbol": f"{base}/USDT:USDT", "base": base, "quote": "USDT", "swap": True, "active": True}
+                for base in ["BTC", "ETH"]
+            }
 
-    monkeypatch.setattr(chat_service, "_runtime_snapshot", _runtime_snapshot)
-    monkeypatch.setattr(chat_service, "MarketTool", FakeMarketTool)
-    chat_service._market_symbol_cache.clear()
+    monkeypatch.setattr(market_catalog_service, "load_management_snapshot", _runtime_snapshot)
+    monkeypatch.setattr(market_catalog_service.ccxt, "binance", FakeExchange)
+    market_catalog_service._market_symbol_cache.clear()
 
     first = chat_service.list_market_symbols_payload("exchange-a", "swap", "btc")
     second = chat_service.list_market_symbols_payload("exchange-a", "swap", "eth")

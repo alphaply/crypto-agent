@@ -18,6 +18,9 @@ def format_positions_to_agent_friendly(positions: list) -> str:
         side = str(position.get("side", "")).upper()
         symbol = str(position.get("symbol", "")).split(":")[0]
         amount = float(position.get("amount", 0) or 0)
+        if position.get('market_type') == 'spot':
+            lines.append(f"[SPOT] {symbol} | Account holdings: {amount} | Free: {position.get('available_amount', 0)} | Cost basis/PnL: N/A (account balance, not task attribution)")
+            continue
         entry = float(position.get("entry_price", 0) or 0)
         pnl = float(position.get("unrealized_pnl", 0) or 0)
         pnl_sign = "+" if pnl >= 0 else ""
@@ -47,6 +50,8 @@ def format_orders_to_agent_friendly(orders, protection_plans=None, symbol=""):
             extras = f" | TP: {tp} | SL: {sl}"
         if raw_type:
             extras = f" | Type: {raw_type}{extras}"
+        if order.get('symbol'):
+            extras = f" | Symbol: {order['symbol']}{extras}"
 
         action = side
         if pos_side == "LONG":
@@ -69,7 +74,55 @@ def format_orders_to_agent_friendly(orders, protection_plans=None, symbol=""):
     return "\n".join(lines) or "(No Active Orders)"
 
 
+def _is_spot_market_data(data: dict) -> bool:
+    return data.get('indicator_profile') == 'spot_long_term' or any(
+        item.get('indicator_profile') == 'spot_long_term'
+        for item in (data.get('technical_indicators') or {}).values()
+    )
+
+
+def _format_spot_market_data(data: dict) -> str:
+    def fmt(value):
+        return 'N/A' if value is None else str(value)
+
+    output = [
+        f"[Spot market: {data.get('symbol') or ''}]",
+        f"- Live/reference price: {fmt(data.get('current_price'))}",
+        '- 4h: execution context; 1d: trend and accumulation; 1w: long-term regime.',
+        '- Indicators use closed candles only. N/A means insufficient/unavailable data, not zero.',
+        '- Drawdown is signed (close/high - 1); RVOL20 uses the previous 20 closed candles. These describe history, not buy instructions.',
+    ]
+    indicators = data.get('technical_indicators') or {}
+    for tf in (list(indicators) or ['4h', '1d', '1w']):
+        if tf not in indicators:
+            output.append(f'[{tf}] N/A (no closed-candle data)')
+            continue
+        item = indicators[tf]
+        ema, spot = item.get('ema') or {}, item.get('spot_context') or {}
+        quality = item.get('data_quality') or {}
+        output.extend([
+            f"[{tf}] Close={fmt(item.get('price'))} | EMA20/50/200={fmt(ema.get('ema_20'))}/{fmt(ema.get('ema_50'))}/{fmt(ema.get('ema_200'))}",
+            f"- RSI14={fmt((item.get('rsi_analysis') or {}).get('rsi'))} | ATR14={fmt(item.get('atr'))} ({fmt(spot.get('atr_pct'))}%) | RVOL20={fmt((item.get('volume_analysis') or {}).get('ratio'))}x",
+            f"- High({fmt(spot.get('high_lookback_bars'))} bars)={fmt(spot.get('recent_high'))} | Drawdown={fmt(spot.get('drawdown_from_high_pct'))}% | Available high-history bars={fmt(spot.get('high_available_bars'))}",
+            f"- Close vs EMA200={fmt(spot.get('price_vs_ema200_pct'))}% | Return20bars={fmt(spot.get('return_20_bars_pct'))}%",
+            f"- Data: {quality.get('basis', 'unknown')} | last close={quality.get('last_closed_at')} | bars={quality.get('bars')} | excluded forming={quality.get('forming_candles_excluded')}",
+        ])
+        if quality.get('stale') or quality.get('gap_count') or quality.get('invalid_candles_excluded'):
+            output.append(f"- DATA QUALITY WARNING: stale={quality.get('stale')}, gaps={quality.get('gap_count', 0)}, invalid bars={quality.get('invalid_candles_excluded', 0)}; verify before submitting orders.")
+        if quality.get('ema_warmup_bars'):
+            output.append(f"- EMA warm-up warning (<3x span): {quality['ema_warmup_bars']}")
+        times, closes = item.get('recent_times') or [], item.get('recent_closes') or []
+        if len(times) == len(closes) and closes:
+            output.append('- Recent closed prices (UTC): ' + ', '.join(f'{ts}={fmt(close)}' for ts, close in zip(times, closes)))
+    news = data.get('news_context') or {}
+    if news.get('digest'):
+        output.append(f"- News context{' [cached/stale]' if news.get('stale') else ''}: {news['digest']}")
+    return '\n'.join(output)
+
+
 def format_market_data_to_text(data: dict) -> str:
+    if _is_spot_market_data(data):
+        return _format_spot_market_data(data)
     """Format market data into a compact agent prompt payload."""
 
     def fmt_value(value):
@@ -319,6 +372,8 @@ def format_market_data_to_text(data: dict) -> str:
 
 
 def format_market_data_to_markdown(data: dict) -> str:
+    if _is_spot_market_data(data):
+        return _format_spot_market_data(data)
     def fmt_num(num):
         if num > 1_000_000_000:
             return f"{num / 1_000_000_000:.1f}B"

@@ -166,7 +166,7 @@ class SummaryMemoryStore:
                 SELECT bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count, created_at
                 FROM short_memories
                 WHERE config_id = ?
-                ORDER BY bucket_start DESC
+                ORDER BY bucket_end DESC, created_at DESC
                 LIMIT ?
                 ''',
                 (config_id, int(limit or 2)),
@@ -188,7 +188,7 @@ class SummaryMemoryStore:
             if config_id and config_id != "ALL":
                 sql += " AND config_id = ?"
                 params.append(config_id)
-            sql += " ORDER BY bucket_start DESC LIMIT ?"
+            sql += " ORDER BY bucket_end DESC, created_at DESC LIMIT ?"
             params.append(int(limit or 200))
             rows = cursor.execute(sql, tuple(params)).fetchall()
             return [dict(row) for row in rows]

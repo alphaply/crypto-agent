@@ -1,11 +1,11 @@
 import os
-from copy import deepcopy
 from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
-from backend.config_store import load_effective_runtime_snapshot
+from backend.config_store import load_effective_runtime_snapshot, normalize_agent_market_settings
 from backend.utils.logger import setup_logger
+from backend.utils.spot_portfolio import get_config_symbols
 
 
 logger = setup_logger("Config")
@@ -51,7 +51,7 @@ class Config:
         config_ids: set[str] = set()
 
         for index, raw_config in enumerate(configs or []):
-            config = deepcopy(raw_config or {})
+            config = normalize_agent_market_settings(raw_config or {})
             if "config_id" not in config or not str(config.get("config_id") or "").strip():
                 symbol = config.get("symbol", "unknown").replace("/", "-").lower()
                 model = str(config.get("model", "default")).split("-")[0]
@@ -68,6 +68,27 @@ class Config:
         return normalized
 
     def _apply_snapshot(self, snapshot: dict) -> None:
+        candidate = self._validated_snapshot(snapshot)
+        # Publish only a complete validated state. Conversion or credential
+        # errors must leave the currently running configuration untouched.
+        self.__dict__.update(candidate.__dict__)
+        logger.info(
+            f"Runtime configuration loaded from {self.source} with {len(self.symbol_configs)} agent config(s)"
+        )
+
+    @classmethod
+    def _validated_snapshot(cls, snapshot: dict):
+        candidate = cls.__new__(cls)
+        candidate._load_snapshot_values(snapshot)
+        candidate._validate_config()
+        return candidate
+
+    @classmethod
+    def validate_snapshot(cls, snapshot: dict) -> None:
+        """Validate a storage candidate without replacing the active runtime."""
+        cls._validated_snapshot(snapshot)
+
+    def _load_snapshot_values(self, snapshot: dict) -> None:
         self._load_bootstrap_settings()
 
         self.global_binance_api_key = snapshot.get("global_binance_api_key")
@@ -94,31 +115,15 @@ class Config:
 
         self.symbol_configs = self._normalize_symbol_configs(snapshot.get("agents", []))
         self.configs_by_id = {cfg["config_id"]: cfg for cfg in self.symbol_configs}
-        self._validate_config()
-        logger.info(
-            f"Runtime configuration loaded from {self.source} with {len(self.symbol_configs)} agent config(s)"
-        )
 
     def _validate_config(self) -> None:
         errors = []
-        has_binance = bool(self.global_binance_api_key and self.global_binance_secret)
-        has_okx = bool(self.global_okx_api_key and self.global_okx_secret and self.global_okx_passphrase)
-
-        if not has_binance and not has_okx:
-            for cfg in self.symbol_configs:
-                symbol = cfg.get("symbol")
-                exchange = str(cfg.get("exchange", "binance")).lower()
-
-                if exchange == "okx":
-                    okx_key = cfg.get("okx_api_key") or cfg.get("api_key")
-                    okx_secret = cfg.get("okx_secret") or cfg.get("secret")
-                    if not okx_key or not okx_secret or not cfg.get("passphrase"):
-                        errors.append(f"{symbol} (OKX) is missing API credentials and no global OKX key is set")
-                else:
-                    key = cfg.get("binance_api_key") or cfg.get("api_key")
-                    secret = cfg.get("binance_secret") or cfg.get("secret")
-                    if not key or not secret:
-                        errors.append(f"{symbol} (Binance) is missing API credentials and no global Binance key is set")
+        for cfg in self.symbol_configs:
+            exchange, key, secret, passphrase = self.get_exchange_credentials(config_id=cfg["config_id"])
+            if exchange not in {"binance", "okx"}:
+                errors.append(f"{cfg.get('symbol')} has unsupported exchange: {exchange}")
+            elif not key or not secret or (exchange == "okx" and not passphrase):
+                errors.append(f"{cfg.get('symbol')} ({exchange.upper()}) is missing API credentials")
 
         if errors:
             deduped_errors = list(dict.fromkeys(errors))
@@ -136,7 +141,7 @@ class Config:
             config = self.configs_by_id.get(config_id)
         elif symbol:
             for item in self.symbol_configs:
-                if item.get("symbol") == symbol:
+                if symbol in get_config_symbols(item):
                     config = item
                     break
 
@@ -177,13 +182,13 @@ class Config:
 
     def get_symbol_config(self, symbol: str) -> Optional[Dict]:
         for config in self.symbol_configs:
-            if config.get("symbol") == symbol:
+            if symbol in get_config_symbols(config):
                 logger.warning("symbol-based config lookup is deprecated; prefer config_id")
                 return config
         return None
 
     def get_configs_by_symbol(self, symbol: str) -> List[Dict]:
-        return [cfg for cfg in self.symbol_configs if cfg.get("symbol") == symbol]
+        return [cfg for cfg in self.symbol_configs if symbol in get_config_symbols(cfg)]
 
     def get_leverage(self, config_id: Optional[str] = None) -> int:
         if config_id:

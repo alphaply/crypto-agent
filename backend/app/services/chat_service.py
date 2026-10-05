@@ -1,6 +1,5 @@
 import json
 import re
-import time
 import uuid
 from typing import Any
 
@@ -28,17 +27,11 @@ from backend.database import (
     update_chat_session_title,
 )
 from backend.utils.llm_utils import build_chat_model, extract_message_text, invoke_with_retry
-from backend.utils.market_data import MarketTool
 
 from backend.app.services.common import logger, serialize_message
+from backend.app.services.market_catalog_service import SUPPORTED_MARKETS, list_market_symbols_payload
 
 
-SUPPORTED_MARKETS = {
-    "binance": ("spot", "swap"),
-    "okx": ("spot", "swap"),
-}
-MARKET_SYMBOL_CACHE_TTL_SECONDS = 15 * 60
-_market_symbol_cache: dict[tuple[str, str], tuple[float, list[dict[str, str]]]] = {}
 PERSISTENCE_ERROR_MESSAGE = "回答已生成，但暂时无法保存到会话历史。"
 r"""
 LEGACY_MODEL_SIGNATURE_RE = re.compile(
@@ -370,42 +363,6 @@ def _branch_seed_messages(session: dict[str, Any]) -> list[Any]:
     if index < 0 or index >= len(messages) or not isinstance(messages[index], HumanMessage):
         raise ValueError("Branch source message is no longer available")
     return messages[:index]
-
-
-def list_market_symbols_payload(exchange_profile_id: str, market_type: str, keyword: str = "") -> dict[str, Any]:
-    profile_id = str(exchange_profile_id or "").strip()
-    requested_market = str(market_type or "spot").lower()
-    if not profile_id:
-        raise ValueError("Exchange profile is required")
-    snapshot = _runtime_snapshot()
-    profile = next((item for item in snapshot.get("exchange_profiles", []) if item.get("profile_id") == profile_id), None)
-    if not profile:
-        raise FileNotFoundError("Exchange profile not found")
-    exchange = str(profile.get("exchange") or "").lower()
-    if exchange not in SUPPORTED_MARKETS or requested_market not in SUPPORTED_MARKETS[exchange]:
-        raise ValueError("Unsupported exchange market")
-
-    cache_key = (profile_id, requested_market)
-    cached = _market_symbol_cache.get(cache_key)
-    now = time.monotonic()
-    if cached and now - cached[0] < MARKET_SYMBOL_CACHE_TTL_SECONDS:
-        catalog = cached[1]
-    else:
-        catalog = MarketTool(
-            exchange_profile=profile,
-            market_type=requested_market,
-        ).list_symbols(requested_market)
-        _market_symbol_cache[cache_key] = (now, catalog)
-
-    needle = str(keyword or "").strip().upper()
-    if needle:
-        catalog = [item for item in catalog if needle in item["symbol"].upper() or needle in item["base"].upper()]
-    return {
-        "exchange_profile_id": profile_id,
-        "exchange": exchange,
-        "market_type": requested_market,
-        "symbols": catalog[:100],
-    }
 
 
 def get_chat_session_payload(session_id: str):

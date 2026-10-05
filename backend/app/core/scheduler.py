@@ -17,6 +17,7 @@ from backend.agent.agent_graph import (
     run_agent_for_config,
 )
 from backend.config import config as global_config
+from backend.agent.memory_workflow import get_review_result
 from backend.database import get_short_memory, init_db
 from backend.utils.logger import setup_logger
 from backend.utils.llm_utils import sync_langsmith_environment
@@ -835,6 +836,7 @@ def run_short_memory_job(now: datetime | None = None) -> dict:
         "generated": 0,
         "existing": 0,
         "retry_wait": 0,
+        "partial": [],
         "failed": [],
     }
 
@@ -861,8 +863,11 @@ def run_short_memory_job(now: datetime | None = None) -> dict:
             if generated:
                 result["generated"] += 1
                 _short_memory_done_buckets.add(done_key)
-            elif existing and int(existing.get("source_count") or 0) > 0:
+            elif existing and str(existing.get('market_summary') or '').strip():
                 result["existing"] += 1
+                _short_memory_done_buckets.add(done_key)
+            elif (get_review_result(f'bucket:{config_id}:{bucket_key}:{result["bucket_end"]}') or {}).get('status') == 'partial':
+                result['partial'].append(config_id)
                 _short_memory_done_buckets.add(done_key)
             else:
                 result["failed"].append(config_id)
@@ -884,6 +889,9 @@ def run_short_memory_job(now: datetime | None = None) -> dict:
             f"[ShortMemory] incomplete for {bucket_key}; retry in "
             f"{_short_memory_retry_minutes()} minutes, failed={result['failed']}"
         )
+    elif result['partial']:
+        result['status'] = 'partial'
+        logger.warning('[ShortMemory] rules changed but memory failed; prior memory retained: %s', result['partial'])
     elif result["retry_wait"]:
         result["status"] = "retry_wait"
     elif result["generated"]:

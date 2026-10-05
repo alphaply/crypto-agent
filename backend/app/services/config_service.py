@@ -1,5 +1,6 @@
 import json
 import os
+from functools import wraps
 from datetime import datetime
 from pathlib import Path
 
@@ -9,8 +10,10 @@ from backend.config_store import (
     export_full_snapshot,
     import_full_snapshot,
     load_management_snapshot,
+    normalize_agent_market_settings,
     runtime_options_payload,
     save_runtime_snapshot,
+    _upgrade_legacy_spot_profiles,
 )
 from backend.database import (
     export_database_bytes,
@@ -21,6 +24,9 @@ from backend.database import (
 )
 from backend.utils.prompt_utils import normalize_prompt_reference, resolve_prompt_path
 from backend.utils.exit_policy import assert_exit_mode_change_allowed, effective_exit_mode
+from backend.utils.spot_portfolio import normalize_spot_symbols
+from backend.utils.spot_config_guard import spot_config_lock as _config_write_lock
+from backend.app.services.market_catalog_service import validate_spot_market_symbols
 
 from backend.app.services.common import logger, prompt_dir
 
@@ -29,6 +35,75 @@ BLOCKED_PROMPT_FILES = set()
 ALLOWED_MARKET_TIMEFRAMES = {"15m", "30m", "1h", "4h", "1d", "1w", "1M"}
 PROMPT_REFERENCE_FIELDS = ("prompt_file",)
 SUMMARIZER_PROMPT_FIELDS = ("strategy_prompt_file", "daily_prompt_file", "short_memory_prompt_file")
+
+
+def _serialized_config_write(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _config_write_lock:
+            return function(*args, **kwargs)
+    return wrapped
+
+
+def _spot_account_changed(previous: dict, agent: dict, profiles: list[dict], globals_payload: dict) -> bool:
+    profile_id = str(agent.get("exchange_profile_id") or "")
+    if profile_id != str(previous.get("exchange_profile_id") or ""):
+        return True
+    profile = next((item for item in profiles if item.get("profile_id") == profile_id), {})
+    if str(profile.get("exchange") or agent.get("exchange") or "binance").lower() != str(previous.get("exchange") or "binance").lower():
+        return True
+    exchange = str(previous.get("exchange") or "binance").lower()
+    # Agent api_key can be the LLM provider key. A bound exchange profile is
+    # authoritative for its exchange credentials and must be compared to the
+    # resolved exchange-specific fields, not to that LLM key.
+    agent_keys = ["passphrase", f"{exchange}_api_key", f"{exchange}_secret"]
+    if not profile_id:
+        agent_keys += ["api_key", "secret"]
+    for source, keys in ((agent, agent_keys), (profile, ("api_key", "secret", "passphrase"))):
+        for key in keys:
+            update = (source.get("secrets") or {}).get(key) or {}
+            value = update.get("value") if isinstance(update, dict) else None
+            if isinstance(update, dict) and update.get("clear"):
+                return True
+            direct = (source.get("_secrets") or {}).get(key) or source.get(key)
+            previous_value = previous.get(key)
+            if source is profile and key in {"api_key", "secret"}:
+                previous_value = previous.get(f"{exchange}_{key}") or previous_value
+            if (value and value != previous_value) or (direct and direct != previous_value):
+                return True
+    # A task can inherit global exchange credentials. Conservatively guard a
+    # global credential rotation when it has an active spot lifecycle as well.
+    for key in (f"global_{exchange}_api_key", f"global_{exchange}_secret", f"global_{exchange}_passphrase"):
+        update = (globals_payload.get("secrets") or {}).get(key) or {}
+        if isinstance(update, dict) and (update.get("clear") or update.get("value")):
+            return True
+        if globals_payload.get(key) and globals_payload[key] != getattr(global_config, key, None):
+            return True
+    return False
+
+
+def _validate_spot_config_change(previous: dict | None, agent: dict, profiles: list[dict], globals_payload: dict) -> None:
+    if previous:
+        from backend.utils.spot_config_guard import assert_spot_config_change_allowed
+
+        profile = next((item for item in profiles if item.get("profile_id") == agent.get("exchange_profile_id")), {})
+        guarded_agent = {**agent, "exchange": profile.get("exchange") or agent.get("exchange") or "binance"}
+        assert_spot_config_change_allowed(
+            previous, guarded_agent,
+            account_changed=_spot_account_changed(previous, agent, profiles, globals_payload),
+        )
+    validate_spot_market_symbols(agent, profiles, previous)
+
+
+def _validate_removed_spot_configs(agents: list[dict]) -> None:
+    from backend.utils.spot_config_guard import assert_spot_config_change_allowed
+
+    next_ids = {item.get("config_id") for item in agents}
+    for previous in global_config.symbol_configs:
+        if previous.get("config_id") not in next_ids:
+            assert_spot_config_change_allowed(
+                previous, {"config_id": previous["config_id"], "mode": "DELETED"}, account_changed=True,
+            )
 
 
 def _prompt_project_root() -> Path:
@@ -126,6 +201,7 @@ def get_raw_config_payload():
     }
 
 
+@_serialized_config_write
 def save_config_payload(
     globals_payload: dict,
     agents_payload: list[dict],
@@ -133,10 +209,11 @@ def save_config_payload(
     exchange_profiles_payload: list[dict] | None = None,
 ):
     _validate_market_timeframes(globals_payload.get("market_timeframes") or [], field_name="market_timeframes")
+    _validate_removed_spot_configs(agents_payload or [])
     normalized_agents_payload = []
     for agent_payload in agents_payload or []:
         config_id = str(agent_payload.get("config_id") or "agent")
-        agent_payload = dict(agent_payload)
+        agent_payload = normalize_agent_market_settings(agent_payload)
         previous = global_config.get_config_by_id(config_id)
         if previous:
             # Omitted fields preserve the policy of existing clients/configurations.
@@ -151,6 +228,7 @@ def save_config_payload(
             agent_payload.get("market_timeframes"),
             field_name=f"agents[{config_id}].market_timeframes",
         )
+        _validate_spot_config_change(previous, agent_payload, exchange_profiles_payload or [], globals_payload)
         normalized_agents_payload.append(_normalize_agent_prompt_files(agent_payload))
 
     save_runtime_snapshot(
@@ -158,6 +236,7 @@ def save_config_payload(
         normalized_agents_payload,
         llm_providers_payload or [],
         exchange_profiles_payload or [],
+        validate_snapshot=global_config.validate_snapshot,
     )
     for provider in llm_providers_payload or []:
         model = str(provider.get("model") or "").strip()
@@ -181,6 +260,29 @@ def save_config_payload(
             "api_key_configured": bool(getattr(global_config, "langchain_api_key", "")),
         },
     }
+
+
+@_serialized_config_write
+def update_config_symbols_payload(config_id: str, symbols: list[str], *, expected_symbols: list[str] | None = None) -> dict:
+    snapshot = load_management_snapshot()
+    agent = next((item for item in snapshot["agents"] if item.get("config_id") == config_id), None)
+    if not agent:
+        raise FileNotFoundError(f"Config not found: {config_id}")
+    if str(agent.get("mode") or "").upper() != "SPOT_DCA":
+        raise ValueError("仅现货任务支持多标的配置")
+    current_symbols = normalize_spot_symbols(agent.get("symbols"), agent.get("symbol"))
+    if expected_symbols is not None and current_symbols != normalize_spot_symbols(expected_symbols):
+        from backend.utils.spot_config_guard import SpotConfigConflict
+
+        raise SpotConfigConflict("现货标的已被其他操作修改，请刷新配置后重试")
+    next_symbols = normalize_spot_symbols(symbols)
+    agent["symbols"] = next_symbols
+    agent["symbol"] = next_symbols[0]
+    save_config_payload(
+        snapshot["globals"], snapshot["agents"],
+        snapshot.get("llm_providers", []), snapshot.get("exchange_profiles", []),
+    )
+    return {"config_id": config_id, "mode": "SPOT_DCA", "symbol": next_symbols[0], "symbols": next_symbols}
 
 
 def export_config_payload():
@@ -220,15 +322,28 @@ def export_database_payload() -> tuple[bytes, str]:
     return export_database_bytes()
 
 
+@_serialized_config_write
 def full_import_payload(data: dict, write_env: bool = False) -> dict:
     """导入完整配置包，包括 prompts 和 model_pricing。"""
+    data = dict(data)
+    data['agents'], data['exchange_profiles'] = _upgrade_legacy_spot_profiles(
+        data.get('agents') or [], data.get('exchange_profiles') or [],
+    )
+    data['agents'] = [normalize_agent_market_settings(agent) for agent in data['agents']]
+    _validate_removed_spot_configs(data['agents'])
+    _validate_market_timeframes((data.get('app_settings') or {}).get('market_timeframes'), field_name='market_timeframes')
     for agent in data.get('agents') or []:
+        normalized = normalize_agent_market_settings(agent)
+        _validate_market_timeframes(normalized.get('market_timeframes'), field_name=f"agents[{agent.get('config_id')}].market_timeframes")
         previous = global_config.get_config_by_id(agent.get('config_id'))
         if previous:
             if agent.get('exit_mode') is None:
                 agent['exit_mode'] = effective_exit_mode(previous)
             assert_exit_mode_change_allowed(previous, agent)
         effective_exit_mode(agent)
+        _validate_spot_config_change(previous, agent, data.get('exchange_profiles') or [], {
+            **(data.get('app_settings') or {}), **(data.get('global_secrets') or {}),
+        })
     prompt_files: dict[str, str] = data.pop("prompts", None) or {}
     model_pricing: list[dict] = data.pop("model_pricing", None) or []
     result = import_full_snapshot(
@@ -236,6 +351,7 @@ def full_import_payload(data: dict, write_env: bool = False) -> dict:
         write_env=write_env,
         prompt_files=prompt_files,
         model_pricing=model_pricing,
+        validate_snapshot=global_config.validate_snapshot,
     )
     return result
 
@@ -276,6 +392,7 @@ def get_config_dependencies_payload(config_id: str):
     return {"config_id": config_id, "counts": get_config_dependency_counts(config_id)}
 
 
+@_serialized_config_write
 def delete_config_payload(config_id: str):
     snapshot = load_management_snapshot()
     target = None
@@ -289,6 +406,11 @@ def delete_config_payload(config_id: str):
     if not target:
         raise FileNotFoundError(f"Config not found: {config_id}")
 
+    from backend.utils.spot_config_guard import assert_spot_config_change_allowed
+
+    previous = global_config.get_config_by_id(config_id) or target
+    assert_spot_config_change_allowed(previous, {"config_id": config_id, "mode": "DELETED"}, account_changed=True)
+
     dependencies_before = get_config_dependency_counts(config_id)
     cleanup_result = purge_config_all_data(config_id)
     save_runtime_snapshot(
@@ -296,6 +418,7 @@ def delete_config_payload(config_id: str):
         remaining,
         snapshot.get("llm_providers", []),
         snapshot.get("exchange_profiles", []),
+        validate_snapshot=global_config.validate_snapshot,
     )
     global_config.reload_config()
     return {

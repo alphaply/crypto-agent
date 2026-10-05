@@ -10,6 +10,7 @@ from backend.utils.market_data import MarketTool
 
 from backend.app.services.common import logger
 from backend.app.services.dashboard_service import calculate_dca_stats
+from backend.utils.spot_portfolio import get_config_symbols
 
 
 def get_token_stats_payload():
@@ -220,6 +221,32 @@ def _resolve_leverage(position, cfg, fallback_leverage):
     return _safe_float(fallback_leverage, 1) or 1
 
 
+def _owned_real_trades(mt, symbol: str, config_id: str | None, trades: list[dict]) -> list[dict]:
+    """Account trade responses need order ownership before task attribution."""
+    from backend.utils.order_ownership import assert_owned_perpetual_order, symbol_aliases
+
+    if not config_id:
+        return []
+    aliases = set(symbol_aliases(mt, symbol))
+    ownership = {}
+    owned = []
+    for trade in trades:
+        if str(trade.get('symbol') or '') not in aliases:
+            continue
+        order_id = str(trade.get('order') or trade.get('order_id') or '')
+        if not order_id:
+            continue
+        if order_id not in ownership:
+            try:
+                assert_owned_perpetual_order(mt, symbol, order_id, config_id)
+                ownership[order_id] = True
+            except ValueError:
+                ownership[order_id] = False
+        if ownership[order_id]:
+            owned.append(trade)
+    return owned
+
+
 def _fetch_real_position_data(mt, symbol, cfg):
     positions = []
     balance = 0
@@ -307,6 +334,7 @@ def _fetch_real_position_data(mt, symbol, cfg):
 
     try:
         raw_trades = mt.exchange.fetch_my_trades(symbol, limit=100)
+        raw_trades = _owned_real_trades(mt, symbol, config_id, raw_trades)
         if raw_trades:
             save_trade_history(raw_trades, config_id=cfg.get("config_id"))
             aggregated = {}
@@ -485,27 +513,33 @@ def get_position_stats_payload(config_id: str):
     if mode == "SPOT_DCA":
         dca_stats = calculate_dca_stats(config_id)
         positions = []
-        if dca_stats and dca_stats.get("avg_cost", 0) > 0:
+        symbol_stats = (dca_stats.get('by_symbol') or [dca_stats]) if dca_stats else []
+        for item in symbol_stats:
+            if float(item.get('total_qty') or 0) <= 0:
+                continue
             positions.append(
                 {
+                    'symbol': item.get('symbol', symbol),
                     "side": "LONG",
-                    "entry_price": dca_stats.get("avg_cost", 0),
-                    "mark_price": dca_stats.get("current_price", 0),
-                    "amount": dca_stats.get("total_qty", 0),
-                    "qty": dca_stats.get("total_qty", 0),
-                    "unrealized_pnl": dca_stats.get("unrealized_pnl", 0),
-                    "roi_pct": dca_stats.get("return_pct", 0),
+                    "entry_price": item.get("avg_cost", 0),
+                    "mark_price": item.get("current_price", 0),
+                    "amount": item.get("total_qty", 0),
+                    "qty": item.get("total_qty", 0),
+                    "unrealized_pnl": item.get("unrealized_pnl", 0),
+                    "roi_pct": item.get("return_pct", 0),
                 }
             )
         return {
             "mode": mode,
             "positions": positions,
-            "balance": round(float(dca_stats.get("market_value", 0) if dca_stats else 0), 2),
-            "margin_balance": round(float(dca_stats.get("market_value", 0) if dca_stats else 0), 2),
-            "unrealized_pnl": round(float(dca_stats.get("unrealized_pnl", 0) if dca_stats else 0), 4),
+            "balance": dca_stats.get("market_value") if dca_stats else None,
+            "margin_balance": dca_stats.get("market_value") if dca_stats else None,
+            "unrealized_pnl": dca_stats.get("unrealized_pnl") if dca_stats else None,
             "summary": None,
             "dca_stats": dca_stats,
-            "errors": [],
+            "errors": (dca_stats.get('errors', []) +
+                       [f'{item} 统计暂不可用' for item in dca_stats.get('missing_symbols', [])])
+                      if dca_stats else ['现货组合统计暂不可用'],
         }
 
     if mode not in ["REAL", "STRATEGY"]:
@@ -573,7 +607,7 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
     configs = [
         cfg
         for cfg in global_config.get_all_symbol_configs()
-        if cfg.get("symbol") == symbol
+        if symbol in get_config_symbols(cfg)
         and cfg.get("enabled", True)
         and str(cfg.get("mode") or "STRATEGY").upper() in {"REAL", "STRATEGY", "SPOT_DCA"}
     ]
@@ -784,20 +818,23 @@ def _fetch_real_open_orders(mt: MarketTool, symbol: str, current_side: str, posi
     ]
 
 
-def get_kline_payload(config_id: str, timeframe: str = "1h"):
+def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None = None):
     if timeframe not in _KLINE_ALLOWED_TF:
         raise ValueError(f"Unsupported timeframe: {timeframe}")
 
     cfg = global_config.get_config_by_id(config_id)
     if not cfg:
         raise FileNotFoundError(f"Config not found: {config_id}")
-    symbol = cfg.get("symbol")
+    symbol = symbol or cfg.get("symbol")
+    if symbol not in get_config_symbols(cfg):
+        raise ValueError(f'Symbol {symbol} is not configured for {config_id}')
     mode = str(cfg.get("mode") or "STRATEGY").upper()
     mt = MarketTool(config_id=config_id)
     fetch_limit = 260 if timeframe in {"1w", "1M"} else (360 if timeframe == "1d" else 500)
     raw = mt.exchange.fetch_ohlcv(symbol, timeframe, limit=fetch_limit)
     if not raw:
         return {
+            'symbol': symbol,
             "candles": [],
             "volume": [],
             "emas": {},
@@ -921,9 +958,10 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
         if positions:
             position = positions[0]
     elif mode == "SPOT_DCA":
-        dca = calculate_dca_stats(config_id)
+        dca = calculate_dca_stats(config_id, symbol=symbol)
         if dca and dca.get("avg_cost", 0) > 0:
             position = {
+                'symbol': symbol,
                 "side": "LONG",
                 "entry_price": dca["avg_cost"],
                 "mark_price": dca.get("current_price", 0),
@@ -965,12 +1003,18 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT o.order_id, o.side, o.entry_price, o.amount, o.status
+                SELECT DISTINCT o.order_id, o.side, o.entry_price,
+                    MAX(0, COALESCE(o.amount,0)-COALESCE(f.filled_qty,o.filled_amount,0)) AS amount,
+                    COALESCE(f.status,o.status) AS status
                 FROM orders o LEFT JOIN spot_order_fills f ON o.order_id = f.order_id
+                    AND f.config_id = o.config_id AND f.symbol = o.symbol
                 WHERE o.config_id=? AND o.trade_mode='SPOT_DCA' AND o.status IN ('OPEN', 'PARTIAL')
-                  AND (f.status IS NULL OR f.status NOT IN ('FILLED','CANCELED','CANCELLED'))
+                  AND o.symbol = ?
+                  AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
+                  AND UPPER(o.side) IN ('BUY','BUY_LIMIT')
+                  AND (f.status IS NULL OR UPPER(f.status) NOT IN ('FILLED','CLOSED','CANCELED','CANCELLED','EXPIRED','REJECTED'))
                 """,
-                (config_id,),
+                (config_id, symbol),
             ).fetchall()
             conn.close()
             for row in rows:
@@ -1009,6 +1053,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h"):
             logger.warning(f'Independent exit chart refresh failed: {exc}')
 
     return {
+        'symbol': symbol,
         "candles": candles,
         "volume": volumes,
         "emas": emas,

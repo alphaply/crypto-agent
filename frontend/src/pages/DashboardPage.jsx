@@ -34,7 +34,7 @@ import ExitManagementPanel from '../components/ExitManagementPanel';
 import EquityCompareChart from '../components/EquityCompareChart';
 import { EditOutlined, ReloadOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
-import { workspaceSignature as getWorkspaceSignature, selectDashboardTab, chartTimeframeOptions, isChartTimeframe } from '../lib/dashboard';
+import { workspaceSignature as getWorkspaceSignature, selectDashboardTab, chartTimeframeOptions, isChartTimeframe, activityRecordKey } from '../lib/dashboard';
 import { exitModeLabel, resolveExitMode } from '../lib/exitManagement';
 import { splitThinkingContent } from '../lib/thinking';
 import { usePreferences } from '../app/usePreferences';
@@ -147,17 +147,20 @@ function isSpotMode(mode) {
 }
 
 function buildSpotFacts(t, stats, pendingOrders = []) {
+  const portfolio = stats?.is_portfolio || (stats?.by_symbol || []).length > 1;
   return [
     { label: t('marketValue'), value: formatPositionValue(stats?.market_value) },
     { label: t('totalInvested'), value: formatPositionValue(stats?.total_invested) },
-    { label: t('actualBalance'), value: formatPositionValue(stats?.actual_balance) },
-    { label: t('recordedQty'), value: formatPositionValue(stats?.total_qty) },
-    { label: t('avgCost'), value: formatPositionValue(stats?.avg_cost) },
-    { label: t('mark'), value: formatPositionValue(stats?.current_price) },
+    ...(!portfolio ? [
+      { label: t('actualBalance'), value: formatPositionValue(stats?.actual_balance) },
+      { label: t('recordedQty'), value: formatPositionValue(stats?.total_qty) },
+      { label: t('avgCost'), value: formatPositionValue(stats?.avg_cost) },
+      { label: t('mark'), value: formatPositionValue(stats?.current_price) },
+    ] : []),
     { label: t('unrealizedPnl'), value: formatPositionValue(stats?.unrealized_pnl) },
     { label: t('roiPct'), value: formatPercentValue(stats?.return_pct) },
     { label: t('buyCount'), value: stats?.buy_count ?? 0 },
-    { label: t('pendingOrders'), value: pendingOrders.length },
+    { label: t('pendingOrders'), value: stats?.pending_orders ?? pendingOrders.length },
   ];
 }
 
@@ -265,6 +268,7 @@ function AgentOverview({ agents, activeTab, onSelect, workspaceMap, loading }) {
                 <span className="agent-overview-tags">
                   <Tag color={agent.enabled ? 'green' : 'default'}>{agent.enabled ? 'ON' : 'OFF'}</Tag>
                   <Tag color="blue">{agent.mode}</Tag>
+                  {agent.is_portfolio ? <Tag>{(agent.symbols || []).length} {locale === 'zh' ? '个标的' : 'symbols'}</Tag> : null}
                 </span>
               </span>
               {workspacePending ? (
@@ -437,11 +441,12 @@ function OrderRecordCard({ row, t }) {
 
   return (
     <Card
-      key={row.trade_id || row.id || row.order_id || `${row.timestamp}-${row.side}`}
+      key={activityRecordKey(row)}
       size="small"
       className="dashboard-mobile-card order-record-card activity-record-card"
       title={(
         <Space size={8} wrap>
+          {row.symbol ? <Tag>{row.symbol}</Tag> : null}
           <Tag color={tagColor}>{row.event_label || row.action_label || row.status || '-'}</Tag>
           {row.is_auto ? <Tag color="cyan">AUTO</Tag> : null}
           <Text type="secondary" className="activity-time">{row.timestamp || '-'}</Text>
@@ -499,7 +504,7 @@ function PaginatedOrderList({ orders, t }) {
   return (
     <div className="paginated-order-list">
       <div className="paginated-order-cards">
-        {pageOrders.map((row) => <OrderRecordCard key={row.trade_id || row.id || row.order_id || `${row.timestamp}-${row.side}`} row={row} t={t} />)}
+        {pageOrders.map((row) => <OrderRecordCard key={activityRecordKey(row)} row={row} t={t} />)}
       </div>
       {totalPages > 1 && (
         <div className="order-pagination">
@@ -577,7 +582,7 @@ function NewsSnapshotCard({ snapshot }) {
   );
 }
 
-export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated, chartLoading = false, chartError = false }) {
+export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated, chartLoading = false, chartError = false, chartSymbol, setChartSymbol }) {
   const { t, locale } = usePreferences();
   const timeframeControlsRef = useRef(null);
   useEffect(() => {
@@ -600,6 +605,9 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
   const pendingOrders = kline?.pending_orders || [];
   const spotMode = isSpotMode(agent?.mode || position?.mode);
   const spotStats = position?.dca_stats || {};
+  const chartSymbols = agent?.symbols?.length ? agent.symbols : [agent?.symbol].filter(Boolean);
+  const requestedChartSymbol = chartSymbols.includes(chartSymbol) ? chartSymbol : agent?.symbol;
+  const displayedChartSymbol = kline.symbol || agent?.symbol;
   const exitMode = position.exit_management?.mode || resolveExitMode({ ...agent, ...position });
   const independentExits = exitMode === 'independent_exits';
 
@@ -699,16 +707,16 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
   };
   const timeframeOptions = chartTimeframeOptions(workspace?.market_timeframes, timeframe);
   const displayedTimeframe = isChartTimeframe(workspace?.timeframe) ? workspace.timeframe : null;
-  const changingTimeframe = displayedTimeframe !== timeframe;
+  const changingTimeframe = displayedTimeframe !== timeframe || displayedChartSymbol !== requestedChartSymbol;
   const waitingForChart = chartLoading || (changingTimeframe && !chartError);
   const chartStatus = waitingForChart
     ? (locale === 'zh'
-      ? `${changingTimeframe ? `正在加载 ${timeframe}` : `正在更新 ${timeframe}`}，当前显示 ${displayedTimeframe || '—'}。`
-      : `${changingTimeframe ? 'Loading' : 'Updating'} ${timeframe}; showing ${displayedTimeframe || '—'}.`)
+      ? `${changingTimeframe ? '正在加载' : '正在更新'} ${requestedChartSymbol || ''} ${timeframe}，当前显示 ${displayedChartSymbol || ''} ${displayedTimeframe || '—'}。`
+      : `${changingTimeframe ? 'Loading' : 'Updating'} ${requestedChartSymbol || ''} ${timeframe}; showing ${displayedChartSymbol || ''} ${displayedTimeframe || '—'}.`)
     : chartError
       ? (locale === 'zh'
-        ? `${timeframe} 行情加载失败，保留 ${displayedTimeframe || '—'} 数据。`
-        : `Could not load ${timeframe}. Keeping ${displayedTimeframe || '—'} data.`)
+        ? `${requestedChartSymbol || ''} ${timeframe} 行情加载失败，保留 ${displayedChartSymbol || ''} ${displayedTimeframe || '—'} 数据。`
+        : `Could not load ${requestedChartSymbol || ''} ${timeframe}. Keeping ${displayedChartSymbol || ''} ${displayedTimeframe || '—'} data.`)
       : (locale === 'zh' ? '自动更新 · 记住上次选择' : 'Auto refresh · Interval remembered');
 
   if (!agent) {
@@ -776,6 +784,19 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
           {spotMode ? (
             <div className="spot-account-summary">
               <FactGrid items={buildSpotFacts(t, spotStats, pendingOrders)} />
+              {spotStats.sync_status === 'partial' ? <Alert type="warning" showIcon message={locale === 'zh' ? '部分账户或行情数据未能核验，未知金额显示为 —，请刷新后确认。' : 'Some account or market data could not be verified. Unknown values are shown as —. Refresh to verify.'} /> : null}
+              {spotStats.missing_symbols?.length ? <Alert type="warning" showIcon message={locale === 'zh' ? `部分标的数据不可用：${spotStats.missing_symbols.join(', ')}，组合总额仅含已读取标的。` : `Some symbols are unavailable: ${spotStats.missing_symbols.join(', ')}. Totals include available symbols only.`} /> : null}
+              {spotStats.is_portfolio && spotStats.by_symbol?.length ? (
+                <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 16 }}>
+                  <Text type="secondary">{locale === 'zh' ? '以下按标的列出持仓，数量与均价分别计算；组合总额使用共同计价币。' : 'Holdings, quantities and average costs are calculated per symbol. Portfolio totals use the shared quote currency.'}</Text>
+                  {spotStats.by_symbol.map((asset) => (
+                    <Card size="small" key={asset.symbol} title={asset.symbol}>
+                      <FactGrid items={buildSpotFacts(t, asset)} />
+                    </Card>
+                  ))}
+                  <Text type="secondary">{locale === 'zh' ? '每周期组合共用额度' : 'Shared allowance per period'}: {formatPositionValue(spotStats.dca_amount_per)} {spotStats.quote_asset || agent.symbol?.split('/')[1] || ''}</Text>
+                </Space>
+              ) : null}
               {spotStats.last_sync ? (
                 <Text type="secondary" className="spot-account-sync">
                   {t('lastSync')}: {spotStats.last_sync}
@@ -884,9 +905,18 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
         <div className="market-chart-toolbar">
           <div className="market-chart-heading">
             <Title level={5}>{t('liveWorkspace')}</Title>
-            <Text type="secondary">{agent.symbol || '—'} · {locale === 'zh' ? '当前图表 ' : 'Showing '}<strong>{displayedTimeframe || '—'}</strong></Text>
+            <Text type="secondary">{displayedChartSymbol || '—'} · {locale === 'zh' ? '当前图表 ' : 'Showing '}<strong>{displayedTimeframe || '—'}</strong></Text>
           </div>
           <div className="market-chart-controls">
+            {spotMode && chartSymbols.length > 1 && setChartSymbol ? (
+              <Select
+                aria-label={locale === 'zh' ? '图表标的' : 'Chart symbol'}
+                value={requestedChartSymbol}
+                options={chartSymbols.map((symbol) => ({ value: symbol, label: symbol }))}
+                onChange={setChartSymbol}
+                style={{ minWidth: 140 }}
+              />
+            ) : null}
             <div ref={timeframeControlsRef} className="market-chart-timeframes" role="group" aria-label={locale === 'zh' ? 'K线周期' : 'Chart interval'}>
               {timeframeOptions.map((value) => (
                 <button
@@ -912,7 +942,7 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
           ) : null}
         </div>
         <div className="chart-wrap chart-wrap-large" aria-busy={waitingForChart}>
-          <KlineChart payload={kline} chartKey={`${workspace?.agent?.config_id}:${agent?.symbol || ''}:${displayedTimeframe || 'unknown'}`} timeframe={displayedTimeframe} />
+          <KlineChart payload={kline} chartKey={`${workspace?.agent?.config_id}:${displayedChartSymbol || ''}:${displayedTimeframe || 'unknown'}`} timeframe={displayedTimeframe} />
         </div>
       </Card>
 
@@ -985,7 +1015,7 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
       </Card>
 
       <div className="workspace-grid">
-        <Card className="panel-card" title={t('pendingOrders')}>
+        <Card className="panel-card" title={`${t('pendingOrders')} · ${displayedChartSymbol || ''}`}>
           {isMobile ? (
             <MobileRecordList
               items={pendingOrders}
@@ -1292,7 +1322,7 @@ export function DailySummaryPanel({ dashboard, authenticated, embedded = false }
 }
 
 export function ShortMemoryPanel({ dashboard, authenticated, embedded = false }) {
-  const { t } = usePreferences();
+  const { t, locale } = usePreferences();
   const [rows, setRows] = useState([]);
   const requestIdRef = useRef(0);
   const [loading, setLoading] = useState(false);
@@ -1300,7 +1330,13 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRow, setEditingRow] = useState(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewResult, setReviewResult] = useState(null);
+  const reviewInFlight = useRef(false);
+  const reviewSequence = useRef(0);
   const [form] = Form.useForm();
+
+  useEffect(() => () => { ++reviewSequence.current; }, []);
 
   const configOptions = useMemo(
     () => [
@@ -1395,12 +1431,44 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
 
   const rowKey = (row) => row.id || `${row.bucket_start}-${row.config_id}`;
 
+  const reviewMemory = async () => {
+    if (!authenticated || filter.config_id === 'ALL' || !filter.config_id || reviewInFlight.current) return;
+    const configId = filter.config_id;
+    const sequence = ++reviewSequence.current;
+    const zh = locale === 'zh';
+    reviewInFlight.current = true;
+    setReviewing(true);
+    setReviewResult(null);
+    try {
+      const { data } = await api.post('/history/short-memories/generate', { config_id: configId });
+      if (sequence !== reviewSequence.current) return;
+      const status = data.review_status;
+      const result = status === 'partial'
+        ? { type: 'warning', title: zh ? '规则操作已有回执；记忆整理未完成，旧记忆保留。' : 'Rule operations returned receipts, but memory consolidation did not finish. Previous memory was preserved.' }
+        : status === 'unchanged'
+          ? { type: 'info', title: zh ? '本窗口无新增证据，沿用已有记忆。' : 'No new evidence for this window. Existing memory is retained.' }
+          : status === 'completed' && data.generated
+            ? { type: 'success', title: zh ? '复盘与记忆整理已完成。规则是否修改请以工具回执为准。' : 'Review and memory consolidation completed. Tool receipts show whether any rules changed.' }
+            : { type: 'error', title: zh ? '复盘未完成，未生成新记忆。' : 'Review did not complete; no new memory was generated.' };
+      setReviewResult({ ...result, configId, error: data.error || '', receipts: data.rule_receipts || [] });
+    } catch (err) {
+      if (sequence === reviewSequence.current) setReviewResult({ type: 'error', title: zh ? '复盘请求失败，以下仍显示已有记忆。' : 'Review request failed. Existing memory is shown below.', configId, error: err.message, receipts: [] });
+    } finally {
+      reviewInFlight.current = false;
+      if (sequence === reviewSequence.current) {
+        setReviewing(false);
+        await loadRows();
+      }
+    }
+  };
+
   return (
     <Card className={embedded ? 'memory-inner-card' : 'panel-card'} title={embedded ? null : t('shortMemories')} bordered={!embedded}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <Space className="memory-toolbar" wrap>
           <Select
             style={{ minWidth: 180 }}
+            disabled={reviewing}
             value={filter.symbol || dashboard?.current_symbol || undefined}
             options={(dashboard?.symbols || []).map((item) => ({ label: item, value: item }))}
             onChange={(value) => {
@@ -1411,6 +1479,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
           />
           <Select
             style={{ minWidth: 220 }}
+            disabled={reviewing}
             value={filter.config_id}
             options={configOptions}
             onChange={(value) => {
@@ -1432,6 +1501,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
           <Button onClick={() => loadRows()} loading={loading}>{t('refresh')}</Button>
           {authenticated ? (
             <>
+              <Button type="primary" onClick={reviewMemory} loading={reviewing} disabled={!filter.config_id || filter.config_id === 'ALL'}>{locale === 'zh' ? '复盘并整理' : 'Review and consolidate'}</Button>
               <Popconfirm title={t('confirmDelete')} onConfirm={deleteSelected} disabled={!selectedRowKeys.length}>
                 <Button danger disabled={!selectedRowKeys.length}>{t('deleteSelected')}</Button>
               </Popconfirm>
@@ -1441,6 +1511,8 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
             </>
           ) : null}
         </Space>
+        {authenticated ? <Text type="secondary">{locale === 'zh' ? '选择具体任务后可手动复盘最近一个已完成的 4 小时窗口，不会提前结束当前窗口。规则改动以回执为准，人工锁定规则保留。' : 'Select a task to review the latest completed four-hour window. The current window stays open. Rule changes are confirmed by receipts; human-locked rules stay protected.'}</Text> : null}
+        {authenticated && reviewResult ? <Alert type={reviewResult.type} showIcon title={`${reviewResult.configId} · ${reviewResult.title}`} description={<Space direction="vertical" style={{ width: '100%' }}>{reviewResult.error ? <Text>{reviewResult.error}</Text> : null}{reviewResult.receipts.length ? <details><summary>{locale === 'zh' ? '规则工具回执' : 'Rule tool receipts'} ({reviewResult.receipts.length})</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 300, overflow: 'auto', fontSize: 12 }}>{JSON.stringify(reviewResult.receipts, null, 2)}</pre></details> : null}</Space>} /> : null}
         <Table
           size="small"
           rowKey={rowKey}
@@ -1504,6 +1576,7 @@ export default function DashboardPage() {
   const [compareIds, setCompareIds] = useState([]);
   const [comparePayload, setComparePayload] = useState(null);
   const [workspaceMap, setWorkspaceMap] = useState({});
+  const [chartSymbols, setChartSymbols] = useState({});
   const [requestedActiveTab, setRequestedActiveTab] = useState(null);
   const [loading, setLoading] = useState(true);
   const [compareLoading, setCompareLoading] = useState(false);
@@ -1591,7 +1664,7 @@ export default function DashboardPage() {
     let mounted = true;
     const controller = new AbortController();
     async function loadWorkspaces() {
-      const configs = JSON.parse(workspaceSignature).map(([config_id]) => ({ config_id }));
+      const configs = JSON.parse(workspaceSignature).map(([config_id, , , symbols]) => ({ config_id, symbols }));
       if (!configs.length) {
         setWorkspaceMap({});
         setWorkspaceLoading(false);
@@ -1602,7 +1675,7 @@ export default function DashboardPage() {
       setWorkspaceErrors([]);
       try {
         const responses = await Promise.allSettled(
-          configs.map((item) => api.get(`/public/workspace/${item.config_id}`, { params: { timeframe }, signal: controller.signal, timeout: 30000 })),
+          configs.map((item) => api.get(`/public/workspace/${item.config_id}`, { params: { timeframe, symbol: item.symbols?.includes(chartSymbols[item.config_id]) ? chartSymbols[item.config_id] : undefined }, signal: controller.signal, timeout: 30000 })),
         );
         if (!mounted) return;
         setWorkspaceMap((previous) => {
@@ -1629,7 +1702,7 @@ export default function DashboardPage() {
       mounted = false;
       controller.abort();
     };
-  }, [workspaceSignature, timeframe, refreshNonce, marketRefresh]);
+  }, [workspaceSignature, timeframe, chartSymbols, refreshNonce, marketRefresh]);
 
   const compareSeries = useMemo(() => comparePayload?.series || [], [comparePayload]);
   const activeTab = selectDashboardTab(dashboard?.agent_summaries, requestedActiveTab);
@@ -1668,12 +1741,12 @@ export default function DashboardPage() {
         key: agent.config_id,
         label: agent.config_id,
         children: workspace
-          ? <WorkspacePanel workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} chartLoading={workspaceLoading} chartError={workspaceErrors.includes(agent.config_id)} />
+          ? <WorkspacePanel workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} chartLoading={workspaceLoading} chartError={workspaceErrors.includes(agent.config_id)} chartSymbol={chartSymbols[agent.config_id]} setChartSymbol={(symbol) => setChartSymbols((previous) => ({ ...previous, [agent.config_id]: symbol }))} />
           : <Card className="panel-card"><Skeleton active loading={workspaceLoading}><Empty description={locale === 'zh' ? '持仓与行情未能加载，请刷新重试。' : 'Workspace unavailable. Please refresh.'} /></Skeleton></Card>,
       });
     });
     return items;
-  }, [authenticated, compareIds, compareLoading, compareSeries, dashboard, t, timeframe, setTimeframe, workspaceMap, workspaceLoading, workspaceErrors, locale]);
+  }, [authenticated, compareIds, compareLoading, compareSeries, dashboard, t, timeframe, setTimeframe, chartSymbols, workspaceMap, workspaceLoading, workspaceErrors, locale]);
 
   return (
     <div className="boxed-page dashboard-page dashboard-v2">

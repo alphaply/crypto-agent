@@ -5,9 +5,11 @@ import time
 import traceback
 from datetime import datetime, timedelta
 
-from backend.agent.agent_graph import generate_manual_daily_summary, generate_short_memory_for_config, resolve_market_timeframes
+from backend.agent.agent_graph import generate_manual_daily_summary, generate_short_memory_for_config, resolve_market_timeframes, get_short_memory_bucket
+from backend.agent.memory_workflow import get_review_result
 from backend.config import config as global_config
 from backend.database import (
+    get_short_memory,
     clean_financial_data,
     delete_daily_summary as db_delete_daily_summary,
     delete_short_memories as db_delete_short_memories,
@@ -37,6 +39,7 @@ from backend.database import (
 )
 from backend.utils.market_data import MarketTool
 from backend.utils.run_schedule import schedule_preview, normalize_dca_freq
+from backend.utils.spot_portfolio import get_config_symbols
 
 from backend.app.services.common import TZ_CN, get_scheduler_status, get_symbol_specific_status, list_symbols, logger
 
@@ -271,7 +274,10 @@ def _get_recent_order_activity(config_id: str, limit: int = 20) -> list[dict]:
                     symbol,
                     NULL AS agent_name,
                     config_id,
-                    'REAL' AS trade_mode,
+                    COALESCE((SELECT o.trade_mode FROM orders o
+                        WHERE o.config_id=trade_history.config_id AND o.symbol=trade_history.symbol
+                          AND o.order_id=trade_history.order_id
+                        ORDER BY o.id DESC LIMIT 1), 'REAL') AS trade_mode,
                     side,
                     price AS entry_price,
                     amount,
@@ -299,8 +305,8 @@ def _get_recent_order_activity(config_id: str, limit: int = 20) -> list[dict]:
 
 
 def _collapse_recent_order_activity(rows: list[dict]) -> list[dict]:
-    latest_cancel_by_order: dict[str, dict] = {}
-    latest_cancelled_open_by_order: dict[str, dict] = {}
+    latest_cancel_by_order: dict[tuple, dict] = {}
+    latest_cancelled_open_by_order: dict[tuple, dict] = {}
 
     for row in rows:
         if row.get("activity_type") != "order":
@@ -308,6 +314,7 @@ def _collapse_recent_order_activity(rows: list[dict]) -> list[dict]:
         order_id = str(row.get("order_id") or "").strip()
         if not order_id:
             continue
+        order_id = (row.get('config_id'), row.get('symbol'), order_id)
         side = str(row.get("side") or "").lower()
         status = str(row.get("status") or "").upper()
         if "cancel" in side and order_id not in latest_cancel_by_order:
@@ -316,13 +323,14 @@ def _collapse_recent_order_activity(rows: list[dict]) -> list[dict]:
             latest_cancelled_open_by_order[order_id] = row
 
     collapsed = []
-    emitted_cancel_order_ids: set[str] = set()
+    emitted_cancel_order_ids: set[tuple] = set()
     for row in rows:
         if row.get("activity_type") != "order":
             collapsed.append(row)
             continue
 
         order_id = str(row.get("order_id") or "").strip()
+        order_id = (row.get('config_id'), row.get('symbol'), order_id) if order_id else None
         side = str(row.get("side") or "").lower()
         status = str(row.get("status") or "").upper()
 
@@ -437,16 +445,55 @@ def calculate_next_run(config, latest_summary=None):
     return schedule_preview(config, datetime.now(TZ_CN), scheduler_enabled=get_scheduler_status())["next_run"]
 
 
-def calculate_dca_stats(config_id, force_sync=False):
+def calculate_dca_stats(config_id, force_sync=False, symbol=None):
+    """Return task totals in quote currency and keep base-asset quantities separate."""
+    cfg = global_config.get_config_by_id(config_id)
+    if not cfg:
+        return None
+    symbols = get_config_symbols(cfg)
+    if symbol is not None:
+        symbols = [symbol] if symbol in symbols else []
+    if not symbols:
+        return None
+    results = [_calculate_dca_symbol_stats(config_id, cfg, item, force_sync) for item in symbols]
+    available = [item for item in results if item is not None]
+    if len(symbols) == 1:
+        return available[0] if available else None
+    if not available:
+        return None
+    totals = {key: (round(sum(float(item[key]) for item in available), 4)
+                   if len(available) == len(symbols) and all(item.get(key) is not None for item in available) else None)
+              for key in ('total_invested', 'market_value', 'unrealized_pnl', 'recorded_buy_cost')}
+    invested = totals['total_invested']
+    complete = len(available) == len(symbols) and all(item.get('sync_status') == 'synced' for item in available)
+    return {
+        **totals, 'is_portfolio': True, 'symbols': symbols, 'by_symbol': available,
+        'quote_asset': symbols[0].split('/')[1],
+        'total_qty': None, 'avg_cost': None, 'current_price': None, 'actual_balance': None,
+        'manual_avg_cost': None, 'manual_qty': None, 'recorded_buy_qty': None,
+        'return_pct': (round(totals['unrealized_pnl'] / invested * 100, 2) if invested else 0)
+                      if invested is not None and totals['unrealized_pnl'] is not None else None,
+        'buy_count': sum(item['buy_count'] for item in available),
+        'pending_orders': sum(item['pending_orders'] for item in available),
+        'dca_amount_per': cfg.get('dca_amount', cfg.get('dca_budget', 0)),
+        'has_legacy': any(item['has_legacy'] for item in available), 'stats_source': 'portfolio',
+        'first_buy': min((item['first_buy'] for item in available if item['first_buy']), default=None),
+        'last_buy': max((item['last_buy'] for item in available if item['last_buy']), default=None),
+        'sync_status': 'synced' if complete else 'partial',
+        'errors': [error for item in available for error in item.get('errors', [])],
+        'missing_symbols': [item for item, result in zip(symbols, results) if result is None],
+        'last_sync': min(item['last_sync'] for item in available),
+    }
+
+
+def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
     try:
-        cache_key = str(config_id)
+        sync_errors = []
+        cache_key = f'{config_id}:{symbol}'
         now_ts = time.time()
-        cfg = global_config.get_config_by_id(config_id)
-        if not cfg:
-            return None
 
         cache_signature = (
-            cfg.get("symbol"),
+            tuple(get_config_symbols(cfg)), symbol, cfg.get('dca_amount'), cfg.get('exchange_profile_id'),
             cfg.get("initial_cost"),
             cfg.get("initial_qty"),
             cfg.get("manual_avg_cost"),
@@ -456,33 +503,39 @@ def calculate_dca_stats(config_id, force_sync=False):
             if cached and cached.get("signature") == cache_signature and now_ts - cached["timestamp"] < DCA_STATS_CACHE_TTL:
                 return cached["data"]
 
-        symbol = cfg.get("symbol")
         if not symbol:
             return None
 
         base_asset = symbol.split("/")[0] if "/" in symbol else symbol.replace("USDT", "")
-        initial_qty = float(cfg.get("initial_qty", 0) or 0)
-        manual_avg_cost = float(cfg.get("manual_avg_cost", 0) or 0)
+        # Legacy manual balances describe the primary symbol only.
+        is_primary = symbol == cfg.get('symbol')
+        initial_qty = float(cfg.get("initial_qty", 0) or 0) if is_primary else 0
+        manual_avg_cost = float(cfg.get("manual_avg_cost", 0) or 0) if is_primary else 0
         if manual_avg_cost > 0 and initial_qty > 0:
             initial_cost = manual_avg_cost * initial_qty
         else:
-            initial_cost = float(cfg.get("initial_cost", 0) or 0)
+            initial_cost = float(cfg.get("initial_cost", 0) or 0) if is_primary else 0
             manual_avg_cost = (initial_cost / initial_qty) if initial_qty > 0 and initial_cost > 0 else 0
         mt = MarketTool(config_id=config_id)
+        from backend.utils.spot_execution import reconcile_spot_reservations
+        reconcile_spot_reservations(config_id, cfg, lambda: mt)
 
         try:
             with get_db_conn() as conn:
                 open_rows = conn.execute(
                     """
-                    SELECT order_id
+                    SELECT DISTINCT order_id
                     FROM orders
                     WHERE config_id = ?
+                      AND symbol = ?
                       AND trade_mode = 'SPOT_DCA'
-                      AND status = 'OPEN'
+                      AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'
+                      AND UPPER(side) IN ('BUY','BUY_LIMIT')
+                      AND status IN ('OPEN', 'PARTIAL')
                     ORDER BY id DESC
                     LIMIT 100
                     """,
-                    (config_id,),
+                    (config_id, symbol),
                 ).fetchall()
 
             for row in open_rows:
@@ -490,6 +543,8 @@ def calculate_dca_stats(config_id, force_sync=False):
                 try:
                     od = mt.exchange.fetch_order(order_id, symbol)
                     exch_status = str(od.get("status", "") or "").lower()
+                    if exch_status not in {'open', 'closed', 'filled', 'canceled', 'cancelled', 'expired', 'rejected'} or od.get('filled') is None:
+                        raise ValueError('交易所订单状态或成交数量尚未核验')
                     filled_qty = float(od.get("filled", 0) or 0)
                     filled_cost = float(od.get("cost", 0) or 0)
                     avg_price = float(od.get("average", 0) or 0)
@@ -498,6 +553,8 @@ def calculate_dca_stats(config_id, force_sync=False):
                         filled_cost = filled_qty * avg_price
                     if avg_price <= 0 and filled_qty > 0 and filled_cost > 0:
                         avg_price = filled_cost / filled_qty
+                    if any(not math.isfinite(value) or value < 0 for value in (filled_qty, filled_cost, avg_price)) or (filled_qty > 0 and filled_cost <= 0):
+                        raise ValueError('交易所成交成本无效')
 
                     fill_ts = od.get("lastTradeTimestamp") or od.get("timestamp")
                     filled_at = None
@@ -512,82 +569,124 @@ def calculate_dca_stats(config_id, force_sync=False):
                     elif filled_qty > 0:
                         local_status = "PARTIAL"
 
-                    update_order_fill_status(order_id, local_status, filled_qty, filled_cost, avg_price, filled_at)
+                    with get_db_conn() as conn:
+                        conn.execute('''UPDATE orders SET status=?, filled_amount=?, filled_cost=?,
+                            avg_fill_price=?, filled_at=? WHERE order_id=? AND config_id=? AND symbol=?
+                            AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''',
+                            (local_status, filled_qty, filled_cost, avg_price, filled_at, order_id, config_id, symbol))
+                        conn.commit()
                     upsert_spot_order_fill(order_id, config_id, symbol, local_status, filled_qty, filled_cost, avg_price, filled_at)
                 except Exception as one_error:
+                    sync_errors.append(f'{symbol} 订单 {order_id} 同步失败')
                     logger.debug(f"Skip spot order sync: {order_id} => {one_error}")
         except Exception as sync_error:
+            sync_errors.append(f'{symbol} 委托同步失败')
             logger.warning(f"DCA order sync failed for {config_id}: {sync_error}")
 
         try:
             trades = mt.exchange.fetch_my_trades(symbol, limit=1000)
             if trades:
-                save_trade_history(trades, config_id=config_id)
+                with get_db_conn() as conn:
+                    owned_ids = {str(row[0]) for row in conn.execute('''SELECT order_id FROM orders
+                        WHERE config_id=? AND symbol=? AND trade_mode='SPOT_DCA'
+                        AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''', (config_id, symbol))}
+                save_trade_history([trade for trade in trades if str(trade.get('order') or trade.get('order_id') or '') in owned_ids], config_id=config_id)
         except Exception as trade_error:
+            sync_errors.append(f'{symbol} 成交历史同步失败')
             logger.warning(f"Fetch my_trades failed for {symbol}: {trade_error}")
 
         with get_db_conn() as conn:
-            agg = conn.execute(
-                """
-                SELECT
-                    COALESCE(SUM(t.cost), 0) AS traded_cost,
-                    COALESCE(SUM(t.amount), 0) AS traded_qty,
-                    COUNT(DISTINCT t.order_id) AS buy_count,
-                    MIN(t.timestamp) AS first_buy,
-                    MAX(t.timestamp) AS last_buy
-                FROM trade_history t
-                INNER JOIN orders o ON o.order_id = t.order_id
-                WHERE o.config_id = ?
-                  AND o.trade_mode = 'SPOT_DCA'
-                  AND LOWER(t.side) = 'buy'
-                """,
-                (config_id,),
-            ).fetchone()
+            # Order fill totals survive exchange trade-history pagination. Use
+            # the larger complete evidence per order, never add two copies of
+            # the same fill and never lose older orders outside fetch_my_trades.
+            rows = conn.execute('''SELECT o.*,f.filled_qty AS sync_qty,f.filled_cost AS sync_cost,
+                    f.avg_fill_price AS sync_price,f.status AS sync_status,
+                    t.traded_qty,t.traded_cost,t.first_buy,t.last_buy
+                FROM orders o LEFT JOIN spot_order_fills f
+                  ON f.config_id=o.config_id AND f.symbol=o.symbol AND f.order_id=o.order_id
+                LEFT JOIN (SELECT order_id,SUM(amount) AS traded_qty,SUM(cost) AS traded_cost,
+                    MIN(timestamp) AS first_buy,MAX(timestamp) AS last_buy FROM trade_history
+                    WHERE symbol=? AND (config_id=? OR config_id IS NULL OR config_id='')
+                      AND LOWER(side)='buy' GROUP BY order_id) t ON t.order_id=o.order_id
+                WHERE o.config_id=? AND o.symbol=? AND o.trade_mode='SPOT_DCA'
+                  AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
+                  AND UPPER(o.side) IN ('BUY','BUY_LIMIT') ORDER BY o.id DESC''',
+                (symbol, config_id, config_id, symbol)).fetchall()
+            traded_cost = traded_qty = 0.0
+            buy_count = 0
+            buy_dates = []
+            seen = set()
+            for row in rows:
+                if row['order_id'] in seen:
+                    continue
+                seen.add(row['order_id'])
+                synced = row['sync_status'] is not None
+                qty = float((row['sync_qty'] if synced else row['filled_amount']) or 0)
+                cost = float((row['sync_cost'] if synced else row['filled_cost']) or 0)
+                avg = float((row['sync_price'] if synced else row['avg_fill_price']) or row['entry_price'] or 0)
+                cost = max(cost, qty * avg)
+                history_qty, history_cost = float(row['traded_qty'] or 0), float(row['traded_cost'] or 0)
+                if history_qty >= qty:
+                    qty, cost = history_qty, max(cost, history_cost)
+                if any(not math.isfinite(value) or value < 0 for value in (qty, cost)):
+                    raise ValueError('现货历史成交数量或成本无效')
+                traded_qty += qty
+                traded_cost += cost
+                if qty > 0:
+                    buy_count += 1
+                    buy_dates.extend(value for value in (row['first_buy'], row['last_buy'], row['filled_at'] or row['timestamp']) if value)
+            agg = {'first_buy': min(buy_dates) if buy_dates else None, 'last_buy': max(buy_dates) if buy_dates else None}
 
             pending = conn.execute(
                 """
-                SELECT COUNT(*) AS pending_count
+                SELECT COUNT(DISTINCT order_id) AS pending_count
                 FROM orders
                 WHERE config_id = ?
+                  AND symbol = ?
                   AND trade_mode = 'SPOT_DCA'
+                  AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'
+                  AND UPPER(side) IN ('BUY','BUY_LIMIT')
                   AND status IN ('OPEN', 'PARTIAL')
                 """,
-                (config_id,),
+                (config_id, symbol),
             ).fetchone()
 
-        traded_cost = float(agg["traded_cost"] or 0)
-        traded_qty = float(agg["traded_qty"] or 0)
-        buy_count = int(agg["buy_count"] or 0)
-
-        balances = mt.exchange.fetch_balance()
-        current_qty = 0
-        if base_asset in balances:
-            current_qty = float(balances[base_asset].get("total", 0) or 0)
-        elif base_asset.lower() in balances:
-            current_qty = float(balances[base_asset.lower()].get("total", 0) or 0)
-        elif "total" in balances and base_asset in balances["total"]:
-            current_qty = float(balances["total"].get(base_asset, 0) or 0)
+        current_qty = None
+        try:
+            balances = mt.exchange.fetch_balance()
+            base_balance = balances.get(base_asset) or balances.get(base_asset.lower()) or {}
+            current_qty = float(base_balance.get('total') or (balances.get('total') or {}).get(base_asset) or 0)
+            if not math.isfinite(current_qty) or current_qty < 0:
+                raise ValueError('交易所持仓余额无效')
+        except Exception:
+            current_qty = None
+            sync_errors.append(f'{symbol} 账户余额同步失败')
 
         if initial_qty > 0:
-            final_qty = initial_qty
-            final_invested = initial_cost
-            stats_source = "manual"
+            final_qty = initial_qty + traded_qty
+            final_invested = initial_cost + traded_cost
+            stats_source = "manual_and_trades" if traded_qty else "manual"
         else:
             final_qty = traded_qty
             final_invested = traded_cost
             stats_source = "trades"
         avg_cost = (final_invested / final_qty) if final_qty > 0 else 0
-        current_price = 0.0
+        current_price = None
         try:
             ticker = mt.exchange.fetch_ticker(symbol)
             current_price = float(ticker.get("last") or ticker.get("close") or 0)
+            if not math.isfinite(current_price) or current_price <= 0:
+                raise ValueError('无有效现货价格')
         except Exception as ticker_error:
+            current_price = None
+            sync_errors.append(f'{symbol} 价格同步失败，市值及收益暂不可用')
             logger.debug(f"Fetch ticker failed for DCA stats {config_id}: {ticker_error}")
-        market_value = final_qty * current_price if current_price > 0 else 0
-        unrealized_pnl = market_value - final_invested if market_value > 0 else 0
-        return_pct = (unrealized_pnl / final_invested * 100) if final_invested > 0 and market_value > 0 else 0
+        market_value = final_qty * current_price if current_price is not None else None
+        unrealized_pnl = market_value - final_invested if market_value is not None else None
+        return_pct = ((unrealized_pnl / final_invested * 100) if final_invested > 0 else 0) if unrealized_pnl is not None else None
 
         result = {
+            'symbol': symbol, 'base_asset': base_asset, 'quote_asset': symbol.split('/')[1], 'is_portfolio': False,
             "buy_count": buy_count,
             "total_invested": round(final_invested, 2),
             "total_qty": round(final_qty, 6),
@@ -597,21 +696,23 @@ def calculate_dca_stats(config_id, force_sync=False):
             "recorded_buy_qty": round(traded_qty, 6),
             "recorded_buy_cost": round(traded_cost, 2),
             "stats_source": stats_source,
-            "current_price": round(current_price, 4),
-            "market_value": round(market_value, 2),
-            "unrealized_pnl": round(unrealized_pnl, 4),
-            "return_pct": round(return_pct, 2),
+            "current_price": round(current_price, 4) if current_price is not None else None,
+            "market_value": round(market_value, 2) if market_value is not None else None,
+            "unrealized_pnl": round(unrealized_pnl, 4) if unrealized_pnl is not None else None,
+            "return_pct": round(return_pct, 2) if return_pct is not None else None,
             "dca_amount_per": cfg.get("dca_amount", cfg.get("dca_budget", 0)),
             "has_legacy": initial_qty > 0,
             "first_buy": agg["first_buy"],
             "last_buy": agg["last_buy"],
-            "actual_balance": round(current_qty, 6),
+            "actual_balance": round(current_qty, 6) if current_qty is not None else None,
             "pending_orders": int(pending["pending_count"] or 0),
-            "sync_status": "synced",
+            "sync_status": "partial" if sync_errors else "synced",
+            "errors": sync_errors,
             "last_sync": datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        save_dca_daily_snapshot(config_id, symbol, result)
+        if not sync_errors:
+            save_dca_daily_snapshot(config_id, symbol, result)
         DCA_STATS_CACHE[cache_key] = {"timestamp": now_ts, "signature": cache_signature, "data": result}
         return result
     except Exception as exc:
@@ -626,7 +727,7 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
             symbol_configs = [
                 conf
                 for conf in configs
-                if conf["symbol"] == symbol
+                if symbol in get_config_symbols(conf)
                 and (config_id is None or conf.get("config_id") == config_id)
                 and conf.get("enabled", True)
                 and str(conf.get("mode", "STRATEGY")).upper() in DASHBOARD_VISIBLE_MODES
@@ -675,6 +776,8 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 summary_dict["model"] = model_name
                 summary_dict["mode"] = mode
                 summary_dict["enabled"] = enabled
+                summary_dict['symbols'] = get_config_symbols(config)
+                summary_dict['is_portfolio'] = len(summary_dict['symbols']) > 1
                 now = datetime.now(TZ_CN)
                 dca_executed = False
                 if mode == "SPOT_DCA":
@@ -746,16 +849,23 @@ def build_dashboard_overview(symbol: str | None = None, page: int = 1):
 def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1, per_page: int = 20, compare_ids: list[str] | None = None):
     compare_ids = compare_ids or []
     symbol_configs = [
-        cfg for cfg in global_config.get_all_symbol_configs() if cfg.get("symbol") == symbol and cfg.get("config_id")
+        cfg for cfg in global_config.get_all_symbol_configs() if symbol in get_config_symbols(cfg) and cfg.get("config_id")
     ]
     config_map = {cfg.get("config_id"): cfg for cfg in symbol_configs}
     if agent_filter != "ALL" and agent_filter not in config_map:
         agent_filter = "ALL"
 
-    summaries = get_paginated_summaries(symbol, page, per_page, config_id=agent_filter)
-    total_count = get_summary_count(symbol, config_id=agent_filter)
+    portfolio_ids = [cfg['config_id'] for cfg in symbol_configs
+                     if str(cfg.get('mode') or '').upper() == 'SPOT_DCA' and len(get_config_symbols(cfg)) > 1]
+    if portfolio_ids:
+        from backend.app.services.portfolio_history_service import portfolio_decision_page
+        summaries, total_count, history_agents = portfolio_decision_page(symbol, portfolio_ids, agent_filter, page, per_page)
+    else:
+        summaries = get_paginated_summaries(symbol, page, per_page, config_id=agent_filter)
+        total_count = get_summary_count(symbol, config_id=agent_filter)
+        history_agents = get_active_agents(symbol)
     total_pages = math.ceil(total_count / per_page) if total_count > 0 else 1
-    active_agents = [aid for aid in get_active_agents(symbol) if aid in config_map]
+    active_agents = [aid for aid in history_agents if aid in config_map]
     if agent_filter == "ALL":
         pnl_stats = get_history_pnl_stats_for_configs(symbol, config_map.keys())
     else:
@@ -807,8 +917,8 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
     dca_stats = None
     dca_chart_data = []
     if agent_mode == "SPOT_DCA" and agent_filter != "ALL":
-        dca_stats = calculate_dca_stats(agent_filter)
-        dca_chart_data = get_dca_daily_snapshot_history(agent_filter, days=30)
+        dca_stats = calculate_dca_stats(agent_filter, symbol=symbol)
+        dca_chart_data = get_dca_daily_snapshot_history(agent_filter, days=30, symbol=symbol)
 
     history_compare_series = []
     selected_compare_ids = [cid for cid in compare_ids if cid in config_map]
@@ -975,13 +1085,27 @@ def list_short_memories_payload(
 
 
 def generate_short_memory_payload(config_id: str, bucket_start: str | None = None):
-    target_time = None
+    now = datetime.now(TZ_CN)
+    current_start, _ = get_short_memory_bucket(now)
+    target_time = current_start - timedelta(seconds=1)
     if bucket_start:
         try:
             target_time = TZ_CN.localize(datetime.strptime(bucket_start, "%Y-%m-%d %H:%M:%S")) + timedelta(seconds=1)
-        except Exception:
-            target_time = None
-    return {"generated": generate_short_memory_for_config(config_id, now_cn=target_time)}
+        except (ValueError, TypeError) as exc:
+            raise ValueError('无效的复盘窗口时间') from exc
+    start, end = get_short_memory_bucket(target_time)
+    if end > now:
+        raise ValueError('只能整理已结束的四小时窗口')
+    generated = generate_short_memory_for_config(config_id, now_cn=target_time)
+    outcome = get_review_result(f'bucket:{config_id}:{start:%Y-%m-%d %H:%M:%S}:{end:%Y-%m-%d %H:%M:%S}') or {}
+    existing = get_short_memory(config_id, start.strftime('%Y-%m-%d %H:%M:%S'))
+    status = outcome.get('status') or ('completed' if generated else 'unchanged' if existing else 'failed')
+    if existing and status == 'completed' and (not generated or not outcome):
+        status = 'unchanged'
+    return {'generated': generated, 'review_status': status, 'error': outcome.get('error', '')
+            or ('整理未完成或已有整理正在运行，旧记忆已保留。' if status == 'failed' else ''),
+            'rule_receipts': outcome.get('rule_receipts', []),
+            'bucket_start': start.strftime('%Y-%m-%d %H:%M:%S'), 'bucket_end': end.strftime('%Y-%m-%d %H:%M:%S')}
 
 
 def list_daily_summaries_payload(

@@ -16,6 +16,40 @@ def calc_emas(series, spans=(20, 50, 100, 200)):
     """Calculate multiple EMA spans in one compact helper."""
     return {int(span): calc_ema(series, int(span)) for span in spans}
 
+
+def build_spot_indicator_context(df: pd.DataFrame, high_lookback: int = 180) -> dict:
+    """Long-horizon spot context from validated, closed candles only."""
+    close = df['close']
+    latest = float(close.iloc[-1])
+    count = len(df)
+    emas = {
+        f'ema_{span}': smart_fmt(calc_ema(close, span).iloc[-1]) if count >= span else None
+        for span in (20, 50, 200)
+    }
+    rsi = smart_fmt(calc_rsi(close, 14).iloc[-1])
+    atr = smart_fmt(calc_atr(df, 14).iloc[-1])
+    baseline = df['volume'].shift(1).rolling(20).mean().iloc[-1]
+    ratio = smart_fmt(df['volume'].iloc[-1] / baseline) if pd.notna(baseline) and baseline > 0 else None
+    recent_high = smart_fmt(df['high'].tail(high_lookback).max()) if count >= high_lookback else None
+    return {
+        'indicator_profile': 'spot_long_term',
+        'price': smart_fmt(latest),
+        'ema': emas,
+        'rsi_analysis': {'rsi': rsi},
+        'atr': atr,
+        'volume_analysis': {'current': smart_fmt(df['volume'].iloc[-1]), 'ratio': ratio,
+                            'baseline': 'previous 20 closed candles, excluding current'},
+        'spot_context': {
+            'atr_pct': smart_fmt(atr / latest * 100) if atr is not None else None,
+            'recent_high': recent_high,
+            'high_lookback_bars': high_lookback,
+            'high_available_bars': min(count, high_lookback),
+            'drawdown_from_high_pct': smart_fmt((latest / recent_high - 1) * 100) if recent_high else None,
+            'price_vs_ema200_pct': smart_fmt((latest / emas['ema_200'] - 1) * 100) if emas['ema_200'] else None,
+            'return_20_bars_pct': smart_fmt((latest / close.iloc[-21] - 1) * 100) if count > 20 else None,
+        },
+    }
+
 def wilder_rma(series, period=14):
     """SMA-seeded Wilder smoothing; missing values restart the warm-up window."""
     if period < 1:

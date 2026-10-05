@@ -7,6 +7,7 @@ import queue
 import sqlite3
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, TypedDict
 
@@ -29,6 +30,7 @@ from langgraph.types import Command, interrupt
 from backend.agent.agent_graph import start_node as scheduler_start_node
 from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool, tool_result_status
+from backend.agent.call_audit import audited_invoke
 from backend.config import config as global_config
 from backend.config_store import load_effective_runtime_snapshot
 import backend.database as database
@@ -79,6 +81,8 @@ class ChatState(TypedDict):
     conversation_summary: str
     conversation_summary_cursor: int
     conversation_summary_updated_at: str
+    spot_cycle_id: str
+    spot_config_fingerprint: str
 
 def _get_chat_tools(cfg: Dict[str, Any]):
     if cfg.get("read_only"):
@@ -636,6 +640,13 @@ def start_node(state: ChatState, config: RunnableConfig):
         "market_context": started.market_context,
         "account_context": started.account_context
     }
+    if str(cfg.get('mode') or '').upper() == 'SPOT_DCA':
+        updates['spot_config_fingerprint'] = started.spot_config_fingerprint or ''
+        updates['spot_cycle_id'] = (
+            state.get('spot_cycle_id') if state.get('retry_last') else None
+        ) or str(uuid.uuid4())
+    else:
+        updates['spot_config_fingerprint'] = ''
     if q and state.get("retry_last") and state.get("replace_last_user_message"):
         existing_messages = list(state.get("messages") or [])
         last_message = existing_messages[-1] if existing_messages else None
@@ -781,7 +792,8 @@ def model_node(state: ChatState, config: RunnableConfig):
 
     started_at = time.time()
     response = invoke_with_retry(
-        _stream_model_response,
+        lambda: audited_invoke(_stream_model_response, config_id=config_id or 'chat',
+                               purpose='decision', model=model_name, messages=trimmed, tools=chat_tools),
         logger=logger,
         context=f"chat session={configurable.get('thread_id')} config_id={config_id} symbol={symbol} model={model_name}",
         on_retry=lambda next_attempt, total_attempts, error_type, exc: _emit_stream_status(
@@ -835,8 +847,13 @@ def model_node(state: ChatState, config: RunnableConfig):
     }
 
 
-def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str, operation_id: str | None = None) -> str:
-    return run_trade_tool(tool_name, args, config_id, symbol, operation_id=operation_id)
+def _run_tool(tool_name: str, args: Dict[str, Any], config_id: str, symbol: str,
+              operation_id: str | None = None, cycle_id: str | None = None,
+              expected_spot_fingerprint: str | None = None) -> str:
+    extra = {'cycle_id': cycle_id} if cycle_id else {}
+    if expected_spot_fingerprint is not None:
+        extra['expected_spot_fingerprint'] = expected_spot_fingerprint
+    return run_trade_tool(tool_name, args, config_id, symbol, operation_id=operation_id, **extra)
 
 
 def tools_node(state: ChatState, config: RunnableConfig):
@@ -864,7 +881,12 @@ def tools_node(state: ChatState, config: RunnableConfig):
             }, ensure_ascii=False)))
             continue
 
-        approval = True if tool_name == 'manage_trading_rules' else interrupt(
+        if tool_name == 'manage_trading_rules':
+            outputs.append(ToolMessage(tool_call_id=call['id'], content='Error: 规则复盘与修改由记忆整理 Agent 负责，请在记忆中心触发整理。'))
+            stopped = True
+            continue
+
+        approval = interrupt(
             {
                 "type": "tool_approval",
                 "tool_call_id": call["id"],
@@ -887,7 +909,11 @@ def tools_node(state: ChatState, config: RunnableConfig):
             continue
 
         try:
-            result = _run_tool(tool_name, tool_args, config_id, symbol, operation_id=call['id'])
+            extra = {'cycle_id': state.get('spot_cycle_id')} if str(cfg.get('mode') or '').upper() == 'SPOT_DCA' else {}
+            if state.get('spot_config_fingerprint') or str(cfg.get('mode') or '').upper() == 'SPOT_DCA':
+                # Empty means an old checkpoint without a verified decision snapshot.
+                extra['expected_spot_fingerprint'] = state.get('spot_config_fingerprint', '')
+            result = _run_tool(tool_name, tool_args, config_id, symbol, operation_id=call['id'], **extra)
             outputs.append(ToolMessage(tool_call_id=call["id"], content=result))
             stopped = tool_result_status(result) in {'failed', 'unknown', 'pending'}
         except Exception as exc:

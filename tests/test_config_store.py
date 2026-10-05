@@ -233,6 +233,122 @@ class ConfigStoreTests(unittest.TestCase):
         snapshot = config_store.load_runtime_snapshot()
         self.assertEqual(snapshot["agents"][0]["market_timeframes"], ["15m", "1h", "1d"])
 
+    def test_spot_portfolio_save_edit_export_import_roundtrip(self):
+        from backend.app.schemas.payloads import ConfigAgentPayload
+        from backend.config import config as runtime_config
+
+        payload = ConfigAgentPayload(
+            config_id="portfolio", mode="SPOT_DCA",
+            symbols=[" btc/usdt ", "ETH/USDT", "BTC/USDT"],
+            dca_amount=100, dca_budget=3000,
+        ).model_dump()
+        config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [payload])
+        snapshot = config_store.load_runtime_snapshot()
+        agent = snapshot["agents"][0]
+        self.assertEqual(agent["symbols"], ["BTC/USDT", "ETH/USDT"])
+        self.assertEqual(agent["symbol"], "BTC/USDT")
+        self.assertEqual(agent["market_type"], "spot")
+        self.assertEqual(agent["market_timeframes"], ["4h", "1d", "1w"])
+        self.assertEqual(snapshot["exchange_profiles"][0]["market_type"], "spot")
+
+        management = config_store.load_management_snapshot()
+        management["agents"][0]["symbols"] = ["SOL/USDT", "ETH/USDT"]
+        management["agents"][0]["market_timeframes"] = ["4h", "1d"]
+        config_store.save_runtime_snapshot(management["globals"], management["agents"], management["llm_providers"], management["exchange_profiles"])
+        exported = config_store.export_full_snapshot(include_secrets=False)
+        with patch.object(runtime_config, "reload_config"):
+            config_store.import_full_snapshot(exported)
+        restored = config_store.load_runtime_snapshot()["agents"][0]
+        self.assertEqual(restored["symbols"], ["SOL/USDT", "ETH/USDT"])
+        self.assertEqual(restored["symbol"], "SOL/USDT")
+        self.assertEqual(restored["market_timeframes"], ["4h", "1d"])
+        self.assertEqual(restored["dca_amount"], 100)
+        self.assertEqual(restored["dca_budget"], 3000)
+
+    def test_spot_portfolio_invalid_inputs_do_not_replace_saved_config(self):
+        config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [
+            {"config_id": "keep", "mode": "SPOT_DCA", "symbol": "BTC/USDT"},
+        ])
+        invalid = [
+            {"symbols": ["BTC/USDT", "ETH/USDC"]},
+            {"symbols": ["BTC/USDT:USDT"]},
+            {"symbols": ["BTC/USDT", "ETH/USDT"], "initial_qty": 1},
+            {"symbols": ["BTC/USDT", "ETH/USDT"], "initial_cost": 100},
+            {"symbols": [f"TOKEN{index}/USDT" for index in range(11)]},
+            {"symbols": "BTC/USDT,ETH/USDT"},
+            {"symbols": ["BTC/USDT", "ETH/USDT"], "mode": "REAL"},
+        ]
+        for overrides in invalid:
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [
+                    {"config_id": "invalid", "mode": "SPOT_DCA", **overrides},
+                ])
+        self.assertEqual(config_store.load_runtime_snapshot()["agents"][0]["config_id"], "keep")
+
+    def test_spot_portfolio_rejects_swap_profile(self):
+        with self.assertRaisesRegex(ValueError, "requires a spot exchange profile"):
+            config_store.save_runtime_snapshot(
+                dict(config_store.DEFAULT_GLOBAL_SETTINGS),
+                [{"config_id": "portfolio", "mode": "SPOT_DCA", "symbols": ["BTC/USDT", "ETH/USDT"], "exchange_profile_id": "swap"}],
+                [], [{"profile_id": "swap", "name": "Swap", "exchange": "binance", "market_type": "swap"}],
+            )
+
+    def test_legacy_spot_import_gets_spot_profile_without_changing_shared_swap_profile(self):
+        from backend.config import config as runtime_config
+
+        data = {"version": 1, "agents": [
+            {"config_id": "legacy-spot", "mode": "SPOT_DCA", "symbol": "BTC/USDT", "exchange_profile_id": "shared"},
+            {"config_id": "futures", "mode": "REAL", "symbol": "BTC/USDT", "exchange_profile_id": "shared"},
+        ], "exchange_profiles": [{"profile_id": "shared", "name": "Shared", "exchange": "binance", "market_type": "swap",
+                                  "_secrets": {"api_key": "legacy-key", "secret": "legacy-secret"}}]}
+        with patch.object(runtime_config, "reload_config"):
+            config_store.import_full_snapshot(data)
+        snapshot = config_store.load_runtime_snapshot()
+        agents = {agent["config_id"]: agent for agent in snapshot["agents"]}
+        profiles = {profile["profile_id"]: profile for profile in snapshot["exchange_profiles"]}
+        self.assertEqual(agents["legacy-spot"]["market_type"], "spot")
+        self.assertEqual(agents["legacy-spot"]["binance_api_key"], "legacy-key")
+        self.assertNotEqual(agents["legacy-spot"]["exchange_profile_id"], "shared")
+        self.assertEqual(profiles["shared"]["market_type"], "swap")
+        self.assertEqual(agents["futures"]["exchange_profile_id"], "shared")
+
+    def test_legacy_runtime_profile_upgrade_does_not_write_database(self):
+        config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [
+            {"config_id": "legacy", "mode": "REAL", "symbol": "BTC/USDT", "exchange_profile_id": "shared"},
+        ], [], [{"profile_id": "shared", "name": "Shared", "exchange": "binance", "market_type": "swap"}])
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT data_json FROM agent_configs WHERE config_id='legacy'").fetchone()
+            payload = json.loads(row[0])
+            payload['mode'] = 'SPOT_DCA'
+            conn.execute("UPDATE agent_configs SET mode='SPOT_DCA',data_json=? WHERE config_id='legacy'", (json.dumps(payload),))
+        snapshot = config_store.load_runtime_snapshot()
+        self.assertEqual(snapshot['agents'][0]['market_type'], 'spot')
+        self.assertNotEqual(snapshot['agents'][0]['exchange_profile_id'], 'shared')
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM exchange_profiles').fetchone()[0], 1)
+
+    def test_legacy_spot_single_symbol_keeps_initial_holdings_and_explicit_timeframes(self):
+        agent = config_store.normalize_agent_market_settings({
+            "config_id": "legacy", "mode": "SPOT_DCA", "symbol": "ETH/USDT",
+            "initial_qty": 2, "initial_cost": 4000, "market_timeframes": ["1h", "1d"],
+        })
+        self.assertEqual(agent["symbols"], ["ETH/USDT"])
+        self.assertEqual(agent["initial_cost"], 4000)
+        self.assertEqual(agent["market_timeframes"], ["1h", "1d"])
+        self.assertEqual(agent["market_type"], "spot")
+
+    def test_runtime_config_lookup_includes_secondary_spot_symbol(self):
+        from backend.config import Config
+
+        runtime = Config.__new__(Config)
+        runtime.symbol_configs = runtime._normalize_symbol_configs([
+            {"config_id": "portfolio", "mode": "SPOT_DCA", "symbols": ["BTC/USDT", "ETH/USDT"], "exchange": "okx", "okx_api_key": "fake-key", "okx_secret": "fake-secret", "passphrase": "fake-pass"},
+        ])
+        runtime.configs_by_id = {agent["config_id"]: agent for agent in runtime.symbol_configs}
+        self.assertEqual(runtime.get_symbol_config("ETH/USDT")["config_id"], "portfolio")
+        self.assertEqual(len(runtime.get_configs_by_symbol("ETH/USDT")), 1)
+        self.assertEqual(runtime.get_exchange_credentials(symbol="ETH/USDT"), ("okx", "fake-key", "fake-secret", "fake-pass"))
+
     def test_provider_and_profile_secret_masks_and_clear(self):
         config_store.save_runtime_snapshot(
             dict(config_store.DEFAULT_GLOBAL_SETTINGS),

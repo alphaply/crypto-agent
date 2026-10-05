@@ -10,6 +10,7 @@ from backend.utils.llm_utils import extract_message_text, extract_reasoning_cont
 from backend.config import config as global_config
 from backend.database import DB_NAME
 from backend.utils.logger import setup_logger
+from backend.utils.spot_portfolio import get_config_symbols
 
 
 load_dotenv(dotenv_path=".env", override=True)
@@ -21,10 +22,10 @@ def list_symbols() -> list[str]:
     seen = set()
     symbols = []
     for cfg in global_config.get_all_symbol_configs():
-        symbol = cfg.get("symbol")
-        if symbol and symbol not in seen:
-            seen.add(symbol)
-            symbols.append(symbol)
+        for symbol in get_config_symbols(cfg):
+            if symbol not in seen:
+                seen.add(symbol)
+                symbols.append(symbol)
     return symbols
 
 
@@ -33,7 +34,7 @@ def get_scheduler_status() -> bool:
 
 
 def get_symbol_specific_status(symbol: str):
-    configs = [cfg for cfg in global_config.get_all_symbol_configs() if cfg.get("symbol") == symbol]
+    configs = [cfg for cfg in global_config.get_all_symbol_configs() if symbol in get_config_symbols(cfg)]
     if not configs:
         return "Unknown", "N/A", False
 

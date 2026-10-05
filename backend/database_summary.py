@@ -193,7 +193,11 @@ class SummaryStore:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM summaries WHERE symbol = ?", (symbol,))
             summary_count = cursor.rowcount
-            cursor.execute("DELETE FROM orders WHERE symbol = ?", (symbol,))
+            # Spot order evidence enforces lifetime spending and cancellation
+            # ownership. History cleanup must not reset those safety limits.
+            columns = {row[1] for row in cursor.execute('PRAGMA table_info(orders)')}
+            spot_filter = " AND COALESCE(trade_mode,'') != 'SPOT_DCA'" if 'trade_mode' in columns else ''
+            cursor.execute(f"DELETE FROM orders WHERE symbol = ?{spot_filter}", (symbol,))
             order_count = cursor.rowcount
             cursor.execute("DELETE FROM mock_orders WHERE symbol = ?", (symbol,))
             conn.commit()

@@ -172,6 +172,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                 )''')
     _execute_best_effort(cursor, "ALTER TABLE trade_history ADD COLUMN order_id TEXT")
     _execute_best_effort(cursor, "ALTER TABLE trade_history ADD COLUMN config_id TEXT")
+    from backend.database_trade import ensure_scoped_trade_ids
+    ensure_scoped_trade_ids(conn)
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS chat_sessions (
                     session_id TEXT PRIMARY KEY,
@@ -300,7 +302,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _execute_best_effort(cursor, "CREATE INDEX IF NOT EXISTS idx_mock_balance_history_config_ts ON mock_balance_history(config_id, timestamp)")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS spot_order_fills (
-                    order_id TEXT PRIMARY KEY,
+                    order_id TEXT,
                     config_id TEXT,
                     symbol TEXT,
                     status TEXT,
@@ -308,8 +310,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     filled_cost REAL DEFAULT 0,
                     avg_fill_price REAL DEFAULT 0,
                     filled_at TEXT,
-                    last_sync_at TEXT
+                    last_sync_at TEXT,
+                    PRIMARY KEY(order_id, config_id, symbol)
                 )''')
+    from backend.database_orders import OrderPersistenceStore
+    OrderPersistenceStore.ensure_spot_fill_key(conn)
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS dca_daily_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -324,8 +329,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     last_buy TEXT,
                     actual_balance REAL,
                     updated_at TEXT,
-                    UNIQUE(snapshot_date, config_id)
+                    UNIQUE(snapshot_date, config_id, symbol)
                 )''')
+
+    from backend.database_dca import DcaSnapshotStore
+    DcaSnapshotStore._ensure_symbol_key(conn)
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS short_memories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -406,9 +414,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status ON scheduler_runs(status, scheduled_at)")
 
     from backend.database_rules import initialize_trading_rules_schema
+    from backend.database_agent_runs import initialize_agent_runs_schema
     from backend.database_independent import initialize_independent_schema
     from backend.utils.trade_operations import initialize_trade_operations_schema
     initialize_trading_rules_schema(cursor)
+    initialize_agent_runs_schema(cursor)
     initialize_independent_schema(cursor)
     initialize_trade_operations_schema(cursor)
     conn.commit()

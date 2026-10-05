@@ -107,7 +107,10 @@ def short_memories(
 
 @router.post("/short-memories/generate")
 def generate_short_memory(payload: GenerateShortMemoryRequest, _: dict = Depends(get_current_user)):
-    return {"success": True, **generate_short_memory_payload(payload.config_id, payload.bucket_start)}
+    try:
+        return {"success": True, **generate_short_memory_payload(payload.config_id, payload.bucket_start)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/short-memories")

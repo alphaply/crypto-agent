@@ -268,9 +268,9 @@ def save_dca_daily_snapshot(config_id, symbol, stats):
     _dca_snapshot_store.save_snapshot(config_id, symbol, stats)
 
 
-def get_dca_daily_snapshot_history(config_id, days=30):
+def get_dca_daily_snapshot_history(config_id, days=30, symbol=None):
     """获取最近 N 天 DCA 快照曲线。"""
-    return _dca_snapshot_store.get_snapshot_history(config_id, days=days)
+    return _dca_snapshot_store.get_snapshot_history(config_id, days=days, symbol=symbol)
 
 # --- 数据分析与记录 ---
 

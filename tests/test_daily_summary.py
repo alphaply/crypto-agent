@@ -317,7 +317,7 @@ class DailySummaryTests(unittest.TestCase):
             )
             conn.commit()
 
-        with patch.object(agent_graph, "summarize_content", return_value="rolling memory") as summarizer:
+        with patch.object(agent_graph, "_run_memory_organizer", return_value="rolling memory") as summarizer:
             generated = agent_graph.generate_rolling_short_memory_for_config(
                 "cfg-a",
                 agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},
@@ -351,7 +351,7 @@ class DailySummaryTests(unittest.TestCase):
             )
             conn.commit()
 
-        with patch.object(agent_graph, "summarize_content", return_value="clean rolling") as summarizer:
+        with patch.object(agent_graph, "_run_memory_organizer", return_value="clean rolling") as summarizer:
             generated = agent_graph.generate_rolling_short_memory_for_config(
                 "cfg-a",
                 agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},
@@ -374,7 +374,7 @@ class DailySummaryTests(unittest.TestCase):
             )
             conn.commit()
 
-        with patch.object(agent_graph, "summarize_content", return_value="Window: last 12h\nSymbol: BTC/USDT..."):
+        with patch.object(agent_graph, "_run_memory_organizer", return_value="Window: last 12h\nSymbol: BTC/USDT..."):
             generated = agent_graph.generate_rolling_short_memory_for_config(
                 "cfg-a",
                 agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},

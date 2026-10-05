@@ -1,5 +1,6 @@
 from backend.config import config as global_config
 from backend.database import get_latest_news_snapshot
+from backend.utils.spot_portfolio import get_config_symbols, SPOT_MARKET_TIMEFRAMES
 
 from backend.app.services.dashboard_service import (
     build_dashboard_overview,
@@ -23,6 +24,8 @@ def _resolved_market_timeframes(config_payload: dict | None = None) -> list[str]
     timeframes = [str(item).strip() for item in list((config_payload or {}).get("market_timeframes") or []) if str(item).strip()]
     if timeframes:
         return timeframes
+    if str((config_payload or {}).get('mode') or '').upper() == 'SPOT_DCA':
+        return list(SPOT_MARKET_TIMEFRAMES)
     return [str(item).strip() for item in list(getattr(global_config, "market_timeframes", None) or ["15m", "1h", "4h", "1d", "1w"]) if str(item).strip()]
 
 
@@ -89,12 +92,15 @@ def build_public_short_memories_payload(
     return list_short_memories_payload(symbol=symbol, config_id=config_id, limit=limit)
 
 
-def build_public_workspace_payload(config_id: str, timeframe: str = "1h") -> dict:
+def build_public_workspace_payload(config_id: str, timeframe: str = "1h", symbol: str | None = None) -> dict:
+    selected_symbol = symbol
     cfg = global_config.get_config_by_id(config_id)
     if not cfg:
         raise FileNotFoundError(f"Config not found: {config_id}")
     if not cfg.get("enabled", True):
         raise FileNotFoundError(f"Workspace not found: {config_id}")
+    if selected_symbol and selected_symbol not in get_config_symbols(cfg):
+        raise ValueError(f'Symbol {selected_symbol} is not configured for {config_id}')
 
     symbol = cfg.get("symbol")
     agents = get_dashboard_data(symbol, config_id=config_id)
@@ -110,8 +116,8 @@ def build_public_workspace_payload(config_id: str, timeframe: str = "1h") -> dic
         "orders": get_recent_order_activity_payload(config_id, limit=40),
         "daily_summaries": get_daily_summaries_payload(config_id, days=7),
         "short_memories": get_short_memories_payload(config_id, limit=1),
-        "news_snapshot": get_latest_news_snapshot(symbol=symbol, config_id=config_id) or get_latest_news_snapshot(symbol=symbol),
-        "kline": get_kline_payload(config_id, timeframe),
+        "news_snapshot": get_latest_news_snapshot(symbol=selected_symbol or symbol, config_id=config_id) or get_latest_news_snapshot(symbol=selected_symbol or symbol),
+        "kline": get_kline_payload(config_id, timeframe, symbol=selected_symbol) if selected_symbol else get_kline_payload(config_id, timeframe),
     }
 
 

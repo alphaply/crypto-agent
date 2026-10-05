@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from backend.app.core.deps import get_current_user
+from backend.app.services.market_catalog_service import MarketCatalogUnavailable
 from backend.app.schemas.payloads import (
     BulkDeleteSessionsRequest,
     ChatStreamRequest,
@@ -67,6 +68,8 @@ def market_symbols(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except MarketCatalogUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/sessions/{session_id}")

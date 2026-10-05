@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 import hashlib
 import json
+import math
 import time
 import uuid
 
@@ -98,6 +99,28 @@ def _reconciled_receipt(conn, row):
     """Resolve a lost acknowledgement only from durable native execution evidence."""
     tables = {item[0] for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     observed = []
+    if {'spot_budget_reservations', 'orders', 'spot_order_fills'} <= tables:
+        records = conn.execute('''SELECT DISTINCT r.operation_id,r.symbol,r.order_id,o.amount,o.entry_price,
+                f.status,f.filled_qty,f.filled_cost,f.avg_fill_price
+            FROM spot_budget_reservations r JOIN orders o ON o.config_id=r.config_id
+                AND o.symbol=r.symbol AND o.order_id=r.order_id
+            JOIN spot_order_fills f ON f.config_id=r.config_id AND f.symbol=r.symbol AND f.order_id=r.order_id
+            WHERE r.config_id=? AND r.status='submitted' AND o.trade_mode='SPOT_DCA'
+                AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
+                AND UPPER(o.side) IN ('BUY','BUY_LIMIT')''', (row['config_id'],)).fetchall()
+        for record in records:
+            if not _operation_matches(record['operation_id'], row['operation_id']):
+                continue
+            status = str(record['status'] or '').lower()
+            values = [float(record[key] or 0) for key in ('filled_qty', 'filled_cost', 'avg_fill_price')]
+            if (status not in {'open', 'partial', 'partially_filled', 'filled', 'closed', 'canceled', 'cancelled', 'expired', 'rejected'}
+                    or any(not math.isfinite(value) or value < 0 for value in values)
+                    or (values[0] > 0 and values[1] <= 0 and values[2] <= 0)):
+                continue
+            observed.append({'operation_id': record['operation_id'], 'symbol': record['symbol'],
+                'id': record['order_id'], 'amount': record['amount'], 'price': record['entry_price'],
+                'filled': values[0], 'cost': values[1],
+                'status': 'open' if status in {'partial', 'partially_filled'} else status})
     if 'real_protection_plans' in tables:
         plans = conn.execute('SELECT symbol,payload FROM real_protection_plans WHERE config_id=?', (row['config_id'],)).fetchall()
         for stored in plans:

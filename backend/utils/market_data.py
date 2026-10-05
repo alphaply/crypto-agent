@@ -13,7 +13,7 @@ from backend.utils.indicators import (
     calc_macd, calc_adx, calc_vwap,
     calc_bollinger_bands, calculate_vp,
     calculate_smc, calculate_liquidity_sweep_ifvg,
-    build_agent_indicator_context,
+    build_agent_indicator_context, build_spot_indicator_context,
 )
 import uuid
 import math
@@ -646,37 +646,45 @@ class MarketTool:
         try:
             if is_real:
                 balance_info = self.exchange.fetch_balance()
+                is_spot = (getattr(self, 'market_type', None) == 'spot' or self.exchange.options.get('defaultType') == 'spot')
+                quote_asset = symbol.split('/')[1].split(':')[0] if is_spot and '/' in symbol else 'USDT'
+                quote_balance = balance_info.get(quote_asset) or balance_info.get(quote_asset.lower()) or {}
                 
                 # 兼容性处理：尝试从不同可能的路径获取 USDT 余额
                 # ccxt 在 fetch_balance() 中通常会统一化结构，但在某些交易所 API 变动时可能失效
                 # 账户余额获取逻辑：实盘使用 total (包含持仓保证金和未实现盈亏的一部分，即钱包余额)
                 # 总权益 = total + unrealized_pnl (标准合约计算公式)
                 usdt_total = 0
-                if 'USDT' in balance_info:
-                    usdt_total = float(balance_info['USDT'].get('total', 0))
-                elif 'usdt' in balance_info:
-                    usdt_total = float(balance_info['usdt'].get('total', 0))
-                elif 'total' in balance_info and 'USDT' in balance_info['total']:
-                    usdt_total = float(balance_info['total'].get('USDT', 0))
+                if quote_balance.get('total') is not None:
+                    usdt_total = float(quote_balance['total'])
+                else:
+                    usdt_total = float((balance_info.get('total') or {}).get(quote_asset) or 0)
 
                 # Prompt 专用可用余额（free），用于交易决策资金约束。
                 usdt_available = 0
-                if 'USDT' in balance_info:
-                    usdt_available = float(balance_info['USDT'].get('free', 0))
-                elif 'usdt' in balance_info:
-                    usdt_available = float(balance_info['usdt'].get('free', 0))
-                elif 'free' in balance_info and 'USDT' in balance_info['free']:
-                    usdt_available = float(balance_info['free'].get('USDT', 0))
+                if quote_balance.get('free') is not None:
+                    usdt_available = float(quote_balance['free'])
+                else:
+                    usdt_available = float((balance_info.get('free') or {}).get(quote_asset) or 0)
                 
                 status_data["balance"] = usdt_total
                 status_data["available_balance"] = usdt_available
+                status_data['quote_asset'] = quote_asset
                 logger.debug(f"[{symbol}] Balance(total)={usdt_total:.4f}, Balance(available)={usdt_available:.4f}")
                 
                 # 实盘持仓
                 try:
-                    if self.exchange.options.get('defaultType') == 'spot':
-                        # 现货没有持仓概念，通过查询币种余额代替，为了简化这里暂返回空持仓
-                        status_data["real_positions"] = []
+                    if is_spot:
+                        base_asset = symbol.split('/')[0]
+                        base_balance = balance_info.get(base_asset) or balance_info.get(base_asset.lower()) or {}
+                        total = float(base_balance.get('total') or (balance_info.get('total') or {}).get(base_asset) or 0)
+                        free = float(base_balance.get('free') or (balance_info.get('free') or {}).get(base_asset) or 0)
+                        status_data['spot_holdings'] = {'symbol': symbol, 'base_asset': base_asset, 'total': total, 'free': free}
+                        status_data['real_positions'] = [
+                            {'symbol': symbol, 'side': 'SPOT', 'amount': total, 'available_amount': free,
+                             'entry_price': None, 'unrealized_pnl': None, 'market_type': 'spot',
+                             'scope': 'exchange_account'}
+                        ] if total > 0 else []
                     else:
                         all_positions = self.exchange.fetch_positions([symbol])
                         real_positions = [
@@ -701,10 +709,11 @@ class MarketTool:
                     
                     # 2. 获取条件委托/触发单 (STOP_MARKET, etc.)
                     trigger_orders = []
-                    try:
-                        trigger_orders = self.exchange.fetch_open_orders(symbol, params={'trigger': True})
-                    except Exception as te:
-                        logger.warning(f"Fetch trigger orders error: {te}")
+                    if not is_spot:
+                        try:
+                            trigger_orders = self.exchange.fetch_open_orders(symbol, params={'trigger': True})
+                        except Exception as te:
+                            logger.warning(f"Fetch trigger orders error: {te}")
                     
                     # 合并订单
                     all_orders = regular_orders + trigger_orders
@@ -770,6 +779,7 @@ class MarketTool:
                         if info.get('tpTriggerPx') or o.get('takeProfitPrice'): display_type = 'TP'
 
                         filtered_orders.append({
+                            'symbol': symbol,
                             'order_id': str(o.get('id')),
                             'side': o.get('side', '').lower(),
                             'pos_side': pos_side.upper(), # 'LONG', 'SHORT' or 'BOTH'
@@ -810,6 +820,10 @@ class MarketTool:
         """
         全量获取市场数据的主入口
         """
+        spot_profile = str(mode).upper() == 'SPOT_DCA' or getattr(self, 'market_type', None) == 'spot'
+        if timeframes is None and spot_profile:
+            from backend.utils.spot_portfolio import SPOT_MARKET_TIMEFRAMES
+            timeframes = list(SPOT_MARKET_TIMEFRAMES)
         if timeframes is None:
             try:
                 from backend.config import config as runtime_config
@@ -824,14 +838,15 @@ class MarketTool:
             "symbol": symbol,
             "timestamp": int(time.time()),
             "analysis": {},
-            "sentiment": self._fetch_market_derivatives(symbol)
+            "sentiment": {} if spot_profile else self._fetch_market_derivatives(symbol),
+            "indicator_profile": 'spot_long_term' if spot_profile else 'perpetual',
         }
 
         logger.info(f"📊 Fetching {symbol} market data ({mode} mode: {timeframes})...")
 
         for tf in timeframes:
             logger.debug(f"  → Processing timeframe: {tf}")
-            data = self.process_timeframe(symbol, tf)
+            data = self.process_timeframe(symbol, tf, profile='spot') if spot_profile else self.process_timeframe(symbol, tf)
             if data:
                 final_output["analysis"][tf] = data
                 logger.debug(f"  ✅ {tf} data collected (price: {data.get('price', 'N/A')})")
@@ -857,12 +872,13 @@ class MarketTool:
     VWAP_VALID_TFS = {'1m', '5m', '15m', '30m', '1h'}
     AGENT_CANDLE_LIMIT = 10
 
-    def process_timeframe(self, symbol, tf):
+    def process_timeframe(self, symbol, tf, profile=None):
         """Calculate with full history; expose only the latest 10 closed candles to agents."""
         try:
             logger.debug(f"    🔍 [{tf}] Fetching OHLCV data for {symbol}...")
-            fetch_limit = 60 if tf == '1M' else 1000
-            min_bars = 12 if tf == '1M' else (52 if tf == '1w' else 200)
+            spot_profile = profile == 'spot' or getattr(self, 'market_type', None) == 'spot'
+            fetch_limit = 600 if spot_profile else (60 if tf == '1M' else 1000)
+            min_bars = 1 if spot_profile else (12 if tf == '1M' else (52 if tf == '1w' else 200))
             ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=fetch_limit)
             if not ohlcv or len(ohlcv) < min_bars:
                 logger.warning(f"    ⚠️ [{tf}] Insufficient OHLCV data: {len(ohlcv) if ohlcv else 0} candles (need >= {min_bars})")
@@ -909,6 +925,16 @@ class MarketTool:
                 'stale': (now_utc - last_closed_at).total_seconds() > durations.get(tf, 2678400) * 2,
                 'ema_warmup_bars': {str(span): len(df) for span in (20, 50, 100, 200) if len(df) < span * 3},
             }
+            if spot_profile:
+                quality['indicator_method'] = 'EMA20/50/200; SMA-seeded Wilder RSI14/ATR14'
+                quality['ema_warmup_bars'] = {str(span): len(df) for span in (20, 50, 200) if len(df) < span * 3}
+                quality['display_bars'] = min(5, len(df))
+                result = build_spot_indicator_context(df, {'4h': 180, '1d': 365, '1w': 52}.get(tf, 180))
+                result['data_quality'] = quality
+                for field in ('open', 'high', 'low', 'close', 'volume'):
+                    result[f'recent_{field}s'] = [smart_fmt(value) for value in df[field].tail(5)]
+                result['recent_times'] = df['time'].tail(5).dt.strftime('%Y-%m-%d %H:%M').tolist()
+                return result
             
             close = df['close']
             high = df['high']
@@ -1095,7 +1121,10 @@ class MarketTool:
                         ownership = assert_owned_perpetual_order(self, symbol, str(cancel_id),
                                                                 getattr(self, 'config_id', None) or agent_name)
                     else:
-                        ownership = {}
+                        from backend.utils.spot_execution import assert_owned_spot_order
+                        ownership = assert_owned_spot_order(
+                            self, symbol, str(cancel_id), getattr(self, 'config_id', None) or agent_name
+                        )
                     logger.info(f"🔄 [CANCEL] 正在撤单 ID: {cancel_id} ...")
                     res = self._cancel_real_order_with_fallbacks(cancel_id, symbol, prefer_trigger=
                         ownership.get('trigger', False))
@@ -1211,20 +1240,15 @@ class MarketTool:
                     params['positionSide'] = pos_side
                     logger.info(f"🚀 [OPEN-LIMIT] 开仓挂单: {pos_side} {side} {amount} @ {price}")
                 else:
+                    formatted_amount, formatted_price = float(amount), float(price)
+                    original_cost = float(order_params['amount']) * float(order_params['entry_price'])
+                    if (not all(math.isfinite(value) and value > 0 for value in (formatted_amount, formatted_price, original_cost))
+                            or formatted_amount * formatted_price > original_cost + 1e-8):
+                        raise ccxt.InvalidOrder('现货精度调整后金额超过申请预算或数量/价格无效，请按交易所精度重新提交')
+                    if order_params.get('client_order_id'):
+                        params['clientOrderId'] = str(order_params['client_order_id'])
                     logger.info(f"🚀 [SPOT-LIMIT] 现货挂单: {side} {amount} @ {price}")
                 
-                merged_amount, merged_ids = self._merge_same_price_real_orders(
-                    symbol,
-                    side,
-                    amount,
-                    price,
-                    params.get('positionSide', 'BOTH'),
-                    'LIMIT',
-                ) if is_spot else (float(amount), [])
-                if merged_ids:
-                    amount = self.exchange.amount_to_precision(symbol, merged_amount)
-                    logger.info(f"🔗 [OPEN-MERGE] merged {len(merged_ids)} limit orders -> {amount} @ {price}")
-
                 order = self.exchange.create_order(symbol, 'LIMIT', side, float(amount), float(price), params=params)
                 
                 logger.info(f"✅ [OPEN-LIMIT] 挂单成功 ID: {order['id']}")

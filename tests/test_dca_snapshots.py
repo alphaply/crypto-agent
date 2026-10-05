@@ -89,6 +89,21 @@ class DcaSnapshotTests(unittest.TestCase):
 
         self.assertEqual([row["snapshot_date"] for row in rows], ["2026-05-10", "2026-05-11"])
 
+    def test_legacy_key_migrates_and_two_symbols_keep_separate_daily_snapshots(self):
+        with database.get_db_conn() as conn:
+            conn.execute('''INSERT INTO dca_daily_snapshots
+                (snapshot_date, config_id, symbol, total_invested, total_qty, avg_cost, buy_count, actual_balance)
+                VALUES ('2026-05-11','cfg-a','BTC/USDT',100,1,100,1,1)''')
+            conn.commit()
+        store = DcaSnapshotStore(database.get_db_conn, lambda: '2026-05-12', lambda: '2026-05-12 10:00:00')
+        store.save_snapshot('cfg-a', 'BTC/USDT', {'total_invested': 200, 'total_qty': 2})
+        store.save_snapshot('cfg-a', 'ETH/USDT', {'total_invested': 300, 'total_qty': 10})
+        store.save_snapshot('cfg-a', 'ETH/USDT', {'total_invested': 360, 'total_qty': 12})
+        rows = store.get_snapshot_history('cfg-a')
+        self.assertEqual([row['total_invested'] for row in rows], [100, 560])
+        self.assertIsNone(rows[1]['total_qty'])
+        self.assertEqual(store.get_snapshot_history('cfg-a', symbol='ETH/USDT')[0]['total_qty'], 12)
+
 
 if __name__ == "__main__":
     unittest.main()

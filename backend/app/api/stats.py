@@ -102,9 +102,9 @@ def equity_compare(symbol: str = "BTC/USDT", config_ids: str = "", _: dict = Dep
 
 
 @router.get("/kline/{config_id}")
-def kline(config_id: str, timeframe: str = "1h", _: dict = Depends(get_current_user)):
+def kline(config_id: str, timeframe: str = "1h", symbol: str | None = None, _: dict = Depends(get_current_user)):
     try:
-        data = get_kline_payload(config_id, timeframe)
+        data = get_kline_payload(config_id, timeframe, symbol=symbol) if symbol else get_kline_payload(config_id, timeframe)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   workspaceSignature,
+  activityRecordKey,
   selectDashboardTab,
   CHART_TIMEFRAME_STORAGE_KEY,
   CHART_TIMEFRAMES,
@@ -11,12 +12,24 @@ import {
 } from '../src/lib/dashboard.js';
 import { resolveExitMode, formatExitNumber } from '../src/lib/exitManagement.js';
 
+test('exchange IDs are scoped by symbol and task for activity cards', () => {
+  const fill = { config_id: 'spot', symbol: 'BTC/USDT', trade_id: '7', activity_type: 'trade' };
+  assert.notEqual(activityRecordKey(fill), activityRecordKey({ ...fill, symbol: 'ETH/USDT' }));
+  assert.notEqual(activityRecordKey(fill), activityRecordKey({ ...fill, config_id: 'other' }));
+});
+
 test('streaming progress and next-run ticks do not reload every workspace', () => {
   const agent = { config_id: 'eth', timestamp: '2026-09-19 10:00', market_timeframes: ['1h'], execution: { reasoning_content: 'one' } };
   const next = { ...agent, next_run: '10:30', execution: { reasoning_content: 'one two' } };
   assert.equal(workspaceSignature([agent]), workspaceSignature([next]));
   assert.notEqual(workspaceSignature([agent]), workspaceSignature([{ ...next, timestamp: '2026-09-19 10:20' }]));
   assert.notEqual(workspaceSignature([agent]), workspaceSignature([{ ...next, config_id: 'btc' }]));
+});
+
+test('adding or removing portfolio symbols refreshes workspace data', () => {
+  const agent = { config_id: 'portfolio', symbol: 'BTC/USDT', symbols: ['BTC/USDT'], market_timeframes: ['4h', '1d', '1w'] };
+  assert.notEqual(workspaceSignature([agent]), workspaceSignature([{ ...agent, symbols: ['BTC/USDT', 'ETH/USDT'] }]));
+  assert.equal(workspaceSignature([agent]), workspaceSignature([{ ...agent, execution: { reasoning_content: 'updated' } }]));
 });
 
 test('single strategy opens directly after switching symbols or deleting an old selection', () => {

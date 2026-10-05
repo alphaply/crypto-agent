@@ -3,6 +3,7 @@ import json
 import re
 import os
 import time
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,8 +25,12 @@ from langgraph.graph import StateGraph, END
 
 from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool, tool_result_status
+from backend.agent.memory_workflow import serialized_memory_review, get_review_result, save_review_result, verify_memory_lease
+from backend.agent.call_audit import audited_invoke
+from backend.utils.decision_journal import decision_journal
 from backend.database_rules import format_trading_rules_context
 from backend.utils.exit_policy import effective_exit_mode
+from backend.utils.spot_portfolio import get_config_symbols, SPOT_MARKET_TIMEFRAMES
 from backend.utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
     format_market_data_to_text
 from backend.utils.llm_utils import (
@@ -40,6 +45,7 @@ from backend.utils.llm_utils import (
 )
 from backend.utils.logger import setup_logger
 from backend.utils.prompt_utils import resolve_prompt_file_content, resolve_prompt_template, render_prompt
+from backend.utils.trading_policy import SUMMARY_FACT_POLICY
 
 import backend.database as database
 from backend.database import (
@@ -48,13 +54,18 @@ from backend.database import (
     get_short_memory,
     get_recent_summary_logic,
     get_summary_logic_between,
-    save_short_memory,
+    save_short_memory as _save_short_memory,
 )
 from backend.utils.market_data import MarketTool
 from backend.utils.news_context import fetch_news_risk_context
 from backend.config import config as global_config
 
 TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
+
+
+def save_short_memory(*args, **kwargs):
+    verify_memory_lease()
+    return _save_short_memory(*args, **kwargs)
 
 
 def _emit_task_progress(configurable: dict, *, phase: str, message: str, **payload) -> None:
@@ -204,6 +215,9 @@ def resolve_market_timeframes(agent_config: dict | None = None) -> list[str]:
     if agent_timeframes:
         return agent_timeframes
 
+    if str((agent_config or {}).get('mode') or '').upper() == 'SPOT_DCA':
+        return list(SPOT_MARKET_TIMEFRAMES)
+
     global_timeframes = [str(item).strip() for item in list(getattr(global_config, 'market_timeframes', None) or []) if str(item).strip()]
     if global_timeframes:
         return global_timeframes
@@ -250,6 +264,12 @@ def calculate_next_run_time(agent_config, now_cn):
 
 def summarize_content(content: str, agent_config: dict, summary_type: str = "strategy") -> str:
     """使用独立的 LLM 配置对分析内容进行压缩。"""
+    if summary_type == 'short_memory':
+        config_id = str(agent_config.get('config_id') or '')
+        return _run_memory_organizer(
+            content, agent_config,
+            operation_id=f'explicit:{config_id}:{hashlib.sha256(content.encode()).hexdigest()}',
+            previous=format_short_memory_for_llm(config_id))
     summarizer_cfg = agent_config.get("summarizer", {})
     
     # 获取配置，优先级：1. agent 专属 summarizer -> 2. 全局运行配置/环境变量 -> 3. agent 自身配置
@@ -279,15 +299,9 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
             reasoning_effort=summarizer_cfg.get("reasoning_effort"),
             compatibility_mode=summarizer_cfg.get("compatibility_mode"),
         )
-        prompt = f"""请将以下交易分析内容压缩为一段简短的“策略逻辑思路”（150字以内），保留趋势情况、关键点位(支持阻力)和操作意图等等。
-直接输出压缩后的文字，不要有任何前缀。
-内容：
-{content}
-"""
         default_prompts = {
             "strategy": "请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}",
             "daily": "请依据以下策略和执行证据生成每日复盘，600字以内。包含市场与策略演变、实际成交与结果、计划执行偏差、风险教训和次日条件；计划不等于成交，缺失盈亏/费用标记未知，不重复计数。只输出复盘文本。\n\n内容：\n{content}",
-            "short_memory": "请把以下交易总结和历史证据滚动压缩成中文短期记忆，400-600字。保留市场状态、连续决策变化、持仓/挂单变化、关键价位和执行结果；概括收益、回撤及7天完整平仓样本、胜率、盈亏比、手续费前盈亏与主要教训，不逐笔复述账本。注明统计截至时间；权益快照非实时、未剔除出入金/共享账户影响，不归因为独立策略收益；缺失数字写未知，成交活动与完整周期盈亏不能相加。旧计划须与最新账户核对，亏损不构成加杠杆或放宽止损理由。只输出总结文本。\n\n内容：\n{content}",
         }
         prompt_text_key = {
             "strategy": "strategy_prompt",
@@ -308,9 +322,14 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
                 fallback=default_prompts.get(summary_type, default_prompts["strategy"]),
             )
         prompt = render_prompt(prompt_template, content=content)
+        prompt += '\n\n' + SUMMARY_FACT_POLICY
 
         response = invoke_with_retry(
-            lambda: llm.invoke([HumanMessage(content=prompt)]),
+            lambda: audited_invoke(
+                lambda: llm.invoke([HumanMessage(content=prompt)]),
+                config_id=agent_config.get('config_id'),
+                purpose='daily_summary' if summary_type == 'daily' else 'memory_review',
+                model=model, messages=[HumanMessage(content=prompt)]),
             logger=logger,
             context=f"summarizer model={model} config_id={agent_config.get('config_id', 'summarizer')}",
         )
@@ -540,8 +559,27 @@ def _memory_evidence_fallback(evidence: str) -> str:
     )
 
 
+def _run_memory_organizer(source: str, agent_config: dict, *, operation_id: str, previous: str) -> str:
+    """Only the memory agent can review evidence and write trading rules."""
+    from backend.agent.memory_agent import run_memory_review
+
+    stored = get_review_result(operation_id)
+    if stored:
+        verify_memory_lease()
+        return stored['summary'] if stored['status'] == 'completed' else ''
+    result = run_memory_review(source, agent_config, operation_id=operation_id)
+    if result.status in {'completed', 'partial'}:
+        save_review_result(agent_config['config_id'], operation_id, result)
+    if result.status == 'completed':
+        verify_memory_lease()
+        return result.summary
+    logger.warning('Memory review %s: %s', result.status, result.error)
+    return ''
+
+
+@serialized_memory_review
 def update_turn_memory(config_id: str, agent_config: dict, strategy_logic: str, messages: list) -> bool:
-    """Replace bounded working memory after each new strategy, retaining execution evidence."""
+    """Explicit compatibility entry point; normal trading turns never invoke it."""
     if not str(strategy_logic or "").strip():
         return False
     previous = format_short_memory_for_llm(config_id)
@@ -558,13 +596,10 @@ def update_turn_memory(config_id: str, agent_config: dict, strategy_logic: str, 
         f"本轮工具结果：\n{execution or '无工具执行，不得声称新交易已执行。'}"
     )
     source += _memory_evidence_section(pos_history_text)
-    summary = summarize_content(source, agent_config, summary_type="short_memory")
+    summary = _run_memory_organizer(source, {**agent_config, 'config_id': config_id},
+                                   operation_id=f'manual:{config_id}:{now}', previous=previous)
     if _is_invalid_short_memory_summary(summary, source):
-        # Still advance the strategy on summarizer failure; never retain an old plan as current.
-        summary = (
-            f"【最新策略（压缩失败，待核实执行）】{strategy_logic[:1200]}\n"
-            "历史计划须重新验证，账户以实时快照为准。" + _memory_evidence_fallback(pos_history_text)
-        )
+        return False
     save_short_memory(now, now, agent_config.get("symbol", "Unknown"), config_id, summary, pos_history_text, 1)
     return True
 
@@ -610,7 +645,8 @@ def format_recent_decisions(config_id: str) -> str:
 def _load_decision_memory(config_id: str) -> tuple[list, str, str, str]:
     """Local context survives exchange/news failures; each source fails independently."""
     sources = (
-        ('daily summaries', lambda: get_daily_summaries(config_id, days=7), []),
+        # Daily reviews remain available in the UI, not repeated in every trade.
+        ('daily summaries', lambda: [], []),
         ('short memory', lambda: format_short_memory_for_llm(config_id, include_metadata=True), '(短期记忆读取失败)'),
         ('recent decisions', lambda: format_recent_decisions(config_id), '(近期摘要读取失败)'),
         ('trading rules', lambda: format_trading_rules_context(config_id), '(交易规则读取失败；不得假设没有规则)'),
@@ -642,6 +678,7 @@ def _is_invalid_short_memory_summary(summary: str, source_input: str) -> bool:
     return text.endswith("...") and source_input.startswith(text[:-3])
 
 
+@serialized_memory_review
 def generate_rolling_short_memory_for_config(
     config_id: str,
     agent_config: dict | None = None,
@@ -675,7 +712,9 @@ def generate_rolling_short_memory_for_config(
     )
     pos_history_text = format_recent_position_history_for_memory(config_id, target_config)
     memory_input += _memory_evidence_section(pos_history_text)
-    memory_summary = summarize_content(memory_input, target_config, summary_type="short_memory")
+    memory_summary = _run_memory_organizer(
+        memory_input, {**target_config, 'config_id': config_id},
+        operation_id=f'rolling:{config_id}:{rows[-1].get("timestamp")}', previous=previous)
     if _is_invalid_short_memory_summary(memory_summary, memory_input):
         logger.warning(f"Skip saving invalid rolling short memory for {config_id}.")
         return False
@@ -694,21 +733,24 @@ def generate_rolling_short_memory_for_config(
     return True
 
 
+@serialized_memory_review
 def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = None) -> bool:
     all_configs = global_config.get_all_symbol_configs()
     target_config = next((c for c in all_configs if c.get("config_id") == config_id), None)
     if not target_config or not target_config.get("enabled", True):
         return False
 
+    if now_cn is None:
+        current_start, _ = get_short_memory_bucket(datetime.now(TZ_CN))
+        now_cn = current_start - timedelta(seconds=1)
     bucket_start, bucket_end = get_short_memory_bucket(now_cn)
+    if bucket_end > datetime.now(TZ_CN):
+        raise ValueError('只能整理已结束的四小时窗口')
     start_text = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
     end_text = bucket_end.strftime("%Y-%m-%d %H:%M:%S")
     existing = get_short_memory(config_id, start_text)
-    if existing and int(existing.get("source_count") or 0) > 0:
+    if existing and str(existing.get('market_summary') or '').strip():
         return False
-    latest = get_short_memories(config_id, limit=1)
-    if latest and latest[0].get("bucket_start", "") >= start_text:
-        return False  # Per-turn memory already covers this maintenance window.
 
     summary_rows = get_summary_logic_between(config_id, start_text, end_text)
     source_count = len(summary_rows)
@@ -720,6 +762,16 @@ def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = N
         if row.get("strategy_logic")
     )
     pos_history_text = format_recent_position_history_for_memory(config_id, target_config)
+    latest = get_short_memories(config_id, limit=1)
+    def evidence_without_read_time(text):
+        return '\n'.join(line for line in str(text or '').splitlines() if not line.startswith('证据读取时间：'))
+    if (not summary_rows and latest
+            and evidence_without_read_time(latest[0].get('position_summary')) == evidence_without_read_time(pos_history_text)):
+        # No new decisions or ledger facts: advance the window without paying
+        # a model to repeat the same review. A zero-source window is still done.
+        save_short_memory(start_text, end_text, target_config.get('symbol', 'Unknown'),
+                          config_id, previous, pos_history_text, 0)
+        return True
     memory_input = (
         f"Window: {start_text} - {end_text}\n"
         f"Symbol: {target_config.get('symbol')}\n\n"
@@ -729,7 +781,9 @@ def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = N
     # Fills or equity can change even in a window with no new agent analysis.
     # Update from evidence and prior memory rather than replacing it with an empty placeholder.
     memory_input += _memory_evidence_section(pos_history_text)
-    memory_summary = summarize_content(memory_input, target_config, summary_type="short_memory")
+    memory_summary = _run_memory_organizer(
+        memory_input, {**target_config, 'config_id': config_id},
+        operation_id=f'bucket:{config_id}:{start_text}:{end_text}', previous=previous)
     if _is_invalid_short_memory_summary(memory_summary, memory_input):
         logger.warning(f"Skip saving invalid short memory for {config_id}.")
         return False
@@ -766,12 +820,23 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
     )
 
     trade_mode = agent_config.get('mode', 'STRATEGY').upper()
+    spot_config_fingerprint = None
+    if trade_mode == 'SPOT_DCA':
+        from backend.utils.spot_config_guard import spot_config_lock, spot_execution_fingerprint
+        with spot_config_lock:
+            spot_config_fingerprint = spot_execution_fingerprint(agent_config)
     is_real_exec = (trade_mode in ['REAL', 'SPOT_DCA'])
     agent_name = config_id
+    symbols = get_config_symbols(agent_config) or [symbol]
+    multi_spot = trade_mode == 'SPOT_DCA' and len(symbols) > 1
+    if trade_mode == 'SPOT_DCA':
+        symbol = symbols[0]
 
     # 提取定投周期与预算逻辑 (SPOT_DCA 专属)
     dca_period_text = "每天"
-    dca_budget = agent_config.get('dca_amount') or agent_config.get('dca_budget') or 100
+    dca_budget = agent_config.get('dca_amount')
+    if dca_budget is None:
+        dca_budget = agent_config.get('dca_budget') if agent_config.get('dca_budget') is not None else 100
     
     if trade_mode == 'SPOT_DCA':
         dca_freq = agent_config.get('dca_freq', '1d').lower()
@@ -794,25 +859,45 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
 
     try:
         timeframes_to_fetch = resolve_market_timeframes(agent_config)
-        market_full = market_tool.get_market_analysis(symbol, mode=trade_mode, timeframes=timeframes_to_fetch)
-        account_data = market_tool.get_account_status(symbol, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
-        if require_fresh:
-            analysis = market_full.get("analysis", {})
-            if any(not analysis.get(tf) or not analysis[tf].get("price")
-                   or (analysis[tf].get("data_quality") or {}).get("stale")
-                   for tf in timeframes_to_fetch):
-                raise ValueError("重试行情刷新不完整，停止本轮决策")
-            if account_data.get("error"):
-                raise ValueError("重试账户刷新失败，停止本轮决策")
-        news_context = fetch_news_risk_context(symbol)
-        database.save_news_snapshot(symbol, config_id, news_context)
+        markets, accounts, news_by_symbol = {}, {}, {}
+        for asset in symbols:
+            market = market_tool.get_market_analysis(asset, mode=trade_mode, timeframes=timeframes_to_fetch)
+            account = market_tool.get_account_status(asset, is_real=is_real_exec, agent_name=agent_name, config_id=config_id)
+            if require_fresh or trade_mode == 'SPOT_DCA':
+                analysis = market.get("analysis", {})
+                if any(not analysis.get(tf) or not analysis[tf].get("price")
+                       or (analysis[tf].get("data_quality") or {}).get("stale")
+                       for tf in timeframes_to_fetch):
+                    raise ValueError(f"{asset} 行情刷新不完整，停止本轮决策")
+                if account.get("error"):
+                    raise ValueError(f"{asset} 账户刷新失败，停止本轮决策")
+            news = fetch_news_risk_context(asset)
+            database.save_news_snapshot(asset, config_id, news)
+            markets[asset], accounts[asset], news_by_symbol[asset] = market, account, news
+        if trade_mode == 'SPOT_DCA':
+            from backend.utils.spot_context import scope_spot_accounts
+            accounts = scope_spot_accounts(config_id, accounts)
+        market_full, account_data, news_context = markets[symbol], accounts[symbol], news_by_symbol[symbol]
+        if multi_spot:
+            market_full = {**market_full, "symbols": symbols, "by_symbol": markets}
+            account_data = {
+                **account_data,
+                "by_symbol": accounts,
+                # Every asset uses the same quote wallet. Never sum the same cash.
+                "balance": min(float(a.get('balance') or 0) for a in accounts.values()),
+                "available_balance": min(float(a.get('available_balance') or 0) for a in accounts.values()),
+                "real_positions": [p for a in accounts.values() for p in a.get('real_positions', [])],
+                "real_open_orders": [{**o, 'symbol': o.get('symbol') or asset}
+                                     for asset, a in accounts.items() for o in a.get('real_open_orders', [])],
+                "external_open_orders": [o for a in accounts.values() for o in a.get('external_open_orders', [])],
+            }
 
         logger.debug(f"📊 Market data fetched: {len(market_full.get('analysis', {}))} timeframes")
         logger.debug(f"💰 Account balance: {account_data.get('balance', 0)} USDT")
     except Exception as e:
-        if require_fresh:
+        if require_fresh or trade_mode == 'SPOT_DCA':
             raise LLMInvocationError(
-                "重试数据刷新失败，已停止本轮决策。",
+                f"行情或账户刷新失败，已停止本轮决策：{e}",
                 error_type="data_refresh_error", retryable=False, attempts=0, original=e,
             ) from e
         logger.error(f"❌ [Data Fetch Error]: {e}")
@@ -834,16 +919,27 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         try:
             balance = account_data.get('balance', 0)
             positions = account_data.get('real_positions', [])
-            total_unrealized_pnl = sum([float(p.get('unrealized_pnl', 0)) for p in positions])
+            total_unrealized_pnl = sum(float(p.get('unrealized_pnl') or 0) for p in positions)
             
-            if now.minute < 15:
+            if now.minute < 15 and trade_mode != 'SPOT_DCA':
                 database.save_balance_snapshot(symbol, balance, total_unrealized_pnl, config_id=config_id)
                 
-            recent_trades = market_tool.fetch_recent_trades(symbol, limit=10)
-            if recent_trades:
-                database.save_trade_history(recent_trades)
-                database.sync_trade_position_history(config_id, symbol, recent_trades)
-            database.sync_open_position_history(config_id, symbol, positions)
+            for asset in symbols:
+                recent_trades = market_tool.fetch_recent_trades(asset, limit=10)
+                if recent_trades:
+                    if trade_mode == 'SPOT_DCA':
+                        with database.get_db_conn() as conn:
+                            owned_ids = {str(row[0]) for row in conn.execute(
+                                "SELECT order_id FROM orders WHERE config_id=? AND symbol=? AND trade_mode='SPOT_DCA' "
+                                "AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'", (config_id, asset))}
+                        recent_trades = [t for t in recent_trades if str(t.get('order')) in owned_ids]
+                        database.save_trade_history(recent_trades, config_id=config_id)
+                    else:
+                        database.save_trade_history(recent_trades)
+                        database.sync_trade_position_history(config_id, asset, recent_trades)
+                asset_positions = accounts[asset].get('real_positions', []) if multi_spot else positions
+                if trade_mode != 'SPOT_DCA':
+                    database.sync_open_position_history(config_id, asset, asset_positions)
         except Exception as e:
             logger.error(f"❌ Failed to save real-time stats: {e}")
 
@@ -870,6 +966,8 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         tf_data = raw_analysis[tf]
         indicators_summary[tf] = {
             "data_quality": tf_data.get("data_quality", {}),
+            "indicator_profile": tf_data.get("indicator_profile"),
+            "spot_context": tf_data.get("spot_context", {}),
             "vwap_anchor": tf_data.get("vwap_anchor"),
             "price": tf_data.get("price"),
             "trend": tf_data.get("trend", {}),
@@ -903,6 +1001,26 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
     }
 
     formatted_market_data = format_market_data_to_text(market_context_llm)
+    if multi_spot:
+        blocks = []
+        for asset, market in markets.items():
+            analysis = market.get('analysis', {})
+            primary = next(iter(analysis.values()), {})
+            blocks.append(f"## {asset}\n" + format_market_data_to_text({
+                'current_price': primary.get('price'), 'atr_base': primary.get('atr'),
+                'sentiment': market.get('sentiment'), 'news_context': news_by_symbol[asset],
+                'technical_indicators': analysis,
+            }))
+        formatted_market_data = '\n\n'.join(blocks)
+    prompt_template = resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger)
+    if '{history_text}' in prompt_template:
+        # Explicit custom-template compatibility; default decisions do not read
+        # or silently append seven days of duplicate narrative.
+        try:
+            daily_history = get_daily_summaries(config_id, days=7)
+        except Exception as exc:
+            logger.warning('Unable to load custom daily history for %s: %s', config_id, exc)
+            daily_history = [{'summary': '每日复盘读取失败'}]
     history_entries = []
     if daily_history:
         for ds in daily_history:
@@ -920,7 +1038,6 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
     next_run_time = calculate_next_run_time(agent_config, now_cn)
 
     positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
-    prompt_template = resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger)
     leverage = global_config.get_leverage(config_id)
 
     if is_real_exec:
@@ -994,7 +1111,7 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
     system_prompt = render_prompt(
         prompt_template,
         model=agent_config.get('model'),
-        symbol=symbol,
+        symbol=', '.join(symbols),
         leverage=leverage,
         current_time=current_time_str,
         next_run_time=next_run_time,
@@ -1014,6 +1131,34 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
 
     # Historical performance/closed-position detail is compressed by memory updates;
     # tool interfaces and execution semantics are carried by native tool descriptions.
+    if trade_mode == 'SPOT_DCA':
+        from backend.utils.spot_execution import spot_budget_status
+        budget_status = spot_budget_status(config_id, agent_config)
+        quote = symbol.split('/')[-1]
+        system_prompt += (
+            f'\n\n## 现货组合执行约束\n允许标的：{", ".join(symbols)}。计价币：{quote}。'
+            f'每个定投周期预算 {dca_budget} {quote} 由所有标的共享，同一周期重跑或聊天不重置额度。'
+            f'任务累计预算：{agent_config.get("dca_budget") if agent_config.get("dca_budget") is not None else "未设置"} {quote}。'
+        )
+        if '{positions_text}' not in prompt_template:
+            system_prompt += '\n\n## 当前持仓\n' + positions_text
+        system_prompt += (
+            f'\n预算周期：{budget_status["period_id"]}（上海时间）；'
+            f'本周期已成交及挂单占用 {budget_status["period_spent"]:g} {quote}，'
+            f'本周期剩余 {budget_status["period_remaining"]:g} {quote}；'
+            f'任务累计已占用 {budget_status["lifetime_committed"]:g} {quote}。'
+            f'预算允许新增买入上限 {budget_status["available"]:g} {quote}，'
+            '实际下单还须满足账户可用余额；最终以执行时校验为准。'
+        )
+        if budget_status['pending_unknown']:
+            system_prompt += '存在尚未核实结果的下单，当前禁止新增买入，必须先核实成交/挂单结果。'
+        external_count = len(account_data.get('external_open_orders') or [])
+        system_prompt += (
+            f'\n当前挂单列表仅包含本任务订单；所选标的另有 {external_count} 笔其他/未归属挂单，'
+            '其资金占用已体现在可用余额内，本任务无权撤销。'
+        )
+        if '{orders_text}' not in prompt_template:
+            system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
     if trade_mode in {'REAL', 'STRATEGY'} and '{orders_text}' not in prompt_template:
         system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
     if '{short_memory_text}' not in prompt_template:
@@ -1022,22 +1167,9 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         system_prompt += '\n\n## 长期交易规则\n' + trading_rules_text
     if '{recent_summaries_text}' not in prompt_template:
         system_prompt += '\n\n## 最近三轮决策摘要（历史计划，不是成交证明）\n' + recent_summaries_text
-    if '{history_text}' not in prompt_template:
-        system_prompt += '\n\n' + formatted_history_text
     if trade_mode in {'REAL', 'STRATEGY'}:
         exit_mode = effective_exit_mode(agent_config)
-        system_prompt += (
-            f'\n\n## 当前退出模式\nexit_mode={exit_mode}。'
-            '加仓通过 open，减仓通过 close 并明确 amount；同一轮多个操作可用 execute_trade_actions 按顺序提交。'
-            'close 的 exit_type=market 表示立即退出；take_profit_limit 配合 price 表示限价止盈；'
-            'stop_market 配合 trigger_price 表示触发市价止损。挂单成功不等于成交。'
-        )
-        if exit_mode == 'independent_exits':
-            system_prompt += '本模式开仓不附带 TP/SL；成交后用独立 close 退出单管理风险。'
-        elif exit_mode == 'attached_required':
-            system_prompt += '本模式每次开仓必须同时提供 TP 和 SL。'
-        else:
-            system_prompt += '本模式允许省略开仓 TP/SL；应明确未设置保护的风险和退出条件。'
+        system_prompt += f'\n\n当前退出模式：exit_mode={exit_mode}。'
     prompt_role = agent_config.get("system_prompt_role", "system")
     instruction = instruction_message(system_prompt, prompt_role)
     instruction.additional_kwargs["is_instruction"] = True
@@ -1049,9 +1181,11 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             messages.append(HumanMessage(content=state.human_message))
 
     return state.model_copy(update={
+        "symbol": symbol,
         "market_context": market_full,
         "account_context": account_data,
         "history_context": daily_history,
+        "spot_config_fingerprint": spot_config_fingerprint,
         "messages": messages
     })
 
@@ -1250,7 +1384,10 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     state = refresh_decision_context(state, config)
                 request_attempts += 1
                 turn_messages = adapt_messages_for_prompt_role(state.messages, current_cfg.get("system_prompt_role"))
-                return _stream_agent_turn(llm, turn_messages, configurable=configurable, run_config=config)
+                return audited_invoke(
+                    lambda: _stream_agent_turn(llm, turn_messages, configurable=configurable, run_config=config),
+                    config_id=config_id, purpose='decision', model=current_model,
+                    messages=turn_messages, tools=tools)
 
             response = invoke_with_retry(
                 invoke_decision,
@@ -1390,7 +1527,9 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 state = refresh_decision_context(state, config)
             request_attempts += 1
             messages = state.messages
-            return _stream_agent_turn(llm, messages, configurable=configurable, run_config=config)
+            return audited_invoke(
+                lambda: _stream_agent_turn(llm, messages, configurable=configurable, run_config=config),
+                config_id=config_id, purpose='decision', model=model_name, messages=messages, tools=tools)
 
         response = invoke_with_retry(
             invoke_decision,
@@ -1494,7 +1633,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     if final_full_content:
         # 汇总逻辑仅针对主要内容
         logic_source = full_content if full_content else final_full_content
-        strategy_logic = final_full_content if failed else summarize_content(logic_source, agent_config)
+        strategy_logic = decision_journal(state.messages, fallback=logic_source)
         
         try:
             database.save_summary(
@@ -1507,8 +1646,6 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 reasoning_content=reasoning_content,
                 reasoning_tokens=reasoning_tokens,
             )
-            if not failed:
-                update_turn_memory(config_id, agent_config, strategy_logic, state.messages)
             
             # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
             trade_mode = agent_config.get('mode', 'STRATEGY').upper()
@@ -1601,7 +1738,11 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
         )
 
         try:
-            result = run_trade_tool(tool_name, args, config_id, symbol, operation_id=tool_call['id'])
+            extra = {}
+            if str(configurable.get('agent_config', {}).get('mode') or '').upper() == 'SPOT_DCA':
+                extra['cycle_id'] = configurable.get('spot_cycle_id')
+                extra['expected_spot_fingerprint'] = state.spot_config_fingerprint or ''
+            result = run_trade_tool(tool_name, args, config_id, symbol, operation_id=tool_call['id'], **extra)
             tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=result))
             status = tool_result_status(result)
         except Exception as e:
@@ -1672,6 +1813,7 @@ def run_agent_for_config(config: dict, human_message: str = None, progress_callb
                     "config_id": config_id,
                     "agent_config": config,
                     "progress_callback": progress_callback,
+                    "spot_cycle_id": uuid.uuid4().hex,
                 }
             },
         )

@@ -1,4 +1,5 @@
 import json
+import math
 import uuid
 import time
 from datetime import datetime, timedelta
@@ -11,6 +12,7 @@ from backend.agent.agent_models import OpenOrderReal, OpenOrderSpotDCA, OpenOrde
 import backend.database as database
 from backend.utils.market_data import MarketTool
 from backend.utils.logger import setup_logger
+from backend.utils.spot_config_guard import serialized_spot_execution
 
 logger = setup_logger("AgentTools")
 DEFAULT_CANCEL_REASON = "未提供撤单原因"
@@ -156,6 +158,7 @@ class OpenRealSchema(BaseModel):
 
 class OpenSpotDCASchema(BaseModel):
     orders: List[OpenOrderSpotDCA] = Field(description="现货定投买入指令列表")
+    symbol: Optional[str] = Field(None, description="订单未填写 symbol 时使用的配置内现货标的")
 
 class CloseRealSchema(BaseModel):
     orders: List[CloseOrder] = Field(description="平仓指令列表")
@@ -196,6 +199,9 @@ class UpdateStrategyProtectionSchema(BaseModel):
 class CancelRealSchema(BaseModel):
     order_id: str = Field(description="要撤销的单个真实订单 ID。一次工具调用只填写一个订单 ID；多个订单请分别调用多次。")
     reason: str = Field(description="撤单原因，必须说明为什么撤销该订单。")
+
+class CancelSpotSchema(CancelRealSchema):
+    symbol: Optional[str] = Field(None, description="现货撤单必须选择该订单所属的配置内交易对；合约标的由系统固定")
 
 class OpenStrategySchema(BaseModel):
     orders: List[OpenOrderStrategy] = Field(description="模拟开仓指令列表")
@@ -241,50 +247,116 @@ class AnalyzeEventContractSchema(BaseModel):
 # ==========================================
 
 @tool(args_schema=OpenSpotDCASchema)
+@serialized_spot_execution
 def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbol: str):
-    """【现货限价定投买入】仅支持BUY_LIMIT，amount为标的币数量，需entry_price和reason。
+    """【多标的现货限价买入】仅支持BUY_LIMIT，每笔可指定配置内symbol，amount为该币数量。
+    所有订单和标的共享任务本轮预算及总预算，不能给每个币重复分配完整预算。
     有执行决定时调用，等待无需调用；用户要求保持的挂单不得改动。
     返回委托不等于成交，接口失败如实报告，不把文字计划当作已执行，不重复提交未知结果。
     """
+    import ccxt
     from backend.config import config as global_config
+    from backend.utils.spot_execution import (resolve_spot_symbol, reserve_spot_batch, finish_spot_reservation,
+                                               reconcile_spot_reservations, spot_client_order_id)
+    from backend.utils.trade_operations import current_operation_id, run_once, tool_result_status
+
     agent_config = global_config.get_config_by_id(config_id) or {}
     agent_name = agent_config.get('model', 'Unknown')
-    market_tool = MarketTool(config_id=config_id)
-    execution_results = []
+    parent_id = current_operation_id.get() or uuid.uuid4().hex
+    try:
+        if agent_config.get('mode', '').upper() != 'SPOT_DCA':
+            raise ValueError('现货买入仅允许 SPOT_DCA 任务')
+        orders = _normalize_order_models(orders, OpenOrderSpotDCA)
+        if not orders:
+            raise ValueError('orders 不能为空')
+        default_symbol = resolve_spot_symbol(agent_config, symbol)
+        # Validate the complete batch before constructing a network-capable client.
+        orders = [op.model_copy(update={'symbol': resolve_spot_symbol(agent_config, op.symbol or default_symbol)})
+                  for op in orders]
+        reconcile_spot_reservations(config_id, agent_config, lambda: MarketTool(config_id=config_id))
+        reserve_spot_batch(config_id, agent_config, parent_id, orders)
+    except Exception as exc:
+        return json.dumps({'status': 'failed', 'error': str(exc)}, ensure_ascii=False)
 
     try:
-        orders = _normalize_order_models(orders, OpenOrderSpotDCA)
+        market_tool = MarketTool(config_id=config_id)
+        account = market_tool.get_account_status(orders[0].symbol, is_real=True, agent_name=config_id)
+        if account.get('error'):
+            raise ValueError(f"无法核验现货账户: {account['error']}")
+        available = float(account.get('available_balance'))
+        requested = sum(op.entry_price * op.amount for op in orders)
+        if not math.isfinite(available) or available < requested:
+            raise ValueError(f'现货可用计价币余额不足：可用 {available:g}，组合订单需要 {requested:g}')
     except Exception as exc:
-        return f"❌ [Error] 现货开仓参数无效: {exc}"
+        for index in range(len(orders)):
+            finish_spot_reservation(config_id, f'{parent_id}:{index}', 'released')
+        return json.dumps({'status': 'failed', 'error': str(exc)}, ensure_ascii=False)
 
-    for op in orders:
+    results = []
+    stopped = False
+    for index, op in enumerate(orders):
+        child_id = f'{parent_id}:{index}'
+        if stopped:
+            finish_spot_reservation(config_id, child_id, 'released')
+            results.append({'index': index, 'symbol': op.symbol, 'status': 'not_executed'})
+            continue
+
+        def submit():
+            writing = False
+            try:
+                latest = market_tool.get_account_status(op.symbol, is_real=True, agent_name=config_id)
+                if latest.get('error'):
+                    raise ValueError(f"无法核验现货账户: {latest['error']}")
+                if _is_duplicate_real_order(op.action, op.entry_price, latest.get('real_open_orders', [])):
+                    finish_spot_reservation(config_id, child_id, 'released')
+                    return {'status': 'skipped', 'reason': '该标的同价位已有买入挂单'}
+                available = float(latest.get('available_balance'))
+                cost = op.entry_price * op.amount
+                if not math.isfinite(available) or available < cost:
+                    raise ValueError(f'现货可用计价币余额不足：可用 {available:g}，订单需要 {cost:g}')
+                writing = True
+                params = {**op.model_dump(), 'client_order_id': spot_client_order_id(config_id, child_id)}
+                response = market_tool.place_real_order(op.symbol, op.action, params, agent_name=config_id)
+                if not response or not response.get('id'):
+                    raise RuntimeError('交易所未返回有效订单 ID，下单结果待核验')
+                order_id = str(response['id'])
+                finish_spot_reservation(config_id, child_id, 'submitted', order_id)
+                cost = op.entry_price * op.amount
+                reason = f"💰 定投下单: {op.amount} {op.symbol.split('/')[0]} @ {op.entry_price} (金额: {cost:.2f}) | {op.reason}"
+                database.save_order_log(order_id, op.symbol, agent_name, 'buy', op.entry_price, 0, 0,
+                                        reason, trade_mode='SPOT_DCA', config_id=config_id,
+                                        amount=op.amount, event_type='ORDER_CREATED')
+                return {'status': 'submitted', 'order_id': order_id, 'symbol': op.symbol,
+                        'amount': op.amount, 'entry_price': op.entry_price,
+                        'message': '现货委托已提交，非成交确认'}
+            except Exception as exc:
+                # Network and unexpected exceptions after a write may hide a
+                # successful order; keep its reservation and stop the batch.
+                definite = not writing or isinstance(exc, (ccxt.InsufficientFunds, ccxt.InvalidOrder,
+                                                           ccxt.AuthenticationError, ccxt.PermissionDenied))
+                status = 'failed' if definite else 'unknown'
+                finish_spot_reservation(config_id, child_id, 'released' if definite else 'unknown')
+                return {'status': status, 'symbol': op.symbol, 'error': str(exc)}
+
         try:
-            action, price = op.action, op.entry_price
-            latest = market_tool.get_account_status(symbol, is_real=True, agent_name=config_id)
-            if _is_duplicate_real_order(action, price, latest.get('real_open_orders', [])):
-                execution_results.append(f"⚠️ [Duplicate] {action} @ {price} 已存在。")
-                continue
-            res = market_tool.place_real_order(symbol, action, op.model_dump(), agent_name=config_id)
-            if res and 'id' in res:
-                # 优化日志展示：增加金额和数量
-                cost = price * op.amount
-                enhanced_reason = f"💰 定投下单: {op.amount} {symbol.split('/')[0]} @ {price} (总额: ${cost:.2f}) | {op.reason}"
-                database.save_order_log(str(res['id']), symbol, agent_name, 'buy', price, 0, 0, enhanced_reason, trade_mode="SPOT_DCA", config_id=config_id, amount=op.amount, event_type="ORDER_CREATED")
-                execution_results.append(f"✅ [下单成功] {action} {symbol} @ {price}")
-            else:
-                execution_results.append(f"❌ [下单失败] 交易所未返回有效订单 ID")
-        except Exception as e:
-            execution_results.append(f"❌ [Error] 现货开仓失败: {str(e)}")
-    return "\n".join(execution_results)
+            result = run_once(config_id, op.symbol, child_id, op.model_dump(), submit)
+        except Exception as exc:
+            finish_spot_reservation(config_id, child_id, 'unknown')
+            result = {'status': 'unknown', 'symbol': op.symbol, 'error': str(exc)}
+        results.append({'index': index, **result})
+        stopped = tool_result_status(result) in {'failed', 'unknown'}
+    return json.dumps({'status': tool_result_status(results), 'results': results}, ensure_ascii=False)
 
 @tool(args_schema=OpenRealSchema)
 def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str):
     """【实盘合约限价开仓】有执行决定时调用，等待无需调用；接口失败如实报告，不把计划当作已执行。
     BUY_LIMIT开多LONG，SELL_LIMIT开空SHORT；必填amount（标的币数量）、entry_price、reason。
-    TP/SL要求由退出模式决定：attached_required必填，attached_optional选填，independent_exits禁止附带，成交后用close设置分批退出。
-    首次开仓省略的保护不会创建。同方向加仓省略TP/SL则继承现有计划；填写则先更新同方向整个仓位的对应保护，另一项保留，非单笔独立保护。
+    TP/SL要求由退出模式决定：attached_required必须同时提供TP和SL，attached_optional选填，independent_exits禁止附带TP/SL。
+    仅附带保护模式：首次开仓省略的保护不会创建。同方向加仓省略TP/SL则继承现有计划；填写则先更新同方向整个仓位的对应保护，另一项保留，非单笔独立保护。
     加仓不自动按均价移动保护，加仓失败不回滚已更新的保护。不得把浮亏加仓/扩大止损作为默认解套手段。
-    返回入场委托不等于成交；成交后独立维护任务安装交易所条件市价TP/SL（含部分成交），存在轮询及网络延迟，并非原子绑定。
+    返回入场委托不等于成交；仅attached_required/attached_optional由后台维护任务在成交后安装已配置的交易所条件市价TP/SL（含部分成交），存在轮询及网络延迟，并非原子绑定。
+    independent_exits不会自动安装TP/SL；Agent须在确认成交后调用close_position_real创建独立退出单，分别指定价格和数量。
+    省略TP/SL时须核对已有保护，明确未保护风险与退出条件。
     WAITING为待成交；ACTIVE且error为空仅代表最近核验通过；EXITING为退出清理未完成。不得声称未核验保护已生效。
     用户要求保持的挂单不得改动；失败/结果未知时停止并核对，不重复开仓。
     """
@@ -391,16 +463,62 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
             break
     return "\n".join(execution_results)
 
+@serialized_spot_execution
+def _cancel_spot_order(order_id: str, reason: str, config_id: str, symbol: str, agent_config: dict):
+    import math
+    from backend.config import config as runtime_config
+    from backend.utils.spot_execution import assert_owned_spot_order, resolve_spot_symbol
+
+    writing = False
+    try:
+        agent_config = runtime_config.get_config_by_id(config_id) or {}
+        symbol = resolve_spot_symbol(agent_config, symbol)
+        assert_owned_spot_order(None, symbol, order_id, config_id)
+        market_tool = MarketTool(config_id=config_id)
+        writing = True
+        market_tool.place_real_order(symbol, 'CANCEL', {'cancel_order_id': str(order_id)}, agent_name=config_id)
+        # Re-read fills after cancellation: a partial fill still consumes budget.
+        verified = market_tool.exchange.fetch_order(str(order_id), symbol)
+        status = str(verified.get('status') or '').lower()
+        if status not in {'canceled', 'cancelled', 'closed', 'filled', 'expired'} or verified.get('filled') is None:
+            raise ValueError('撤单或成交数量尚未核验，保留原预算占用')
+        filled = float(verified['filled'])
+        average = float(verified.get('average') or verified.get('price') or 0)
+        cost = float(verified.get('cost') or filled * average)
+        if any(not math.isfinite(value) or value < 0 for value in (filled, average, cost)) or (filled > 0 and cost <= 0):
+            raise ValueError('撤单后的成交成本无效，保留原预算占用')
+        local_status = 'FILLED' if status in {'closed', 'filled'} else 'CANCELLED'
+        with database.get_db_conn() as conn:
+            conn.execute("""UPDATE orders SET status=?,filled_amount=?,filled_cost=?,avg_fill_price=?
+                WHERE order_id=? AND config_id=? AND symbol=? AND trade_mode='SPOT_DCA'
+                AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'""",
+                         (local_status, filled, cost, average, str(order_id), config_id, symbol))
+            conn.commit()
+        database.upsert_spot_order_fill(str(order_id), config_id, symbol, local_status, filled, cost, average)
+        if local_status == 'CANCELLED':
+            database.save_order_log(str(order_id), symbol, agent_config.get('model', 'Unknown'), 'CANCEL_BUY',
+                                    0, 0, 0, f'撤单成功: {order_id} | {reason}', trade_mode='SPOT_DCA',
+                                    config_id=config_id, status='CANCELLED', event_type='CANCELLED')
+        return json.dumps({'status': 'completed', 'order_id': str(order_id), 'symbol': symbol,
+                           'exchange_status': status, 'filled_amount': filled, 'filled_cost': cost,
+                           'message': '订单已成交，未撤销成交' if local_status == 'FILLED' else '撤单及成交成本已核验'}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({'status': 'unknown' if writing else 'failed', 'order_id': str(order_id),
+                           'symbol': symbol, 'error': str(exc)}, ensure_ascii=False)
+
+
 @tool(args_schema=CancelRealSchema)
 def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
     """【撤销真实挂单】每次只传一个order_id及reason。用户明确要求保持的挂单不得撤销。
     不得取消保护来绕过入场/TP/SL校验，不用撤单重开绕过改单pending/未知状态。
     撤单结果以工具返回为准，失败或不确定需核对当前订单和成交，不声称已完成。
     """
-    if _exit_mode(config_id) == 'independent_exits':
-        return _independent_call(config_id, symbol, 'cancel', order_id=order_id)
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
+    if agent_config.get('mode', '').upper() == 'SPOT_DCA':
+        return _cancel_spot_order(order_id, reason, config_id, symbol, agent_config)
+    if _exit_mode(config_id) == 'independent_exits':
+        return _independent_call(config_id, symbol, 'cancel', order_id=order_id)
     agent_name = agent_config.get('model', 'Unknown')
     market_tool = MarketTool(config_id=config_id)
     execution_results = []
@@ -443,6 +561,9 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
     except Exception as e:
         execution_results.append(f"❌ [Error] 撤单失败 ({oid}): {str(e)}")
     return "\n".join(execution_results)
+
+
+cancel_orders_spot = cancel_orders_real.model_copy(update={'args_schema': CancelSpotSchema})
 
 
 @tool(args_schema=UpdateProtectionSchema)
@@ -608,7 +729,9 @@ def update_position_protection_strategy(order_id: str, reason: str, config_id: s
 @tool(args_schema=OpenStrategySchema)
 def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symbol: str):
     """【模拟合约限价开仓/加仓】BUY_LIMIT开多LONG，SELL_LIMIT开空SHORT；amount为标的币数量，需entry_price和reason。
-    TP/SL要求由任务退出模式决定；独立退出模式不附带整仓TP/SL，成交后用close设置不同价格和数量的退出单。
+    TP/SL要求由任务退出模式决定：attached_required必须同时提供TP和SL，attached_optional选填，independent_exits禁止附带TP/SL。
+    independent_exits不会自动安装TP/SL；Agent须在确认成交后调用close_position_strategy创建独立退出单，分别指定价格和数量。
+    省略TP/SL时须核对已有保护，明确未保护风险与退出条件。
     多单SL<入场<TP，空单TP<入场<SL；valid_duration_hours为挂单有效期，默认24小时。
     有执行决定时调用，等待无需调用。记录挂单不等于成交，以工具返回为准；失败如实报告，不能把文字计划当作已执行。
     用户要求保持的挂单不得改动，不盲目叠加同方向挂单/仓位。

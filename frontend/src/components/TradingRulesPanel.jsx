@@ -138,7 +138,7 @@ export default function TradingRulesPanel({ agents = [] }) {
   const [requestedConfigId, setRequestedConfigId] = useState(null);
   const configId = agents.some((agent) => agent.config_id === requestedConfigId) ? requestedConfigId : agents[0]?.config_id;
   return <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-    <Text type="secondary">{zh ? '规则按任务独立保存并进入模型决策上下文。模型可主动维护未锁定的规则；人工新增默认锁定。停用保留版本记录。' : 'Rules belong to each task and enter its decision context. Models can maintain unlocked rules. Human-created rules are locked by default. Disabling keeps their history.'}</Text>
+    <Text type="secondary">{zh ? '规则按任务独立保存。交易 Agent 只读取并执行规则；记忆复盘 Agent 可维护未锁定的规则。人工新增默认锁定，停用保留版本记录。' : 'Rules belong to each task. The trading agent reads and follows them; the memory review agent can maintain unlocked rules. Human-created rules are locked by default. Disabling keeps their history.'}</Text>
     <Select aria-label={zh ? '规则所属任务' : 'Rule task'} value={configId} onChange={setRequestedConfigId} style={{ width: '100%', maxWidth: 440 }} options={agents.map((agent) => ({ value: agent.config_id, label: `${agent.title || agent.config_id} · ${agent.symbol || ''}` }))} placeholder={zh ? '选择任务' : 'Select task'} />
     {configId ? <TaskTradingRules key={configId} configId={configId} /> : <Empty description={zh ? '请先创建并保存一个任务' : 'Create and save a task first'} />}
   </Space>;

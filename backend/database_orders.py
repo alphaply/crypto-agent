@@ -93,17 +93,33 @@ class OrderPersistenceStore:
             )
             conn.commit()
 
+    @staticmethod
+    def ensure_spot_fill_key(conn):
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        primary = [row[1] for row in conn.execute('PRAGMA table_info(spot_order_fills)') if row[5]]
+        if primary != ['order_id']:
+            return
+        conn.execute('''CREATE TABLE spot_order_fills_scoped (
+            order_id TEXT, config_id TEXT, symbol TEXT, status TEXT,
+            filled_qty REAL DEFAULT 0, filled_cost REAL DEFAULT 0, avg_fill_price REAL DEFAULT 0,
+            filled_at TEXT, last_sync_at TEXT, PRIMARY KEY(order_id, config_id, symbol))''')
+        conn.execute('''INSERT INTO spot_order_fills_scoped
+            SELECT order_id, config_id, symbol, status, filled_qty, filled_cost, avg_fill_price,
+            filled_at, last_sync_at FROM spot_order_fills''')
+        conn.execute('DROP TABLE spot_order_fills')
+        conn.execute('ALTER TABLE spot_order_fills_scoped RENAME TO spot_order_fills')
+
     def upsert_spot_fill(self, order_id, config_id, symbol, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None):
         last_sync_at = self._timestamp_factory()
         with self._conn_factory() as conn:
+            self.ensure_spot_fill_key(conn)
             cursor = conn.cursor()
             cursor.execute(
                 '''
                 INSERT INTO spot_order_fills (order_id, config_id, symbol, status, filled_qty, filled_cost, avg_fill_price, filled_at, last_sync_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(order_id) DO UPDATE SET
-                    config_id = excluded.config_id,
-                    symbol = excluded.symbol,
+                ON CONFLICT(order_id, config_id, symbol) DO UPDATE SET
                     status = excluded.status,
                     filled_qty = excluded.filled_qty,
                     filled_cost = excluded.filled_cost,

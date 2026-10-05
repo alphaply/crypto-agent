@@ -130,6 +130,18 @@ class OrderFillTests(unittest.TestCase):
         self.assertEqual(row["filled_at"], "2026-05-12 11:00:00")
         self.assertTrue(row["last_sync_at"])
 
+    def test_spot_fill_id_collisions_keep_other_symbols_and_tasks(self):
+        database.upsert_spot_order_fill('same-id', 'cfg-a', 'BTC/USDT', 'OPEN')
+        database.upsert_spot_order_fill('same-id', 'cfg-a', 'ETH/USDT', 'FILLED', 2, 50, 25)
+        database.upsert_spot_order_fill('same-id', 'cfg-b', 'BTC/USDT', 'PARTIAL', 1, 100, 100)
+        database.upsert_spot_order_fill('same-id', 'cfg-a', 'BTC/USDT', 'CANCELLED')
+        with database.get_db_conn() as conn:
+            rows = conn.execute('SELECT config_id,symbol,status FROM spot_order_fills').fetchall()
+        self.assertEqual({(row['config_id'], row['symbol']): row['status'] for row in rows}, {
+            ('cfg-a', 'BTC/USDT'): 'CANCELLED', ('cfg-a', 'ETH/USDT'): 'FILLED',
+            ('cfg-b', 'BTC/USDT'): 'PARTIAL',
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

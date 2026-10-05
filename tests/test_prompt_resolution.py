@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.app.services import config_service
-from backend.utils.prompt_utils import normalize_prompt_reference, resolve_prompt_file_content
+from backend.utils.prompt_utils import normalize_prompt_reference, resolve_prompt_file_content, render_prompt
+from backend.utils.prompts import PROMPT_MAP
 
 
 class _Logger:
@@ -32,6 +33,17 @@ class PromptResolutionTests(unittest.TestCase):
         )
 
         self.assertEqual(content, "custom prompt")
+
+    def test_selectable_bundled_templates_match_default_templates(self):
+        prompt_dir = Path(__file__).resolve().parents[1] / 'backend' / 'agent' / 'prompts'
+        for mode, name in [('REAL', 'real.txt'), ('STRATEGY', 'strategy.txt'), ('SPOT_DCA', 'dca.txt')]:
+            with self.subTest(mode=mode):
+                template = prompt_dir.joinpath(name).read_text(encoding='utf-8')
+                self.assertEqual(template.strip(), PROMPT_MAP[mode].strip())
+                rendered = render_prompt(template, symbol='ETH/USDT', balance=100.0)
+                self.assertIn('ETH/USDT', rendered)
+                self.assertNotIn('{', rendered)
+                self.assertNotIn('}', rendered)
 
     def test_resolve_prompt_file_content_accepts_backend_as_project_root(self):
         content = resolve_prompt_file_content(

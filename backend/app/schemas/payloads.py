@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from backend.utils.polymarket import PolymarketSettings
 from backend.utils.run_schedule import RunScheduleRule
 
@@ -136,7 +136,8 @@ class ConfigAgentPayload(BaseModel):
 
     config_id: str
     title: str | None = None
-    symbol: str
+    symbol: str = ""
+    symbols: list[str] | None = None
     enabled: bool = True
     mode: str = "STRATEGY"
     exit_mode: Literal["attached_required", "attached_optional", "independent_exits"] | None = None
@@ -166,6 +167,12 @@ class ConfigAgentPayload(BaseModel):
     exchange_profile_id: str | None = None
     summarizer: AgentSummarizerPayload = Field(default_factory=AgentSummarizerPayload)
     secrets: AgentSecretsPayload = Field(default_factory=AgentSecretsPayload)
+
+    @model_validator(mode="after")
+    def require_market_target(self):
+        if self.mode.upper() != "SPOT_DCA" and not self.symbol.strip():
+            raise ValueError("symbol is required for non-spot tasks")
+        return self
 
 
 class LlmProviderPayload(BaseModel):

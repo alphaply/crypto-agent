@@ -23,8 +23,12 @@ def daily_exchange_evidence(config: dict, date_str: str) -> str:
             ledger.sync_income(start_ms, end_ms - 1)
             return execution_context(config['config_id'], hours=24, limit=200,
                                      now=start + timedelta(days=1), scope=ledger.scope, symbol=ledger.symbol)
-        trades = ex.fetch_my_trades(config['symbol'], since=start_ms, limit=None,
-                                   params={'until': end_ms - 1, 'paginate': True, 'paginationCalls': 5})
+        from backend.utils.spot_portfolio import get_config_symbols
+        trades = []
+        for symbol in get_config_symbols(config):
+            trades.extend({**trade, 'symbol': trade.get('symbol') or symbol} for trade in ex.fetch_my_trades(
+                symbol, since=start_ms, limit=None,
+                params={'until': end_ms - 1, 'paginate': True, 'paginationCalls': 5}))
         unique = {}
         for trade in trades:
             if not start_ms <= int(trade.get('timestamp') or 0) < end_ms:
@@ -32,7 +36,7 @@ def daily_exchange_evidence(config: dict, date_str: str) -> str:
             info = trade.get('info') or {}
             item = {k: trade.get(k) for k in ('id', 'order', 'timestamp', 'symbol', 'side', 'price', 'amount', 'cost', 'fee')}
             item['realized_pnl'] = trade.get('realizedPnl', info.get('realizedPnl', info.get('fillPnl')))
-            unique[str(trade.get('id'))] = item
+            unique[(item['symbol'], str(trade.get('id')))] = item
         return '交易所当日成交（优先于本地历史；属于该账户该品种，可能包含手工/其他策略，不得全部归因本Agent；最多5页，完整性未证明；缺失盈亏不填0）：\n' + json.dumps({
             'returned_fill_count': len(unique), 'omitted_detail_count': max(0, len(unique) - 200),
             'fills': sorted(unique.values(), key=lambda item: item['timestamp'])[-200:],
@@ -55,7 +59,7 @@ def daily_execution_evidence(config_id: str, date_str: str) -> str:
             ).fetchall()
             # Raw exchange payloads can be very large and are not needed for a review.
             allowed = {
-                "order_id", "timestamp", "trade_mode", "side", "entry_price", "amount",
+                "order_id", "symbol", "timestamp", "trade_mode", "side", "entry_price", "amount",
                 "take_profit", "stop_loss", "reason", "status", "filled_amount",
                 "avg_fill_price", "filled_at", "event_type", "realized_pnl",
                 "opened_at", "closed_at", "close_price", "source", "position_key",
