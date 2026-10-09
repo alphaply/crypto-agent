@@ -37,7 +37,7 @@ def enqueue_memory_update(config_id, run_id, summary_id):
 
 
 def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bool:
-    from backend.agent import agent_graph as graph
+    from backend.agent import memory_service as memory
     with memory_review_lease(config_id) as acquired:
         if not acquired:
             return False
@@ -61,8 +61,8 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
                 WHERE config_id=? AND timestamp>=? AND timestamp<=? AND id<=?
                 ORDER BY timestamp,id''', (config_id, beginning, row['timestamp'], row['id'])).fetchall()
         try:
-            previous = graph.format_short_memory_for_llm(config_id)
-            evidence = graph.format_recent_position_history_for_memory(config_id, agent_config)
+            previous = memory.format_short_memory_for_llm(config_id)
+            evidence = memory.format_recent_position_history_for_memory(config_id, agent_config)
             entries = []
             for item in rows:
                 text = str(item['strategy_logic'] or '')
@@ -78,14 +78,14 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
             source = ('过去4h滚动窗口：' + beginning + ' → ' + row['timestamp']
                       + '\n当前短期记忆：\n' + previous + '\n本轮及前4h摘要（只出现一次）：\n'
                       + '\n'.join(entries)
-                      + graph._memory_evidence_section(evidence))
-            result = graph._run_memory_organizer(source, {**agent_config, 'config_id': config_id},
-                                                operation_id='run-memory:' + run_id, previous=previous)
-            if graph._is_invalid_short_memory_summary(result, source):
+                      + memory.format_memory_evidence(evidence))
+            result = memory.organize_memory(source, {**agent_config, 'config_id': config_id},
+                                            operation_id='run-memory:' + run_id)
+            if memory.is_invalid_memory(result, source):
                 raise ValueError('记忆整理未返回有效结果，旧记忆已保留')
             # Stable subsecond identity prevents same-second manual runs overwriting one another.
             key = end.replace(microsecond=int(row['id']) % 1000000).isoformat(sep=' ', timespec='microseconds')
-            graph.save_short_memory(key, row['timestamp'], agent_config.get('symbol', 'Unknown'), config_id,
+            memory.save_short_memory(key, row['timestamp'], agent_config.get('symbol', 'Unknown'), config_id,
                                     result, evidence, len(rows), window_start=beginning,
                                     window_end=row['timestamp'], source_summary_ids=[item['id'] for item in rows],
                                     run_id=run_id)

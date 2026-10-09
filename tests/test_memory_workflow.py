@@ -1,3 +1,4 @@
+from backend.agent import memory_service
 from datetime import datetime
 import json
 from pathlib import Path
@@ -30,9 +31,11 @@ def local_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(db_path))
     with database.get_db_conn() as conn:
         initialize_schema(conn)
+        conn.execute("INSERT INTO summaries(timestamp,config_id,strategy_logic) VALUES('2026-10-06 09:00:00','cfg','new evidence')")
+        conn.commit()
     monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [CONFIG])
-    monkeypatch.setattr(agent_graph, 'datetime', ReviewClock)
-    monkeypatch.setattr(agent_graph, 'format_recent_position_history_for_memory', lambda *_: EVIDENCE)
+    monkeypatch.setattr(memory_service, 'datetime', ReviewClock)
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: EVIDENCE)
     # Every paid boundary is mocked, including paths expected never to reach it.
     runner = Mock(side_effect=AssertionError('Unexpected memory model invocation'))
     monkeypatch.setattr(memory_agent, 'run_memory_review', runner)
@@ -44,27 +47,26 @@ def prior_memory(evidence='old evidence'):
                                'BTC/USDT', 'cfg', 'prior verified memory', evidence, 1)
 
 
-def bucket_operation():
-    start, end = agent_graph.get_short_memory_bucket(NOW)
-    return f'bucket:cfg:{start:%Y-%m-%d %H:%M:%S}:{end:%Y-%m-%d %H:%M:%S}'
+def rolling_operation():
+    return 'rolling:cfg:2026-10-06 09:00:00'
 
 
 def test_partial_rule_success_is_persisted_without_overwriting_memory_or_retry(local_db):
     _, runner = local_db
     prior_memory()
     before = database.get_short_memories('cfg', 10)
-    receipts = [{'success': True, 'status': 'completed', 'operation_id': bucket_operation() + ':rules',
+    receipts = [{'success': True, 'status': 'completed', 'operation_id': rolling_operation() + ':rules',
                  'rules': [{'rule_id': 'r1', 'revision': 2, 'config_id': 'cfg', 'content': 'Wait for confirmation'}]}]
     runner.side_effect = None
     runner.return_value = MemoryReviewResult(status='partial', rule_receipts=receipts, error='Final model call failed')
 
-    assert not agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
-    saved = memory_workflow.get_review_result(bucket_operation())
+    assert not memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=NOW)
+    saved = memory_workflow.get_review_result(rolling_operation())
     assert saved['status'] == 'partial' and saved['summary'] == ''
     assert saved['rule_receipts'] == receipts and saved['error'] == 'Final model call failed'
     assert database.get_short_memories('cfg', 10) == before
 
-    assert not agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
+    assert not memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=NOW)
     runner.assert_called_once()
     assert database.get_short_memories('cfg', 10) == before
 
@@ -75,47 +77,23 @@ def test_failed_review_preserves_memory_but_can_retry_same_window(local_db):
     before = database.get_short_memories('cfg', 10)
     runner.side_effect = None
     runner.return_value = MemoryReviewResult(status='failed', error='Model unavailable')
-    assert not agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
-    assert memory_workflow.get_review_result(bucket_operation()) is None
+    assert not memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=NOW)
+    assert memory_workflow.get_review_result(rolling_operation()) is None
     assert database.get_short_memories('cfg', 10) == before
 
     runner.return_value = MemoryReviewResult(status='completed', summary='new reviewed evidence')
-    assert agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
+    assert memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=NOW)
     assert runner.call_count == 2
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'new reviewed evidence'
-
-
-def test_completed_zero_source_bucket_is_not_reviewed_again(local_db):
-    _, runner = local_db
-    runner.side_effect = None
-    runner.return_value = MemoryReviewResult(status='completed', summary='No new decisions; actual historical fills reviewed')
-    assert agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
-    latest = database.get_short_memories('cfg', 1)[0]
-    assert latest['source_count'] == 0
-    assert not agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
-    runner.assert_called_once()
-
-
-def test_no_new_decisions_or_evidence_advances_window_without_model(local_db):
-    _, runner = local_db
-    prior_memory(EVIDENCE.replace('2026-10-06 10:00', '2026-10-06 04:00'))
-    assert agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
-    start, end = agent_graph.get_short_memory_bucket(NOW)
-    saved = database.get_short_memory('cfg', start.strftime('%Y-%m-%d %H:%M:%S'))
-    assert saved['bucket_end'] == end.strftime('%Y-%m-%d %H:%M:%S')
-    assert saved['market_summary'] == 'prior verified memory'
-    assert saved['position_summary'] == EVIDENCE and saved['source_count'] == 0
-    assert not agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
-    runner.assert_not_called()
 
 
 def test_completed_result_replay_uses_saved_review_without_another_model(local_db):
     _, runner = local_db
     runner.side_effect = None
     runner.return_value = MemoryReviewResult(status='completed', summary='Reviewed conclusion')
-    args = {'operation_id': 'explicit:cfg:evidence-hash', 'previous': 'old'}
-    assert agent_graph._run_memory_organizer('evidence', CONFIG, **args) == 'Reviewed conclusion'
-    assert agent_graph._run_memory_organizer('evidence', CONFIG, **args) == 'Reviewed conclusion'
+    args = {'operation_id': 'explicit:cfg:evidence-hash'}
+    assert memory_service.organize_memory('evidence', CONFIG, **args) == 'Reviewed conclusion'
+    assert memory_service.organize_memory('evidence', CONFIG, **args) == 'Reviewed conclusion'
     runner.assert_called_once_with('evidence', CONFIG, operation_id=args['operation_id'])
 
 
@@ -147,7 +125,7 @@ def test_lease_releases_after_exception_and_serialized_helpers_do_not_enter(loca
     _, runner = local_db
     with memory_workflow.memory_review_lease('cfg') as acquired:
         assert acquired
-        assert not agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
+        assert not memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=NOW)
         runner.assert_not_called()
     with pytest.raises(RuntimeError):
         with memory_workflow.memory_review_lease('cfg') as acquired:

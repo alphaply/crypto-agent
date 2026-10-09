@@ -377,8 +377,7 @@ function PromptVarHints({ content, vars, locale }) {
 const AGENT_PROMPT_VARS = [
   'current_time', 'symbol', 'leverage', 'current_price', 'atr_15m',
   'balance', 'positions_text', 'orders_text', 'formatted_market_data',
-  'short_memory_text', 'history_text', 'next_run_time',
-  'recent_summaries_text', 'trading_rules_text',
+  'short_memory_text', 'recent_summaries_text', 'trading_rules_text', 'next_run_time',
   'dca_period_text', 'dca_budget',
 ];
 
@@ -1754,7 +1753,7 @@ export default function AdminPage() {
                       <PromptCodeEditor
                         value={promptContent}
                         onChange={updatePromptContent}
-                        placeholder="Use {current_time}, {symbol}, {formatted_market_data}, {positions_text}, {orders_text}, {history_text}, {short_memory_text}"
+                        placeholder="Use {current_time}, {symbol}, {formatted_market_data}, {positions_text}, {orders_text}, {short_memory_text}"
                         height={promptExpanded ? "calc(100dvh - 290px)" : 520}
                         onSave={savePrompt}
                         disabled={promptLoading || promptSaving}

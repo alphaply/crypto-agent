@@ -1,3 +1,4 @@
+from backend.agent.decision_context import DecisionMemory
 from unittest.mock import Mock
 
 import pytest
@@ -56,11 +57,11 @@ def portfolio(monkeypatch, tmp_path):
                                 event_type='ORDER_CREATED')
     monkeypatch.setattr(graph, 'MarketTool', Mock(return_value=market))
     monkeypatch.setattr(graph, 'fetch_news_risk_context', lambda symbol: {})
-    monkeypatch.setattr(graph, '_load_decision_memory', lambda _: ([], 'short', 'recent', 'rules'))
+    monkeypatch.setattr(graph, 'load_decision_memory', lambda _: DecisionMemory('short', 'recent', 'rules'))
     for name in ('save_news_snapshot', 'save_balance_snapshot', 'sync_open_position_history'):
         monkeypatch.setattr(graph.database, name, Mock())
     monkeypatch.setattr(graph.global_config, 'get_leverage', lambda _: 1)
-    state = AgentState(symbol='BTC/USDT', messages=[], market_context={}, account_context={}, history_context=[])
+    state = AgentState(symbol='BTC/USDT', messages=[], market_context={}, account_context={},)
     return cfg, market, state
 
 

@@ -128,10 +128,8 @@ class AgentSummarizerPayload(BaseModel):
     api_base: str | None = None
     temperature: float | None = None
     strategy_prompt_file: str | None = None
-    daily_prompt_file: str | None = None
     short_memory_prompt_file: str | None = None
     strategy_prompt: str | None = None
-    daily_prompt: str | None = None
     short_memory_prompt: str | None = None
 
 

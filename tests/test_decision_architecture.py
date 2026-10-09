@@ -1,9 +1,10 @@
+from backend.agent import decision_context
 from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from backend.agent import agent_graph, tool_registry
+from backend.agent import tool_registry
 from backend.utils.decision_journal import decision_journal
 
 
@@ -41,10 +42,11 @@ def test_journal_preserves_full_fallback_when_model_has_no_text():
 
 
 def test_default_context_does_not_read_daily_reports(monkeypatch):
-    daily = Mock(side_effect=AssertionError('Daily reviews must be explicitly requested by a custom template'))
-    monkeypatch.setattr(agent_graph, 'get_daily_summaries', daily)
-    monkeypatch.setattr(agent_graph, 'format_short_memory_for_llm', lambda *_, **__: 'memory')
-    monkeypatch.setattr(agent_graph, 'format_recent_decisions', lambda *_: 'decisions')
-    monkeypatch.setattr(agent_graph, 'format_trading_rules_context', lambda *_: 'rules')
-    assert agent_graph._load_decision_memory('cfg') == ([], 'memory', 'decisions', 'rules')
+    from backend import database
+    daily = Mock(side_effect=AssertionError('Daily reviews are retired'))
+    monkeypatch.setattr(database, 'get_daily_summaries', daily)
+    monkeypatch.setattr(decision_context, 'format_short_memory_for_llm', lambda *_, **__: 'memory')
+    monkeypatch.setattr(decision_context, 'format_recent_decisions', lambda *_: 'decisions')
+    monkeypatch.setattr(decision_context, 'format_trading_rules_context', lambda *_: 'rules')
+    assert decision_context.load_decision_memory('cfg') == decision_context.DecisionMemory('memory', 'decisions', 'rules')
     daily.assert_not_called()

@@ -2,7 +2,7 @@ import concurrent.futures
 import sqlite3
 import unittest
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import patch
 
 from backend.app.core import scheduler
@@ -32,12 +32,6 @@ class SchedulerResilienceTests(unittest.TestCase):
         scheduler._running_maintenance_futures.clear()
         scheduler._agent_executor = None
         scheduler._maintenance_executor = None
-        scheduler._daily_summary_future = None
-        scheduler._daily_summary_done_date = None
-        scheduler._daily_summary_last_attempt_at = None
-        scheduler._short_memory_done_buckets.clear()
-        scheduler._short_memory_last_attempts.clear()
-        scheduler._short_memory_future = None
         scheduler._last_heartbeat_key = None
 
     def tearDown(self):
@@ -46,12 +40,6 @@ class SchedulerResilienceTests(unittest.TestCase):
         scheduler._running_maintenance_futures.clear()
         scheduler._agent_executor = None
         scheduler._maintenance_executor = None
-        scheduler._daily_summary_future = None
-        scheduler._daily_summary_done_date = None
-        scheduler._daily_summary_last_attempt_at = None
-        scheduler._short_memory_done_buckets.clear()
-        scheduler._short_memory_last_attempts.clear()
-        scheduler._short_memory_future = None
 
     def test_interval_20_is_due_only_on_00_20_40(self):
         cfg = {"config_id": "cfg-a", "mode": "STRATEGY", "run_interval": 20}
@@ -167,107 +155,6 @@ class SchedulerResilienceTests(unittest.TestCase):
 
         self.assertFalse(submitted)
         self.assertEqual(agent_executor.submissions, [])
-
-    def test_daily_summary_waits_until_configured_time_then_catches_up(self):
-        cfg = {"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True}
-        before = scheduler.TZ_CN.localize(datetime(2026, 8, 15, 0, 4, 0))
-        later = scheduler.TZ_CN.localize(datetime(2026, 8, 15, 13, 0, 0))
-
-        with patch.dict("os.environ", {"DAILY_SUMMARY_TIME": "00:05"}), \
-            patch("backend.app.core.scheduler.global_config.get_all_symbol_configs", return_value=[cfg]), \
-            patch("backend.app.core.scheduler._ensure_balance_snapshot_for_date"), \
-            patch("backend.database.get_daily_summaries", return_value=[]), \
-            patch("backend.database.get_pending_daily_summary_data", return_value=[{"strategy_logic": "logic"}]), \
-            patch("backend.app.core.scheduler.generate_manual_daily_summary", return_value=True) as generate:
-            not_due = scheduler.run_daily_summary_job(now=before)
-            completed = scheduler.run_daily_summary_job(now=later)
-
-        self.assertEqual(not_due["status"], "not_due")
-        self.assertEqual(completed["status"], "completed")
-        self.assertEqual(completed["generated"], 1)
-        generate.assert_called_once_with("cfg-a", "2026-08-14")
-
-    def test_daily_summary_rebuilds_prompt_echo_and_retries_failures(self):
-        cfg = {"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True}
-        first = scheduler.TZ_CN.localize(datetime(2026, 8, 15, 0, 5, 0))
-        prompt_echo = (
-            "以下是 2026-08-14 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾..."
-        )
-
-        with patch.dict(
-            "os.environ",
-            {"DAILY_SUMMARY_TIME": "00:05", "DAILY_SUMMARY_RETRY_MINUTES": "15"},
-        ), patch(
-            "backend.app.core.scheduler.global_config.get_all_symbol_configs", return_value=[cfg]
-        ), patch(
-            "backend.app.core.scheduler._ensure_balance_snapshot_for_date"
-        ), patch(
-            "backend.database.get_daily_summaries",
-            return_value=[{"date": "2026-08-14", "summary": prompt_echo}],
-        ), patch(
-            "backend.database.get_pending_daily_summary_data",
-            return_value=[{"strategy_logic": "logic"}],
-        ), patch(
-            "backend.app.core.scheduler.generate_manual_daily_summary",
-            side_effect=[False, True],
-        ) as generate:
-            failed = scheduler.run_daily_summary_job(now=first)
-            waiting = scheduler.run_daily_summary_job(now=first + timedelta(minutes=10))
-            completed = scheduler.run_daily_summary_job(now=first + timedelta(minutes=15))
-
-        self.assertEqual(failed["status"], "retry_pending")
-        self.assertEqual(waiting["status"], "retry_wait")
-        self.assertEqual(completed["status"], "completed")
-        self.assertEqual(generate.call_count, 2)
-
-    def test_short_memory_catches_up_latest_completed_bucket(self):
-        cfg = {"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True}
-        after_boundary = scheduler.TZ_CN.localize(datetime(2026, 9, 5, 12, 17, 0))
-
-        with patch(
-            "backend.app.core.scheduler.global_config.get_all_symbol_configs",
-            return_value=[cfg],
-        ), patch(
-            "backend.app.core.scheduler.generate_short_memory_for_config",
-            return_value=True,
-        ) as generate, patch(
-            "backend.app.core.scheduler.get_short_memory",
-            return_value={"source_count": 3},
-        ):
-            result = scheduler.run_short_memory_job(now=after_boundary)
-
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["bucket_start"], "2026-09-05 08:00:00")
-        self.assertEqual(result["bucket_end"], "2026-09-05 12:00:00")
-        self.assertEqual(result["generated"], 1)
-        generate.assert_called_once()
-        self.assertEqual(
-            generate.call_args.kwargs["now_cn"],
-            scheduler.TZ_CN.localize(datetime(2026, 9, 5, 11, 59, 59)),
-        )
-
-    def test_short_memory_retries_failed_config_after_interval(self):
-        cfg = {"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True}
-        first = scheduler.TZ_CN.localize(datetime(2026, 9, 5, 12, 1, 0))
-
-        with patch.dict("os.environ", {"SHORT_MEMORY_RETRY_MINUTES": "15"}), patch(
-            "backend.app.core.scheduler.global_config.get_all_symbol_configs",
-            return_value=[cfg],
-        ), patch(
-            "backend.app.core.scheduler.generate_short_memory_for_config",
-            side_effect=[False, True],
-        ) as generate, patch(
-            "backend.app.core.scheduler.get_short_memory",
-            return_value=None,
-        ):
-            failed = scheduler.run_short_memory_job(now=first)
-            waiting = scheduler.run_short_memory_job(now=first + timedelta(minutes=10))
-            completed = scheduler.run_short_memory_job(now=first + timedelta(minutes=15))
-
-        self.assertEqual(failed["status"], "retry_pending")
-        self.assertEqual(waiting["status"], "retry_wait")
-        self.assertEqual(completed["status"], "completed")
-        self.assertEqual(generate.call_count, 2)
 
 
 if __name__ == "__main__":

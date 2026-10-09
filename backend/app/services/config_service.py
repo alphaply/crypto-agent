@@ -34,7 +34,7 @@ from backend.app.services.common import logger, prompt_dir
 BLOCKED_PROMPT_FILES = set()
 ALLOWED_MARKET_TIMEFRAMES = {"15m", "30m", "1h", "4h", "1d", "1w", "1M"}
 PROMPT_REFERENCE_FIELDS = ("prompt_file",)
-SUMMARIZER_PROMPT_FIELDS = ("strategy_prompt_file", "daily_prompt_file", "short_memory_prompt_file")
+SUMMARIZER_PROMPT_FIELDS = ("strategy_prompt_file", "short_memory_prompt_file")
 
 
 def _serialized_config_write(function):

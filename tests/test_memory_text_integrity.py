@@ -1,4 +1,5 @@
 """Regression coverage for complete memory text across review and prompt boundaries."""
+from backend.agent import memory_service, decision_context
 
 from datetime import datetime, timedelta
 from unittest.mock import Mock
@@ -45,7 +46,7 @@ def test_strategy_summary_failure_preserves_entire_original_text(local_db, monke
     assert agent_graph.summarize_content(source, CONFIG) == agent_graph.STRATEGY_SUMMARY_FAILURE_PREFIX + source
 
 
-@pytest.mark.parametrize('summary_type', ['strategy', 'daily'])
+@pytest.mark.parametrize('summary_type', ['strategy'])
 def test_completed_long_summary_and_source_are_preserved(local_db, monkeypatch, summary_type):
     source = full_text('输入')
     result = full_text('完整复盘')
@@ -58,28 +59,7 @@ def test_completed_long_summary_and_source_are_preserved(local_db, monkeypatch, 
     assert '150字以内' not in prompt and '600字以内' not in prompt
 
 
-@pytest.mark.parametrize('reason', ['length', 'max_tokens'])
-def test_incomplete_daily_summary_never_replaces_saved_review(local_db, monkeypatch, reason):
-    day = '2026-10-01'
-    database.save_daily_summary(day, CONFIG['symbol'], 'cfg', 'previous complete daily review', 1)
-    with database.get_db_conn() as conn:
-        conn.execute(
-            'INSERT INTO summaries(timestamp,config_id,strategy_logic) VALUES(?,?,?)',
-            (day + ' 08:00:00', 'cfg', full_text('新策略')),
-        )
-        conn.commit()
-    from backend.utils import trade_review
-
-    monkeypatch.setattr(trade_review, 'daily_exchange_evidence', lambda *_: '')
-    monkeypatch.setattr(trade_review, 'daily_execution_evidence', lambda *_: 'Execution facts')
-    response = AIMessage(content='incomplete daily', response_metadata={'finish_reason': reason})
-    monkeypatch.setattr(agent_graph, 'build_chat_model', lambda **_: Mock(invoke=Mock(return_value=response)))
-
-    assert not agent_graph.generate_manual_daily_summary('cfg', day)
-    assert database.list_daily_summaries(config_id='cfg')[0]['summary'] == 'previous complete daily review'
-
-
-@pytest.mark.parametrize('writer', ['turn', 'rolling', 'bucket'])
+@pytest.mark.parametrize('writer', ['run', 'rolling'])
 def test_every_memory_writer_preserves_long_input_and_output(local_db, monkeypatch, writer):
     previous = full_text('旧记忆')
     strategy = full_text('决策')
@@ -95,26 +75,25 @@ def test_every_memory_writer_preserves_long_input_and_output(local_db, monkeypat
         )
         conn.commit()
     organizer = Mock(return_value=reviewed)
-    monkeypatch.setattr(agent_graph, '_run_memory_organizer', organizer)
-    monkeypatch.setattr(agent_graph, 'format_recent_position_history_for_memory', lambda *_: evidence)
+    monkeypatch.setattr(memory_service, 'organize_memory', organizer)
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: evidence)
 
-    if writer == 'turn':
+    if writer == 'run':
+        from tests.test_turn_memory_and_review import run_persisted_memory
         messages = [ToolMessage(content=execution, tool_call_id='result', name='check_order')]
-        changed = agent_graph.update_turn_memory('cfg', CONFIG, strategy, messages)
-    elif writer == 'rolling':
-        changed = agent_graph.generate_rolling_short_memory_for_config('cfg', CONFIG, now_cn=NOW)
+        changed = run_persisted_memory('cfg', CONFIG, strategy, messages)
     else:
-        changed = agent_graph.generate_short_memory_for_config('cfg', now_cn=NOW)
+        changed = memory_service.generate_rolling_short_memory_for_config('cfg', CONFIG, now_cn=NOW)
 
     assert changed
     source = organizer.call_args.args[0]
     assert previous in source and strategy in source and evidence in source
-    if writer == 'turn':
-        assert execution in source
+    if writer == 'run':
+        assert __import__('json').dumps(execution, ensure_ascii=False) in source
     saved = database.get_short_memories('cfg', 1)[0]
     assert saved['market_summary'] == reviewed
     assert saved['position_summary'] == evidence
-    assert agent_graph.format_short_memory_for_llm('cfg') == reviewed
+    assert decision_context.format_short_memory_for_llm('cfg') == reviewed
 
 
 def test_rolling_review_reads_every_record_within_selected_window(local_db, monkeypatch):
@@ -134,10 +113,10 @@ def test_rolling_review_reads_every_record_within_selected_window(local_db, monk
         )
         conn.commit()
     organizer = Mock(return_value='Complete window review')
-    monkeypatch.setattr(agent_graph, '_run_memory_organizer', organizer)
-    monkeypatch.setattr(agent_graph, 'format_recent_position_history_for_memory', lambda *_: '')
+    monkeypatch.setattr(memory_service, 'organize_memory', organizer)
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: '')
 
-    assert agent_graph.generate_rolling_short_memory_for_config('cfg', CONFIG, now_cn=NOW, hours=12)
+    assert memory_service.generate_rolling_short_memory_for_config('cfg', CONFIG, now_cn=NOW, hours=12)
     source = organizer.call_args.args[0]
     assert all(record[2] in source for record in records)
     assert 'too-old' not in source and 'future-evidence' not in source and 'another-config-evidence' not in source
@@ -160,14 +139,9 @@ def test_complete_memory_and_recent_decisions_reach_trading_prompt(local_db, mon
     monkeypatch.setattr(agent_graph, 'MarketTool', lambda **_: market)
     monkeypatch.setattr(agent_graph, 'resolve_prompt_template', lambda *_: 'Custom prompt {symbol}')
     monkeypatch.setattr(agent_graph.global_config, 'get_leverage', lambda *_: 2)
-    state = AgentState(symbol=CONFIG['symbol'], messages=[], market_context={}, account_context={}, history_context=[])
+    state = AgentState(symbol=CONFIG['symbol'], messages=[], market_context={}, account_context={},)
 
     result = agent_graph.start_node(state, {'configurable': {'config_id': 'cfg', 'agent_config': CONFIG}})
     prompt = result.messages[0].content
     assert memory in prompt
     assert all(decision in prompt for decision in decisions)
-
-
-def test_evidence_fallback_preserves_details_and_full_tail():
-    evidence = '截至快照: 2026-10-01\n' + full_text('明细')
-    assert evidence in agent_graph._memory_evidence_fallback(evidence)

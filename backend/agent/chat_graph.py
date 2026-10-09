@@ -241,7 +241,7 @@ def _start_temporary_chat(state: ChatState, configurable: Dict[str, Any], cfg: D
     news_context_text = _temporary_news_context_text(news_context)
     account_context_text = _temporary_account_context_text(account_context)
     limitations_text = _temporary_analysis_limitations(market_context, news_context, account_context)
-    unavailable_history = "Not loaded: temporary chats do not use task short-term memory, daily summaries, or strategy history."
+    unavailable_history = "Not loaded: temporary chats do not use task short-term memory or strategy history."
     system_prompt = "\n\n".join(
         part
         for part in (
@@ -646,7 +646,6 @@ def start_node(state: ChatState, config: RunnableConfig):
         messages=[],
         market_context={},
         account_context={},
-        history_context=[],
         full_analysis="",
         human_message=None,
     )
@@ -910,7 +909,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
             continue
 
         if tool_name == 'manage_trading_rules':
-            outputs.append(ToolMessage(tool_call_id=call['id'], content='Error: 规则复盘与修改由记忆整理 Agent 负责，请在记忆中心触发整理。'))
+            outputs.append(ToolMessage(tool_call_id=call['id'], content='Error: 自动规则维护已停用；模型只能读取既有规则，不能修改规则。'))
             stopped = True
             continue
 

@@ -1,3 +1,4 @@
+from backend.agent import memory_service, decision_context
 import json
 from unittest.mock import patch
 
@@ -7,7 +8,16 @@ import pytest
 import backend.database as database
 from backend.database_schema import initialize_schema
 from backend.agent import agent_graph
-from backend.utils.trade_review import daily_execution_evidence
+from backend.agent import memory_updates
+
+
+def run_persisted_memory(config_id, cfg, strategy, messages):
+    from uuid import uuid4
+    report = {'execution_results': [message.content for message in messages if isinstance(message, ToolMessage)]}
+    run_id = str(uuid4())
+    database.save_summary(cfg.get('symbol', 'ETH/USDT'), 'test', strategy, strategy,
+                          config_id=config_id, run_id=run_id, report_json=json.dumps(report))
+    return memory_updates.process_memory_update(config_id, run_id, {**cfg, 'config_id': config_id})
 
 
 @pytest.fixture
@@ -18,7 +28,7 @@ def local_db(tmp_path):
         yield
 
 
-@pytest.mark.parametrize('summary_type', ['strategy', 'daily'])
+@pytest.mark.parametrize('summary_type', ['strategy'])
 @pytest.mark.parametrize('custom', [False, True])
 def test_summary_preserves_facts_without_forcing_rule_review(monkeypatch, summary_type, custom):
     from unittest.mock import Mock
@@ -39,26 +49,22 @@ def test_summary_preserves_facts_without_forcing_rule_review(monkeypatch, summar
     assert result == '规则保留，尚无新增完整平仓样本。'
 
 
-def test_short_memory_summary_delegates_to_memory_reviewer(local_db, monkeypatch):
+@pytest.mark.parametrize('summary_type', ['daily', 'short_memory'])
+def test_strategy_summarizer_rejects_retired_modes_before_model_call(monkeypatch, summary_type):
     from unittest.mock import Mock
-
-    database.save_short_memory('2026-01-01', '2026-01-02', 'ETH/USDT', 'cfg', 'prior review', '', 1)
-    reviewer = Mock(return_value='reviewed memory')
-    monkeypatch.setattr(agent_graph, '_run_memory_organizer', reviewer)
-    cfg = {'config_id': 'cfg', 'model': 'offline-test', 'summarizer': {'short_memory_prompt': 'Custom: {content}'}}
-    assert agent_graph.summarize_content('historical evidence', cfg, 'short_memory') == 'reviewed memory'
-    reviewer.assert_called_once()
-    assert reviewer.call_args.args == ('historical evidence', cfg)
-    assert reviewer.call_args.kwargs['previous'] == 'prior review'
-    assert reviewer.call_args.kwargs['operation_id'].startswith('explicit:cfg:')
+    model = Mock(side_effect=AssertionError('Must not construct a model for retired summary modes'))
+    monkeypatch.setattr(agent_graph, 'build_chat_model', model)
+    with pytest.raises(ValueError, match='Unsupported summary type'):
+        agent_graph.summarize_content('evidence', {}, summary_type)
+    model.assert_not_called()
 
 
 def test_explicit_turn_review_updates_bounded_memory_with_execution_evidence(local_db):
     database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg', 'old short plan', '', 1)
     messages = [AIMessage(content='new long plan', tool_calls=[{'id': 'c', 'name': 'open_position_real', 'args': {}}]),
                 ToolMessage(content='Order rejected: no funds', tool_call_id='c')]
-    with patch.object(agent_graph, '_run_memory_organizer', return_value='new plan; entry rejected') as summarize:
-        assert agent_graph.update_turn_memory('cfg', {'symbol': 'ETH/USDT'}, 'reverse to long', messages)
+    with patch.object(memory_service, 'organize_memory', return_value='new plan; entry rejected') as summarize:
+        assert run_persisted_memory('cfg', {'symbol': 'ETH/USDT'}, 'reverse to long', messages)
     source = summarize.call_args.args[0]
     assert 'Agent 收益与回撤' in source
     assert '起点收益率/回撤: N/A' in source
@@ -66,16 +72,16 @@ def test_explicit_turn_review_updates_bounded_memory_with_execution_evidence(loc
     assert 'old short plan' in source and 'reverse to long' in source
     assert '最多600字' not in source
     assert '分为【当前假设】' not in source
-    assert source.startswith('更新时间：')
-    assert 'open_position_real: Order rejected' in source
+    assert source.startswith('过去4h滚动窗口：')
+    assert 'Order rejected' in source
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'new plan; entry rejected'
 
 
 def test_memory_failure_preserves_previous_memory_without_strategy_fallback(local_db):
     database.save_short_memory('2026-01-01', '2026-01-02', 'ETH/USDT', 'cfg', 'previous verified memory', 'previous evidence', 1)
     previous = database.get_short_memories('cfg', 10)
-    with patch.object(agent_graph, '_run_memory_organizer', return_value=''):
-        assert not agent_graph.update_turn_memory('cfg', {}, 'old trade invalidated', [])
+    with patch.object(memory_service, 'organize_memory', return_value=''):
+        assert not run_persisted_memory('cfg', {}, 'old trade invalidated', [])
     assert database.get_short_memories('cfg', 10) == previous
 
 
@@ -98,8 +104,8 @@ def test_short_memory_includes_local_7d_closed_positions_and_stats(local_db):
         )
         conn.commit()
 
-    with patch.object(agent_graph, '_run_memory_organizer', return_value='updated memory') as summarize:
-        assert agent_graph.update_turn_memory('cfg', {'mode': 'REAL', 'symbol': 'ETH/USDT'}, 'wait for pullbacks', [])
+    with patch.object(memory_service, 'organize_memory', return_value='updated memory') as summarize:
+        assert run_persisted_memory('cfg', {'mode': 'REAL', 'symbol': 'ETH/USDT'}, 'wait for pullbacks', [])
 
     source = summarize.call_args.args[0]
     assert '【过去7天平仓记录（本地成交账本）】' in source
@@ -114,10 +120,10 @@ def test_short_memory_includes_local_7d_closed_positions_and_stats(local_db):
     saved = database.get_short_memories('cfg', 1)[0]
     assert 'Agent 收益与回撤' in saved['position_summary']
     assert '完整平仓周期: 1 笔' in saved['position_summary']
-    assert agent_graph.format_short_memory_for_llm('cfg') == 'updated memory'
+    assert decision_context.format_short_memory_for_llm('cfg') == 'updated memory'
 
 
-@pytest.mark.parametrize('writer', ['turn', 'rolling', 'bucket', 'empty_bucket'])
+@pytest.mark.parametrize('writer', ['rolling'])
 def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch, writer):
     now = agent_graph.TZ_CN.localize(__import__('datetime').datetime(2026, 9, 28, 10, 0))
     cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL'}
@@ -139,13 +145,8 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
         conn.commit()
     database.save_short_memory('2026-09-28 00:00:00', '2026-09-28 04:00:00',
                                'ETH/USDT', 'cfg', 'previous strategy and lessons', '', 1)
-    with patch.object(agent_graph, '_run_memory_organizer', return_value='compressed strategy and performance') as summarize:
-        if writer == 'turn':
-            changed = agent_graph.update_turn_memory('cfg', cfg, 'new support', [])
-        elif writer == 'rolling':
-            changed = agent_graph.generate_rolling_short_memory_for_config('cfg', cfg, now_cn=now)
-        else:
-            changed = agent_graph.generate_short_memory_for_config('cfg', now_cn=now)
+    with patch.object(memory_service, 'organize_memory', return_value='compressed strategy and performance') as summarize:
+        changed = memory_service.generate_rolling_short_memory_for_config('cfg', cfg, now_cn=now)
     assert changed
     source = summarize.call_args.args[0]
     assert source.count('## Agent 收益与回撤') == 1
@@ -158,8 +159,6 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
     saved = database.get_short_memories('cfg', 1)[0]
     assert '起点收益率: -8.00%' in saved['position_summary']
     assert saved['market_summary'] == 'compressed strategy and performance'
-    if writer == 'empty_bucket':
-        assert saved['source_count'] == 0
 
 
 @pytest.mark.parametrize('bad_summary', ['', 'Previous short memory: prompt echo'])
@@ -170,103 +169,21 @@ def test_memory_compression_failure_does_not_replace_previous_review(local_db, m
         '【过去7天平仓记录（本地成交账本）】\n- detail-only-position-id\n'
         '完整平仓周期: 2 笔 | 胜率: 50% | 已确认累计盈亏（手续费前）: -1.00 USDT'
     )
-    monkeypatch.setattr(agent_graph, 'format_recent_position_history_for_memory', lambda *_: evidence)
-    monkeypatch.setattr(agent_graph, '_run_memory_organizer', lambda *_, **__: bad_summary)
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: evidence)
+    monkeypatch.setattr(memory_service, 'organize_memory', lambda *_, **__: bad_summary)
     database.save_short_memory('2026-09-28 00:00:00', '2026-09-28 04:00:00',
                                'ETH/USDT', 'cfg', 'previous reviewed risk', 'previous evidence', 1)
     previous = database.get_short_memories('cfg', 10)
-    assert not agent_graph.update_turn_memory('cfg', {'symbol': 'ETH/USDT'}, 'cancel invalid entry', [])
+    assert not run_persisted_memory('cfg', {'symbol': 'ETH/USDT'}, 'cancel invalid entry', [])
     assert database.get_short_memories('cfg', 10) == previous
 
 
 def test_empty_window_failed_compression_keeps_previous_memory(local_db, monkeypatch):
     cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL'}
     monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [cfg])
-    monkeypatch.setattr(agent_graph, '_run_memory_organizer', lambda *_, **__: '')
+    monkeypatch.setattr(memory_service, 'organize_memory', lambda *_, **__: '')
     database.save_short_memory('2026-09-28 00:00:00', '2026-09-28 04:00:00',
                                'ETH/USDT', 'cfg', 'prior memory and risk', '', 1)
     now = agent_graph.TZ_CN.localize(__import__('datetime').datetime(2026, 9, 28, 10, 0))
-    assert not agent_graph.generate_short_memory_for_config('cfg', now_cn=now)
-    assert agent_graph.format_short_memory_for_llm('cfg') == 'prior memory and risk'
-
-
-def test_daily_review_uses_only_requested_day_and_config_and_actual_fills(local_db):
-    with database.get_db_conn() as conn:
-        for cid, day, tid in [('cfg', '2026-09-01', 'a'), ('other', '2026-09-01', 'b'), ('cfg', '2026-09-02', 'c')]:
-            conn.execute('INSERT INTO trade_history(trade_id,config_id,timestamp,symbol,side,price,amount,fee,fee_currency,realized_pnl) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                         (tid, cid, day + ' 12:00:00', 'ETH/USDT', 'sell', 100, 1, .2, 'USDT', 2))
-        conn.commit()
-    text = daily_execution_evidence('cfg', '2026-09-01')
-    payload = json.loads(text[text.index('{'):])
-    assert [x['trade_id'] for x in payload['trade_history']] == ['a']
-    assert payload['real_fill_totals']['fill_count'] == 1
-    assert payload['fees_by_currency'] == [{'fee_currency': 'USDT', 'fee': .2}]
-    cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT'}
-    with patch.object(agent_graph.global_config, 'get_all_symbol_configs', return_value=[cfg]), patch.object(agent_graph, 'summarize_content', return_value='actual fills review') as summarize:
-        assert agent_graph.generate_manual_daily_summary('cfg', '2026-09-01')
-    assert 'trade_history' in summarize.call_args.args[0]
-    assert database.list_daily_summaries(config_id='cfg')[0]['source_count'] == 0  # historical export is not limited to current seven days
-
-
-def test_parse_execution_facts_to_text_formatting():
-    data = {
-        "position_cycles": {
-            "completed": [
-                {
-                    "symbol": "ETH/USDT:USDT",
-                    "side": "SHORT",
-                    "opened_at_ms": 1757221561000,
-                    "closed_at_ms": 1757223361000,
-                    "entered_base": 0.12,
-                    "exited_base": 0.12,
-                    "entry_vwap": 2504.5,
-                    "exit_vwap": 2505.5,
-                    "realized_pnl_before_fees": -0.12,
-                    "exit_reasons": ["stop_loss"]
-                }
-            ],
-            "open_cycles": [
-                {
-                    "symbol": "ETH/USDT:USDT",
-                    "side": "LONG",
-                    "opened_at_ms": 1757276417000,
-                    "remaining_base": 0.161,
-                    "entry_cost": 399.04655
-                }
-            ]
-        },
-        "recent_fills": [
-            {
-                "timestamp": 1757276417000,
-                "symbol": "ETH/USDT:USDT",
-                "position_side": "LONG",
-                "role": "entry",
-                "side": "buy",
-                "price": 2478.55,
-                "amount": 0.161,
-                "realized_pnl": None
-            }
-        ],
-        "known_realized_pnl_before_fees": -0.12,
-        "fees_by_currency": {"USDT": 0.0601}
-    }
-    raw_text = json.dumps(data)
-    parsed = agent_graph.parse_execution_facts_to_text(raw_text)
-
-    # 验证各区块存在且由双换行分开，避免粘连
-    assert "【已平仓交易周期】" in parsed
-    assert "止损出场" in parsed
-    assert "手续费前盈亏 -0.12 USDT" in parsed
-    assert "【未闭合持仓周期 (实际持仓以实时账户快照为准)】" in parsed
-    assert "剩余数量: 0.1610" in parsed
-    assert "【近期成交明细】" in parsed
-    assert "2478.55" in parsed
-    assert "【账本统计】" in parsed
-    assert "已确认实现盈亏: -0.12 USDT" in parsed
-    assert "手续费: 0.0601 USDT" in parsed
-
-    # 验证章节之间有空行分隔
-    sections = parsed.split("\n\n")
-    assert len(sections) == 4
-    for s in sections:
-        assert s.startswith("【")
+    assert not memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=now)
+    assert decision_context.format_short_memory_for_llm('cfg') == 'prior memory and risk'

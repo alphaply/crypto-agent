@@ -116,7 +116,6 @@ def test_agent_node_builds_reasoning_model_before_binding_tools():
         messages=[HumanMessage(content="analyze")],
         market_context={},
         account_context={},
-        history_context=[],
     )
     config = {
         "configurable": {
@@ -166,7 +165,6 @@ def test_finalize_node_saves_configured_strategy_summary_separately_from_raw_ana
         messages=[AIMessage(content="hold position")],
         market_context={},
         account_context={},
-        history_context=[],
     )
     config = {
         "configurable": {
@@ -177,7 +175,7 @@ def test_finalize_node_saves_configured_strategy_summary_separately_from_raw_ana
 
     with patch("backend.agent.agent_graph.summarize_content", return_value="summary") as summarize, patch(
         "backend.agent.agent_graph.database.save_summary"
-    ) as save, patch("backend.agent.agent_graph.update_turn_memory") as update_memory:
+    ) as save, patch("backend.agent.memory_service.organize_memory") as update_memory:
         finalize_node(state, config)
 
     summarize.assert_called_once()
@@ -242,8 +240,8 @@ def test_empty_and_exhausted_responses_are_not_successful():
 def test_failure_is_saved_without_summary_request_or_success_progress():
     import pytest
     progress = []
-    state = AgentState(symbol="BTC/USDT", messages=[AIMessage(content="Error: disconnected", additional_kwargs={"invocation_failed": True})], market_context={}, account_context={}, history_context=[])
-    with patch("backend.agent.agent_graph.database.save_summary") as save, patch("backend.agent.agent_graph.summarize_content") as summarize, patch("backend.agent.agent_graph.update_turn_memory") as memory:
+    state = AgentState(symbol="BTC/USDT", messages=[AIMessage(content="Error: disconnected", additional_kwargs={"invocation_failed": True})], market_context={}, account_context={},)
+    with patch("backend.agent.agent_graph.database.save_summary") as save, patch("backend.agent.agent_graph.summarize_content") as summarize, patch("backend.agent.memory_service.organize_memory") as memory:
         with pytest.raises(RuntimeError, match="disconnected"):
             finalize_node(state, {"configurable": {"progress_callback": progress.append}})
     assert "disconnected" in save.call_args.args[2]
@@ -266,7 +264,7 @@ def test_agent_retries_partial_disconnection_without_replaying_tools():
             yield AIMessageChunk(content="recovered")
     model = FlakyModel()
     progress = []
-    state = AgentState(symbol="BTC/USDT", messages=[HumanMessage(content="analyze")], market_context={}, account_context={}, history_context=[])
+    state = AgentState(symbol="BTC/USDT", messages=[HumanMessage(content="analyze")], market_context={}, account_context={},)
     with patch("backend.agent.agent_graph.refresh_decision_context", side_effect=lambda state, config: state), patch("backend.agent.agent_graph.build_chat_model", return_value=model), patch("backend.agent.agent_graph.get_trade_tools_for_mode", return_value=[]), patch("backend.agent.agent_graph.run_trade_tool") as trade, patch("backend.utils.llm_utils.get_llm_max_retries", return_value=2), patch("backend.utils.llm_utils.time.sleep"):
         result = agent_node(state, {"configurable": {"agent_config": {"model": "test"}, "progress_callback": progress.append}})
     assert model.calls == 2
@@ -328,10 +326,10 @@ def test_length_with_complete_tool_call_continues_and_saves_warning():
             else:
                 yield AIMessageChunk(content="工具执行结果已确认", response_metadata={"finish_reason": "stop"})
     model = Model()
-    state = AgentState(symbol="ETH/USDT", messages=[HumanMessage(content="analyze")], market_context={}, account_context={}, history_context=[])
+    state = AgentState(symbol="ETH/USDT", messages=[HumanMessage(content="analyze")], market_context={}, account_context={},)
     progress = []
     config = {"configurable": {"agent_config": {"mode": "REAL", "model": "test"}, "progress_callback": progress.append}}
-    with patch("backend.agent.agent_graph.build_chat_model", return_value=model), patch("backend.agent.agent_graph.run_trade_tool", return_value="test execution result") as trade, patch("backend.agent.agent_graph.database.save_summary") as save, patch("backend.agent.agent_graph.summarize_content", return_value="summary"), patch("backend.agent.agent_graph.update_turn_memory"), patch("backend.utils.llm_utils.time.sleep") as sleep:
+    with patch("backend.agent.agent_graph.build_chat_model", return_value=model), patch("backend.agent.agent_graph.run_trade_tool", return_value="test execution result") as trade, patch("backend.agent.agent_graph.database.save_summary") as save, patch("backend.agent.agent_graph.summarize_content", return_value="summary"), patch("backend.agent.memory_service.organize_memory"), patch("backend.utils.llm_utils.time.sleep") as sleep:
         state = agent_node(state, config)
         assert should_continue(state) == "tools"
         assert state.messages[-1].response_metadata['finish_reason'] == 'length'

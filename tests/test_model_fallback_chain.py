@@ -73,7 +73,6 @@ def test_primary_model_succeeds_without_fallback():
         messages=[HumanMessage(content="analyze", additional_kwargs={"is_instruction": True})],
         market_context={},
         account_context={},
-        history_context=[],
     )
     agent_config = {
         "model": "primary-model",
@@ -114,7 +113,6 @@ def test_primary_model_fails_fallback_1_succeeds():
         messages=[HumanMessage(content="analyze", additional_kwargs={"is_instruction": True})],
         market_context={},
         account_context={},
-        history_context=[],
     )
     agent_config = {
         "model": "primary-model",
@@ -160,7 +158,6 @@ def test_primary_and_fallback_1_fail_fallback_2_succeeds():
         messages=[HumanMessage(content="analyze", additional_kwargs={"is_instruction": True})],
         market_context={},
         account_context={},
-        history_context=[],
     )
     agent_config = {
         "model": "m1",
@@ -202,7 +199,6 @@ def test_all_models_fail_emits_error_summary():
         messages=[HumanMessage(content="analyze", additional_kwargs={"is_instruction": True})],
         market_context={},
         account_context={},
-        history_context=[],
     )
     agent_config = {
         "model": "m1",
@@ -243,7 +239,6 @@ def test_each_model_retries_configured_global_times():
         messages=[HumanMessage(content="analyze", additional_kwargs={"is_instruction": True})],
         market_context={},
         account_context={},
-        history_context=[],
     )
     agent_config = {
         "model": "m1",

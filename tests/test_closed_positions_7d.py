@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import backend.database as database
 from backend.database_schema import initialize_schema
-from backend.agent.agent_graph import format_recent_position_history_for_memory
+from backend.agent.memory_service import format_recent_position_history_for_memory
 
 
 @pytest.fixture

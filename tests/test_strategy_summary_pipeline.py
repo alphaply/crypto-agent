@@ -1,4 +1,5 @@
 """Exercise real finalize-to-summary wiring with isolated storage and mocked models."""
+from backend.agent import memory_service
 
 from copy import deepcopy
 import json
@@ -27,8 +28,7 @@ def local_db(tmp_path, monkeypatch):
 
 
 def state_with(messages):
-    return AgentState(symbol='ETH/USDT', messages=messages, market_context={}, account_context={},
-                      history_context=[], active_model_name='trade-model')
+    return AgentState(symbol='ETH/USDT', messages=messages, market_context={}, account_context={}, active_model_name='trade-model')
 
 
 def saved_summary():
@@ -73,7 +73,7 @@ def test_finalize_uses_configured_deepseek_and_saves_its_complete_summary(local_
     trade = Mock(side_effect=AssertionError('Finalize must never replay trading tools'))
     monkeypatch.setattr(agent_graph, 'run_trade_tool', trade)
     review = Mock(side_effect=AssertionError('Per-turn summaries must not trigger rule reviews'))
-    monkeypatch.setattr(agent_graph, 'update_turn_memory', review)
+    monkeypatch.setattr(memory_service, 'organize_memory', review)
 
     assert agent_graph.finalize_node(state, {'configurable': {'config_id': 'cfg', 'agent_config': cfg}}) is state
 
@@ -155,7 +155,7 @@ def test_failed_or_empty_trading_round_does_not_call_summary_model(local_db, mon
     assert progress[-1]['phase'] == 'failed'
 
 
-@pytest.mark.parametrize('summary_type', ['strategy', 'daily'])
+@pytest.mark.parametrize('summary_type', ['strategy'])
 @pytest.mark.parametrize('prompt_source', ['top_text', 'nested_text', 'top_file', 'nested_file'])
 def test_summary_prompt_resolution_preserves_user_configuration(local_db, monkeypatch, tmp_path, summary_type, prompt_source):
     key = f'{summary_type}_prompt'
@@ -199,7 +199,7 @@ def test_global_summarizer_is_used_before_trading_model(local_db, monkeypatch):
     assert build.call_args.kwargs['base_url'] == 'https://global-summary.example.test/v1'
 
 
-@pytest.mark.parametrize('summary_type', ['strategy', 'daily'])
+@pytest.mark.parametrize('summary_type', ['strategy'])
 def test_custom_prompt_without_placeholder_still_receives_complete_source(local_db, monkeypatch, summary_type):
     source = 'Full decision and execution evidence. ' * 300 + 'FULL_SOURCE_TAIL'
     template = 'Compress the supplied evidence to 80 characters while preserving the result.'

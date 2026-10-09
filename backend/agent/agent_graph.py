@@ -1,11 +1,8 @@
 import uuid
 import json
-import re
 import os
 import time
-import hashlib
-from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 
@@ -25,10 +22,9 @@ from langgraph.graph import StateGraph, END
 
 from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool, tool_result_status
-from backend.agent.memory_workflow import serialized_memory_review, get_review_result, save_review_result, verify_memory_lease
+from backend.agent.decision_context import load_decision_memory, render_decision_prompt, clean_decision_template
 from backend.agent.call_audit import audited_invoke
 from backend.utils.decision_journal import decision_journal
-from backend.database_rules import format_trading_rules_context
 from backend.utils.exit_policy import effective_exit_mode
 from backend.utils.spot_portfolio import get_config_symbols, SPOT_MARKET_TIMEFRAMES
 from backend.utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
@@ -50,24 +46,11 @@ from backend.utils.prompt_utils import resolve_prompt_file_content, resolve_prom
 from backend.utils.trading_policy import SUMMARY_FACT_POLICY
 
 import backend.database as database
-from backend.database import (
-    get_daily_summaries,
-    get_short_memories,
-    get_short_memory,
-    get_recent_summary_logic,
-    get_summary_logic_between,
-    save_short_memory as _save_short_memory,
-)
 from backend.utils.market_data import MarketTool
 from backend.utils.news_context import fetch_news_risk_context
 from backend.config import config as global_config
 
 TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
-
-
-def save_short_memory(*args, **kwargs):
-    verify_memory_lease()
-    return _save_short_memory(*args, **kwargs)
 
 
 def _emit_task_progress(configurable: dict, *, phase: str, message: str, **payload) -> None:
@@ -257,12 +240,8 @@ STRATEGY_SUMMARY_FAILURE_PREFIX = "【策略压缩失败；以下为未压缩原
 
 def summarize_content(content: str, agent_config: dict, summary_type: str = "strategy") -> str:
     """使用独立的 LLM 配置对分析内容进行压缩。"""
-    if summary_type == 'short_memory':
-        config_id = str(agent_config.get('config_id') or '')
-        return _run_memory_organizer(
-            content, agent_config,
-            operation_id=f'explicit:{config_id}:{hashlib.sha256(content.encode()).hexdigest()}',
-            previous=format_short_memory_for_llm(config_id))
+    if summary_type not in {'strategy', 'report'}:
+        raise ValueError(f'Unsupported summary type: {summary_type}')
     summarizer_cfg = agent_config.get("summarizer") or {}
     
     # 获取配置，优先级：1. agent 专属 summarizer -> 2. 全局运行配置/环境变量 -> 3. agent 自身配置
@@ -293,27 +272,14 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
             reasoning_effort=summarizer_cfg.get("reasoning_effort"),
             compatibility_mode=summarizer_cfg.get("compatibility_mode"),
         )
-        default_prompts = {
-            "strategy": "请把以下单轮交易分析压缩为精炼的中文策略摘要。合并重复分析，保留趋势判断、关键价位、风险点、持仓/挂单意图、实际执行结果和下一步条件。不要为字数目标截断条件或结果。只输出摘要文本。\n\n内容：\n{content}",
-            "daily": "请依据以下策略和执行证据生成完整每日复盘，不因字数限制省略有效信息或截断内容。包含市场与策略演变、实际成交与结果、计划执行偏差、风险教训和次日条件；计划不等于成交，缺失盈亏/费用标记未知，不重复计数。只输出复盘文本。\n\n内容：\n{content}",
-        }
-        prompt_text_key = {
-            "strategy": "strategy_prompt",
-            "daily": "daily_prompt",
-            "short_memory": "short_memory_prompt",
-        }.get(summary_type, "strategy_prompt")
-        prompt_file_key = {
-            "strategy": "strategy_prompt_file",
-            "daily": "daily_prompt_file",
-            "short_memory": "short_memory_prompt_file",
-        }.get(summary_type, "strategy_prompt_file")
-        prompt_template = str(agent_config.get(prompt_text_key) or summarizer_cfg.get(prompt_text_key) or "").strip()
+        default_prompt = "请把以下单轮交易分析压缩为精炼的中文策略摘要。合并重复分析，保留趋势判断、关键价位、风险点、持仓/挂单意图、实际执行结果和下一步条件。不要为字数目标截断条件或结果。只输出摘要文本。\n\n内容：\n{content}"
+        prompt_template = str(agent_config.get('strategy_prompt') or summarizer_cfg.get('strategy_prompt') or "").strip()
         if not prompt_template:
             prompt_template = resolve_prompt_file_content(
-                agent_config.get(prompt_file_key) or summarizer_cfg.get(prompt_file_key),
+                agent_config.get('strategy_prompt_file') or summarizer_cfg.get('strategy_prompt_file'),
                 PROJECT_ROOT,
                 logger,
-                fallback=default_prompts.get(summary_type, default_prompts["strategy"]),
+                fallback=default_prompt,
             )
         prompt = render_prompt(prompt_template, content=content)
         if '{content}' not in prompt_template:
@@ -374,7 +340,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
             lambda: audited_invoke(
                 lambda: llm.invoke(summary_messages),
                 config_id=agent_config.get('config_id'),
-                purpose='daily_summary' if summary_type == 'daily' else 'strategy_summary',
+                purpose='strategy_summary',
                 model=model, messages=summary_messages,
                 provider_id=resolve_summarizer_provider_id(agent_config),
                 response_validator=validate_summary_response),
@@ -384,460 +350,10 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
         return extract_message_text(response).strip()
     except Exception as e:
         logger.error(f"❌ [Summarizer Error]: {e}")
-        if summary_type in {"daily", "short_memory"}:
-            return ""
         # Preserve the source when organization fails; slicing it silently loses
         # the strategy's risk conditions and later execution facts.
         return STRATEGY_SUMMARY_FAILURE_PREFIX + content
 
-
-def is_invalid_daily_summary(summary: str, source_input: str = "") -> bool:
-    """Reject empty summaries and prompt/input echoes masquerading as results."""
-    text = str(summary or "").strip()
-    if not text:
-        return True
-    prompt_markers = (
-        "一整天的多轮交易分析逻辑，请汇总为",
-        "请把以下一整天的交易推理压缩成",
-        "{content}",
-    )
-    if any(marker in text for marker in prompt_markers):
-        return True
-    return bool(source_input) and text.endswith("...") and source_input.startswith(text[:-3])
-
-
-def generate_manual_daily_summary(config_id: str, date_str: str) -> bool:
-    """手动或通过调度器触发特定周期的每日总结汇总。"""
-    from backend.database import get_pending_daily_summary_data, save_daily_summary
-    from backend.config import config as global_config
-    
-    # 查找对应的 config
-    all_configs = global_config.get_all_symbol_configs()
-    target_config = next((c for c in all_configs if c['config_id'] == config_id), None)
-    if not target_config:
-        logger.error(f"Config ID {config_id} not found for manual summary.")
-        return False
-        
-    try:
-        rows = get_pending_daily_summary_data(config_id, date_str)
-        from backend.utils.trade_review import daily_execution_evidence, daily_exchange_evidence
-        execution_evidence = daily_execution_evidence(config_id, date_str)
-        exchange_evidence = daily_exchange_evidence(target_config, date_str)
-        if exchange_evidence:
-            execution_evidence += '\n\n' + exchange_evidence
-        if not rows and not execution_evidence:
-            logger.info(f"No summary data found for {config_id} on {date_str}")
-            return False
-            
-        combined = "\n".join(
-            f"[{r['timestamp']}] {r['strategy_logic']}"
-            for r in rows if r.get('strategy_logic')
-        )
-        if not combined.strip() and not execution_evidence:
-            return False
-            
-        summary_input = (
-            f"复盘日期 {date_str}。按【市场与策略变化】【实际执行与结果】【偏差与教训】【下一日条件】总结。"
-            "区分计划、挂单、成交、平仓；只用有证据的数字，不把分析轮数当成交数。"
-            "检查失效后退出、止损变更、浮亏加仓和成本。缺失的费用/盈亏写未知。\n"
-            f"策略记录：\n{combined}\n\n执行记录：\n{execution_evidence or '无本地执行记录，不代表交易所没有交易。'}"
-        )
-        summary_text = summarize_content(
-            summary_input,
-            target_config,
-            summary_type="daily",
-        )
-        if is_invalid_daily_summary(summary_text, summary_input):
-            logger.error(f"Daily summary returned no usable result for {config_id} on {date_str}; not saving it.")
-            return False
-
-        save_daily_summary(date_str, target_config.get('symbol', 'Unknown'), config_id, summary_text, len(rows))
-        return True
-    except Exception as e:
-        logger.error(f"Failed to generate manual daily summary for {config_id}: {e}")
-        return False
-
-
-def get_short_memory_bucket(now_cn: datetime | None = None) -> tuple[datetime, datetime]:
-    now_cn = now_cn or datetime.now(TZ_CN)
-    bucket_hour = (now_cn.hour // 4) * 4
-    bucket_start = now_cn.replace(hour=bucket_hour, minute=0, second=0, microsecond=0)
-    return bucket_start, bucket_start + timedelta(hours=4)
-
-
-def parse_execution_facts_to_text(raw_data: str | dict) -> str:
-    """Parse structured execution facts JSON into human-readable text for prompt/memory injection."""
-    if isinstance(raw_data, str):
-        try:
-            data = json.loads(raw_data)
-        except Exception:
-            return raw_data
-    elif isinstance(raw_data, dict):
-        data = raw_data
-    else:
-        return ""
-
-    sections = []
-
-    # 1. 已平仓交易周期
-    cycles = data.get("position_cycles", {}) or {}
-    completed = cycles.get("completed", []) or []
-    if completed:
-        lines = ["【已平仓交易周期】"]
-        for c in completed:
-            symbol = c.get("symbol", "")
-            side = c.get("side", "")
-            pnl = c.get("realized_pnl_before_fees")
-            reasons = c.get("exit_reasons", []) or []
-            reason_desc = []
-            if "stop_loss" in reasons:
-                reason_desc.append("止损出场")
-            if "take_profit" in reasons:
-                reason_desc.append("止盈出场")
-            reason_desc.extend(r for r in reasons if r not in {'stop_loss', 'take_profit'})
-            reason_str = " | " + " ".join(reason_desc) if reason_desc else ""
-            currency = c.get('settlement_currency', 'USDT')
-            pnl_str = '盈亏未知' if pnl is None else f"手续费前盈亏 {pnl:+.2f} {currency}"
-            entry_vwap = c.get("entry_vwap", 0.0)
-            exit_vwap = c.get("exit_vwap", 0.0)
-            amount = c.get("entered_base", 0.0)
-            lines.append(f"- {symbol} {side} | 入场均价: {entry_vwap:.2f} | 离场均价: {exit_vwap:.2f} | 数量: {amount:.4f} | {pnl_str}{reason_str}")
-        sections.append("\n".join(lines))
-
-    # 2. 未闭合持仓周期
-    open_cycles = cycles.get("open_cycles", []) or []
-    if open_cycles:
-        lines = ["【未闭合持仓周期 (实际持仓以实时账户快照为准)】"]
-        for oc in open_cycles:
-            symbol = oc.get("symbol", "")
-            side = oc.get("side", "")
-            rem = oc.get("remaining_base", 0.0)
-            cost = oc.get("entry_cost", 0.0)
-            lines.append(f"- {symbol} {side} | 剩余数量: {rem:.4f} | 累计成本: {cost:.2f} USDT")
-        sections.append("\n".join(lines))
-
-    # 3. 近期成交明细
-    recent_fills = data.get("recent_fills", []) or []
-    if recent_fills:
-        lines = ["【近期成交明细】"]
-        for f in recent_fills:
-            ts = f.get("timestamp") or 0
-            t_str = datetime.fromtimestamp(ts / 1000, tz=TZ_CN).strftime("%m-%d %H:%M:%S") if ts else "未知时间"
-            sym = f.get("symbol", "")
-            pside = f.get("position_side", "")
-            role = f.get("role", "")
-            side = f.get("side", "")
-            price = f.get("price", 0.0)
-            amount = f.get("amount", 0.0)
-            lines.append(f"- [{t_str}] {sym} {pside} ({role}/{side}) | 价格: {price} | 数量: {amount}")
-        sections.append("\n".join(lines))
-
-    # 4. 账本统计
-    lines = ["【账本统计】"]
-    pnl = data.get("known_realized_pnl_before_fees")
-    if pnl is not None:
-        pnl_str = f"+{pnl:.2f}" if pnl > 0 else f"{pnl:.2f}"
-        lines.append(f"已确认实现盈亏: {pnl_str} USDT")
-    fees = data.get("fees_by_currency", {}) or {}
-    if fees:
-        for cur, amt in fees.items():
-            lines.append(f"手续费: {amt} {cur}")
-    sections.append("\n".join(lines))
-
-    return "\n\n".join(sections)
-
-
-def format_recent_position_history_for_memory(config_id: str, agent_config: dict) -> str:
-    """Read full historical evidence only when updating memory, never per decision."""
-    from backend.utils.performance_context import performance_context
-
-    try:
-        symbol = agent_config.get('symbol', '')
-        mode = str(agent_config.get('mode') or 'STRATEGY').upper()
-        result = performance_context(config_id, symbol, mode)
-        if result:
-            result = f"证据读取时间：{datetime.now(TZ_CN).strftime('%Y-%m-%d %H:%M:%S %Z')}\n" + result
-        if mode == 'REAL':
-            from backend.utils.execution_ledger import recent_activity_summary
-            try:
-                result += '\n' + recent_activity_summary(config_id, symbol)
-            except Exception:
-                result += '\n最近7天成交活动暂不可用，不能据此断言历史完整。'
-        return result
-    except Exception as e:
-        logger.warning(f"Failed to fetch historical performance for memory: {e}")
-        return "历史收益、回撤与7天平仓证据读取失败，不能据此断言没有交易或收益为零。"
-
-
-def _memory_evidence_section(evidence: str) -> str:
-    if not evidence:
-        return ""
-    return (
-        "\n\n## 历史表现与成交事实（仅用于更新短期记忆）\n"
-        "压缩时保留统计截至时间、收益/回撤、完整平仓样本与手续费前盈亏及主要教训；"
-        "注明快照非实时且未剔除出入金/共享账户影响、缺失数字未知，"
-        "成交活动与完整周期盈亏不能相加，不逐笔复制账本。\n" + evidence
-    )
-
-
-def _memory_evidence_fallback(evidence: str) -> str:
-    """Preserve source evidence when organization is unavailable."""
-    if not evidence:
-        return ""
-    return (
-        "\n【历史证据】\n" + evidence +
-        "\n快照非实时；未剔除出入金/共享账户影响，不能归因为独立策略收益。"
-        "盈亏为手续费前，缺失费用未知；成交活动与完整周期不相加，覆盖不明时不声称历史完整。"
-    )
-
-
-def _run_memory_organizer(source: str, agent_config: dict, *, operation_id: str, previous: str) -> str:
-    """Consolidate short-term memory; automatic rule maintenance is suspended."""
-    from backend.agent.memory_agent import run_memory_review
-
-    stored = get_review_result(operation_id)
-    if stored:
-        verify_memory_lease()
-        return stored['summary'] if stored['status'] == 'completed' else ''
-    result = run_memory_review(source, agent_config, operation_id=operation_id)
-    if result.status in {'completed', 'partial'}:
-        save_review_result(agent_config['config_id'], operation_id, result)
-    if result.status == 'completed':
-        verify_memory_lease()
-        return result.summary
-    logger.warning('Memory review %s: %s', result.status, result.error)
-    return ''
-
-
-@serialized_memory_review
-def update_turn_memory(config_id: str, agent_config: dict, strategy_logic: str, messages: list) -> bool:
-    """Explicit compatibility entry point; normal trading turns never invoke it."""
-    if not str(strategy_logic or "").strip():
-        return False
-    previous = format_short_memory_for_llm(config_id)
-    call_names = {call['id']: call['name'] for msg in messages if isinstance(msg, AIMessage)
-                  for call in (msg.tool_calls or [])}
-    execution = "\n".join(
-        f"{getattr(msg, 'name', None) or call_names.get(msg.tool_call_id, 'tool')}: {extract_message_text(msg)}"
-        for msg in messages if isinstance(msg, ToolMessage)
-    )
-    now = datetime.now(TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
-    pos_history_text = format_recent_position_history_for_memory(config_id, agent_config)
-    source = (
-        f"更新时间：{now}\n旧记忆：\n{previous}\n新策略逻辑：\n{strategy_logic}\n"
-        f"本轮工具结果：\n{execution or '无工具执行，不得声称新交易已执行。'}"
-    )
-    source += _memory_evidence_section(pos_history_text)
-    summary = _run_memory_organizer(source, {**agent_config, 'config_id': config_id},
-                                   operation_id=f'manual:{config_id}:{now}', previous=previous)
-    if _is_invalid_short_memory_summary(summary, source):
-        return False
-    save_short_memory(now, now, agent_config.get("symbol", "Unknown"), config_id, summary, pos_history_text, 1)
-    return True
-
-
-def format_short_memory_text(config_id: str, limit: int = 1) -> str:
-    memories = get_short_memories(config_id, limit=limit)
-    if not memories:
-        return "(No short-term memory yet)"
-
-    entries = []
-    for item in memories:
-        market = item.get("market_summary") or ""
-        entries.append(
-            f"[updated={item.get('bucket_start')}] sources={item.get('source_count', 0)}\n"
-            f"{market or '-'}"
-        )
-    return "\n\n".join(entries)
-
-
-def format_short_memory_for_llm(config_id: str, limit: int = 1, *, include_metadata: bool = False) -> str:
-    memories = get_short_memories(config_id, limit=limit)
-    entries = [
-        (f"[覆盖 {item.get('window_start') or item.get('bucket_start')} → {item.get('window_end') or item.get('bucket_end')}；更新 {item.get('created_at')}]\n" if include_metadata else '')
-        + str(item.get("market_summary") or "").strip()
-        for item in memories
-        if str(item.get("market_summary") or "").strip()
-    ]
-    return "\n\n".join(entries) if entries else "(No short-term memory yet)"
-
-
-def format_recent_decisions(config_id: str) -> str:
-    """Include the complete text of the selected three most recent decisions."""
-    rows = get_recent_summary_logic(config_id, limit=3)
-    lines = []
-    for row in reversed(rows):
-        text = str(row.get('strategy_logic') or '').strip()
-        if text:
-            lines.append(f"[{row.get('timestamp')}] {text}")
-    return '\n'.join(lines) or '(暂无近期决策摘要)'
-
-
-def _load_decision_memory(config_id: str) -> tuple[list, str, str, str]:
-    """Local context survives exchange/news failures; each source fails independently."""
-    sources = (
-        # Daily reviews remain available in the UI, not repeated in every trade.
-        ('daily summaries', lambda: [], []),
-        ('short memory', lambda: format_short_memory_for_llm(config_id, include_metadata=True), '(短期记忆读取失败)'),
-        ('recent decisions', lambda: format_recent_decisions(config_id), '(近期摘要读取失败)'),
-        ('trading rules', lambda: format_trading_rules_context(config_id), '(交易规则读取失败；不得假设没有规则)'),
-    )
-    values = []
-    for name, read, fallback in sources:
-        try:
-            values.append(read())
-        except Exception as exc:
-            logger.warning('Unable to load %s for %s: %s', name, config_id, exc)
-            values.append(fallback)
-    return tuple(values)
-
-
-def _is_invalid_short_memory_summary(summary: str, source_input: str) -> bool:
-    text = str(summary or "").strip()
-    if not text:
-        return True
-    markers = (
-        "Window:",
-        "Symbol:",
-        "Previous rolling memory:",
-        "Previous short memory:",
-        "Recent strategy summaries:",
-        "Recent market/agent reasoning:",
-    )
-    if any(marker in text for marker in markers):
-        return True
-    return text.endswith("...") and source_input.startswith(text[:-3])
-
-
-@serialized_memory_review
-def generate_rolling_short_memory_for_config(
-    config_id: str,
-    agent_config: dict | None = None,
-    now_cn: datetime | None = None,
-    hours: int = 4,
-    limit: int | None = None,
-) -> bool:
-    """Review the complete time window unless an explicit row limit is requested."""
-    now_cn = now_cn or datetime.now(TZ_CN)
-    all_configs = global_config.get_all_symbol_configs()
-    target_config = agent_config or next((c for c in all_configs if c.get("config_id") == config_id), None)
-    if not target_config or not target_config.get("enabled", True):
-        return False
-
-    since_time = (now_cn - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-    # Stored decision timestamps have second precision. Include the current
-    # second while excluding records beyond the requested review window.
-    end_time = (now_cn + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
-    rows = get_summary_logic_between(config_id, since_time, end_time)
-    if limit is not None:
-        if limit < 1:
-            raise ValueError('Rolling memory row limit must be positive')
-        rows = rows[-limit:]
-    if not rows:
-        return False
-
-    previous = format_short_memory_for_llm(config_id, limit=1)
-    source_text = "\n".join(
-        f"[{row.get('timestamp')}] {row.get('strategy_logic')}"
-        for row in rows
-        if row.get("strategy_logic")
-    )
-    memory_input = (
-        f"Window: last {hours}h\n"
-        f"Symbol: {target_config.get('symbol')}\n\n"
-        f"Previous rolling memory:\n{previous}\n\n"
-        f"Recent strategy summaries:\n{source_text}"
-    )
-    pos_history_text = format_recent_position_history_for_memory(config_id, target_config)
-    memory_input += _memory_evidence_section(pos_history_text)
-    memory_summary = _run_memory_organizer(
-        memory_input, {**target_config, 'config_id': config_id},
-        operation_id=f'rolling:{config_id}:{rows[-1].get("timestamp")}', previous=previous)
-    if _is_invalid_short_memory_summary(memory_summary, memory_input):
-        logger.warning(f"Skip saving invalid rolling short memory for {config_id}.")
-        return False
-    end_stamp = now_cn.strftime("%Y-%m-%d %H:%M:%S")
-    save_short_memory(
-        # Keep the legacy edit key; explicit metadata describes the evidence window.
-        end_stamp,
-        end_stamp,
-        target_config.get("symbol", "Unknown"),
-        config_id,
-        memory_summary,
-        pos_history_text,
-        len(rows),
-        window_start=since_time,
-        window_end=end_stamp,
-        source_summary_ids=[row['id'] for row in rows if row.get('id') is not None],
-        run_id=f'rolling:{config_id}:{rows[-1].get("timestamp")}',
-    )
-    return True
-
-
-@serialized_memory_review
-def generate_short_memory_for_config(config_id: str, now_cn: datetime | None = None) -> bool:
-    all_configs = global_config.get_all_symbol_configs()
-    target_config = next((c for c in all_configs if c.get("config_id") == config_id), None)
-    if not target_config or not target_config.get("enabled", True):
-        return False
-
-    if now_cn is None:
-        current_start, _ = get_short_memory_bucket(datetime.now(TZ_CN))
-        now_cn = current_start - timedelta(seconds=1)
-    bucket_start, bucket_end = get_short_memory_bucket(now_cn)
-    if bucket_end > datetime.now(TZ_CN):
-        raise ValueError('只能整理已结束的四小时窗口')
-    start_text = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
-    end_text = bucket_end.strftime("%Y-%m-%d %H:%M:%S")
-    existing = get_short_memory(config_id, start_text)
-    if existing and str(existing.get('market_summary') or '').strip():
-        return False
-
-    summary_rows = get_summary_logic_between(config_id, start_text, end_text)
-    source_count = len(summary_rows)
-
-    previous = format_short_memory_for_llm(config_id, limit=1)
-    market_text = "\n".join(
-        f"[{row.get('timestamp')}] {row.get('strategy_logic')}"
-        for row in summary_rows
-        if row.get("strategy_logic")
-    )
-    pos_history_text = format_recent_position_history_for_memory(config_id, target_config)
-    latest = get_short_memories(config_id, limit=1)
-    def evidence_without_read_time(text):
-        return '\n'.join(line for line in str(text or '').splitlines() if not line.startswith('证据读取时间：'))
-    if (not summary_rows and latest
-            and evidence_without_read_time(latest[0].get('position_summary')) == evidence_without_read_time(pos_history_text)):
-        # No new decisions or ledger facts: advance the window without paying
-        # a model to repeat the same review. A zero-source window is still done.
-        save_short_memory(start_text, end_text, target_config.get('symbol', 'Unknown'),
-                          config_id, previous, pos_history_text, 0)
-        return True
-    memory_input = (
-        f"Window: {start_text} - {end_text}\n"
-        f"Symbol: {target_config.get('symbol')}\n\n"
-        f"Recent market/agent reasoning:\n{market_text or 'No new market reasoning.'}\n\n"
-        f"Previous short memory:\n{previous}"
-    )
-    # Fills or equity can change even in a window with no new agent analysis.
-    # Update from evidence and prior memory rather than replacing it with an empty placeholder.
-    memory_input += _memory_evidence_section(pos_history_text)
-    memory_summary = _run_memory_organizer(
-        memory_input, {**target_config, 'config_id': config_id},
-        operation_id=f'bucket:{config_id}:{start_text}:{end_text}', previous=previous)
-    if _is_invalid_short_memory_summary(memory_summary, memory_input):
-        logger.warning(f"Skip saving invalid short memory for {config_id}.")
-        return False
-    save_short_memory(
-        start_text,
-        end_text,
-        target_config.get("symbol", "Unknown"),
-        config_id,
-        memory_summary,
-        pos_history_text,
-        source_count,
-    )
-    return True
 
 # ==========================================
 # 2. Nodes
@@ -954,7 +470,7 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             'real_positions': []
         }
 
-    daily_history, short_memory_text, recent_summaries_text, trading_rules_text = _load_decision_memory(config_id)
+    memory_context = load_decision_memory(config_id)
 
     if is_real_exec:
         try:
@@ -1053,23 +569,7 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
                 'technical_indicators': analysis,
             }))
         formatted_market_data = '\n\n'.join(blocks)
-    prompt_template = resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger)
-    # Legacy templates can keep the variable, but daily memory is no longer read.
-    daily_history = []
-    history_entries = []
-    if daily_history:
-        for ds in daily_history:
-            date_str = ds.get('date', '未知日期')
-            summary = ds.get('summary', '')
-            count = ds.get('source_count', 0)
-            if summary:
-                history_entries.append(f"  [{date_str}] ({count}轮分析) {summary}")
-        formatted_history_text = "\n".join(history_entries)
-    else:
-        formatted_history_text = "(暂无历史记录)"
-
-    formatted_history_text = "## Daily Memory\n" + formatted_history_text
-
+    prompt_template = clean_decision_template(resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger))
     next_run_time = calculate_next_run_time(agent_config, now_cn)
 
     positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
@@ -1143,8 +643,8 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             account_data, plans=protection_plans if trade_mode == 'REAL' else None,
             contract_size=contract_size, symbol=symbol)
 
-    system_prompt = render_prompt(
-        prompt_template,
+    system_prompt = render_decision_prompt(
+        prompt_template, memory_context,
         model=agent_config.get('model'),
         symbol=', '.join(symbols),
         leverage=leverage,
@@ -1156,10 +656,6 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         positions_text=positions_text,
         orders_text=orders_friendly_text,
         formatted_market_data=formatted_market_data,
-        short_memory_text=short_memory_text,
-        recent_summaries_text=recent_summaries_text,
-        trading_rules_text=trading_rules_text,
-        history_text=formatted_history_text,
         dca_period_text=dca_period_text,
         dca_budget=dca_budget
     )
@@ -1196,14 +692,8 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
     if trade_mode in {'REAL', 'STRATEGY'} and '{orders_text}' not in prompt_template:
         system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
-    if '{short_memory_text}' not in prompt_template:
-        system_prompt += '\n\n## Short-term memory\n' + short_memory_text
     if agent_config.get('market_profile') == 'hourly':
         system_prompt += '\n\n## 当前小时级策略周期\n每1h评估一次；1h决定触发和失效，4h判断结构，1d提供背景。仅使用本轮提供的已收盘K线，不要求15m入场信号。给出单一主策略和未来1h/4h的条件判断。'
-    if '{trading_rules_text}' not in prompt_template:
-        system_prompt += '\n\n## 长期交易规则\n' + trading_rules_text
-    if '{recent_summaries_text}' not in prompt_template:
-        system_prompt += '\n\n## 最近三轮决策摘要（历史计划，不是成交证明）\n' + recent_summaries_text
     if trade_mode in {'REAL', 'STRATEGY'}:
         exit_mode = effective_exit_mode(agent_config)
         system_prompt += f'\n\n当前退出模式：exit_mode={exit_mode}。'
@@ -1221,7 +711,6 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         "symbol": symbol,
         "market_context": market_full,
         "account_context": account_data,
-        "history_context": daily_history,
         "spot_config_fingerprint": spot_config_fingerprint,
         "messages": messages
     })
@@ -1864,7 +1353,6 @@ def run_agent_for_config(config: dict, human_message: str = None, progress_callb
         messages=[],
         market_context={},
         account_context={},
-        history_context=[],
         full_analysis="",
         human_message=human_message
     )

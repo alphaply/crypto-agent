@@ -1,14 +1,6 @@
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from langchain_core.messages import (
-    BaseMessageChunk,
-    HumanMessage,
-    AIMessage,
-    ToolMessage,
-    SystemMessage,
-    trim_messages,
-    BaseMessage
-)
+from langchain_core.messages import BaseMessage
 
 class OpenOrderReal(BaseModel):
     """实盘限价开仓；可选成交后全仓 TP/SL，数量使用标的币数量。"""
@@ -86,7 +78,6 @@ class AgentState(BaseModel):
     messages: List[BaseMessage]
     market_context: Dict[str, Any]
     account_context: Dict[str, Any]
-    history_context: List[Dict[str, Any]]
     full_analysis: str = ""
     human_message: Optional[str] = None
     active_agent: Optional[str] = "MASTER"

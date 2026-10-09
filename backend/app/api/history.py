@@ -14,7 +14,6 @@ from backend.app.schemas.payloads import (
 from backend.app.services.dashboard_service import (
     build_history_payload,
     clean_history_payload,
-    generate_daily_summary_payload,
     generate_short_memory_payload,
     get_daily_summaries_payload,
     get_short_memories_payload,

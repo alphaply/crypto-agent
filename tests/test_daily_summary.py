@@ -1,3 +1,4 @@
+from backend.agent import memory_service, decision_context
 import sqlite3
 import tempfile
 import unittest
@@ -186,39 +187,6 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual([row["strategy_logic"] for row in pending], ["logic-a1", "logic-a2", ""])
         self.assertEqual([row["strategy_logic"] for row in window_rows], ["logic-a2"])
 
-    def test_daily_summary_does_not_save_prompt_echo_as_result(self):
-        from backend.agent import agent_graph
-
-        with database.get_db_conn() as conn:
-            conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
-                ("2026-08-14 00:01:31", "BTC/USDT", "agent", "cfg-a", "中期空头未改，等待反弹做空。"),
-            )
-            conn.commit()
-
-        cfg = {"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True}
-        prompt_echo = (
-            "以下是 2026-08-14 一整天的多轮交易分析逻辑，请汇总为一段200字以内的当日策略行情回顾..."
-        )
-        with patch.object(agent_graph.global_config, "get_all_symbol_configs", return_value=[cfg]), \
-            patch.object(agent_graph, "summarize_content", return_value=prompt_echo):
-            generated = agent_graph.generate_manual_daily_summary("cfg-a", "2026-08-14")
-
-        self.assertFalse(generated)
-        self.assertEqual(database.get_daily_summaries("cfg-a", days=7), [])
-
-    def test_daily_summarizer_failure_returns_no_fake_summary(self):
-        from backend.agent import agent_graph
-
-        cfg = {
-            "config_id": "cfg-a",
-            "symbol": "BTC/USDT",
-            "model": "summary-model",
-        }
-        with patch.object(agent_graph, "build_chat_model", side_effect=RuntimeError("upstream unavailable")):
-            summary = agent_graph.summarize_content("daily source input", cfg, summary_type="daily")
-
-        self.assertEqual(summary, "")
 
     def test_short_memory_upserts_by_config_and_bucket(self):
         database.save_short_memory("2026-05-06 00:00:00", "2026-05-06 04:00:00", "BTC/USDT", "btc-a", "A", "P", 2)
@@ -317,8 +285,8 @@ class DailySummaryTests(unittest.TestCase):
             )
             conn.commit()
 
-        with patch.object(agent_graph, "_run_memory_organizer", return_value="rolling memory") as summarizer:
-            generated = agent_graph.generate_rolling_short_memory_for_config(
+        with patch.object(memory_service, "organize_memory", return_value="rolling memory") as summarizer:
+            generated = memory_service.generate_rolling_short_memory_for_config(
                 "cfg-a",
                 agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},
                 now_cn=agent_graph.TZ_CN.localize(__import__("datetime").datetime(2026, 5, 5, 5, 0, 0)),
@@ -326,7 +294,7 @@ class DailySummaryTests(unittest.TestCase):
 
         self.assertTrue(generated)
         summarizer.assert_called_once()
-        memory_text = agent_graph.format_short_memory_text("cfg-a")
+        memory_text = decision_context.format_short_memory_text("cfg-a")
         self.assertIn("rolling memory", memory_text)
 
     def test_short_memory_llm_format_omits_display_metadata(self):
@@ -334,7 +302,7 @@ class DailySummaryTests(unittest.TestCase):
 
         database.save_short_memory("2026-05-06 00:00:00", "2026-05-06 04:00:00", "BTC/USDT", "cfg-a", "clean memory", "", 2)
 
-        memory_text = agent_graph.format_short_memory_for_llm("cfg-a")
+        memory_text = decision_context.format_short_memory_for_llm("cfg-a")
 
         self.assertEqual(memory_text, "clean memory")
         self.assertNotIn("[updated=", memory_text)
@@ -351,8 +319,8 @@ class DailySummaryTests(unittest.TestCase):
             )
             conn.commit()
 
-        with patch.object(agent_graph, "_run_memory_organizer", return_value="clean rolling") as summarizer:
-            generated = agent_graph.generate_rolling_short_memory_for_config(
+        with patch.object(memory_service, "organize_memory", return_value="clean rolling") as summarizer:
+            generated = memory_service.generate_rolling_short_memory_for_config(
                 "cfg-a",
                 agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},
                 now_cn=agent_graph.TZ_CN.localize(__import__("datetime").datetime(2026, 5, 5, 6, 0, 0)),
@@ -374,8 +342,8 @@ class DailySummaryTests(unittest.TestCase):
             )
             conn.commit()
 
-        with patch.object(agent_graph, "_run_memory_organizer", return_value="Window: last 12h\nSymbol: BTC/USDT..."):
-            generated = agent_graph.generate_rolling_short_memory_for_config(
+        with patch.object(memory_service, "organize_memory", return_value="Window: last 12h\nSymbol: BTC/USDT..."):
+            generated = memory_service.generate_rolling_short_memory_for_config(
                 "cfg-a",
                 agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},
                 now_cn=agent_graph.TZ_CN.localize(__import__("datetime").datetime(2026, 5, 5, 6, 0, 0)),

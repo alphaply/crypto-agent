@@ -1,3 +1,4 @@
+from backend.agent import decision_context
 from datetime import datetime
 from unittest.mock import Mock
 
@@ -32,7 +33,7 @@ def test_recent_decisions_are_three_chronological_complete_summaries(local_db):
                          ('cfg', f'2026-10-01 0{index}:00:00', str(index) * 700))
         conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic) VALUES(?,?,?)', ('other', '2026-10-01', 'other task'))
         conn.commit()
-    lines = agent_graph.format_recent_decisions('cfg').splitlines()
+    lines = decision_context.format_recent_decisions('cfg').splitlines()
     assert len(lines) == 3
     assert all(len(line.split('] ', 1)[1]) == 700 for line in lines)
     assert '01:00:00' in lines[0] and '03:00:00' in lines[2]
@@ -48,7 +49,7 @@ def test_market_failure_still_includes_rules_recent_and_working_memory(local_db,
     monkeypatch.setattr(agent_graph, 'MarketTool', lambda **_: market)
     monkeypatch.setattr(agent_graph, 'resolve_prompt_template', lambda *_: 'Custom prompt {symbol}')
     monkeypatch.setattr(agent_graph.global_config, 'get_leverage', lambda *_: 2)
-    state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={}, history_context=[])
+    state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={},)
     result = agent_graph.start_node(state, {'configurable': {'config_id': 'cfg', 'agent_config': {'mode': 'STRATEGY'}}})
     prompt = result.messages[0].content
     assert 'Verify executed amounts' in prompt and 'Previous thesis' in prompt
@@ -83,7 +84,7 @@ def test_rule_chat_tool_is_rejected_without_approval_or_execution(monkeypatch):
     monkeypatch.setattr(chat_graph, '_run_tool', run)
     state = {'messages': [AIMessage(content='', tool_calls=[{'name': 'manage_trading_rules', 'args': {'action': 'list'}, 'id': 'rule-call'}])]}
     result = chat_graph.tools_node(state, {'configurable': {'config_id': 'cfg'}})
-    assert '记忆整理 Agent' in result['messages'][0].content
+    assert '自动规则维护已停用' in result['messages'][0].content
     run.assert_not_called()
     monkeypatch.setattr(chat_graph, '_resolve_chat_config', lambda _: {'symbol': 'ETH/USDT', 'read_only': True})
     result = chat_graph.tools_node(state, {'configurable': {}})
@@ -119,7 +120,7 @@ def test_scheduler_and_chat_stop_multi_tool_calls_after_failed_or_uncertain_resu
     message = AIMessage(content='', tool_calls=calls)
     run = Mock(return_value=result)
     monkeypatch.setattr(agent_graph, 'run_trade_tool', run)
-    state = AgentState(symbol='ETH/USDT', messages=[message], market_context={}, account_context={}, history_context=[])
+    state = AgentState(symbol='ETH/USDT', messages=[message], market_context={}, account_context={},)
     outputs = agent_graph.tools_node(state, {'configurable': {'config_id': 'cfg'}}).messages[1:]
     assert [output.tool_call_id for output in outputs] == ['call-0', 'call-1', 'call-2']
     assert all('not_executed' in output.content for output in outputs[1:])

@@ -5,7 +5,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 
-from backend.agent.agent_graph import generate_manual_daily_summary, generate_short_memory_for_config, resolve_market_timeframes, get_short_memory_bucket
+from backend.agent.agent_graph import resolve_market_timeframes
 from backend.agent.memory_workflow import get_review_result
 from backend.config import config as global_config
 from backend.database import (
@@ -1094,7 +1094,7 @@ def list_short_memories_payload(
 
 
 def generate_short_memory_payload(config_id: str, bucket_start: str | None = None):
-    from backend.agent.agent_graph import generate_rolling_short_memory_for_config
+    from backend.agent.memory_service import generate_rolling_short_memory_for_config
     from backend.database import get_summary_logic_between
     now = datetime.now(TZ_CN)
     target_time = now
@@ -1154,10 +1154,6 @@ def export_daily_summaries_payload(
             )
         )
     return "\n\n---\n\n".join(chunks)
-
-
-def generate_daily_summary_payload(config_id: str, date_str: str):
-    return {"success": generate_manual_daily_summary(config_id, date_str)}
 
 
 def clean_history_payload(symbol: str):

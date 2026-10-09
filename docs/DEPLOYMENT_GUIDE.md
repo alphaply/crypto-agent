@@ -32,14 +32,10 @@ PORT=7860
 RUN_SCHEDULER_IN_WEB=true
 SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
-DAILY_SUMMARY_TIME=00:05
-DAILY_SUMMARY_RETRY_MINUTES=15
-SHORT_MEMORY_RETRY_MINUTES=15
 ```
 
 其中 `RUN_SCHEDULER_IN_WEB=true` 适用于单进程运行方式；下面分容器部署显式覆盖为 false，并单独启动 `crypto-agent-scheduler`。仓库不提供 Compose 文件，已有自维护 Compose 可沿用相同镜像、数据卷和配置。
-每日总结默认在所配置时区的 `00:05` 汇总前一天数据；若调度器错过该时刻，会在恢复后补跑。总结模型调用失败时不会保存 Prompt 回显，并会按 `DAILY_SUMMARY_RETRY_MINUTES` 重试。
-短期记忆按四小时窗口生成（`00:00`、`04:00`、`08:00`、`12:00`、`16:00`、`20:00`）；若调度器在整点后启动，会自动补生成最近一个已结束的窗口。生成失败时默认每 15 分钟重试，可通过 `SHORT_MEMORY_RETRY_MINUTES` 调整。
+短期动态记忆在每轮报告保存后入队更新，合并旧 memory、近 4 小时摘要和实际执行证据。失败保留旧记忆，最多尝试 3 次，前两次失败后分别等待至少 60 秒、300 秒。日报和固定四小时批次已退役，不再注册调度或补跑。
 
 启动服务：
 

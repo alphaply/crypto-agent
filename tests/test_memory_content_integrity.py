@@ -176,7 +176,7 @@ def test_configured_model_summary_is_used_without_expanding_raw_analysis(memory_
         monkeypatch.setattr(agent_graph, 'MarketTool', lambda **_: market)
         monkeypatch.setattr(agent_graph, 'resolve_prompt_template', lambda *_: 'Task {symbol}\n{recent_summaries_text}')
         monkeypatch.setattr(agent_graph.global_config, 'get_leverage', lambda *_: 2)
-        state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={}, history_context=[])
+        state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={},)
         result = agent_graph.start_node(state, {'configurable': {'config_id': 'cfg', 'agent_config': {'mode': 'STRATEGY'}}})
         prompt = result.messages[0].content
         assert compressed.strip() in prompt

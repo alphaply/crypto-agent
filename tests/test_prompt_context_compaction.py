@@ -121,14 +121,13 @@ def test_decision_prompt_only_loads_compressed_history_and_current_protection(lo
     market.fetch_recent_trades.return_value = []
     monkeypatch.setattr(agent_graph, 'MarketTool', lambda **_: market)
     monkeypatch.setattr(agent_graph, 'fetch_news_risk_context', lambda *_: {})
-    monkeypatch.setattr(agent_graph, 'get_daily_summaries', lambda *_, **__: [])
     monkeypatch.setattr(agent_graph, 'resolve_prompt_template', lambda *_: template)
     monkeypatch.setattr(agent_graph.global_config, 'get_leverage', lambda *_: 2)
     for name in ('save_news_snapshot', 'save_balance_snapshot', 'sync_open_position_history'):
         monkeypatch.setattr(database, name, lambda *_, **__: None)
     database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg',
                                'compressed lessons only', 'heavy raw ledger must stay stored', 1)
-    state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={}, history_context=[])
+    state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={},)
     result = agent_graph.start_node(state, {'configurable': {
         'config_id': 'cfg', 'agent_config': {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': mode,
                                            'market_timeframes': ['15m'], 'exit_mode': exit_mode,

@@ -1,10 +1,11 @@
+from backend.agent import memory_service
 from unittest.mock import Mock
 
 import pytest
 
 from backend import database
 from backend.database_schema import initialize_schema
-from backend.agent import agent_graph as graph, memory_updates as updates
+from backend.agent import memory_updates as updates
 
 
 @pytest.fixture
@@ -18,7 +19,7 @@ def job(tmp_path, monkeypatch):
         conn.commit()
     database.save_short_memory('2026-10-09 08:00:00', '2026-10-09 09:00:00', 'ETH/USDT', 'cfg', 'prior memory', '', 1)
     updates.enqueue_memory_update('cfg', 'run-1', summary_id)
-    monkeypatch.setattr(graph, 'format_recent_position_history_for_memory', lambda *args: 'Confirmed execution evidence')
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *args: 'Confirmed execution evidence')
     return {'config_id': 'cfg', 'symbol': 'ETH/USDT'}
 
 
@@ -29,7 +30,7 @@ def state():
 
 def test_failed_memory_retries_back_off_then_stop_without_touching_old_memory(job, monkeypatch):
     model = Mock(return_value='')
-    monkeypatch.setattr(graph, '_run_memory_organizer', model)
+    monkeypatch.setattr(memory_service, 'organize_memory', model)
     old = database.get_short_memories('cfg')
     for attempt in range(1, 4):
         assert not updates.process_memory_update('cfg', 'run-1', job)
@@ -48,7 +49,7 @@ def test_failed_memory_retries_back_off_then_stop_without_touching_old_memory(jo
 
 def test_successful_memory_update_runs_once_and_keeps_rolling_evidence(job, monkeypatch):
     model = Mock(return_value='new dynamic memory')
-    monkeypatch.setattr(graph, '_run_memory_organizer', model)
+    monkeypatch.setattr(memory_service, 'organize_memory', model)
     assert updates.process_memory_update('cfg', 'run-1', job)
     assert updates.process_memory_update('cfg', 'run-1', job)
     assert state()['status'] == 'completed' and model.call_count == 1

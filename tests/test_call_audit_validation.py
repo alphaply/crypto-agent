@@ -76,7 +76,7 @@ def test_audit_storage_error_does_not_mask_validation_failure(local_db, monkeypa
         invoke(response, response_validator=require_complete_response)
 
 
-@pytest.mark.parametrize('summary_type', ['strategy', 'daily'])
+@pytest.mark.parametrize('summary_type', ['strategy'])
 @pytest.mark.parametrize('failure', ['length', 'empty'])
 def test_summary_rejection_is_an_error_audit_with_billable_usage(local_db, monkeypatch, summary_type, failure):
     source = 'Full strategy source ' * 400 + 'SOURCE_TAIL'

@@ -1,3 +1,4 @@
+from backend.agent import decision_context
 from unittest.mock import Mock, patch
 
 import httpx
@@ -24,10 +25,9 @@ def fresh_data(monkeypatch):
     monkeypatch.setattr(graph, "resolve_market_timeframes", lambda _: ["15m"])
     monkeypatch.setattr(graph, "fetch_news_risk_context", lambda _: {})
     monkeypatch.setattr(graph.database, "save_news_snapshot", Mock())
-    monkeypatch.setattr(graph, "get_daily_summaries", Mock(return_value=[]))
-    monkeypatch.setattr(graph, "format_short_memory_for_llm", Mock(return_value="memory"))
+    monkeypatch.setattr(decision_context, "format_short_memory_for_llm", Mock(return_value="memory"))
     monkeypatch.setattr(graph, "resolve_prompt_template", Mock(return_value="{short_memory_text}"))
-    monkeypatch.setattr(graph, "render_prompt", lambda template, **kw: f"price={kw['current_price']} atr={kw['atr_15m']} balance={kw['balance']}")
+    monkeypatch.setattr(decision_context, "render_prompt", lambda template, **kw: f"price={kw['current_price']} atr={kw['atr_15m']} balance={kw['balance']}")
     monkeypatch.setattr(graph, "get_trade_tools_for_mode", Mock(return_value=[]))
     monkeypatch.setattr(llm_utils, "get_llm_max_retries", lambda: 1)
     monkeypatch.setattr(llm_utils.time, "sleep", Mock())
@@ -39,7 +39,7 @@ def initial_state():
         HumanMessage(content="analyze"),
         AIMessage(content="", tool_calls=[{"id": "executed", "name": "trade", "args": {}}]),
         ToolMessage(content="already placed", tool_call_id="executed")],
-        market_context={}, account_context={}, history_context=[], human_message="analyze")
+        market_context={}, account_context={}, human_message="analyze")
 
 
 @pytest.mark.parametrize("node", [graph.agent_node, graph.small_agent_node])

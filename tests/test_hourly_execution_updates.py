@@ -1,4 +1,5 @@
 """Offline behavior checks for hourly reports, memory, scheduling and run budgets."""
+from backend.agent import memory_service, decision_context
 from datetime import datetime
 import json
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'hourly.sqlite'))
     with database.get_db_conn() as conn:
         initialize_schema(conn)
-    monkeypatch.setattr(agent_graph, 'format_recent_position_history_for_memory', lambda *_: 'verified fills')
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: 'verified fills')
 
 
 def at(text):
@@ -95,7 +96,7 @@ def test_memory_per_run_four_hours_retry_and_idempotence(isolated, monkeypatch):
     def review(source, *args, **kwargs):
         seen.append(source)
         return '' if len(seen) == 1 else 'updated-memory'
-    monkeypatch.setattr(agent_graph, '_run_memory_organizer', review)
+    monkeypatch.setattr(memory_service, 'organize_memory', review)
     monkeypatch.setattr(agent_graph, 'run_agent_for_config', lambda *_: pytest.fail('memory retry must not trade'))
     assert not process_memory_update('cfg', 'run-1', {'symbol': 'BTC/USDT'})
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'prior-memory'
@@ -117,7 +118,7 @@ def test_memory_per_run_four_hours_retry_and_idempotence(isolated, monkeypatch):
     assert memory['run_id'] == 'run-1' and memory['version'] == 2
     # Persistence retries retain the same version and do not create another snapshot.
     assert len(database.get_short_memories('cfg', 10)) == 2
-    assert '覆盖 2026-10-08 06:00:00 → 2026-10-08 10:00:00' in agent_graph.format_short_memory_for_llm('cfg', include_metadata=True)
+    assert '覆盖 2026-10-08 06:00:00 → 2026-10-08 10:00:00' in decision_context.format_short_memory_for_llm('cfg', include_metadata=True)
 
 
 def test_memory_versions_and_window_metadata_survive_same_second_updates(isolated):
