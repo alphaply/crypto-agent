@@ -39,6 +39,8 @@ def test_batch_stops_on_failure_or_uncertainty_and_never_replays_writes(local_db
     result = execute(cancellations())
     assert result['status'] == expected
     assert [item['status'] for item in result['results']] == ['completed', expected, 'not_executed']
+    assert [item['index'] for item in result['results']] == [0, 1, 2]
+    assert result['results'][2]['blocked_by_index'] == 1
     assert dispatch.call_count == 2
     assert execute(cancellations()) == result
     assert dispatch.call_count == 2
@@ -136,6 +138,37 @@ def test_unknown_receipt_refreshes_from_native_reconciliation_without_replay(loc
     assert result['results'][0]['result']['results'][0]['id'] == 'exchange-order'
     assert callback.call_count == 1
     assert '未执行动作没有重放' in result['message']
+
+
+@pytest.mark.parametrize('pending_kind', ['fill_pending', 'unobserved_entry_fills', 'cleanup_fill_unseen', 'EXITING'])
+def test_independent_receipt_waits_for_persisted_pending_evidence_even_without_error(local_db, pending_kind):
+    callback = Mock(side_effect=TimeoutError('Lost acknowledgement'))
+    request = {'tool': 'open', 'amount': 1}
+    run_once('cfg', 'ETH/USDT', 'call', request, callback)
+    plan = {'state': 'ACTIVE', 'side': 'LONG', 'error': None, 'execution_mode': 'independent_exits',
+            'entries': [{'id': 'exchange-order', 'operation_id': 'call:0', 'status': 'closed',
+                         'amount': 1, 'filled': 1}]}
+    if pending_kind == 'fill_pending':
+        plan['entries'][0]['fill_pending'] = True
+    elif pending_kind == 'EXITING':
+        plan['state'] = 'EXITING'
+    else:
+        plan[pending_kind] = 1
+    with database.get_db_conn() as conn:
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+                     ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(plan)))
+        conn.commit()
+    assert reconcile_pending_trade_operations('cfg') == 0
+    assert run_once('cfg', 'ETH/USDT', 'call', request, callback)['status'] == 'unknown'
+    plan['state'] = 'ACTIVE'
+    plan.pop(pending_kind, None)
+    plan['entries'][0].pop('fill_pending', None)
+    with database.get_db_conn() as conn:
+        conn.execute('UPDATE real_protection_plans SET payload=?', (json.dumps(plan),))
+        conn.commit()
+    assert reconcile_pending_trade_operations('cfg') == 1
+    assert run_once('cfg', 'ETH/USDT', 'call', request, callback)['status'] == 'completed'
+    assert callback.call_count == 1
 
 
 def test_reconciliation_requires_exact_prefix_scope_and_confirmed_amendment(local_db):

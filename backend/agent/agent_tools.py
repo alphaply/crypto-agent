@@ -44,7 +44,11 @@ def _independent_call(config_id, symbol, action, **kwargs):
         result = method(symbol, **kwargs) if real else method(**kwargs)
         return json.dumps(result, ensure_ascii=False, default=str)
     except ValueError as exc:
-        return json.dumps({'status': 'failed', 'error': str(exc)}, ensure_ascii=False)
+        from backend.utils.independent_exits import IndependentPositionError
+        result = {'status': 'failed', 'error': str(exc)}
+        if isinstance(exc, IndependentPositionError):
+            result.update(error_code=exc.code, details=exc.details)
+        return json.dumps(result, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({'status': 'unknown', 'error': str(exc)}, ensure_ascii=False)
 
@@ -83,15 +87,19 @@ def _independent_orders(orders, config_id, symbol, opening=False):
                 if (config.get_config_by_id(config_id) or {}).get('mode', 'STRATEGY').upper() != 'REAL':
                     args['current_price'] = current_price
                 result = _independent_call(config_id, symbol, 'close', **args)
-            results.append(json.loads(result))
+            item = json.loads(result)
+            item['index'] = index
+            results.append(item)
             if tool_result_status(result) in {'failed', 'unknown'}:
                 break
         except Exception as exc:
-            results.append({'status': 'unknown', 'error': str(exc)})
+            results.append({'status': 'unknown', 'error': str(exc), 'index': index})
             break
         finally:
             current_operation_id.reset(token)
-    results.extend({'status': 'not_executed', 'index': index} for index in range(len(results), len(ops)))
+    blocked_by_index = len(results) - 1
+    results.extend({'status': 'not_executed', 'index': index, 'blocked_by_index': blocked_by_index}
+                   for index in range(len(results), len(ops)))
     status = tool_result_status(results)
     return json.dumps({'status': status, 'results': results}, ensure_ascii=False)
 

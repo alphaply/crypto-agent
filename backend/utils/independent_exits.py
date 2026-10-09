@@ -16,6 +16,16 @@ from backend.utils.position_protection import PositionProtection, TERMINAL, _loc
 
 
 EXIT_TYPES = {"market", "take_profit_limit", "stop_market"}
+FLAT_CONFIRMATION_SECONDS = 2.0
+
+
+class IndependentPositionError(ValueError):
+    """A verified position cannot safely be managed by this independent cycle."""
+
+    def __init__(self, message, *, code, details):
+        super().__init__(message)
+        self.code = code
+        self.details = details
 
 
 def positive(value, name, *, zero=False):
@@ -71,6 +81,76 @@ class IndependentExits(PositionProtection):
     def _remaining(self, record):
         return max(float(record.get("amount", 0)) - float(record.get("filled", 0)), 0)
 
+    @staticmethod
+    def _record_fill(record, order, previous_filled):
+        """Keep the last verified cumulative fill when a response is incomplete."""
+        try:
+            raw = order.get("filled")
+            if raw is None or isinstance(raw, bool):
+                raise ValueError("Missing fill quantity")
+            filled = positive(raw, "order fill", zero=True)
+            if filled + 1e-12 < previous_filled:
+                raise ValueError("Cumulative fill moved backwards")
+        except (TypeError, ValueError, OverflowError):
+            record.update(filled=previous_filled, fill_pending=True)
+            return False
+        record["filled"] = max(filled, previous_filled)
+        record.pop("fill_pending", None)
+        return True
+
+    def _query(self, record, symbol, trigger=False):
+        previous_filled = float(record.get("filled", 0))
+        previous_status = record.get("status")
+        order = super()._query(record, symbol, trigger)
+        if (order is not None and record.get('cancel_confirmed_at') and previous_status in TERMINAL
+                and order.get('status') not in TERMINAL):
+            record.update(status=previous_status, filled=previous_filled, fill_pending=True)
+            raise RuntimeError("Cancellation fill outcome is unverified; awaiting a terminal order response")
+        if order is not None and not self._record_fill(record, order, previous_filled):
+            raise RuntimeError("Order fill quantity is unverified; reconcile the existing order ID")
+        return order
+
+    def _record_cancel_fill(self, record, response):
+        return self._record_fill(record, response, float(record.get('filled', 0)))
+
+    def _position(self, plan):
+        # An unavailable or malformed response must not become proof of flatness.
+        positions = self.ex.fetch_positions([plan["symbol"]])
+        if not isinstance(positions, list):
+            raise RuntimeError("Exchange position response is unavailable")
+        found = None
+        for position in positions:
+            if not isinstance(position, dict) or position.get("contracts") is None:
+                raise RuntimeError("Exchange position quantity is unavailable")
+            quantity = positive(position["contracts"], "exchange position quantity", zero=True)
+            side = str(position.get("side", "")).upper()
+            if quantity and side not in {"LONG", "SHORT"}:
+                raise RuntimeError("Exchange position direction is unavailable")
+            if position.get("symbol") and position["symbol"] != plan["symbol"]:
+                raise RuntimeError("Exchange returned a different position symbol")
+            if quantity and side == plan["side"]:
+                if found is not None:
+                    raise RuntimeError("Multiple exchange positions require reconciliation")
+                found = position
+        return found
+
+    def _missing_cycle_result(self, symbol, side, plan):
+        position = self._position({"symbol": symbol, "side": side})
+        cycle_state = (plan or {}).get("state", "MISSING")
+        if not position:
+            return {"status": "skipped", "reason": "no_position", "symbol": symbol,
+                    "pos_side": side, "cycle_state": cycle_state, "position_amount": 0.0}
+        contract_size = positive(self._market(symbol).get("contractSize") or 1, "contract size")
+        raise IndependentPositionError(
+            "An exchange position exists but has no active independent position cycle",
+            code="independent_position_cycle_missing",
+            details={"symbol": symbol, "pos_side": side, "cycle_state": cycle_state,
+                     "position_amount": float(position["contracts"]) * contract_size,
+                     "next_action": "Verify this symbol, position side, exchange account and task ownership; "
+                                    "reconcile the original task's entry and exit records before managing this position. "
+                                    "Do not create another entry or retry an unknown order with a new operation ID."},
+        )
+
     def _existing_operation(self, plan, operation_id):
         if operation_id:
             return next((record for record in plan.get("entries", []) + plan.get("exits", [])
@@ -79,6 +159,11 @@ class IndependentExits(PositionProtection):
 
     def _result(self, plan, record):
         contract_size = float(self._market(plan["symbol"]).get("contractSize") or 1)
+        pending = record.get("status") != "rejected" and bool(
+            not record.get("id") or record.get("status") in {None, "submitting"}
+            or record.get("fill_pending") or record.get("replacement")
+            or plan.get("error") or plan["state"] == "EXITING"
+            or plan.get("unobserved_entry_fills") or plan.get("cleanup_fill_unseen"))
         return {"id": record.get("id"), "client_id": record.get("client_id"),
                 "status": record.get("status"), "episode_id": plan["episode_id"],
                 "amount": float(record.get("amount", 0)) * contract_size,
@@ -86,7 +171,7 @@ class IndependentExits(PositionProtection):
                 "exit_type": record.get("exit_type"), "price": record.get("price"),
                 "trigger_price": record.get("trigger_price"),
                 "protection_state": plan["state"], "error": plan.get("error"),
-                "pending": not record.get("id") or record.get("status") in {None, "submitting"}}
+                "pending": pending}
 
     def _active_plan(self, symbol, side, *, create=False):
         plan = self._load(symbol, side)
@@ -96,7 +181,7 @@ class IndependentExits(PositionProtection):
             self._reconcile(plan)
         if not plan or plan["state"] == "DONE":
             if not create:
-                raise ValueError("No active independent position cycle")
+                return None
             plan = self._new(symbol, side)
         if plan.get("error") or plan["state"] == "EXITING":
             raise ValueError("Independent orders require reconciliation before another action")
@@ -141,8 +226,15 @@ class IndependentExits(PositionProtection):
                                          record["amount"], record.get("price"), params)
             if not order or not order.get("id"):
                 raise RuntimeError("Submission outcome unknown; reconcile by client ID")
-            record.update(id=str(order["id"]), status=order.get("status") or "open",
-                          filled=float(order.get("filled") or 0))
+            previous_filled = float(record.get("filled", 0))
+            record.update(id=str(order["id"]), status=order.get("status") or "open")
+            self._record_fill(record, order, previous_filled)
+            if not record.get("exit_type"):
+                new_fill = max(float(record["filled"]) - previous_filled, 0)
+                if new_fill:
+                    # Terminal ACKs are not queried again. Preserve their fill
+                    # evidence until the position API has caught up, across restart.
+                    plan["unobserved_entry_fills"] = float(plan.get("unobserved_entry_fills", 0)) + new_fill
             self._save(plan)
         except ccxt.ExchangeError as exc:
             record["status"] = "rejected"
@@ -174,11 +266,15 @@ class IndependentExits(PositionProtection):
         with _lock(self.account_scope):
             market = self._market(symbol)
             symbol = market["symbol"]
+            if pos_side not in {"LONG", "SHORT"}:
+                raise ValueError("Invalid position side")
             previous = self._load(symbol, pos_side)
             existing = self._existing_operation(previous or {}, operation_id)
             if existing:
                 return self._result(previous, existing)
             plan = self._active_plan(symbol, pos_side)
+            if plan is None:
+                return self._missing_cycle_result(symbol, pos_side, self._load(symbol, pos_side))
             pos = self._position(plan)
             if not pos:
                 raise ValueError("Exit orders require an already filled position")
@@ -244,11 +340,20 @@ class IndependentExits(PositionProtection):
             record["replacement"] = request
             self._save(plan)
         self._cancel(record, plan, record["exit_type"] == "stop_market")
-        pos = self._position(plan)
-        if record.get("status") == "closed" or not pos:
+        if record.get("status") == "closed" and not record.get("fill_pending"):
             record.pop("replacement", None)
             self._save(plan)
             return record
+        try:
+            pos = self._position(plan)
+            if not pos:
+                raise RuntimeError("Position absent during exit replacement; awaiting reconciliation")
+        except Exception:
+            # The cancellation may be final, but a single read cannot abandon
+            # the replacement. Maintenance resumes this exact persisted intent.
+            plan["error"] = "Exit replacement pending position verification; do not repeat the order"
+            self._save(plan)
+            raise
         quantity = max(request["remaining"] - max(float(record.get("filled", 0)) - request["original_filled"], 0), 0)
         others = sum(self._remaining(r) for r in plan["exits"] if r is not record and
                      r["exit_type"] == record["exit_type"] and r.get("status") not in TERMINAL)
@@ -320,6 +425,7 @@ class IndependentExits(PositionProtection):
         pos = self._position(plan)
         if pos:
             plan.pop('cleanup_fill_unseen',None)
+            plan.pop('flat_candidate', None)
             plan.update(state="ACTIVE", error="Entry filled during cleanup; residual position requires management")
         elif plan.get('cleanup_fill_unseen'):
             # A cancellation acknowledgement proving a new fill is stronger than
@@ -327,10 +433,29 @@ class IndependentExits(PositionProtection):
             # never mark the cycle DONE while that residual has not been observed.
             plan.update(state='EXITING',error='Late entry fill confirmed but residual position not yet visible; awaiting reconciliation')
         else:
+            plan.pop('flat_candidate', None)
             plan.update(state="DONE", error=None)
             from backend.utils.execution_metrics import observe
             observe(self,plan,None)
         self._save(plan)
+
+    def _flat_confirmed(self, plan):
+        entry_filled = sum(positive(record.get("filled", 0), "entry fill", zero=True)
+                           for record in plan.get("entries", []))
+        exit_filled = sum(positive(record.get("filled", 0), "exit fill", zero=True)
+                          for record in plan.get("exits", []))
+        if entry_filled > 0 and exit_filled + 1e-12 >= entry_filled:
+            return True
+        now = time.time()
+        candidate = plan.get("flat_candidate")
+        if candidate is None:
+            candidate = plan["flat_candidate"] = {"first_observed_at": now, "observations": 0}
+        candidate["observations"] += 1
+        if candidate["observations"] > 1 and now - candidate["first_observed_at"] >= FLAT_CONFIRMATION_SECONDS:
+            return True
+        plan["error"] = "Position temporarily absent; awaiting a later flat confirmation before cancelling exits"
+        self._save(plan)
+        return False
 
     def _reconcile(self, plan):
         if plan["state"] == "DONE":
@@ -340,7 +465,7 @@ class IndependentExits(PositionProtection):
         try:
             plan["error"] = None
             for record in plan.get("entries", []) + plan.get("exits", []):
-                if record.get("status") not in TERMINAL:
+                if record.get("status") not in TERMINAL or record.get("fill_pending"):
                     previous_filled = float(record.get('filled',0))
                     if self._query(record, plan["symbol"], record.get("exit_type") == "stop_market") is None:
                         raise RuntimeError(f"Order outcome unresolved: {record['client_id']}")
@@ -353,14 +478,25 @@ class IndependentExits(PositionProtection):
                     if record.get("amendment", {}).get("state") == "pending":
                         raise RuntimeError("Entry amendment outcome unresolved")
             pos = self._position(plan)
+            if not pos and plan.get("ever_filled") and plan["state"] != "EXITING":
+                # A second read may already show an eventually consistent
+                # position. Neither empty read alone authorizes cancelling exits.
+                pos = self._position(plan)
             if not pos and plan.get('unobserved_entry_fills'):
                 plan['cleanup_fill_unseen'] = float(plan.get('cleanup_fill_unseen',0)) + plan.pop('unobserved_entry_fills')
             elif pos:
                 plan.pop('cleanup_fill_unseen',None)
                 plan.pop('unobserved_entry_fills',None)
+                plan.pop('flat_candidate', None)
             if pos or any(float(record.get('filled', 0)) > 0 for record in plan.get('entries', [])):
                 plan["ever_filled"] = True
+            if not pos and plan.get('cleanup_fill_unseen'):
+                plan["error"] = "Entry fill confirmed but position not yet visible; awaiting reconciliation"
+                self._save(plan)
+                return
             if plan["state"] == "EXITING" or (plan.get("ever_filled") and not pos):
+                if plan["state"] != "EXITING" and not self._flat_confirmed(plan):
+                    return
                 self._cleanup(plan)
                 return
             if not pos:
@@ -382,7 +518,7 @@ class IndependentExits(PositionProtection):
             for kind in ("take_profit_limit", "stop_market"):
                 live = [r for r in plan["exits"] if r["exit_type"] == kind and r.get("status") not in TERMINAL]
                 total = sum(self._remaining(r) for r in live)
-                quantity = float(self._position(plan).get("contracts", 0)) if self._position(plan) else 0
+                quantity = float(pos["contracts"])
                 if total > quantity + 1e-12:
                     ratio = quantity / total
                     # Cancel all affected orders before replacing. This prevents the
@@ -401,6 +537,8 @@ class IndependentExits(PositionProtection):
             plan["verified_at"] = time.time()
             self._save(plan)
         except Exception as exc:
+            # Failed/unknown reads break consecutive flat observations.
+            plan.pop('flat_candidate', None)
             plan["error"] = str(exc)
             self._save(plan)
             raise
@@ -417,14 +555,17 @@ class IndependentExits(PositionProtection):
             quantity = float((position or {}).get("contracts", 0)) * contract_size
             stops = 0.0
             for record in plan.get("exits", []):
+                result["pending"] |= bool(record.get("replacement") or record.get("fill_pending"))
                 if record.get("status") in TERMINAL:
                     continue
                 item = self._result(plan, record)
                 item.update(order_id=record.get("id"), pos_side=side)
                 result["exits"].append(item)
-                if record["exit_type"] == "stop_market" and record.get("status") == "open":
+                if record["exit_type"] == "stop_market" and record.get("status") == "open" and not item['pending']:
                     stops += item["remaining"]
                 result["pending"] |= item["pending"] or bool(record.get("replacement"))
             result["uncovered"][side] = max(quantity - stops, 0)
-            result["pending"] |= bool(plan.get("error")) or plan["state"] == "EXITING"
+            result["pending"] |= bool(plan.get("error") or plan.get('unobserved_entry_fills')
+                                      or plan.get('cleanup_fill_unseen') or plan["state"] == "EXITING"
+                                      or any(r.get('fill_pending') for r in plan.get('entries', [])))
         return result

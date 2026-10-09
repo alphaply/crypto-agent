@@ -138,7 +138,10 @@ def _reconciled_receipt(conn, row):
                     if not any(_operation_matches(value, row['operation_id']) for value in operation_fields) and not matching_details:
                         continue
                     # A known order ID alone is not proof the requested cancel/amend succeeded.
-                    if plan.get('error') or any(item.get('state') == 'pending' for item in details) or record.get('replacement'):
+                    independent_pending = plan.get('execution_mode') == 'independent_exits' and (
+                        plan.get('state') == 'EXITING' or plan.get('unobserved_entry_fills') or plan.get('cleanup_fill_unseen'))
+                    if (plan.get('error') or independent_pending or record.get('fill_pending')
+                            or any(item.get('state') == 'pending' for item in details) or record.get('replacement')):
                         return None
                     status = str(record.get('status') or '').lower()
                     if _operation_matches(record.get('cancel_operation_id'), row['operation_id']) and status not in {'canceled', 'cancelled', 'closed', 'filled', 'expired', 'rejected'}:

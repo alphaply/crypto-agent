@@ -415,6 +415,11 @@ class PositionProtection:
             self._reconcile(plan)
             return plan
 
+    def _record_cancel_fill(self, record, response):
+        if response.get('filled') is not None:
+            record['filled'] = float(response['filled'])
+        return True
+
     def _cancel(self, record, plan, trigger=False):
         if record.get("status") in TERMINAL:
             return
@@ -451,9 +456,11 @@ class PositionProtection:
                     status = 'canceled'
                 if same_order and status in TERMINAL:
                     record['status'] = status
-                    if result.get('filled') is not None:
-                        record['filled'] = float(result['filled'])
                     record['cancel_confirmed_at'] = time.time()
+                    if not self._record_cancel_fill(record, result):
+                        plan['error'] = 'Cancellation confirmed but cumulative fill is unverified; reconcile the existing order ID'
+                        self._save(plan)
+                        raise RuntimeError(plan['error'])
                     self._save(plan)
                     return
         # Exchange reads may lag a successful cancel. Finish confirmation in this call.

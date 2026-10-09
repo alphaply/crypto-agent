@@ -142,15 +142,16 @@ def execute_trade_actions(actions: list, config_id: str, symbol: str):
     import uuid
     batch_id = current_operation_id.get() or uuid.uuid4().hex
     results = []
-    stopped = False
+    blocked_by_index = None
     for i, action in enumerate(parsed.actions):
-        if stopped:
-            results.append({"index": i, "action": action.action, "status": "not_executed"})
+        if blocked_by_index is not None:
+            results.append({"index": i, "action": action.action, "status": "not_executed", "blocked_by_index": blocked_by_index})
             continue
         result = run_once(config_id, symbol, f"{batch_id}:{i}", action.model_dump(), lambda a=action: _dispatch(a, config_id, symbol, mode))
         status = tool_result_status(result)
         results.append({"index": i, "action": action.action, "status": status, "result": result})
-        stopped = status in {"failed", "unknown", "pending"}
+        if status in {"failed", "unknown", "pending"}:
+            blocked_by_index = i
     status = next((r["status"] for r in results if r["status"] in {"failed", "unknown", "pending"}),
                   'submitted' if any(r['status'] == 'submitted' for r in results) else 'completed')
     return json.dumps({"status": status, "operation_id": batch_id, "results": results}, ensure_ascii=False)

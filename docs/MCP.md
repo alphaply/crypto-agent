@@ -103,6 +103,8 @@ OAuth 状态保存在 `trading_data.db`，重启和不同工作进程需要访�
 
 查询工具为 `list_profiles`、`list_symbols`、`get_news`、`get_market`、`get_balance`、`get_positions`、`get_orders`、`get_spot_inventory`、`get_trading_tools` 和 `get_operation`。`get_news` 读取全局缓存摘要及新鲜度，不触发抓取或模型计费。余额是账户余额，同一账户的多个策略不能相加；账户余额也不等于该 MCP 配置有权卖出的库存。
 
+合约退出需要匹配该配置的持仓归属和退出周期。`pos_side=LONG` 表示平多，`SHORT` 表示平空，不能按委托的买卖方向选择。若返回周期缺失、已结束或待核验，请先核对配置、标的、持仓方向及原始开仓记录；不能换配置或新增开仓来绕过归属校验。批次中 `not_executed` 表示之前的操作失败或未知，未提交该项；已确认无仓的跳过项不阻止其后操作。详见[合约独立退出排查](WORKBENCH.md#合约独立退出与平仓排查)。
+
 先用 `list_profiles` 取得获授权的 `profile_id`，再调用 `list_symbols` 搜索该账户、市场类型及配置范围内的实际可用标的。例如：
 
 ```json

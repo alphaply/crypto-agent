@@ -99,3 +99,93 @@ def test_legacy_multi_order_reports_unexecuted_after_failure(simulation):
     ]}, 'failed-multi-close')
     assert result['status'] == 'failed'
     assert [row['status'] for row in result['results']] == ['failed', 'not_executed']
+    assert [row['index'] for row in result['results']] == [0, 1]
+    assert result['results'][1]['blocked_by_index'] == 0
+
+
+@pytest.mark.parametrize('tool_name', ['close_position_real', 'execute_trade_actions'])
+def test_real_close_skips_confirmed_empty_side_and_continues_batch(simulation, monkeypatch, tool_name):
+    monkeypatch.setattr(config, 'get_config_by_id', lambda _: {
+        'config_id': 'cfg', 'mode': 'REAL', 'exit_mode': 'independent_exits',
+    })
+    calls = []
+
+    def close(symbol, **kwargs):
+        calls.append((symbol, kwargs['pos_side']))
+        if kwargs['pos_side'] == 'LONG':
+            return {'status': 'skipped', 'reason': 'no_position', 'symbol': symbol, 'pos_side': 'LONG'}
+        return {'status': 'filled', 'id': 'short-exit', 'filled': 1}
+
+    monkeypatch.setattr(agent_tools, '_independent_service', lambda *_: (SimpleNamespace(close=close), True))
+    orders = [
+        {'pos_side': side, 'exit_type': 'market', 'amount': 0, 'reason': 'close held positions'}
+        for side in ('LONG', 'SHORT')
+    ]
+    payload = {'orders': orders} if tool_name == 'close_position_real' else {
+        'actions': [{'action': 'close', 'order': order} for order in orders],
+    }
+    result = call(tool_name, payload, 'close-both-sides')
+    assert result['status'] == 'completed'
+    assert [row['index'] for row in result['results']] == [0, 1]
+    assert all('blocked_by_index' not in row for row in result['results'])
+    if tool_name == 'close_position_real':
+        assert [row['status'] for row in result['results']] == ['skipped', 'filled']
+        assert result['results'][0]['reason'] == 'no_position'
+    else:
+        first = json.loads(result['results'][0]['result'])
+        assert first['results'][0]['status'] == 'skipped'
+        assert first['results'][0]['reason'] == 'no_position'
+    assert calls == [('ETH/USDT', 'LONG'), ('ETH/USDT', 'SHORT')]
+    assert call(tool_name, payload, 'close-both-sides') == result
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('tool_name', ['close_position_real', 'execute_trade_actions'])
+@pytest.mark.parametrize('uncertain', [False, True])
+def test_real_close_preserves_diagnostic_and_blocks_following_items(simulation, monkeypatch, tool_name, uncertain):
+    from backend.utils.independent_exits import IndependentPositionError
+
+    monkeypatch.setattr(config, 'get_config_by_id', lambda _: {
+        'config_id': 'cfg', 'mode': 'REAL', 'exit_mode': 'independent_exits',
+    })
+    details = {
+        'symbol': 'ETH/USDT:USDT', 'pos_side': 'LONG', 'cycle_state': None,
+        'position_amount': 1, 'next_action': 'Verify this task and position ownership before retrying.',
+    }
+    calls = []
+
+    def close(symbol, **kwargs):
+        calls.append((symbol, kwargs['pos_side']))
+        if uncertain:
+            raise TimeoutError('Position query unavailable')
+        raise IndependentPositionError(
+            'No active independent position cycle',
+            code='independent_position_cycle_missing', details=details,
+        )
+
+    monkeypatch.setattr(agent_tools, '_independent_service', lambda *_: (SimpleNamespace(close=close), True))
+    orders = [
+        {'pos_side': side, 'exit_type': 'market', 'amount': 0, 'reason': 'close held positions'}
+        for side in ('LONG', 'SHORT')
+    ]
+    payload = {'orders': orders} if tool_name == 'close_position_real' else {
+        'actions': [{'action': 'close', 'order': order} for order in orders],
+    }
+    result = call(tool_name, payload, 'blocked-close')
+    expected = 'unknown' if uncertain else 'failed'
+    assert result['status'] == expected
+    assert [row['status'] for row in result['results']] == [expected, 'not_executed']
+    assert [row['index'] for row in result['results']] == [0, 1]
+    assert result['results'][1]['blocked_by_index'] == 0
+    first = result['results'][0]
+    if tool_name == 'execute_trade_actions':
+        first = json.loads(first['result'])['results'][0]
+    if uncertain:
+        assert first['error'] == 'Position query unavailable'
+        assert 'error_code' not in first
+    else:
+        assert first['error_code'] == 'independent_position_cycle_missing'
+        assert first['details'] == details
+    assert calls == [('ETH/USDT', 'LONG')]
+    assert call(tool_name, payload, 'blocked-close') == result
+    assert len(calls) == 1
