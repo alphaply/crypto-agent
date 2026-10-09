@@ -50,8 +50,8 @@ const { useBreakpoint } = Grid;
 const ADMIN_TAB_STORAGE_KEY = 'crypto-agent-admin-active-tab';
 const ADMIN_TAB_KEYS = ['tasks', 'intelligence', 'providers', 'exchanges', 'mcp', 'memory', 'runtime', 'agent-runs', 'prompts', 'database', 'importexport'];
 
-const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩为精炼的中文策略摘要。合并重复分析，保留趋势判断、关键价位、风险点、持仓/挂单意图、实际执行结果和下一步条件。不要为字数目标截断条件或结果。只输出摘要文本。\n\n内容：\n{content}';
-const DEFAULT_SHORT_MEMORY_PROMPT = '请整理旧记忆并复盘本窗口，完整保留尚有效的条件、实际结果和未解决问题，不限制字数。以下是提供的证据：\n{content}';
+const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩为100–200字、最多4条短句的中文策略摘要。合并重复分析，保留趋势判断、关键价位、风险点、持仓/挂单意图、实际执行结果和下一步条件。不要为字数目标截断条件或结果。只输出摘要文本。\n\n内容：\n{content}';
+const DEFAULT_SHORT_MEMORY_PROMPT = '请将旧记忆与新证据合并为最新状态，目标300–500字、最多6条短项。替换过时内容，合并重复项，保留有效条件、实际结果与待核验问题，不逐轮追加日志，不为字数目标截断必要条件。以下是提供的证据：\n{content}';
 
 const DEFAULT_PROMPT_FILE_CONTENT = `Role: Crypto trading strategy analyst
 Time: {current_time}
@@ -1295,9 +1295,9 @@ export default function AdminPage() {
                     <Switch checked={payload.globals.langchain_tracing} onChange={(c) => updateGlobal('langchain_tracing', c)} />
                   </div>
                   <div className="form-field">
-                    <label>{locale === 'zh' ? '摘要/记忆等辅助调用远程追踪' : 'Trace auxiliary summary/memory calls'}</label>
+                    <label>{locale === 'zh' ? '其他辅助调用远程追踪' : 'Trace other auxiliary calls'}</label>
                     <Switch checked={payload.globals.langchain_background_tracing === true} onChange={(c) => updateGlobal('langchain_background_tracing', c)} />
-                    <Text type="secondary">{locale === 'zh' ? '默认关闭，仍保留本地调用与费用记录；Agent 决策和聊天保留完整追踪。消息处理在消息聚合中单独设置。' : 'Off by default; local call/cost records remain. Agent decisions and chats keep full tracing. News tracing is configured separately.'}</Text>
+                    <Text type="secondary">{locale === 'zh' ? '默认关闭，仍保留本地调用与费用记录。决策、策略摘要、短期记忆和聊天统一跟随 LangChain Tracing 主开关；消息处理在消息聚合中单独设置。' : 'Off by default; local call/cost records remain. Decisions, strategy summaries, short-term memory and chats follow the main LangChain Tracing switch. News tracing is configured separately.'}</Text>
                   </div>
                   <div className="form-field">
                     <label>LangChain Project</label>

@@ -284,7 +284,8 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
         prompt = render_prompt(prompt_template, content=content)
         if '{content}' not in prompt_template:
             prompt += '\n\n内容：\n' + content
-        prompt += '\n\n' + SUMMARY_FACT_POLICY
+        from backend.agent.summary_prompts import STRATEGY_BREVITY_POLICY
+        prompt += '\n\n' + SUMMARY_FACT_POLICY + '\n\n' + STRATEGY_BREVITY_POLICY
         prompt_role = summarizer_cfg.get('system_prompt_role') or agent_config.get('system_prompt_role', 'system')
         summary_messages = [instruction_message(prompt, prompt_role)]
         def validate_summary_response(response) -> None:
@@ -314,6 +315,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
                 purpose='strategy_summary',
                 model=model, messages=summary_messages,
                 provider_id=resolve_summarizer_provider_id(agent_config),
+                request_settings=summarizer_cfg,
                 response_validator=validate_summary_response),
             logger=logger,
             context=f"summarizer model={model} config_id={agent_config.get('config_id', 'summarizer')}",

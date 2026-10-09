@@ -77,7 +77,8 @@ def test_failed_review_preserves_memory_but_can_retry_same_window(local_db):
     before = database.get_short_memories('cfg', 10)
     runner.side_effect = None
     runner.return_value = MemoryReviewResult(status='failed', error='Model unavailable')
-    assert not memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=NOW)
+    with pytest.raises(memory_service.MemoryReviewError, match='Model unavailable'):
+        memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=NOW)
     assert memory_workflow.get_review_result(rolling_operation()) is None
     assert database.get_short_memories('cfg', 10) == before
 

@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { isCompactPlainCode, prepareMarkdown } from '../lib/markdown';
+import { isCompactPlainCode, prepareMarkdown, markdownRemarkPlugins } from '../lib/markdown';
 
 function childText(children) {
   return React.Children.toArray(children).map((child) => {
@@ -15,7 +14,6 @@ const markdownComponents = {
     void node;
     return <a {...props} target="_blank" rel="noreferrer" />;
   },
-  del: ({ children }) => <span>{children}</span>,
   table: ({ node, children, ...props }) => {
     void node;
     return (
@@ -59,7 +57,7 @@ export default function MarkdownBlock({ content, className = '', streaming = fal
   return (
     <div className={`markdown-block ${className}`.trim()}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={markdownRemarkPlugins}
         components={markdownComponents}
       >
         {source}

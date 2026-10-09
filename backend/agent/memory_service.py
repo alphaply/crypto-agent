@@ -13,6 +13,10 @@ TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
 logger = setup_logger(__name__)
 
 
+class MemoryReviewError(RuntimeError):
+    """A failed consolidation that leaves the previous memory unchanged."""
+
+
 def save_short_memory(*args, **kwargs):
     verify_memory_lease()
     return _save_short_memory(*args, **kwargs)
@@ -66,7 +70,9 @@ def organize_memory(source: str, agent_config: dict, *, operation_id: str) -> st
         verify_memory_lease()
         return result.summary
     logger.warning('Memory review %s: %s', result.status, result.error)
-    return ''
+    if result.status == 'partial':
+        return ''  # Legacy rule receipts remain non-retryable historical data.
+    raise MemoryReviewError(result.error or 'Memory review failed; previous memory retained')
 
 
 def is_invalid_memory(summary: str, source_input: str) -> bool:

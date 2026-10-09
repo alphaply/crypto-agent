@@ -1,4 +1,5 @@
 import json
+import uuid
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -35,7 +36,7 @@ def environment(tmp_path, monkeypatch):
         conn.commit()
     monkeypatch.setattr(service.config, "get_config_by_id", lambda cid: {"config_id": cid} if cid in {"cfg", "other"} else None)
     monkeypatch.setattr(memory, "invoke_with_retry", lambda operation, **kwargs: operation())
-    monkeypatch.setattr(memory, "_start_audit", lambda *args: "audit")
+    monkeypatch.setattr(memory, "_start_audit", lambda *args: str(uuid.uuid4()))
     monkeypatch.setattr(memory, "_finish_audit", lambda *args, **kwargs: None)
     usage = []
     monkeypatch.setattr(database, "save_token_usage", lambda **kwargs: usage.append(kwargs))
@@ -132,6 +133,7 @@ def test_long_memory_preserves_evidence_and_ignores_legacy_rule_reason(environme
     assert result.summary == summary
     assert source in fake.calls[0][-1].content and "自定义整理格式" in fake.calls[0][-1].content
     assert "长期规则自动维护已暂停" in fake.calls[0][0].content
+    assert "300–500字" in fake.calls[0][0].content and "不逐轮追加日志" in fake.calls[0][0].content
 
 
 def test_model_fallback_and_custom_file(environment, monkeypatch, tmp_path):
@@ -307,13 +309,13 @@ def test_rule_tool_response_never_executes_or_starts_second_model_turn(environme
 
 
 @pytest.mark.parametrize('enabled', [False, True])
-def test_memory_custom_audit_path_respects_background_trace_setting(environment, monkeypatch, enabled):
+def test_memory_follows_main_tracing_regardless_of_auxiliary_switch(environment, monkeypatch, enabled):
     from langsmith import tracing_context, utils
     monkeypatch.setattr(memory.global_config, 'langchain_background_tracing', enabled)
     fake = model(monkeypatch, final())
     invoke = fake.invoke
     def checked(messages):
-        assert utils.tracing_is_enabled() == ('local' if enabled else False)
+        assert utils.tracing_is_enabled() == 'local'
         return invoke(messages)
     monkeypatch.setattr(fake, 'invoke', checked)
     with tracing_context(enabled='local'):

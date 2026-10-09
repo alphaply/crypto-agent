@@ -47,6 +47,17 @@ def test_latest_memory_uses_coverage_end_not_bucket_start(local_db):
     assert decision_context.format_short_memory_for_llm('cfg') == 'completed batch'
 
 
+def test_manual_review_returns_original_failure_with_no_memory_write(local_db, monkeypatch):
+    error = 'Memory review response is incomplete: finish_reason=length'
+    monkeypatch.setattr(memory_service, 'generate_rolling_short_memory_for_config',
+                        Mock(side_effect=memory_service.MemoryReviewError(error)))
+    monkeypatch.setattr(dashboard_service.global_config, 'get_config_by_id', lambda _: {'config_id': 'cfg'})
+    monkeypatch.setattr(database, 'get_summary_logic_between', lambda *args: [{'timestamp': '2026-10-06 09:00:00'}])
+    result = dashboard_service.generate_short_memory_payload('cfg')
+    assert result['review_status'] == 'failed' and result['error'] == error
+    assert result['generated'] is False and database.get_short_memories('cfg') == []
+
+
 def test_lost_lease_rejects_memory_writes(local_db, monkeypatch):
     with memory_review_lease('cfg') as acquired:
         assert acquired

@@ -99,7 +99,7 @@ export default function AgentRunsPanel({ agents = [] }) {
   ];
 
   return <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-    <Alert type="info" showIcon title={zh ? '交易 Agent 负责决策和执行，记忆 Agent 负责复盘和维护未锁定的规则。' : 'The trading agent decides and executes; the memory agent reviews outcomes and maintains unlocked rules.'}
+    <Alert type="info" showIcon title={zh ? '交易 Agent 负责决策和执行，记忆模型只整理短期动态记忆。' : 'The trading agent decides and executes; the memory model consolidates short-term memory only.'}
       description={zh ? `这里展示实际发生的模型调用。当前任务保留最近 ${retention.per_config} 次，全局消息单独保留最多 ${retention.news_per_config || 12100} 次，最长 ${retention.days} 天；字符数包含消息和工具定义的 JSON，不等于 Token。费用优先使用服务商返回值，否则按调用时的渠道费率估算（含已报告的缓存用量）；缺少价格或用量显示未知。仅登录后可查看。` : `Actual model calls. Keeps the latest ${retention.per_config} calls per selected task and up to ${retention.news_per_config || 12100} shared news calls for ${retention.days} days. Character counts include message and tool JSON, not tokens. Costs use provider-reported values when available, otherwise configured rates at call time including reported cache usage. Missing prices or usage stay unknown. Login is required.`} />
     <Space wrap>
       <Select allowClear showSearch optionFilterProp="label" aria-label={zh ? '运行记录所属任务' : 'Run task'} value={configId} onChange={(value) => { setConfigId(value); setPage(1); }} placeholder={zh ? '全部任务' : 'All tasks'} style={{ minWidth: 220 }} options={[{ value: 'news-intelligence', label: zh ? '全局消息处理' : 'Shared news pipeline' }, ...agents.filter((agent) => agent.config_id !== 'news-intelligence').map((agent) => ({ value: agent.config_id, label: agent.title || agent.config_id }))]} />
@@ -123,6 +123,8 @@ export default function AgentRunsPanel({ agents = [] }) {
           { key: 'end', label: zh ? '完成' : 'Finished', children: time(detail.finished_at) },
           { key: 'input', label: zh ? '消息 / 工具字符' : 'Message / tool chars', children: `${number(detail.message_chars)} / ${number(detail.tool_chars)}` },
           { key: 'tokens', label: zh ? '输入 / 输出 Token' : 'Input / output tokens', children: `${number(detail.prompt_tokens)} / ${number(detail.completion_tokens)}` },
+          { key: 'stop', label: zh ? '停止原因' : 'Stop reason', children: detail.details?.response_metadata?.finish_reason || detail.details?.response_metadata?.stop_reason || detail.details?.completion_status?.finish_reason || detail.details?.completion_status?.stop_reason || detail.details?.response_metadata?.status || detail.details?.completion_status?.status || '—' },
+          { key: 'settings', label: zh ? '输出与推理配置' : 'Output / reasoning settings', children: Object.keys(detail.details?.request_settings || {}).length ? <pre style={blockStyle}>{formatBody(detail.details.request_settings)}</pre> : <Text type="secondary">{zh ? '未显式配置；使用模型或服务商默认值' : 'Not explicitly configured; model or provider defaults apply'}</Text> },
           { key: 'cost', label: zh ? '费用' : 'Cost', children: costLabel(detail) },
           { key: 'run', label: 'ID', children: <Text copyable style={{ overflowWrap: 'anywhere' }}>{detail.run_id}</Text> },
         ]} />
@@ -131,7 +133,7 @@ export default function AgentRunsPanel({ agents = [] }) {
           { key: 'messages', label: zh ? '实际输入消息（按发送顺序）' : 'Actual messages (in sent order)', children: <Space direction="vertical" style={{ width: '100%' }} size="middle">{(detail.messages || []).map((item, index) => <div key={index} style={{ width: '100%' }}><Tag>{index + 1} · {item.role || 'unknown'}{item.name ? ` · ${item.name}` : ''}</Tag><pre style={blockStyle}>{formatBody(item.content)}</pre>{item.tool_calls || item.tool_call_id || item.function_call ? <pre style={blockStyle}>{formatBody({ tool_calls: item.tool_calls, tool_call_id: item.tool_call_id, function_call: item.function_call })}</pre> : null}</div>)}</Space> },
           { key: 'tools', label: `${zh ? '本次可用工具' : 'Available tools'} (${detail.tools?.length || 0})`, children: <pre style={blockStyle}>{formatBody(detail.tools)}</pre> },
           { key: 'output', label: zh ? '模型输出' : 'Model output', children: detail.output ? <pre style={blockStyle}>{detail.output}</pre> : <Text type="secondary">{zh ? '本次无文本输出；工具调用可在详情中查看。' : 'No text output for this call; tool calls may appear in details.'}</Text> },
-          { key: 'details', label: zh ? '工具调用与附加记录' : 'Tool calls and additional details', children: <pre style={blockStyle}>{formatBody(detail.details)}</pre> },
+          { key: 'details', label: zh ? '响应元数据、推理与工具记录' : 'Response metadata, reasoning and tools', children: <pre style={blockStyle}>{formatBody(detail.details)}</pre> },
           { key: 'raw', label: zh ? '完整消息 JSON' : 'Complete message JSON', children: <Paragraph copyable={{ text: formatBody(detail.messages) }}><pre style={blockStyle}>{formatBody(detail.messages)}</pre></Paragraph> },
         ]} />
       </Space> : null}

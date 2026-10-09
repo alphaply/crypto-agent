@@ -86,6 +86,7 @@ def test_finalize_uses_configured_deepseek_and_saves_its_complete_summary(local_
     assert 'NESTED_SHOULD_NOT_WIN' not in prompt_message.content
     assert decision_journal(messages) in prompt_message.content
     assert prompt_message.content.count(SUMMARY_FACT_POLICY) == 1
+    assert '100–200字' in prompt_message.content and '不复述逐步思考' in prompt_message.content
     saved = saved_summary()
     assert saved['strategy_logic'] == result
     structured = json.loads(saved['decision_json'])

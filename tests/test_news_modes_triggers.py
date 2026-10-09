@@ -232,7 +232,7 @@ def test_stream_signal_shortens_fetch_cadence_without_refresh_storm(env, monkeyp
     assert not news_service.refresh_news(force=False, background=False)['started']
 
 
-@pytest.mark.parametrize('purpose,background,expected', [('decision', False, 'local'), ('chat', False, 'local'), ('strategy_summary', False, False), ('daily_summary', True, 'local')])
+@pytest.mark.parametrize('purpose,background,expected', [('decision', False, 'local'), ('chat', False, 'local'), ('strategy_summary', False, 'local'), ('memory_review', False, 'local'), ('daily_summary', False, False), ('daily_summary', True, 'local')])
 def test_auxiliary_trace_switch_keeps_agent_calls_and_local_audit(env, monkeypatch, purpose, background, expected):
     from backend.agent.call_audit import audited_invoke
     from backend.config import config

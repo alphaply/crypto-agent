@@ -57,3 +57,14 @@ def test_successful_memory_update_runs_once_and_keeps_rolling_evidence(job, monk
     assert 'prior memory' in source and source.count('new verified evidence') == 1
     assert 'Confirmed execution evidence' in source
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'new dynamic memory'
+
+
+def test_incomplete_provider_reason_reaches_job_status_and_preserves_old_memory(job, monkeypatch):
+    from backend.agent import memory_agent
+    error = 'Memory review response is incomplete: finish_reason=length'
+    monkeypatch.setattr(memory_agent, 'run_memory_review', lambda *args, **kwargs:
+                        memory_agent.MemoryReviewResult(error=error))
+    old = database.get_short_memories('cfg')
+    assert not updates.process_memory_update('cfg', 'run-1', job)
+    assert state()['error'] == error
+    assert database.get_short_memories('cfg') == old

@@ -1,4 +1,8 @@
 import remend from 'remend';
+import remarkGfm from 'remark-gfm';
+
+// Single tildes often delimit price ranges; double tildes retain GFM deletion.
+export const markdownRemarkPlugins = [[remarkGfm, { singleTilde: false }]];
 
 const STREAMING_REPAIR_OPTIONS = {
   // Currency values are common in this project, so avoid treating `$` as math.

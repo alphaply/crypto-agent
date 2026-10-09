@@ -1106,7 +1106,7 @@ def list_short_memories_payload(
 
 
 def generate_short_memory_payload(config_id: str, bucket_start: str | None = None):
-    from backend.agent.memory_service import generate_rolling_short_memory_for_config
+    from backend.agent.memory_service import generate_rolling_short_memory_for_config, MemoryReviewError
     from backend.database import get_summary_logic_between
     now = datetime.now(TZ_CN)
     target_time = now
@@ -1124,13 +1124,17 @@ def generate_short_memory_payload(config_id: str, bucket_start: str | None = Non
     start, end = target_time - timedelta(hours=4), target_time
     rows = get_summary_logic_between(config_id, start.strftime('%Y-%m-%d %H:%M:%S'),
                                      (end + timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S'))
-    generated = generate_rolling_short_memory_for_config(config_id, {**cfg, 'enabled': True}, now_cn=target_time, hours=4)
+    failure = ''
+    try:
+        generated = generate_rolling_short_memory_for_config(config_id, {**cfg, 'enabled': True}, now_cn=target_time, hours=4)
+    except MemoryReviewError as exc:
+        generated, failure = False, str(exc)
     outcome = get_review_result(f'rolling:{config_id}:{rows[-1].get("timestamp")}') if rows else {}
     outcome = outcome or {}
-    status = outcome.get('status') or ('completed' if generated else 'unchanged' if not rows else 'failed')
+    status = 'failed' if failure else outcome.get('status') or ('completed' if generated else 'unchanged' if not rows else 'failed')
     if status == 'completed' and not generated:
         status = 'unchanged'
-    return {'generated': generated, 'review_status': status, 'error': outcome.get('error', '')
+    return {'generated': generated, 'review_status': status, 'error': failure or outcome.get('error', '')
             or ('整理未完成或已有整理正在运行，旧记忆已保留。' if status == 'failed' else ''),
             'rule_receipts': outcome.get('rule_receipts', []),
             'bucket_start': start.strftime('%Y-%m-%d %H:%M:%S'), 'bucket_end': end.strftime('%Y-%m-%d %H:%M:%S')}
