@@ -8,7 +8,7 @@ import json
 def perpetual_symbol(exchange, symbol):
     market = exchange.market(symbol)
     if not market.get('contract') and ':' not in symbol:
-        market = exchange.market(f'{symbol}:USDT')
+        market = exchange.market(f'{symbol}:{symbol.split("/")[-1]}')
     if market.get('contract') is False or market.get('linear') is False:
         raise ValueError('MCP perpetual profile requires a linear contract')
     return market['symbol']

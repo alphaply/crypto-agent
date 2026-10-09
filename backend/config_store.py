@@ -17,7 +17,7 @@ from backend.utils.logger import setup_logger
 from backend.utils.run_schedule import DcaSchedule, validate_run_schedule
 from backend.utils.spot_portfolio import SPOT_MARKET_TIMEFRAMES, normalize_spot_symbols
 from backend.storage_paths import DATA_DIR, PROJECT_ROOT, data_file
-from backend.app.schemas.news import default_news_settings, default_pricing_sync_settings
+from backend.app.schemas.news import NewsSettings, default_news_settings, default_pricing_sync_settings
 
 
 logger = setup_logger("ConfigStore")
@@ -47,6 +47,7 @@ LANGSMITH_PROJECT_ENV_KEYS = ("LANGSMITH_PROJECT", "LANGCHAIN_PROJECT")
 LANGSMITH_API_KEY_ENV_KEYS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 
 GLOBAL_SECRET_ENV_MAP = {
+    "global_blockbeats_api_key": "BLOCKBEATS_API_KEY",
     "global_binance_api_key": "BINANCE_API_KEY",
     "global_binance_secret": "BINANCE_SECRET",
     "global_okx_api_key": "OKX_API_KEY",
@@ -912,6 +913,7 @@ def load_management_snapshot(*, include_secrets: bool = False) -> dict[str, Any]
         key: snapshot.get(key, default)
         for key, default in DEFAULT_GLOBAL_SETTINGS.items()
     }
+    globals_payload['news'] = NewsSettings.model_validate(globals_payload['news']).model_dump()
     def secret_view(value):
         metadata = _mask_secret(value)
         if include_secrets:

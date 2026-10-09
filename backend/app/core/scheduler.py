@@ -48,6 +48,7 @@ _protection_futures = {}
 _protection_executor = None
 _protection_clients = {}
 _disabled_mock_maintenance_at = {}
+_mcp_spot_maintenance_at = {}
 _execution_sync_futures = {}
 _execution_sync_executor = None
 _execution_sync_last = {}
@@ -432,7 +433,18 @@ def run_config_maintenance(config):
         try:
             from backend.app.services.dashboard_service import calculate_dca_stats
 
-            calculate_dca_stats(config_id)
+            if config.get('mcp_symbol_scope') == 'all':
+                from backend.mcp.settings import runtime_symbols
+                from backend.utils.spot_portfolio import MAX_SPOT_SYMBOLS
+                by_quote = {}
+                for owned_symbol in config.get('mcp_owned_symbols') or []:
+                    by_quote.setdefault(owned_symbol.split('/')[1], []).append(owned_symbol)
+                for symbols in by_quote.values():
+                    for start in range(0, len(symbols), MAX_SPOT_SYMBOLS):
+                        with runtime_symbols(config_id, symbols[start:start + MAX_SPOT_SYMBOLS]):
+                            calculate_dca_stats(config_id)
+            else:
+                calculate_dca_stats(config_id)
         except Exception as exc:
             logger.warning(f"[DCA Sync] {config_id} order/stat sync failed: {exc}")
 
@@ -522,12 +534,17 @@ def _sync_execution(config):
         mt = MarketTool(config_id=config['config_id'])
         from backend.utils.execution_stream import ensure_stream
         ensure_stream(mt)
-        ledger = ExecutionLedger(mt.exchange, config['config_id'], config['symbol'])
-        result = ledger.sync()
         from backend.utils.execution_metrics import update_post_exit
-        update_post_exit(mt.exchange, ledger.scope, ledger.symbol)
-        if result.get('error'):
-            logger.warning(f"[ExecutionSync] {config['config_id']}: {result['error']}")
+        symbols = config.get('mcp_owned_symbols') if config.get('mcp_symbol_scope') == 'all' else [config['symbol']]
+        for symbol in symbols or []:
+            try:
+                ledger = ExecutionLedger(mt.exchange, config['config_id'], symbol)
+                result = ledger.sync()
+                update_post_exit(mt.exchange, ledger.scope, ledger.symbol)
+                if result.get('error'):
+                    logger.warning(f"[ExecutionSync] {config['config_id']} {symbol}: {result['error']}")
+            except Exception as exc:
+                logger.warning(f"[ExecutionSync] {config['config_id']} {symbol}: {exc}")
     except Exception as exc:
         logger.warning(f"[ExecutionSync] {config['config_id']}: {exc}")
 
@@ -964,6 +981,14 @@ def protection_tick():
     except Exception as exc:
         logger.error('Cannot load external maintenance profiles: %s', exc)
         external_configs = []
+    # MCP profiles never enter the decision scheduler, but their owned spot
+    # orders still need reconciliation after submission or while paused.
+    for cfg in external_configs:
+        config_id = cfg['config_id']
+        if (cfg.get('mode') == 'SPOT_DCA'
+                and time.monotonic() - _mcp_spot_maintenance_at.get(config_id, -60) >= 60
+                and _submit_maintenance(cfg)):
+            _mcp_spot_maintenance_at[config_id] = time.monotonic()
     configs = {cfg['config_id']: cfg for cfg in [*global_config.get_all_symbol_configs(), *external_configs] if cfg}
     # Data accounting continues for recently active plans even when decision making
     # is disabled, including fills that arrive after protective cleanup.

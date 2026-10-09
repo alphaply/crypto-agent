@@ -42,12 +42,16 @@ def test_config_symbol_endpoints_require_authentication():
     assert client.patch("/api/config/spot/symbols", json={"symbols": ["BTC/USDT"]}).status_code == 401
 
 
-def test_config_market_catalog_route_forwards_all_filters(client, monkeypatch):
+@pytest.mark.parametrize('linear_only', [False, True])
+def test_config_market_catalog_route_forwards_all_filters(client, monkeypatch, linear_only):
     catalog = Mock(return_value={"symbols": [], "total": 0, "has_more": False})
     monkeypatch.setattr(routes, "list_market_symbols_payload", catalog)
-    response = client.get("/api/config/market-symbols", params={"exchange": "okx", "quote": "USDT", "keyword": "BTC", "offset": 100, "limit": 50, "symbols": "BTC/USDT,ETH/USDT"})
+    params = {"exchange": "okx", "quote": "USDT", "keyword": "BTC", "offset": 100, "limit": 50, "symbols": "BTC/USDT,ETH/USDT"}
+    if linear_only:
+        params.update(market_type='swap', linear_only='true')
+    response = client.get("/api/config/market-symbols", params=params)
     assert response.status_code == 200
-    assert catalog.call_args.kwargs == {"exchange": "okx", "quote": "USDT", "limit": 50, "offset": 100, "symbols": ["BTC/USDT", "ETH/USDT"], "require_profile_market": True}
+    assert catalog.call_args.kwargs == {"exchange": "okx", "quote": "USDT", "limit": 50, "offset": 100, "symbols": ["BTC/USDT", "ETH/USDT"], "require_profile_market": True, "linear_only": linear_only}
 
 
 @pytest.mark.parametrize("params", [{"limit": 201}, {"limit": 0}, {"offset": -1}, {"market_type": "future"}])

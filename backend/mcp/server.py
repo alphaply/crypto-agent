@@ -82,7 +82,7 @@ def build_server(public_url):
 
     @server.tool(annotations=read, meta=read_meta)
     async def get_positions(profile_id: str, symbol: str | None = None) -> list[dict]:
-        """Read open perpetual positions for configured symbols. Use balance for spot holdings."""
+        """Read open perpetual positions for authorized symbols; omit symbol for all allowed positions. Use balance for spot holdings."""
         return await query('positions', profile_id=profile_id, symbol=symbol)
 
     @server.tool(annotations=read, meta=read_meta)
@@ -97,7 +97,7 @@ def build_server(public_url):
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True), meta={'securitySchemes': [{'type': 'oauth2', 'scopes': SCOPES}]})
     async def execute_trade(profile_id: str, symbol: str, tool_name: str, arguments: dict, operation_id: str) -> dict:
-        """Execute a tool listed by get_trading_tools. Requires trade scope (cancel scope for cancellations). operation_id must be stable across retries; a timeout remains unknown and is never blindly replayed. Spot orders in one call share one allowance. MCP leverage limits use actual exchange settings; reducing/closing/cancelling remains possible above the cap."""
+        """Execute a tool listed by get_trading_tools. Requires trade scope (cancel scope for cancellations). operation_id must be stable across retries; a timeout remains unknown and is never blindly replayed. Spot orders in one call share one allowance in their common quote currency; mixed quote currencies in a call are rejected. MCP leverage limits use actual exchange settings; reducing/closing/cancelling remains possible above the cap."""
         return await anyio.to_thread.run_sync(partial(service.execute, service.principal(), profile_id, symbol, tool_name, arguments, operation_id))
 
     @server.tool(annotations=read, meta=read_meta)

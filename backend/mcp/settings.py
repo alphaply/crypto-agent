@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -10,6 +12,17 @@ from . import store
 from backend.utils.spot_config_guard import serialized_spot_execution
 
 SCOPES = ['read', 'trade', 'cancel']
+_request_symbols: ContextVar[tuple[str, tuple[str, ...]] | None] = ContextVar('mcp_request_symbols', default=None)
+
+
+@contextmanager
+def runtime_symbols(config_id: str, symbols: list[str]):
+    """Bind an authorized call's symbols without mutating the saved profile."""
+    token = _request_symbols.set((config_id, tuple(symbols)))
+    try:
+        yield
+    finally:
+        _request_symbols.reset(token)
 
 
 class MCPSettings(BaseModel):
@@ -36,7 +49,8 @@ class MCPProfile(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     exchange_profile_id: str = Field(min_length=1, max_length=200)
     market_type: Literal['spot', 'swap'] = 'swap'
-    symbols: list[str] = Field(min_length=1, max_length=30)
+    symbol_scope: Literal['selected', 'all'] = 'selected'
+    symbols: list[str] = Field(default_factory=list, max_length=30)
     enabled: bool = True
     max_leverage: int = Field(5, ge=1, le=125)
     leverage: int = Field(1, ge=1, le=125)
@@ -47,7 +61,9 @@ class MCPProfile(BaseModel):
     def validate_policy(self):
         if self.leverage > self.max_leverage:
             raise ValueError('Configured leverage exceeds the MCP maximum')
-        if self.market_type == 'spot':
+        if self.symbol_scope == 'selected' and not self.symbols:
+            raise ValueError('Select at least one symbol or explicitly allow all symbols')
+        if self.market_type == 'spot' and self.symbol_scope == 'selected':
             from backend.utils.spot_portfolio import normalize_spot_symbols
             normalize_spot_symbols(self.symbols)
         return self
@@ -66,7 +82,7 @@ def settings():
 
 
 def profiles():
-    return store.list_records('profile')
+    return [{'symbol_scope': 'selected', **row} for row in store.list_records('profile')]
 
 
 def exchange_profile(profile_id):
@@ -84,7 +100,7 @@ def save_profile(payload: MCPProfile):
     account = exchange_profile(payload.exchange_profile_id)
     if account.get('market_type', 'swap') != payload.market_type:
         raise ValueError('MCP market type must match its exchange account')
-    if payload.market_type == 'spot':
+    if payload.market_type == 'spot' and payload.symbol_scope == 'selected':
         from backend.utils.spot_portfolio import normalize_spot_symbols
         normalize_spot_symbols(payload.symbols)
     previous = store.get('profile', payload.profile_id)
@@ -103,7 +119,8 @@ def save_profile(payload: MCPProfile):
 
 def maintenance_profiles():
     """Include paused profiles: previously submitted orders still need protection."""
-    return [get_runtime_profile('mcp:' + row['profile_id']) for row in profiles()]
+    result = [get_runtime_profile('mcp:' + row['profile_id']) for row in profiles()]
+    return [row for row in result if row and row.get('symbol')]
 
 
 def get_runtime_profile(config_id: str):
@@ -114,10 +131,25 @@ def get_runtime_profile(config_id: str):
     if not profile:
         return None
     account = exchange_profile(profile['exchange_profile_id'])
+    symbol_scope = profile.get('symbol_scope', 'selected')
+    symbols = list(profile.get('symbols') or [])
+    owned = []
+    if symbol_scope == 'all':
+        from .config_guard import owned_symbols
+        with store.connection() as conn:
+            owned = owned_symbols(conn, profile)
+        request = _request_symbols.get()
+        symbols = list(request[1]) if request and request[0] == config_id else owned
+        if profile['market_type'] == 'spot' and symbols:
+            # Background readers must not add raw costs of different quote assets.
+            # Each gateway call is independently constrained to one quote asset.
+            quote = symbols[0].split('/')[1]
+            symbols = [symbol for symbol in symbols if symbol.split('/')[1] == quote][:10]
     return {
         **account, 'config_id': config_id, 'title': profile['name'],
-        'exchange_profile_id': profile['exchange_profile_id'], 'symbol': profile['symbols'][0],
-        'symbols': profile['symbols'], 'market_type': profile['market_type'],
+        'exchange_profile_id': profile['exchange_profile_id'], 'symbol': symbols[0] if symbols else None,
+        'symbols': symbols, 'market_type': profile['market_type'],
+        'mcp_symbol_scope': symbol_scope, 'mcp_owned_symbols': owned,
         'mode': 'SPOT_DCA' if profile['market_type'] == 'spot' else 'REAL',
         'enabled': profile['enabled'], 'mcp_profile': True, 'mcp_max_leverage': profile['max_leverage'],
         'leverage': profile['leverage'], 'exit_mode': profile['exit_mode'],

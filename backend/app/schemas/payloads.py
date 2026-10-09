@@ -73,6 +73,7 @@ class SecretUpdate(BaseModel):
 
 
 class GlobalSecretsPayload(BaseModel):
+    global_blockbeats_api_key: SecretUpdate = Field(default_factory=SecretUpdate)
     global_binance_api_key: SecretUpdate = Field(default_factory=SecretUpdate)
     global_binance_secret: SecretUpdate = Field(default_factory=SecretUpdate)
     global_okx_api_key: SecretUpdate = Field(default_factory=SecretUpdate)

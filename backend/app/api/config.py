@@ -49,6 +49,7 @@ def market_symbols(
     limit: int = Query(100, ge=1, le=200),
     offset: int = Query(0, ge=0),
     symbols: str = Query("", max_length=1000),
+    linear_only: bool = Query(False),
     _: dict = Depends(get_current_user),
 ):
     try:
@@ -56,6 +57,7 @@ def market_symbols(
             exchange_profile_id, market_type, keyword, exchange=exchange,
             quote=quote, limit=limit, offset=offset, symbols=symbols.split(","),
             require_profile_market=True,
+            linear_only=linear_only,
         )}
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc

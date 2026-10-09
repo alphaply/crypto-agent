@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 
 from . import store
-from .settings import profiles, get_runtime_profile, settings
+from .settings import profiles, get_runtime_profile, runtime_symbols, settings
 from .redaction import sanitize, safe_error
 from backend.utils.spot_config_guard import serialized_spot_execution
 
@@ -40,11 +41,34 @@ def list_profiles(caller):
     return [row for row in profiles() if row['profile_id'] in caller['profile_ids'] and row.get('enabled')]
 
 
-def normalize_symbol(profile, symbol):
+def normalize_symbol(profile, symbol, exchange=None, *, allow_inactive=False):
     requested = str(symbol or '').strip().upper()
-    if requested not in profile['symbols']:
-        raise ValueError('Symbol is outside this MCP profile')
-    return requested
+    if profile.get('symbol_scope', 'selected') != 'all':
+        if requested not in profile['symbols']:
+            raise ValueError('Symbol is outside this MCP profile')
+        return requested
+    if not requested or '/' not in requested or len(requested) > 50:
+        raise ValueError('Provide a valid exchange symbol')
+    if exchange is None:
+        raise ValueError('Exchange market validation is required for unrestricted symbols')
+    try:
+        if profile['market_type'] == 'swap':
+            from .guard import perpetual_symbol
+            requested = perpetual_symbol(exchange, requested)
+        market = exchange.market(requested)
+    except Exception as exc:
+        raise ValueError('Symbol is not a valid market on this exchange') from exc
+    if profile['market_type'] == 'spot':
+        valid = market.get('spot') is True and not market.get('contract')
+    else:
+        valid = market.get('swap') is True and market.get('linear') is True
+    if not valid:
+        raise ValueError('Symbol market type does not match this MCP profile')
+    if market.get('active') is False and not allow_inactive:
+        raise ValueError('Symbol is not active on this exchange')
+    if not market.get('symbol'):
+        raise ValueError('Exchange did not identify a canonical market symbol')
+    return str(market['symbol'])
 
 
 def market_tool(profile_id):
@@ -67,7 +91,7 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                 result = trading_tools(profile_id)
             else:
                 exchange = market_tool(profile_id).exchange
-                symbol = normalize_symbol(profile, symbol) if symbol else None
+                symbol = normalize_symbol(profile, symbol, exchange, allow_inactive=True) if symbol else None
                 if profile['market_type'] == 'swap':
                     from .guard import perpetual_symbol
                     symbol = perpetual_symbol(exchange, symbol) if symbol else None
@@ -77,8 +101,17 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                 elif resource == 'positions':
                     if profile['market_type'] == 'spot':
                         raise ValueError('Use balance for spot holdings')
-                    selected = [symbol] if symbol else [perpetual_symbol(exchange, value) for value in profile['symbols']]
-                    result = [{k: v for k, v in row.items() if k != 'info'} for row in exchange.fetch_positions(selected)]
+                    unrestricted = profile.get('symbol_scope', 'selected') == 'all'
+                    selected = [symbol] if symbol else (None if unrestricted else [perpetual_symbol(exchange, value) for value in profile['symbols']])
+                    rows = exchange.fetch_positions() if selected is None else exchange.fetch_positions(selected)
+                    result = []
+                    for row in rows:
+                        if unrestricted:
+                            try:
+                                normalize_symbol(profile, row.get('symbol'), exchange, allow_inactive=True)
+                            except ValueError:
+                                continue  # Account-wide responses may also contain inverse futures/options.
+                        result.append({k: v for k, v in row.items() if k != 'info'})
                 elif resource == 'orders':
                     if not symbol:
                         raise ValueError('symbol is required for orders')
@@ -131,16 +164,33 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
             for action in arguments.get('actions', [])
         ):
             require(caller, 'cancel', profile_id)
-        symbol = normalize_symbol(profile, symbol)
+        unrestricted = profile.get('symbol_scope', 'selected') == 'all'
+        exchange = market_tool(profile_id).exchange if unrestricted else None
+        increasing = tool_name in {'open_position_spot_dca', 'open_position_real', 'update_entry_order_real'} or (
+            tool_name == 'execute_trade_actions' and any(
+                isinstance(action, dict) and action.get('action') in {'open', 'amend_entry'}
+                for action in arguments.get('actions', [])
+            )
+        )
+        symbol = normalize_symbol(profile, symbol, exchange, allow_inactive=not increasing)
         allowed = {tool['name']: tool for tool in trading_tools(profile_id)}
         if tool_name not in allowed:
             raise PermissionError('Tool is not available for this MCP trading profile')
         if any(key in arguments for key in ('config_id', 'symbol', 'operation_id', 'cycle_id')):
             raise ValueError('Trading identity and symbol must be supplied through gateway fields')
-        # Per-order spot symbols may vary, but remain within this profile.
+        arguments = deepcopy(arguments)
+        call_symbols = [symbol]
+        # Per-order spot symbols may vary, but remain within this profile and
+        # share one quote-denominated allowance for the entire operation.
         for order in arguments.get('orders', []) if isinstance(arguments.get('orders', []), list) else []:
             if isinstance(order, dict) and order.get('symbol'):
-                normalize_symbol(profile, order['symbol'])
+                if profile['market_type'] != 'spot':
+                    raise ValueError('Perpetual orders use the gateway symbol; per-order symbols are unsupported')
+                order['symbol'] = normalize_symbol(profile, order['symbol'], exchange, allow_inactive=not increasing)
+                call_symbols.append(order['symbol'])
+        if profile['market_type'] == 'spot':
+            from backend.utils.spot_portfolio import normalize_spot_symbols
+            call_symbols = normalize_spot_symbols(call_symbols)
         from backend.agent.tool_registry import _TOOL_BY_NAME, run_trade_tool
         validated = _TOOL_BY_NAME[tool_name].args_schema.model_validate(arguments).model_dump(exclude_none=True)
         request = {'symbol': symbol, 'tool': tool_name, 'arguments': validated}
@@ -152,11 +202,16 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         cfg_id = 'mcp:' + profile_id
         stable_id = 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
         cycle_id = None
-        if profile['market_type'] == 'spot':
-            from backend.utils.spot_execution import ensure_spot_budget_cycle
-            cycle_id = stable_id
-            ensure_spot_budget_cycle(cfg_id, get_runtime_profile(cfg_id), cycle_id, origin='mcp')
-        raw = run_trade_tool(tool_name, validated, cfg_id, symbol, operation_id=stable_id, cycle_id=cycle_id)
+        with runtime_symbols(cfg_id, call_symbols):
+            if profile['market_type'] == 'spot':
+                from backend.utils.spot_execution import ensure_spot_budget_cycle
+                cycle_id = stable_id
+                ensure_spot_budget_cycle(cfg_id, get_runtime_profile(cfg_id), cycle_id, origin='mcp')
+            # The gateway has already authenticated and validated this symbol.
+            # Pass it explicitly to the shared multi-symbol spot dispatcher;
+            # user-provided identity fields remain forbidden above.
+            dispatch_args = {**validated, 'symbol': symbol} if profile['market_type'] == 'spot' else validated
+            raw = run_trade_tool(tool_name, dispatch_args, cfg_id, symbol, operation_id=stable_id, cycle_id=cycle_id)
         from backend.utils.trade_operations import tool_result_status
         try:
             payload = json.loads(raw)

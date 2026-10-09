@@ -15,15 +15,25 @@ DEFAULT_SCORER_CRITERIA = [
     'A major market-wide development involving monetary conditions, substantial capital flows, exchange solvency, systemic security incidents, or comparable broad market drivers.',
 ]
 
+BLOCKBEATS_API_URL = 'https://api-pro.theblockbeats.info/v1/newsflash'
+BLOCKBEATS_LEGACY_RSS_URL = 'https://api.theblockbeats.news/v2/rss/all'
+
 
 class NewsSource(BaseModel):
     id: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
     name: str = Field(min_length=1, max_length=120)
-    kind: Literal['rss', 'cryptocurrency_cv', 'calendar_bls', 'calendar_bea', 'calendar_fomc', 'policy', 'treasury', 'binance'] = 'rss'
+    kind: Literal['rss', 'blockbeats', 'cryptocurrency_cv', 'calendar_bls', 'calendar_bea', 'calendar_fomc', 'policy', 'treasury', 'binance'] = 'rss'
     url: str = Field(default='', max_length=2000)
     enabled: bool = True
     category: str = Field(default='crypto', max_length=40)
     language: str = Field(default='', max_length=10)
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_blockbeats_rss(cls, value):
+        if isinstance(value, dict) and value.get('id') == 'blockbeats' and value.get('kind', 'rss') == 'rss' and str(value.get('url', '')).rstrip('/') == BLOCKBEATS_LEGACY_RSS_URL:
+            return {**value, 'kind': 'blockbeats', 'url': BLOCKBEATS_API_URL}
+        return value
 
     @field_validator('url')
     @classmethod
@@ -38,12 +48,18 @@ class NewsSource(BaseModel):
     def require_rss_url(self):
         if self.kind in {'rss', 'policy'} and not self.url:
             raise ValueError('RSS and policy sources require a URL')
+        if self.kind == 'blockbeats':
+            if self.url and self.url != BLOCKBEATS_API_URL:
+                raise ValueError('BlockBeats uses its official API endpoint')
+            self.url = BLOCKBEATS_API_URL
+            if self.language not in {'', 'cn', 'en', 'cht', 'vi', 'ko', 'ja', 'th', 'tr'}:
+                raise ValueError('Unsupported BlockBeats language')
         return self
 
 
 def default_news_sources() -> list[dict]:
     return [
-        {'id': 'blockbeats', 'name': '律动 BlockBeats', 'kind': 'rss', 'url': 'https://api.theblockbeats.news/v2/rss/all', 'language': 'cn'},
+        {'id': 'blockbeats', 'name': '律动 BlockBeats', 'kind': 'blockbeats', 'url': BLOCKBEATS_API_URL, 'language': 'cn'},
         {'id': 'binance', 'name': 'Binance 公告', 'kind': 'binance'},
         {'id': 'coindesk', 'name': 'CoinDesk', 'kind': 'rss', 'url': 'https://www.coindesk.com/arc/outboundfeeds/rss/'},
         {'id': 'cointelegraph', 'name': 'Cointelegraph', 'kind': 'rss', 'url': 'https://cointelegraph.com/rss'},

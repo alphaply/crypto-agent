@@ -22,7 +22,13 @@ def spot_execution_fingerprint(config: dict) -> str:
             'dca_budget', 'dca_freq', 'api_key', 'secret', 'passphrase', 'password',
             'binance_api_key', 'binance_secret', 'okx_api_key', 'okx_secret', 'okx_passphrase')
     payload = {key: config.get(key) for key in keys}
-    payload['symbols'] = get_config_symbols(config)
+    if config.get('mcp_symbol_scope') == 'all':
+        # Request-local symbols and accumulated ownership do not alter policy.
+        payload['symbol'] = None
+        payload['symbols'] = []
+        payload['mcp_symbol_scope'] = 'all'
+    else:
+        payload['symbols'] = get_config_symbols(config)
     # Mirror Config.get_exchange_credentials using the captured task plus live
     # fallback values. The caller stores only this hash before model inference.
     exchange = str(config.get('exchange') or 'binance').lower()

@@ -36,12 +36,20 @@ def _provider(snapshot: dict, provider_id: str, purpose: str) -> dict:
     return provider
 
 
-def _source_result(source, settings: NewsSettings, now: datetime) -> dict:
+def _source_result(source, settings: NewsSettings, now: datetime, blockbeats_api_key: str = '') -> dict:
     from backend.utils import binance_announcements
     if source.kind == 'binance':
         return binance_announcements.get_items(settings.lookback_hours)
+    if source.kind == 'blockbeats' and not blockbeats_api_key:
+        return {'items': [], 'status': 'configuration_required', 'stale': False,
+                'error': '请在消息聚合中配置律动 API Key'}
     timeout = 6.0
     def fetch():
+        if source.kind == 'blockbeats':
+            from backend.utils.blockbeats import fetch_newsflash
+            return fetch_newsflash(blockbeats_api_key, language=source.language,
+                                   limit=settings.candidate_limit, now=now,
+                                   lookback_hours=settings.lookback_hours, timeout=timeout)
         if source.kind == 'rss':
             raw = sources._read_url(source.url, timeout, headers={'language': source.language} if source.language else None)
             return sources._parse_feed(raw, source.name, source.category)
@@ -62,10 +70,11 @@ def _source_result(source, settings: NewsSettings, now: datetime) -> dict:
     return sources._fetch_cached(f'shared:{source.id}:{identity}', fetch, ttl=timedelta(0), stale_ttl=timedelta(hours=48), now=now)
 
 
-def collect_candidates(settings: NewsSettings, now: datetime) -> tuple[list[dict], dict, dict]:
+def collect_candidates(settings: NewsSettings, now: datetime, snapshot: dict | None = None) -> tuple[list[dict], dict, dict]:
     active = [source for source in settings.sources if source.enabled]
+    blockbeats_api_key = (snapshot if snapshot is not None else _runtime()).get('global_blockbeats_api_key') or ''
     pool = ThreadPoolExecutor(max_workers=min(12, max(1, len(active))), thread_name_prefix='news-sources')
-    futures = {pool.submit(_source_result, source, settings, now): source for source in active}
+    futures = {pool.submit(_source_result, source, settings, now, blockbeats_api_key): source for source in active}
     done, pending = wait(futures, timeout=15)
     items, health = [], {}
     for future in done:
@@ -75,7 +84,8 @@ def collect_candidates(settings: NewsSettings, now: datetime) -> tuple[list[dict
             health[source.id] = {key: result.get(key) for key in ('status', 'stale', 'fetched_at')}
             health[source.id]['name'] = source.name
             if result.get('error'):
-                health[source.id]['error'] = 'Source unavailable; cached items are used when available'
+                health[source.id]['error'] = ('请在消息聚合中配置律动 API Key' if result.get('status') == 'configuration_required' and source.kind == 'blockbeats'
+                                               else 'Source unavailable; cached items are used when available')
             items.extend({**item, 'source_id': source.id, 'source_stale': bool(result.get('stale'))} for item in result.get('items', []))
         except Exception:
             health[source.id] = {'name': source.name, 'status': 'unavailable', 'error': 'Source retrieval failed'}
@@ -148,7 +158,7 @@ def _run_refresh(owner: str, snapshot: dict) -> None:
         if summary_provider.get('api_protocol') == 'decisions' or str(summary_provider['model']).lower().startswith('jev'):
             raise NewsPipelineError('Select a generative model for news summaries; Jev only scores content')
         now = datetime.now(timezone.utc)
-        candidates, health, predictions = collect_candidates(settings, now)
+        candidates, health, predictions = collect_candidates(settings, now, snapshot)
         database_news.update_state('news', {'source_health': health, 'candidate_count': len(candidates)}, owner=owner)
         if not any(h.get('status') in {'ok', 'stale'} for h in health.values()):
             raise NewsPipelineError('All news sources are unavailable; retaining the previous snapshot')

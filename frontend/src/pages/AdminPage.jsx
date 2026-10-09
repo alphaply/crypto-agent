@@ -1261,7 +1261,7 @@ export default function AdminPage() {
           {
             key: 'intelligence',
             label: locale === 'zh' ? '消息聚合' : 'News aggregation',
-            children: <NewsSettingsPanel value={payload.globals.news} onChange={(value) => updateGlobal('news', value)} providers={payload.llm_providers} profiles={persistedProfiles} polymarket={payload.globals.polymarket} onPolymarketChange={(value) => updateGlobal('polymarket', value)} />,
+            children: <NewsSettingsPanel value={payload.globals.news} onChange={(value) => updateGlobal('news', value)} providers={payload.llm_providers} profiles={persistedProfiles} polymarket={payload.globals.polymarket} onPolymarketChange={(value) => updateGlobal('polymarket', value)} blockbeatsKey={payload.globals.secrets?.global_blockbeats_api_key} onBlockbeatsKeyChange={(patch) => updateGlobalSecret('global_blockbeats_api_key', patch)} />,
           },
           // ===== 运行配置 =====
           {

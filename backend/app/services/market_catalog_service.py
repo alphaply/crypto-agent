@@ -85,6 +85,7 @@ def get_market_catalog(exchange: str, market_type: str = "spot") -> tuple[list[d
                     "base": base,
                     "quote": quote,
                     "market_type": market_type,
+                    "linear": market.get("linear") is True,
                     "display_name": f"{symbol} · {market_type.upper()}",
                 }
             preferred_quotes = {"USDT": 0, "USDC": 1, "FDUSD": 2, "USD": 3}
@@ -112,6 +113,7 @@ def list_market_symbols_payload(
     offset: int = 0,
     symbols: list[str] | None = None,
     require_profile_market: bool = False,
+    linear_only: bool = False,
 ) -> dict[str, Any]:
     profile_id = str(exchange_profile_id or "").strip()
     requested_market = str(market_type or "spot").strip().lower()
@@ -129,6 +131,8 @@ def list_market_symbols_payload(
     if not 1 <= limit <= 200 or offset < 0:
         raise ValueError("limit must be 1–200 and offset must be nonnegative")
     catalog, cached = get_market_catalog(requested_exchange, requested_market)
+    if linear_only and requested_market == 'swap':
+        catalog = [item for item in catalog if item.get('linear') is True]
     by_symbol = {item["symbol"]: item for item in catalog}
     selected = list(dict.fromkeys(str(item).strip().upper() for item in symbols or [] if str(item).strip()))
     needle = str(keyword or "").strip().upper()
