@@ -9,6 +9,20 @@ export function selectDashboardTab(agents = [], requested) {
   return (agents.find((agent) => agent.enabled !== false) || agents[0])?.config_id || 'compare';
 }
 
+export function selectAgentId(agents = [], requested) {
+  return agents.some((agent) => agent.config_id === requested) ? requested
+    : (agents.find((agent) => agent.enabled !== false) || agents[0])?.config_id || '';
+}
+
+export function filterAgents(agents = [], search = '', filter = 'all') {
+  const query = search.trim().toLowerCase();
+  return agents.filter((agent) => {
+    if (filter === 'active' && !['RUNNING', 'QUEUED'].includes(agent.execution?.status)) return false;
+    if (filter === 'enabled' && agent.enabled === false) return false;
+    return !query || [agent.config_id, agent.title, agent.display_name, agent.model, agent.mode, ...(agent.symbols || [agent.symbol])].filter(Boolean).join(' ').toLowerCase().includes(query);
+  });
+}
+
 export function activityRecordKey(row) {
   return JSON.stringify([row.config_id || '', row.symbol || '', row.activity_type || '',
     row.trade_id || row.id || row.order_id || '', row.event_type || '', row.timestamp || '']);

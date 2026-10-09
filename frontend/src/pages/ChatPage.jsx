@@ -37,6 +37,7 @@ import { Bubble, Conversations, Sender, XProvider } from '@ant-design/x';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import ChatRunProgress from '../components/ChatRunProgress';
+import MarketSymbolPicker from '../components/MarketSymbolPicker';
 import { api, streamSse } from '../lib/api';
 import { createChatStreamLifecycle, reduceChatStreamLifecycle } from '../lib/chatStreamLifecycle';
 import { splitThinkingContent } from '../lib/thinking';
@@ -293,11 +294,8 @@ export default function ChatPage({ token }) {
   const [temporaryRuntime, setTemporaryRuntime] = useState({
     exchange_profile_id: '', market_type: 'spot', symbol: '', llm_provider_id: '', temperature: null, global_requirement: '', system_prompt_role: 'system',
   });
-  const [symbolOptions, setSymbolOptions] = useState([]);
-  const [symbolLoading, setSymbolLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  const symbolSearchTimerRef = useRef(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const draftRef = useRef({ content: '', reasoning_content: '', reasoning_tokens: 0, reasoning_started_at: null, pending: false });
@@ -305,7 +303,6 @@ export default function ChatPage({ token }) {
   const animationFrameRef = useRef(null);
   const lastDraftPaintRef = useRef(0);
   const abortRef = useRef(null);
-  const symbolRequestRef = useRef(0);
   const chatWindowRef = useRef(null);
   const followOutputRef = useRef(true);
   const pendingBranchSessionRef = useRef('');
@@ -403,7 +400,6 @@ export default function ChatPage({ token }) {
       mounted = false;
       if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
       abortRef.current?.abort();
-      window.clearTimeout(symbolSearchTimerRef.current);
     };
   }, []);
 
@@ -561,31 +557,6 @@ export default function ChatPage({ token }) {
     }),
     [branchFamilies, messages, streaming, streamStatus],
   );
-
-  const searchSymbols = async (keyword = '') => {
-    if (!temporaryRuntime.exchange_profile_id) return;
-    const requestId = symbolRequestRef.current + 1;
-    symbolRequestRef.current = requestId;
-    setSymbolLoading(true);
-    try {
-      const response = await api.get('/chat/market-symbols', {
-        params: {
-          exchange_profile_id: temporaryRuntime.exchange_profile_id,
-          market_type: temporaryRuntime.market_type,
-          keyword,
-        },
-      });
-      if (requestId !== symbolRequestRef.current) return;
-      setSymbolOptions(response.data.symbols || []);
-    } catch (err) {
-      if (requestId === symbolRequestRef.current) {
-        setSymbolOptions([]);
-        setError(err.message || 'Failed to load symbols');
-      }
-    } finally {
-      if (requestId === symbolRequestRef.current) setSymbolLoading(false);
-    }
-  };
 
   const ensureSession = async () => {
     if (currentSessionId) return currentSessionId;
@@ -876,7 +847,6 @@ export default function ChatPage({ token }) {
     setCreateError('');
     setCreatingConfigId('');
     setTemporaryRuntime((prev) => buildInitialRuntime(bootstrap, prev));
-    setSymbolOptions([]);
     setCreateModalOpen(true);
     setSidebarOpen(false);
   };
@@ -1080,19 +1050,36 @@ export default function ChatPage({ token }) {
             ) : (
               <>
                 <div className="chat-create-grid">
+                    <label className="form-field">
+                      <span>{isZh ? '行情账户' : 'Market data account'}</span>
+                      <Select
+                        value={temporaryRuntime.exchange_profile_id || undefined}
+                        options={exchangeProfiles.map((item) => ({ value: item.profile_id, disabled: !item.configured, label: `${item.name || item.profile_id} · ${String(item.exchange || '').toUpperCase()}` }))}
+                        onChange={(value) => {
+                          const profile = exchangeProfiles.find((item) => item.profile_id === value);
+                          updateRuntime({ exchange_profile_id: value, market_type: profile?.supported_market_types?.includes('spot') ? 'spot' : profile?.supported_market_types?.[0] || 'spot', symbol: '' });
+                        }}
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>{isZh ? '市场' : 'Market'}</span>
+                      <Select
+                        value={temporaryRuntime.market_type}
+                        options={(selectedProfile?.supported_market_types || ['spot', 'swap']).map((value) => ({ value, label: value === 'spot' ? (isZh ? '现货' : 'Spot') : (isZh ? '永续合约' : 'Perpetual') }))}
+                        onChange={(value) => { updateRuntime({ market_type: value, symbol: '' }); }}
+                      />
+                    </label>
                   <label className="form-field">
                     <span>{isZh ? '标的' : 'Symbol'}</span>
-                    <Select
-                      showSearch
-                      filterOption={false}
-                      value={temporaryRuntime.symbol || undefined}
-                      loading={symbolLoading}
-                      options={symbolOptions.map((item) => ({ value: item.symbol, label: item.display_name || item.symbol }))}
-                      placeholder={isZh ? '搜索标的' : 'Search symbols'}
-                      onFocus={() => searchSymbols('')}
-                      onSearch={(keyword) => { window.clearTimeout(symbolSearchTimerRef.current); symbolSearchTimerRef.current = window.setTimeout(() => searchSymbols(keyword), 300); }}
-                      onChange={(value) => updateRuntime({ symbol: value })}
-                    />
+                    {createModalOpen && <MarketSymbolPicker
+                      key={`${temporaryRuntime.exchange_profile_id}:${temporaryRuntime.market_type}`}
+                      endpoint="/chat/market-symbols"
+                      profileId={temporaryRuntime.exchange_profile_id}
+                      marketType={temporaryRuntime.market_type}
+                      value={temporaryRuntime.symbol}
+                      onChange={(symbol) => updateRuntime({ symbol })}
+                      locale={locale}
+                    />}
                   </label>
                   <label className="form-field">
                     <span>{isZh ? '模型' : 'Model'}</span>
@@ -1111,26 +1098,6 @@ export default function ChatPage({ token }) {
                 <details className="chat-advanced-options">
                   <summary>{isZh ? '更多设置' : 'More settings'}</summary>
                   <div className="chat-create-grid">
-                    <label className="form-field">
-                      <span>{isZh ? '行情账户' : 'Market data account'}</span>
-                      <Select
-                        value={temporaryRuntime.exchange_profile_id || undefined}
-                        options={exchangeProfiles.map((item) => ({ value: item.profile_id, disabled: !item.configured, label: `${item.name || item.profile_id} · ${String(item.exchange || '').toUpperCase()}` }))}
-                        onChange={(value) => {
-                          const profile = exchangeProfiles.find((item) => item.profile_id === value);
-                          updateRuntime({ exchange_profile_id: value, market_type: profile?.supported_market_types?.includes('spot') ? 'spot' : profile?.supported_market_types?.[0] || 'spot', symbol: 'BTC/USDT' });
-                          setSymbolOptions([]);
-                        }}
-                      />
-                    </label>
-                    <label className="form-field">
-                      <span>{isZh ? '市场' : 'Market'}</span>
-                      <Select
-                        value={temporaryRuntime.market_type}
-                        options={(selectedProfile?.supported_market_types || ['spot', 'swap']).map((value) => ({ value, label: value === 'spot' ? (isZh ? '现货' : 'Spot') : (isZh ? '永续合约' : 'Perpetual') }))}
-                        onChange={(value) => { updateRuntime({ market_type: value, symbol: 'BTC/USDT' }); setSymbolOptions([]); }}
-                      />
-                    </label>
                     <label className="form-field field-span-2">
                       <span>{isZh ? '分析偏好' : 'Analysis preferences'}</span>
                       <TextArea value={temporaryRuntime.global_requirement} onChange={(event) => updateRuntime({ global_requirement: event.target.value })} autoSize={{ minRows: 2, maxRows: 5 }} maxLength={4000} placeholder={isZh ? '关注的周期、风险、关键价位与失效条件' : 'Time horizon, risks, key levels, and invalidation'} />

@@ -16,7 +16,7 @@ const bootstrap = {
 
 test('a new task defaults to analysis even when trading configurations exist', () => {
   const runtime = buildInitialRuntime(bootstrap, {});
-  assert.equal(runtime.symbol, 'BTC/USDT');
+  assert.equal(runtime.symbol, '');
   assert.equal(runtime.exchange_profile_id, 'account');
   assert.equal(runtime.llm_provider_id, 'model');
   assert.equal(runtime.system_prompt_role, 'user');
@@ -47,7 +47,7 @@ test('a removed market account is replaced with configured defaults', () => {
   const initial = buildInitialRuntime(bootstrap, { exchange_profile_id: 'deleted', symbol: 'OLD/USDT', market_type: 'future', llm_provider_id: 'deleted' });
   assert.equal(initial.exchange_profile_id, 'account');
   assert.equal(initial.market_type, 'spot');
-  assert.equal(initial.symbol, 'BTC/USDT');
+  assert.equal(initial.symbol, '');
   assert.equal(initial.llm_provider_id, 'model');
 });
 

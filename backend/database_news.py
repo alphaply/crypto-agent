@@ -23,16 +23,76 @@ def initialize(conn) -> None:
         CREATE TABLE IF NOT EXISTS news_score_cache (
             fingerprint TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS news_processing_runs (
+            run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS binance_announcements (
             id TEXT PRIMARY KEY, published_at TEXT NOT NULL, payload_json TEXT NOT NULL
         );
     ''')
 
 
+def save_processing_run(run_id: str, payload: dict) -> None:
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        initialize(conn)
+        conn.execute('''INSERT INTO news_processing_runs VALUES (?,?,?,?)
+            ON CONFLICT(run_id) DO UPDATE SET updated_at=excluded.updated_at,payload_json=excluded.payload_json''',
+                     (run_id, payload['started_at'], now_iso(), json.dumps(payload, ensure_ascii=False)))
+        conn.execute('''DELETE FROM news_processing_runs WHERE run_id NOT IN
+            (SELECT run_id FROM news_processing_runs ORDER BY started_at DESC LIMIT 20)''')
+        conn.commit()
+
+
+def processing_runs(limit: int = 20) -> dict:
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        initialize(conn)
+        _recover_interrupted_runs(conn)
+        rows = conn.execute('SELECT payload_json FROM news_processing_runs ORDER BY started_at DESC LIMIT ?', (max(1, min(limit, 50)),)).fetchall()
+        total = conn.execute('SELECT COUNT(*) FROM news_processing_runs').fetchone()[0]
+    return {'runs': [{k: v for k, v in json.loads(row[0]).items() if k != 'items'} for row in rows], 'total': total}
+
+
+def processing_run(run_id: str) -> dict | None:
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        initialize(conn)
+        _recover_interrupted_runs(conn)
+        row = conn.execute('SELECT payload_json FROM news_processing_runs WHERE run_id=?', (run_id,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def _recover_interrupted_runs(conn) -> None:
+    """An expired or replaced worker is a failed run, never a completed one."""
+    # Lease acquisition and progress publication can occur in another process.
+    # Read both under one write transaction so a newly acquired owner cannot be
+    # mistaken for an interrupted worker using an older lease snapshot.
+    conn.execute('BEGIN IMMEDIATE')
+    now = now_iso()
+    lease = conn.execute("SELECT lease_owner,lease_until FROM shared_pipeline_state WHERE name='news'").fetchone()
+    active_owner = lease['lease_owner'] if lease and (lease['lease_until'] or '') > now else None
+    rows = conn.execute('SELECT run_id,payload_json FROM news_processing_runs').fetchall()
+    for row in rows:
+        payload = json.loads(row['payload_json'])
+        if payload.get('status') == 'running' and row['run_id'] != active_owner:
+            payload.update(status='error', interrupted=True, finished_at=now,
+                           error='News worker was interrupted or its lease expired; previous snapshot retained')
+            conn.execute('UPDATE news_processing_runs SET payload_json=?,updated_at=? WHERE run_id=?',
+                         (json.dumps(payload, ensure_ascii=False), now, row['run_id']))
+            if lease and row['run_id'] == lease['lease_owner']:
+                conn.execute("UPDATE shared_pipeline_state SET payload_json=?,lease_owner=NULL,lease_until=NULL WHERE name='news' AND lease_owner=?",
+                             (json.dumps(payload, ensure_ascii=False), row['run_id']))
+    conn.commit()
+
+
 def read_state(name: str) -> dict:
     from backend.database import get_db_conn
     with get_db_conn() as conn:
         initialize(conn)
+        if name == 'news':
+            _recover_interrupted_runs(conn)
         row = conn.execute('SELECT payload_json, lease_owner, lease_until FROM shared_pipeline_state WHERE name=?', (name,)).fetchone()
     if not row:
         return {}

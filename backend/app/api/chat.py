@@ -54,15 +54,25 @@ def create_session(payload: CreateSessionRequest, _: dict = Depends(get_current_
 
 @router.get("/market-symbols")
 def market_symbols(
-    exchange_profile_id: str = Query(...),
-    market_type: str = Query("spot"),
-    keyword: str = Query(""),
+    exchange_profile_id: str = Query(..., max_length=200),
+    market_type: str = Query("spot", pattern="^(spot|swap)$"),
+    keyword: str = Query("", max_length=100),
+    quote: str = Query("", max_length=30),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    symbols: str = Query("", max_length=1000),
+    linear_only: bool = Query(False),
     _: dict = Depends(get_current_user),
 ):
     try:
         return {
             "success": True,
-            **list_market_symbols_payload(exchange_profile_id, market_type, keyword),
+            **list_market_symbols_payload(
+                exchange_profile_id, market_type, keyword, quote=quote,
+                limit=limit, offset=offset,
+                symbols=[item.strip() for item in symbols.split(",") if item.strip()],
+                linear_only=linear_only,
+            ),
         }
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

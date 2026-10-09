@@ -22,13 +22,14 @@ def audited_invoke(
     operation, *, config_id, purpose, model, messages, tools=None,
     response_validator: Callable[[Any], None] | None = None,
     provider_id: str | None = None,
+    parent_run_id: str | None = None,
 ):
     """Validate inside the audit boundary while retaining rejected model output."""
     from backend.database_agent_runs import start_agent_run, finish_agent_run
 
     run_id = None
     try:
-        run_id = start_agent_run(config_id or 'unknown', purpose, model or 'unknown', messages, tools, provider_id=provider_id)
+        run_id = start_agent_run(config_id or 'unknown', purpose, model or 'unknown', messages, tools, provider_id=provider_id, parent_run_id=parent_run_id)
     except Exception as exc:
         logger.warning('Cannot record model input: %s', exc)
     response = None

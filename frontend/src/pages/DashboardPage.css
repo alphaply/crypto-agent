@@ -80,3 +80,11 @@
   .dashboard-v2 .dashboard-schedule-label { flex-basis: 100%; }
   .dashboard-v2 .intelligence-rail { grid-template-columns: minmax(0, 1fr); }
 }
+.overview-page { display: grid; gap: 20px; }
+.overview-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 24px 0 16px; }
+.overview-metric { display: flex; flex-direction: column; gap: 8px; padding: 18px; border: 1px solid var(--border-color, #e5e7eb); border-radius: 12px; }
+.overview-metric > span, .overview-metric > small { opacity: .66; }
+.overview-metric > strong { font-size: clamp(19px, 2vw, 28px); line-height: 1.4; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.overview-agent-link { padding: 0; white-space: normal; text-align: left; height: auto; }
+@media (max-width: 1000px) { .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .overview-metrics { gap: 8px; } .overview-metric { padding: 12px; } }

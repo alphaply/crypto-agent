@@ -10,6 +10,7 @@ import { api, setApiToken } from './lib/api';
 import './workbench.css';
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const AgentsPage = lazy(() => import('./pages/AgentsPage'));
 const PublicUsagePage = lazy(() => import('./pages/PublicPage'));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
@@ -42,15 +43,16 @@ function PublicShell({ authenticated, onLogout }) {
   const items = useMemo(
     () => [
       { key: '/', label: t('publicDashboard') },
+      { key: '/agents', label: 'Agents' },
       { key: '/history', label: t('history') },
       { key: '/usage', label: t('usage') },
     ],
     [t],
   );
 
-  const activeKey = location.pathname === '/usage' ? '/usage' : location.pathname === '/history' ? '/history' : '/';
+  const activeKey = items.find((item) => item.key === location.pathname)?.key || '/';
 
-  const dashboardRefresh = activeKey === '/' ? (
+  const dashboardRefresh = ['/', '/agents'].includes(activeKey) ? (
     <Button
       size="small"
       icon={<ReloadOutlined />}
@@ -85,6 +87,7 @@ function ConsoleShell({ token, bootstrapping, onLogin, onLogout }) {
   const items = useMemo(
     () => [
       { key: '/console/chat', label: t('chat') },
+      { key: '/console/agents', label: 'Agents' },
       { key: '/console/config', label: t('config') },
       { key: '/console/history', label: t('history') },
     ],
@@ -206,6 +209,7 @@ export default function App() {
       <Route path="/public" element={<Navigate to="/" replace />} />
       <Route element={<PublicShell authenticated={Boolean(token)} onLogout={handleLogout} />}>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/agents" element={<AgentsPage />} />
         <Route path="/history" element={<HistoryPage />} />
         <Route path="/usage" element={<PublicUsagePage />} />
       </Route>
@@ -222,6 +226,7 @@ export default function App() {
       >
         <Route index element={<Navigate to="/console/chat" replace />} />
         <Route path="chat" element={<ChatPage token={token} />} />
+        <Route path="agents" element={<AgentsPage />} />
         <Route path="config" element={<AdminPage />} />
         <Route path="history" element={<HistoryPage />} />
       </Route>

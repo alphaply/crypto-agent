@@ -20,6 +20,10 @@ from backend.utils import news_context, jev, binance_announcements
 
 @pytest.fixture
 def news_env(tmp_path, monkeypatch):
+    from backend.utils import llm_utils
+    monkeypatch.setattr(llm_utils, 'sync_langsmith_environment', lambda: {})
+    monkeypatch.setenv('LANGSMITH_TRACING', 'false')
+    monkeypatch.setenv('LANGCHAIN_TRACING_V2', 'false')
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'news.sqlite'))
     with database.get_db_conn() as conn:
         initialize_schema(conn)

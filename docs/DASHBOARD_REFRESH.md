@@ -8,14 +8,14 @@
 
 ## 界面与刷新
 
-- 重做总览指标、刷新状态、策略选择和运行计划区域。单策略默认打开持仓与图表，多策略保留对比视图；支持移动端和深浅主题。
+- Dashboard 只显示总览指标、收益、任务数据列表与共享消息；独立的 `/agents`（管理入口 `/console/agents`）承载任务选择、运行状态、K 线、持仓、报告和记忆。总览中的查看入口跳转对应任务；旧任务深链保持兼容。两个页面均支持移动端和深浅主题。
 - 累计指标明确统计口径，无成交时胜率显示未知。持仓/行情失败会显示警告并保留已有数据，不把加载失败伪装成空仓。
-- 看板每 8 秒更新完整快照，行情和权益约每 32 秒刷新；新分析完成也会刷新行情。后台标签页暂停自动请求，后台快照刷新不闪烁全局加载条。
+- 看板每 8 秒更新完整快照；只有 Agents 页加载当前任务的工作区，行情和权益约每 32 秒刷新，新分析完成也会刷新行情。后台标签页暂停自动请求，后台快照刷新不闪烁全局加载条。
 - 请求设定超时，切换与卸载会取消相关请求；推理文本更新不再触发全部行情重载。工作区接口只读取目标配置，避免重复构建整个交易对总览。
 - 修复订单页数越界以及总结/记忆在切换交易对时保留旧筛选和迟到响应覆盖的问题。
 
 ## 验证
 
-`uv run pytest -q`；`npm run lint --prefix frontend`；`npm run test:dashboard --prefix frontend`；`npm run test:chat --prefix frontend`；`npm run build --prefix frontend`。
+`uv run python -m pytest tests -q`；`npm run lint --prefix frontend`；`npm run test:dashboard --prefix frontend`；`npm run test:chat --prefix frontend`；`npm run build --prefix frontend`。
 
 调度回归覆盖时段切换、跨日、暂停、DCA 补执行与 ISO 跨年周。浏览器使用隔离 SQLite 与模拟行情检查 390px 手机和 1440px 桌面、深浅主题、规则展开、交易对切换及失败提示；线上页面仅用于读取现状。

@@ -22,7 +22,7 @@ export function buildInitialRuntime(data, last = readLastRuntime()) {
   return {
     exchange_profile_id: profile.profile_id || '',
     market_type: marketType,
-    symbol: sameMarket && String(last.symbol || '').trim() ? last.symbol : 'BTC/USDT',
+    symbol: sameMarket && String(last.symbol || '').trim() ? last.symbol : '',
     llm_provider_id: provider.provider_id || '',
     temperature: last.temperature ?? null,
     global_requirement: last.global_requirement || '分析趋势、关键价位、多空证据和失效条件。优先说明数据质量与风险，不确定时明确说明。',

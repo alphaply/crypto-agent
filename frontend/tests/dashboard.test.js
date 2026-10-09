@@ -4,12 +4,34 @@ import {
   workspaceSignature,
   activityRecordKey,
   selectDashboardTab,
+  selectAgentId,
+  filterAgents,
   CHART_TIMEFRAME_STORAGE_KEY,
   CHART_TIMEFRAMES,
   readChartTimeframe,
   saveChartTimeframe,
   chartTimeframeOptions,
 } from '../src/lib/dashboard.js';
+
+test('Agent deep links survive disabled tasks and fall back when a task is deleted', () => {
+  const agents = [{ config_id: 'paused', enabled: false }, { config_id: 'live', enabled: true }];
+  assert.equal(selectAgentId(agents, 'paused'), 'paused');
+  assert.equal(selectAgentId(agents, 'deleted'), 'live');
+  assert.equal(selectAgentId(agents, 'compare'), 'live');
+  assert.equal(selectAgentId([], 'live'), '');
+});
+
+test('Agent directory combines search across portfolio markets with execution filters', () => {
+  const agents = [
+    { config_id: 'basket', title: 'Portfolio', symbols: ['BTC/USDT', 'ETH/USDT'], execution: { status: 'RUNNING' } },
+    { config_id: 'paused', enabled: false, model: 'DeepSeek', symbol: 'SOL/USDT', execution: { status: 'QUEUED' } },
+    { config_id: 'scheduled', enabled: true, symbol: 'ETH/USDT', execution: { status: 'FINISHED' } },
+  ];
+  assert.deepEqual(filterAgents(agents, ' eth ', 'active').map((agent) => agent.config_id), ['basket']);
+  assert.deepEqual(filterAgents(agents, 'deepseek', 'all').map((agent) => agent.config_id), ['paused']);
+  assert.deepEqual(filterAgents(agents, '', 'enabled').map((agent) => agent.config_id), ['basket', 'scheduled']);
+  assert.deepEqual(filterAgents(agents, '', 'active').map((agent) => agent.config_id), ['basket', 'paused']);
+});
 import { resolveExitMode, formatExitNumber } from '../src/lib/exitManagement.js';
 
 test('exchange IDs are scoped by symbol and task for activity cards', () => {

@@ -3,11 +3,14 @@ import { PriceSyncPanel, ProviderPricingFields } from '../components/ProviderPri
 import RunScheduleEditor from '../components/RunScheduleEditor';
 import SpotScheduleEditor from '../components/SpotScheduleEditor';
 import NewsSettingsPanel from '../components/NewsSettingsPanel';
+import ScorerProviderFields from '../components/ScorerProviderFields';
+import { JEV_PROVIDER_PRESETS } from '../lib/scorerProvider';
 import DatabaseMaintenance from '../components/DatabaseMaintenance';
 import ResponsiveTabs from '../components/ResponsiveTabs';
 import TradingRulesPanel from '../components/TradingRulesPanel';
 import AgentRunsPanel from '../components/AgentRunsPanel';
 import SpotSymbolPicker from '../components/SpotSymbolPicker';
+import MarketSymbolPicker from '../components/MarketSymbolPicker';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -39,7 +42,7 @@ import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, DownloadOutlined, H
 import { api } from '../lib/api';
 import { EXIT_MODES, exitModeLabel, resolveExitMode } from '../lib/exitManagement';
 import { usePreferences } from '../app/usePreferences';
-import { ShortMemoryPanel } from './DashboardPage';
+import { ShortMemoryPanel } from '../components/AgentWorkspace';
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
@@ -89,19 +92,19 @@ function taskSymbols(task) {
   return [...new Set(symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
 }
 
-function spotCatalogContext(task, profiles, persistedProfiles) {
+function taskCatalogContext(task, profiles, persistedProfiles) {
   const profile = profiles.find((item) => item.profile_id === task?.exchange_profile_id);
   const persisted = persistedProfiles.find((item) => item.profile_id === profile?.profile_id
     && item.exchange === profile?.exchange && item.market_type === profile?.market_type);
   return {
     exchange: profile?.exchange || (!task?.exchange_profile_id ? task?.exchange : '') || '',
     exchange_profile_id: persisted?.profile_id || undefined,
-    market_type: 'spot',
+    market_type: task?.mode === 'SPOT_DCA' ? 'spot' : (task?.market_type || 'swap'),
   };
 }
 
 const LLM_PROVIDER_PRESETS = [
-  { key: 'bai-jev', label: 'BAI · TypeSafe Jev', api_base: 'https://api.b.ai/v1', model: 'jev-1.13.0', compatibility_mode: 'openai', api_protocol: 'decisions', thinking_enabled: false },
+  ...JEV_PROVIDER_PRESETS,
   { key: 'openai', label: 'OpenAI / Codex', api_base: 'https://api.openai.com/v1', model: 'gpt-5.6', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'medium' },
   { key: 'deepseek', label: 'DeepSeek', api_base: 'https://api.deepseek.com', model: 'deepseek-v4-pro', compatibility_mode: 'deepseek', thinking_enabled: true, reasoning_effort: 'high' },
   { key: 'bai-claude', label: 'BAI · Claude', api_base: 'https://api.bankofai.io/v1', model: 'claude-sonnet-5', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'high' },
@@ -117,7 +120,7 @@ function buildBlankAgent() {
   return {
     config_id: `agent-${now}`,
     title: '',
-    symbol: 'BTC/USDT',
+    symbol: '',
     enabled: true,
     mode: 'STRATEGY',
     exit_mode: 'attached_required',
@@ -424,6 +427,7 @@ export default function AdminPage() {
   const pendingSavesRef = useRef(0);
   const lastSavedRevisionRef = useRef(-1);
   const [persistedProfiles, setPersistedProfiles] = useState([]);
+  const [persistedProviders, setPersistedProviders] = useState([]);
   const [persistedAgents, setPersistedAgents] = useState([]);
   const [saveState, setSaveState] = useState('idle');
   const [selectedPrompt, setSelectedPrompt] = useState('');
@@ -486,6 +490,7 @@ export default function AdminPage() {
       payloadRef.current = response.data;
       setPayload(response.data);
       setPersistedProfiles(response.data.exchange_profiles || []);
+      setPersistedProviders(response.data.llm_providers || []);
       setPersistedAgents(response.data.agents || []);
       setSaveState('idle');
       const firstPrompt = response.data.prompts?.files?.[0] || '';
@@ -578,6 +583,7 @@ export default function AdminPage() {
         });
         lastSavedRevisionRef.current = revision;
         setPersistedProfiles(targetPayload.exchange_profiles || []);
+        setPersistedProviders(targetPayload.llm_providers || []);
         setPersistedAgents(targetPayload.agents || []);
         if (revision === revisionRef.current) setError('');
         if (reload && revision === revisionRef.current) await loadAll();
@@ -718,25 +724,26 @@ export default function AdminPage() {
     setTaskSaving(true);
     try {
       const original = persistedAgents.find((agent) => agent.config_id === taskToSave.config_id);
-      const originalCatalog = spotCatalogContext(original, persistedProfiles, persistedProfiles);
-      const currentCatalog = spotCatalogContext(taskToSave, payload.exchange_profiles || [], persistedProfiles);
-      const spotTargetsChanged = !original || original.mode !== 'SPOT_DCA'
-        || taskSymbols(original).join(',') !== taskToSave.symbols?.join(',')
+      const originalCatalog = taskCatalogContext(original, persistedProfiles, persistedProfiles);
+      const currentCatalog = taskCatalogContext(taskToSave, payload.exchange_profiles || [], persistedProfiles);
+      const targetsChanged = !original || original.mode !== taskToSave.mode
+        || taskSymbols(original).join(',') !== taskSymbols(taskToSave).join(',')
         || (original.exchange_profile_id || '') !== (taskToSave.exchange_profile_id || '')
         || originalCatalog.exchange !== currentCatalog.exchange
-        || (original.market_type || 'spot') !== taskToSave.market_type
+        || originalCatalog.market_type !== currentCatalog.market_type
         || (original.enabled === false && taskToSave.enabled !== false);
       // Existing tasks remain editable during an exchange outage. Creation,
       // target/account changes, and re-enabling still require verification.
-      if (taskToSave.mode === 'SPOT_DCA' && spotTargetsChanged) {
+      if (targetsChanged) {
+        const requestedSymbols = taskSymbols(taskToSave);
         const { data } = await api.get('/config/market-symbols', {
-          params: { ...currentCatalog, symbols: taskToSave.symbols.join(','), limit: 1 },
+          params: { ...currentCatalog, symbols: requestedSymbols.join(','), linear_only: currentCatalog.market_type === 'swap' || undefined, limit: 1 },
           silent: true,
         });
         const invalid = data.invalid_symbols || [];
         const verified = new Set((data.selected_symbols || []).map((item) => item.symbol));
-        if (invalid.length || taskToSave.symbols.some((symbol) => !verified.has(symbol))) {
-          message.error(locale === 'zh' ? `存在不可交易的标的，请重新选择：${(invalid.length ? invalid : taskToSave.symbols.filter((symbol) => !verified.has(symbol))).join('、')}` : 'Some selected markets are unavailable. Choose valid exchange markets.');
+        if (invalid.length || requestedSymbols.some((symbol) => !verified.has(symbol))) {
+          message.error(locale === 'zh' ? `存在不可交易的标的，请重新选择：${(invalid.length ? invalid : requestedSymbols.filter((symbol) => !verified.has(symbol))).join('、')}` : 'Some selected markets are unavailable. Choose valid exchange markets.');
           return;
         }
       }
@@ -813,9 +820,14 @@ export default function AdminPage() {
         next.market_type = value === 'SPOT_DCA' ? 'spot' : 'swap';
         next.market_timeframes = value === 'SPOT_DCA' ? [...SPOT_MARKET_TIMEFRAMES] : [...MARKET_TIMEFRAME_OPTIONS];
         const profile = (payload.exchange_profiles || []).find((item) => item.profile_id === next.exchange_profile_id);
-        if (profile && profile.market_type !== next.market_type) next.exchange_profile_id = '';
+        if (profile && profile.market_type !== next.market_type) { next.exchange_profile_id = ''; next.exchange = ''; }
         if (value === 'SPOT_DCA') { next.symbols = []; next.symbol = ''; }
-        else delete next.symbols;
+        else { delete next.symbols; next.symbol = ''; }
+      }
+      if (field === 'exchange_profile_id' && value !== prev.exchange_profile_id && next.mode !== 'SPOT_DCA') {
+        const profile = (payload.exchange_profiles || []).find((item) => item.profile_id === value);
+        next.exchange = profile?.exchange || '';
+        next.symbol = '';
       }
       if (String(next.mode || '').toUpperCase() === 'SPOT_DCA') {
         if (field === 'exchange_profile_id' && value !== prev.exchange_profile_id) {
@@ -966,6 +978,7 @@ export default function AdminPage() {
       model: preset.model,
       compatibility_mode: preset.compatibility_mode,
       api_protocol: preset.api_protocol || 'chat',
+      decisions_api: preset.decisions_api || 'bai',
       thinking_enabled: preset.thinking_enabled,
       reasoning_effort: preset.reasoning_effort,
     } : prev);
@@ -1215,7 +1228,7 @@ export default function AdminPage() {
   }, [locale, payload?.agents, payload?.llm_providers, providerApiBaseFilter, providerKeyFilter, providerQuery, providerThinkingFilter]);
 
   const taskMode = editingTask?.mode || 'STRATEGY';
-  const taskCatalog = spotCatalogContext(editingTask, payload?.exchange_profiles || [], persistedProfiles);
+  const taskCatalog = taskCatalogContext(editingTask, payload?.exchange_profiles || [], persistedProfiles);
   const multiSpotTask = taskMode === 'SPOT_DCA' && taskSymbols(editingTask).length > 1;
   const taskDefaultTimeframes = taskMode === 'SPOT_DCA' ? SPOT_MARKET_TIMEFRAMES : MARKET_TIMEFRAME_OPTIONS;
   const memoryDashboard = payload ? {
@@ -1859,12 +1872,12 @@ export default function AdminPage() {
                     <label>Mode *</label>
                     <Select value={editingTask.mode} options={(payload.options?.modes || []).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingTask('mode', v)} style={{ width: '100%' }} />
                   </div>
-                  {taskMode === 'SPOT_DCA' && <div className="form-field field-span-2">
-                    <label>{locale === 'zh' ? '现货交易所配置' : 'Spot exchange profile'} *</label>
-                    <ProfileSelect ariaLabel={locale === 'zh' ? '现货交易所配置' : 'Spot exchange profile'} profiles={(payload.exchange_profiles || []).filter((profile) => profile.market_type === 'spot')} value={editingTask.exchange_profile_id} onChange={(v) => updateEditingTask('exchange_profile_id', v)} allowEmpty />
+                  <div className="form-field field-span-2">
+                    <label>{locale === 'zh' ? '交易账户' : 'Exchange account'} * · {taskCatalog.market_type === 'spot' ? 'Spot' : 'Swap'}</label>
+                    <ProfileSelect ariaLabel={locale === 'zh' ? '交易账户' : 'Exchange account'} profiles={(payload.exchange_profiles || []).filter((profile) => profile.market_type === taskCatalog.market_type)} value={editingTask.exchange_profile_id} onChange={(v) => updateEditingTask('exchange_profile_id', v)} allowEmpty />
                     {!editingTask.exchange_profile_id && editingTask.exchange && <Text type="secondary">{locale === 'zh' ? `使用原任务的 ${editingTask.exchange} 账户配置。选择新的账户后需重新选择标的。` : `Using the task's legacy ${editingTask.exchange} account. Changing the account clears selected markets.`}</Text>}
                     {editingTask.exchange_profile_id && !taskCatalog.exchange_profile_id && taskCatalog.exchange && <Text type="secondary">{locale === 'zh' ? '按当前交易所配置加载标的；保存任务时一并保存账户配置。' : 'Loading markets for the current exchange; the profile will be saved with the task.'}</Text>}
-                  </div>}
+                  </div>
                   <div className={`form-field${taskMode === 'SPOT_DCA' ? ' field-span-2' : ''}`}>
                     <label>{taskMode === 'SPOT_DCA' ? (locale === 'zh' ? '现货标的（最多 10 个）' : 'Spot symbols (up to 10)') : t('symbol')} *</label>
                     {taskMode === 'SPOT_DCA' ? (
@@ -1876,7 +1889,7 @@ export default function AdminPage() {
                         onChange={(values) => updateEditingTask('symbols', values)}
                         locale={locale}
                       />
-                    ) : <Input value={editingTask.symbol} onChange={(e) => updateEditingTask('symbol', e.target.value)} />}
+                    ) : <MarketSymbolPicker key={`${editingTaskId || 'new'}:${editingTask.exchange_profile_id || 'legacy'}:${taskCatalog.exchange}:${taskCatalog.market_type}`} profileId={taskCatalog.exchange_profile_id} exchange={taskCatalog.exchange} marketType={taskCatalog.market_type} value={editingTask.symbol} onChange={(value) => updateEditingTask('symbol', value)} locale={locale} />}
                   </div>
                   <div className="form-field">
                     <label>Enabled</label>
@@ -2174,9 +2187,7 @@ export default function AdminPage() {
                 <div className="field-grid">
                   <div className="form-field field-span-2">
                     <label>{t('selectProfile')}</label>
-                    {taskMode === 'SPOT_DCA'
-                      ? <Text type="secondary">{locale === 'zh' ? '现货账户和标的在上方基本设置中配置。' : 'Configure the spot account and markets in Basic settings above.'}</Text>
-                      : <ProfileSelect profiles={payload.exchange_profiles} value={editingTask.exchange_profile_id} onChange={(v) => updateEditingTask('exchange_profile_id', v)} allowEmpty />}
+                    <Text type="secondary">{locale === 'zh' ? '交易账户和标的在上方基本设置中选择。' : 'Choose the account and markets in Basic settings above.'}</Text>
                   </div>
                   {(() => {
                     const info = getProfileInfo(editingTask.exchange_profile_id);
@@ -2289,9 +2300,10 @@ export default function AdminPage() {
               </div>
             </div>
             <Text type="secondary" className="provider-id">Provider ID: {editingProvider.provider_id}</Text>
-            <div className="form-field"><label>{locale === 'zh' ? '服务接口' : 'API protocol'}</label><Select value={editingProvider.api_protocol || 'chat'} options={[{value:'chat',label:locale === 'zh'?'对话与摘要':'Chat and summaries'},{value:'decisions',label:'b.ai Jev · Decisions API'}]} onChange={(v)=>updateEditingProvider('api_protocol',v)}/></div>
+            <div className="form-field"><label>{locale === 'zh' ? '服务接口' : 'API protocol'}</label><Select value={editingProvider.api_protocol || 'chat'} options={[{value:'chat',label:locale === 'zh'?'对话与摘要':'Chat and summaries'},{value:'decisions',label:locale === 'zh'?'Jev 结构化决策':'Jev structured decisions'}]} onChange={(v)=>updateEditingProvider('api_protocol',v)}/></div>
+            {editingProvider.api_protocol === 'decisions' && <ScorerProviderFields key={`${editingProvider.provider_id}:${editingProvider.api_base}:${editingProvider.decisions_api}`} value={editingProvider} saved={persistedProviders.find((provider) => provider.provider_id === editingProvider.provider_id)} onChange={(patch) => setEditingProvider((prev) => ({ ...prev, ...patch }))} locale={locale} />}
             {editingProvider.api_protocol !== 'decisions' && <div className="form-field"><label>{locale === 'zh' ? '固定报告输出能力' : 'Report output capability'}</label><Select value={editingProvider.report_output_mode || 'json'} options={[{value:'json',label:locale === 'zh'?'JSON 校验（默认）':'JSON validation (default)'},{value:'json_schema',label:'Native JSON Schema'},{value:'tool',label:locale === 'zh'?'指定报告工具':'Forced report tool'}]} onChange={(v)=>updateEditingProvider('report_output_mode',v)}/><Text type="secondary">{locale === 'zh'?'按渠道实际支持的能力选择；仅在收尾阶段生成报告，格式纠正不重放交易。':'Select the capability supported by this channel. Report repair never repeats trading.'}</Text></div>}
-            <div className="form-field">
+            {editingProvider.api_protocol !== 'decisions' && <><div className="form-field">
               <label>Temperature</label>
               <InputNumber min={0} max={2} step={0.1} value={editingProvider.temperature} onChange={(v) => updateEditingProvider('temperature', v)} style={{ width: '100%' }} />
             </div>
@@ -2322,9 +2334,10 @@ export default function AdminPage() {
               />
               <Text type="secondary">{locale === 'zh' ? '若服务商报错或不支持 system role，请选择 User 消息。任务和任务聊天会自动继承。' : 'Choose User message when an endpoint rejects system roles. Task and task chats inherit this setting.'}</Text>
             </div>
+            </>}
             <ProviderPricingFields value={editingProvider} onChange={(patch) => setEditingProvider((prev) => ({ ...prev, ...patch }))}/>
             <SecretField label="API Key" meta={editingProvider.secrets?.api_key} onChange={(v) => updateEditingProviderSecret('api_key', { value: v, clear: false })} onClear={() => updateEditingProviderSecret('api_key', { value: '', clear: true })} />
-            <div className="form-field">
+            {editingProvider.api_protocol !== 'decisions' && <><div className="form-field">
               <label>{t('thinkingMode')}</label>
               <Select
                 value={editingProvider.thinking_enabled == null ? 'auto' : editingProvider.thinking_enabled ? 'enabled' : 'disabled'}
@@ -2369,7 +2382,7 @@ export default function AdminPage() {
                   // Keep the last valid JSON while the user is typing.
                 }
               }} style={{ fontFamily: 'monospace', fontSize: 13 }} />
-            </div>
+            </div></>}
           </Space>
         )}
       </Drawer>

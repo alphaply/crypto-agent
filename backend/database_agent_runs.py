@@ -12,6 +12,9 @@ PURPOSES = frozenset({'decision', 'strategy_summary', 'memory_review', 'daily_su
 STATUSES = frozenset({'success', 'error', 'cancelled'})
 RETENTION_DAYS = 30
 MAX_RUNS_PER_CONFIG = 100
+# Twenty maximum-size news batches (300 items, up to two score attempts) plus
+# summary retries. Ordinary agent retention remains unchanged.
+MAX_NEWS_RUNS = 12100
 _SECRET_KEYS = frozenset({
     'api_key', 'apikey', 'authorization', 'password', 'secret', 'passphrase',
     'access_token', 'refresh_token', 'config', 'configurable', 'credentials',
@@ -133,7 +136,7 @@ def _prune(conn: sqlite3.Connection, config_id: str) -> None:
     conn.execute('''DELETE FROM agent_runs WHERE config_id = ? AND run_id NOT IN (
         SELECT run_id FROM agent_runs WHERE config_id = ?
         ORDER BY started_at DESC, rowid DESC LIMIT ?
-    )''', (config_id, config_id, MAX_RUNS_PER_CONFIG))
+    )''', (config_id, config_id, MAX_NEWS_RUNS if config_id == 'news-intelligence' else MAX_RUNS_PER_CONFIG))
 
 
 def start_agent_run(
@@ -250,7 +253,9 @@ def list_agent_runs(*, config_id: str | None = None, purpose: str | None = None,
         rows = conn.execute('SELECT ' + _METADATA_COLUMNS + ' FROM agent_runs' + where +
                             ' ORDER BY started_at DESC, rowid DESC LIMIT ? OFFSET ?', [*values, limit, offset]).fetchall()
     return {'runs': [dict(row) for row in rows], 'total': total, 'limit': limit, 'offset': offset,
-            'retention': {'days': RETENTION_DAYS, 'per_config': MAX_RUNS_PER_CONFIG}}
+            'retention': {'days': RETENTION_DAYS,
+                          'per_config': MAX_NEWS_RUNS if config_id == 'news-intelligence' else MAX_RUNS_PER_CONFIG,
+                          'news_per_config': MAX_NEWS_RUNS}}
 
 
 def get_agent_run(run_id: str) -> dict | None:

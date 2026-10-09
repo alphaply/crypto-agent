@@ -164,6 +164,20 @@ def test_strategy_summary_has_distinct_authenticated_filter_and_full_detail(clie
     assert client.get('/api/agent-runs', params={'purpose': 'memory_review'}).json()['total'] == 1
 
 
+@pytest.mark.parametrize('purpose', ['news_score', 'news_summary', 'chat', 'chat_summary'])
+def test_news_and_chat_purpose_filters_preserve_private_audit_access(client, purpose):
+    run_id = start('news-intelligence' if purpose.startswith('news_') else 'chat-example', purpose)
+    start('another-config', 'decision')
+    assert client.get('/api/agent-runs', params={'purpose': purpose}).status_code == 401
+    authenticate(client)
+    response = client.get('/api/agent-runs', params={'purpose': purpose})
+    assert response.status_code == 200
+    assert response.json()['total'] == 1
+    assert response.json()['runs'][0]['run_id'] == run_id
+    assert 'messages' not in response.json()['runs'][0]
+    assert client.get('/api/agent-runs/' + run_id).json()['run']['messages'][0]['content'] == '真实输入'
+
+
 @pytest.mark.parametrize('params', [
     {'limit': 0}, {'limit': 101}, {'offset': -1}, {'offset': 10001},
     {'purpose': 'unknown'}, {'config_id': ''}, {'config_id': 'x' * 201}, {'limit': 'bad'},

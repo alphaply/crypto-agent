@@ -1,15 +1,13 @@
 """SDK OAuth 2.1 provider; SDK handlers validate PKCE, redirects and client auth."""
 from __future__ import annotations
 
-import html
 import secrets
 import time
 from urllib.parse import urlparse
 
-from mcp.server.auth.provider import AccessToken, AuthorizationCode, AuthorizeError, RefreshToken, RegistrationError, TokenError, construct_redirect_uri
+from mcp.server.auth.provider import AccessToken, AuthorizationCode, AuthorizeError, RefreshToken, RegistrationError, TokenError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.datastructures import FormData
 
 from . import store
@@ -125,9 +123,11 @@ class AuthorizationProvider:
         if not set(requested) <= set(SCOPES):
             raise AuthorizeError('invalid_scope', 'Unsupported scope')
         transaction = secrets.token_urlsafe(32)
+        csrf = secrets.token_urlsafe(32)
         store.put('pending', store.digest(transaction), {
             'client_id': client.client_id, 'client_name': client.client_name or client.client_id,
             'params': params.model_dump(mode='json'), 'expires_at': time.time() + 600,
+            'csrf': store.digest(csrf), 'csrf_token': encrypt(csrf),
         })
         return self.public_url + '/oauth/consent?transaction=' + transaction
 
@@ -194,66 +194,5 @@ class AuthorizationProvider:
             store.put('revoked_grant', grant, {'revoked_at': time.time()})
 
     async def consent(self, request: Request):
-        from backend.app.core.security import authenticate_password, check_login_allowed, record_login_failure, reset_login_attempts
-        transaction = request.query_params.get('transaction', '') if request.method == 'GET' else str((await request.form()).get('transaction', ''))
-        pending = store.get('pending', store.digest(transaction))
-        if not pending or pending['expires_at'] < time.time():
-            return HTMLResponse('Authorization request expired. Restart the connection.', status_code=400)
-        esc = html.escape
-        if request.method == 'GET':
-            csrf = secrets.token_urlsafe(32)
-            pending['csrf'] = store.digest(csrf)
-            store.put('pending', store.digest(transaction), pending)
-            requested = list(dict.fromkeys(['read'] + (pending['params'].get('scopes') or [])))
-            scope_options = ''.join(f'<label><input type="checkbox" name="scopes" value="{esc(scope, quote=True)}" checked>{esc(scope)}</label>' for scope in requested if scope != 'read')
-            options = ''.join(f'<label><input type="checkbox" name="profile_ids" value="{esc(p["profile_id"], quote=True)}">{esc(p["name"])}</label>' for p in profiles() if p.get('enabled'))
-            response = HTMLResponse(f'''<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>MCP 授权</title>
-            <style>body{{font:16px system-ui;background:#f5f7fb;color:#14233b;max-width:520px;margin:8vh auto;padding:24px}}form{{display:grid;gap:18px;background:white;padding:28px;border-radius:18px}}label{{display:block}}input[type=password]{{padding:12px}}button{{padding:12px}}</style>
-            <h1>连接 Crypto Agent</h1><form method="post"><p>客户端：{esc(pending['client_name'])}</p><p>查询权限 read；选择额外授权：</p>{scope_options}
-            <p>选择允许访问的 MCP 交易配置：</p>{options}<input type="hidden" name="transaction" value="{esc(transaction, quote=True)}"><input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">
-            <label>管理员密码 <input name="password" type="password" autocomplete="current-password" required></label>
-            <button name="decision" value="allow">授权连接</button><button name="decision" value="deny" formnovalidate>取消</button></form></html>''')
-            response.set_cookie('mcp_consent', csrf, httponly=True, secure=self.public_url.startswith('https:'), samesite='lax', max_age=600, path='/oauth/consent')
-            response.headers['Cache-Control'] = 'no-store'
-            response.headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
-            return response
-        form = await request.form()
-        csrf = str(form.get('csrf', ''))
-        if (not csrf or not secrets.compare_digest(csrf, request.cookies.get('mcp_consent', ''))
-                or not secrets.compare_digest(store.digest(csrf), pending.get('csrf', ''))):
-            return JSONResponse({'error': 'Invalid consent session'}, status_code=403)
-        params = pending['params']
-        if form.get('decision') != 'allow':
-            store.pop('pending', store.digest(transaction))
-            return RedirectResponse(construct_redirect_uri(params['redirect_uri'], error='access_denied', state=params.get('state')), status_code=303)
-        ip = request.client.host if request.client else 'unknown'
-        allowed, reason = check_login_allowed(ip)
-        if not allowed:
-            return JSONResponse({'error': reason}, status_code=429)
-        if not authenticate_password(str(form.get('password', ''))):
-            record_login_failure(ip)
-            return JSONResponse({'error': 'Invalid administrator password'}, status_code=401)
-        reset_login_attempts(ip)
-        selected_scopes = [str(value) for value in form.getlist('scopes')]
-        if not set(selected_scopes) <= set(params.get('scopes') or []):
-            return JSONResponse({'error': 'Cannot grant scopes not requested by this client'}, status_code=400)
-        scopes = list(dict.fromkeys(['read'] + selected_scopes))
-        profile_ids = list(dict.fromkeys(str(value) for value in form.getlist('profile_ids')))
-        try:
-            validate_grant(scopes, profile_ids)
-        except ValueError as exc:
-            return JSONResponse({'error': str(exc)}, status_code=400)
-        if not store.pop('pending', store.digest(transaction)):
-            return JSONResponse({'error': 'Consent already completed'}, status_code=400)
-        code, grant = secrets.token_urlsafe(32), secrets.token_hex(16)
-        record = MCPCode(code='', client_id=pending['client_id'], scopes=scopes, profile_ids=profile_ids,
-                         grant_id=grant, expires_at=time.time() + 120, code_challenge=params['code_challenge'],
-                         redirect_uri=params['redirect_uri'], redirect_uri_provided_explicitly=params['redirect_uri_provided_explicitly'],
-                         resource=self.resource, subject='admin').model_dump(mode='json')
-        record.pop('code')
-        store.put('code', store.digest(code), record)
-        store.audit('admin', 'oauth_authorize', 'completed', result={'client_id': pending['client_id'], 'scopes': scopes, 'profile_ids': profile_ids})
-        response = RedirectResponse(construct_redirect_uri(params['redirect_uri'], code=code, state=params.get('state')), status_code=303)
-        response.delete_cookie('mcp_consent', path='/oauth/consent')
-        response.headers['Cache-Control'] = 'no-store'
-        return response
+        from .consent import handle_consent
+        return await handle_consent(self, request)

@@ -70,7 +70,7 @@ AGENT_SECRET_KEYS = {
 
 LLM_PROVIDER_SECRET_KEYS = {"api_key"}
 PROVIDER_OPTION_KEYS = (
-    "api_protocol", "models_dev_provider_id", "models_dev_model_id", "pricing_mode",
+    "api_protocol", "decisions_api", "models_dev_provider_id", "models_dev_model_id", "pricing_mode",
     "input_price_per_m", "output_price_per_m", "cache_read_price_per_m",
     "cache_write_price_per_m", "pricing_currency", "report_output_mode",
 )
@@ -1047,6 +1047,8 @@ def save_runtime_snapshot(
                 conn.execute("DELETE FROM secret_store WHERE scope = 'exchange_profile'")
 
             for provider in llm_providers:
+                if provider.get('decisions_api', 'bai') not in {'bai', 'typesafe'}:
+                    raise ValueError('Unknown Jev Decisions API adapter')
                 provider_id = str(provider.get("provider_id") or "").strip()
                 if not provider_id:
                     continue

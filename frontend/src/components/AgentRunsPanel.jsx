@@ -23,7 +23,7 @@ export default function AgentRunsPanel({ agents = [] }) {
   const [detail, setDetail] = useState(null);
   const [detailError, setDetailError] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
-  const [retention, setRetention] = useState({ days: 30, per_config: 100 });
+  const [retention, setRetention] = useState({ days: 30, per_config: 100, news_per_config: 12100 });
   const listSequence = useRef(0);
   const detailSequence = useRef(0);
   const unknown = zh ? '未知' : 'Unknown';
@@ -32,6 +32,10 @@ export default function AgentRunsPanel({ agents = [] }) {
     strategy_summary: zh ? '单轮策略压缩' : 'Per-round strategy summary',
     memory_review: zh ? '记忆整理与复盘' : 'Memory and review',
     daily_summary: zh ? '日内归档' : 'Daily summary',
+    chat: zh ? '聊天' : 'Chat',
+    chat_summary: zh ? '聊天上下文压缩' : 'Chat compaction',
+    news_score: zh ? '消息相关度评分' : 'News scoring',
+    news_summary: zh ? '共享消息摘要' : 'News summary',
   };
   const statusLabels = {
     running: zh ? '调用中' : 'Running', success: zh ? '成功' : 'Success',
@@ -39,7 +43,7 @@ export default function AgentRunsPanel({ agents = [] }) {
   };
   const number = (value) => value == null ? unknown : value.toLocaleString();
   const time = (value) => value ? new Date(value).toLocaleString(zh ? 'zh-CN' : 'en-US') : '—';
-  const taskName = (id) => agents.find((agent) => agent.config_id === id)?.title || id;
+  const taskName = (id) => id === 'news-intelligence' ? (zh ? '全局消息处理' : 'Shared news pipeline') : agents.find((agent) => agent.config_id === id)?.title || id;
   const statusTag = (status) => <Tag color={{ running: 'processing', success: 'success', error: 'error' }[status]}>{statusLabels[status] || status}</Tag>;
   const costLabel = (run) => run.cost == null ? unknown : <Space direction="vertical" size={0}><Text>{run.cost.toFixed(6)} {run.currency || ''}</Text><Text type="secondary">{run.cost_source === 'model_pricing' ? (zh ? '按配置费率估算' : 'Estimated from configured rates') : run.cost_source === 'provider' ? (zh ? '服务商返回' : 'Provider reported') : unknown}</Text></Space>;
 
@@ -96,9 +100,9 @@ export default function AgentRunsPanel({ agents = [] }) {
 
   return <Space direction="vertical" size="middle" style={{ width: '100%' }}>
     <Alert type="info" showIcon title={zh ? '交易 Agent 负责决策和执行，记忆 Agent 负责复盘和维护未锁定的规则。' : 'The trading agent decides and executes; the memory agent reviews outcomes and maintains unlocked rules.'}
-      description={zh ? `这里展示更新后实际发生的模型调用。每任务保留最近 ${retention.per_config} 次，最长 ${retention.days} 天；字符数包含消息和工具定义的 JSON，不等于 Token。费用优先使用服务商返回值，否则按调用时的渠道费率估算（含已报告的缓存用量）；缺少价格或用量显示未知。仅登录后可查看。` : `Actual model calls recorded after this update. Keeps the latest ${retention.per_config} calls per task for up to ${retention.days} days. Character counts include message and tool JSON, not tokens. Costs use provider-reported values when available, otherwise an estimate from provider-specific rates at call time, including reported cache usage. Missing prices or usage stay unknown. Login is required.`} />
+      description={zh ? `这里展示实际发生的模型调用。当前任务保留最近 ${retention.per_config} 次，全局消息单独保留最多 ${retention.news_per_config || 12100} 次，最长 ${retention.days} 天；字符数包含消息和工具定义的 JSON，不等于 Token。费用优先使用服务商返回值，否则按调用时的渠道费率估算（含已报告的缓存用量）；缺少价格或用量显示未知。仅登录后可查看。` : `Actual model calls. Keeps the latest ${retention.per_config} calls per selected task and up to ${retention.news_per_config || 12100} shared news calls for ${retention.days} days. Character counts include message and tool JSON, not tokens. Costs use provider-reported values when available, otherwise configured rates at call time including reported cache usage. Missing prices or usage stay unknown. Login is required.`} />
     <Space wrap>
-      <Select allowClear showSearch optionFilterProp="label" aria-label={zh ? '运行记录所属任务' : 'Run task'} value={configId} onChange={(value) => { setConfigId(value); setPage(1); }} placeholder={zh ? '全部任务' : 'All tasks'} style={{ minWidth: 220 }} options={agents.map((agent) => ({ value: agent.config_id, label: agent.title || agent.config_id }))} />
+      <Select allowClear showSearch optionFilterProp="label" aria-label={zh ? '运行记录所属任务' : 'Run task'} value={configId} onChange={(value) => { setConfigId(value); setPage(1); }} placeholder={zh ? '全部任务' : 'All tasks'} style={{ minWidth: 220 }} options={[{ value: 'news-intelligence', label: zh ? '全局消息处理' : 'Shared news pipeline' }, ...agents.filter((agent) => agent.config_id !== 'news-intelligence').map((agent) => ({ value: agent.config_id, label: agent.title || agent.config_id }))]} />
       <Select allowClear aria-label={zh ? '调用用途' : 'Call purpose'} value={purpose} onChange={(value) => { setPurpose(value); setPage(1); }} placeholder={zh ? '全部用途' : 'All purposes'} style={{ minWidth: 190 }} options={Object.entries(purposeLabels).map(([value, label]) => ({ value, label }))} />
       <Button icon={<ReloadOutlined />} loading={loading} onClick={load}>{zh ? '刷新记录' : 'Refresh'}</Button>
     </Space>

@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from contextvars import copy_context
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
 from backend import database_news
@@ -12,6 +14,8 @@ from backend.app.schemas.news import NewsSettings
 from backend.utils import news_context as sources
 from backend.utils.jev import JevError, score_news, validate_provider
 from backend.utils.logger import setup_logger
+from backend.utils.news_tracing import news_span, pipeline_run_id, trace_identity
+from backend.app.services.news_progress import NewsProgress, current_progress
 
 logger = setup_logger('SharedNews')
 
@@ -74,24 +78,45 @@ def collect_candidates(settings: NewsSettings, now: datetime, snapshot: dict | N
     active = [source for source in settings.sources if source.enabled]
     blockbeats_api_key = (snapshot if snapshot is not None else _runtime()).get('global_blockbeats_api_key') or ''
     pool = ThreadPoolExecutor(max_workers=min(12, max(1, len(active))), thread_name_prefix='news-sources')
-    futures = {pool.submit(_source_result, source, settings, now, blockbeats_api_key): source for source in active}
-    done, pending = wait(futures, timeout=15)
+    progress = current_progress.get()
+    if progress:
+        progress.update(counts={'sources_total': len(active) + 1})
+    def fetch(source):
+        with news_span('news.source', inputs={'source_id': source.id, 'kind': source.kind}) as span:
+            result = _source_result(source, settings, now, blockbeats_api_key)
+            if span:
+                span.end(outputs={'status': result.get('status'), 'item_count': len(result.get('items', []))})
+            return result
+    futures = {pool.submit(copy_context().run, fetch, source): source for source in active}
     items, health = [], {}
-    for future in done:
-        source = futures[future]
-        try:
-            result = future.result()
-            health[source.id] = {key: result.get(key) for key in ('status', 'stale', 'fetched_at')}
-            health[source.id]['name'] = source.name
-            if result.get('error'):
-                health[source.id]['error'] = ('请在消息聚合中配置律动 API Key' if result.get('status') == 'configuration_required' and source.kind == 'blockbeats'
-                                               else 'Source unavailable; cached items are used when available')
-            items.extend({**item, 'source_id': source.id, 'source_stale': bool(result.get('stale'))} for item in result.get('items', []))
-        except Exception:
-            health[source.id] = {'name': source.name, 'status': 'unavailable', 'error': 'Source retrieval failed'}
-    for future in pending:
+    completed = set()
+    try:
+        for future in as_completed(futures, timeout=15):
+            completed.add(future)
+            source = futures[future]
+            count = 0
+            try:
+                result = future.result()
+                health[source.id] = {key: result.get(key) for key in ('status', 'stale', 'fetched_at')}
+                health[source.id]['name'] = source.name
+                if result.get('error'):
+                    health[source.id]['error'] = ('请在消息聚合中配置律动 API Key' if result.get('status') == 'configuration_required' and source.kind == 'blockbeats'
+                                                   else 'Source unavailable; cached items are used when available')
+                received = result.get('items', [])
+                count = len(received)
+                items.extend({**item, 'source_id': source.id, 'source_stale': bool(result.get('stale'))} for item in received)
+            except Exception:
+                health[source.id] = {'name': source.name, 'status': 'unavailable', 'error': 'Source retrieval failed'}
+            health[source.id]['item_count'] = count
+            if progress:
+                progress.source(source.id, health[source.id], count)
+    except TimeoutError:
+        pass
+    for future in set(futures) - completed:
         source = futures[future]
         health[source.id] = {'name': source.name, 'status': 'timeout', 'error': 'Source retrieval timed out'}
+        if progress:
+            progress.source(source.id, health[source.id], 0)
         future.cancel()
     pool.shutdown(wait=False, cancel_futures=True)
     from backend.utils.polymarket import get_polymarket_context, intelligence_items
@@ -105,12 +130,17 @@ def collect_candidates(settings: NewsSettings, now: datetime, snapshot: dict | N
             {key: value for key, value in event.items() if key != 'error'}
             for event in predictions.get('events', [])
         ]
-        items.extend(intelligence_items(predictions))
+        prediction_items = intelligence_items(predictions)
+        items.extend(prediction_items)
         for key, value in predictions.get('source_health', {}).items():
             health[key] = {field: value.get(field) for field in ('status', 'stale', 'fetched_at')}
+        if progress:
+            progress.source('polymarket', {'name': 'Polymarket', 'status': 'ok' if predictions.get('enabled') else 'disabled'}, len(prediction_items))
     except Exception:
         predictions = {'enabled': False, 'events': []}
         health['polymarket'] = {'status': 'unavailable'}
+        if progress:
+            progress.source('polymarket', health['polymarket'], 0)
     cutoff, horizon = now - timedelta(hours=settings.lookback_hours), now + timedelta(days=7)
     unique = {}
     for item in items:
@@ -144,11 +174,46 @@ def _summarize(items: list[dict], provider: dict) -> str:
         require_complete_response(response, context='News summary')
         if not extract_message_text(response).strip():
             raise ValueError('News summary was empty')
-    response = invoke_with_retry(lambda: audited_invoke(lambda: llm.invoke(messages), config_id='news-intelligence', purpose='news_summary', model=provider['model'], provider_id=provider['provider_id'], messages=messages, response_validator=validate), logger=logger, context='shared news summary')
+    response = invoke_with_retry(lambda: audited_invoke(lambda: llm.invoke(messages), config_id='news-intelligence', purpose='news_summary', model=provider['model'], provider_id=provider['provider_id'], messages=messages, response_validator=validate, parent_run_id=pipeline_run_id.get()), logger=logger, context='shared news summary')
     return extract_message_text(response).strip()
 
 
 def _run_refresh(owner: str, snapshot: dict) -> None:
+    from backend.utils.llm_utils import sync_langsmith_environment
+    progress = NewsProgress(owner)
+    token = current_progress.set(progress)
+    parent_token = pipeline_run_id.set(owner)
+    try:
+        try:
+            sync_langsmith_environment()
+            tracing = nullcontext()
+        except Exception:
+            from langsmith import tracing_context
+            tracing = tracing_context(enabled=False)
+            logger.warning('News tracing configuration unavailable; continuing with local progress')
+        with tracing:
+            with news_span('news.refresh', inputs={'run_id': owner}) as span:
+                progress.update(**trace_identity(span))
+                _process_refresh(owner, snapshot, progress)
+                if span:
+                    span.end(outputs={'status': progress.value['status'], 'counts': progress.value['counts']},
+                             error=progress.value['error'] if progress.value['status'] == 'error' else None)
+    except Exception:
+        logger.warning('Shared news worker failed; retaining the previous snapshot')
+        try:
+            progress.finish('error', 'News processing failed; retaining the previous snapshot')
+        except Exception:
+            logger.warning('Cannot persist news progress failure')
+    finally:
+        try:
+            database_news.update_state('news', {}, owner=owner, release=True)
+        except Exception:
+            logger.warning('Cannot release news lease; it will expire automatically')
+        current_progress.reset(token)
+        pipeline_run_id.reset(parent_token)
+
+
+def _process_refresh(owner: str, snapshot: dict, progress: NewsProgress) -> None:
     settings = _settings(snapshot)
     database_news.update_state('news', {'status': 'running', 'last_attempt_at': database_news.now_iso(), 'error': None}, owner=owner)
     try:
@@ -159,31 +224,48 @@ def _run_refresh(owner: str, snapshot: dict) -> None:
             raise NewsPipelineError('Select a generative model for news summaries; Jev only scores content')
         now = datetime.now(timezone.utc)
         candidates, health, predictions = collect_candidates(settings, now, snapshot)
-        database_news.update_state('news', {'source_health': health, 'candidate_count': len(candidates)}, owner=owner)
+        progress.update(source_health=health)
         if not any(h.get('status') in {'ok', 'stale'} for h in health.values()):
             raise NewsPipelineError('All news sources are unavailable; retaining the previous snapshot')
+        progress.candidates(candidates)
         scored, failed = [], 0
+        def score(index, item):
+            progress.item(index, status='scoring')
+            return score_news(item, scorer, instructions=settings.scorer_instructions, criteria=settings.scorer_criteria)
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix='jev-score') as pool:
-            futures = {pool.submit(score_news, item, scorer, instructions=settings.scorer_instructions, criteria=settings.scorer_criteria): item for item in candidates}
+            futures = {pool.submit(copy_context().run, score, index, item): (index, item) for index, item in enumerate(candidates)}
             for future in as_completed(futures):
+                index, item = futures[future]
                 try:
-                    scored.append({**futures[future], 'scoring': future.result()})
-                except Exception:
+                    scoring = future.result()
+                except Exception as exc:
                     failed += 1
+                    progress.item(index, status='failed', error=exc)
+                else:
+                    scored.append({**item, 'scoring': scoring, '_progress_index': index})
+                    progress.item(index, status='scored', scoring=scoring)
         if candidates and not scored:
             raise NewsPipelineError('All Jev scoring requests failed; retaining the previous snapshot')
+        progress.update(stage='filter')
         selected = sorted((item for item in scored if item['scoring']['score'] >= settings.min_score), key=lambda item: (item['scoring']['score'], item.get('published_at') or ''), reverse=True)[:settings.max_items]
-        digest = _summarize(selected, summary_provider)
+        progress.selected({item.pop('_progress_index') for item in selected})
+        with news_span('news.summarize', inputs={'selected_count': len(selected), 'model': summary_provider['model']}) as summary_span:
+            digest = _summarize(selected, summary_provider)
+            if summary_span:
+                summary_span.end(outputs={'digest': digest})
         for item in selected:
             item['relevance'] = item['scoring']['score'] / 100
+            item['scoring'] = _public_scoring(item['scoring'])
         payload = {'available': True, 'digest': digest, 'items': selected, 'headlines': [sources._display_title(item) for item in selected], 'crypto_headlines': [item['title'] for item in selected if item.get('category') in {'crypto', 'critical', 'exchange_announcement'}], 'macro_headlines': [item['title'] for item in selected if item.get('category') in {'macro_policy', 'macro_calendar', 'macro_market', 'policy', 'geopolitical'}], 'events': [item for item in selected if item.get('category') == 'macro_calendar'], 'polymarket': predictions, 'as_of': database_news.now_iso(), 'source_health': health, 'stale': any(item.get('source_stale') for item in selected), 'source': 'shared_news_pipeline', 'candidate_count': len(candidates), 'scored_count': len(scored), 'filtered_count': len(scored) - len(selected), 'score_failures': failed, 'scorer_model': scorer['model'], 'summary_model': summary_provider['model']}
+        progress.update(stage='publish')
         if not database_news.publish_snapshot(payload, owner):
             raise NewsPipelineError('News refresh lease expired; previous snapshot retained')
-        database_news.update_state('news', {'status': 'degraded' if failed else 'success', 'last_success_at': payload['as_of'], 'error': f'{failed} items could not be scored' if failed else None, 'score_failures': failed, 'selected_count': len(selected)}, owner=owner, release=True)
+        progress.update(last_success_at=payload['as_of'], score_failures=failed, selected_count=len(selected))
+        progress.finish('degraded' if failed else 'success', f'{failed} items could not be scored' if failed else None)
     except Exception as exc:
         message = str(exc) if isinstance(exc, (NewsPipelineError, JevError)) else 'News processing failed; retaining the previous snapshot'
         logger.warning('Shared news refresh failed: %s', type(exc).__name__)
-        database_news.update_state('news', {'status': 'error', 'error': message}, owner=owner, release=True)
+        progress.finish('error', message)
 
 
 def refresh_news(*, force: bool = True, background: bool = True) -> dict:
@@ -224,10 +306,18 @@ def get_latest_news() -> dict:
     payload = database_news.latest_snapshot()
     if not payload or not settings.enabled:
         return {'available': False, 'digest': '', 'items': [], 'headlines': [], 'source_health': {}, 'as_of': None, 'stale': False, 'enabled': settings.enabled, 'status': 'disabled' if not settings.enabled else 'awaiting_first_snapshot'}
+    # Older snapshots may carry private audit IDs. Public consumers get only
+    # scoring content; processing diagnostics remain on authenticated routes.
+    payload['items'] = [{**item, 'scoring': _public_scoring(item.get('scoring') or {})} for item in payload.get('items', [])]
     as_of = sources._parse_iso(payload.get('as_of'))
     state = database_news.read_state('news')
     stale = not as_of or datetime.now(timezone.utc) - as_of > timedelta(seconds=settings.refresh_seconds * 1.5)
     return {**payload, 'enabled': settings.enabled, 'stale': bool(payload.get('stale') or stale or state.get('status') == 'error'), 'status': state.get('status', 'success') if settings.enabled else 'disabled'}
+
+
+def _public_scoring(scoring: dict) -> dict:
+    fields = {'score', 'raw_score', 'level_count', 'confidence', 'probabilities', 'legend', 'model', 'rubric_version', 'cached'}
+    return {key: value for key, value in scoring.items() if key in fields}
 
 
 def get_latest_global_snapshot() -> dict | None:
