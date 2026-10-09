@@ -18,6 +18,7 @@ import {
   Space,
   Spin,
   Table,
+  Tabs,
   Tag,
   Typography,
   message,
@@ -321,7 +322,7 @@ function PaginatedOrderList({ orders, t }) {
   );
 }
 
-export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticated, chartLoading = false, chartError = false, chartSymbol, setChartSymbol }) {
+export function WorkspacePanel({ compact = false, workspace, timeframe, setTimeframe, authenticated, chartLoading = false, chartError = false, chartSymbol, setChartSymbol }) {
   const { t, locale } = usePreferences();
   const timeframeControlsRef = useRef(null);
   useEffect(() => {
@@ -349,6 +350,7 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
   const exitMode = position.exit_management?.mode || resolveExitMode({ ...agent, ...position });
   const independentExits = exitMode === 'independent_exits';
 
+  const [activeView, setActiveView] = useState('overview');
   const [editingMemory, setEditingMemory] = useState(null);
   const [memoryEditText, setMemoryEditText] = useState('');
   const [memorySaving, setMemorySaving] = useState(false);
@@ -466,341 +468,395 @@ export function WorkspacePanel({ workspace, timeframe, setTimeframe, authenticat
     ] : []),
   ];
 
+  const chartPanel = (
+    <Card className="panel-card market-chart-card">
+      <div className="market-chart-toolbar">
+        <div className="market-chart-heading">
+          <Title level={5}>{compact ? (locale === 'zh' ? '市场行情' : 'Market') : t('liveWorkspace')}</Title>
+          <Text type="secondary">{displayedChartSymbol || '—'} · {locale === 'zh' ? '当前图表 ' : 'Showing '}<strong>{displayedTimeframe || '—'}</strong></Text>
+        </div>
+        <div className="market-chart-controls">
+          {spotMode && chartSymbols.length > 1 && setChartSymbol ? (
+            <Select
+              aria-label={locale === 'zh' ? '图表标的' : 'Chart symbol'}
+              value={requestedChartSymbol}
+              options={chartSymbols.map((symbol) => ({ value: symbol, label: symbol }))}
+              onChange={setChartSymbol}
+              style={{ minWidth: 140 }}
+            />
+          ) : null}
+          <div ref={timeframeControlsRef} className="market-chart-timeframes" role="group" aria-label={locale === 'zh' ? 'K线周期' : 'Chart interval'}>
+            {timeframeOptions.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={`market-chart-timeframe${value === timeframe ? ' is-active' : ''}`}
+                aria-pressed={value === timeframe}
+                onClick={() => setTimeframe(value)}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {(!compact || waitingForChart || chartError) && <div className={`market-chart-status${chartError && !waitingForChart ? ' is-error' : ''}`} role="status" aria-live="polite" aria-atomic="true">
+        {waitingForChart ? <Spin size="small" /> : null}
+        <span>{chartStatus}</span>
+        {chartError && !waitingForChart ? (
+          <Button type="link" size="small" icon={<ReloadOutlined />} onClick={() => window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'))}>
+            {locale === 'zh' ? '重试' : 'Retry'}
+          </Button>
+        ) : null}
+      </div>}
+      <div className="chart-wrap chart-wrap-large" aria-busy={waitingForChart}>
+        <KlineChart payload={kline} chartKey={`${workspace?.agent?.config_id}:${displayedChartSymbol || ''}:${displayedTimeframe || 'unknown'}`} timeframe={displayedTimeframe} />
+      </div>
+    </Card>
+  );
+
+  const positionPanel = (
+    <Card className="panel-card">
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <div className="position-header-row">
+          <Space size={8} wrap>
+            <Text strong>{spotMode ? t('spotAccount') : t('positions')}</Text>
+            {spotMode && !compact ? <Tag color="gold">SPOT_DCA</Tag> : null}
+            {!spotMode ? <Tag color={independentExits ? 'blue' : 'default'}>{exitModeLabel(exitMode, locale)}</Tag> : null}
+            {!spotMode && !independentExits && authenticated && activePositions.length === 1 ? (
+              <Button size="small" icon={<EditOutlined />} onClick={() => openProtectionModal(activePositions[0])}>
+                {t('adjustTpSl')}
+              </Button>
+            ) : null}
+          </Space>
+          {(!compact || !spotMode) && <div className="position-balance-row">
+            {spotMode ? (
+              <>
+                <span><Text type="secondary">{t('marketValue')}: </Text><Text>{formatPositionValue(spotStats.market_value)}</Text></span>
+                <span><Text type="secondary">{t('totalInvested')}: </Text><Text>{formatPositionValue(spotStats.total_invested)}</Text></span>
+              </>
+            ) : (
+              <>
+                <span><Text type="secondary">{t('marginBalance')}: </Text><Text>{formatPositionValue(getMarginBalance(workspace))}</Text></span>
+                <span><Text type="secondary">{t('walletBalance')}: </Text><Text>{formatPositionValue(position.balance)}</Text></span>
+              </>
+            )}
+          </div>}
+        </div>
+        {spotMode ? (
+          <div className="spot-account-summary">
+            <FactGrid items={buildSpotFacts(t, spotStats, pendingOrders)} />
+            {spotStats.sync_status === 'partial' ? <Alert type="warning" showIcon message={locale === 'zh' ? '部分账户或行情数据未能核验，未知金额显示为 —，请刷新后确认。' : 'Some account or market data could not be verified. Unknown values are shown as —. Refresh to verify.'} /> : null}
+            {spotStats.missing_symbols?.length ? <Alert type="warning" showIcon message={locale === 'zh' ? `部分标的数据不可用：${spotStats.missing_symbols.join(', ')}，组合总额仅含已读取标的。` : `Some symbols are unavailable: ${spotStats.missing_symbols.join(', ')}. Totals include available symbols only.`} /> : null}
+            {spotStats.is_portfolio && spotStats.by_symbol?.length ? (
+              <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 16 }}>
+                <Text type="secondary">{locale === 'zh' ? '以下按标的列出持仓，数量与均价分别计算；组合总额使用共同计价币。' : 'Holdings, quantities and average costs are calculated per symbol. Portfolio totals use the shared quote currency.'}</Text>
+                {spotStats.by_symbol.map((asset) => (
+                  <Card size="small" key={asset.symbol} title={asset.symbol}>
+                    <FactGrid items={buildSpotFacts(t, asset)} />
+                  </Card>
+                ))}
+                <Text type="secondary">{locale === 'zh' ? '本次运行组合共用额度' : 'Shared allowance per run'}: {formatPositionValue(spotStats.dca_amount_per)} {spotStats.quote_asset || agent.symbol?.split('/')[1] || ''}</Text>
+              </Space>
+            ) : null}
+            {spotStats.last_sync ? (
+              <Text type="secondary" className="spot-account-sync">
+                {t('lastSync')}: {spotStats.last_sync}
+              </Text>
+            ) : null}
+          </div>
+        ) : activePositions.length === 0 ? (
+          <Text type="secondary">{t('noActivePositions')}</Text>
+        ) : hasDualPosition ? (
+          <div className="dual-position-grid">
+            {activePositions.map((pos, idx) => (
+              <div
+                key={idx}
+                className={`position-card-inner ${pos.side === 'SHORT' ? 'position-card-short' : 'position-card-long'}`}
+              >
+                <div className="position-card-badge">
+                  <Space size={8}>
+                    <Tag color={pos.side === 'SHORT' ? 'red' : 'green'}>{pos.side}</Tag>
+                    {authenticated && !independentExits ? (
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openProtectionModal(pos)}>
+                        {t('adjustTpSl')}
+                      </Button>
+                    ) : null}
+                  </Space>
+                </div>
+                <FactGrid items={buildSinglePositionFacts(pos)} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <FactGrid items={buildSinglePositionFacts(activePositions[0])} />
+        )}
+        {!spotMode ? <ExitManagementPanel management={position.exit_management} hideEmpty={compact && activePositions.length === 0} /> : null}
+      </Space>
+      <Modal
+        open={Boolean(editingProtection)}
+        title={`${t('adjustTpSl')} - ${editingProtection?.side || ''} (${editingProtection?.symbol || agent?.symbol || ''})`}
+        onCancel={() => setEditingProtection(null)}
+        onOk={saveProtection}
+        confirmLoading={protectionSaving}
+        okText={t('save')}
+        cancelText={t('cancel')}
+        destroyOnClose
+      >
+        {editingProtection ? (
+          <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 12 }}>
+            <Alert type="info" showIcon message={t('tpSlNotice')} />
+            <Text type="secondary">作用于同方向整个仓位（含后续加仓）。留空保留原值；仅勾选取消才移除保护。</Text>
+            {editingProtection.protection_error ? <Alert type="error" showIcon message={editingProtection.protection_error} /> : null}
+            <Text type="secondary">最近核验：{editingProtection.protection_verified_at ? new Date(editingProtection.protection_verified_at * 1000).toLocaleString() : '尚未核验'} · {editingProtection.protection_state || '未设置'}</Text>
+            <Descriptions size="small" column={2} bordered>
+              <Descriptions.Item label={t('side')}>
+                <Tag color={editingProtection.side === 'SHORT' ? 'red' : 'green'}>{editingProtection.side}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label={t('entry')}>
+                {formatPositionValue(editingProtection.entry_price)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('mark')}>
+                {formatPositionValue(editingProtection.mark_price)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('qty')}>
+                {formatPositionValue(editingProtection.qty || editingProtection.amount || editingProtection.contracts)}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Form layout="vertical">
+              <Form.Item label={t('takeProfitPrice')}>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <InputNumber
+                    style={{ width: '100%' }}
+                    placeholder={t('takeProfitPrice')}
+                    value={clearTp ? null : protectionTp}
+                    onChange={(val) => setProtectionTp(val)}
+                    disabled={clearTp}
+                    min={0.00000001}
+                  />
+                  <Checkbox checked={clearTp} onChange={(e) => setClearTp(e.target.checked)}>
+                    {t('clearTp')}
+                  </Checkbox>
+                </Space>
+              </Form.Item>
+
+              <Form.Item label={t('stopLossPrice')}>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <InputNumber
+                    style={{ width: '100%' }}
+                    placeholder={t('stopLossPrice')}
+                    value={clearSl ? null : protectionSl}
+                    onChange={(val) => setProtectionSl(val)}
+                    disabled={clearSl}
+                    min={0.00000001}
+                  />
+                  <Checkbox checked={clearSl} onChange={(e) => setClearSl(e.target.checked)}>
+                    {t('clearSl')}
+                  </Checkbox>
+                </Space>
+              </Form.Item>
+            </Form>
+          </Space>
+        ) : null}
+      </Modal>
+    </Card>
+  );
+
+  const analysisPanel = (
+    <Card className="panel-card" title={compact ? (locale === 'zh' ? '推理与执行过程' : 'Reasoning and execution') : t('analysis')}>
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        {!compact ? <TaskExecutionPanel execution={agent.execution} locale={locale} /> : agent.execution?.status === 'FINISHED' ? (
+          <details className="content-disclosure"><summary>{locale === 'zh' ? '查看执行过程与工具调用' : 'Execution details and tool calls'}</summary><TaskExecutionPanel execution={agent.execution} locale={locale} /></details>
+        ) : null}
+        {!compact && <Descriptions size="small" column={1} bordered>
+          <Descriptions.Item label={t('executedAt')}>{agent.timestamp || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('nextRun')}>{agent.next_run || '-'} · {agent.schedule?.timezone || ''}</Descriptions.Item>
+        </Descriptions>}
+        {!agent.report || agent.report.validation_status === 'invalid' ? <MarkdownBlock content={normalizedAnalysis.content || ''} /> : null}
+        {!historyReasoningDuplicated ? (
+          <ReasoningBlock
+            title={t('reasoning')}
+            content={normalizedAnalysis.reasoning}
+            reasoningTokens={agent.reasoning_tokens || 0}
+          />
+        ) : null}
+        {agent.strategy_logic ? (
+          <details className="content-disclosure strategy-block">
+            <summary>{t('strategyLogic')}</summary>
+            <MarkdownBlock content={agent.strategy_logic} />
+          </details>
+        ) : null}
+      </Space>
+    </Card>
+  );
+
+  const memoryPanel = (
+    <Card
+      className="panel-card"
+      title={t('shortMemories')}
+      extra={shortMemories[0] && authenticated ? (
+        <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openMemoryEdit(shortMemories[0])} />
+      ) : null}
+    >
+      {shortMemories[0] ? (() => {
+        const memory = shortMemories[0];
+        return (
+          <details className="content-disclosure">
+            <summary>{memory.window_start || memory.bucket_start} → {memory.window_end || memory.bucket_end}</summary>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Text type="secondary" className="memory-source-meta">
+                {locale === 'zh' ? '更新于' : 'Updated'} {memory.created_at} · {locale === 'zh' ? '来源' : 'Sources'} {memory.source_count ?? 0} {memory.version ? ` · v${memory.version}` : ''}
+              </Text>
+              <MarkdownBlock content={memory.market_summary || ''} />
+              {memory.position_summary ? <details className="content-disclosure"><summary>{locale === 'zh' ? '成交事实快照' : 'Execution snapshot'}</summary><MarkdownBlock content={memory.position_summary} /></details> : null}
+            </Space>
+          </details>
+        );
+      })() : (
+        <Empty description={t('noData')} />
+      )}
+      <Modal
+        open={Boolean(editingMemory)}
+        title={t('shortMemories')}
+        onCancel={() => setEditingMemory(null)}
+        onOk={saveMemoryEdit}
+        confirmLoading={memorySaving}
+        okText={t('save')}
+        cancelText={t('cancel')}
+        width={640}
+      >
+        {editingMemory ? (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Text type="secondary">{editingMemory.window_start || editingMemory.bucket_start} — {editingMemory.window_end || editingMemory.bucket_end}</Text>
+            <TextArea rows={10} value={memoryEditText} onChange={(e) => setMemoryEditText(e.target.value)} />
+          </Space>
+        ) : null}
+      </Modal>
+    </Card>
+  );
+
+  const ordersPanel = (
+    <div className="workspace-grid">
+      <Card className="panel-card" title={`${t('pendingOrders')} · ${displayedChartSymbol || ''}${compact ? ` (${pendingOrders.length})` : ''}`}>
+        {compact && !pendingOrders.length ? <Text type="secondary">{t('noOpenOrders')}</Text> : isMobile ? (
+          <MobileRecordList
+            items={pendingOrders}
+            emptyText={t('noOpenOrders')}
+            renderItem={(row) => (
+              <Card
+                key={row.order_id || `${row.side}-${row.price}-${row.amount}`}
+                size="small"
+                className="dashboard-mobile-card summary-snippet"
+                title={row.side || '-'}
+                extra={<Tag>{row.type || '-'}</Tag>}
+              >
+                <FactGrid
+                  items={[
+                    { label: t('price'), value: <CopyNumber value={row.price} /> },
+                    ...(row.trigger_price > 0 ? [{ label: t('triggerPrice'), value: <CopyNumber value={row.trigger_price} /> }] : []),
+                    { label: t('amount'), value: <CopyNumber value={row.amount} /> },
+                    ...(row.take_profit ? [{ label: 'TP', value: <CopyNumber value={row.take_profit} /> }] : []),
+                    ...(row.stop_loss ? [{ label: 'SL', value: <CopyNumber value={row.stop_loss} /> }] : []),
+                    { label: t('status'), value: row.status || 'OPEN' },
+                    { label: t('reason'), value: row.reason || '-' },
+                    { label: t('orderId'), value: <CopyText value={row.order_id} className="activity-id-value" /> },
+                  ]}
+                />
+              </Card>
+            )}
+          />
+        ) : (
+          <Table
+            size="small"
+            rowKey={(row) => row.order_id || `${row.side}-${row.price}-${row.amount}`}
+            dataSource={pendingOrders}
+            pagination={false}
+            scroll={{ x: compact ? 640 : 1080 }}
+            expandable={compact ? {
+              expandedRowRender: (row) => <FactGrid items={[
+                { label: t('reason'), value: row.reason || '—' },
+                { label: t('orderId'), value: <CopyText value={row.order_id} className="activity-id-value" /> },
+              ]} />,
+              rowExpandable: (row) => Boolean(row.reason || row.order_id),
+            } : undefined}
+            locale={{ emptyText: <Empty description={t('noOpenOrders')} /> }}
+            columns={[
+              { title: t('side'), dataIndex: 'side' },
+              {
+                title: t('type'),
+                dataIndex: 'type',
+                render: (value, row) => (
+                  <Space size={4} wrap>
+                    <Tag>{value || '-'}</Tag>
+                    {row.raw_type && row.raw_type !== value ? <Text type="secondary">{row.raw_type}</Text> : null}
+                  </Space>
+                ),
+              },
+              { title: t('price'), dataIndex: 'price', render: (value) => <CopyNumber value={value} /> },
+              ...(!compact || pendingOrders.some((row) => row.trigger_price > 0) ? [{
+                title: t('triggerPrice'),
+                dataIndex: 'trigger_price',
+                render: (value) => (value > 0 ? <CopyNumber value={value} /> : '-'),
+              }] : []),
+              { title: t('amount'), dataIndex: 'amount', render: (value) => <CopyNumber value={value} /> },
+              ...(!compact || pendingOrders.some((row) => row.take_profit) ? [{ title: 'TP', dataIndex: 'take_profit', render: (value) => (value ? <CopyNumber value={value} /> : '-') }] : []),
+              ...(!compact || pendingOrders.some((row) => row.stop_loss) ? [{ title: 'SL', dataIndex: 'stop_loss', render: (value) => (value ? <CopyNumber value={value} /> : '-') }] : []),
+              { title: t('status'), dataIndex: 'status', render: (value) => value || 'OPEN' },
+              ...(!compact ? [
+              { title: t('reason'), dataIndex: 'reason', width: 220, render: (value) => value || '-' },
+              { title: t('orderId'), dataIndex: 'order_id', render: (value) => <CopyText value={value} className="activity-id-value" /> },
+              ] : []),
+            ]}
+          />
+        )}
+      </Card>
+    </div>
+  );
+
+  const recentOrdersPanel = (
+    <Card className="panel-card" title={t('recentOrders')}>
+      <PaginatedOrderList orders={recentOrders} t={t} />
+    </Card>
+  );
+
+  if (compact) {
+    const urgentExecution = ['QUEUED', 'RUNNING', 'FAILED'].includes(agent.execution?.status);
+    return (
+      <div className="agent-workspace-compact">
+        {urgentExecution && <TaskExecutionPanel execution={agent.execution} locale={locale} />}
+        <Tabs activeKey={activeView} onChange={setActiveView} items={[
+          {
+            key: 'overview', label: locale === 'zh' ? '概览' : 'Overview',
+            children: <div className="agent-view-stack">
+              <TradeReportPanel report={agent.report} summaryOnly onOpenReport={() => setActiveView('report')} />
+              {chartPanel}{positionPanel}{ordersPanel}
+            </div>,
+          },
+          {
+            key: 'report', label: locale === 'zh' ? '运行报告' : 'Run report',
+            children: <div className="agent-view-stack"><TradeReportPanel report={agent.report} />{analysisPanel}</div>,
+          },
+          { key: 'memory', label: t('shortMemories'), children: memoryPanel },
+          {
+            key: 'history', label: locale === 'zh' ? '交易记录' : 'Trade history',
+            children: <div className="agent-view-stack">
+              {authenticated && !spotMode ? <PositionCycleHistory key={agent.config_id} configId={agent.config_id} /> : null}
+              {recentOrdersPanel}
+            </div>,
+          },
+        ]} />
+      </div>
+    );
+  }
+
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Card className="panel-card market-chart-card">
-        <div className="market-chart-toolbar">
-          <div className="market-chart-heading">
-            <Title level={5}>{t('liveWorkspace')}</Title>
-            <Text type="secondary">{displayedChartSymbol || '—'} · {locale === 'zh' ? '当前图表 ' : 'Showing '}<strong>{displayedTimeframe || '—'}</strong></Text>
-          </div>
-          <div className="market-chart-controls">
-            {spotMode && chartSymbols.length > 1 && setChartSymbol ? (
-              <Select
-                aria-label={locale === 'zh' ? '图表标的' : 'Chart symbol'}
-                value={requestedChartSymbol}
-                options={chartSymbols.map((symbol) => ({ value: symbol, label: symbol }))}
-                onChange={setChartSymbol}
-                style={{ minWidth: 140 }}
-              />
-            ) : null}
-            <div ref={timeframeControlsRef} className="market-chart-timeframes" role="group" aria-label={locale === 'zh' ? 'K线周期' : 'Chart interval'}>
-              {timeframeOptions.map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`market-chart-timeframe${value === timeframe ? ' is-active' : ''}`}
-                  aria-pressed={value === timeframe}
-                  onClick={() => setTimeframe(value)}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className={`market-chart-status${chartError && !waitingForChart ? ' is-error' : ''}`} role="status" aria-live="polite" aria-atomic="true">
-          {waitingForChart ? <Spin size="small" /> : null}
-          <span>{chartStatus}</span>
-          {chartError && !waitingForChart ? (
-            <Button type="link" size="small" icon={<ReloadOutlined />} onClick={() => window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'))}>
-              {locale === 'zh' ? '重试' : 'Retry'}
-            </Button>
-          ) : null}
-        </div>
-        <div className="chart-wrap chart-wrap-large" aria-busy={waitingForChart}>
-          <KlineChart payload={kline} chartKey={`${workspace?.agent?.config_id}:${displayedChartSymbol || ''}:${displayedTimeframe || 'unknown'}`} timeframe={displayedTimeframe} />
-        </div>
-      </Card>
-
-
+      {chartPanel}
       <TradeReportPanel report={agent.report} />
-      <Card className="panel-card">
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          <div className="position-header-row">
-            <Space size={8} wrap>
-              <Text strong>{spotMode ? t('spotAccount') : t('positions')}</Text>
-              {spotMode ? <Tag color="gold">SPOT_DCA</Tag> : null}
-              {!spotMode ? <Tag color={independentExits ? 'blue' : 'default'}>{exitModeLabel(exitMode, locale)}</Tag> : null}
-              {!spotMode && !independentExits && authenticated && activePositions.length === 1 ? (
-                <Button size="small" icon={<EditOutlined />} onClick={() => openProtectionModal(activePositions[0])}>
-                  {t('adjustTpSl')}
-                </Button>
-              ) : null}
-            </Space>
-            <div className="position-balance-row">
-              {spotMode ? (
-                <>
-                  <span><Text type="secondary">{t('marketValue')}: </Text><Text>{formatPositionValue(spotStats.market_value)}</Text></span>
-                  <span><Text type="secondary">{t('totalInvested')}: </Text><Text>{formatPositionValue(spotStats.total_invested)}</Text></span>
-                </>
-              ) : (
-                <>
-                  <span><Text type="secondary">{t('marginBalance')}: </Text><Text>{formatPositionValue(getMarginBalance(workspace))}</Text></span>
-                  <span><Text type="secondary">{t('walletBalance')}: </Text><Text>{formatPositionValue(position.balance)}</Text></span>
-                </>
-              )}
-            </div>
-          </div>
-          {spotMode ? (
-            <div className="spot-account-summary">
-              <FactGrid items={buildSpotFacts(t, spotStats, pendingOrders)} />
-              {spotStats.sync_status === 'partial' ? <Alert type="warning" showIcon message={locale === 'zh' ? '部分账户或行情数据未能核验，未知金额显示为 —，请刷新后确认。' : 'Some account or market data could not be verified. Unknown values are shown as —. Refresh to verify.'} /> : null}
-              {spotStats.missing_symbols?.length ? <Alert type="warning" showIcon message={locale === 'zh' ? `部分标的数据不可用：${spotStats.missing_symbols.join(', ')}，组合总额仅含已读取标的。` : `Some symbols are unavailable: ${spotStats.missing_symbols.join(', ')}. Totals include available symbols only.`} /> : null}
-              {spotStats.is_portfolio && spotStats.by_symbol?.length ? (
-                <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 16 }}>
-                  <Text type="secondary">{locale === 'zh' ? '以下按标的列出持仓，数量与均价分别计算；组合总额使用共同计价币。' : 'Holdings, quantities and average costs are calculated per symbol. Portfolio totals use the shared quote currency.'}</Text>
-                  {spotStats.by_symbol.map((asset) => (
-                    <Card size="small" key={asset.symbol} title={asset.symbol}>
-                      <FactGrid items={buildSpotFacts(t, asset)} />
-                    </Card>
-                  ))}
-                  <Text type="secondary">{locale === 'zh' ? '本次运行组合共用额度' : 'Shared allowance per run'}: {formatPositionValue(spotStats.dca_amount_per)} {spotStats.quote_asset || agent.symbol?.split('/')[1] || ''}</Text>
-                </Space>
-              ) : null}
-              {spotStats.last_sync ? (
-                <Text type="secondary" className="spot-account-sync">
-                  {t('lastSync')}: {spotStats.last_sync}
-                </Text>
-              ) : null}
-            </div>
-          ) : activePositions.length === 0 ? (
-            <Text type="secondary">{t('noActivePositions')}</Text>
-          ) : hasDualPosition ? (
-            <div className="dual-position-grid">
-              {activePositions.map((pos, idx) => (
-                <div
-                  key={idx}
-                  className={`position-card-inner ${pos.side === 'SHORT' ? 'position-card-short' : 'position-card-long'}`}
-                >
-                  <div className="position-card-badge">
-                    <Space size={8}>
-                      <Tag color={pos.side === 'SHORT' ? 'red' : 'green'}>{pos.side}</Tag>
-                      {authenticated && !independentExits ? (
-                        <Button size="small" icon={<EditOutlined />} onClick={() => openProtectionModal(pos)}>
-                          {t('adjustTpSl')}
-                        </Button>
-                      ) : null}
-                    </Space>
-                  </div>
-                  <FactGrid items={buildSinglePositionFacts(pos)} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <FactGrid items={buildSinglePositionFacts(activePositions[0])} />
-          )}
-          {!spotMode ? <ExitManagementPanel management={position.exit_management} /> : null}
-        </Space>
-        <Modal
-          open={Boolean(editingProtection)}
-          title={`${t('adjustTpSl')} - ${editingProtection?.side || ''} (${editingProtection?.symbol || agent?.symbol || ''})`}
-          onCancel={() => setEditingProtection(null)}
-          onOk={saveProtection}
-          confirmLoading={protectionSaving}
-          okText={t('save')}
-          cancelText={t('cancel')}
-          destroyOnClose
-        >
-          {editingProtection ? (
-            <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 12 }}>
-              <Alert type="info" showIcon message={t('tpSlNotice')} />
-              <Text type="secondary">作用于同方向整个仓位（含后续加仓）。留空保留原值；仅勾选取消才移除保护。</Text>
-              {editingProtection.protection_error ? <Alert type="error" showIcon message={editingProtection.protection_error} /> : null}
-              <Text type="secondary">最近核验：{editingProtection.protection_verified_at ? new Date(editingProtection.protection_verified_at * 1000).toLocaleString() : '尚未核验'} · {editingProtection.protection_state || '未设置'}</Text>
-              <Descriptions size="small" column={2} bordered>
-                <Descriptions.Item label={t('side')}>
-                  <Tag color={editingProtection.side === 'SHORT' ? 'red' : 'green'}>{editingProtection.side}</Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label={t('entry')}>
-                  {formatPositionValue(editingProtection.entry_price)}
-                </Descriptions.Item>
-                <Descriptions.Item label={t('mark')}>
-                  {formatPositionValue(editingProtection.mark_price)}
-                </Descriptions.Item>
-                <Descriptions.Item label={t('qty')}>
-                  {formatPositionValue(editingProtection.qty || editingProtection.amount || editingProtection.contracts)}
-                </Descriptions.Item>
-              </Descriptions>
-
-              <Form layout="vertical">
-                <Form.Item label={t('takeProfitPrice')}>
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    <InputNumber
-                      style={{ width: '100%' }}
-                      placeholder={t('takeProfitPrice')}
-                      value={clearTp ? null : protectionTp}
-                      onChange={(val) => setProtectionTp(val)}
-                      disabled={clearTp}
-                      min={0.00000001}
-                    />
-                    <Checkbox checked={clearTp} onChange={(e) => setClearTp(e.target.checked)}>
-                      {t('clearTp')}
-                    </Checkbox>
-                  </Space>
-                </Form.Item>
-
-                <Form.Item label={t('stopLossPrice')}>
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    <InputNumber
-                      style={{ width: '100%' }}
-                      placeholder={t('stopLossPrice')}
-                      value={clearSl ? null : protectionSl}
-                      onChange={(val) => setProtectionSl(val)}
-                      disabled={clearSl}
-                      min={0.00000001}
-                    />
-                    <Checkbox checked={clearSl} onChange={(e) => setClearSl(e.target.checked)}>
-                      {t('clearSl')}
-                    </Checkbox>
-                  </Space>
-                </Form.Item>
-              </Form>
-            </Space>
-          ) : null}
-        </Modal>
-      </Card>
-
+      {positionPanel}
       {authenticated && !spotMode ? <PositionCycleHistory key={agent.config_id} configId={agent.config_id} /> : null}
-
-      <Card className="panel-card" title={t('analysis')}>
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          <TaskExecutionPanel execution={agent.execution} locale={locale} />
-          <Descriptions size="small" column={1} bordered>
-            <Descriptions.Item label={t('executedAt')}>{agent.timestamp || '-'}</Descriptions.Item>
-            <Descriptions.Item label={t('nextRun')}>{agent.next_run || '-'} · {agent.schedule?.timezone || ''}</Descriptions.Item>
-          </Descriptions>
-          {!agent.report || agent.report.validation_status === 'invalid' ? <MarkdownBlock content={normalizedAnalysis.content || ''} /> : null}
-          {!historyReasoningDuplicated ? (
-            <ReasoningBlock
-              title={t('reasoning')}
-              content={normalizedAnalysis.reasoning}
-              reasoningTokens={agent.reasoning_tokens || 0}
-            />
-          ) : null}
-          {agent.strategy_logic ? (
-            <details className="content-disclosure strategy-block">
-              <summary>{t('strategyLogic')}</summary>
-              <MarkdownBlock content={agent.strategy_logic} />
-            </details>
-          ) : null}
-        </Space>
-      </Card>
-
-      <Card
-        className="panel-card"
-        title={t('shortMemories')}
-        extra={shortMemories[0] && authenticated ? (
-          <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openMemoryEdit(shortMemories[0])} />
-        ) : null}
-      >
-        {shortMemories[0] ? (() => {
-          const memory = shortMemories[0];
-          return (
-            <details className="content-disclosure">
-              <summary>{memory.window_start || memory.bucket_start} → {memory.window_end || memory.bucket_end}</summary>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <Text type="secondary" className="memory-source-meta">
-                  {locale === 'zh' ? '更新于' : 'Updated'} {memory.created_at} · {locale === 'zh' ? '来源' : 'Sources'} {memory.source_count ?? 0} {memory.version ? ` · v${memory.version}` : ''}
-                </Text>
-                <MarkdownBlock content={memory.market_summary || ''} />
-                {memory.position_summary ? <details className="content-disclosure"><summary>{locale === 'zh' ? '成交事实快照' : 'Execution snapshot'}</summary><MarkdownBlock content={memory.position_summary} /></details> : null}
-              </Space>
-            </details>
-          );
-        })() : (
-          <Empty description={t('noData')} />
-        )}
-        <Modal
-          open={Boolean(editingMemory)}
-          title={t('shortMemories')}
-          onCancel={() => setEditingMemory(null)}
-          onOk={saveMemoryEdit}
-          confirmLoading={memorySaving}
-          okText={t('save')}
-          cancelText={t('cancel')}
-          width={640}
-        >
-          {editingMemory ? (
-            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-              <Text type="secondary">{editingMemory.window_start || editingMemory.bucket_start} — {editingMemory.window_end || editingMemory.bucket_end}</Text>
-              <TextArea rows={10} value={memoryEditText} onChange={(e) => setMemoryEditText(e.target.value)} />
-            </Space>
-          ) : null}
-        </Modal>
-      </Card>
-
-      <div className="workspace-grid">
-        <Card className="panel-card" title={`${t('pendingOrders')} · ${displayedChartSymbol || ''}`}>
-          {isMobile ? (
-            <MobileRecordList
-              items={pendingOrders}
-              emptyText={t('noOpenOrders')}
-              renderItem={(row) => (
-                <Card
-                  key={row.order_id || `${row.side}-${row.price}-${row.amount}`}
-                  size="small"
-                  className="dashboard-mobile-card summary-snippet"
-                  title={row.side || '-'}
-                  extra={<Tag>{row.type || '-'}</Tag>}
-                >
-                  <FactGrid
-                    items={[
-                      { label: t('price'), value: <CopyNumber value={row.price} /> },
-                      ...(row.trigger_price > 0 ? [{ label: t('triggerPrice'), value: <CopyNumber value={row.trigger_price} /> }] : []),
-                      { label: t('amount'), value: <CopyNumber value={row.amount} /> },
-                      ...(row.take_profit ? [{ label: 'TP', value: <CopyNumber value={row.take_profit} /> }] : []),
-                      ...(row.stop_loss ? [{ label: 'SL', value: <CopyNumber value={row.stop_loss} /> }] : []),
-                      { label: t('status'), value: row.status || 'OPEN' },
-                      { label: t('reason'), value: row.reason || '-' },
-                      { label: t('orderId'), value: <CopyText value={row.order_id} className="activity-id-value" /> },
-                    ]}
-                  />
-                </Card>
-              )}
-            />
-          ) : (
-            <Table
-              size="small"
-              rowKey={(row) => row.order_id || `${row.side}-${row.price}-${row.amount}`}
-              dataSource={pendingOrders}
-              pagination={false}
-              scroll={{ x: 1080 }}
-              locale={{ emptyText: <Empty description={t('noOpenOrders')} /> }}
-              columns={[
-                { title: t('side'), dataIndex: 'side' },
-                {
-                  title: t('type'),
-                  dataIndex: 'type',
-                  render: (value, row) => (
-                    <Space size={4} wrap>
-                      <Tag>{value || '-'}</Tag>
-                      {row.raw_type ? <Text type="secondary">{row.raw_type}</Text> : null}
-                    </Space>
-                  ),
-                },
-                { title: t('price'), dataIndex: 'price', render: (value) => <CopyNumber value={value} /> },
-                {
-                  title: t('triggerPrice'),
-                  dataIndex: 'trigger_price',
-                  render: (value) => (value > 0 ? <CopyNumber value={value} /> : '-'),
-                },
-                { title: t('amount'), dataIndex: 'amount', render: (value) => <CopyNumber value={value} /> },
-                { title: 'TP', dataIndex: 'take_profit', render: (value) => (value ? <CopyNumber value={value} /> : '-') },
-                { title: 'SL', dataIndex: 'stop_loss', render: (value) => (value ? <CopyNumber value={value} /> : '-') },
-                { title: t('status'), dataIndex: 'status', render: (value) => value || 'OPEN' },
-                { title: t('reason'), dataIndex: 'reason', width: 220, render: (value) => value || '-' },
-                { title: t('orderId'), dataIndex: 'order_id', render: (value) => <CopyText value={value} className="activity-id-value" /> },
-              ]}
-            />
-          )}
-        </Card>
-      </div>
-
-      <Card className="panel-card" title={t('recentOrders')}>
-        <PaginatedOrderList orders={recentOrders} t={t} />
-      </Card>
-
+      {analysisPanel}{memoryPanel}{ordersPanel}{recentOrdersPanel}
     </Space>
   );
 }
@@ -994,7 +1050,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
             </>
           ) : null}
         </Space>
-        {authenticated ? <Text type="secondary">{locale === 'zh' ? '每次运行后结合前 4 小时摘要更新短期记忆。选择任务可手动整理，规则改动以回执为准。' : 'Memory refreshes after each run using the previous four hours. Select a task to refresh manually; rule changes require confirmed receipts.'}</Text> : null}
+        {authenticated ? <Text type="secondary">{locale === 'zh' ? '每次运行后结合前 4 小时摘要更新短期记忆，选择任务可手动整理。' : 'Memory refreshes after each run using the previous four hours. Select a task to refresh manually.'}</Text> : null}
         {authenticated && reviewResult ? <Alert type={reviewResult.type} showIcon title={`${reviewResult.configId} · ${reviewResult.title}`} description={<Space direction="vertical" style={{ width: '100%' }}>{reviewResult.error ? <Text>{reviewResult.error}</Text> : null}{reviewResult.receipts.length ? <details><summary>{locale === 'zh' ? '规则工具回执' : 'Rule tool receipts'} ({reviewResult.receipts.length})</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 300, overflow: 'auto', fontSize: 12 }}>{JSON.stringify(reviewResult.receipts, null, 2)}</pre></details> : null}</Space>} /> : null}
         <Table
           size="small"

@@ -52,7 +52,7 @@ function PublicShell({ authenticated, onLogout }) {
 
   const activeKey = items.find((item) => item.key === location.pathname)?.key || '/';
 
-  const dashboardRefresh = ['/', '/agents'].includes(activeKey) ? (
+  const dashboardRefresh = activeKey === '/' ? (
     <Button
       size="small"
       icon={<ReloadOutlined />}

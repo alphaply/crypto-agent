@@ -1,13 +1,17 @@
 import React from 'react';
-import { Alert, Card, Space, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Space, Tag, Typography } from 'antd';
 import MarkdownBlock from './MarkdownBlock';
 import { usePreferences } from '../app/usePreferences';
-export default function TradeReportPanel({ report }) {
+export default function TradeReportPanel({ report, summaryOnly = false, onOpenReport }) {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
   if (!report) return null;
   const decision = report.decision || {};
   const labels = { BUY: '买入', SELL: '卖出', HOLD: '观望', CLOSE: '平仓', MANAGE: '管理持仓' };
+  if (summaryOnly) return <Card className="panel-card agent-decision-summary" size="small">
+    <div className="agent-decision-heading"><Space wrap><Typography.Text strong>{zh ? '最近决策' : 'Latest decision'}</Typography.Text>{decision.action && <Tag color={decision.action === 'HOLD' ? 'default' : 'blue'}>{zh ? labels[decision.action] || decision.action : decision.action}</Tag>}</Space><Button type="link" size="small" onClick={onOpenReport}>{zh ? '查看完整报告' : 'Full report'}</Button></div>
+    {report.validation_status === 'invalid' ? <Alert type="warning" showIcon title={zh ? '报告格式未通过校验，请查看运行原文。' : 'Report validation failed. Review the original output.'} /> : <MarkdownBlock content={decision.rationale || report.strategy || (zh ? '本轮未提供决策摘要。' : 'No decision summary for this run.')} />}
+  </Card>;
   return <Card className="panel-card trade-report" title={zh ? '运行报告' : 'Run report'} extra={<Tag color={decision.action === 'HOLD' ? 'default' : 'blue'}>{zh ? labels[decision.action] || decision.action : decision.action}</Tag>}>
     {report.validation_status === 'invalid' && <Alert type="warning" showIcon title={zh ? '报告格式未通过校验，请查看本次运行原文。' : 'Report validation failed. Review the original run output.'} />}
     <div className="trade-report-grid">

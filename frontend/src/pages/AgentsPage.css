@@ -1,7 +1,16 @@
 .agents-page { display: grid; gap: 20px; }
-.agents-heading, .agent-detail-heading { display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
-.agents-heading h2, .agent-detail-heading h3 { margin: 5px 0 10px; }
+.agent-detail-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.agent-overview-header { padding: 20px 24px 8px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-surface); min-width: 0; }
+.agent-detail-identity { min-width: 0; flex: 1 1 320px; }
+.agent-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.agent-title-row h2.ant-typography { margin: 0; font-size: 24px; overflow-wrap: anywhere; }
+.agent-detail-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--text-muted); font-size: 12px; margin-top: 8px; overflow-wrap: anywhere; }
+.agent-heading-actions { flex-shrink: 0; }
+.agents-page .dashboard-schedules.is-compact .dashboard-schedule { padding: 0; border: 0; background: transparent; }
+.agent-schedule-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; color: var(--text-muted); }
+.agent-schedule-link { color: var(--accent); }
 .agents-layout { display: grid; grid-template-columns: 264px minmax(0, 1fr); align-items: start; gap: 24px; }
+.agents-layout.is-single { grid-template-columns: minmax(0, 1fr); }
 .agent-directory { position: sticky; top: 84px; display: grid; gap: 12px; }
 .agent-directory-list { max-height: calc(100vh - 245px); overflow: auto; display: grid; gap: 10px; padding: 2px; }
 .agent-directory-item { display: flex; flex-direction: column; gap: 10px; padding: 16px; text-align: left; border: 1px solid var(--border-color, #dce1e8); border-radius: 12px; color: inherit; background: transparent; cursor: pointer; min-width: 0; }
@@ -13,10 +22,23 @@
 .agent-directory-item small { opacity: .6; }
 .agent-directory-item .ant-tag { margin-bottom: 4px; }
 .agent-detail { min-width: 0; display: grid; gap: 18px; }
+.agent-workspace-compact, .agent-view-stack { display: grid; gap: 16px; min-width: 0; }
+.agent-workspace-compact > .ant-tabs { min-width: 0; }
+.agent-workspace-compact .ant-tabs-nav { margin-bottom: 16px; }
+.agent-decision-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.agent-decision-summary .markdown-block > :last-child { margin-bottom: 0; }
+.agent-workspace-compact .market-chart-toolbar { margin-bottom: 12px; }
+.agent-workspace-compact .chart-wrap-large { height: 360px; }
+.agent-workspace-compact .workspace-grid { grid-template-columns: minmax(0, 1fr); }
+.agent-workspace-compact .dashboard-fact-grid { grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); }
+.agent-workspace-compact .dashboard-fact-item { min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 1100px) { .agents-layout { grid-template-columns: 220px minmax(0, 1fr); gap: 16px; } }
 @media (max-width: 800px) {
   .agents-layout { grid-template-columns: minmax(0, 1fr); }
   .agent-directory { position: static; }
   .agent-directory-list { display: flex; overflow-x: auto; max-height: 225px; padding-bottom: 8px; }
   .agent-directory-item { flex: 0 0 225px; }
+  .agent-overview-header { padding: 16px 16px 4px; }
+  .agent-title-row h2.ant-typography { font-size: 20px; }
+  .agent-workspace-compact .chart-wrap-large { height: 300px; }
 }

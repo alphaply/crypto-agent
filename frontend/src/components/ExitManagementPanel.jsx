@@ -2,7 +2,7 @@ import { Alert, Empty, Space, Table, Tag, Typography } from 'antd';
 import { usePreferences } from '../app/usePreferences';
 import { formatExitNumber } from '../lib/exitManagement';
 
-export default function ExitManagementPanel({ management }) {
+export default function ExitManagementPanel({ management, hideEmpty = false }) {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
   if (!management || management.mode !== 'independent_exits') return null;
@@ -12,6 +12,9 @@ export default function ExitManagementPanel({ management }) {
     : { market: 'Market exit', take_profit_limit: 'Limit take profit', stop_market: 'Stop market' };
   const uncovered = ['LONG', 'SHORT'].map((side) => ({ side, amount: management.error ? null : management.uncovered?.[side] }));
   const hasUncovered = uncovered.some(({ amount }) => Number(amount) > 0);
+  // Hide only confirmed zero exposure; unknown coverage and pending/error states stay visible.
+  if (hideEmpty && !exits.length && !management.error && !management.pending
+      && uncovered.every(({ amount }) => amount !== null && amount !== undefined && Number(amount) === 0)) return null;
   return (
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
       {management.error ? <Alert type="error" showIcon title={management.error} /> : null}

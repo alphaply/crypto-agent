@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Empty, Input, Segmented, Skeleton, Space, Tag, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { WorkspacePanel } from '../components/AgentWorkspace';
 import ScheduleDetails from '../components/ScheduleDetails';
 import { useDashboardSnapshot } from '../hooks/useDashboardSnapshot';
@@ -22,7 +22,6 @@ export default function AgentsPage() {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
   const navigate = useNavigate();
-  const location = useLocation();
   const [params, setParams] = useSearchParams();
   const { dashboard, loading, error, refresh, revision, marketRefresh } = useDashboardSnapshot();
   const [timeframe, setTimeframe] = useChartTimeframe();
@@ -63,28 +62,32 @@ export default function AgentsPage() {
   const running = agents.filter((item) => ['RUNNING', 'QUEUED'].includes(item.execution?.status)).length;
   const authenticated = Boolean(localStorage.getItem('crypto-agent-token'));
   return <div className="boxed-page dashboard-page dashboard-v2 agents-page">
-    <section className="agents-heading">
-      <div><div className="dashboard-eyebrow">AGENT WORKSPACE</div><Typography.Title level={2}>{zh ? 'Agent 运行' : 'Agent activity'}</Typography.Title><Typography.Text type="secondary">{zh ? `${agents.length} 个任务 · ${running} 个进行中 · 选择任务查看入选标的与运行结果` : `${agents.length} agents · ${running} active · Select an agent to inspect its markets and execution`}</Typography.Text></div>
-      <Space wrap><Button icon={<ReloadOutlined />} loading={loading || workspaceLoading} onClick={refresh}>{zh ? '刷新' : 'Refresh'}</Button><Button icon={<SettingOutlined />} onClick={() => navigate('/console/config')}>{zh ? '管理任务' : 'Manage agents'}</Button></Space>
-    </section>
-    {error && <Alert type="warning" showIcon title={error} />}
-    {loading && !dashboard ? <Card><Skeleton active /></Card> : !agents.length ? <Card><Empty description={zh ? '尚未配置 Agent' : 'No agents configured'}><Button type="primary" onClick={() => navigate('/console/config')}>{zh ? '创建任务' : 'Create an agent'}</Button></Empty></Card> : <div className="agents-layout">
-      <aside className="agent-directory" aria-label={zh ? 'Agent 列表' : 'Agent list'}>
+    {error && <Alert type="warning" showIcon title={error} action={<Button onClick={refresh} loading={loading}>{zh ? '重试' : 'Retry'}</Button>} />}
+    {loading && !dashboard ? <Card><Skeleton active /></Card> : !agents.length ? <Card><Empty description={zh ? '尚未配置 Agent' : 'No agents configured'}><Button type="primary" onClick={() => navigate('/console/config')}>{zh ? '创建任务' : 'Create an agent'}</Button></Empty></Card> : <div className={`agents-layout${agents.length === 1 ? ' is-single' : ''}`}>
+      {agents.length > 1 && <aside className="agent-directory" aria-label={zh ? 'Agent 列表' : 'Agent list'}>
+        <Typography.Text type="secondary">{zh ? `${agents.length} 个任务 · ${running} 个进行中` : `${agents.length} agents · ${running} active`}</Typography.Text>
         <Input allowClear prefix={<SearchOutlined />} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={zh ? '搜索任务、标的或模型' : 'Search agents, symbols or models'} aria-label={zh ? '搜索 Agent' : 'Search agents'} />
         <Segmented block value={filter} onChange={setFilter} options={[{ value: 'all', label: zh ? '全部' : 'All' }, { value: 'active', label: zh ? '运行中' : 'Active' }, { value: 'enabled', label: zh ? '已启用' : 'Enabled' }]} />
         <div className="agent-directory-list">{visibleAgents.length ? visibleAgents.map((item) => <button type="button" className={`agent-directory-item${item.config_id === activeId ? ' is-selected' : ''}`} key={item.config_id} aria-pressed={item.config_id === activeId} onClick={() => selectAgent(item.config_id)}>
-          <span className="agent-directory-title">{item.display_name || item.title || item.config_id}</span><span><AgentStatus agent={item} zh={zh} /><Tag>{item.mode}</Tag></span><span className="agent-directory-symbols">{(item.symbols || [item.symbol]).filter(Boolean).join(' · ')}</span><small>{zh ? '下次 ' : 'Next '}{item.next_run || '—'}</small>
+          <span className="agent-directory-title">{item.display_name || item.title || item.config_id}</span><span><AgentStatus agent={item} zh={zh} /></span><span className="agent-directory-symbols">{(item.symbols || [item.symbol]).filter(Boolean).join(' · ')}</span>
         </button>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={zh ? '没有匹配的任务' : 'No matching agents'} />}</div>
-      </aside>
+      </aside>}
       <section className="agent-detail" aria-label={zh ? 'Agent 详情' : 'Agent details'}>
         {agent && <>
-          <div className="agent-detail-heading"><div><Typography.Title level={3}>{agent.display_name || agent.title || activeId}</Typography.Title><Typography.Text type="secondary">{agent.model || '—'} · {agent.config_id}</Typography.Text></div><Space wrap><AgentStatus agent={agent} zh={zh} /><Tag>{agent.mode}</Tag></Space></div>
-          <ScheduleDetails agents={[agent]} activeTab={activeId} locale={locale} />
+          <header className="agent-overview-header">
+            <div className="agent-detail-heading">
+              <div className="agent-detail-identity">
+                <div className="agent-title-row"><Typography.Title level={2}>{agent.display_name || agent.title || activeId}</Typography.Title><AgentStatus agent={agent} zh={zh} /></div>
+                <div className="agent-detail-meta"><span>{agent.model || '—'}</span><span>{({ REAL: zh ? '合约实盘' : 'Live futures', SPOT_DCA: zh ? '现货' : 'Spot', STRATEGY: zh ? '策略分析' : 'Analysis' })[agent.mode] || agent.mode}</span>{agent.timestamp && <span>{zh ? '最近运行 ' : 'Last run '}{agent.timestamp}</span>}</div>
+              </div>
+              <Space className="agent-heading-actions"><Button icon={<ReloadOutlined />} loading={loading || workspaceLoading} onClick={refresh}>{zh ? '刷新' : 'Refresh'}</Button><Button icon={<SettingOutlined />} onClick={() => navigate('/console/config')}>{zh ? '管理任务' : 'Manage agents'}</Button></Space>
+            </div>
+            <ScheduleDetails agents={[agent]} activeTab={activeId} locale={locale} compact />
+          </header>
           {workspaceError && <Alert type="warning" showIcon title={zh ? '持仓或行情未能更新' : 'Unable to update positions or markets'} description={workspaceError} action={<Button onClick={refresh}>{zh ? '重试' : 'Retry'}</Button>} />}
-          {workspace ? <WorkspacePanel key={activeId} workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} chartLoading={workspaceLoading} chartError={Boolean(workspaceError)} chartSymbol={chartSymbol} setChartSymbol={(symbol) => setChartSymbols((previous) => ({ ...previous, [activeId]: symbol }))} /> : <Card><Skeleton active loading={workspaceLoading}><Empty description={zh ? '行情暂时不可用，请重试。' : 'Market data unavailable. Please retry.'} /></Skeleton></Card>}
+          {workspace ? <WorkspacePanel key={activeId} compact workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} chartLoading={workspaceLoading} chartError={Boolean(workspaceError)} chartSymbol={chartSymbol} setChartSymbol={(symbol) => setChartSymbols((previous) => ({ ...previous, [activeId]: symbol }))} /> : <Card><Skeleton active loading={workspaceLoading}><Empty description={zh ? '行情暂时不可用，请重试。' : 'Market data unavailable. Please retry.'} /></Skeleton></Card>}
         </>}
       </section>
     </div>}
-    {location.pathname.startsWith('/console') && <Typography.Text type="secondary">{zh ? '此页面与公开 Agent 页面展示相同的运行数据。' : 'This workspace shares its runtime data with the public Agents page.'}</Typography.Text>}
   </div>;
 }
