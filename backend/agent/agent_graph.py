@@ -592,7 +592,7 @@ def _memory_evidence_fallback(evidence: str) -> str:
 
 
 def _run_memory_organizer(source: str, agent_config: dict, *, operation_id: str, previous: str) -> str:
-    """Only the memory agent can review evidence and write trading rules."""
+    """Consolidate short-term memory; automatic rule maintenance is suspended."""
     from backend.agent.memory_agent import run_memory_review
 
     stored = get_review_result(operation_id)

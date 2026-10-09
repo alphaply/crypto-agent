@@ -2225,7 +2225,7 @@ export default function AdminPage() {
                   </div>
                   <div className="form-field">
                     <label>{t('shortMemoryPrompt')}</label>
-                    <Text type="secondary">{locale === 'zh' ? '用于记忆整理和规则复盘。复盘权限、人工锁定保护和输出格式由系统提供；这里补充你的整理偏好。' : 'Used for memory consolidation and rule review. The system supplies permissions, human-lock protection and output format; add your review preferences here.'}</Text>
+                    <Text type="secondary">{locale === 'zh' ? '仅整理短期动态 memory，正常一次模型调用，不调用规则工具、不自动维护 rule。这里补充记忆整理偏好。' : 'Consolidates short-term memory in one normal model call. Rule tools and automatic rule maintenance are disabled. Add your memory preferences here.'}</Text>
                     <PromptEditor
                       value={editingTask.short_memory_prompt || editingTask.summarizer?.short_memory_prompt || ''}
                       onChange={(v) => { updateEditingTask('short_memory_prompt', v); updateEditingTaskSummarizer('short_memory_prompt', v); }}

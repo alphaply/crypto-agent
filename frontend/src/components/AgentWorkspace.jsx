@@ -931,7 +931,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
         : status === 'unchanged'
           ? { type: 'info', title: zh ? '本窗口无新增证据，沿用已有记忆。' : 'No new evidence for this window. Existing memory is retained.' }
           : status === 'completed' && data.generated
-            ? { type: 'success', title: zh ? '复盘与记忆整理已完成。规则是否修改请以工具回执为准。' : 'Review and memory consolidation completed. Tool receipts show whether any rules changed.' }
+            ? { type: 'success', title: zh ? '短期动态记忆已更新。' : 'Short-term memory updated.' }
             : { type: 'error', title: zh ? '复盘未完成，未生成新记忆。' : 'Review did not complete; no new memory was generated.' };
       setReviewResult({ ...result, configId, error: data.error || '', receipts: data.rule_receipts || [] });
     } catch (err) {

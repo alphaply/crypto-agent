@@ -30,7 +30,7 @@ export default function AgentRunsPanel({ agents = [] }) {
   const purposeLabels = {
     decision: zh ? '交易决策' : 'Trading decision',
     strategy_summary: zh ? '单轮策略压缩' : 'Per-round strategy summary',
-    memory_review: zh ? '记忆整理与复盘' : 'Memory and review',
+    memory_review: zh ? '短期动态记忆' : 'Short-term memory',
     daily_summary: zh ? '日内归档' : 'Daily summary',
     chat: zh ? '聊天' : 'Chat',
     chat_summary: zh ? '聊天上下文压缩' : 'Chat compaction',

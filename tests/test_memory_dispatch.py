@@ -64,11 +64,7 @@ def test_latest_memory_uses_coverage_end_not_bucket_start(local_db):
     assert agent_graph.format_short_memory_for_llm('cfg') == 'completed batch'
 
 
-def test_lost_lease_rejects_memory_and_rule_writes(local_db, monkeypatch):
-    from backend.agent import memory_agent
-    from backend.agent.rule_tools import ManageTradingRulesSchema
-    apply = Mock(side_effect=AssertionError('Lost lease must not write rules'))
-    monkeypatch.setattr(memory_agent.manage_trading_rules, 'func', apply)
+def test_lost_lease_rejects_memory_writes(local_db, monkeypatch):
     with memory_review_lease('cfg') as acquired:
         assert acquired
         with database.get_db_conn() as conn:
@@ -76,7 +72,4 @@ def test_lost_lease_rejects_memory_and_rule_writes(local_db, monkeypatch):
             conn.commit()
         with pytest.raises(RuntimeError, match='租约'):
             agent_graph.save_short_memory('2026-10-06 00:00:00', '2026-10-06 04:00:00', 'ETH/USDT', 'cfg', 'stale', '', 1)
-        with pytest.raises(RuntimeError, match='租约'):
-            memory_agent._tool_result(ManageTradingRulesSchema(action='apply'), 'cfg', 'ETH/USDT', 'review-1')
     assert database.get_short_memories('cfg') == []
-    apply.assert_not_called()

@@ -99,6 +99,11 @@ def test_memory_per_run_four_hours_retry_and_idempotence(isolated, monkeypatch):
     monkeypatch.setattr(agent_graph, 'run_agent_for_config', lambda *_: pytest.fail('memory retry must not trade'))
     assert not process_memory_update('cfg', 'run-1', {'symbol': 'BTC/USDT'})
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'prior-memory'
+    assert not process_memory_update('cfg', 'run-1', {'symbol': 'BTC/USDT'})
+    assert len(seen) == 1
+    with database.get_db_conn() as conn:
+        conn.execute("UPDATE memory_update_jobs SET next_attempt=0 WHERE config_id='cfg' AND run_id='run-1'")
+        conn.commit()
     assert process_memory_update('cfg', 'run-1', {'symbol': 'BTC/USDT'})
     assert process_memory_update('cfg', 'run-1', {'symbol': 'BTC/USDT'})
     assert len(seen) == 2

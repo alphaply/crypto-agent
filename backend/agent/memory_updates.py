@@ -15,6 +15,7 @@ logger = setup_logger('RunMemory')
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='run-memory')
 _guard = threading.Lock()
 _active = {}
+MAX_JOB_ATTEMPTS = 3
 
 
 def _initialize(conn):
@@ -44,8 +45,10 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
             _initialize(conn)
             job = conn.execute('SELECT * FROM memory_update_jobs WHERE config_id=? AND run_id=?',
                                (config_id, run_id)).fetchone()
-            if not job or job['status'] == 'completed':
-                return bool(job)
+            if not job or job['status'] != 'pending':
+                return bool(job and job['status'] == 'completed')
+            if job['next_attempt'] > time.time():
+                return False
             row = conn.execute('SELECT id,timestamp FROM summaries WHERE id=? AND config_id=?',
                                (job['summary_id'], config_id)).fetchone()
             if not row:
@@ -94,12 +97,16 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
         except Exception as exc:
             from backend.agent.memory_workflow import get_review_result
             prior = get_review_result('run-memory:' + run_id)
-            status = 'partial' if prior and prior.get('status') == 'partial' else 'pending'
+            attempts = job['attempts'] + 1
+            if prior and prior.get('status') == 'partial':
+                status = 'partial'
+            else:
+                status = 'failed' if attempts >= MAX_JOB_ATTEMPTS else 'pending'
             with database.get_db_conn() as conn:
                 conn.execute("UPDATE memory_update_jobs SET status=?,attempts=attempts+1,next_attempt=?,error=? WHERE config_id=? AND run_id=?",
-                             (status, time.time() + 60, str(exc), config_id, run_id))
+                             (status, time.time() + 60 * 5 ** min(attempts - 1, 2), str(exc), config_id, run_id))
                 conn.commit()
-            logger.warning('Memory update pending for %s: %s', run_id, exc)
+            logger.warning('Memory update %s for %s (attempt %s/%s): %s', status, run_id, attempts, MAX_JOB_ATTEMPTS, exc)
             return False
 
 

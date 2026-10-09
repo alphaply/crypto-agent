@@ -1,12 +1,11 @@
 import json
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from backend import database, database_rules as rules
 from backend.agent import memory_agent as memory
 from backend.app.services import trading_rules_service as service
-from backend.utils.trade_operations import current_operation_id
 
 
 CONFIG = {"config_id": "cfg", "symbol": "BTC/USDT", "model": "mock-model", "api_key": "mock-key"}
@@ -54,8 +53,7 @@ def model(monkeypatch, *responses):
             self.settings = {}
 
         def bind_tools(self, toolset):
-            self.tools = toolset
-            return self
+            raise AssertionError("Memory must not bind any tools")
 
         def invoke(self, messages):
             self.calls.append(list(messages))
@@ -74,18 +72,18 @@ def model(monkeypatch, *responses):
     return fake
 
 
-def test_no_change_one_call_full_rules_and_cost(environment, monkeypatch):
+def test_memory_only_one_call_no_rules_and_cost(environment, monkeypatch):
     locked = rules.change_trading_rules("cfg", [{"action": "add", "content": "人工规则"}], actor="human")[0]
     disabled = rules.change_trading_rules("cfg", [{"action": "add", "content": "停用规则", "enabled": False}], actor="model")[0]
     fake = model(monkeypatch, final())
     result = memory.run_memory_review(SOURCE, CONFIG, operation_id="window1")
     assert result.status == "completed" and result.error == ""
-    assert "规则复盘：证据不足" in result.summary
-    assert len(fake.calls) == 1 and [tool.name for tool in fake.tools] == ["manage_trading_rules"]
+    assert result.summary == "样本不足；保留待确认条件。"
+    assert len(fake.calls) == 1 and fake.tools == [] and result.rule_receipts == []
     supplied = fake.calls[0][-1].content
     assert SOURCE in supplied
-    assert locked["rule_id"] in supplied and disabled["rule_id"] in supplied
-    assert '"locked": true' in supplied and '"enabled": false' in supplied
+    assert locked["rule_id"] not in supplied and disabled["rule_id"] not in supplied
+    assert "当前完整规则" not in supplied
     assert environment == [{"symbol": "BTC/USDT", "config_id": "cfg", "model": "mock-model", "prompt_tokens": 12, "completion_tokens": 8}]
 
 
@@ -103,7 +101,7 @@ def test_unknown_trade_tool_rejected_before_any_write(environment, monkeypatch):
     response.tool_calls.append({"name": "place_order", "args": {}, "id": "trade1"})
     fake = model(monkeypatch, response)
     result = memory.run_memory_review(SOURCE, CONFIG, operation_id="trade")
-    assert result.status == "failed" and "not authorized" in result.error
+    assert result.status == "failed" and "disabled" in result.error
     assert rules.list_trading_rules("cfg") == [] and len(fake.calls) == 1
 
 
@@ -124,86 +122,16 @@ def test_cross_task_rule_and_human_lock_are_preserved(environment, monkeypatch):
     assert rules.list_trading_rules("other") == [other]
 
 
-def test_apply_receipt_stable_id_and_atomic_version_checks(environment, monkeypatch):
-    outer = current_operation_id.set("outer")
-    try:
-        for _ in range(2):
-            fake = model(monkeypatch, call("apply", [add_change()]), final(conclusion="更新"))
-            result = memory.run_memory_review(SOURCE, CONFIG, operation_id="same-window")
-            assert result.status == "completed" and len(result.rule_receipts) == 1
-            assert result.rule_receipts[0]["operation_id"] == "same-window:rules"
-            assert isinstance(fake.calls[1][-1], ToolMessage)
-        assert current_operation_id.get() == "outer"
-    finally:
-        current_operation_id.reset(outer)
-    saved = rules.list_trading_rules("cfg")
-    assert len(saved) == 1
-    model(monkeypatch, call("apply", [add_change(), {"action": "disable", "rule_id": saved[0]["rule_id"], "expected_revision": 99, "reason": "T1/T2"}]))
-    failed = memory.run_memory_review(SOURCE, CONFIG, operation_id="stale")
-    assert failed.status == "failed" and not failed.rule_receipts
-    assert rules.list_trading_rules("cfg") == saved
-
-
-def test_successful_apply_then_model_failure_preserves_receipt(environment, monkeypatch):
-    fake = model(monkeypatch, call("apply", [add_change()]), RuntimeError("model offline"))
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="partial")
-    assert result.status == "partial" and result.summary == "" and "offline" in result.error
-    assert len(result.rule_receipts) == len(rules.list_trading_rules("cfg")) == 1
-    assert len(fake.calls) == 2
-
-
-def test_two_apply_calls_rejected_without_partial_write(environment, monkeypatch):
-    response = call("apply", [add_change()])
-    response.tool_calls.append({**response.tool_calls[0], "id": "tool2"})
-    model(monkeypatch, response)
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="double")
-    assert result.status == "failed" and "one apply" in result.error
-    assert rules.list_trading_rules("cfg") == []
-
-
-def test_later_second_apply_cannot_mutate_again(environment, monkeypatch):
-    fake = model(monkeypatch, call("apply", [add_change()]), call("apply", [add_change()]))
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="double-round")
-    assert result.status == "partial" and not result.summary and "one apply" in result.error
-    assert len(rules.list_trading_rules("cfg")) == 1 and len(fake.calls) == 2
-
-
-def test_repeated_list_has_hard_model_budget(environment, monkeypatch):
-    fake = model(monkeypatch, call(), call(), call())
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="loop")
-    assert result.status == "failed" and not result.summary and len(fake.calls) == 3
-
-
-def test_final_update_without_receipt_is_rejected(environment, monkeypatch):
-    model(monkeypatch, final(conclusion="更新"))
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="lie")
-    assert result.status == "failed" and not result.summary and "without" in result.error
-
-
-def test_long_memory_and_reason_are_preserved_with_full_custom_template_evidence(environment, monkeypatch):
+def test_long_memory_preserves_evidence_and_ignores_legacy_rule_reason(environment, monkeypatch):
     summary = "正文开头\n" + "长记忆；" * 4000 + "\n正文末尾：必须等日线收盘确认。"
     reason = "完整理由\n" + "证据交易ID与时间；" * 100 + "\n理由末尾T-last。"
     source = SOURCE + "\n" + "完整证据；" * 4000 + "\n证据末尾。"
     fake = model(monkeypatch, final(summary=summary, reason=reason))
     result = memory.run_memory_review(source, {**CONFIG, "summarizer": {"short_memory_prompt": "自定义整理格式"}}, operation_id="long")
     assert result.status == "completed"
-    assert result.summary == f"{summary}\n规则复盘：证据不足。{reason}\n程序回执：本轮未修改长期规则。"
+    assert result.summary == summary
     assert source in fake.calls[0][-1].content and "自定义整理格式" in fake.calls[0][-1].content
-    assert "人工锁定" in fake.calls[0][0].content
-
-
-def test_every_applied_rule_version_is_present_in_memory(environment, monkeypatch):
-    changes = [
-        {**add_change(), "content": f"规则{index}：确认到达后才允许入场。"}
-        for index in range(7)
-    ]
-    model(monkeypatch, call("apply", changes), final(conclusion="更新"))
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="many-rules")
-    assert result.status == "completed"
-    applied = result.rule_receipts[0]["rules"]
-    assert len(applied) == 7
-    for rule in applied:
-        assert f"{rule['rule_id']} v{rule['revision']}" in result.summary
+    assert "长期规则自动维护已暂停" in fake.calls[0][0].content
 
 
 def test_model_fallback_and_custom_file(environment, monkeypatch, tmp_path):
@@ -277,7 +205,7 @@ def test_memory_prompt_file_precedence_matches_strategy_summary(
         assert marker not in supplied
 
 
-def test_actual_audit_includes_input_tools_raw_output_and_receipts(environment, monkeypatch):
+def test_actual_audit_includes_input_raw_output_and_no_rule_tools(environment, monkeypatch):
     from backend import database_agent_runs as audit
 
     monkeypatch.setattr(memory, "_start_audit", START_AUDIT)
@@ -286,17 +214,17 @@ def test_actual_audit_includes_input_tools_raw_output_and_receipts(environment, 
     reason = "理由开头：" + "证据引用。" * 100 + "理由末尾。"
     source = SOURCE + "\n" + "完整来源。" * 2000 + "来源末尾。"
     response = final(summary=summary, reason=reason, conclusion="更新")
-    model(monkeypatch, call("apply", [add_change()]), response)
+    model(monkeypatch, response)
     result = memory.run_memory_review(source, CONFIG, operation_id="audit-window")
     assert result.status == "completed"
     runs = audit.list_agent_runs(config_id="cfg", purpose="memory_review")["runs"]
-    assert len(runs) == 2 and all(run["status"] == "success" for run in runs)
+    assert len(runs) == 1 and all(run["status"] == "success" for run in runs)
     latest = audit.get_agent_run(runs[0]["run_id"])
     assert latest["output"] == response.content
     assert latest["details"]["memory_summary"] == result.summary
-    assert summary in result.summary and reason in result.summary
+    assert result.summary == summary and reason not in result.summary
     assert latest["details"]["rule_receipts"] == result.rule_receipts
-    assert latest["tools"][0]["function"]["name"] == "manage_trading_rules"
+    assert latest["tools"] == []
     assert source in latest["messages"][1]["content"]
 
 
@@ -328,23 +256,6 @@ def test_provider_retries_share_the_three_call_budget(environment, monkeypatch):
     assert result.status == "failed" and "budget" in result.error and len(fake.calls) == 3
 
 
-def test_explicit_tool_failure_never_becomes_success_or_retries(environment, monkeypatch):
-    original_tool = memory.manage_trading_rules.func
-    applied = []
-
-    def failed_tool(**kwargs):
-        if kwargs["action"] == "apply":
-            applied.append(kwargs)
-            return json.dumps({"success": False, "status": "failed", "error": "Rejected"})
-        return original_tool(**kwargs)
-
-    monkeypatch.setattr(memory.manage_trading_rules, "func", failed_tool)
-    fake = model(monkeypatch, call("apply", [add_change()]), final(conclusion="更新"))
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="tool-failure")
-    assert result.status == "failed" and not result.summary and not result.rule_receipts
-    assert len(applied) == len(fake.calls) == 1 and rules.list_trading_rules("cfg") == []
-
-
 @pytest.mark.parametrize("summarizer,agent_role,expected", [
     ({}, "system", SystemMessage),
     ({}, "user", HumanMessage),
@@ -358,7 +269,7 @@ def test_system_prompt_role_compatibility(environment, monkeypatch, summarizer, 
     assert isinstance(fake.calls[0][0], expected)
     if expected is HumanMessage:
         assert len(fake.calls[0]) == 1 and SOURCE in fake.calls[0][0].content
-        assert "人工锁定" in fake.calls[0][0].content
+        assert "长期规则自动维护已暂停" in fake.calls[0][0].content
     assert "system_prompt_role" not in fake.settings
 
 
@@ -386,45 +297,25 @@ def test_complete_tool_arguments_with_truncated_response_never_execute(environme
     assert rules.list_trading_rules("cfg") == []
 
 
-def test_truncated_summary_after_apply_is_partial(environment, monkeypatch):
-    response = final(conclusion="更新")
-    response.response_metadata = {"stop_reason": "max_tokens"}
-    model(monkeypatch, call("apply", [add_change()]), response)
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="truncated-after-write")
-    assert result.status == "partial" and result.summary == "" and len(result.rule_receipts) == 1
+@pytest.mark.parametrize('action', ['list', 'apply'])
+def test_rule_tool_response_never_executes_or_starts_second_model_turn(environment, monkeypatch, action):
+    fake = model(monkeypatch, call(action, [add_change()] if action == 'apply' else []), final())
+    result = memory.run_memory_review(SOURCE, CONFIG, operation_id='no-rule-tools')
+    assert result.status == 'failed' and 'disabled' in result.error
+    assert len(fake.calls) == 1 and result.rule_receipts == []
+    assert rules.list_trading_rules('cfg') == []
 
 
-def test_excessive_lists_rejected_before_tool_execution(environment, monkeypatch):
-    response = call()
-    response.tool_calls *= 3
-    fake = model(monkeypatch, response)
-    calls = []
-    original = memory._tool_result
-
-    def tracked(*args):
-        calls.append(args[0].action)
-        return original(*args)
-
-    monkeypatch.setattr(memory, "_tool_result", tracked)
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="too-many-tools")
-    assert result.status == "failed" and "two tool calls" in result.error
-    assert calls == ["list"] and len(fake.calls) == 1  # Initial program-owned snapshot only.
-
-
-def test_tool_count_limit_applies_across_model_rounds(environment, monkeypatch):
-    response = call("apply", [add_change()])
-    response.tool_calls.append({"name": "manage_trading_rules", "args": {"action": "list"}, "id": "extra-list"})
-    fake = model(monkeypatch, call(), response)
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="too-many-round-tools")
-    assert result.status == "failed" and "two tool calls" in result.error
-    assert rules.list_trading_rules("cfg") == [] and len(fake.calls) == 2
-
-
-def test_free_text_is_not_a_rule_write_receipt(environment, monkeypatch):
-    model(monkeypatch, final(summary="长期规则已更新。", conclusion="保留"))
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="prose-claim")
-    # Do not pretend field validation can prove the meaning of arbitrary prose.
-    # The separate program-generated result and structured receipt are definitive.
-    assert result.status == "completed" and result.rule_receipts == []
-    assert result.summary.endswith("程序回执：本轮未修改长期规则。")
-    assert rules.list_trading_rules("cfg") == []
+@pytest.mark.parametrize('enabled', [False, True])
+def test_memory_custom_audit_path_respects_background_trace_setting(environment, monkeypatch, enabled):
+    from langsmith import tracing_context, utils
+    monkeypatch.setattr(memory.global_config, 'langchain_background_tracing', enabled)
+    fake = model(monkeypatch, final())
+    invoke = fake.invoke
+    def checked(messages):
+        assert utils.tracing_is_enabled() == ('local' if enabled else False)
+        return invoke(messages)
+    monkeypatch.setattr(fake, 'invoke', checked)
+    with tracing_context(enabled='local'):
+        result = memory.run_memory_review(SOURCE, CONFIG, operation_id='trace-memory')
+    assert result.status == 'completed' and len(fake.calls) == 1
