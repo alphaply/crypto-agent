@@ -75,6 +75,15 @@ class PositionProtection:
             previous_row = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side=?',
                                         (self.config_id, plan['symbol'], plan['side'])).fetchone()
             previous = json.loads(previous_row['payload']) if previous_row else {}
+            adoption = plan.get('adoption') or {}
+            if adoption and adoption.get('operation_id') != (previous.get('adoption') or {}).get('operation_id'):
+                if previous and previous.get('state') != 'DONE':
+                    raise ValueError('An active position cycle already exists; manual adoption cannot replace it')
+                for row in conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side!=?',
+                                        (self.config_id, plan['symbol'], plan['side'])):
+                    other = json.loads(row['payload'])
+                    if other.get('account_scope') == self.account_scope and other.get('state') != 'DONE':
+                        raise ValueError('Another active position cycle prevents manual position adoption')
             if previous.get('record_version', 0) != plan.get('record_version', 0):
                 raise ConcurrentProtectionUpdate('Protection plan changed concurrently; reload before another exchange action')
             plan['record_version'] = plan.get('record_version', 0) + 1

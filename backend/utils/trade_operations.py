@@ -98,6 +98,17 @@ def _merge_reconciled_result(row, observed: list[dict], request):
 def _reconciled_receipt(conn, row):
     """Resolve a lost acknowledgement only from durable native execution evidence."""
     tables = {item[0] for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'trade_operation_requests' in tables:
+        saved_request = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
+                                     (row['config_id'], row['operation_id'])).fetchone()
+        if saved_request and json.loads(saved_request['request_json']).get('tool') == 'adopt_position_real':
+            from backend.utils.position_adoption import find_adoption_receipt
+            receipt = find_adoption_receipt(row['config_id'], row['operation_id'], row['symbol'])
+            if receipt is not None:
+                result = {**receipt, 'reconciled': True}
+                conn.execute('UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?',
+                             ('completed', json.dumps(result, ensure_ascii=False), time.time(), row['config_id'], row['operation_id']))
+                return result
     observed = []
     if {'spot_budget_reservations', 'orders', 'spot_order_fills'} <= tables:
         records = conn.execute('''SELECT DISTINCT r.operation_id,r.symbol,r.order_id,o.amount,o.entry_price,

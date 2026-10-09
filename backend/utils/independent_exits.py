@@ -147,7 +147,9 @@ class IndependentExits(PositionProtection):
             details={"symbol": symbol, "pos_side": side, "cycle_state": cycle_state,
                      "position_amount": float(position["contracts"]) * contract_size,
                      "next_action": "Verify this symbol, position side, exchange account and task ownership; "
-                                    "reconcile the original task's entry and exit records before managing this position. "
+                                    "if the user requested management of a manually opened position, use adopt_position_real "
+                                    "(MCP: adopt_perpetual_position) with its exact expected_amount first. "
+                                    "Otherwise reconcile the original task's entry and exit records. "
                                     "Do not create another entry or retry an unknown order with a new operation ID."},
         )
 
@@ -442,6 +444,7 @@ class IndependentExits(PositionProtection):
     def _flat_confirmed(self, plan):
         entry_filled = sum(positive(record.get("filled", 0), "entry fill", zero=True)
                            for record in plan.get("entries", []))
+        entry_filled += positive((plan.get('adoption') or {}).get('contracts', 0), 'adopted quantity', zero=True)
         exit_filled = sum(positive(record.get("filled", 0), "exit fill", zero=True)
                           for record in plan.get("exits", []))
         if entry_filled > 0 and exit_filled + 1e-12 >= entry_filled:
@@ -477,6 +480,9 @@ class IndependentExits(PositionProtection):
                         raise RuntimeError(f"Order state unresolved: {record['client_id']}")
                     if record.get("amendment", {}).get("state") == "pending":
                         raise RuntimeError("Entry amendment outcome unresolved")
+            if plan.get('adoption'):
+                from backend.mcp.guard import assert_position_owner
+                assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True)
             pos = self._position(plan)
             if not pos and plan.get("ever_filled") and plan["state"] != "EXITING":
                 # A second read may already show an eventually consistent
@@ -545,12 +551,19 @@ class IndependentExits(PositionProtection):
 
     def snapshot(self, symbol):
         symbol = self._market(symbol)["symbol"]
-        result = {"mode": "independent_exits", "exits": [], "uncovered": {"LONG": 0.0, "SHORT": 0.0}, "pending": False}
+        result = {"mode": "independent_exits", "exits": [], "adopted_positions": [],
+                  "uncovered": {"LONG": 0.0, "SHORT": 0.0}, "pending": False}
         contract_size = float(self._market(symbol).get("contractSize") or 1)
         for side in ("LONG", "SHORT"):
             plan = self._load(symbol, side)
             if not plan or plan["state"] == "DONE" or plan.get("execution_mode") != "independent_exits":
                 continue
+            if plan.get('adoption'):
+                baseline = plan['adoption']
+                result['adopted_positions'].append({
+                    'source': 'manual_adoption', 'pos_side': side, 'amount': baseline.get('amount'),
+                    'adopted_at': baseline.get('adopted_at'), 'episode_id': plan['episode_id'],
+                })
             position = self._position(plan)
             quantity = float((position or {}).get("contracts", 0)) * contract_size
             stops = 0.0

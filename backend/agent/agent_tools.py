@@ -8,7 +8,7 @@ from typing import List, Literal, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from backend.agent.agent_models import OpenOrderReal, OpenOrderSpotDCA, OpenOrderStrategy, CloseOrder
+from backend.agent.agent_models import AdoptPositionRealSchema, OpenOrderReal, OpenOrderSpotDCA, OpenOrderStrategy, CloseOrder
 import backend.database as database
 from backend.utils.market_data import MarketTool
 from backend.utils.logger import setup_logger
@@ -403,6 +403,37 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
             execution_results.append(f"❌ [Error] 开仓失败: {str(e)}")
             break
     return "\n".join(execution_results)
+
+@tool(args_schema=AdoptPositionRealSchema)
+def adopt_position_real(pos_side: str, expected_amount: float, reason: str, config_id: str, symbol: str):
+    """【显式接管已有手动合约仓位】仅用于REAL实盘合约的independent_exits独立退出模式。
+    用户已要求管理已有手动仓位后，先查询并核对账户、标的、LONG/SHORT方向与该方向全部标的币数量，再显式调用本工具。
+    expected_amount必须是核对后的标的币数量，不是合约张数；reason说明用户意图与接管原因。不得因周期缺失而自动接管其他任务仓位。
+    接管只建立本任务管理记录，不下单、不成交、不创建保护，也不改变已有仓位和挂单。成功后再按用户要求调用close_position_real挂独立SL/TP或平仓。
+    接管成功不代表止损止盈已生效；返回拒绝或未知结果时停止并核对，不通过新增开仓或更换operation_id重试绕过校验。
+    """
+    from backend.config import config
+    from backend.utils.trade_operations import current_operation_id
+    try:
+        params = AdoptPositionRealSchema.model_validate({
+            'pos_side': pos_side, 'expected_amount': expected_amount, 'reason': reason,
+        })
+        cfg = config.get_config_by_id(config_id) or {}
+        if str(cfg.get('mode') or '').upper() != 'REAL' or _exit_mode(config_id) != 'independent_exits':
+            raise ValueError('接管已有仓位仅允许 REAL 实盘合约的独立退出模式')
+        from backend.utils.position_adoption import adopt_position
+        result = adopt_position(MarketTool(config_id=config_id), symbol, params.pos_side,
+                                params.expected_amount, params.reason, current_operation_id.get())
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except ValueError as exc:
+        from backend.utils.independent_exits import IndependentPositionError
+        result = {'status': 'failed', 'error': str(exc)}
+        if isinstance(exc, IndependentPositionError):
+            result.update(error_code=exc.code, details=exc.details)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({'status': 'unknown', 'error': str(exc)}, ensure_ascii=False)
+
 
 @tool(args_schema=CloseRealSchema)
 def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):

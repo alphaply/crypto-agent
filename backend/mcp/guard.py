@@ -14,10 +14,10 @@ def perpetual_symbol(exchange, symbol):
     return market['symbol']
 
 
-def assert_position_owner(market_tool, symbol):
+def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_only=False):
     """Fail closed on shared or untracked perpetual exposure, using read-only evidence."""
     config_id = str(getattr(market_tool, 'config_id', '') or '')
-    if not config_id.startswith('mcp:'):
+    if not config_id.startswith('mcp:') and not adopted_only:
         return
     from backend import database
     from backend.utils.execution_ledger import account_scope
@@ -38,6 +38,8 @@ def assert_position_owner(market_tool, symbol):
                 if plan.get('account_scope') == scope and plan.get('state') != 'DONE':
                     if row['config_id'] != config_id:
                         raise ValueError('Another strategy owns this account position; MCP cannot modify shared exposure')
+                    if plan_override and plan.get('side') == plan_override.get('side'):
+                        plan = plan_override
                     plans.append(plan)
         if 'execution_order_links' in tables:
             for row in conn.execute(f'SELECT order_id,config_id,role,payload FROM execution_order_links WHERE account_scope=? AND symbol IN ({placeholders})', (scope, *aliases)):
@@ -50,12 +52,29 @@ def assert_position_owner(market_tool, symbol):
                         links.setdefault(str(order_id), {'config_id': config_id, 'role': role, 'side': plan['side']})
     canonical = perpetual_symbol(exchange, symbol)
     positions = [row for row in exchange.fetch_positions([canonical]) if abs(float(row.get('contracts') or 0)) > 0]
-    if not positions:
+    adoptions = [plan['adoption'] for plan in plans if plan.get('adoption')]
+    if not positions and not adoptions:
         return
     owned_sides = {str(plan.get('side')).upper() for plan in plans}
     if any(str(row.get('side')).upper() not in owned_sides for row in positions):
         raise ValueError('Untracked exchange position: MCP cannot establish sole ownership')
     starts = [float(entry['created_at']) for plan in plans for entry in plan.get('entries', []) if entry.get('created_at')]
+    amounts = {}
+    baseline_ids = set()
+    for baseline in adoptions:
+        side = baseline.get('side')
+        contracts = float(baseline.get('contracts') or 0)
+        since_ms = baseline.get('since_ms')
+        ids = baseline.get('observed_trade_ids')
+        if (baseline.get('account_scope') != scope or side not in owned_sides
+                or not math.isfinite(contracts) or contracts <= 0
+                or isinstance(since_ms, bool) or not isinstance(since_ms, (int, float))
+                or not math.isfinite(since_ms) or since_ms <= 0
+                or not isinstance(ids, list) or any(not isinstance(value, str) or not value for value in ids)):
+            raise ValueError('Adopted position baseline requires reconciliation')
+        amounts[side] = amounts.get(side, 0) + contracts
+        starts.append(since_ms / 1000)
+        baseline_ids.update(ids)
     if not starts:
         raise ValueError('Position ownership has no verifiable entry history')
     # Complete fills since the current position cycle distinguish owned quantity
@@ -63,7 +82,6 @@ def assert_position_owner(market_tool, symbol):
     trades = exchange.fetch_my_trades(canonical, since=int(min(starts) * 1000), limit=1000)
     if len(trades) >= 1000:
         raise ValueError('Position history exceeds one verifiable page; reconcile ownership before trading')
-    amounts = {}
     seen = set()
     for trade in trades:
         if trade.get('id') is None:
@@ -71,6 +89,8 @@ def assert_position_owner(market_tool, symbol):
         if str(trade['id']) in seen:
             continue
         seen.add(str(trade['id']))
+        if str(trade['id']) in baseline_ids:
+            continue  # Explicitly observed before adoption; never attribute historical manual fills.
         link = links.get(str(trade.get('order')))
         if not link or link.get('config_id') != config_id:
             raise ValueError('Untracked or foreign fills share this position; MCP modification denied')
@@ -129,6 +149,10 @@ def preflight_tool(tool_name, args, config_id, symbol):
     if not profile:
         raise ValueError('Unknown MCP profile')
     if profile['market_type'] == 'spot':
+        return
+    if tool_name == 'adopt_position_real':
+        # The explicit adoption service verifies current ownership and quantity.
+        # Requiring an existing cycle here would make adoption unreachable.
         return
     risky = tool_name in {'open_position_real', 'update_entry_order_real'}
     if tool_name == 'execute_trade_actions':

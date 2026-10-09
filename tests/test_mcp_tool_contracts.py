@@ -106,6 +106,33 @@ def test_sdk_schema_is_flat_strict_and_discovery_matches_registered_tools(contra
     assert 'arguments' not in schemas['buy_spot']['properties'] and schemas['buy_spot']['additionalProperties'] is False
     assert schemas['list_symbols']['properties']['limit']['maximum'] == 200
     assert 'stop_limit_price' in schemas['create_spot_exit']['properties']
+    assert set(schemas['adopt_perpetual_position']['required']) == {
+        'profile_id', 'symbol', 'pos_side', 'expected_amount', 'reason', 'operation_id',
+    }
+
+
+def test_flat_manual_position_adoption_is_scoped_and_uses_durable_receipts(contracts):
+    caller, _, dispatch, server = contracts
+    profile = store.get('profile', 'swap')
+    store.put('profile', 'swap', {**profile, 'exit_mode': 'independent_exits'})
+    request = {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT', 'pos_side': 'SHORT',
+               'expected_amount': .37, 'reason': 'user requested management', 'operation_id': 'adopt-short-0001'}
+    result = call(server, 'adopt_perpetual_position', request)
+    assert result['status'] == 'submitted'  # Dispatcher is mocked in this contract-only fixture.
+    assert call(server, 'adopt_perpetual_position', request) == result
+    dispatch.assert_called_once()
+    assert dispatch.call_args.args[:4] == ('adopt_position_real', {
+        'pos_side': 'SHORT', 'expected_amount': .37, 'reason': 'user requested management',
+    }, 'mcp:swap', 'ETH/USDT:USDT')
+    for invalid in ({**request, 'expected_amount': True}, {**request, 'amount': .37}):
+        with pytest.raises(ToolError):
+            call(server, 'adopt_perpetual_position', invalid)
+    assert service.execute({**caller, 'scopes': ['read']}, 'swap', request['symbol'], 'adopt_position_real',
+                           {'pos_side': 'SHORT', 'expected_amount': .37, 'reason': 'test'},
+                           'unauthorized-adopt')['status'] == 'failed'
+    assert 'adopt_position_real' not in {item['name'] for item in service.trading_tools('spot')}
+    store.put('profile', 'swap', profile)
+    assert 'adopt_position_real' not in {item['name'] for item in service.trading_tools('swap')}
 
 
 def test_flat_and_legacy_json_calls_share_one_operation_receipt(contracts):

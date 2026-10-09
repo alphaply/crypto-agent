@@ -39,6 +39,9 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
                                 or any(r.get('fill_pending') or r.get('replacement')
                                        for r in plan.get('entries', []) + plan.get('exits', [])))
             cycle_notes.append(f"{plan.get('side')} 本任务独立退出周期：{plan.get('state')}；待核验={plan_pending}")
+            if plan.get('adoption'):
+                adoption = plan['adoption']
+                cycle_notes.append(f"{plan.get('side')} 来源为用户委托接管的手动仓；接管基线={adoption.get('amount')} 标的币，时间={adoption.get('adopted_at')}；不是本任务开仓成交。接管本身不创建止盈止损。")
             snapshot['pending'] |= plan_pending
             for record in plan.get('exits', []):
                 snapshot['pending'] |= bool(record.get('replacement') or record.get('fill_pending'))
@@ -60,7 +63,7 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
         else:
             for side in sorted(visible_sides - managed_sides):
                 snapshot['pending'] = True
-                cycle_notes.append(f'{side} 可见交易所持仓，但本任务没有活跃独立退出周期。先核对 config_id、symbol、持仓方向和原开仓任务；不能将手动仓或其他任务持仓自动认领，也不要用新增开仓修复周期。')
+                cycle_notes.append(f'{side} 可见交易所持仓，但本任务没有活跃独立退出周期。先核对 config_id、symbol、持仓方向和原开仓任务；不能将手动仓或其他任务持仓自动认领，也不要用新增开仓修复周期。若用户已明确委托管理手动仓，先调用 adopt_position_real，expected_amount 填实时全部标的币数量；成功后再平仓或挂独立止盈止损。其他任务持仓应由原任务管理。')
     lines = [f'独立退出单（{units}；' + ('本地核验记录非实时成交证明' if local_real else '模拟账户快照') + '）。附带 TP/SL 为空不代表没有独立退出单。']
     lines.extend(cycle_notes)
     for order in snapshot.get('exits', []):

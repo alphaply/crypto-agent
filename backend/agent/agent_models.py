@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from langchain_core.messages import (
     BaseMessageChunk,
     HumanMessage,
@@ -66,6 +66,16 @@ class CloseOrder(BaseModel):
         if self.exit_type is None and (self.price is not None or self.trigger_price is not None):
             raise ValueError("price/trigger_price 必须配合显式 exit_type")
         return self
+
+class AdoptPositionRealSchema(BaseModel):
+    """Explicitly adopt a verified existing perpetual position without trading."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    pos_side: Literal["LONG", "SHORT"] = Field(description="已核对的现有持仓方向：LONG多仓，SHORT空仓")
+    expected_amount: float = Field(gt=0, allow_inf_nan=False, strict=True,
+                                   description="已核对的该方向全部标的币数量，不是合约张数；必须与交易所当前仓位一致")
+    reason: str = Field(min_length=1, description="用户要求管理已有手动仓位的具体意图及接管原因")
+
 
 class SessionTitle(BaseModel):
     """会话标题总结"""

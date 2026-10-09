@@ -16,6 +16,7 @@ def test_trade_tools_for_real_mode_include_cancel_real():
     assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL")) == [
         "open_position_real",
         "close_position_real",
+        "adopt_position_real",
         "cancel_orders_real",
         "update_position_protection_real",
         "update_entry_order_real",

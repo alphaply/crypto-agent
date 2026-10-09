@@ -5,6 +5,7 @@ from typing import Any
 
 from backend.agent.agent_tools import (
     DEFAULT_CANCEL_REASON,
+    adopt_position_real,
     cancel_orders_real,
     cancel_orders_spot,
     cancel_orders_strategy,
@@ -30,7 +31,7 @@ logger = setup_logger("ToolRegistry")
 _CANCEL_TOOL_NAMES = {"cancel_orders_real", "cancel_orders_strategy"}
 
 _TOOLS_BY_MODE = {
-    "REAL": [open_position_real, close_position_real, cancel_orders_real, update_position_protection_real, update_entry_order_real],
+    "REAL": [open_position_real, close_position_real, adopt_position_real, cancel_orders_real, update_position_protection_real, update_entry_order_real],
     "SPOT_DCA": [open_position_spot_dca, cancel_orders_spot],
     "STRATEGY": [open_position_strategy, cancel_orders_strategy, close_position_strategy, update_position_protection_strategy, update_entry_order_strategy],
 }
@@ -163,7 +164,7 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
             symbol = resolve_spot_symbol(config, requested_symbol or symbol)
         except ValueError as exc:
             return json.dumps({'status': 'failed', 'error': str(exc)}, ensure_ascii=False)
-    if tool_name in {'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy', 'update_exit_order', 'execute_trade_actions'}:
+    if tool_name in {'adopt_position_real', 'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy', 'update_exit_order', 'execute_trade_actions'}:
         # Dispatch uses .func(), so these scalar arguments need explicit schema validation.
         call_args = tool_obj.args_schema.model_validate(call_args).model_dump()
     call_args["config_id"] = config_id

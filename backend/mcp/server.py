@@ -36,7 +36,7 @@ def build_server(public_url):
     origin = urlparse(public_url)
     server = FastMCP(
         'Crypto Agent', stateless_http=True, json_response=True, streamable_http_path='/mcp',
-        instructions='Shared market research and scoped trading. Start with list_profiles and list_symbols to discover authorized canonical symbols. Prefer flat buy_spot/create_spot_exit tools, and read get_spot_inventory before a spot exit. Read get_trading_tools before using execute_trade. Every write needs a unique operation_id; reuse the same ID only for the identical request. Unknown outcomes must be inspected, never blindly retried. Submitted orders are not fills.',
+        instructions='Shared market research and scoped trading. Start with list_profiles and list_symbols to discover authorized canonical symbols. Prefer flat buy_spot/create_spot_exit tools, and read get_spot_inventory before a spot exit. When the user requests management of a manually opened perpetual position, read get_positions and use adopt_perpetual_position with its exact base quantity before creating exits; adoption itself does not trade or protect the position. Read get_trading_tools before using execute_trade. Every write needs a unique operation_id; reuse the same ID only for the identical request. Unknown outcomes must be inspected, never blindly retried. Submitted orders are not fills.',
         token_verifier=provider,
         auth=AuthSettings(issuer_url=AnyHttpUrl(public_url + '/oauth'),
                           resource_server_url=AnyHttpUrl(public_url + '/mcp'),

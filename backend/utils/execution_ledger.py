@@ -428,7 +428,10 @@ def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None
         if limit is None or len(facts) < limit:
             facts.append({**fill, 'order_id': row['order_id'], 'symbol': row['symbol'],
                           'role': row['role'] or 'unknown', 'evidence': json.loads(row['link_metadata'] or '{}')})
-    active = [{k: p.get(k) for k in ('symbol', 'side', 'state', 'stop_loss', 'take_profit', 'error', 'verified_at')}
+    active = [{**{k: p.get(k) for k in ('symbol', 'side', 'state', 'stop_loss', 'take_profit', 'error', 'verified_at')},
+               **({'position_source': 'manual_adoption', 'adoption': {
+                   key: p['adoption'].get(key) for key in ('amount', 'entry_price', 'adopted_at', 'side')
+               }} if p.get('adoption') else {})}
               for p in plans if p['state'] != 'DONE' and (not scope or p.get('account_scope') == scope)
               and (not symbol or p['symbol'] == symbol)]
     income_totals = {}

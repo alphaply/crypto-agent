@@ -34,6 +34,7 @@ TOOL_CATALOG = [
         ('create_spot_exit', 'trade', 'Sell owned spot quantity or place native TP/SL/OCO'),
         ('cancel_spot_exit', 'cancel', 'Cancel an MCP-owned spot exit'),
         ('open_perpetual', 'trade', 'Place one linear perpetual limit entry'),
+        ('adopt_perpetual_position', 'trade', 'Explicitly adopt a user-owned manual perpetual position for management'),
         ('close_perpetual', 'trade', 'Reduce or close an owned perpetual position'),
         ('amend_perpetual_entry', 'trade', 'Change an owned entry price or total quantity'),
         ('update_perpetual_protection', 'trade', 'Change owned perpetual TP/SL protection'),
@@ -56,7 +57,7 @@ def normalize_tool_input(tool_name, value):
     # Only the conventional args envelope is flattened at the MCP boundary.
     # execute_trade.arguments remains the explicit business-argument container.
     result = service.unwrap_arguments(value, wrappers=('args',))
-    numeric = {'amount', 'entry_price', 'price', 'trigger_price', 'stop_loss', 'take_profit',
+    numeric = {'amount', 'expected_amount', 'entry_price', 'price', 'trigger_price', 'stop_loss', 'take_profit',
                'stop_limit_price', 'take_profit_limit_price', 'limit', 'offset'}
     for key in numeric & result.keys():
         if isinstance(result[key], bool):
@@ -123,7 +124,7 @@ def register_tools(server):
         return await query('balance', profile_id=profile_id)
 
     async def get_positions(profile_id: ProfileId, symbol: str | None = None) -> list[dict]:
-        """Read open perpetual positions for authorized symbols. Omit symbol for allowed positions; use get_spot_inventory for sellable owned spot quantity."""
+        """Read open perpetual positions for authorized symbols. base_amount is contracts times contractSize, in base-asset units; use it as expected_amount when the user requests manual-position adoption. Visibility alone does not establish task ownership. Omit symbol for allowed positions; use get_spot_inventory for sellable owned spot quantity."""
         return await query('positions', profile_id=profile_id, symbol=symbol)
 
     async def get_orders(profile_id: ProfileId, symbol: Symbol, limit: int = 100) -> list[dict]:
@@ -179,6 +180,13 @@ def register_tools(server):
                  'reason': reason, 'price': price, 'trigger_price': trigger_price}
         return await execute(profile_id, symbol, 'close_position_real', {'orders': [{k: v for k, v in order.items() if v is not None}]}, operation_id)
 
+    async def adopt_perpetual_position(profile_id: ProfileId, symbol: Symbol, pos_side: Literal['LONG', 'SHORT'],
+                                       expected_amount: Amount, reason: Reason, operation_id: OperationId) -> dict:
+        """After the user requests management of a manually opened position, explicitly adopt its entire current side into this profile's independent exit cycle. Read get_positions first: expected_amount must equal its current base-asset quantity, not contract count. Checks account ownership, position and outstanding orders; rejects other tasks' positions. This ONLY saves management records: it does not place/cancel orders or create TP/SL. After success, use close_perpetual for exits or protection. Example: {"profile_id":"swap","symbol":"ETH/USDT:USDT","pos_side":"SHORT","expected_amount":0.37,"reason":"user requested management of their manual position","operation_id":"adopt-eth-short-0001"}."""
+        return await execute(profile_id, symbol, 'adopt_position_real', {
+            'pos_side': pos_side, 'expected_amount': expected_amount, 'reason': reason,
+        }, operation_id)
+
     async def amend_perpetual_entry(profile_id: ProfileId, symbol: Symbol, order_id: str,
                                     reason: Reason, operation_id: OperationId, entry_price: Price | None = None,
                                     amount: Amount | None = None, pos_side: Literal['LONG', 'SHORT'] | None = None) -> dict:
@@ -212,7 +220,7 @@ def register_tools(server):
     functions = {function.__name__: function for function in (
         list_profiles, list_symbols, get_news, get_market, get_balance, get_positions, get_orders,
         get_spot_inventory, get_trading_tools, buy_spot, create_spot_exit, cancel_spot_exit,
-        open_perpetual, close_perpetual, amend_perpetual_entry, update_perpetual_protection,
+        open_perpetual, adopt_perpetual_position, close_perpetual, amend_perpetual_entry, update_perpetual_protection,
         cancel_order, execute_trade, get_operation,
     )}
     for item in TOOL_CATALOG:

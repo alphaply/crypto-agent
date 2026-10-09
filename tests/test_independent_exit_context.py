@@ -47,3 +47,15 @@ def test_cancelled_stop_with_replacement_intent_is_still_pending():
     text = independent_exit_context({'real_positions': [{'side': 'long', 'amount': 2}]},
                                     plans=[plan], contract_size=1, symbol='ETH/USDT')
     assert 'LONG=2.0' in text and '待核验=True' in text
+
+
+def test_manual_adoption_is_distinguished_from_agent_entry_and_missing_cycle_has_next_step():
+    account = {'real_positions': [{'side': 'short', 'amount': .37}]}
+    plan = {'symbol': 'ETH/USDT:USDT', 'side': 'SHORT', 'state': 'ACTIVE',
+            'execution_mode': 'independent_exits', 'entries': [], 'exits': [],
+            'adoption': {'amount': .37, 'adopted_at': 100}}
+    text = independent_exit_context(account, plans=[plan], contract_size=1, symbol='ETH/USDT')
+    assert '来源为用户委托接管的手动仓' in text
+    assert '不是本任务开仓成交' in text and '接管本身不创建止盈止损' in text
+    missing = independent_exit_context(account, plans=[], contract_size=1, symbol='ETH/USDT')
+    assert 'adopt_position_real' in missing and 'expected_amount' in missing
