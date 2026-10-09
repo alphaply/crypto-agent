@@ -9,6 +9,7 @@ from . import store
 from .auth import admin_keys, admin_connections, create_api_key
 from backend.utils.spot_config_guard import serialized_spot_execution
 from .settings import MCPSettings, MCPProfile, SCOPES, profiles, save_profile, settings
+from .connection import ChatGPTClientRequest, check_connection, connection_details, register_chatgpt_client
 
 def prevent_caching(response: Response):
     response.headers['Cache-Control'] = 'no-store'
@@ -31,11 +32,27 @@ def overview(response: Response):
     response.headers['Cache-Control'] = 'no-store'
     return {'success': True, 'settings': value, 'profiles': profiles(), 'keys': admin_keys(), 'oauth_connections': admin_connections(),
             'tools': tool_catalog(), 'scopes': SCOPES, 'audit': store.audit_rows(50),
-            'connection': {'url': url + '/mcp', 'transport': 'streamable-http',
-                           'oauth_issuer': url + '/oauth', 'oauth_metadata': url + '/.well-known/oauth-authorization-server/oauth',
-                           'resource_metadata': url + '/.well-known/oauth-protected-resource/mcp',
-                           'restart_required': bool(active_public_url() and active_public_url() != url),
-                           'configuration': {'mcpServers': {'crypto-agent': {'url': url + '/mcp', 'headers': {'Authorization': 'Bearer <API_KEY>'}}}}}}
+            'connection': connection_details(url, active_public_url())}
+
+
+@router.get('/connection-check')
+async def connection_check():
+    from .server import active_public_url
+    return await check_connection(settings()['public_url'], active_public_url())
+
+
+@router.post('/oauth-clients')
+async def create_oauth_client(payload: ChatGPTClientRequest):
+    from .server import active_public_url
+    value = settings()
+    connection = connection_details(value['public_url'], active_public_url())
+    if connection['restart_required']:
+        raise HTTPException(409, '公开地址尚未生效，请重启后端后再生成客户端')
+    try:
+        client = await register_chatgpt_client(payload, value['public_url'])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {'success': True, 'client': client, 'connection': connection}
 
 
 @router.put('/settings')

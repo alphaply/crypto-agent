@@ -20,7 +20,7 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 - 现代左侧导航与跨标的 Dashboard；按任务查看固定报告、持仓、短期记忆与 K 线。聊天采用“新建任务 → 聊天”，默认分析，可关联交易配置。
 - 聊天每次成功压缩上下文后自动总结会话标题，支持 reasoning 模型；标题生成失败保留原名。后台可直接删除现货任务及本地关联记录，交易所持仓和挂单需自行处理（[操作说明](docs/WORKBENCH.md#聊天标题与任务删除)）。
 - 模型按渠道独立计价，支持 models.dev 每 6 小时同步、人工覆盖、缓存费用和长期用量记录；未定价不显示为免费。
-- `/mcp` Streamable HTTP 服务为 WorkBuddy / ChatGPT 提供共享数据与交易工具，独立交易配置、凭据和调用记录；交易标的支持搜索多选或明确设置为不限制。
+- `/mcp` Streamable HTTP 服务为 WorkBuddy / ChatGPT 提供共享数据、标的搜索和扁平参数交易工具，支持现货买入、归属库存卖出及交易所原生 TP/SL/OCO；独立交易配置、权限和持久幂等回执，标的可指定或明确设置为不限制（[工具与接入说明](docs/MCP.md)）。
 - 全局消息每小时聚合：原有宏观与加密来源、Polymarket、律动官方 JSON API、币安官方公告连接；律动 API Key 在消息聚合页单独配置。Jev Decisions 相关度评分与阈值过滤后，由普通模型生成统一快照，各 Agent、Chat、Dashboard 与 MCP 共享。
 - SQLite 本地状态存储
 - Docker 部署，Web 服务和调度器分容器运行

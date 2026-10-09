@@ -8,7 +8,7 @@ def owned_symbols(conn, profile):
     """Persisted task evidence, independent of its current symbol policy."""
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     result = set()
-    for table in ('orders', 'spot_budget_reservations', 'real_protection_plans', 'execution_order_links', 'trade_action_runs'):
+    for table in ('orders', 'spot_budget_reservations', 'mcp_spot_exits', 'real_protection_plans', 'execution_order_links', 'trade_action_runs'):
         if table in tables:
             result.update(str(row[0]) for row in conn.execute(
                 f'SELECT DISTINCT symbol FROM {table} WHERE config_id=? AND symbol IS NOT NULL',
@@ -39,6 +39,10 @@ def active_lifecycle(conn, profile, symbols=None, *, excluded_symbols=None):
             if affected(row['symbol']) and json.loads(row['payload']).get('state') != 'DONE':
                 return True
     if profile['market_type'] == 'spot':
+        if 'mcp_spot_exits' in tables:
+            for row in conn.execute("SELECT symbol FROM mcp_spot_exits WHERE config_id=? AND state NOT IN ('filled','cancelled','failed')", (config_id,)):
+                if affected(row['symbol']):
+                    return True
         if 'orders' in tables:
             for row in conn.execute("SELECT order_id,symbol,status,filled_amount,filled_cost FROM orders WHERE config_id=? AND trade_mode='SPOT_DCA' AND UPPER(side) IN ('BUY','BUY_LIMIT')", (config_id,)):
                 if not affected(row['symbol']):

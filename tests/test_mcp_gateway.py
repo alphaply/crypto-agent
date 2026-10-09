@@ -61,7 +61,7 @@ def test_sdk_initialization_tool_list_and_scoped_call(gateway):
 def test_unauthenticated_discovery_and_revoked_key(gateway):
     response = gateway.post('/mcp', json={})
     assert response.status_code == 401
-    assert '/.well-known/oauth-protected-resource/mcp' in response.headers['www-authenticate']
+    assert '/oauth/resource-metadata' in response.headers['www-authenticate']
     metadata = gateway.get('/.well-known/oauth-authorization-server/oauth').json()
     assert metadata['code_challenge_methods_supported'] == ['S256']
     assert metadata['token_endpoint'] == 'http://localhost:7860/oauth/token'

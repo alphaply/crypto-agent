@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Card, Checkbox, Empty, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Checkbox, Collapse, Empty, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Typography, message } from 'antd';
 import { ApiOutlined, CopyOutlined, KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
 import { usePreferences } from '../app/usePreferences';
 import McpSymbolPicker from './McpSymbolPicker';
+import McpConnectionSetup from './McpConnectionSetup';
+import { mcpSuggestedOrigin } from '../lib/mcpConnection';
 import { mcpProfileDraft, mcpProfilePayload } from '../lib/mcpSymbols';
 
 const { Text, Paragraph } = Typography;
@@ -52,6 +54,7 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
   const activeKeys = (data?.keys || []).filter((key) => !key.revoked);
   const connectionKey = activeKeys.find((key) => key.id === selectedKey);
   const connectionConfig = JSON.stringify({ mcpServers: { 'crypto-agent': { url: data?.connection?.url || '', ...(connectionKey ? { headers: { Authorization: `Bearer ${connectionKey.secret}` } } : {}) } } }, null, 2);
+  const suggestedOrigin = mcpSuggestedOrigin(window.location.origin);
 
   if (loading) return <Card className="panel-card"><Spin /></Card>;
   if (!data) return <Alert type="error" title={error || label('MCP 配置加载失败', 'MCP settings unavailable')} action={<Button onClick={load}>{label('重试', 'Retry')}</Button>} />;
@@ -64,15 +67,20 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
         <div className="form-field"><label>{label('启用 MCP', 'Enable MCP')}</label><Switch checked={settings.enabled} onChange={(enabled) => setSettings({ ...settings, enabled })} /></div>
         <div className="form-field"><label>{label('服务公开地址', 'Public service origin')}</label><Input value={settings.public_url} placeholder="https://agent.example.com" onChange={(event) => setSettings({ ...settings, public_url: event.target.value })} /></div>
       </div>
-      <Space wrap style={{ marginTop: 16 }}><Button type="primary" loading={busy} onClick={() => mutate(() => api.put('/mcp/settings', settings))}>{label('保存接入设置', 'Save connection settings')}</Button><Text type="secondary">{label('公开地址变更后重启服务；其他设置即时生效。', 'Restart after changing the public origin. Other settings take effect immediately.')}</Text></Space>
-      {data.connection?.restart_required && <Alert style={{ marginTop: 12 }} type="warning" showIcon title={label('公开地址已修改，请重启后再建立新连接。', 'The public origin changed. Restart before creating connections.')} />}
-      <div className="settings-stack" style={{ marginTop: 20 }}>
-        <div><Text type="secondary">Streamable HTTP</Text><Paragraph copyable={{ text: data.connection?.url }} style={{ marginBottom: 0 }}>{data.connection?.url}</Paragraph></div>
-        <Text type="secondary">{label('ChatGPT 使用 OAuth：添加服务 URL 后，使用管理员密码登录并选择权限与配置。WorkBuddy 可使用下方 API Key 的 Bearer 连接方式。', 'ChatGPT uses OAuth: add the URL, sign in with the administrator password and choose scopes and profiles. WorkBuddy can use a Bearer API key below.')}</Text>
-        <Select allowClear value={selectedKey || undefined} onChange={(value) => setSelectedKey(value || '')} options={activeKeys.map((key) => ({ value: key.id, label: key.name }))} placeholder={label('OAuth 连接 / 选择 API Key 生成配置', 'OAuth connection / select an API key')} />
+      <Space wrap style={{ marginTop: 16 }}>
+        <Button type="primary" loading={busy} onClick={() => mutate(() => api.put('/mcp/settings', settings))}>{label('保存接入设置', 'Save connection settings')}</Button>
+        <Button disabled={busy || !suggestedOrigin || (suggestedOrigin === settings.public_url && suggestedOrigin === data.settings.public_url)} onClick={() => mutate(() => api.put('/mcp/settings', { ...settings, public_url: suggestedOrigin }))}>{label('使用当前域名并保存', 'Use current origin and save')}</Button>
+        <Text type="secondary">{suggestedOrigin || label('请通过公网 HTTPS 域名访问后使用当前域名。', 'Open this page on its public HTTPS origin to use the current address.')}</Text>
+      </Space>
+      <Paragraph type="secondary" style={{ marginTop: 10, marginBottom: 0 }}>{label('填写网站根地址，不带 /mcp。公开地址变更后重启后端服务；其他设置即时生效。', 'Enter the site origin without /mcp. Restart the backend after changing the public origin; other settings take effect immediately.')}</Paragraph>
+      {data.connection?.restart_required && <Alert style={{ marginTop: 12 }} type="warning" showIcon title={label('公开地址已保存，但运行中的服务尚未应用', 'The public origin is saved but is not active yet')} description={<>{label('请重启后端服务或容器，再刷新本页并检查连接。', 'Restart the backend service or container, then refresh this page and check the connection.')}{data.connection.active_public_url && <Paragraph style={{ marginTop: 6, marginBottom: 0, overflowWrap: 'anywhere' }}>{label('当前运行地址', 'Active origin')}: {data.connection.active_public_url}</Paragraph>}</>} />}
+      <McpConnectionSetup key={`${data.settings.public_url}:${data.settings.enabled}:${data.connection?.active_public_url}:${data.connection?.restart_required}`} connection={data.connection} savedSettings={data.settings} draftSettings={settings} locale={locale} busy={busy} />
+      <Collapse style={{ marginTop: 20 }} items={[{ key: 'other-clients', label: label('其他 MCP 客户端：API Key / JSON 配置', 'Other MCP clients: API key / JSON configuration'), children: <div className="settings-stack">
+        <Text type="secondary">{label('WorkBuddy 等客户端可使用下方创建的 API Key 作为 Bearer 凭据。', 'Clients such as WorkBuddy can use an API key created below as a Bearer credential.')}</Text>
+        <Select aria-label={label('连接使用的 API Key', 'Connection API key')} allowClear value={selectedKey || undefined} onChange={(value) => setSelectedKey(value || '')} options={activeKeys.map((key) => ({ value: key.id, label: key.name }))} placeholder={label('选择 API Key 生成配置', 'Select an API key to create the configuration')} />
         <pre style={{ margin: 0, padding: 16, borderRadius: 12, background: 'var(--bg-subtle)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{connectionConfig}</pre>
         <Button icon={<CopyOutlined />} onClick={() => copy(connectionConfig)}>{label('复制连接配置', 'Copy connection configuration')}</Button>
-      </div>
+      </div> }]} />
     </Card>
 
     <Card className="panel-card" title={label('交易连接配置', 'Trading connection profiles')} extra={<Button icon={<PlusOutlined />} onClick={() => { setEditing(blankProfile()); setNewProfile(true); }}>{label('新建配置', 'New profile')}</Button>}>

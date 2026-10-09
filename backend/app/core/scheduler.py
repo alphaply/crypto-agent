@@ -433,6 +433,10 @@ def run_config_maintenance(config):
         try:
             from backend.app.services.dashboard_service import calculate_dca_stats
 
+            if config.get('mcp_profile'):
+                from backend.mcp.spot_orders import reconcile
+                reconcile(config_id)
+
             if config.get('mcp_symbol_scope') == 'all':
                 from backend.mcp.settings import runtime_symbols
                 from backend.utils.spot_portfolio import MAX_SPOT_SYMBOLS
