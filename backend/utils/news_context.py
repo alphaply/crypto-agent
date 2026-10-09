@@ -110,19 +110,25 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
 
 
-def _read_url(url: str, timeout: float = 4.0) -> bytes:
+def _read_url(url: str, timeout: float = 4.0, headers: dict | None = None) -> bytes:
     user_agent = os.getenv("NEWS_USER_AGENT", "crypto-agent/1.0 contact@example.com")
-    request = urllib.request.Request(url, headers={"User-Agent": user_agent, "Accept": "*/*"})
+    request = urllib.request.Request(url, headers={"User-Agent": user_agent, "Accept": "*/*", **(headers or {})})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
+            data = response.read(8 * 1024 * 1024 + 1)
+            if len(data) > 8 * 1024 * 1024:
+                raise ValueError('News response is too large')
+            return data
     except HTTPError as exc:
         if exc.code not in {301, 302, 307, 308} or not exc.headers.get("Location"):
             raise
         redirected = urllib.parse.urljoin(url, exc.headers["Location"])
-        retry = urllib.request.Request(redirected, headers={"User-Agent": user_agent, "Accept": "*/*"})
+        retry = urllib.request.Request(redirected, headers={"User-Agent": user_agent, "Accept": "*/*", **(headers or {})})
         with urllib.request.urlopen(retry, timeout=timeout) as response:
-            return response.read()
+            data = response.read(8 * 1024 * 1024 + 1)
+            if len(data) > 8 * 1024 * 1024:
+                raise ValueError('News response is too large')
+            return data
 
 
 def _source_lock(source_key: str) -> threading.Lock:
@@ -324,13 +330,13 @@ def _parse_ics_events(raw: bytes, source: str, filters: tuple[str, ...]) -> list
     return items
 
 
-def _fetch_bls_calendar(timeout: float) -> list[dict[str, Any]]:
-    url = os.getenv("NEWS_BLS_CALENDAR_URL", DEFAULT_CALENDAR_SOURCES["bls"])
+def _fetch_bls_calendar(timeout: float, url: str | None = None) -> list[dict[str, Any]]:
+    url = url or os.getenv("NEWS_BLS_CALENDAR_URL", DEFAULT_CALENDAR_SOURCES["bls"])
     return _parse_ics_events(_read_url(url, timeout), "BLS", CALENDAR_FILTERS["bls"])
 
 
-def _fetch_bea_calendar(timeout: float) -> list[dict[str, Any]]:
-    url = os.getenv("NEWS_BEA_CALENDAR_URL", DEFAULT_CALENDAR_SOURCES["bea"])
+def _fetch_bea_calendar(timeout: float, url: str | None = None) -> list[dict[str, Any]]:
+    url = url or os.getenv("NEWS_BEA_CALENDAR_URL", DEFAULT_CALENDAR_SOURCES["bea"])
     payload = json.loads(_read_url(url, timeout).decode("utf-8", errors="ignore"))
     items = []
     for title, raw in (payload.items() if isinstance(payload, dict) else []):
@@ -344,8 +350,8 @@ def _fetch_bea_calendar(timeout: float) -> list[dict[str, Any]]:
     return items
 
 
-def _fetch_fomc_calendar(timeout: float, now: datetime) -> list[dict[str, Any]]:
-    url = os.getenv("NEWS_FOMC_CALENDAR_URL", DEFAULT_CALENDAR_SOURCES["fomc"])
+def _fetch_fomc_calendar(timeout: float, now: datetime, url: str | None = None) -> list[dict[str, Any]]:
+    url = url or os.getenv("NEWS_FOMC_CALENDAR_URL", DEFAULT_CALENDAR_SOURCES["fomc"])
     page = _read_url(url, timeout).decode("utf-8", errors="ignore")
     items = []
     current_year = None
@@ -389,11 +395,14 @@ def _parse_feed(raw: bytes, source: str, category: str, relevance: float = 0.8) 
             except Exception:
                 published = _parse_iso(published_raw)
         if _clean_text(title):
-            items.append(_make_item(source=source, title=title, category=category, impact="medium", relevance=relevance, published_at=published, url=link))
+            item = _make_item(source=source, title=title, category=category, impact="medium", relevance=relevance, published_at=published, url=link)
+            item['content'] = _clean_text(node.findtext('description') or node.findtext('{*}summary') or node.findtext('{*}content') or '')[:12000]
+            item['guid'] = node.findtext('guid') or node.findtext('{*}id') or link
+            items.append(item)
     return items
 
 
-def _fetch_cryptocurrency_cv(symbol: str, timeout: float, category: str = "general") -> list[dict[str, Any]]:
+def _fetch_cryptocurrency_cv(symbol: str, timeout: float, category: str = "general", url: str | None = None) -> list[dict[str, Any]]:
     base = str(symbol or "").split("/")[0].split(":")[0].lower()
     params = {
         "limit": max(3, min(25, int(os.getenv("NEWS_CV_LIMIT", "10")))),
@@ -404,7 +413,8 @@ def _fetch_cryptocurrency_cv(symbol: str, timeout: float, category: str = "gener
         params["category"] = "bitcoin"
     elif base in {"ethereum", "ether", "eth"}:
         params["category"] = "ethereum"
-    url = f"https://cryptocurrency.cv/api/news?{urllib.parse.urlencode(params)}"
+    base_url = url or 'https://cryptocurrency.cv/api/news'
+    url = base_url + ('&' if '?' in base_url else '?') + urllib.parse.urlencode(params)
     payload = json.loads(_read_url(url, timeout).decode("utf-8", errors="ignore"))
     rows = (
         payload.get("articles")
@@ -450,8 +460,8 @@ def _fetch_cryptocurrency_cv(symbol: str, timeout: float, category: str = "gener
     return items
 
 
-def _fetch_treasury_market_news(timeout: float) -> list[dict[str, Any]]:
-    url = os.getenv("NEWS_TREASURY_URL", DEFAULT_TREASURY_SOURCE)
+def _fetch_treasury_market_news(timeout: float, url: str | None = None) -> list[dict[str, Any]]:
+    url = url or os.getenv("NEWS_TREASURY_URL", DEFAULT_TREASURY_SOURCE)
     page = _read_url(url, timeout).decode("utf-8", errors="ignore")
     patterns = (
         re.compile(
@@ -699,7 +709,13 @@ def _display_title(item: dict[str, Any]) -> str:
     return f"{item.get('title', '')} — {when}"
 
 
-def fetch_news_risk_context(symbol: str, limit: int = 10, timeout: float = 8.0) -> dict:
+def fetch_news_risk_context(symbol: str = '', limit: int = 10, timeout: float = 8.0) -> dict:
+    """Read the shared hourly snapshot. Agent/chat reads never initiate model calls."""
+    from backend.app.services.news_service import get_latest_news
+    return get_latest_news()
+
+
+def _fetch_legacy_news_risk_context(symbol: str, limit: int = 10, timeout: float = 8.0) -> dict:
     if str(os.getenv("NEWS_RISK_ENABLED", "true")).lower() in {"0", "false", "no"}:
         return {}
 

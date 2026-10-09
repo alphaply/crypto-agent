@@ -162,7 +162,7 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
         assert saved['source_count'] == 0
 
 
-@pytest.mark.parametrize('bad_summary', ['', 'x' * 2401])
+@pytest.mark.parametrize('bad_summary', ['', 'Previous short memory: prompt echo'])
 def test_memory_compression_failure_does_not_replace_previous_review(local_db, monkeypatch, bad_summary):
     evidence = (
         '截至快照: 2026-09-28 09:00 | 权益: 92.00 USDT | 样本: 3\n'

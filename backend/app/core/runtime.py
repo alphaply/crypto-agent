@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from backend.app.core.scheduler import run_scheduler_forever, scheduler_should_run
 from backend.database import init_db
+from backend.mcp.server import mcp_lifespan
 from backend.utils.logger import setup_logger
 
 
@@ -35,4 +36,9 @@ async def lifespan(_: FastAPI):
     init_db()
     if os.getenv("RUN_SCHEDULER_IN_WEB", "true").lower() == "true":
         _run_scheduler_once()
-    yield
+    try:
+        async with mcp_lifespan():
+            yield
+    finally:
+        from backend.utils.binance_announcements import stop_worker
+        stop_worker()

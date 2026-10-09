@@ -117,6 +117,8 @@ def execute_trade_actions(actions: list, config_id: str, symbol: str):
     if not cfg or cfg.get("mode", "STRATEGY").upper() not in {"REAL", "STRATEGY"}:
         raise ValueError("批量交易仅适用于已有 REAL/STRATEGY 任务")
     parsed = TradeActionsSchema.model_validate({"actions": actions})
+    from backend.mcp.guard import preflight_tool
+    preflight_tool('execute_trade_actions', parsed.model_dump(), config_id, symbol)
     mode = cfg.get("mode", "STRATEGY").upper()
     exit_mode = effective_exit_mode(cfg)
     for action in parsed.actions:

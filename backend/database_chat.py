@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
+from uuid import uuid4
 
 
 class ChatSessionStore:
@@ -33,6 +34,10 @@ class ChatSessionStore:
                 cursor.execute("ALTER TABLE chat_sessions ADD COLUMN root_session_id TEXT")
             if "fork_message_index" not in columns:
                 cursor.execute("ALTER TABLE chat_sessions ADD COLUMN fork_message_index INTEGER")
+            if "title_summary_cursor" not in columns:
+                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN title_summary_cursor INTEGER NOT NULL DEFAULT 0")
+            if "title_summary_token" not in columns:
+                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN title_summary_token TEXT NOT NULL DEFAULT ''")
             cursor.execute(
                 '''
                 INSERT INTO chat_sessions (
@@ -85,12 +90,38 @@ class ChatSessionStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def update_title(self, session_id: str, title: str) -> None:
+    def update_title(self, session_id: str, title: str, *, summary_token: str | None = None) -> bool:
+        with self._conn_factory() as conn:
+            cursor = conn.cursor()
+            condition = " AND title_summary_token = ?" if summary_token is not None else ""
+            params = (title, session_id, summary_token) if summary_token is not None else (title, session_id)
+            cursor.execute(
+                "UPDATE chat_sessions SET title = ? WHERE session_id = ?" + condition,
+                params,
+            )
+            conn.commit()
+            return bool(cursor.rowcount)
+
+    def claim_title_summary(self, session_id: str, summary_cursor: int) -> str | None:
+        """Claim one title attempt per persisted compaction, including failed attempts."""
+        if summary_cursor <= 0:
+            return None
+        token = uuid4().hex
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE chat_sessions SET title = ? WHERE session_id = ?",
-                (title, session_id),
+                "UPDATE chat_sessions SET title_summary_cursor = ?, title_summary_token = ? "
+                "WHERE session_id = ? AND title_summary_cursor < ?",
+                (summary_cursor, token, session_id, summary_cursor),
+            )
+            conn.commit()
+            return token if cursor.rowcount else None
+
+    def reset_title_summary(self, session_id: str) -> None:
+        with self._conn_factory() as conn:
+            conn.execute(
+                "UPDATE chat_sessions SET title_summary_cursor = 0, title_summary_token = '' WHERE session_id = ?",
+                (session_id,),
             )
             conn.commit()
 

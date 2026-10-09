@@ -169,6 +169,9 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
     call_args["config_id"] = config_id
     call_args["symbol"] = symbol
 
+    from backend.mcp.guard import preflight_tool
+    preflight_tool(tool_name, call_args, config_id, symbol)
+
     logger.info(
         "Executing tool call: name=%s config_id=%s symbol=%s arg_keys=%s",
         tool_name,

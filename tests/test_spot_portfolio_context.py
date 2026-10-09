@@ -77,8 +77,9 @@ def test_one_decision_sees_all_assets_and_one_shared_wallet(portfolio):
     for symbol in cfg['symbols']:
         assert f'## {symbol}' in prompt
     assert '100' in prompt and '由所有标的共享' in prompt
-    assert '本周期已成交及挂单占用 20 USDT' in prompt
-    assert '预算允许新增买入上限 80 USDT' in prompt
+    assert '本周期已成交及挂单占用 0 USDT' in prompt
+    assert '任务累计已占用 20 USDT' in prompt
+    assert '预算允许新增买入上限 0 USDT' in prompt  # No registered trading run in this read-only context.
     assert 'BTC-order' in prompt and 'ETH-order' in prompt
     orders_block = prompt.split('【当前挂单】', 1)[1].split('【市场数据', 1)[0]
     assert 'Symbol: BTC/USDT' in orders_block and 'Symbol: ETH/USDT' in orders_block
@@ -96,8 +97,9 @@ def test_spot_prompt_keeps_holdings_and_orders_once_without_forced_review(portfo
     for symbol in cfg['symbols']:
         assert prompt.count(f'[LONG] {symbol} | Amt: 1.0') == 1
         assert prompt.count(f"ID:'{symbol[:3]}-order'") == 1
-    assert '本周期已成交及挂单占用 20 USDT' in prompt
-    assert '预算允许新增买入上限 80 USDT' in prompt
+    assert '本周期已成交及挂单占用 0 USDT' in prompt
+    assert '任务累计已占用 20 USDT' in prompt
+    assert '预算允许新增买入上限 0 USDT' in prompt
     assert '## 决策与复盘要求' not in prompt
     assert '最后说明规则复盘结论' not in prompt
 

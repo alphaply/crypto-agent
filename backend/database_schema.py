@@ -193,6 +193,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN parent_session_id TEXT")
     _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN root_session_id TEXT")
     _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN fork_message_index INTEGER")
+    _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN title_summary_cursor INTEGER NOT NULL DEFAULT 0")
+    _execute_best_effort(cursor, "ALTER TABLE chat_sessions ADD COLUMN title_summary_token TEXT NOT NULL DEFAULT ''")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,

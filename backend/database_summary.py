@@ -1,6 +1,8 @@
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 
+from backend.summary_memory_source import restore_memory_source
+
 
 class SummaryStore:
     def __init__(self, conn_factory: Callable[[], AbstractContextManager], timestamp_factory: Callable[[], str], logger):
@@ -18,11 +20,24 @@ class SummaryStore:
         agent_type=None,
         reasoning_content=None,
         reasoning_tokens=0,
+        report_json=None,
+        run_id=None,
+        timeframe='1h',
     ):
         timestamp = self._timestamp_factory()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
+            conn.execute('BEGIN IMMEDIATE')
             columns = {row[1] for row in cursor.execute("PRAGMA table_info(summaries)").fetchall()}
+            for name in ('report_json', 'run_id'):
+                if name not in columns:
+                    cursor.execute(f'ALTER TABLE summaries ADD COLUMN {name} TEXT')
+            if run_id:
+                existing = cursor.execute('SELECT id FROM summaries WHERE run_id=? AND config_id=?',
+                                          (run_id, config_id or agent_name)).fetchone()
+                if existing:
+                    conn.commit()
+                    return existing['id']
             if "reasoning_content" in columns and "reasoning_tokens" in columns:
                 cursor.execute(
                     '''
@@ -34,7 +49,7 @@ class SummaryStore:
                     (
                         timestamp,
                         symbol,
-                        "15m",
+                        timeframe,
                         agent_name,
                         config_id or agent_name,
                         agent_type,
@@ -55,7 +70,7 @@ class SummaryStore:
                     (
                         timestamp,
                         symbol,
-                        "15m",
+                        timeframe,
                         agent_name,
                         config_id or agent_name,
                         agent_type,
@@ -73,9 +88,17 @@ class SummaryStore:
                         content, strategy_logic
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
-                    (timestamp, symbol, "15m", agent_name, config_id or agent_name, agent_type, content, strategy_logic),
+                    (timestamp, symbol, timeframe, agent_name, config_id or agent_name, agent_type, content, strategy_logic),
                 )
+            summary_id = cursor.lastrowid
+            cursor.execute('UPDATE summaries SET report_json=?,run_id=? WHERE id=?', (report_json, run_id, summary_id))
+            if run_id:
+                from backend.agent.memory_updates import _initialize
+                _initialize(conn)
+                cursor.execute('INSERT OR IGNORE INTO memory_update_jobs(config_id,run_id,summary_id) VALUES (?,?,?)',
+                               (config_id or agent_name, run_id, summary_id))
             conn.commit()
+            return summary_id
 
     def get_active_agents(self, symbol):
         with self._conn_factory() as conn:
@@ -136,8 +159,7 @@ class SummaryStore:
             params = [config_id]
             where = [
                 "config_id = ?",
-                "strategy_logic IS NOT NULL",
-                "strategy_logic != ''",
+                "(COALESCE(strategy_logic, '') != '' OR COALESCE(content, '') != '')",
             ]
             if since_time:
                 where.append("timestamp >= ?")
@@ -145,7 +167,7 @@ class SummaryStore:
             params.append(int(limit or 12))
             rows = cursor.execute(
                 f'''
-                SELECT timestamp, symbol, config_id, strategy_logic
+                SELECT timestamp, symbol, config_id, strategy_logic, content AS _source_content
                 FROM summaries
                 WHERE {' AND '.join(where)}
                 ORDER BY id DESC
@@ -153,7 +175,7 @@ class SummaryStore:
                 ''',
                 tuple(params),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [restore_memory_source(row) for row in rows]
 
     def get_summary_count(self, symbol, config_id=None):
         with self._conn_factory() as conn:

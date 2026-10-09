@@ -75,7 +75,7 @@ export default function PolymarketPanel() {
 export function PolymarketSettings({ value, onChange }) {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
-  const settings = value || { enabled: false, events: [], refresh_seconds: 300 };
+  const settings = { enabled: false, refresh_seconds: 300, ...value, events: Array.isArray(value?.events) ? value.events : [] };
   const [url, setUrl] = useState('');
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState('');
@@ -95,7 +95,7 @@ export function PolymarketSettings({ value, onChange }) {
     <Space orientation="vertical" size="large" style={{ width: '100%' }}>
       <Alert type="info" showIcon title={zh ? '公开盘口，无需 API Key 或钱包' : 'Public market data. No API key or wallet needed.'} description={zh ? '从服务器读取事件概率、买卖报价、24h 成交量和流动性，加入消息面与 Agent 分析。连接测试由实际后端发起，可验证新加坡服务器的访问情况。' : 'Fetch probabilities, quotes, volume and liquidity for news and agent analysis. Test the connection from your actual backend server.'} />
       <div className="prediction-settings-controls"><label>{zh ? '启用监控' : 'Enable monitoring'} <Switch checked={settings.enabled} onChange={(enabled) => onChange({ ...settings, enabled })} /></label><label>{zh ? '缓存刷新间隔（秒）' : 'Cache interval (seconds)'} <InputNumber min={60} max={3600} value={settings.refresh_seconds} onChange={(refresh_seconds) => onChange({ ...settings, refresh_seconds: refresh_seconds ?? 300 })} /></label></div>
-      <Text type="secondary">{zh ? '看板与 Agent 请求时按缓存间隔采集；失败时最多使用 1 小时缓存并显示过期标记。监控列表会公开显示在看板，最多 8 个事件。' : 'Fetch on dashboard and agent requests using the cache interval. Failures may use a marked cache up to one hour old. Up to eight events, publicly visible on the dashboard.'}</Text>
+      <Text type="secondary">{zh ? '消息聚合任务按缓存间隔采集，纳入统一摘要快照；看板与 Agent 共享已完成结果。监控列表最多 8 个事件。' : 'The news pipeline collects markets on this cache interval and publishes a shared snapshot for the dashboard and agents. Up to eight events.'}</Text>
       <div className="prediction-add-row"><Input aria-label={zh ? 'Polymarket 事件链接' : 'Polymarket event URL'} placeholder={EXAMPLE} value={url} onChange={(e) => { setUrl(e.target.value); setPreview(null); setError(''); }} /><Button onClick={test} loading={testing} disabled={!url.trim()}>{zh ? '测试连接' : 'Test connection'}</Button></div>
       <Button type="link" onClick={() => { setUrl(EXAMPLE); setPreview(null); }}>{zh ? '填入示例：9 月美联储利率决议' : 'Use example: September Fed decision'}</Button>
       {error && <Alert type="error" title={error} />}

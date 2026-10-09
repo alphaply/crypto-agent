@@ -251,7 +251,7 @@ def test_aggregator_enforces_six_item_category_budget(monkeypatch):
         lambda _key, fetcher, **_kwargs: {"items": fetcher(), "status": "ok", "stale": False, "fetched_at": news_context._iso(now)},
     )
 
-    result = news_context.fetch_news_risk_context("BTC/USDT")
+    result = news_context._fetch_legacy_news_risk_context("BTC/USDT")
     categories = [item["category"] for item in result["items"]]
     assert len(result["items"]) == 6
     assert categories.count("macro_calendar") == 2
@@ -267,7 +267,7 @@ def test_all_sources_unavailable_has_no_risk_level_fields(monkeypatch):
         "_fetch_cached",
         lambda *_args, **_kwargs: {"items": [], "status": "unavailable", "stale": False, "error": "offline"},
     )
-    result = news_context.fetch_news_risk_context("BTC/USDT")
+    result = news_context._fetch_legacy_news_risk_context("BTC/USDT")
     assert "risk_level" not in result
     assert "risk_reasons" not in result
     assert result["headlines"] == []

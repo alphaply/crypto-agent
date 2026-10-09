@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
-PURPOSES = frozenset({'decision', 'memory_review', 'daily_summary'})
+PURPOSES = frozenset({'decision', 'strategy_summary', 'memory_review', 'daily_summary', 'chat', 'chat_summary', 'news_score', 'news_summary'})
 STATUSES = frozenset({'success', 'error', 'cancelled'})
 RETENTION_DAYS = 30
 MAX_RUNS_PER_CONFIG = 100
@@ -17,7 +17,7 @@ _SECRET_KEYS = frozenset({
     'access_token', 'refresh_token', 'config', 'configurable', 'credentials',
 })
 _MESSAGE_KEYS = ('role', 'content', 'name', 'tool_call_id', 'tool_calls', 'function_call', 'refusal')
-_METADATA_COLUMNS = '''run_id, parent_run_id, config_id, purpose, model, status,
+_METADATA_COLUMNS = '''run_id, parent_run_id, config_id, purpose, model, provider_id, status,
     started_at, finished_at, input_chars, message_chars, tool_chars, output_chars,
     prompt_tokens, completion_tokens, total_tokens, cost, currency, cost_source'''
 
@@ -43,7 +43,7 @@ def initialize_agent_runs_schema(cursor: sqlite3.Cursor) -> None:
     existing = {row[1] for row in cursor.execute('PRAGMA table_info(agent_runs)')}
     for name, column_type in (
         ('cost_source', 'TEXT'), ('input_price_per_m', 'REAL'),
-        ('output_price_per_m', 'REAL'), ('pricing_currency', 'TEXT'),
+        ('output_price_per_m', 'REAL'), ('pricing_currency', 'TEXT'), ('provider_id', 'TEXT'),
     ):
         if name not in existing:
             cursor.execute(f'ALTER TABLE agent_runs ADD COLUMN {name} {column_type}')
@@ -138,28 +138,35 @@ def _prune(conn: sqlite3.Connection, config_id: str) -> None:
 
 def start_agent_run(
     config_id: str, purpose: str, model: str, messages: list, tools: list | None = None,
-    *, parent_run_id: str | None = None,
+    *, parent_run_id: str | None = None, provider_id: str | None = None,
+    price_snapshot: dict | None = None,
 ) -> str:
     """Record the actual inputs immediately before invoking the model."""
     from backend.database import get_db_conn
+    from backend.app.services.pricing_service import get_price_snapshot, resolve_provider_id
+    from backend.database_usage import start_usage
 
     if purpose not in PURPOSES:
         raise ValueError('Unknown agent run purpose')
     messages_json = _dumps([_serialize_message(message) for message in messages])
     tools_json = _dumps(_serialize_tools(tools))
     run_id = uuid.uuid4().hex
+    provider_id = provider_id or resolve_provider_id(str(model), str(config_id), purpose)
+    started_at = _timestamp()
     with get_db_conn() as conn:
         initialize_agent_runs_schema(conn.cursor())
-        input_price, output_price, pricing_currency = _pricing_snapshot(conn, str(model))
+        prices = price_snapshot if price_snapshot is not None else get_price_snapshot(str(model), provider_id, conn=conn)
+        input_price, output_price, pricing_currency = prices.get('input_price_per_m'), prices.get('output_price_per_m'), prices.get('currency')
         conn.execute('''INSERT INTO agent_runs (
             run_id, parent_run_id, config_id, purpose, model, status, started_at,
             input_chars, message_chars, tool_chars, messages_json, tools_json,
-            input_price_per_m, output_price_per_m, pricing_currency
-        ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
-            run_id, parent_run_id, str(config_id), purpose, str(model), _timestamp(),
+            input_price_per_m, output_price_per_m, pricing_currency, provider_id
+        ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+            run_id, parent_run_id, str(config_id), purpose, str(model), started_at,
             len(messages_json) + len(tools_json), len(messages_json), len(tools_json),
-            messages_json, tools_json, input_price, output_price, pricing_currency,
+            messages_json, tools_json, input_price, output_price, pricing_currency, provider_id,
         ))
+        start_usage(conn, run_id, config_id=str(config_id), purpose=purpose, model=str(model), provider_id=provider_id, started_at=started_at, prices=prices)
         _prune(conn, str(config_id))
         conn.commit()
     return run_id
@@ -180,6 +187,7 @@ def finish_agent_run(
     error: str = '', details: dict | None = None,
 ) -> None:
     from backend.database import get_db_conn
+    from backend.database_usage import finish_usage
 
     if status not in STATUSES:
         raise ValueError('Unknown agent run status')
@@ -194,6 +202,8 @@ def finish_agent_run(
     cost_source = 'provider' if cost is not None else None
     with get_db_conn() as conn:
         initialize_agent_runs_schema(conn.cursor())
+        finished_at = _timestamp()
+        durable = finish_usage(conn, run_id, usage, status, finished_at)
         price = conn.execute('''SELECT input_price_per_m, output_price_per_m, pricing_currency
             FROM agent_runs WHERE run_id = ?''', (run_id,)).fetchone()
         if cost is None and prompt_tokens is not None and completion_tokens is not None and price is not None:
@@ -204,10 +214,13 @@ def finish_agent_run(
                 cost = prompt_tokens / 1_000_000 * input_price + completion_tokens / 1_000_000 * output_price
                 currency = price[2]
                 cost_source = 'model_pricing'
+        if durable is not None:
+            prompt_tokens, completion_tokens, total_tokens = durable['prompt_tokens'], durable['completion_tokens'], durable['total_tokens']
+            cost, currency, cost_source = durable['cost'], durable['currency'], durable['cost_source']
         conn.execute('''UPDATE agent_runs SET status = ?, finished_at = ?, output = ?,
             output_chars = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ?,
             cost = ?, currency = ?, cost_source = ?, error = ?, details_json = ? WHERE run_id = ?''', (
-            status, _timestamp(), output, len(output), prompt_tokens, completion_tokens,
+            status, finished_at, output, len(output), prompt_tokens, completion_tokens,
             total_tokens, cost, currency, cost_source, error, _dumps(_json_value(details or {})), run_id,
         ))
         conn.commit()

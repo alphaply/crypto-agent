@@ -214,6 +214,8 @@ class PositionProtection:
 
     def open(self, symbol, op, operation_id=None):
         """Open with protection intent persisted before submitting the entry order."""
+        from backend.mcp.guard import assert_entry_allowed
+        assert_entry_allowed(self.mt, symbol)
         if operation_id is None:
             from backend.utils.trade_operations import current_operation_id
             operation_id = current_operation_id.get()
@@ -294,6 +296,8 @@ class PositionProtection:
 
     def amend_entry(self, symbol, order_id, price=None, amount=None, reason='', pos_side=None, operation_id=None):
         """Amend a managed perpetual limit entry. Amount means TOTAL base quantity."""
+        from backend.mcp.guard import assert_entry_allowed
+        assert_entry_allowed(self.mt, symbol)
         if operation_id is None:
             from backend.utils.trade_operations import current_operation_id
             operation_id = current_operation_id.get()
@@ -741,6 +745,14 @@ class PositionProtection:
                                     'error': 'Exchange credentials changed; protection plan requires its original account'})
                     continue
                 try:
+                    if str(self.config_id).startswith('mcp:') and plan['state'] != 'DONE':
+                        from backend.mcp.guard import assert_position_owner
+                        try:
+                            assert_position_owner(self.mt, plan['symbol'])
+                        except Exception as exc:
+                            results.append({'symbol': plan['symbol'], 'side': plan['side'], 'state': plan['state'],
+                                            'error': f'MCP ownership check failed; no exchange changes: {exc}'})
+                            continue
                     if plan.get('execution_mode') == 'independent_exits':
                         from backend.utils.independent_exits import IndependentExits
                         IndependentExits(self.mt)._reconcile(plan)

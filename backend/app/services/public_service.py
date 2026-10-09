@@ -26,6 +26,8 @@ def _resolved_market_timeframes(config_payload: dict | None = None) -> list[str]
         return timeframes
     if str((config_payload or {}).get('mode') or '').upper() == 'SPOT_DCA':
         return list(SPOT_MARKET_TIMEFRAMES)
+    if (config_payload or {}).get('market_profile') == 'hourly':
+        return ['1h', '4h', '1d']
     return [str(item).strip() for item in list(getattr(global_config, "market_timeframes", None) or ["15m", "1h", "4h", "1d", "1w"]) if str(item).strip()]
 
 
@@ -34,11 +36,14 @@ def _usage_summary(payload: dict) -> dict:
     models = payload.get("models", [])
     agents = payload.get("agents", [])
     total_tokens = sum(int(item.get("total", 0) or 0) for item in daily)
-    total_cost = round(sum(float(item.get("cost", 0) or 0) for item in models), 4)
+    summary = payload.get("summary") or {}
+    total_cost = summary.get("cost")
     latest_day = daily[0] if daily else None
     return {
         "total_tokens_14d": total_tokens,
         "total_cost": total_cost,
+        "costs_by_currency": summary.get("costs_by_currency", {}),
+        "unpriced_calls": summary.get("unpriced_calls", 0),
         "tracked_models": len(models),
         "tracked_agents": len(agents),
         "latest_day": latest_day,
@@ -64,10 +69,11 @@ def build_public_dashboard_payload(symbol: str | None = None) -> dict:
         "compare_candidates": compare_candidates,
         "default_compare_ids": [item["config_id"] for item in compare_candidates if item.get("config_id")],
         "usage_summary": _usage_summary(usage),
+        "usage_today": usage.get("today", {}),
     }
 
 
-def build_public_compare_payload(symbol: str, config_ids: str = "") -> dict:
+def build_public_compare_payload(symbol: str | None, config_ids: str = "") -> dict:
     return get_equity_compare_payload(symbol, config_ids)
 
 
@@ -97,8 +103,6 @@ def build_public_workspace_payload(config_id: str, timeframe: str = "1h", symbol
     cfg = global_config.get_config_by_id(config_id)
     if not cfg:
         raise FileNotFoundError(f"Config not found: {config_id}")
-    if not cfg.get("enabled", True):
-        raise FileNotFoundError(f"Workspace not found: {config_id}")
     if selected_symbol and selected_symbol not in get_config_symbols(cfg):
         raise ValueError(f'Symbol {selected_symbol} is not configured for {config_id}')
 
@@ -114,9 +118,7 @@ def build_public_workspace_payload(config_id: str, timeframe: str = "1h", symbol
         "agent": agent,
         "position": get_position_stats_payload(config_id),
         "orders": get_recent_order_activity_payload(config_id, limit=40),
-        "daily_summaries": get_daily_summaries_payload(config_id, days=7),
         "short_memories": get_short_memories_payload(config_id, limit=1),
-        "news_snapshot": get_latest_news_snapshot(symbol=selected_symbol or symbol, config_id=config_id) or get_latest_news_snapshot(symbol=selected_symbol or symbol),
         "kline": get_kline_payload(config_id, timeframe, symbol=selected_symbol) if selected_symbol else get_kline_payload(config_id, timeframe),
     }
 

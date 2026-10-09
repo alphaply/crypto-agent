@@ -727,9 +727,8 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
             symbol_configs = [
                 conf
                 for conf in configs
-                if symbol in get_config_symbols(conf)
+                if (not symbol or symbol in get_config_symbols(conf))
                 and (config_id is None or conf.get("config_id") == config_id)
-                and conf.get("enabled", True)
                 and str(conf.get("mode", "STRATEGY")).upper() in DASHBOARD_VISIBLE_MODES
             ]
 
@@ -765,7 +764,7 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                     summary_dict = {
                         "config_id": config_id,
                         "agent_name": model_name,
-                        "symbol": symbol,
+                        "symbol": config.get("symbol"),
                         "content": "No analysis data yet.",
                         "strategy_logic": "N/A",
                         "timestamp": "N/A",
@@ -781,14 +780,8 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 now = datetime.now(TZ_CN)
                 dca_executed = False
                 if mode == "SPOT_DCA":
-                    start = now - timedelta(days=now.weekday()) if normalize_dca_freq(config.get("dca_freq")) == "1w" else now
-                    row = conn.execute(
-                        "SELECT count(*) FROM orders WHERE config_id = ? AND trade_mode = 'SPOT_DCA' AND timestamp >= ?",
-                        (config_id, start.strftime("%Y-%m-%d 00:00:00")),
-                    ).fetchone()
-                    dca_executed = bool(row[0])
                     from backend.app.core.scheduler import dca_was_dispatched
-                    dca_executed = dca_executed or dca_was_dispatched(config_id, now, config.get("dca_freq"))
+                    dca_executed = dca_was_dispatched(config_id, now, config=config)
                 schedule = schedule_preview(config, now, scheduler_enabled=get_scheduler_status(), dca_executed=dca_executed)
                 summary_dict["schedule"] = schedule
                 summary_dict["next_run"] = schedule["next_run"]
@@ -803,7 +796,10 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 summary_dict["all_orders"] = orders
                 summary_dict["order_total"] = total
                 summary_dict["order_page"] = 1
-                summary_dict["daily_summaries"] = get_daily_summaries(config_id, days=7)
+                try:
+                    summary_dict["report"] = json.loads(summary_dict.get("report_json") or "null")
+                except (TypeError, ValueError):
+                    summary_dict["report"] = None
                 if latest_execution_row:
                     execution = dict(latest_execution_row)
                     try:
@@ -826,23 +822,36 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
 
 def build_dashboard_overview(symbol: str | None = None, page: int = 1):
     symbols = list_symbols()
-    current_symbol = symbol or (symbols[0] if symbols else "BTC/USDT")
+    current_symbol = symbol or None
     agent_summaries = get_dashboard_data(current_symbol, page)
-    symbol_mode, symbol_freq, symbol_enabled = get_symbol_specific_status(current_symbol)
+    symbol_mode, symbol_freq, symbol_enabled = get_symbol_specific_status(current_symbol) if current_symbol else ("ALL", None, True)
+    from backend.app.services.news_service import get_latest_global_snapshot
+    run_counts = {"finished": 0, "failed": 0, "running": 0}
+    with get_db_conn() as conn:
+        try:
+            for row in conn.execute(
+                "SELECT status, COUNT(*) AS n FROM scheduler_runs WHERE job_type='agent' AND created_at >= ? GROUP BY status",
+                ((datetime.now(TZ_CN) - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S'),),
+            ):
+                status = str(row['status']).lower()
+                if status in run_counts:
+                    run_counts[status] = row['n']
+        except sqlite3.OperationalError:
+            pass
     return {
         "generated_at": datetime.now(TZ_CN).isoformat(),
         "timezone": str(TZ_CN),
         "symbols": symbols,
         "current_symbol": current_symbol,
         "agent_summaries": agent_summaries,
-        "overview_metrics": build_symbol_overview_metrics(current_symbol, agent_summaries),
-        "compare_rows": build_config_compare_rows(current_symbol, agent_summaries),
+        "overview_metrics": {"agent_count": len(agent_summaries), "enabled_count": sum(bool(item.get('enabled')) for item in agent_summaries), "runs_24h": run_counts},
+        "compare_rows": build_config_compare_rows(current_symbol, agent_summaries) if current_symbol else [],
         "symbol_mode": symbol_mode,
         "symbol_freq": symbol_freq,
         "symbol_enabled": symbol_enabled,
         "scheduler_enabled": get_scheduler_status(),
         "market_timeframes": list(getattr(global_config, "market_timeframes", None) or []),
-        "news_snapshot": get_latest_news_snapshot(symbol=current_symbol),
+        "news_snapshot": get_latest_global_snapshot(),
     }
 
 
@@ -1085,22 +1094,29 @@ def list_short_memories_payload(
 
 
 def generate_short_memory_payload(config_id: str, bucket_start: str | None = None):
+    from backend.agent.agent_graph import generate_rolling_short_memory_for_config
+    from backend.database import get_summary_logic_between
     now = datetime.now(TZ_CN)
-    current_start, _ = get_short_memory_bucket(now)
-    target_time = current_start - timedelta(seconds=1)
+    target_time = now
     if bucket_start:
         try:
-            target_time = TZ_CN.localize(datetime.strptime(bucket_start, "%Y-%m-%d %H:%M:%S")) + timedelta(seconds=1)
+            parsed = datetime.fromisoformat(bucket_start)
+            target_time = parsed.astimezone(TZ_CN) if parsed.tzinfo else TZ_CN.localize(parsed)
         except (ValueError, TypeError) as exc:
             raise ValueError('无效的复盘窗口时间') from exc
-    start, end = get_short_memory_bucket(target_time)
-    if end > now:
-        raise ValueError('只能整理已结束的四小时窗口')
-    generated = generate_short_memory_for_config(config_id, now_cn=target_time)
-    outcome = get_review_result(f'bucket:{config_id}:{start:%Y-%m-%d %H:%M:%S}:{end:%Y-%m-%d %H:%M:%S}') or {}
-    existing = get_short_memory(config_id, start.strftime('%Y-%m-%d %H:%M:%S'))
-    status = outcome.get('status') or ('completed' if generated else 'unchanged' if existing else 'failed')
-    if existing and status == 'completed' and (not generated or not outcome):
+    if target_time > now:
+        raise ValueError('只能整理已结束的时间，不能生成未来记忆')
+    cfg = global_config.get_config_by_id(config_id)
+    if not cfg:
+        raise ValueError('交易任务不存在')
+    start, end = target_time - timedelta(hours=4), target_time
+    rows = get_summary_logic_between(config_id, start.strftime('%Y-%m-%d %H:%M:%S'),
+                                     (end + timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S'))
+    generated = generate_rolling_short_memory_for_config(config_id, {**cfg, 'enabled': True}, now_cn=target_time, hours=4)
+    outcome = get_review_result(f'rolling:{config_id}:{rows[-1].get("timestamp")}') if rows else {}
+    outcome = outcome or {}
+    status = outcome.get('status') or ('completed' if generated else 'unchanged' if not rows else 'failed')
+    if status == 'completed' and not generated:
         status = 'unchanged'
     return {'generated': generated, 'review_status': status, 'error': outcome.get('error', '')
             or ('整理未完成或已有整理正在运行，旧记忆已保留。' if status == 'failed' else ''),

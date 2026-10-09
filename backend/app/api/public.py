@@ -16,9 +16,13 @@ router = APIRouter(prefix="/api/public", tags=["public"])
 
 @router.get("/polymarket")
 def polymarket():
-    from backend.utils.polymarket import get_polymarket_context
+    from backend.app.services.news_service import get_latest_news
 
-    return {"success": True, **get_polymarket_context()}
+    news = get_latest_news()
+    predictions = news.get('polymarket') or {'enabled': False, 'events': [], 'source_health': {}}
+    return {"success": True, **predictions, 'snapshot_id': news.get('snapshot_id'),
+            'as_of': news.get('as_of'), 'stale': news.get('stale', False),
+            'status': news.get('status')}
 
 
 @router.get("/dashboard")
@@ -27,7 +31,7 @@ def dashboard(symbol: str | None = None):
 
 
 @router.get("/compare")
-def compare(symbol: str = "BTC/USDT", config_ids: str = ""):
+def compare(symbol: str | None = None, config_ids: str = ""):
     return {"success": True, **build_public_compare_payload(symbol, config_ids)}
 
 

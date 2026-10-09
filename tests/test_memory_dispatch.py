@@ -18,7 +18,7 @@ def local_db(tmp_path, monkeypatch):
         initialize_schema(conn)
 
 
-def test_manual_review_uses_completed_window_and_reports_existing_result(monkeypatch):
+def test_manual_review_uses_rolling_four_hours_and_reports_existing_result(local_db, monkeypatch):
     now = dashboard_service.TZ_CN.localize(datetime(2026, 10, 6, 10, 15))
     class Clock(datetime):
         @classmethod
@@ -26,16 +26,17 @@ def test_manual_review_uses_completed_window_and_reports_existing_result(monkeyp
             return now
     monkeypatch.setattr(dashboard_service, 'datetime', Clock)
     generate = Mock(return_value=False)
-    monkeypatch.setattr(dashboard_service, 'generate_short_memory_for_config', generate)
+    monkeypatch.setattr(agent_graph, 'generate_rolling_short_memory_for_config', generate)
+    monkeypatch.setattr(dashboard_service.global_config, 'get_config_by_id', lambda _: {'config_id': 'cfg'})
     monkeypatch.setattr(dashboard_service, 'get_review_result', lambda *_: {'status': 'completed'})
     monkeypatch.setattr(dashboard_service, 'get_short_memory', lambda *_: {'market_summary': 'retained'})
     result = dashboard_service.generate_short_memory_payload('cfg')
     assert result['review_status'] == 'unchanged'
-    assert result['bucket_start'] == '2026-10-06 04:00:00'
-    assert result['bucket_end'] == '2026-10-06 08:00:00'
-    assert generate.call_args.kwargs['now_cn'] < now
+    assert result['bucket_start'] == '2026-10-06 06:15:00'
+    assert result['bucket_end'] == '2026-10-06 10:15:00'
+    assert generate.call_args.kwargs['now_cn'] == now
     with pytest.raises(ValueError, match='已结束'):
-        dashboard_service.generate_short_memory_payload('cfg', '2026-10-06 08:00:00')
+        dashboard_service.generate_short_memory_payload('cfg', '2026-10-06 11:00:00')
     with pytest.raises(ValueError, match='无效'):
         dashboard_service.generate_short_memory_payload('cfg', 'not-a-date')
     assert generate.call_count == 1

@@ -91,3 +91,10 @@ test('task-specific options include the remembered interval and reject unsupport
   assert.deepEqual(chartTimeframeOptions(['unsupported'], '5m'), ['5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']);
   assert.deepEqual(chartTimeframeOptions(null, 'invalid'), ['15m', '30m', '1h', '4h', '1d', '1w', '1M']);
 });
+
+test('global task workspace keeps different symbols and selects the first enabled task', () => {
+  const agents = [{ config_id: 'btc', symbol: 'BTC/USDT', enabled: false }, { config_id: 'eth', symbol: 'ETH/USDT', enabled: true }];
+  assert.equal(selectDashboardTab(agents, null), 'eth');
+  assert.equal(selectDashboardTab(agents, 'btc'), 'btc');
+  assert.equal(JSON.parse(workspaceSignature(agents)).length, 2);
+});

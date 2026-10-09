@@ -14,77 +14,8 @@ from backend.utils.spot_portfolio import get_config_symbols
 
 
 def get_token_stats_payload():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
-    pricing = get_all_pricing()
-    daily_stats = cursor.execute(
-        """
-        SELECT strftime('%Y-%m-%d', timestamp) as day,
-               SUM(prompt_tokens) as prompt,
-               SUM(completion_tokens) as completion,
-               SUM(total_tokens) as total
-        FROM token_usage
-        GROUP BY day
-        ORDER BY day DESC LIMIT 14
-        """
-    ).fetchall()
-
-    daily_costs = {}
-    all_usages = cursor.execute("SELECT timestamp, model, prompt_tokens, completion_tokens FROM token_usage").fetchall()
-    for usage in all_usages:
-        day = usage["timestamp"][:10]
-        m_price = pricing.get(usage["model"], {"input_price_per_m": 0, "output_price_per_m": 0})
-        cost = (usage["prompt_tokens"] / 1_000_000 * m_price["input_price_per_m"]) + (
-            usage["completion_tokens"] / 1_000_000 * m_price["output_price_per_m"]
-        )
-        daily_costs[day] = daily_costs.get(day, 0) + cost
-
-    model_stats = cursor.execute(
-        """
-        SELECT model,
-               SUM(prompt_tokens) as prompt,
-               SUM(completion_tokens) as completion,
-               SUM(total_tokens) as total
-        FROM token_usage
-        GROUP BY model
-        """
-    ).fetchall()
-
-    model_stats_list = []
-    for model_row in model_stats:
-        row = dict(model_row)
-        m_price = pricing.get(row["model"], {"input_price_per_m": 0, "output_price_per_m": 0})
-        row["cost"] = (row["prompt"] / 1_000_000 * m_price["input_price_per_m"]) + (
-            row["completion"] / 1_000_000 * m_price["output_price_per_m"]
-        )
-        model_stats_list.append(row)
-
-    agent_stats = cursor.execute(
-        """
-        SELECT config_id, symbol,
-               SUM(prompt_tokens) as prompt,
-               SUM(completion_tokens) as completion,
-               SUM(total_tokens) as total
-        FROM token_usage
-        GROUP BY config_id
-        """
-    ).fetchall()
-
-    conn.close()
-    daily_formatted = []
-    for row in daily_stats:
-        formatted = dict(row)
-        formatted["cost"] = round(daily_costs.get(formatted["day"], 0), 4)
-        daily_formatted.append(formatted)
-
-    return {
-        "daily": daily_formatted,
-        "models": model_stats_list,
-        "agents": [dict(row) for row in agent_stats],
-        "pricing": pricing,
-    }
+    from backend.database_usage import token_stats
+    return token_stats()
 
 
 def save_pricing_payload(model: str, input_price: float, output_price: float, currency: str = "USD"):
@@ -603,47 +534,70 @@ def _equity_series_metadata(points: list[dict]) -> dict:
     }
 
 
-def get_equity_compare_payload(symbol: str, config_ids: str = ""):
+def get_equity_compare_payload(symbol: str | None = None, config_ids: str = ""):
     configs = [
         cfg
         for cfg in global_config.get_all_symbol_configs()
-        if symbol in get_config_symbols(cfg)
+        if (not symbol or symbol in get_config_symbols(cfg))
         and cfg.get("enabled", True)
         and str(cfg.get("mode") or "STRATEGY").upper() in {"REAL", "STRATEGY", "SPOT_DCA"}
     ]
     if config_ids:
         wanted = {item.strip() for item in config_ids.split(",") if item.strip()}
         configs = [cfg for cfg in configs if cfg.get("config_id") in wanted]
-    configs = configs[:12]
+    import hashlib
+    grouped_configs = []
+    real_groups = {}
+    for cfg in configs:
+        if not symbol and str(cfg.get('mode') or '').upper() == 'REAL':
+            exchange = cfg.get('exchange') or 'binance'
+            key = cfg.get('api_key') or cfg.get('binance_api_key') or cfg.get('okx_api_key')
+            try:
+                exchange, key, _, _ = global_config.get_exchange_credentials(config_id=cfg['config_id'])
+            except (AttributeError, KeyError):
+                pass
+            identity = hashlib.sha256(f"{exchange}:{cfg.get('market_type') or 'swap'}:{key or cfg['config_id']}".encode()).hexdigest()
+            if identity in real_groups:
+                real_groups[identity]['_config_ids'].append(cfg['config_id'])
+                continue
+            item = {**cfg, '_config_ids': [cfg['config_id']], '_account_scope': identity}
+            real_groups[identity] = item
+        else:
+            item = {**cfg, '_config_ids': [cfg['config_id']]}
+        grouped_configs.append(item)
 
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     series = []
-    for cfg in configs:
+    for cfg in grouped_configs:
         config_id = cfg.get("config_id")
         mode = str(cfg.get("mode") or "STRATEGY").upper()
         display_name = cfg.get("title") or cfg.get("display_name") or config_id
         label = f"{display_name} ({mode})"
         points = []
         data_source = None
+        selected_symbol = symbol or cfg.get('symbol') or next(iter(get_config_symbols(cfg)), '')
         if mode == "REAL":
+            ids = cfg['_config_ids']
+            id_placeholders = ','.join('?' for _ in ids)
+            symbol_clause = ' AND symbol = ?' if symbol else ''
             rows = cursor.execute(
-                """
+                f"""
                 SELECT day, total_equity FROM (
                     SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
                            row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
                     FROM balance_history
-                    WHERE config_id = ? AND symbol = ? AND total_equity > 0
+                    WHERE config_id IN ({id_placeholders}){symbol_clause} AND total_equity > 0
                 ) WHERE rn = 1 ORDER BY day ASC
                 """,
-                (config_id, symbol),
+                [*ids, *([symbol] if symbol else [])],
             ).fetchall()
             points = [{"date": row["day"], "equity": row["total_equity"]} for row in rows]
             data_source = {
                 "table": "balance_history",
                 "field": "total_equity",
-                "scope": "config_id",
+                "scope": "account" if not symbol else "config_id",
                 "config_id": config_id,
                 "symbol": symbol,
                 "label": "balance_history.total_equity",
@@ -661,7 +615,7 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
                     WHERE config_id = ? AND symbol = ? AND COALESCE(total_equity, balance) > 0
                 ) h WHERE h.rn = 1 ORDER BY h.day ASC
                 """,
-                (config_id, symbol),
+                (config_id, selected_symbol),
             ).fetchall()
             points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
             data_source = {
@@ -670,20 +624,23 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
                 "fallback_field": "balance",
                 "scope": "config_id",
                 "config_id": config_id,
-                "symbol": symbol,
+                "symbol": selected_symbol,
                 "label": "mock_balance_history.total_equity",
                 "display_label": "策略模拟权益快照",
                 "kind": "strategy_equity",
             }
         elif mode == "SPOT_DCA":
+            target_symbols = [symbol] if symbol else get_config_symbols(cfg)
+            placeholders = ','.join('?' for _ in target_symbols)
             rows = cursor.execute(
-                """
-                SELECT snapshot_date AS day, total_invested AS equity
+                f"""
+                SELECT snapshot_date AS day, SUM(total_invested) AS equity
                 FROM dca_daily_snapshots
-                WHERE config_id = ? AND symbol = ? AND total_invested > 0
+                WHERE config_id = ? AND symbol IN ({placeholders}) AND total_invested > 0
+                GROUP BY snapshot_date
                 ORDER BY snapshot_date ASC
                 """,
-                (config_id, symbol),
+                (config_id, *target_symbols),
             ).fetchall()
             points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
             data_source = {
@@ -695,11 +652,15 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
                 "label": "dca_daily_snapshots.total_invested",
                 "display_label": "定投累计投入快照",
                 "kind": "dca_invested",
+                "symbols": target_symbols,
             }
 
         series.append(
             {
                 "config_id": config_id,
+                "config_ids": cfg['_config_ids'],
+                "account_scope": cfg.get('_account_scope'),
+                "symbol": selected_symbol if mode != 'SPOT_DCA' else symbol,
                 "label": label,
                 "mode": mode,
                 "points": points,
@@ -709,7 +670,10 @@ def get_equity_compare_payload(symbol: str, config_ids: str = ""):
         )
 
     conn.close()
-    return {"symbol": symbol, "series": series}
+    return {"symbol": symbol, "series": series, "groups": [
+        {'mode': mode, 'series': [item for item in series if item['mode'] == mode]}
+        for mode in ('REAL', 'STRATEGY', 'SPOT_DCA')
+    ]}
 
 
 _KLINE_ALLOWED_TF = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}

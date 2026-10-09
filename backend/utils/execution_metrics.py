@@ -81,5 +81,6 @@ def metrics_context(config_id, start_ms, end_ms, scope=None, symbol=None):
                             (config_id, scope, scope, symbol, symbol)).fetchall()
     values = [json.loads(row['payload']) for row in rows]
     values = [v for v in values if start_ms <= v.get('flat_observed_at', v.get('last_observed_at', 0)) < end_ms]
-    return {'observation_count': len(values), 'details': values[-20:], 'omitted_details': max(0, len(values) - 20),
+    values.sort(key=lambda value: value.get('flat_observed_at', value.get('last_observed_at', 0)))
+    return {'observation_count': len(values), 'details': values, 'omitted_details': 0,
             'limits': '浮盈浮亏为维护任务采样极值，非逐笔真实MFE/MAE；首次发现仓位时间不是开仓成交时间；退出后价格不证明原交易应继续持有。'}

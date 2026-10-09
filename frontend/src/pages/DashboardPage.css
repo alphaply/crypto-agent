@@ -34,7 +34,7 @@
 .dashboard-v2 .dashboard-schedule-rules { display: grid; gap: 10px; }
 .dashboard-v2 .dashboard-rule { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); }
 .dashboard-v2 .dashboard-rule.is-current { border-left: 3px solid var(--accent); }
-.dashboard-v2 .market-workbench { grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; }
+.dashboard-v2 .market-workbench { grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .dashboard-v2 .market-workbench .ant-card { border-radius: 12px; }
 .dashboard-v2 .intelligence-rail { max-height: none; overflow: visible; }
 

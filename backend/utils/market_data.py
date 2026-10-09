@@ -821,6 +821,7 @@ class MarketTool:
         全量获取市场数据的主入口
         """
         spot_profile = str(mode).upper() == 'SPOT_DCA' or getattr(self, 'market_type', None) == 'spot'
+        hourly_profile = (getattr(self, 'runtime_config', {}) or {}).get('market_profile') == 'hourly'
         if timeframes is None and spot_profile:
             from backend.utils.spot_portfolio import SPOT_MARKET_TIMEFRAMES
             timeframes = list(SPOT_MARKET_TIMEFRAMES)
@@ -846,7 +847,8 @@ class MarketTool:
 
         for tf in timeframes:
             logger.debug(f"  → Processing timeframe: {tf}")
-            data = self.process_timeframe(symbol, tf, profile='spot') if spot_profile else self.process_timeframe(symbol, tf)
+            data = (self.process_timeframe(symbol, tf, profile='spot') if spot_profile else
+                    self.process_timeframe(symbol, tf, profile='hourly') if hourly_profile else self.process_timeframe(symbol, tf))
             if data:
                 final_output["analysis"][tf] = data
                 logger.debug(f"  ✅ {tf} data collected (price: {data.get('price', 'N/A')})")
@@ -877,7 +879,9 @@ class MarketTool:
         try:
             logger.debug(f"    🔍 [{tf}] Fetching OHLCV data for {symbol}...")
             spot_profile = profile == 'spot' or getattr(self, 'market_type', None) == 'spot'
-            fetch_limit = 600 if spot_profile else (60 if tf == '1M' else 1000)
+            hourly_profile = profile == 'hourly'
+            candle_limit = {'1h': 24, '4h': 12, '1d': 7}.get(tf, 10) if hourly_profile else self.AGENT_CANDLE_LIMIT
+            fetch_limit = 600 if spot_profile or hourly_profile else (60 if tf == '1M' else 1000)
             min_bars = 1 if spot_profile else (12 if tf == '1M' else (52 if tf == '1w' else 200))
             ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=fetch_limit)
             if not ohlcv or len(ohlcv) < min_bars:
@@ -913,7 +917,7 @@ class MarketTool:
             quality = {
                 'basis': 'closed_candles_only', 'last_closed_at': str(last_closed_at) + ' UTC',
                 'forming_candles_excluded': forming_count, 'bars': len(df),
-                'display_bars': min(self.AGENT_CANDLE_LIMIT, len(df)),
+                'display_bars': min(candle_limit, len(df)),
                 'observed_at': str(now_utc.floor('s')) + ' UTC',
                 'invalid_candles_excluded': invalid_count,
                 'duplicate_candles_excluded': duplicate_count,
@@ -1006,7 +1010,7 @@ class MarketTool:
             
             # 序列数据
             def to_list(series):
-                raw = series.iloc[-self.AGENT_CANDLE_LIMIT:].values.tolist()
+                raw = series.iloc[-candle_limit:].values.tolist()
                 return [smart_fmt(float(x)) for x in raw]
 
             recent_opens = to_list(df['open'])
@@ -1033,7 +1037,7 @@ class MarketTool:
                 "recent_highs": recent_highs,
                 "recent_lows": recent_lows,
                 "recent_volumes": to_list(volume),
-                "recent_times": df['time'].tail(self.AGENT_CANDLE_LIMIT).dt.strftime('%Y-%m-%d %H:%M').tolist(),
+                "recent_times": df['time'].tail(candle_limit).dt.strftime('%Y-%m-%d %H:%M').tolist(),
                 "decision_context": build_agent_indicator_context(df, emas, rsi, atr, hist),
 
                 "rsi_analysis": rsi_result,

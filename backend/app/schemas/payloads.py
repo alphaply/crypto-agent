@@ -2,7 +2,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from backend.utils.polymarket import PolymarketSettings
-from backend.utils.run_schedule import RunScheduleRule
+from backend.utils.run_schedule import RunScheduleRule, DcaSchedule
+from backend.app.schemas.news import NewsSettings, PricingSyncSettings
 
 
 class LoginRequest(BaseModel):
@@ -82,6 +83,8 @@ class GlobalSecretsPayload(BaseModel):
 
 
 class ConfigGlobalPayload(BaseModel):
+    news: NewsSettings = Field(default_factory=NewsSettings)
+    pricing_sync: PricingSyncSettings = Field(default_factory=PricingSyncSettings)
     polymarket: PolymarketSettings = Field(default_factory=PolymarketSettings)
     leverage: int = 20
     enable_scheduler: bool = True
@@ -149,6 +152,8 @@ class ConfigAgentPayload(BaseModel):
     run_schedule: list[RunScheduleRule] = Field(default_factory=list, max_length=20)
     leverage: int | None = None
     market_timeframes: list[str] | None = None
+    market_profile: Literal["legacy", "hourly", "spot"] | None = None
+    dca_schedule: DcaSchedule | None = None
     exchange: str | None = None
     market_type: str | None = None
     dca_amount: float | None = None
@@ -189,8 +194,15 @@ class LlmProviderPayload(BaseModel):
     thinking_enabled: bool | None = None
     reasoning_effort: str | None = None
     system_prompt_role: Literal["system", "user"] = "system"
-    input_price_per_m: float | None = 0
-    output_price_per_m: float | None = 0
+    api_protocol: Literal["chat", "decisions"] = "chat"
+    report_output_mode: Literal["json", "json_schema", "tool"] = "json"
+    models_dev_provider_id: str = ""
+    models_dev_model_id: str = ""
+    pricing_mode: Literal["manual", "models_dev"] = "manual"
+    input_price_per_m: float | None = Field(None, ge=0)
+    output_price_per_m: float | None = Field(None, ge=0)
+    cache_read_price_per_m: float | None = Field(None, ge=0)
+    cache_write_price_per_m: float | None = Field(None, ge=0)
     pricing_currency: str | None = "USD"
     secrets: LlmProviderSecretsPayload = Field(default_factory=LlmProviderSecretsPayload)
 

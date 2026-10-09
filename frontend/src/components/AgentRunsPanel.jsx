@@ -29,6 +29,7 @@ export default function AgentRunsPanel({ agents = [] }) {
   const unknown = zh ? '未知' : 'Unknown';
   const purposeLabels = {
     decision: zh ? '交易决策' : 'Trading decision',
+    strategy_summary: zh ? '单轮策略压缩' : 'Per-round strategy summary',
     memory_review: zh ? '记忆整理与复盘' : 'Memory and review',
     daily_summary: zh ? '日内归档' : 'Daily summary',
   };
@@ -95,7 +96,7 @@ export default function AgentRunsPanel({ agents = [] }) {
 
   return <Space direction="vertical" size="middle" style={{ width: '100%' }}>
     <Alert type="info" showIcon title={zh ? '交易 Agent 负责决策和执行，记忆 Agent 负责复盘和维护未锁定的规则。' : 'The trading agent decides and executes; the memory agent reviews outcomes and maintains unlocked rules.'}
-      description={zh ? `这里展示更新后实际发生的模型调用。每任务保留最近 ${retention.per_config} 次，最长 ${retention.days} 天；字符数包含消息和工具定义的 JSON，不等于 Token。费用优先使用服务商返回值，否则按调用当时已配置的模型费率估算（不含缓存折扣等差异）；缺少价格或用量显示未知。仅登录后可查看。` : `Actual model calls recorded after this update. Keeps the latest ${retention.per_config} calls per task for up to ${retention.days} days. Character counts include message and tool JSON, not tokens. Costs use provider-reported values when available, otherwise an estimate from rates configured at call time, excluding cache discounts and similar differences. Missing prices or usage stay unknown. Login is required.`} />
+      description={zh ? `这里展示更新后实际发生的模型调用。每任务保留最近 ${retention.per_config} 次，最长 ${retention.days} 天；字符数包含消息和工具定义的 JSON，不等于 Token。费用优先使用服务商返回值，否则按调用时的渠道费率估算（含已报告的缓存用量）；缺少价格或用量显示未知。仅登录后可查看。` : `Actual model calls recorded after this update. Keeps the latest ${retention.per_config} calls per task for up to ${retention.days} days. Character counts include message and tool JSON, not tokens. Costs use provider-reported values when available, otherwise an estimate from provider-specific rates at call time, including reported cache usage. Missing prices or usage stay unknown. Login is required.`} />
     <Space wrap>
       <Select allowClear showSearch optionFilterProp="label" aria-label={zh ? '运行记录所属任务' : 'Run task'} value={configId} onChange={(value) => { setConfigId(value); setPage(1); }} placeholder={zh ? '全部任务' : 'All tasks'} style={{ minWidth: 220 }} options={agents.map((agent) => ({ value: agent.config_id, label: agent.title || agent.config_id }))} />
       <Select allowClear aria-label={zh ? '调用用途' : 'Call purpose'} value={purpose} onChange={(value) => { setPurpose(value); setPage(1); }} placeholder={zh ? '全部用途' : 'All purposes'} style={{ minWidth: 190 }} options={Object.entries(purposeLabels).map(([value, label]) => ({ value, label }))} />

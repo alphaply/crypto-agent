@@ -160,7 +160,7 @@ def test_summarize_content_invokes_the_model_it_builds():
         assert summarize_content("market analysis", config) == "summary"
 
 
-def test_finalize_node_saves_local_excerpt_without_extra_model_calls():
+def test_finalize_node_saves_configured_strategy_summary_separately_from_raw_analysis():
     state = AgentState(
         symbol="BTC/USDT",
         messages=[AIMessage(content="hold position")],
@@ -180,10 +180,15 @@ def test_finalize_node_saves_local_excerpt_without_extra_model_calls():
     ) as save, patch("backend.agent.agent_graph.update_turn_memory") as update_memory:
         finalize_node(state, config)
 
-    summarize.assert_not_called()
+    summarize.assert_called_once()
+    assert 'hold position' in summarize.call_args.args[0]
+    assert '本轮无工具调用' in summarize.call_args.args[0]
+    assert summarize.call_args.args[1]['config_id'] == 'cfg-test'
+    assert summarize.call_args.kwargs['summary_type'] == 'report'
     update_memory.assert_not_called()
-    assert 'hold position' in save.call_args.args[3]
-    assert '本轮无工具调用' in save.call_args.args[3]
+    import json
+    assert json.loads(save.call_args.kwargs['report_json'])['raw_analysis'] == 'hold position'
+    assert save.call_args.args[3] == 'summary'
 
 
 def test_collect_agent_reasoning_preserves_tool_call_stages():
@@ -339,8 +344,10 @@ def test_length_with_complete_tool_call_continues_and_saves_warning():
     trade.assert_called_once_with("open_position_real", args, "unknown", "ETH/USDT", operation_id="call-trace")
     sleep.assert_not_called()
     assert model.calls == 2
-    assert "[输出提示]" in save.call_args.args[2]
-    assert "工具执行结果已确认" in save.call_args.args[2]
+    import json
+    raw = json.loads(save.call_args.kwargs['report_json'])['raw_analysis']
+    assert "[输出提示]" in raw
+    assert "工具执行结果已确认" in raw
     assert progress[-1]['phase'] == 'completed'
 
 

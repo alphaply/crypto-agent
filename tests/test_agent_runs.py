@@ -141,6 +141,29 @@ def test_list_metadata_only_filtering_and_detail(client):
     assert client.get('/api/agent-runs/' + 'f' * 32).status_code == 404
 
 
+def test_strategy_summary_has_distinct_authenticated_filter_and_full_detail(client):
+    source = '完整单轮策略输入：' + '事实与执行回执。' * 700 + '输入末尾'
+    summary = '模型压缩后的策略摘要；' * 150 + '摘要末尾：等待确认后才入场。'
+    run_id = runs.start_agent_run('cfg', 'strategy_summary', 'deepseek-test',
+                                  [HumanMessage(content=source)])
+    runs.finish_agent_run(run_id, status='success', output=summary,
+                          usage={'input_tokens': 2000, 'output_tokens': 500})
+    start('cfg', 'memory_review')
+    assert client.get('/api/agent-runs', params={'purpose': 'strategy_summary'}).status_code == 401
+    authenticate(client)
+    response = client.get('/api/agent-runs', params={'purpose': 'strategy_summary', 'config_id': 'cfg'})
+    assert response.status_code == 200
+    listed = response.json()
+    assert listed['total'] == 1 and listed['runs'][0]['run_id'] == run_id
+    assert listed['runs'][0]['purpose'] == 'strategy_summary'
+    assert listed['runs'][0]['model'] == 'deepseek-test'
+    assert listed['runs'][0]['completion_tokens'] == 500
+    detail = client.get('/api/agent-runs/' + run_id).json()['run']
+    assert detail['messages'][0]['content'] == source
+    assert detail['output'] == summary
+    assert client.get('/api/agent-runs', params={'purpose': 'memory_review'}).json()['total'] == 1
+
+
 @pytest.mark.parametrize('params', [
     {'limit': 0}, {'limit': 101}, {'offset': -1}, {'offset': 10001},
     {'purpose': 'unknown'}, {'config_id': ''}, {'config_id': 'x' * 201}, {'limit': 'bad'},

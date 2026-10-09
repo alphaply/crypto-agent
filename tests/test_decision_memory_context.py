@@ -25,7 +25,7 @@ def test_daily_memory_is_seven_calendar_days_not_seven_rows(local_db):
     assert [x['date'] for x in store.get_daily_summaries('cfg')] == ['2026-10-01', '2026-09-30', '2026-09-25']
 
 
-def test_recent_decisions_are_three_chronological_bounded_summaries(local_db):
+def test_recent_decisions_are_three_chronological_complete_summaries(local_db):
     with database.get_db_conn() as conn:
         for index in range(4):
             conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic) VALUES(?,?,?)',
@@ -34,7 +34,7 @@ def test_recent_decisions_are_three_chronological_bounded_summaries(local_db):
         conn.commit()
     lines = agent_graph.format_recent_decisions('cfg').splitlines()
     assert len(lines) == 3
-    assert all(len(line.split('] ', 1)[1]) == 500 for line in lines)
+    assert all(len(line.split('] ', 1)[1]) == 700 for line in lines)
     assert '01:00:00' in lines[0] and '03:00:00' in lines[2]
     assert 'other task' not in '\n'.join(lines)
 

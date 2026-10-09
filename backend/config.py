@@ -58,6 +58,11 @@ class Config:
                 config["config_id"] = f"{symbol}-{model}-{index}"
                 logger.warning(f"Config {index} missing config_id, auto-generated {config['config_id']}")
 
+            if (config.get('api_protocol') == 'decisions'
+                    or (config.get('summarizer') or {}).get('api_protocol') == 'decisions'
+                    or any(item.get('api_protocol') == 'decisions' for item in config.get('fallback_models') or [])):
+                raise ValueError("Jev Decisions channels are for news scoring; use a chat model for agents and reports")
+
             config_id = str(config["config_id"]).strip()
             if config_id in config_ids:
                 raise ValueError(f"Duplicate config_id: {config_id}")
@@ -101,6 +106,10 @@ class Config:
 
         self.enable_scheduler = bool(snapshot.get("enable_scheduler", True))
         self.polymarket = snapshot.get("polymarket") or {}
+        self.news = snapshot.get("news") or {}
+        self.pricing_sync = snapshot.get("pricing_sync") or {}
+        self.llm_providers = snapshot.get("llm_providers") or []
+        self.exchange_profiles = snapshot.get("exchange_profiles") or []
         self.leverage = int(snapshot.get("leverage", self.DEFAULT_LEVERAGE))
         self.langchain_tracing = bool(snapshot.get("langchain_tracing", False))
         self.langchain_project = snapshot.get("langchain_project", "crypto-agent")
@@ -138,7 +147,7 @@ class Config:
     ) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
         config = None
         if config_id:
-            config = self.configs_by_id.get(config_id)
+            config = self.get_config_by_id(config_id)
         elif symbol:
             for item in self.symbol_configs:
                 if symbol in get_config_symbols(item):
@@ -178,6 +187,9 @@ class Config:
         return None, None
 
     def get_config_by_id(self, config_id: str) -> Optional[Dict]:
+        if str(config_id).startswith("mcp:"):
+            from backend.mcp.settings import get_runtime_profile
+            return get_runtime_profile(config_id)
         return self.configs_by_id.get(config_id)
 
     def get_symbol_config(self, symbol: str) -> Optional[Dict]:
@@ -192,7 +204,7 @@ class Config:
 
     def get_leverage(self, config_id: Optional[str] = None) -> int:
         if config_id:
-            config = self.configs_by_id.get(config_id)
+            config = self.get_config_by_id(config_id)
             if config and "leverage" in config and config.get("leverage") is not None:
                 return int(config.get("leverage"))
         return int(self.leverage)

@@ -9,16 +9,19 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 - FastAPI 后端和 React + Vite 前端
 - 多 Agent 策略配置和定时调度
 - 现货 `SPOT_DCA` 单任务支持 1–10 个同计价币标的，可从交易所接口搜索选择，也可通过 API 配置；默认分析 `4h / 1d / 1w`，支持任务级覆盖（[现货组合与 API 说明](docs/TRADING_WORKFLOW.md#现货组合任务)）。
-- 现货组合按 `dca_freq` 共用上海时区自然日或周一开始的自然周额度，重跑、聊天和重启不会重置本周期预算；单标的初始持仓数量及成本与本任务后续成交合并统计。
+- 现货计划支持每日/每周多个时点，每个计划时槽获得一份跨标的组合额度；同一时槽的重试、审批恢复和重启不会重置额度，另受任务总预算约束；单标的初始持仓数量及成本与本任务后续成交合并统计。
 - 合约开仓、加仓、按数量减仓和批量顺序操作；退出方式可选必填 TP/SL、可选 TP/SL 或独立退出单，实盘与模拟均支持（[流程说明](docs/TRADING_WORKFLOW.md)）。
-- 交易 Agent 专注决策与执行，只读长期规则；短期记忆 Agent 每四小时整理策略与真实成交证据，负责复盘和有依据的规则修订。后台记忆中心支持人工编辑、锁定和版本记录。
-- 每轮直接保存有界决策摘录及执行状态，不再额外调用策略摘要或短期记忆模型。决策默认读取行情、账户、短期记忆、最近三轮摘录和有效规则；收益、回撤及最近 7 天平仓由记忆 Agent 整理（[指标口径](docs/agent-performance-context.md)）。
+- 交易 Agent 专注决策与执行，只读长期规则；短期记忆 Agent 在每轮摘要落库后，结合本轮摘要、该任务前 4 小时摘要和当前记忆更新，负责复盘和有依据的规则修订。后台记忆中心支持人工编辑、锁定和版本记录。
+- 每轮由配置的摘要模型（如 DeepSeek）按策略 Prompt 压缩完整决策与工具执行记录，完整保存返回的策略摘要，原始分析另行保留。决策默认读取行情、账户、完整短期记忆、最近三轮策略摘要和有效规则；收益、回撤及最近 7 天平仓由记忆 Agent 整理。应用不按字符数截断输入和有效输出，模型压缩仍遵循自定义 Prompt；所选时间窗口内的成交证据完整传递（[指标口径](docs/agent-performance-context.md)）。
 - 后台「Agent 运行」可查看实际模型输入、工具定义、输出、状态和 token 数；从升级后开始记录，无需依赖 LangSmith 查看拼接后的 Prompt（[设计说明](docs/PROMPT_DESIGN.md)）。
 - 交易接口及改单约束随工具描述提供；每轮保留精简的 TP/SL 状态。实盘入场改单支持多空方向校验，模拟未成交单支持联合修改入场价和 TP/SL，已成交仓位单独管理保护。
-- 行情上下文展示最近 10 根已收盘 K 线及时间、成交量，包含 CHOP14、CMF20、Squeeze 收缩/释放状态及趋势、动量、相对波动与量能参考；指标仍使用完整历史计算和预热。
+- 新建合约任务默认每 60 分钟运行，1h 分析预设使用 `1h / 4h / 1d`，每周期计算 600 根历史并展示 `24 / 12 / 7` 根已收盘 K 线。既有间隔、时段和显式行情配置保留。
 - K 线、均线、持仓、订单和盈亏展示
-- 聊天控制台、运行配置页、公开用量统计页
-- 消息情报：官方宏观经济日历、美联储/美国财政部政策、美债流动性与加密新闻（默认每轮最多 10 项，支持全局 LLM 压缩和缓存回退）
+- 现代左侧导航与跨标的 Dashboard；按任务查看固定报告、持仓、短期记忆与 K 线。聊天采用“新建任务 → 聊天”，默认分析，可关联交易配置。
+- 聊天每次成功压缩上下文后自动总结会话标题，支持 reasoning 模型；标题生成失败保留原名。后台可直接删除现货任务及本地关联记录，交易所持仓和挂单需自行处理（[操作说明](docs/WORKBENCH.md#聊天标题与任务删除)）。
+- 模型按渠道独立计价，支持 models.dev 每 6 小时同步、人工覆盖、缓存费用和长期用量记录；未定价不显示为免费。
+- `/mcp` Streamable HTTP 服务为 WorkBuddy / ChatGPT 提供共享数据与交易工具，独立交易配置、凭据和调用记录。
+- 全局消息每小时聚合：原有宏观与加密来源、Polymarket、律动 RSS、币安官方公告连接；Jev Decisions 相关度评分与阈值过滤后，由普通模型生成统一快照，各 Agent、Chat、Dashboard 与 MCP 共享。
 - SQLite 本地状态存储
 - Docker 部署，Web 服务和调度器分容器运行
 
@@ -75,13 +78,10 @@ PORT=7860
 RUN_SCHEDULER_IN_WEB=true
 SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
-DAILY_SUMMARY_TIME=00:05
-DAILY_SUMMARY_RETRY_MINUTES=15
-SHORT_MEMORY_RETRY_MINUTES=15
 ```
 
 `ADMIN_PASSWORD` 用于登录控制台，`JWT_SECRET` 用于会话签名，`CONFIG_MASTER_KEY` 用于加密 SQLite 中保存的密钥。已有数据库继续使用时，不要更换 `CONFIG_MASTER_KEY`。
-每日总结默认在 `TIMEZONE` 对应时区的 `00:05` 汇总前一天策略及交易证据；调度器当时离线会在恢复后补跑，模型调用失败则默认每 15 分钟重试。短期记忆 Agent 整理最新完成的四小时窗口，负责复盘与长期规则维护，也支持手动及滚动整理；失败重试间隔由 `SHORT_MEMORY_RETRY_MINUTES` 控制。每轮交易仅保存决策摘录和执行状态，日报不再默认注入交易 Prompt。实盘保护计划另由每 5 秒扫描的维护循环核对，不等待下一轮 LLM 分析；实际延迟受网络及任务队列影响。
+每日记忆和旧固定 4 小时批次已停用，旧数据保留归档。每轮摘要与记忆待处理记录原子落库，短期记忆按任务串行更新，失败保留旧版本并只重试记忆步骤。实盘保护计划继续由原有独立维护循环核对，不等待下一轮 LLM 分析。操作说明见 [工作台配置](docs/WORKBENCH.md)、[MCP 接入](docs/MCP.md) 和 [交易流程](docs/TRADING_WORKFLOW.md)。
 
 ### 启动开发环境
 
@@ -133,9 +133,6 @@ CONFIG_MASTER_KEY=your-long-stable-config-master-key
 PORT=7860
 SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
-DAILY_SUMMARY_TIME=00:05
-DAILY_SUMMARY_RETRY_MINUTES=15
-SHORT_MEMORY_RETRY_MINUTES=15
 ```
 
 ### 启动服务

@@ -47,7 +47,8 @@ def test_dca_weekly_alias_and_already_executed_week():
     cfg = {'mode': 'SPOT_DCA', 'dca_freq': 'weekly', 'dca_weekday': 4, 'dca_time': '10:15'}
     assert schedule_preview(cfg, at('2026-09-17T12:00'))['next_run'] == '09-18 10:15'
     assert schedule_preview(cfg, at('2026-09-18T12:00'), dca_executed=True)['next_run'] == '09-25 10:15'
-    assert schedule_preview(cfg, at('2026-09-17T12:00'), dca_executed=True)['next_run'] == '09-25 10:15'
+    # A previous completed slot cannot consume a future occurrence.
+    assert schedule_preview(cfg, at('2026-09-17T12:00'), dca_executed=True)['next_run'] == '09-18 10:15'
 
 
 def test_dca_midnight_catchup_does_not_claim_a_slot_before_next_target():
@@ -57,9 +58,10 @@ def test_dca_midnight_catchup_does_not_claim_a_slot_before_next_target():
 
 def test_weekly_dispatch_deduplication_uses_iso_year(monkeypatch):
     from backend.app.core import scheduler
-    monkeypatch.setattr(scheduler, '_last_run_times', {'dca': at('2026-12-31T10:00')})
-    assert scheduler.dca_was_dispatched('dca', at('2027-01-01T10:00'), 'weekly')
-    assert not scheduler.dca_was_dispatched('dca', at('2027-01-08T10:00'), 'weekly')
+    cfg = {'dca_freq': 'weekly', 'dca_weekday': 3, 'dca_time': '10:00'}
+    scheduler._insert_scheduler_run('dca-iso', 'agent', '2026-12-31 10:00:00', status='FINISHED')
+    assert scheduler.dca_was_dispatched('dca-iso', at('2027-01-01T10:00'), config=cfg)
+    assert not scheduler.dca_was_dispatched('dca-iso', at('2027-01-08T10:00'), config=cfg)
 
 
 def test_service_uses_shared_rules_instead_of_legacy_interval():

@@ -7,7 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.api import auth, chat, config, dashboard, history, public, setup, stats, database_admin, trading_rules, agent_runs
+from backend.app.api import auth, chat, config, dashboard, history, public, setup, stats, database_admin, trading_rules, agent_runs, news, pricing
+from backend.mcp.server import install_mcp
 from backend.app.core.runtime import lifespan
 
 
@@ -31,6 +32,9 @@ app.include_router(agent_runs.router)
 app.include_router(public.router)
 app.include_router(stats.router)
 app.include_router(database_admin.router)
+app.include_router(news.router)
+app.include_router(pricing.router)
+install_mcp(app)
 
 
 DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"

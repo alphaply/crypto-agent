@@ -150,7 +150,9 @@ def test_prediction_only_news_and_threshold_probabilities(monkeypatch, event_pay
     monkeypatch.setattr(polymarket, 'get_polymarket_context', lambda: {'enabled': True, 'events': [event], 'source_health': {'polymarket:test': {'status': 'ok'}}})
     monkeypatch.setattr(news_context, '_fetch_cached', lambda *_args, **_kwargs: {'items': [], 'status': 'unavailable'})
     monkeypatch.setattr(news_context, '_news_digest', lambda *_: '')
-    result = news_context.fetch_news_risk_context('BTC/USDT')
+    # Exercise the retained source adapter; live agent reads now use the shared
+    # published snapshot and do not collect or score sources per symbol.
+    result = news_context._fetch_legacy_news_risk_context('BTC/USDT')
     assert result['available']
     assert 'Polymarket' in result['headlines'][0]
     assert 'polymarket:test' in result['source_health']

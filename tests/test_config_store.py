@@ -148,6 +148,28 @@ class ConfigStoreTests(unittest.TestCase):
         conn.close()
         self.assertIn("sort_order", columns)
 
+    def test_redacted_full_export_excludes_bootstrap_and_runtime_secrets(self):
+        config_store.ensure_runtime_config_initialized()
+        with patch.dict(os.environ, {'ADMIN_PASSWORD': 'admin-export-secret', 'JWT_SECRET': 'jwt-export-secret', 'PORT': '7860'}):
+            exported = config_store.export_full_snapshot(include_secrets=False)
+            encoded = json.dumps(exported)
+            for secret in ('test-master-key', 'admin-export-secret', 'jwt-export-secret', 'binance-secret', 'agent-api-key', 'okx-agent-secret'):
+                self.assertNotIn(secret, encoded)
+            self.assertEqual(exported['env']['PORT'], '7860')
+            self.assertEqual(exported['global_secrets'], {})
+            self.assertEqual(config_store.export_full_snapshot(include_secrets=True)['env']['ADMIN_PASSWORD'], 'admin-export-secret')
+
+    def test_full_import_rolls_back_runtime_when_mcp_validation_fails(self):
+        from backend.mcp.transfer import import_settings
+        config_store.ensure_runtime_config_initialized()
+        before = config_store.load_runtime_snapshot()
+        exported = config_store.export_full_snapshot(include_secrets=False)
+        exported['app_settings']['leverage'] = 3
+        invalid_mcp = {'profiles': [{'profile_id': 'mcp-test', 'name': 'Test', 'exchange_profile_id': 'missing-account', 'symbols': ['BTC/USDT']}]}
+        with self.assertRaisesRegex(ValueError, 'missing or incompatible'):
+            config_store.import_full_snapshot(exported, transaction_hook=lambda conn: import_settings(invalid_mcp, connection=conn))
+        self.assertEqual(config_store.load_runtime_snapshot(), before)
+
     def test_save_runtime_snapshot_updates_flags_and_clears_secret(self):
         config_store.ensure_runtime_config_initialized()
         management = config_store.load_management_snapshot()
@@ -215,6 +237,79 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(agent["passphrase"], "okx-pass")
         self.assertEqual(agent["extra_body"], {"reasoning_effort": "low"})
         self.assertEqual(agent["system_prompt_role"], "user")
+
+    def test_summarizer_provider_resolves_role_and_request_options(self):
+        providers = [{
+            "provider_id": "deepseek-summary", "name": "Summary provider", "role": "summarizer",
+            "model": "deepseek-flash", "api_base": "https://summary.example.test/v1",
+            "temperature": 0.2, "compatibility_mode": "deepseek", "thinking_enabled": False,
+            "reasoning_effort": "low", "system_prompt_role": "user", "extra_body": {"max_tokens": 4096},
+            "secrets": {"api_key": {"value": "summary-test-key"}},
+        }]
+        agents = [{
+            "config_id": "eth-summary", "symbol": "ETH/USDT", "mode": "STRATEGY",
+            "model": "trade-model", "system_prompt_role": "system",
+            "summarizer_provider_id": "deepseek-summary",
+            "strategy_prompt": "Compress to 80 characters: {content}",
+            "summarizer": {"strategy_prompt": "Nested configured prompt: {content}"},
+        }]
+        config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), agents, providers, [])
+
+        agent = config_store.load_runtime_snapshot()["agents"][0]
+        summary = agent["summarizer"]
+        self.assertEqual(summary["model"], "deepseek-flash")
+        self.assertEqual(summary["api_key"], "summary-test-key")
+        self.assertEqual(summary["api_base"], "https://summary.example.test/v1")
+        self.assertEqual(summary["system_prompt_role"], "user")
+        self.assertEqual(summary["extra_body"], {"max_tokens": 4096})
+        self.assertEqual(summary["compatibility_mode"], "deepseek")
+        self.assertFalse(summary["thinking_enabled"])
+        self.assertEqual(summary["reasoning_effort"], "low")
+        self.assertEqual(agent["strategy_prompt"], "Compress to 80 characters: {content}")
+
+        # A task's explicit role override follows the same precedence as its
+        # primary model role; unrelated provider defaults must not erase it.
+        agents[0]["summarizer"]["system_prompt_role"] = "system"
+        config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), agents, providers, [])
+        self.assertEqual(config_store.load_runtime_snapshot()["agents"][0]["summarizer"]["system_prompt_role"], "system")
+
+    def test_fallback_credentials_stay_in_provider_secret_storage_and_explicit_exports(self):
+        config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [{
+            'config_id': 'fallback-test', 'symbol': 'BTC/USDT', 'mode': 'STRATEGY',
+            'fallback_models': [{'model': 'backup', 'api_key': 'sensitive-fallback-value', 'api_base': 'https://backup.test/v1'}],
+        }])
+        runtime = config_store.load_runtime_snapshot()
+        self.assertEqual(runtime['agents'][0]['fallback_models'][0]['api_key'], 'sensitive-fallback-value')
+        with sqlite3.connect(self.db_path) as conn:
+            stored = conn.execute('SELECT data_json FROM agent_configs').fetchone()[0]
+        self.assertNotIn('sensitive-fallback-value', stored)
+        self.assertNotIn('sensitive-fallback-value', json.dumps(config_store.load_management_snapshot()))
+        self.assertNotIn('sensitive-fallback-value', json.dumps(config_store.export_full_snapshot(False)))
+        self.assertNotIn('sensitive-fallback-value', json.dumps(config_store.export_agent_configs()))
+        exported = config_store.export_full_snapshot(True)
+        backup = next(item for item in exported['llm_providers'] if item['model'] == 'backup')
+        self.assertEqual(backup['_secrets']['api_key'], 'sensitive-fallback-value')
+        self.assertTrue(exported['agents'][0]['fallback_llm_provider_ids'])
+
+    def test_legacy_default_cadence_and_explicit_hourly_profile_survive_roundtrip(self):
+        from backend.utils.run_schedule import effective_schedule
+        from datetime import datetime
+        config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [
+            {'config_id': 'old-real', 'symbol': 'BTC/USDT', 'mode': 'REAL'},
+            {'config_id': 'hourly', 'symbol': 'BTC/USDT', 'mode': 'REAL', 'market_profile': 'hourly'},
+            {'config_id': 'explicit', 'symbol': 'BTC/USDT', 'mode': 'REAL', 'market_profile': 'hourly', 'run_interval': 30},
+        ])
+        agents = config_store.load_runtime_snapshot()['agents']
+        intervals = {item['config_id']: effective_schedule(item, datetime(2026, 10, 8, 9))['interval'] for item in agents}
+        self.assertEqual(intervals, {'old-real': 15, 'hourly': 60, 'explicit': 30})
+
+    def test_invalid_imported_dca_schedule_cannot_replace_saved_tasks(self):
+        config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [{'config_id': 'keep', 'symbol': 'BTC/USDT'}])
+        with self.assertRaises(ValueError):
+            config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [
+                {'config_id': 'bad', 'symbol': 'BTC/USDT', 'mode': 'SPOT_DCA', 'dca_schedule': {'times': ['25:00']}},
+            ])
+        self.assertEqual(config_store.load_runtime_snapshot()['agents'][0]['config_id'], 'keep')
 
     def test_save_runtime_snapshot_preserves_agent_market_timeframes(self):
         config_store.save_runtime_snapshot(

@@ -36,6 +36,45 @@ def database_contents(path):
         return list(conn.iterdump())
 
 
+def test_new_task_defaults_are_hourly_without_changing_existing_or_explicit_settings(isolated_config_api, monkeypatch):
+    from backend.utils import llm_utils
+    monkeypatch.setattr(llm_utils, 'sync_langsmith_environment', lambda: None)
+    client, runtime, _ = isolated_config_api
+    config_store.save_runtime_snapshot({
+        'global_binance_api_key': 'test-account', 'global_binance_secret': 'test-secret',
+    }, [
+        {'config_id': 'legacy', 'symbol': 'BTC/USDT', 'mode': 'REAL'},
+        {'config_id': 'existing', 'symbol': 'BTC/USDT', 'mode': 'REAL', 'run_interval': 30,
+         'market_profile': 'legacy', 'market_timeframes': ['30m', '4h']},
+    ], validate_snapshot=Config.validate_snapshot)
+    runtime.reload_config()
+    response = client.put('/api/config', json={
+        'globals': {},
+        'agents': [
+            {'config_id': 'legacy', 'symbol': 'BTC/USDT', 'mode': 'REAL'},
+            {'config_id': 'existing', 'symbol': 'BTC/USDT', 'mode': 'REAL'},
+            {'config_id': 'new', 'symbol': 'BTC/USDT', 'mode': 'REAL'},
+            {'config_id': 'explicit', 'symbol': 'BTC/USDT', 'mode': 'REAL', 'run_interval': 15},
+            {'config_id': 'custom-chart', 'symbol': 'BTC/USDT', 'mode': 'REAL', 'market_timeframes': ['15m', '1h']},
+            {'config_id': 'explicit-profile', 'symbol': 'BTC/USDT', 'mode': 'REAL', 'market_profile': 'legacy'},
+        ],
+    })
+    assert response.status_code == 200, response.text
+    configs = runtime.configs_by_id
+    assert configs['new']['run_interval'] == 60
+    assert configs['new']['market_profile'] == 'hourly'
+    assert configs['legacy'].get('run_interval') is None
+    assert configs['legacy'].get('market_profile') is None
+    assert configs['existing']['run_interval'] == 30
+    assert configs['existing']['market_timeframes'] == ['30m', '4h']
+    assert configs['existing']['market_profile'] == 'legacy'
+    assert configs['explicit']['run_interval'] == 15
+    assert configs['custom-chart']['market_timeframes'] == ['15m', '1h']
+    assert configs['custom-chart'].get('market_profile') is None
+    assert configs['explicit-profile']['run_interval'] == 60
+    assert configs['explicit-profile']['market_profile'] == 'legacy'
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_http_put_missing_credentials_rolls_back_disk_and_runtime(isolated_config_api, enabled):
     client, runtime, db_path = isolated_config_api

@@ -97,7 +97,7 @@ def update_position_protection(
 
 
 @router.get("/equity-compare")
-def equity_compare(symbol: str = "BTC/USDT", config_ids: str = "", _: dict = Depends(get_current_user)):
+def equity_compare(symbol: str | None = None, config_ids: str = "", _: dict = Depends(get_current_user)):
     return {"success": True, **get_equity_compare_payload(symbol, config_ids)}
 
 

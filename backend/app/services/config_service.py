@@ -75,9 +75,16 @@ def _spot_account_changed(previous: dict, agent: dict, profiles: list[dict], glo
     # global credential rotation when it has an active spot lifecycle as well.
     for key in (f"global_{exchange}_api_key", f"global_{exchange}_secret", f"global_{exchange}_passphrase"):
         update = (globals_payload.get("secrets") or {}).get(key) or {}
-        if isinstance(update, dict) and (update.get("clear") or update.get("value")):
-            return True
-        if globals_payload.get(key) and globals_payload[key] != getattr(global_config, key, None):
+        previous_value = getattr(global_config, key, None)
+        if isinstance(update, dict):
+            if update.get("clear"):
+                return True
+            # The settings API returns saved values for editable secret fields.
+            # Resubmitting the same value during autosave is not a rotation.
+            value = update.get("value")
+            if value and value != previous_value:
+                return True
+        if globals_payload.get(key) and globals_payload[key] != previous_value:
             return True
     return False
 
@@ -96,14 +103,20 @@ def _validate_spot_config_change(previous: dict | None, agent: dict, profiles: l
 
 
 def _validate_removed_spot_configs(agents: list[dict]) -> None:
-    from backend.utils.spot_config_guard import assert_spot_config_change_allowed
+    from backend.utils.spot_config_guard import SpotConfigConflict, assert_spot_config_change_allowed
 
     next_ids = {item.get("config_id") for item in agents}
     for previous in global_config.symbol_configs:
         if previous.get("config_id") not in next_ids:
-            assert_spot_config_change_allowed(
-                previous, {"config_id": previous["config_id"], "mode": "DELETED"}, account_changed=True,
-            )
+            try:
+                assert_spot_config_change_allowed(
+                    previous, {"config_id": previous["config_id"], "mode": "DELETED"}, account_changed=True,
+                )
+            except SpotConfigConflict as exc:
+                raise SpotConfigConflict(
+                    '现货任务仍有持仓、委托或待核验记录；如需删除，请使用任务的“删除”按钮。'
+                    '删除仅清理本系统数据，交易所持仓和委托需自行处理。'
+                ) from exc
 
 
 def _prompt_project_root() -> Path:
@@ -179,15 +192,19 @@ def _prompt_files():
 
 
 def get_raw_config_payload():
-    snapshot = load_management_snapshot()
+    snapshot = load_management_snapshot(include_secrets=True)
     pricing = get_all_pricing()
     llm_providers = []
     for provider in snapshot.get("llm_providers", []):
         provider_copy = dict(provider)
-        model_price = pricing.get(provider_copy.get("model") or "", {})
-        provider_copy["input_price_per_m"] = model_price.get("input_price_per_m", provider_copy.get("input_price_per_m", 0))
-        provider_copy["output_price_per_m"] = model_price.get("output_price_per_m", provider_copy.get("output_price_per_m", 0))
-        provider_copy["pricing_currency"] = model_price.get("currency", provider_copy.get("pricing_currency", "USD"))
+        # Legacy prices only seed channels that have never had their own rate.
+        legacy = pricing.get(provider_copy.get('model') or '', {})
+        for field in ('input_price_per_m', 'output_price_per_m'):
+            if field not in provider_copy:
+                provider_copy[field] = legacy.get(field)
+        provider_copy.setdefault('pricing_currency', legacy.get('currency', 'USD'))
+        from backend.app.services.pricing_service import get_price_snapshot
+        provider_copy["effective_prices"] = get_price_snapshot(provider_copy.get("model", ""), provider_copy.get("provider_id"))
         llm_providers.append(provider_copy)
     return {
         "globals": snapshot["globals"],
@@ -208,6 +225,8 @@ def save_config_payload(
     llm_providers_payload: list[dict] | None = None,
     exchange_profiles_payload: list[dict] | None = None,
 ):
+    from backend.mcp.config_guard import account_change_hook
+    validate_mcp_accounts = account_change_hook()
     _validate_market_timeframes(globals_payload.get("market_timeframes") or [], field_name="market_timeframes")
     _validate_removed_spot_configs(agents_payload or [])
     normalized_agents_payload = []
@@ -217,10 +236,19 @@ def save_config_payload(
         previous = global_config.get_config_by_id(config_id)
         if previous:
             # Omitted fields preserve the policy of existing clients/configurations.
+            for field in ('run_interval', 'market_profile', 'market_timeframes'):
+                if agent_payload.get(field) is None and previous.get(field) is not None:
+                    agent_payload[field] = previous[field]
             if agent_payload.get("exit_mode") is None:
                 agent_payload["exit_mode"] = effective_exit_mode(previous)
             assert_exit_mode_change_allowed(previous, agent_payload)
         else:
+            # New tasks default to hourly analysis; imports and legacy runtime
+            # loading do not pass through this task-creation branch.
+            if agent_payload.get('mode') != 'SPOT_DCA' and agent_payload.get('run_interval') is None:
+                agent_payload['run_interval'] = 60
+                if not agent_payload.get('market_profile') and not agent_payload.get('market_timeframes'):
+                    agent_payload['market_profile'] = 'hourly'
             if agent_payload.get("exit_mode") is None:
                 agent_payload["exit_mode"] = "attached_required"
         effective_exit_mode(agent_payload)
@@ -231,23 +259,23 @@ def save_config_payload(
         _validate_spot_config_change(previous, agent_payload, exchange_profiles_payload or [], globals_payload)
         normalized_agents_payload.append(_normalize_agent_prompt_files(agent_payload))
 
+    decision_ids = {provider.get('provider_id') for provider in llm_providers_payload or [] if provider.get('api_protocol') == 'decisions'}
+    for agent in normalized_agents_payload:
+        assigned = {agent.get('llm_provider_id'), agent.get('summarizer_provider_id'), *(agent.get('fallback_llm_provider_ids') or [])}
+        if assigned & decision_ids:
+            raise ValueError('Jev Decisions channels can only be selected for news scoring')
+
     save_runtime_snapshot(
         globals_payload,
         normalized_agents_payload,
         llm_providers_payload or [],
         exchange_profiles_payload or [],
         validate_snapshot=global_config.validate_snapshot,
+        transaction_hook=validate_mcp_accounts,
     )
+    from backend.app.services.pricing_service import save_provider_pricing
     for provider in llm_providers_payload or []:
-        model = str(provider.get("model") or "").strip()
-        if not model:
-            continue
-        update_model_pricing(
-            model,
-            float(provider.get("input_price_per_m") or 0),
-            float(provider.get("output_price_per_m") or 0),
-            provider.get("pricing_currency") or "USD",
-    )
+        save_provider_pricing(provider)
     global_config.reload_config()
     from backend.utils.llm_utils import sync_langsmith_environment
 
@@ -294,6 +322,8 @@ def export_config_payload():
 def full_export_payload(include_secrets: bool = True) -> tuple[str, str]:
     """构建包含所有配置（含 prompts 和 pricing）的完整导出包并序列化为 JSON。"""
     snapshot = export_full_snapshot(include_secrets=include_secrets)
+    from backend.mcp.transfer import export_settings
+    snapshot['mcp'] = export_settings(include_secrets=include_secrets)
 
     # 附加 prompts 内容
     directory = prompt_dir()
@@ -326,6 +356,8 @@ def export_database_payload() -> tuple[bytes, str]:
 def full_import_payload(data: dict, write_env: bool = False) -> dict:
     """导入完整配置包，包括 prompts 和 model_pricing。"""
     data = dict(data)
+    from backend.mcp.config_guard import account_change_hook
+    validate_mcp_accounts = account_change_hook()
     data['agents'], data['exchange_profiles'] = _upgrade_legacy_spot_profiles(
         data.get('agents') or [], data.get('exchange_profiles') or [],
     )
@@ -346,12 +378,19 @@ def full_import_payload(data: dict, write_env: bool = False) -> dict:
         })
     prompt_files: dict[str, str] = data.pop("prompts", None) or {}
     model_pricing: list[dict] = data.pop("model_pricing", None) or []
+    mcp_payload = data.pop('mcp', None)
+    from backend.mcp.transfer import import_settings
+    def import_mcp(conn):
+        validate_mcp_accounts(conn)
+        if mcp_payload is not None:
+            import_settings(mcp_payload, connection=conn)
     result = import_full_snapshot(
         data=data,
         write_env=write_env,
         prompt_files=prompt_files,
         model_pricing=model_pricing,
         validate_snapshot=global_config.validate_snapshot,
+        transaction_hook=import_mcp,
     )
     return result
 
@@ -406,19 +445,23 @@ def delete_config_payload(config_id: str):
     if not target:
         raise FileNotFoundError(f"Config not found: {config_id}")
 
-    from backend.utils.spot_config_guard import assert_spot_config_change_allowed
-
-    previous = global_config.get_config_by_id(config_id) or target
-    assert_spot_config_change_allowed(previous, {"config_id": config_id, "mode": "DELETED"}, account_changed=True)
-
     dependencies_before = get_config_dependency_counts(config_id)
-    cleanup_result = purge_config_all_data(config_id)
+    cleanup_result = {}
+
+    def cleanup_deleted_task(conn):
+        cleanup_result.update(purge_config_all_data(config_id, connection=conn))
+
+    # Explicit deletion discards local task ownership/history. It does not change
+    # the trading account, liquidate holdings, or cancel exchange orders. Keep the
+    # switch/removal guard on ordinary saves/imports, and commit the config plus
+    # cleanup together so a failed save cannot leave an active task without data.
     save_runtime_snapshot(
         snapshot["globals"],
         remaining,
         snapshot.get("llm_providers", []),
         snapshot.get("exchange_profiles", []),
         validate_snapshot=global_config.validate_snapshot,
+        transaction_hook=cleanup_deleted_task,
     )
     global_config.reload_config()
     return {
@@ -430,4 +473,6 @@ def delete_config_payload(config_id: str):
         },
         "dependencies_before": dependencies_before,
         "cleanup": cleanup_result,
+        "exchange_orders_cancelled": False,
+        "exchange_positions_closed": False,
     }

@@ -455,7 +455,7 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "CLOSED")
         self.assertEqual(rows[0]["realized_pnl"], 10)
 
-    def test_dashboard_data_hides_disabled_configs(self):
+    def test_dashboard_data_includes_paused_tasks_in_all_tasks_view(self):
         class RuntimeConfig:
             def get_all_symbol_configs(self):
                 return [
@@ -469,7 +469,7 @@ class DailySummaryTests(unittest.TestCase):
         with patch.object(dashboard_service, "global_config", RuntimeConfig()):
             rows = dashboard_service.get_dashboard_data("BTC/USDT")
 
-        self.assertEqual([row["config_id"] for row in rows], ["enabled"])
+        self.assertEqual([row["config_id"] for row in rows], ["enabled", "disabled"])
 
     def test_prompt_file_fallback_when_missing(self):
         class Logger:

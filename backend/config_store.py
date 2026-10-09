@@ -14,9 +14,10 @@ from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 
 from backend.utils.logger import setup_logger
-from backend.utils.run_schedule import validate_run_schedule
+from backend.utils.run_schedule import DcaSchedule, validate_run_schedule
 from backend.utils.spot_portfolio import SPOT_MARKET_TIMEFRAMES, normalize_spot_symbols
 from backend.storage_paths import DATA_DIR, PROJECT_ROOT, data_file
+from backend.app.schemas.news import default_news_settings, default_pricing_sync_settings
 
 
 logger = setup_logger("ConfigStore")
@@ -26,6 +27,8 @@ BASE_DIR = PROJECT_ROOT
 DB_NAME = data_file("TRADING_DB_PATH", "trading_data.db")
 
 DEFAULT_GLOBAL_SETTINGS: dict[str, Any] = {
+    "news": default_news_settings(),
+    "pricing_sync": default_pricing_sync_settings(),
     "polymarket": {"enabled": False, "events": [], "refresh_seconds": 300},
     "leverage": 20,
     "enable_scheduler": True,
@@ -65,6 +68,11 @@ AGENT_SECRET_KEYS = {
 }
 
 LLM_PROVIDER_SECRET_KEYS = {"api_key"}
+PROVIDER_OPTION_KEYS = (
+    "api_protocol", "models_dev_provider_id", "models_dev_model_id", "pricing_mode",
+    "input_price_per_m", "output_price_per_m", "cache_read_price_per_m",
+    "cache_write_price_per_m", "pricing_currency", "report_output_mode",
+)
 
 EXCHANGE_PROFILE_SECRET_KEYS = {"api_key", "secret", "passphrase"}
 
@@ -162,6 +170,13 @@ def _decrypt_secret(value: str) -> str:
 def _split_agent_payload(agent: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     payload = deepcopy(agent)
     payload.pop("secrets", None)
+    if payload.get("fallback_llm_provider_ids"):
+        payload.pop("fallback_models", None)
+    else:
+        payload["fallback_models"] = [
+            {key: value for key, value in item.items() if key not in {"api_key", "secrets", "_secrets"}}
+            for item in payload.get("fallback_models", []) if isinstance(item, dict)
+        ]
     summarizer = dict(payload.get("summarizer") or {})
     secret_values: dict[str, str] = {}
 
@@ -257,6 +272,8 @@ def _ensure_provider_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_effort TEXT")
     if "system_prompt_role" not in _column_names(conn, "llm_providers"):
         conn.execute("ALTER TABLE llm_providers ADD COLUMN system_prompt_role TEXT NOT NULL DEFAULT 'system'")
+    if "settings_json" not in _column_names(conn, "llm_providers"):
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS exchange_profiles (
@@ -299,6 +316,8 @@ def normalize_agent_market_settings(agent: dict[str, Any]) -> dict[str, Any]:
     payload = deepcopy(agent)
     mode = str(payload.get("mode") or "STRATEGY").upper()
     payload["mode"] = mode
+    if payload.get("dca_schedule") is not None:
+        payload["dca_schedule"] = DcaSchedule.model_validate(payload["dca_schedule"]).model_dump()
     if mode == "SPOT_DCA":
         symbols = normalize_spot_symbols(payload.get("symbols"), payload.get("symbol"))
         payload["symbols"] = symbols
@@ -553,6 +572,8 @@ def _derive_referenced_configs(
                     fb_pids.append(fb_prov_id)
             if fb_pids:
                 next_agent["fallback_llm_provider_ids"] = fb_pids
+        # The resolved fallback list contains credentials. Persist/export only references.
+        next_agent.pop("fallback_models", None)
         if not next_agent.get("summarizer_provider_id"):
             provider = _derive_provider_from_agent(next_agent, "summarizer")
             if provider:
@@ -699,7 +720,7 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
 
         provider_rows = conn.execute(
             """
-            SELECT provider_id, name, model, api_base, temperature, role, extra_body, compatibility_mode, thinking_enabled, reasoning_effort, system_prompt_role
+            SELECT provider_id, name, model, api_base, temperature, role, extra_body, compatibility_mode, thinking_enabled, reasoning_effort, system_prompt_role, settings_json
             FROM llm_providers
             ORDER BY name ASC, provider_id ASC
             """
@@ -720,6 +741,8 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
                 "reasoning_effort": row["reasoning_effort"] or "",
                 "system_prompt_role": "user" if row["system_prompt_role"] == "user" else "system",
             }
+            options = json.loads(row["settings_json"] or "{}")
+            provider.update({key: options[key] for key in PROVIDER_OPTION_KEYS if key in options})
             provider.update(provider_secret_map.get(row["provider_id"], {}))
             providers.append(provider)
             provider_map[row["provider_id"]] = provider
@@ -783,6 +806,8 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
                     payload["thinking_enabled"] = provider.get("thinking_enabled")
                 if provider.get("reasoning_effort"):
                     payload["reasoning_effort"] = provider.get("reasoning_effort")
+                payload["report_output_mode"] = provider.get("report_output_mode", "json")
+                payload["api_protocol"] = provider.get("api_protocol", "chat")
                 if payload.get("system_prompt_role") not in {"system", "user"}:
                     payload["system_prompt_role"] = provider.get("system_prompt_role", "system")
                 if provider.get("api_key"):
@@ -798,6 +823,7 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
                         "model": fb_provider.get("model") or "",
                         "api_base": fb_provider.get("api_base") or "",
                         "api_key": fb_provider.get("api_key") or "",
+                        "api_protocol": fb_provider.get("api_protocol", "chat"),
                         "temperature": fb_provider.get("temperature", payload.get("temperature", 0.5)),
                         "extra_body": fb_provider.get("extra_body") or {},
                         "compatibility_mode": fb_provider.get("compatibility_mode") or "auto",
@@ -816,7 +842,13 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
                 summarizer["model"] = summary_provider.get("model") or summarizer.get("model") or ""
                 summarizer["api_base"] = summary_provider.get("api_base") or summarizer.get("api_base") or ""
                 summarizer["temperature"] = summary_provider.get("temperature", summarizer.get("temperature"))
+                if summary_provider.get("extra_body"):
+                    summarizer["extra_body"] = summary_provider.get("extra_body")
                 summarizer["compatibility_mode"] = summary_provider.get("compatibility_mode") or "auto"
+                summarizer["report_output_mode"] = summary_provider.get("report_output_mode", "json")
+                summarizer["api_protocol"] = summary_provider.get("api_protocol", "chat")
+                if summarizer.get("system_prompt_role") not in {"system", "user"}:
+                    summarizer["system_prompt_role"] = summary_provider.get("system_prompt_role", "system")
                 if summary_provider.get("thinking_enabled") is not None:
                     summarizer["thinking_enabled"] = summary_provider.get("thinking_enabled")
                 if summary_provider.get("reasoning_effort"):
@@ -868,7 +900,7 @@ def load_effective_runtime_snapshot() -> dict[str, Any]:
     return snapshot or _env_snapshot()
 
 
-def load_management_snapshot() -> dict[str, Any]:
+def load_management_snapshot(*, include_secrets: bool = False) -> dict[str, Any]:
     snapshot = load_effective_runtime_snapshot()
     providers, profiles, agents_with_refs = _derive_referenced_configs(
         {**snapshot},
@@ -880,8 +912,14 @@ def load_management_snapshot() -> dict[str, Any]:
         key: snapshot.get(key, default)
         for key, default in DEFAULT_GLOBAL_SETTINGS.items()
     }
+    def secret_view(value):
+        metadata = _mask_secret(value)
+        if include_secrets:
+            metadata["value"] = value or ""
+        return metadata
+
     globals_payload["secrets"] = {
-        key: _mask_secret(snapshot.get(key))
+        key: secret_view(snapshot.get(key))
         for key in GLOBAL_SECRET_ENV_MAP
     }
 
@@ -890,10 +928,10 @@ def load_management_snapshot() -> dict[str, Any]:
         agent_copy = deepcopy(agent)
         secret_meta = {key: {"configured": False, "masked_value": ""} for key in AGENT_SECRET_KEYS}
         for key in ("api_key", "secret", "passphrase", "binance_api_key", "binance_secret", "okx_api_key", "okx_secret"):
-            secret_meta[key] = _mask_secret(agent_copy.pop(key, None))
+            secret_meta[key] = secret_view(agent_copy.pop(key, None))
 
         summarizer = dict(agent_copy.get("summarizer") or {})
-        secret_meta["summarizer_api_key"] = _mask_secret(summarizer.pop("api_key", None))
+        secret_meta["summarizer_api_key"] = secret_view(summarizer.pop("api_key", None))
         agent_copy["summarizer"] = summarizer
         agent_copy["secrets"] = secret_meta
         agents_payload.append(agent_copy)
@@ -902,7 +940,7 @@ def load_management_snapshot() -> dict[str, Any]:
     for provider in providers:
         provider_copy = deepcopy(provider)
         provider_copy["secrets"] = {
-            key: _mask_secret(provider_copy.pop(key, None))
+            key: secret_view(provider_copy.pop(key, None))
             for key in LLM_PROVIDER_SECRET_KEYS
         }
         providers_payload.append(provider_copy)
@@ -911,7 +949,7 @@ def load_management_snapshot() -> dict[str, Any]:
     for profile in profiles:
         profile_copy = deepcopy(profile)
         profile_copy["secrets"] = {
-            key: _mask_secret(profile_copy.pop(key, None))
+            key: secret_view(profile_copy.pop(key, None))
             for key in EXCHANGE_PROFILE_SECRET_KEYS
         }
         profiles_payload.append(profile_copy)
@@ -932,6 +970,7 @@ def save_runtime_snapshot(
     exchange_profiles_payload: list[dict[str, Any]] | None = None,
     *,
     validate_snapshot: Callable[[dict[str, Any]], None] | None = None,
+    transaction_hook: Callable[[sqlite3.Connection], None] | None = None,
 ) -> None:
     load_dotenv(override=False)
     normalized_agents = _normalize_agents(agents_payload)
@@ -945,6 +984,9 @@ def save_runtime_snapshot(
     from backend.utils.polymarket import PolymarketSettings
 
     settings['polymarket'] = PolymarketSettings.model_validate(settings['polymarket']).model_dump()
+    from backend.app.schemas.news import NewsSettings, PricingSyncSettings
+    settings['news'] = NewsSettings.model_validate(settings['news']).model_dump()
+    settings['pricing_sync'] = PricingSyncSettings.model_validate(settings['pricing_sync']).model_dump()
 
     global_secret_updates = dict(globals_payload.get("secrets") or {})
     for secret_key in GLOBAL_SECRET_ENV_MAP:
@@ -1010,8 +1052,8 @@ def save_runtime_snapshot(
                 conn.execute(
                     """
                     INSERT INTO llm_providers (
-                        provider_id, name, model, api_base, temperature, role, extra_body, compatibility_mode, thinking_enabled, reasoning_effort, system_prompt_role, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        provider_id, name, model, api_base, temperature, role, extra_body, compatibility_mode, thinking_enabled, reasoning_effort, system_prompt_role, updated_at, settings_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         provider_id,
@@ -1026,6 +1068,7 @@ def save_runtime_snapshot(
                         str(provider.get("reasoning_effort") or ""),
                         "user" if str(provider.get("system_prompt_role") or "system").lower() == "user" else "system",
                         timestamp,
+                        json.dumps({key: provider[key] for key in PROVIDER_OPTION_KEYS if key in provider}, ensure_ascii=False),
                     ),
                 )
                 secret_updates = dict(provider.get("secrets") or {})
@@ -1111,6 +1154,8 @@ def save_runtime_snapshot(
                 if candidate is None:
                     raise ValueError(LAST_RUNTIME_CONFIG_ERROR or "Unable to validate candidate runtime configuration")
                 validate_snapshot(candidate)
+            if transaction_hook is not None:
+                transaction_hook(conn)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1198,6 +1243,12 @@ def export_full_snapshot(include_secrets: bool = True) -> dict[str, Any]:
     if snapshot is None:
         snapshot = _env_snapshot()
 
+    providers, profiles, agents = _derive_referenced_configs(
+        snapshot, snapshot.get("agents", []), snapshot.get("llm_providers") or [],
+        snapshot.get("exchange_profiles") or [],
+    )
+    snapshot = {**snapshot, "agents": agents, "llm_providers": providers, "exchange_profiles": profiles}
+
     # 全局设置
     app_settings = {
         key: snapshot.get(key, default)
@@ -1260,6 +1311,8 @@ def export_full_snapshot(include_secrets: bool = True) -> dict[str, Any]:
     load_dotenv(override=False)
     env_out: dict[str, str] = {}
     for env_key in _EXPORT_ENV_KEYS:
+        if not include_secrets and env_key in {'ADMIN_PASSWORD', 'JWT_SECRET', 'CONFIG_MASTER_KEY'}:
+            continue
         val = os.getenv(env_key)
         if val is not None:
             env_out[env_key] = val
@@ -1283,6 +1336,7 @@ def import_full_snapshot(
     prompt_files: dict[str, str] | None = None,
     model_pricing: list[dict[str, Any]] | None = None,
     validate_snapshot: Callable[[dict[str, Any]], None] | None = None,
+    transaction_hook: Callable[[sqlite3.Connection], None] | None = None,
 ) -> dict[str, Any]:
     """
     将完整配置快照还原到数据库，可选写入 .env 引导变量。
@@ -1324,6 +1378,7 @@ def import_full_snapshot(
     save_runtime_snapshot(
         globals_payload, agents_merged, providers_merged, profiles_merged,
         validate_snapshot=validate_snapshot,
+        transaction_hook=transaction_hook,
     )
 
     # 还原 prompt 文件

@@ -1,172 +1,41 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { BulbOutlined, GlobalOutlined, MenuOutlined } from '@ant-design/icons';
-import { Button, Drawer, Grid, Select, Space, Tooltip, Typography } from 'antd';
+import React, { useState } from 'react';
+import { AppstoreOutlined, BulbOutlined, CommentOutlined, GlobalOutlined, HistoryOutlined, MenuOutlined, SettingOutlined, BarChartOutlined } from '@ant-design/icons';
+import { Button, Drawer, Grid, Space, Tooltip, Typography } from 'antd';
 import { usePreferences } from '../app/usePreferences';
-import { api } from '../lib/api';
 
-const { useBreakpoint } = Grid;
-
-function PreferenceControls({ compact = false }) {
+const NAV = [
+  { key: '/', zh: '总览', en: 'Overview', icon: <AppstoreOutlined /> },
+  { key: '/console/chat', zh: '任务聊天', en: 'Tasks', icon: <CommentOutlined /> },
+  { key: '/history', zh: '运行历史', en: 'History', icon: <HistoryOutlined /> },
+  { key: '/usage', zh: '用量统计', en: 'Usage', icon: <BarChartOutlined /> },
+  { key: '/console/config', zh: '系统设置', en: 'Settings', icon: <SettingOutlined /> },
+];
+function PreferenceControls() {
   const { locale, setLocale, theme, setTheme, t } = usePreferences();
-  const nextLocale = locale === 'zh' ? 'en' : 'zh';
-  const nextTheme = theme === 'dark' ? 'light' : 'dark';
-
-  return (
-    <Space size={compact ? 4 : 8} className="topbar-icon-controls">
-      <Tooltip title={nextLocale === 'zh' ? t('localeZhHint') : t('localeEnHint')}>
-        <Button
-          className="topbar-icon-button"
-          size="small"
-          icon={<GlobalOutlined />}
-          onClick={() => setLocale(nextLocale)}
-          aria-label={t('switchLanguage')}
-        >
-          {locale === 'zh' ? '中' : 'EN'}
-        </Button>
-      </Tooltip>
-      <Tooltip title={nextTheme === 'dark' ? t('themeDarkHint') : t('themeLightHint')}>
-        <Button
-          className="topbar-icon-button"
-          size="small"
-          icon={<BulbOutlined />}
-          onClick={() => setTheme(nextTheme)}
-          aria-label={t('switchTheme')}
-        />
-      </Tooltip>
-    </Space>
-  );
+  return <Space size={6}>
+    <Tooltip title={t('switchLanguage')}><Button size="small" icon={<GlobalOutlined />} onClick={() => setLocale(locale === 'zh' ? 'en' : 'zh')} aria-label={t('switchLanguage')}>{locale === 'zh' ? '中' : 'EN'}</Button></Tooltip>
+    <Tooltip title={t('switchTheme')}><Button size="small" icon={<BulbOutlined />} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={t('switchTheme')} /></Tooltip>
+  </Space>;
 }
-
-export default function AppTopBar({ items, activeKey, onNavigate, actions, extraActions }) {
-  const screens = useBreakpoint();
-  const isMobile = !screens.lg;
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [symbols, setSymbols] = useState([]);
-  const { selectedSymbol, setSelectedSymbol, t, locale } = usePreferences();
-
-  useEffect(() => {
-    let mounted = true;
-    async function loadSymbols() {
-      try {
-        const response = await api.get('/public/dashboard');
-        if (!mounted) return;
-        const nextSymbols = response.data.symbols || [];
-        setSymbols(nextSymbols);
-        if (response.data.current_symbol) {
-          setSelectedSymbol((current) => current || response.data.current_symbol);
-        }
-      } catch {
-        if (mounted) setSymbols([]);
-      }
-    }
-    loadSymbols();
-    return () => {
-      mounted = false;
-    };
-  }, [setSelectedSymbol]);
-
-  const navButtons = useMemo(
-    () =>
-      items.map((item) => (
-        <Button
-          key={item.key}
-          type={activeKey === item.key ? 'primary' : 'text'}
-          aria-current={activeKey === item.key ? 'page' : undefined}
-          onClick={() => {
-            setDrawerOpen(false);
-            onNavigate(item.key);
-          }}
-        >
-          {item.label}
-        </Button>
-      )),
-    [activeKey, items, onNavigate],
-  );
-
-  const renderSymbolSelect = () => (
-    symbols.length ? (
-      <Select
-        className="topbar-symbol"
-        size="small"
-        value={selectedSymbol || undefined}
-        onChange={setSelectedSymbol}
-        options={symbols.map((item) => ({ label: item, value: item }))}
-        placeholder={t('symbol')}
-      />
-    ) : null
-  );
-
-  return (
-    <>
-      <header className="app-topbar">
-        <div className="app-topbar__brand">
-          <Typography.Text strong className="app-topbar__logo">
-            Crypto Agent
-          </Typography.Text>
-        </div>
-
-        {!isMobile ? (
-          <>
-            <Space className="app-topbar__nav" wrap>
-              {navButtons}
-            </Space>
-            <Space className="app-topbar__actions" wrap size="middle">
-              {renderSymbolSelect()}
-              {extraActions}
-              <PreferenceControls />
-              {actions}
-            </Space>
-          </>
-        ) : (
-          <Space size={8} className="app-topbar__mobile-actions">
-            <Select
-              className="app-topbar__route"
-              aria-label={locale === 'zh' ? '切换页面' : 'Navigate to page'}
-              value={activeKey}
-              options={items.map((item) => ({ value: item.key, label: item.label }))}
-              onChange={onNavigate}
-              popupMatchSelectWidth={false}
-            />
-            {extraActions}
-            <Button className="app-topbar__menu" aria-label={locale === 'zh' ? '打开导航与设置' : 'Open navigation and settings'} icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)} />
-          </Space>
-        )}
-      </header>
-
-      <Drawer placement="right" open={drawerOpen} onClose={() => setDrawerOpen(false)} width={280} title={t('brand')}>
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          {symbols.length ? (
-            <Select
-              style={{ width: '100%' }}
-              size="small"
-              value={selectedSymbol || undefined}
-              onChange={setSelectedSymbol}
-              options={symbols.map((item) => ({ label: item, value: item }))}
-              placeholder={t('symbol')}
-            />
-          ) : null}
-          <Space direction="vertical" style={{ width: '100%' }}>
-            {items.map((item) => (
-              <Button
-                key={item.key}
-                type={activeKey === item.key ? 'primary' : 'default'}
-                block
-                onClick={() => {
-                  setDrawerOpen(false);
-                  onNavigate(item.key);
-                }}
-              >
-                {item.label}
-              </Button>
-            ))}
-          </Space>
-          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-            <PreferenceControls compact />
-            {extraActions}
-          </Space>
-          <div>{actions}</div>
-        </Space>
-      </Drawer>
-    </>
-  );
+export default function AppTopBar({ activeKey, onNavigate, actions, extraActions }) {
+  const { locale } = usePreferences();
+  const screens = Grid.useBreakpoint();
+  const [open, setOpen] = useState(false);
+  const currentKey = activeKey === '/console/history' ? '/history' : activeKey;
+  const current = NAV.find((item) => item.key === currentKey) || NAV[0];
+  const nav = <nav className="workspace-navigation" aria-label={locale === 'zh' ? '主导航' : 'Main navigation'}>
+    {NAV.map((item) => <button type="button" key={item.key} className={currentKey === item.key ? 'is-active' : ''} aria-current={currentKey === item.key ? 'page' : undefined} onClick={() => { setOpen(false); onNavigate(item.key); }}>{item.icon}<span>{locale === 'zh' ? item.zh : item.en}</span></button>)}
+  </nav>;
+  return <>
+    {screens.lg && <aside className="workspace-sidebar">
+      <div className="workspace-brand"><span className="workspace-brand-mark">C</span><div><strong>Crypto Agent</strong><small>{locale === 'zh' ? '交易与研究工作台' : 'Trading & research'}</small></div></div>
+      {nav}
+      <div className="workspace-sidebar-footer"><span className="signal-dot" />{locale === 'zh' ? '研究 · 决策 · 执行' : 'Research · Decide · Execute'}</div>
+    </aside>}
+    <header className="app-topbar workspace-topbar">
+      <Space className="workspace-page-title">{!screens.lg && <Button icon={<MenuOutlined />} aria-label={locale === 'zh' ? '打开导航' : 'Open navigation'} onClick={() => setOpen(true)} />}<Typography.Text strong>{locale === 'zh' ? current.zh : current.en}</Typography.Text></Space>
+      <Space className="workspace-header-actions" wrap>{extraActions}<PreferenceControls />{actions}</Space>
+    </header>
+    <Drawer placement="left" open={open} onClose={() => setOpen(false)} size={280} title="Crypto Agent">{nav}</Drawer>
+  </>;
 }

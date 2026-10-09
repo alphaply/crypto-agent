@@ -58,6 +58,13 @@ def order(symbol='BTC/USDT', cost=40, **changes):
 
 
 def buy(orders, operation='buy', cycle='cycle-1', **kwargs):
+    from backend.config import config
+    from backend.utils.spot_execution import ensure_spot_budget_cycle
+    if cycle:
+        try:
+            ensure_spot_budget_cycle('spot', config.get_config_by_id('spot'), cycle, 'test')
+        except ValueError:
+            pass  # The execution path must independently reject invalid budgets.
     return json.loads(tool_registry.run_trade_tool(
         'open_position_spot_dca', {'orders': orders, **kwargs}, 'spot', 'BTC/USDT',
         operation_id=operation, cycle_id=cycle))
@@ -119,8 +126,8 @@ def test_separate_tools_in_one_cycle_share_allowance(spot_runtime):
     assert len(spot_runtime.calls) == 1
 
 
-def test_legacy_calls_without_cycle_share_safe_fallback(spot_runtime):
-    assert buy([order(cost=60)], operation='one', cycle=None)['status'] == 'submitted'
+def test_legacy_calls_without_cycle_cannot_create_allowance(spot_runtime):
+    assert buy([order(cost=60)], operation='one', cycle=None)['status'] == 'failed'
     assert buy([order('ETH/USDT', cost=50)], operation='two', cycle=None)['status'] == 'failed'
 
 
@@ -143,7 +150,7 @@ def test_task_budget_survives_new_cycle_and_optional_budget_never_resets_period(
     assert buy([order(cost=60)], operation='one')['status'] == 'submitted'
     assert buy([order('ETH/USDT', cost=50)], operation='two', cycle='cycle-2')['status'] == 'failed'
     spot_runtime.config.pop('dca_budget')
-    assert buy([order('ETH/USDT', cost=50)], operation='three', cycle='cycle-3')['status'] == 'failed'
+    assert buy([order('ETH/USDT', cost=50)], operation='three', cycle='cycle-3')['status'] == 'submitted'
     assert buy([order('ETH/USDT', cost=40)], operation='four', cycle='cycle-4')['status'] == 'submitted'
 
 
@@ -250,15 +257,17 @@ def test_database_export_preserves_budget_reservations(spot_runtime):
         Path(response.path).unlink()
 
 
-def test_calendar_allowance_is_not_reset_by_new_run_and_counts_legacy_uuid(spot_runtime):
+def test_new_run_gets_its_own_allowance_and_legacy_still_counts_lifetime(spot_runtime):
     from backend.utils.spot_execution import spot_budget_status
     assert buy([order(cost=70)], operation='one', cycle='old-random-uuid')['status'] == 'submitted'
     with database.get_db_conn() as conn:
         conn.execute("UPDATE spot_budget_reservations SET cycle_id='legacy-run-id'")
         conn.commit()
     result = buy([order('ETH/USDT', cost=40)], operation='two', cycle='another-uuid')
-    assert result['status'] == 'failed'
-    assert spot_budget_status('spot', spot_runtime.config)['period_remaining'] == 30
+    assert result['status'] == 'submitted'
+    status = spot_budget_status('spot', spot_runtime.config, 'another-uuid')
+    assert status['period_remaining'] == 60
+    assert status['lifetime_committed'] == 110
 
 
 def test_week_period_boundaries_use_china_time():
@@ -274,7 +283,7 @@ def test_allowance_refreshes_next_calendar_period_without_erasing_lifetime(spot_
     from backend.utils import spot_execution
     assert buy([order(cost=90)])['status'] == 'submitted'
     monkeypatch.setattr(spot_execution, 'spot_budget_period', lambda _: ('day:next', 9999999999))
-    assert buy([order('ETH/USDT', cost=90)], operation='next')['status'] == 'submitted'
+    assert buy([order('ETH/USDT', cost=90)], operation='next', cycle='next-run')['status'] == 'submitted'
     assert spot_execution.spot_budget_status('spot', spot_runtime.config)['lifetime_committed'] == 180
 
 

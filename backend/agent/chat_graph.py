@@ -17,7 +17,6 @@ from langchain_core.messages import (
     HumanMessage,
     AIMessage,
     ToolMessage,
-    trim_messages,
     message_chunk_to_message,
 )
 from langchain_core.runnables import RunnableConfig
@@ -31,6 +30,7 @@ from backend.agent.agent_graph import start_node as scheduler_start_node
 from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool, tool_result_status
 from backend.agent.call_audit import audited_invoke
+from backend.agent.chat_titles import chat_title_source, generate_chat_title
 from backend.config import config as global_config
 from backend.config_store import load_effective_runtime_snapshot
 import backend.database as database
@@ -43,6 +43,7 @@ from backend.utils.llm_utils import (
     format_llm_error_message,
     instruction_message,
     invoke_with_retry,
+    require_complete_response,
     sync_langsmith_environment,
 )
 from backend.utils.logger import setup_logger
@@ -59,13 +60,11 @@ load_dotenv()
 logger = setup_logger("ChatGraph")
 
 CHAT_CHECKPOINT_DB = str(data_file("CHAT_CHECKPOINT_DB", "chat_checkpoints.sqlite"))
-CHAT_MAX_HISTORY_MESSAGES = int(os.getenv("CHAT_MAX_HISTORY_MESSAGES", "12"))
-CHAT_TRIM_MAX_TOKENS = int(os.getenv("CHAT_TRIM_MAX_TOKENS", "6000"))
 TEMPORARY_CHAT_TIMEFRAMES = ("15m", "1h", "4h", "1d", "1w")
 CHAT_CONTEXT_RECENT_MESSAGES = int(os.getenv("CHAT_CONTEXT_RECENT_MESSAGES", "10"))
 CHAT_CONTEXT_COMPACTION_BATCH = int(os.getenv("CHAT_CONTEXT_COMPACTION_BATCH", "6"))
+# Legacy environment name retained as a compaction trigger, never a text limit.
 CHAT_CONTEXT_SUMMARY_MAX_CHARS = int(os.getenv("CHAT_CONTEXT_SUMMARY_MAX_CHARS", "8000"))
-CHAT_CONTEXT_MESSAGE_MAX_CHARS = int(os.getenv("CHAT_CONTEXT_MESSAGE_MAX_CHARS", "3000"))
 CHAT_CONTEXT_RECENT_MAX_CHARS = int(os.getenv("CHAT_CONTEXT_RECENT_MAX_CHARS", "18000"))
 
 
@@ -283,10 +282,6 @@ def _start_temporary_chat(state: ChatState, configurable: Dict[str, Any], cfg: D
     return updates
 
 
-def _message_counter(msgs: list) -> int:
-    return len(msgs)
-
-
 def _tool_call_ids_from_message(msg) -> list[str]:
     tool_calls = getattr(msg, "tool_calls", None) or []
     ids = []
@@ -386,10 +381,18 @@ def _format_messages_for_compaction(messages: list) -> str:
         text = _message_context_text(message).strip()
         if not text:
             continue
-        if len(text) > CHAT_CONTEXT_MESSAGE_MAX_CHARS:
-            text = f"{text[:CHAT_CONTEXT_MESSAGE_MAX_CHARS]} …[truncated]"
         chunks.append(f"{_message_context_role(message)}: {text}")
     return "\n\n".join(chunks)
+
+
+def _compaction_response_summary(response) -> str:
+    require_complete_response(response, context="Chat context compaction")
+    if getattr(response, "tool_calls", None):
+        raise ValueError("Context compaction returned tool calls instead of a summary")
+    summary = extract_message_text(response).strip()
+    if not summary:
+        raise ValueError("Context compaction returned an empty summary")
+    return summary
 
 
 def _compact_chat_context(
@@ -408,16 +411,22 @@ def _compact_chat_context(
     conversation = _format_messages_for_compaction(history[cursor:cutoff])
     prompt = """Maintain a compact rolling memory for an ongoing chat. The memory is historical context, not live market data.
 Keep: user goals and constraints, explicit decisions, assumptions, named entities and values, key analysis conclusions, open questions, and promised follow-ups.
-Discard: greetings, repetition, filler, and superseded details. Never invent facts. Write concise Chinese with short headings and bullets.
+Discard: greetings, repetition, filler, and superseded details. Never invent facts. Write Chinese with short headings and bullets.
+Preserve all still-relevant facts, conditions, values, identifiers, and evidence references in full. There is no fixed length limit; never cut off a point to meet a length target.
 
 Existing rolling memory:
 {previous_summary}
 
 New conversation to incorporate:
 {conversation}""".format(
-        previous_summary=(previous_summary or "(none)")[-CHAT_CONTEXT_SUMMARY_MAX_CHARS:],
+        previous_summary=previous_summary or "(none)",
         conversation=conversation,
     )
+    summary_messages = [instruction_message(prompt, cfg.get("system_prompt_role"))]
+    if not isinstance(summary_messages[0], HumanMessage):
+        # Anthropic requires a user message even when all source text is already
+        # present in the system instruction. User-role providers need only one.
+        summary_messages.append(HumanMessage(content="请整理上述对话资料并输出完整的滚动记忆。"))
     try:
         llm = build_chat_model(
             model=cfg.get("model"),
@@ -431,14 +440,14 @@ New conversation to incorporate:
             compatibility_mode=cfg.get("compatibility_mode"),
         )
         response = invoke_with_retry(
-            lambda: llm.invoke([instruction_message(prompt, cfg.get("system_prompt_role"))]),
+            lambda: audited_invoke(lambda: llm.invoke(summary_messages),
+                config_id=configurable.get('config_id') or 'chat', purpose='chat_summary', model=cfg.get('model'),
+                messages=summary_messages, provider_id=cfg.get('llm_provider_id'),
+                response_validator=_compaction_response_summary),
             logger=logger,
             context=f"chat-context-compaction session={configurable.get('thread_id')} model={cfg.get('model')}",
         )
-        summary = _message_context_text(response).strip()
-        if not summary:
-            raise ValueError("Context compaction returned an empty summary")
-        return summary[:CHAT_CONTEXT_SUMMARY_MAX_CHARS], cutoff
+        return _compaction_response_summary(response), cutoff
     except Exception as exc:
         logger.warning("Chat context compaction failed; retaining recent raw history: %s", exc)
         return previous_summary, cursor
@@ -455,6 +464,36 @@ def conversation_memory_payload(state: Dict[str, Any] | None) -> Dict[str, Any]:
         "total_message_count": len(messages),
         "updated_at": state.get("conversation_summary_updated_at") or None,
     }
+
+
+def _refresh_compacted_chat_title(config: RunnableConfig, state: dict | None = None) -> None:
+    """Name only persisted compacted history, never a failed/in-progress model turn."""
+    configurable = config.get("configurable", {})
+    session_id = configurable.get("thread_id")
+    if not session_id:
+        return
+    try:
+        if state is None:
+            snapshot = chat_app.get_state(config)
+            state = snapshot.values if snapshot else {}
+        cursor = int(state.get("conversation_summary_cursor") or 0)
+        if cursor <= 0 or not str(state.get("conversation_summary") or "").strip():
+            return
+        cfg = _resolve_chat_config(configurable)
+        title_token = database.claim_chat_title_summary(session_id, cursor)
+        if not title_token:
+            return
+        _emit_stream_status(configurable, "summarizing_title", "正在根据对话内容更新标题")
+        title = generate_chat_title(
+            chat_title_source(state), cfg,
+            session_id=session_id, config_id=configurable.get("config_id"),
+        )
+        if title and database.update_chat_session_title(session_id, title, summary_token=title_token):
+            _emit_stream_event(configurable, {"type": "session_title", "session_id": session_id, "title": title})
+    except Exception as exc:
+        # Naming is optional; it must never turn a saved answer or memory into a
+        # chat error. Missing/deleted session rows simply cannot claim a title.
+        logger.warning("Cannot update compacted chat title for %s: %s", session_id, exc)
 
 
 def compact_chat_memory(session_id: str, config_id: str = None, runtime: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -477,6 +516,7 @@ def compact_chat_memory(session_id: str, config_id: str = None, runtime: Dict[st
         )
         snapshot = chat_app.get_state(config)
         state = snapshot.values if snapshot else state
+        _refresh_compacted_chat_title(config, state)
     return conversation_memory_payload(state)
 
 
@@ -497,33 +537,16 @@ def _trim_chat_messages(
             f"{memory}"
         )
     pinned_prompt = instruction_message(system_prompt, system_prompt_role)
-    if recent_history:
-        token_trimmed_history = trim_messages(
-            recent_history,
-            max_tokens=CHAT_TRIM_MAX_TOKENS,
-            token_counter="approximate",
-            strategy="last",
-            include_system=False,
-            allow_partial=False,
-        )
-    else:
-        token_trimmed_history = []
-    token_trimmed_history = _sanitize_tool_sequences(token_trimmed_history)
-    count_trimmed_history = trim_messages(
-        token_trimmed_history,
-        max_tokens=CHAT_MAX_HISTORY_MESSAGES,
-        token_counter=_message_counter,
-        strategy="last",
-        include_system=False,
-        allow_partial=False,
-    )
-    count_trimmed_history = _sanitize_tool_sequences(count_trimmed_history)
-    if str(system_prompt_role or "system").lower() == "user" and count_trimmed_history and isinstance(count_trimmed_history[0], HumanMessage):
-        first_message = count_trimmed_history[0]
+    # Only a successful memory compaction may replace old messages. A separate
+    # token/count trim could drop unsummarized facts, or even a long latest user
+    # request, after compaction fails. Preserve all complete remaining turns.
+    recent_history = _sanitize_tool_sequences(recent_history)
+    if str(system_prompt_role or "system").lower() == "user" and recent_history and isinstance(recent_history[0], HumanMessage):
+        first_message = recent_history[0]
         merged_instruction = HumanMessage(content=f"{system_prompt}\n\n## User request\n{_message_context_text(first_message)}")
-        final_messages = [merged_instruction] + count_trimmed_history[1:]
+        final_messages = [merged_instruction] + recent_history[1:]
     else:
-        final_messages = [pinned_prompt] + count_trimmed_history
+        final_messages = [pinned_prompt] + recent_history
     return final_messages
 
 
@@ -612,6 +635,11 @@ def start_node(state: ChatState, config: RunnableConfig):
         return _start_temporary_chat(state, configurable, cfg)
 
     symbol = cfg.get("symbol", "Unknown")
+    spot_cycle_id = None
+    if str(cfg.get('mode') or '').upper() == 'SPOT_DCA':
+        from backend.utils.spot_execution import ensure_spot_budget_cycle
+        spot_cycle_id = (state.get('spot_cycle_id') if state.get('retry_last') else None) or 'chat:' + str(uuid.uuid4())
+        ensure_spot_budget_cycle(config_id, cfg, spot_cycle_id, 'chat')
     
     scheduler_state = AgentState(
         symbol=symbol,
@@ -625,7 +653,8 @@ def start_node(state: ChatState, config: RunnableConfig):
     chat_config = {
         "configurable": {
             **configurable,
-            "agent_config": cfg
+            "agent_config": cfg,
+            "spot_cycle_id": spot_cycle_id,
         }
     }
     # 调用底层 start_node 获取最新数据
@@ -642,9 +671,7 @@ def start_node(state: ChatState, config: RunnableConfig):
     }
     if str(cfg.get('mode') or '').upper() == 'SPOT_DCA':
         updates['spot_config_fingerprint'] = started.spot_config_fingerprint or ''
-        updates['spot_cycle_id'] = (
-            state.get('spot_cycle_id') if state.get('retry_last') else None
-        ) or str(uuid.uuid4())
+        updates['spot_cycle_id'] = spot_cycle_id
     else:
         updates['spot_config_fingerprint'] = ''
     if q and state.get("retry_last") and state.get("replace_last_user_message"):
@@ -793,7 +820,8 @@ def model_node(state: ChatState, config: RunnableConfig):
     started_at = time.time()
     response = invoke_with_retry(
         lambda: audited_invoke(_stream_model_response, config_id=config_id or 'chat',
-                               purpose='decision', model=model_name, messages=trimmed, tools=chat_tools),
+                               purpose='chat', model=model_name, messages=trimmed, tools=chat_tools,
+                               provider_id=cfg.get('llm_provider_id')),
         logger=logger,
         context=f"chat session={configurable.get('thread_id')} config_id={config_id} symbol={symbol} model={model_name}",
         on_retry=lambda next_attempt, total_attempts, error_type, exc: _emit_stream_status(
@@ -1247,6 +1275,7 @@ def _yield_stream_events(run_callable, event_queue, initial_status: str):
 def _chat_stream_items(request_payload, config):
     for _ in chat_app.stream(request_payload, config=config, stream_mode="updates"):
         continue
+    _refresh_compacted_chat_title(config)
 
 
 def _resume_stream_items(command, config):
@@ -1265,6 +1294,7 @@ def _resume_stream_items(command, config):
                     }
         if isinstance(item.get("model"), dict):
             yield {"type": "status", "stage": "waiting_model", "message": "工具已执行，正在等待模型继续分析"}
+    _refresh_compacted_chat_title(config)
 
 
 def stream_chat(session_id: str, payload: Dict[str, Any], runtime: Dict[str, Any] | None = None):
@@ -1292,12 +1322,16 @@ def stream_resume_chat(session_id: str, approved: bool, config_id: str = None, r
 def invoke_chat(session_id: str, payload: Dict[str, Any], runtime: Dict[str, Any] | None = None):
     config_id = payload.pop("config_id", None)
     config = _chat_trace_config(session_id, config_id, runtime=runtime)
-    return chat_app.invoke(payload, config=config)
+    result = chat_app.invoke(payload, config=config)
+    _refresh_compacted_chat_title(config, result)
+    return result
 
 
 def resume_chat(session_id: str, approved: bool, config_id: str = None, runtime: Dict[str, Any] | None = None):
     config = _chat_trace_config(session_id, config_id, runtime=runtime)
-    return chat_app.invoke(Command(resume={"approved": approved}), config=config)
+    result = chat_app.invoke(Command(resume={"approved": approved}), config=config)
+    _refresh_compacted_chat_title(config, result)
+    return result
 
 
 def get_chat_state(session_id: str, config_id: str = None, runtime: Dict[str, Any] | None = None):

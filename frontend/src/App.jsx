@@ -7,6 +7,7 @@ import AppTopBar from './components/AppTopBar';
 import AuthGate from './components/AuthGate';
 import GlobalLoader from './components/GlobalLoader';
 import { api, setApiToken } from './lib/api';
+import './workbench.css';
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const PublicUsagePage = lazy(() => import('./pages/PublicPage'));

@@ -70,6 +70,19 @@ class ConfigSymbolsRequest(BaseModel):
     expected_symbols: list[str] | None = Field(None, min_length=1, max_length=10)
 
 
+class SchedulePreviewRequest(BaseModel):
+    config: dict
+
+
+@router.post('/schedule-preview')
+def preview_schedule(payload: SchedulePreviewRequest, _: dict = Depends(get_current_user)):
+    from backend.utils.run_schedule import preview_dca_schedule
+    try:
+        return {'success': True, 'next_runs': preview_dca_schedule(payload.config, count=3)}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.patch("/{config_id}/symbols")
 def update_config_symbols(config_id: str, payload: ConfigSymbolsRequest, _: dict = Depends(get_current_user)):
     try:
@@ -103,7 +116,8 @@ def test_polymarket(payload: dict, _: dict = Depends(get_current_user)):
 
 
 @router.get("")
-def get_config(_: dict = Depends(get_current_user)):
+def get_config(response: Response, _: dict = Depends(get_current_user)):
+    response.headers["Cache-Control"] = "no-store"
     return {"success": True, **get_raw_config_payload()}
 
 
@@ -130,14 +144,14 @@ def save_config(payload: SaveConfigRequest, _: dict = Depends(get_current_user))
 @router.get("/export")
 def export_config(_: dict = Depends(get_current_user)):
     content, filename = export_config_payload()
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"', 'Cache-Control': 'no-store'}
     return Response(content=content, media_type="application/json", headers=headers)
 
 
 @router.get("/full-export")
 def full_export(include_secrets: bool = Query(default=True), _: dict = Depends(get_current_user)):
     content, filename = full_export_payload(include_secrets=include_secrets)
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"', 'Cache-Control': 'no-store'}
     return Response(content=content, media_type="application/json", headers=headers)
 
 

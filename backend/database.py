@@ -283,9 +283,12 @@ def save_summary(
     agent_type=None,
     reasoning_content=None,
     reasoning_tokens=0,
+    report_json=None,
+    run_id=None,
+    timeframe='1h',
 ):
     """保存 AI 分析结果"""
-    _summary_store.save_summary(
+    return _summary_store.save_summary(
         symbol,
         agent_name,
         content,
@@ -294,6 +297,9 @@ def save_summary(
         agent_type=agent_type,
         reasoning_content=reasoning_content,
         reasoning_tokens=reasoning_tokens,
+        report_json=report_json,
+        run_id=run_id,
+        timeframe=timeframe,
     )
 
 def get_active_agents(symbol):
@@ -398,8 +404,16 @@ def get_chat_sessions(limit: int = 100):
     return _chat_session_store.list_sessions(limit=limit)
 
 
-def update_chat_session_title(session_id: str, title: str):
-    _chat_session_store.update_title(session_id, title)
+def update_chat_session_title(session_id: str, title: str, *, summary_token: str | None = None):
+    return _chat_session_store.update_title(session_id, title, summary_token=summary_token)
+
+
+def claim_chat_title_summary(session_id: str, summary_cursor: int) -> str | None:
+    return _chat_session_store.claim_title_summary(session_id, summary_cursor)
+
+
+def reset_chat_title_summary(session_id: str) -> None:
+    _chat_session_store.reset_title_summary(session_id)
 
 
 def delete_chat_session(session_id: str) -> int:
@@ -441,8 +455,8 @@ def get_summary_logic_between(config_id, start_time, end_time):
     return _summary_memory_store.get_summary_logic_between(config_id, start_time, end_time)
 
 
-def save_short_memory(bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count):
-    _summary_memory_store.save_short_memory(bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count)
+def save_short_memory(bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count, **metadata):
+    _summary_memory_store.save_short_memory(bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count, **metadata)
 
 
 def get_short_memories(config_id, limit=2):
@@ -1133,9 +1147,9 @@ def soft_delete_config_runtime_data(config_id: str):
     return _config_cleanup_store.soft_delete_runtime_data(config_id)
 
 
-def purge_config_all_data(config_id: str):
+def purge_config_all_data(config_id: str, *, connection: sqlite3.Connection | None = None):
     """彻底删除指定 config_id 的历史与运行数据，避免历史页残留。"""
-    return _config_cleanup_store.purge_all_data(config_id)
+    return _config_cleanup_store.purge_all_data(config_id, connection=connection)
 
 
 def export_database_bytes() -> tuple[bytes, str]:

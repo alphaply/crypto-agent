@@ -103,6 +103,8 @@ class IndependentExits(PositionProtection):
         return plan
 
     def open(self, symbol, op, operation_id=None):
+        from backend.mcp.guard import assert_entry_allowed
+        assert_entry_allowed(self.mt, symbol)
         if op.stop_loss is not None or op.take_profit is not None:
             raise ValueError("Independent mode uses the close tool for exits; entry TP/SL must be omitted")
         with _lock(self.account_scope):

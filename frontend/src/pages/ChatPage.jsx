@@ -11,7 +11,6 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
-  Segmented,
   Select,
   Space,
   Spin,
@@ -42,11 +41,11 @@ import { api, streamSse } from '../lib/api';
 import { createChatStreamLifecycle, reduceChatStreamLifecycle } from '../lib/chatStreamLifecycle';
 import { splitThinkingContent } from '../lib/thinking';
 import { usePreferences } from '../app/usePreferences';
+import { buildInitialRuntime, buildChatTaskPayload, saveLastRuntime } from '../lib/chatTask';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 const { useBreakpoint } = Grid;
-const RUNTIME_STORAGE_KEY = 'crypto-agent-chat-runtime-v1';
 
 function normalizeAssistantDraft(draft) {
   return {
@@ -253,32 +252,6 @@ function StreamFailureCard({ failure, onRetry, onEdit, locale }) {
   );
 }
 
-function readLastRuntime() {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(RUNTIME_STORAGE_KEY) || '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function buildInitialRuntime(data) {
-  const last = readLastRuntime();
-  const profiles = (data?.exchange_profiles || []).filter((item) => item.configured);
-  const providers = (data?.llm_providers || []).filter((item) => item.api_key_configured);
-  const profile = profiles.find((item) => item.profile_id === last.exchange_profile_id) || profiles[0] || {};
-  const provider = providers.find((item) => item.provider_id === last.llm_provider_id) || providers[0] || {};
-  return {
-    exchange_profile_id: profile.profile_id || '',
-    market_type: profile.supported_market_types?.includes(last.market_type) ? last.market_type : (profile.supported_market_types?.[0] || 'spot'),
-    symbol: '',
-    llm_provider_id: provider.provider_id || '',
-    temperature: last.temperature ?? null,
-    global_requirement: last.global_requirement || '分析趋势、关键价位、多空证据和失效条件。优先说明数据质量与风险，不确定时明确说明。',
-    system_prompt_role: last.system_prompt_role || provider.system_prompt_role || 'system',
-  };
-}
-
 function runtimeSubtitle(runtime, locale) {
   if (!runtime?.symbol) return '';
   const market = runtime.market_type === 'swap'
@@ -315,8 +288,8 @@ export default function ChatPage({ token }) {
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [error, setError] = useState('');
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [createMode, setCreateMode] = useState('task');
   const [creatingConfigId, setCreatingConfigId] = useState('');
+  const createMode = creatingConfigId ? 'task' : 'temporary';
   const [temporaryRuntime, setTemporaryRuntime] = useState({
     exchange_profile_id: '', market_type: 'spot', symbol: '', llm_provider_id: '', temperature: null, global_requirement: '', system_prompt_role: 'system',
   });
@@ -417,11 +390,7 @@ export default function ChatPage({ token }) {
         setBootstrap(data);
         const firstConfig = data.configs?.[0]?.config_id || '';
         setCurrentConfigId(firstConfig);
-        setCreatingConfigId(firstConfig);
         setTemporaryRuntime(buildInitialRuntime(data));
-        if ((data.exchange_profiles || []).some((item) => item.configured) && (data.llm_providers || []).some((item) => item.api_key_configured)) {
-          setCreateMode('temporary');
-        }
         if (data.sessions?.[0]?.session_id) setCurrentSessionId(data.sessions[0].session_id);
       } catch (err) {
         if (mounted) setError(err.message || 'Failed to load chat bootstrap');
@@ -468,7 +437,6 @@ export default function ChatPage({ token }) {
         if (response.data.session) addOrUpdateSession(response.data.session);
         if (response.data.session?.config_id) {
           setCurrentConfigId(response.data.session.config_id);
-          setCreatingConfigId(response.data.session.config_id);
         }
       } catch (err) {
         if (mounted) setError(err.message || 'Failed to load session');
@@ -530,7 +498,7 @@ export default function ChatPage({ token }) {
     : (activeConfig ? `${activeConfig.symbol} / ${activeConfig.mode} · ${activeConfig.model || ''}` : t('chatPageDesc'));
   const selectedProfile = exchangeProfiles.find((item) => item.profile_id === temporaryRuntime.exchange_profile_id);
   const selectedProvider = providerOptions.find((item) => item.provider_id === temporaryRuntime.llm_provider_id);
-  const temporaryTimeframes = bootstrap?.temporary_chat?.timeframes || ['15m', '1h', '4h', '1d', '1w'];
+  const temporaryTimeframes = bootstrap?.temporary_chat?.timeframes || ['1h', '4h', '1d'];
 
   const branchFamilies = useMemo(() => {
     const families = new Map();
@@ -565,9 +533,7 @@ export default function ChatPage({ token }) {
       key: item.session_id,
       label: item.title || item.session_id,
       timestamp: item.updated_at,
-      group: item.session_type === 'temporary'
-        ? `${item.runtime?.symbol || item.symbol || 'Chat'} · ${isZh ? '临时' : 'Temporary'}`
-        : (item.symbol || item.config_id),
+      group: isZh ? '任务历史' : 'Task history',
     })),
     [isZh, sessionItems, sessionQuery],
   );
@@ -623,13 +589,7 @@ export default function ChatPage({ token }) {
 
   const ensureSession = async () => {
     if (currentSessionId) return currentSessionId;
-    const configId = currentConfigId || configOptions[0]?.config_id;
-    if (!configId) throw new Error(isZh ? '请先新建一个聊天会话。' : 'Create a chat session first.');
-    const response = await api.post('/chat/sessions', { mode: 'task', config_id: configId });
-    const session = response.data.session || { session_id: response.data.session_id, title: 'New chat', config_id: configId, session_type: 'task' };
-    addOrUpdateSession(session);
-    setCurrentSessionId(response.data.session_id);
-    return response.data.session_id;
+    throw new Error(isZh ? '请先新建任务。' : 'Create a task first.');
   };
 
   const runStream = async (url, messageText = '', requestBody = null) => {
@@ -660,6 +620,14 @@ export default function ChatPage({ token }) {
           scheduleDraftAnimation();
         } else if (event.type === 'status') {
           setStreamStatus(event.message || '');
+        } else if (event.type === 'session_title') {
+          if (event.session_id && event.title) {
+            setBootstrap((prev) => ({
+              ...prev,
+              sessions: (prev?.sessions || []).map((session) => session.session_id === event.session_id
+                ? { ...session, title: event.title } : session),
+            }));
+          }
         } else if (event.type === 'tool_calls') {
           setStreamStatus(t('toolApproval'));
         } else if (event.type === 'approval_required') {
@@ -682,6 +650,7 @@ export default function ChatPage({ token }) {
             paintDraftMessage();
           }
           setPendingApproval(event.pending_approval || null);
+          if (event.session) addOrUpdateSession(event.session);
           if (event.conversation_memory) setConversationMemory(event.conversation_memory);
           setPersistenceWarning(event.persisted === false ? (event.persistence_error || (isZh ? '回答已生成，但暂时无法保存到历史会话。' : 'The response was generated but could not be saved.')) : '');
           setStreamStatus('');
@@ -817,6 +786,7 @@ export default function ChatPage({ token }) {
     try {
       const response = await api.post(`/chat/sessions/${currentSessionId}/memory/compact`);
       setConversationMemory(response.data.conversation_memory || null);
+      if (response.data.session) addOrUpdateSession(response.data.session);
     } catch (err) {
       setError(err.message || 'Failed to compact conversation memory');
     } finally {
@@ -829,7 +799,6 @@ export default function ChatPage({ token }) {
     setCreateError('');
     try {
       setCreating(true);
-      let payload;
       if (createMode === 'temporary') {
         if (!temporaryRuntime.exchange_profile_id || !temporaryRuntime.symbol || !temporaryRuntime.llm_provider_id) {
           throw new Error(isZh ? '请选择交易所账户、市场标的和模型服务商。' : 'Choose an exchange profile, symbol, and LLM provider.');
@@ -837,29 +806,20 @@ export default function ChatPage({ token }) {
         if (!temporaryRuntime.global_requirement.trim()) {
           throw new Error(isZh ? '请填写全局需求。' : 'Enter a global requirement.');
         }
-        payload = { mode: 'temporary', runtime: { ...temporaryRuntime, read_only: true } };
       } else {
         if (!creatingConfigId) throw new Error(isZh ? '请选择任务配置。' : 'Choose a task configuration.');
-        payload = { mode: 'task', config_id: creatingConfigId };
       }
-      const response = await api.post('/chat/sessions', payload);
+      const response = await api.post('/chat/sessions', buildChatTaskPayload(temporaryRuntime, creatingConfigId));
       const session = response.data.session || {
         session_id: response.data.session_id,
-        title: createMode === 'temporary' ? `${temporaryRuntime.symbol} | Temporary chat` : 'New chat',
+        title: t('createSession'),
         config_id: createMode === 'task' ? creatingConfigId : '',
         symbol: createMode === 'temporary' ? temporaryRuntime.symbol : '',
         session_type: createMode,
         runtime: createMode === 'temporary' ? temporaryRuntime : {},
       };
       if (createMode === 'temporary') {
-        window.localStorage.setItem(RUNTIME_STORAGE_KEY, JSON.stringify({
-          exchange_profile_id: temporaryRuntime.exchange_profile_id,
-          market_type: temporaryRuntime.market_type,
-          llm_provider_id: temporaryRuntime.llm_provider_id,
-          temperature: temporaryRuntime.temperature,
-          global_requirement: temporaryRuntime.global_requirement,
-          system_prompt_role: temporaryRuntime.system_prompt_role,
-        }));
+        saveLastRuntime(temporaryRuntime);
       }
       addOrUpdateSession(session);
       setCurrentSessionId(response.data.session_id);
@@ -914,8 +874,8 @@ export default function ChatPage({ token }) {
   const openCreateSessionModal = () => {
     if (streaming || sendingRef.current) return;
     setCreateError('');
-    setCreatingConfigId(currentConfigId || configOptions[0]?.config_id || '');
-    setTemporaryRuntime((prev) => ({ ...buildInitialRuntime(bootstrap), ...prev, symbol: '' }));
+    setCreatingConfigId('');
+    setTemporaryRuntime((prev) => buildInitialRuntime(bootstrap, prev));
     setSymbolOptions([]);
     setCreateModalOpen(true);
     setSidebarOpen(false);
@@ -934,9 +894,9 @@ export default function ChatPage({ token }) {
         </div>
         <Button type="primary" icon={<PlusOutlined />} block disabled={streaming} onClick={openCreateSessionModal}>{t('createSession')}</Button>
         <div className="x-chat-active-config">
-          <Text type="secondary">{activeRuntime ? (isZh ? '临时只读上下文' : 'Temporary read-only context') : t('symbol')}</Text>
+          <Text type="secondary">{isZh ? '当前任务' : 'Current task'}</Text>
           <Text strong>{activeSubtitle || '-'}</Text>
-          {activeRuntime ? <Tag color="purple">{isZh ? '临时' : 'Temporary'}</Tag> : null}
+
         </div>
         {!isMobile ? memoryCard : null}
       </div>
@@ -985,7 +945,7 @@ export default function ChatPage({ token }) {
                     <div className="x-chat-main-titles">
                       <Space size={8} wrap>
                         <Title level={4} style={{ margin: 0 }} title={currentSession?.title || undefined}>{currentSession?.title || (isZh ? '即时市场研究' : 'Live market research')}</Title>
-                        {activeRuntime ? <Tag color="purple">{isZh ? '临时只读' : 'Temporary read-only'}</Tag> : null}
+                        {currentSession ? <Tag color={activeRuntime ? 'blue' : 'orange'}>{activeRuntime ? (isZh ? '分析' : 'Analysis') : (isZh ? '已关联交易配置' : 'Trading configuration linked')}</Tag> : null}
                         {activeModelConfig?.thinking_enabled ? (
                           <Tag color="geekblue" icon={<BulbOutlined />}>
                             {isZh ? '思考模型' : 'Reasoning model'}
@@ -1039,7 +999,7 @@ export default function ChatPage({ token }) {
                     ) : (
                       <div className="x-chat-empty">
                         <Empty description={currentSessionId ? (isZh ? '从一个好问题开始' : 'Start with a question') : t('emptySessions')}>
-                          <Paragraph type="secondary">{isZh ? '选择交易所、市场、标的与模型后即可开始。每次提问都会刷新行情、技术面与最新消息。' : 'Choose an exchange, market, symbol, and model. Each message refreshes live market, technical, and news context.'}</Paragraph>
+                          <Paragraph type="secondary">{isZh ? '新建任务，描述你想分析的问题。任务会结合行情与共享消息摘要回答。' : 'Create a task and describe your question. Answers use market data and shared news summaries.'}</Paragraph>
                           {currentSessionId ? <div className="chat-starters">{(isZh ? ['分析当前趋势、关键价位与失效条件', '对比多空证据，哪些信号存在冲突？', '复盘近期交易，区分数据问题与执行问题'] : ['Analyze trend, levels and invalidation', 'Compare bullish and bearish evidence', 'Review recent trades and execution']).map((text) => <Button key={text} onClick={() => setInput(text)}>{text}</Button>)}</div> : <Button type="primary" icon={<PlusOutlined />} onClick={openCreateSessionModal}>{t('createSession')}</Button>}
                         </Empty>
                       </div>
@@ -1089,160 +1049,110 @@ export default function ChatPage({ token }) {
           className="chat-create-modal"
           title={t('createSession')}
           open={createModalOpen}
-          width={isMobile ? 'calc(100vw - 24px)' : 760}
+          width={isMobile ? 'calc(100vw - 24px)' : 640}
           onOk={createSession}
           onCancel={() => setCreateModalOpen(false)}
           confirmLoading={creating}
-          okText={isZh ? '创建并开始' : 'Create chat'}
+          okText={isZh ? '开始聊天' : 'Start chatting'}
           maskClosable={!creating}
           closable={!creating}
           cancelButtonProps={{ disabled: creating }}
           okButtonProps={{ disabled: createMode === 'task' ? !creatingConfigId : !temporaryRuntime.exchange_profile_id || !temporaryRuntime.symbol || !temporaryRuntime.llm_provider_id || !temporaryRuntime.global_requirement.trim() }}
         >
           {createError ? <Alert type="error" showIcon message={createError} style={{ marginBottom: 12 }} /> : null}
-          <div className="chat-create-mode">
-            <Segmented
-              block
-              value={createMode}
-              options={[
-                { label: isZh ? '临时聊天' : 'Temporary chat', value: 'temporary' },
-                { label: isZh ? '任务配置聊天' : 'Task chat', value: 'task' },
-              ]}
-              onChange={(value) => setCreateMode(value)}
-            />
+          <div className="chat-create-section">
+            <Paragraph type="secondary">{isZh ? '默认分析行情与消息，选择标的后即可开始聊天。' : 'Start with market and news analysis. Choose a symbol and begin chatting.'}</Paragraph>
+            <label className="form-field">
+              <span>{isZh ? '关联交易配置（可选）' : 'Linked trading configuration (optional)'}</span>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                placeholder={isZh ? '仅分析行情' : 'Analyze only'}
+                value={creatingConfigId || undefined}
+                options={configOptions.map((item) => ({ label: `${item.name || item.config_id} · ${item.symbol} / ${item.mode}`, value: item.config_id }))}
+                onChange={(value) => setCreatingConfigId(value || '')}
+                style={{ width: '100%' }}
+              />
+            </label>
+            {createMode === 'task' ? (
+              <Alert type="info" showIcon message={isZh ? '使用关联配置的行情、模型和策略记忆。交易工具执行前仍需你审批。' : 'Uses the linked market, model, and strategy memory. Trading tools still require your approval.'} />
+            ) : (
+              <>
+                <div className="chat-create-grid">
+                  <label className="form-field">
+                    <span>{isZh ? '标的' : 'Symbol'}</span>
+                    <Select
+                      showSearch
+                      filterOption={false}
+                      value={temporaryRuntime.symbol || undefined}
+                      loading={symbolLoading}
+                      options={symbolOptions.map((item) => ({ value: item.symbol, label: item.display_name || item.symbol }))}
+                      placeholder={isZh ? '搜索标的' : 'Search symbols'}
+                      onFocus={() => searchSymbols('')}
+                      onSearch={(keyword) => { window.clearTimeout(symbolSearchTimerRef.current); symbolSearchTimerRef.current = window.setTimeout(() => searchSymbols(keyword), 300); }}
+                      onChange={(value) => updateRuntime({ symbol: value })}
+                    />
+                  </label>
+                  <label className="form-field">
+                    <span>{isZh ? '模型' : 'Model'}</span>
+                    <Select
+                      value={temporaryRuntime.llm_provider_id || undefined}
+                      options={providerOptions.map((item) => ({ value: item.provider_id, disabled: !item.api_key_configured, label: `${item.name || item.provider_id} · ${item.model || '-'}` }))}
+                      placeholder={isZh ? '选择已配置的模型' : 'Choose a configured model'}
+                      onChange={(value) => {
+                        const provider = providerOptions.find((item) => item.provider_id === value);
+                        updateRuntime({ llm_provider_id: value, system_prompt_role: provider?.system_prompt_role || 'system' });
+                      }}
+                    />
+                  </label>
+                </div>
+                {!selectedProfile?.configured || !selectedProvider?.api_key_configured ? <Alert type="info" showIcon message={isZh ? '请在后台配置交易所账户和模型，再创建分析任务。' : 'Configure an exchange account and model in settings to start an analysis task.'} /> : null}
+                <details className="chat-advanced-options">
+                  <summary>{isZh ? '更多设置' : 'More settings'}</summary>
+                  <div className="chat-create-grid">
+                    <label className="form-field">
+                      <span>{isZh ? '行情账户' : 'Market data account'}</span>
+                      <Select
+                        value={temporaryRuntime.exchange_profile_id || undefined}
+                        options={exchangeProfiles.map((item) => ({ value: item.profile_id, disabled: !item.configured, label: `${item.name || item.profile_id} · ${String(item.exchange || '').toUpperCase()}` }))}
+                        onChange={(value) => {
+                          const profile = exchangeProfiles.find((item) => item.profile_id === value);
+                          updateRuntime({ exchange_profile_id: value, market_type: profile?.supported_market_types?.includes('spot') ? 'spot' : profile?.supported_market_types?.[0] || 'spot', symbol: 'BTC/USDT' });
+                          setSymbolOptions([]);
+                        }}
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>{isZh ? '市场' : 'Market'}</span>
+                      <Select
+                        value={temporaryRuntime.market_type}
+                        options={(selectedProfile?.supported_market_types || ['spot', 'swap']).map((value) => ({ value, label: value === 'spot' ? (isZh ? '现货' : 'Spot') : (isZh ? '永续合约' : 'Perpetual') }))}
+                        onChange={(value) => { updateRuntime({ market_type: value, symbol: 'BTC/USDT' }); setSymbolOptions([]); }}
+                      />
+                    </label>
+                    <label className="form-field field-span-2">
+                      <span>{isZh ? '分析偏好' : 'Analysis preferences'}</span>
+                      <TextArea value={temporaryRuntime.global_requirement} onChange={(event) => updateRuntime({ global_requirement: event.target.value })} autoSize={{ minRows: 2, maxRows: 5 }} maxLength={4000} placeholder={isZh ? '关注的周期、风险、关键价位与失效条件' : 'Time horizon, risks, key levels, and invalidation'} />
+                    </label>
+                    <label className="form-field">
+                      <span>{isZh ? '提示词角色' : 'Prompt role'}</span>
+                      <Select
+                        value={temporaryRuntime.system_prompt_role || selectedProvider?.system_prompt_role || 'system'}
+                        options={[{ value: 'system', label: 'System' }, { value: 'user', label: isZh ? 'User（兼容模式）' : 'User (compatibility)' }]}
+                        onChange={(value) => updateRuntime({ system_prompt_role: value })}
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>{isZh ? '采样温度' : 'Temperature'}</span>
+                      <InputNumber min={0} max={2} step={0.1} value={temporaryRuntime.temperature} placeholder={isZh ? '服务商默认值' : 'Provider default'} onChange={(value) => updateRuntime({ temperature: value })} style={{ width: '100%' }} />
+                    </label>
+                  </div>
+                  <Text type="secondary">{isZh ? `分析周期：${temporaryTimeframes.join(' / ')}。结合共享消息摘要，保留任务中的对话上下文。` : `Analysis timeframes: ${temporaryTimeframes.join(' / ')}. Uses shared news summaries and keeps this task’s conversation context.`}</Text>
+                </details>
+              </>
+            )}
           </div>
-          {createMode === 'task' ? (
-            <div className="chat-create-section">
-              <Text type="secondary">{isZh ? '继续使用现有任务的标的、模型、Prompt 与工具审批规则。' : 'Use the existing task symbol, model, prompt, and tool-approval rules.'}</Text>
-              <Select showSearch optionFilterProp="label" placeholder={isZh ? '选择已有任务' : 'Select a task'} style={{ width: '100%' }} value={creatingConfigId || undefined} options={configOptions.map((item) => ({ label: `${item.symbol} / ${item.mode} · ${item.model || '-'}`, value: item.config_id }))} onChange={setCreatingConfigId} />
-            </div>
-          ) : (
-            <div className="chat-create-section">
-              <Alert type="info" showIcon message={isZh ? '临时聊天为只读，不会写入任务配置或执行交易。' : 'Temporary chats are read-only and never change task configuration or trade.'} />
-              <div className="chat-create-grid">
-                <label className="form-field">
-                  <span>{isZh ? '交易所账户' : 'Exchange profile'}</span>
-                  <Select
-                    value={temporaryRuntime.exchange_profile_id || undefined}
-                    options={exchangeProfiles.map((item) => ({
-                      value: item.profile_id,
-                      disabled: !item.configured,
-                      label: `${item.name || item.profile_id} · ${String(item.exchange || '').toUpperCase()}`,
-                    }))}
-                    onChange={(value) => {
-                      const profile = exchangeProfiles.find((item) => item.profile_id === value);
-                      updateRuntime({ exchange_profile_id: value, market_type: profile?.supported_market_types?.includes('spot') ? 'spot' : profile?.supported_market_types?.[0] || 'spot', symbol: '' });
-                      setSymbolOptions([]);
-                    }}
-                  />
-                  <Text type="secondary" className="chat-create-select-note">
-                    {selectedProfile?.configured
-                      ? (isZh ? `已选择 ${String(selectedProfile.exchange || '').toUpperCase()} 账户，API Key 已配置。` : `${String(selectedProfile.exchange || '').toUpperCase()} account selected; API key configured.`)
-                      : (isZh ? '仅显示已保存账户；密钥不会在此页面展示。' : 'Saved accounts only; keys are never displayed here.')}
-                  </Text>
-                </label>
-                <label className="form-field">
-                  <span>{isZh ? '市场分类' : 'Market'}</span>
-                  <Segmented
-                    block
-                    value={temporaryRuntime.market_type}
-                    options={(selectedProfile?.supported_market_types || ['spot', 'swap']).map((value) => ({
-                      value,
-                      label: value === 'spot' ? (isZh ? '现货' : 'Spot') : (isZh ? '永续合约' : 'Perpetual'),
-                    }))}
-                    onChange={(value) => {
-                      updateRuntime({ market_type: value, symbol: '' });
-                      setSymbolOptions([]);
-                    }}
-                  />
-                </label>
-                <label className="form-field">
-                  <span>{isZh ? '交易标的' : 'Symbol'}</span>
-                  <Select
-                    showSearch
-                    filterOption={false}
-                    value={temporaryRuntime.symbol || undefined}
-                    loading={symbolLoading}
-                    options={symbolOptions.map((item) => ({ value: item.symbol, label: item.display_name || item.symbol }))}
-                    placeholder={isZh ? '先选择账户，然后搜索或展开标的列表' : 'Choose an account, then search symbols'}
-                    onFocus={() => searchSymbols('')}
-                    onSearch={(keyword) => { window.clearTimeout(symbolSearchTimerRef.current); symbolSearchTimerRef.current = window.setTimeout(() => searchSymbols(keyword), 300); }}
-                    onChange={(value) => updateRuntime({ symbol: value })}
-                  />
-                </label>
-                <label className="form-field">
-                  <span>{isZh ? '模型服务商 / API Key' : 'LLM provider / API key'}</span>
-                  <Select
-                    value={temporaryRuntime.llm_provider_id || undefined}
-                    options={providerOptions.map((item) => ({
-                      value: item.provider_id,
-                      disabled: !item.api_key_configured,
-                      label: `${item.name || item.provider_id} · ${item.model || '-'}`,
-                    }))}
-                    onChange={(value) => {
-                      const provider = providerOptions.find((item) => item.provider_id === value);
-                      updateRuntime({ llm_provider_id: value, system_prompt_role: provider?.system_prompt_role || 'system' });
-                    }}
-                  />
-                  <Text type="secondary" className="chat-create-select-note">
-                    {selectedProvider?.api_key_configured
-                      ? (isZh ? '该模型服务商的 API Key 已配置。' : 'This provider API key is configured.')
-                      : (isZh ? '请选择已配置 API Key 的模型服务商。' : 'Choose a provider with an API key configured.')}
-                  </Text>
-                  {selectedProvider ? <Text type="secondary" className="chat-create-select-note">{isZh ? `服务商默认使用${selectedProvider.system_prompt_role === 'user' ? '用户消息（兼容模式）' : 'System 消息'}。` : `Provider default: ${selectedProvider.system_prompt_role === 'user' ? 'user message (compatibility mode)' : 'system message'}.`}</Text> : null}
-                </label>
-                <details className="field-span-2 chat-advanced-options"><summary>{isZh ? '高级选项 · 模型与兼容性' : 'Advanced · Model and compatibility'}</summary><div className="chat-create-grid">                <label className="form-field">
-                  <span>{isZh ? '当前模型' : 'Model'}</span>
-                  <Input value={selectedProvider?.model || ''} disabled placeholder={isZh ? '选择模型服务商后显示' : 'Choose a provider'} />
-                </label>
-                <label className="form-field">
-                  <span>{isZh ? '提示词角色' : 'Prompt role'}</span>
-                  <Select
-                    value={temporaryRuntime.system_prompt_role || selectedProvider?.system_prompt_role || 'system'}
-                    options={[
-                      { value: 'system', label: isZh ? 'System 消息' : 'System message' },
-                      { value: 'user', label: isZh ? 'User 消息（兼容模式）' : 'User message (compatibility)' },
-                    ]}
-                    onChange={(value) => updateRuntime({ system_prompt_role: value })}
-                  />
-                  <Text type="secondary" className="chat-create-select-note">{isZh ? '模型不支持 system role 时请选择 User。' : 'Choose User if the model rejects system roles.'}</Text>
-                </label>
-                <label className="form-field">
-                  <span>{isZh ? '采样温度 (Temperature)' : 'Temperature'}</span>
-                  <InputNumber
-                    min={0}
-                    max={2}
-                    step={0.1}
-                    placeholder={selectedProvider?.temperature !== undefined ? `${selectedProvider.temperature} (${isZh ? '服务商默认' : 'Default'})` : (isZh ? '服务商默认 (0.5)' : 'Default (0.5)')}
-                    value={temporaryRuntime.temperature}
-                    onChange={(value) => updateRuntime({ temperature: value })}
-                    style={{ width: '100%' }}
-                  />
-                  <Text type="secondary" className="chat-create-select-note">{isZh ? '留空使用服务商默认值；推理模型自动兼容。' : 'Leave empty for provider default; auto-adapted for reasoning models.'}</Text>
-                </label>
-</div></details>
-                <label className="form-field field-span-2">
-                  <span>{isZh ? '全局需求' : 'Global requirement'}</span>
-                  <TextArea value={temporaryRuntime.global_requirement} onChange={(event) => updateRuntime({ global_requirement: event.target.value })} autoSize={{ minRows: 3, maxRows: 6 }} maxLength={4000} placeholder={isZh ? '例如：以 1–3 天的持仓决策为目标，优先分析风险、关键价位和失效条件。此需求会用于本设备后续创建的临时聊天。' : 'For example: focus on 1–3 day holding decisions, risk, key levels, and invalidation. This will be reused for future temporary chats on this device.'} />
-                </label>
-              </div>
-              <Space direction="vertical" size={3} className="chat-create-hints">
-                <Text type="secondary" className="chat-create-hint">
-                  {isZh
-                    ? `每次提问都会刷新 ${temporaryTimeframes.join(' / ')} K 线技术面与消息面：EMA、RSI、ATR、MACD、ADX、布林带、成交量、成交量分布、SMC、流动性 / iFVG、VWAP 和加密/宏观新闻。`
-                    : `Each message refreshes ${temporaryTimeframes.join(' / ')} technical and news context: EMA, RSI, ATR, MACD, ADX, Bollinger Bands, volume, volume profile, SMC, liquidity / iFVG, VWAP, and crypto/macro headlines.`}
-                </Text>
-                <Text type="secondary" className="chat-create-hint">
-                  {isZh
-                    ? '临时聊天不加载任务短期记忆、每日总结或策略历史，但会保留当前临时会话内的对话上下文。'
-                    : 'Temporary chats do not load task short-term memory, daily summaries, or strategy history, but retain the current conversation context.'}
-                </Text>
-                <Text type="secondary" className="chat-create-hint">
-                  {selectedProvider?.thinking_enabled ? (isZh ? `已启用思考流${selectedProvider.reasoning_effort ? ` · ${selectedProvider.reasoning_effort}` : ''}` : `Thinking stream enabled${selectedProvider.reasoning_effort ? ` · ${selectedProvider.reasoning_effort}` : ''}`) : (isZh ? '模型是否输出思考流由服务商配置决定。' : 'Reasoning-stream availability is determined by the selected provider.')}
-                </Text>
-              </Space>
-            </div>
-          )}
         </Modal>
       </div>
     </XProvider>

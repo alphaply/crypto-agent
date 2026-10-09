@@ -247,6 +247,81 @@ def extract_message_text(message: BaseMessage | Any) -> str:
     return "".join(parts)
 
 
+def require_complete_response(response: BaseMessage | Any, *, context: str = "Model") -> None:
+    """Reject provider-truncated or refused output before treating it as memory.
+
+    A response can contain valid JSON or nonempty prose while its provider reports
+    an exhausted output budget. Never let that partial answer replace prior memory.
+    """
+    incomplete_reasons = {
+        "length", "max_tokens", "max_output_tokens", "content_filter",
+        "incomplete", "failed", "cancelled",
+    }
+    for container_name in ("response_metadata", "additional_kwargs"):
+        metadata = getattr(response, container_name, None) or {}
+        if not isinstance(metadata, dict):
+            continue
+        for key in ("finish_reason", "stop_reason", "status"):
+            reason = str(metadata.get(key) or "").strip().lower()
+            if reason in incomplete_reasons:
+                raise ValueError(f"{context} response is incomplete: {key}={reason}")
+        if metadata.get("incomplete_details"):
+            raise ValueError(f"{context} response is incomplete: provider returned incomplete_details")
+        if metadata.get("refusal"):
+            raise ValueError(f"{context} model refused the request")
+    content = getattr(response, "content", None)
+    if isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "refusal" for block in content
+    ):
+        raise ValueError(f"{context} model refused the request")
+    if getattr(response, "invalid_tool_calls", None):
+        raise ValueError(f"{context} returned malformed tool arguments")
+
+
+def extract_usage(message: BaseMessage | Any) -> dict:
+    """Keep normalized cache counts plus provider-reported settlement metadata."""
+    metadata = getattr(message, 'response_metadata', None) or {}
+    native = metadata.get('token_usage') or metadata.get('usage') or {}
+    normalized = getattr(message, 'usage_metadata', None) or {}
+    usage = dict(normalized or native)
+    for key in ('cost', 'currency'):
+        if key in native:
+            usage[key] = native[key]
+        elif key in metadata:
+            usage[key] = metadata[key]
+    return usage
+
+
+def resolve_summarizer_provider_id(agent_config: dict) -> str | None:
+    """Attribute the effective model, endpoint and key, including mixed overrides.
+
+    The summarizer inherits each connection field separately. A global or inline
+    override can therefore make the agent's provider reference inaccurate.
+    """
+    from backend.config import config as global_config
+
+    summarizer = agent_config.get('summarizer') or {}
+    effective = {
+        key: (summarizer.get(key)
+              or getattr(global_config, f'global_summarizer_{key}', '')
+              or os.getenv(f'GLOBAL_SUMMARIZER_{key.upper()}')
+              or agent_config.get(key) or '')
+        for key in ('model', 'api_base', 'api_key')
+    }
+    providers = getattr(global_config, 'llm_providers', []) or []
+    def normalized(key, value):
+        text = str(value or '')
+        return text.rstrip('/') if key == 'api_base' else text
+    matches = [p for p in providers if all(
+        normalized(key, p.get(key)) == normalized(key, value)
+        for key, value in effective.items()
+    )]
+    preferred = agent_config.get('summarizer_provider_id') or agent_config.get('llm_provider_id')
+    if preferred and any(p.get('provider_id') == preferred for p in matches):
+        return preferred
+    return matches[0]['provider_id'] if len(matches) == 1 else None
+
+
 def extract_reasoning_token_count(message: BaseMessage | Any) -> int:
     """Read provider-normalized reasoning token usage when no summary is exposed."""
     usage = getattr(message, "usage_metadata", None) or {}

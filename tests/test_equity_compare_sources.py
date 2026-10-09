@@ -121,3 +121,47 @@ def test_dashboard_data_includes_spot_dca_configs(tmp_path, monkeypatch):
 
     assert [row["config_id"] for row in rows] == ["real-a", "strategy-a", "dca-a"]
     assert rows[-1]["mode"] == "SPOT_DCA"
+
+
+def test_global_compare_uses_each_task_symbol_and_deduplicates_real_account(tmp_path, monkeypatch):
+    db_path = tmp_path / 'global-compare.db'
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript('''
+            CREATE TABLE balance_history(id INTEGER PRIMARY KEY,timestamp TEXT,symbol TEXT,config_id TEXT,total_equity REAL);
+            CREATE TABLE mock_balance_history(id INTEGER PRIMARY KEY,timestamp TEXT,symbol TEXT,config_id TEXT,balance REAL,total_equity REAL);
+            CREATE TABLE dca_daily_snapshots(id INTEGER PRIMARY KEY,snapshot_date TEXT,symbol TEXT,config_id TEXT,total_invested REAL);
+            INSERT INTO balance_history VALUES(1,'2026-10-01 10:00','BTC/USDT','real-btc',100);
+            INSERT INTO balance_history VALUES(2,'2026-10-01 11:00','ETH/USDT','real-eth',105);
+            INSERT INTO balance_history VALUES(3,'2026-10-01 12:00','BTC/USDT','other-account',50);
+            INSERT INTO mock_balance_history VALUES(1,'2026-10-01','ETH/USDT','strategy-eth',200,220);
+            INSERT INTO mock_balance_history VALUES(2,'2026-10-01','BTC/USDT','strategy-eth',999,999);
+            INSERT INTO dca_daily_snapshots VALUES(1,'2026-10-01','BTC/USDT','spot',10);
+            INSERT INTO dca_daily_snapshots VALUES(2,'2026-10-01','ETH/USDT','spot',20);
+        ''')
+    class GlobalConfig:
+        def get_all_symbol_configs(self):
+            return [
+                {'config_id': 'real-btc', 'mode': 'REAL', 'symbol': 'BTC/USDT'},
+                {'config_id': 'real-eth', 'mode': 'REAL', 'symbol': 'ETH/USDT'},
+                {'config_id': 'other-account', 'mode': 'REAL', 'symbol': 'BTC/USDT'},
+                {'config_id': 'strategy-eth', 'mode': 'STRATEGY', 'symbol': 'ETH/USDT'},
+                {'config_id': 'spot', 'mode': 'SPOT_DCA', 'symbol': 'BTC/USDT', 'symbols': ['BTC/USDT', 'ETH/USDT']},
+            ]
+
+        def get_exchange_credentials(self, config_id):
+            return 'binance', 'other-key' if config_id == 'other-account' else 'shared-key', 'secret', ''
+
+    monkeypatch.setattr(stats_service, 'DB_NAME', str(db_path))
+    monkeypatch.setattr(stats_service, 'global_config', GlobalConfig())
+    payload = stats_service.get_equity_compare_payload()
+    by_id = {item['config_id']: item for item in payload['series']}
+    assert len(by_id) == 4 and payload['symbol'] is None
+    assert by_id['real-btc']['config_ids'] == ['real-btc', 'real-eth']
+    assert by_id['real-btc']['latest_equity'] == 105
+    assert by_id['real-btc']['data_source']['scope'] == 'account'
+    assert by_id['other-account']['latest_equity'] == 50
+    assert by_id['strategy-eth']['latest_equity'] == 220
+    assert by_id['spot']['latest_equity'] == 30
+    assert [item['mode'] for item in payload['groups']] == ['REAL', 'STRATEGY', 'SPOT_DCA']
+    filtered = stats_service.get_equity_compare_payload(config_ids='real-eth,strategy-eth')
+    assert [item['config_id'] for item in filtered['series']] == ['real-eth', 'strategy-eth']

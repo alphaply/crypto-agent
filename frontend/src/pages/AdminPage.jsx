@@ -1,4 +1,8 @@
+import McpSettingsPanel from '../components/McpSettingsPanel';
+import { PriceSyncPanel, ProviderPricingFields } from '../components/ProviderPricingFields';
 import RunScheduleEditor from '../components/RunScheduleEditor';
+import SpotScheduleEditor from '../components/SpotScheduleEditor';
+import NewsSettingsPanel from '../components/NewsSettingsPanel';
 import DatabaseMaintenance from '../components/DatabaseMaintenance';
 import ResponsiveTabs from '../components/ResponsiveTabs';
 import TradingRulesPanel from '../components/TradingRulesPanel';
@@ -35,18 +39,16 @@ import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, DownloadOutlined, H
 import { api } from '../lib/api';
 import { EXIT_MODES, exitModeLabel, resolveExitMode } from '../lib/exitManagement';
 import { usePreferences } from '../app/usePreferences';
-import { DailySummaryPanel, ShortMemoryPanel } from './DashboardPage';
-import { PolymarketSettings } from '../components/PolymarketPanel';
+import { ShortMemoryPanel } from './DashboardPage';
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 const { useBreakpoint } = Grid;
 const ADMIN_TAB_STORAGE_KEY = 'crypto-agent-admin-active-tab';
-const ADMIN_TAB_KEYS = ['runtime', 'intelligence', 'tasks', 'providers', 'exchanges', 'memory', 'agent-runs', 'prompts', 'database', 'importexport'];
+const ADMIN_TAB_KEYS = ['tasks', 'intelligence', 'providers', 'exchanges', 'mcp', 'memory', 'runtime', 'agent-runs', 'prompts', 'database', 'importexport'];
 
-const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}';
-const DEFAULT_DAILY_PROMPT = '请把以下一整天的交易推理压缩成一段中文日内记忆，300字以内。保留趋势演变、关键价位、决策变化、执行动作和风险结论。只输出总结文本。\n\n内容：\n{content}';
-const DEFAULT_SHORT_MEMORY_PROMPT = '请压缩旧记忆并复盘本窗口，保留尚有效的条件、实际结果和未解决问题。以下是提供的证据：\n{content}';
+const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩为精炼的中文策略摘要。合并重复分析，保留趋势判断、关键价位、风险点、持仓/挂单意图、实际执行结果和下一步条件。不要为字数目标截断条件或结果。只输出摘要文本。\n\n内容：\n{content}';
+const DEFAULT_SHORT_MEMORY_PROMPT = '请整理旧记忆并复盘本窗口，完整保留尚有效的条件、实际结果和未解决问题，不限制字数。以下是提供的证据：\n{content}';
 
 const DEFAULT_PROMPT_FILE_CONTENT = `Role: Crypto trading strategy analyst
 Time: {current_time}
@@ -99,6 +101,7 @@ function spotCatalogContext(task, profiles, persistedProfiles) {
 }
 
 const LLM_PROVIDER_PRESETS = [
+  { key: 'bai-jev', label: 'BAI · TypeSafe Jev', api_base: 'https://api.b.ai/v1', model: 'jev-1.13.0', compatibility_mode: 'openai', api_protocol: 'decisions', thinking_enabled: false },
   { key: 'openai', label: 'OpenAI / Codex', api_base: 'https://api.openai.com/v1', model: 'gpt-5.6', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'medium' },
   { key: 'deepseek', label: 'DeepSeek', api_base: 'https://api.deepseek.com', model: 'deepseek-v4-pro', compatibility_mode: 'deepseek', thinking_enabled: true, reasoning_effort: 'high' },
   { key: 'bai-claude', label: 'BAI · Claude', api_base: 'https://api.bankofai.io/v1', model: 'claude-sonnet-5', compatibility_mode: 'openai', thinking_enabled: true, reasoning_effort: 'high' },
@@ -122,7 +125,8 @@ function buildBlankAgent() {
     api_base: '',
     temperature: 0.3,
     prompt_file: '',
-    market_timeframes: [...MARKET_TIMEFRAME_OPTIONS],
+    market_timeframes: ['1h', '4h', '1d'],
+    market_profile: 'hourly',
     run_interval: 60,
     leverage: 10,
     exchange: '',
@@ -140,7 +144,6 @@ function buildBlankAgent() {
     summarizer_provider_id: '',
     exchange_profile_id: '',
     strategy_prompt: DEFAULT_STRATEGY_PROMPT,
-    daily_prompt: DEFAULT_DAILY_PROMPT,
     short_memory_prompt: DEFAULT_SHORT_MEMORY_PROMPT,
     system_prompt_role: 'system',
     summarizer: {
@@ -148,8 +151,7 @@ function buildBlankAgent() {
       api_base: '',
       temperature: 0.3,
       strategy_prompt: DEFAULT_STRATEGY_PROMPT,
-      daily_prompt: DEFAULT_DAILY_PROMPT,
-      short_memory_prompt: DEFAULT_SHORT_MEMORY_PROMPT,
+        short_memory_prompt: DEFAULT_SHORT_MEMORY_PROMPT,
     },
     secrets: {
       api_key: buildBlankSecretMeta(),
@@ -169,8 +171,8 @@ function buildBlankProvider() {
     model: '',
     api_base: '',
     temperature: 0.5,
-    input_price_per_m: 0,
-    output_price_per_m: 0,
+    input_price_per_m: null,
+    output_price_per_m: null,
     pricing_currency: 'USD',
     extra_body: {},
     compatibility_mode: 'auto',
@@ -230,11 +232,12 @@ function SecretField({ label, meta, onChange, onClear }) {
         </Tag>
       </Space>
       <Space.Compact style={{ width: '100%' }}>
-        <Input.Password
+        <Input
           value={meta?.value || ''}
           onChange={(event) => onChange(event.target.value)}
-          placeholder={meta?.configured ? meta.masked_value || '******' : '******'}
+          placeholder={t('notConfigured')} autoComplete="off" spellCheck={false}
         />
+        <Button disabled={!meta?.value} onClick={() => navigator.clipboard.writeText(meta.value)}>{t('copy')}</Button>
         <Button onClick={onClear}>{t('clear')}</Button>
       </Space.Compact>
     </div>
@@ -243,7 +246,7 @@ function SecretField({ label, meta, onChange, onClear }) {
 
 function ProviderSelect({ providers, value, onChange, allowEmpty, emptyLabel }) {
   const { t } = usePreferences();
-  const options = (providers || []).map((p) => ({
+  const options = (providers || []).filter((p) => p.api_protocol !== 'decisions').map((p) => ({
     label: `${p.name || p.provider_id} (${p.model || '-'})`,
     value: p.provider_id,
   }));
@@ -407,9 +410,9 @@ export default function AdminPage() {
   const screens = useBreakpoint();
   const isMobile = !screens.md;
   const [activeAdminTab, setActiveAdminTab] = useState(() => {
-    if (typeof window === 'undefined') return 'runtime';
+    if (typeof window === 'undefined') return 'tasks';
     const saved = window.localStorage.getItem(ADMIN_TAB_STORAGE_KEY);
-    return ADMIN_TAB_KEYS.includes(saved) ? saved : 'runtime';
+    return ADMIN_TAB_KEYS.includes(saved) ? saved : 'tasks';
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -453,6 +456,8 @@ export default function AdminPage() {
   const [editingTask, setEditingTask] = useState(null);
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [taskSaving, setTaskSaving] = useState(false);
+  const [deletingTaskId, setDeletingTaskId] = useState(null);
+  const deletingTaskRef = useRef(false);
   const [draggingTaskId, setDraggingTaskId] = useState('');
   const autosaveTimerRef = useRef(null);
 
@@ -530,7 +535,7 @@ export default function AdminPage() {
   }, [selectedPrompt]);
 
   const updatePayload = (updater) => {
-    if (!payloadRef.current) return;
+    if (!payloadRef.current || deletingTaskRef.current) return;
     const next = updater(payloadRef.current);
     payloadRef.current = next;
     revisionRef.current += 1;
@@ -550,7 +555,7 @@ export default function AdminPage() {
   };
 
   const persistConfig = useCallback((targetPayload, reload = false, revision = revisionRef.current) => {
-    if (!targetPayload) return Promise.resolve(false);
+    if (!targetPayload || deletingTaskRef.current) return Promise.resolve(false);
     pendingSavesRef.current += 1;
     setSaving(true);
     setError('');
@@ -602,7 +607,7 @@ export default function AdminPage() {
   };
 
   useEffect(() => {
-    if (!payload || loading || taskSaving || saveState !== 'unsaved') return undefined;
+    if (!payload || loading || taskSaving || deletingTaskId || saveState !== 'unsaved') return undefined;
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
     const snapshot = payload;
     const revision = revisionRef.current;
@@ -615,7 +620,7 @@ export default function AdminPage() {
         autosaveTimerRef.current = null;
       }
     };
-  }, [payload, loading, taskSaving, saveState, persistConfig]);
+  }, [payload, loading, taskSaving, deletingTaskId, saveState, persistConfig]);
 
   // --- Task (Agent) CRUD ---
   const openAddTask = () => {
@@ -660,7 +665,7 @@ export default function AdminPage() {
   };
 
   const saveTask = async () => {
-    if (!editingTask || taskSaving) return;
+    if (!editingTask || taskSaving || deletingTaskRef.current) return;
     const taskToSave = normalizeTaskForSave(editingTask);
     if (taskToSave.mode === 'SPOT_DCA') {
       const symbols = taskToSave.symbols;
@@ -849,8 +854,44 @@ export default function AdminPage() {
   };
 
   const deleteAgentData = async (configId) => {
-    await api.delete(`/config/${configId}`);
-    await loadAll();
+    if (deletingTaskRef.current || taskSaving) return;
+    deletingTaskRef.current = true;
+    setDeletingTaskId(configId);
+    setError('');
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    try {
+      // Drain older writes before deleting so an autosave cannot recreate the task.
+      await saveQueueRef.current;
+      await api.delete(`/config/${encodeURIComponent(configId)}`);
+      const hasUnsavedChanges = lastSavedRevisionRef.current !== revisionRef.current;
+      const next = {
+        ...payloadRef.current,
+        agents: (payloadRef.current.agents || []).filter((agent) => agent.config_id !== configId),
+      };
+      payloadRef.current = next;
+      const revision = ++revisionRef.current;
+      setPayload(next);
+      setPersistedAgents((agents) => agents.filter((agent) => agent.config_id !== configId));
+      if (!hasUnsavedChanges) lastSavedRevisionRef.current = revision;
+      setSaveState(hasUnsavedChanges ? 'unsaved' : 'saved');
+      if (editingTaskId === configId) {
+        setTaskDrawerOpen(false);
+        setEditingTask(null);
+        setEditingTaskId(null);
+      }
+      message.success(locale === 'zh' ? '任务及关联数据已删除。' : 'Task and linked data deleted.');
+    } catch (err) {
+      const detail = err.message || (locale === 'zh' ? '请稍后重试。' : 'Please try again.');
+      const text = `${locale === 'zh' ? '删除任务失败：' : 'Failed to delete task: '}${detail}`;
+      setError(text);
+      message.error(text, 8);
+    } finally {
+      deletingTaskRef.current = false;
+      setDeletingTaskId(null);
+    }
   };
 
   // --- Provider CRUD ---
@@ -924,6 +965,7 @@ export default function AdminPage() {
       api_base: preset.api_base,
       model: preset.model,
       compatibility_mode: preset.compatibility_mode,
+      api_protocol: preset.api_protocol || 'chat',
       thinking_enabled: preset.thinking_enabled,
       reasoning_effort: preset.reasoning_effort,
     } : prev);
@@ -1177,7 +1219,7 @@ export default function AdminPage() {
   const multiSpotTask = taskMode === 'SPOT_DCA' && taskSymbols(editingTask).length > 1;
   const taskDefaultTimeframes = taskMode === 'SPOT_DCA' ? SPOT_MARKET_TIMEFRAMES : MARKET_TIMEFRAME_OPTIONS;
   const memoryDashboard = payload ? {
-    current_symbol: payload.agents?.[0]?.symbol || '',
+    current_symbol: '',
     symbols: Array.from(new Set((payload.agents || []).flatMap(taskSymbols))),
     agent_summaries: (payload.agents || []).map((agent) => ({
       config_id: agent.config_id,
@@ -1190,7 +1232,7 @@ export default function AdminPage() {
   } : null;
 
   return (
-    <Space className="admin-page" direction="vertical" size="large" style={{ width: '100%' }}>
+    <Space className="admin-page" direction="vertical" size="large" style={{ width: '100%' }} inert={Boolean(deletingTaskId) || undefined}>
       <Card className="hero-card">
         <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
           <div>
@@ -1205,7 +1247,7 @@ export default function AdminPage() {
                 ? ({ failed: '保存失败', saving: '保存中…', unsaved: '待保存', saved: '已保存' }[saveState] || '自动保存')
                 : ({ failed: 'Save failed', saving: 'Saving…', unsaved: 'Unsaved', saved: 'Saved' }[saveState] || 'Auto save')}
             </Tag>
-            <Button onClick={saveConfig} loading={saving} disabled={!payload}>{t('saveConfig')}</Button>
+            <Button onClick={saveConfig} loading={saving} disabled={!payload || Boolean(deletingTaskId)}>{t('saveConfig')}</Button>
           </Space>
         </Space>
       </Card>
@@ -1215,16 +1257,16 @@ export default function AdminPage() {
       {loading ? (
         <Card className="panel-card loading-card"><Spin /></Card>
       ) : payload ? (
-        <ResponsiveTabs label={locale === 'zh' ? '配置分区' : 'Configuration section'} activeKey={activeAdminTab} onChange={setActiveAdminTab} items={[
+        <ResponsiveTabs tabPosition={isMobile ? 'top' : 'left'} label={locale === 'zh' ? '配置分区' : 'Configuration section'} activeKey={activeAdminTab} onChange={setActiveAdminTab} items={[
           {
             key: 'intelligence',
-            label: locale === 'zh' ? '消息源' : 'News sources',
-            children: <PolymarketSettings value={payload.globals.polymarket} onChange={(value) => updateGlobal('polymarket', value)} />,
+            label: locale === 'zh' ? '消息聚合' : 'News aggregation',
+            children: <NewsSettingsPanel value={payload.globals.news} onChange={(value) => updateGlobal('news', value)} providers={payload.llm_providers} profiles={persistedProfiles} polymarket={payload.globals.polymarket} onPolymarketChange={(value) => updateGlobal('polymarket', value)} />,
           },
           // ===== 运行配置 =====
           {
             key: 'runtime',
-            label: t('runtimeConfig'),
+            label: locale === 'zh' ? '系统设置' : 'System settings',
             children: (
               <Card className="panel-card" title={t('globals')}>
                 <div className="field-grid">
@@ -1286,7 +1328,7 @@ export default function AdminPage() {
           // ===== 任务配置 =====
           {
             key: 'tasks',
-            label: locale === 'zh' ? '任务配置' : 'Task Config',
+            label: locale === 'zh' ? '任务与调度' : 'Tasks and scheduling',
             children: (
               <Card className="panel-card" title={locale === 'zh' ? '任务配置' : 'Task Config'} extra={
                 <Button type="primary" onClick={openAddTask}>{t('addAgent')}</Button>
@@ -1319,8 +1361,8 @@ export default function AdminPage() {
                           <Button size="small" icon={<ArrowDownOutlined />} disabled={index === (payload.agents || []).length - 1} onClick={() => moveTask(record.config_id, 1)} />
                           <Button size="small" onClick={() => openEditTask(record)}>Edit</Button>
                           <Button size="small" onClick={() => duplicateTask(record)}>Copy</Button>
-                          <Popconfirm title={t('confirmDelete')} description="Delete this config and linked data?" onConfirm={() => deleteAgentData(record.config_id)}>
-                            <Button size="small" danger>Delete</Button>
+                          <Popconfirm title={t('confirmDelete')} description={locale === 'zh' ? '删除此任务及本系统关联的运行、历史数据？删除不会卖出持仓或撤销交易所委托，交易所资产和委托需自行管理。' : 'Delete this task and its local runtime/history data? This will not sell holdings or cancel exchange orders; manage them directly on the exchange.'} onConfirm={() => deleteAgentData(record.config_id)}>
+                            <Button size="small" danger loading={deletingTaskId === record.config_id} disabled={taskSaving || Boolean(deletingTaskId && deletingTaskId !== record.config_id)}>{t('delete')}</Button>
                           </Popconfirm>
                         </Space>
                       </Card>
@@ -1404,10 +1446,10 @@ export default function AdminPage() {
                             <Button size="small" onClick={() => duplicateTask(record)}>Copy</Button>
                             <Popconfirm
                               title={t('confirmDelete')}
-                              description="Delete this config and linked data?"
+                              description={locale === 'zh' ? '删除此任务及本系统关联的运行、历史数据？删除不会卖出持仓或撤销交易所委托，交易所资产和委托需自行管理。' : 'Delete this task and its local runtime/history data? This will not sell holdings or cancel exchange orders; manage them directly on the exchange.'}
                               onConfirm={() => deleteAgentData(record.config_id)}
                             >
-                              <Button size="small" danger>Delete</Button>
+                              <Button size="small" danger loading={deletingTaskId === record.config_id} disabled={taskSaving || Boolean(deletingTaskId && deletingTaskId !== record.config_id)}>{t('delete')}</Button>
                             </Popconfirm>
                           </Space>
                         ),
@@ -1421,8 +1463,9 @@ export default function AdminPage() {
           // ===== 模型服务商 =====
           {
             key: 'providers',
-            label: t('llmProviders'),
+            label: locale === 'zh' ? '模型与价格' : 'Models and prices',
             children: (
+              <div className="settings-stack"><PriceSyncPanel value={payload.globals.pricing_sync} onChange={(value) => updateGlobal('pricing_sync', value)} />
               <Card
                 className="panel-card provider-catalog-card"
                 title={t('llmProviders')}
@@ -1566,8 +1609,8 @@ export default function AdminPage() {
                             },
                             { title: t('thinkingMode'), width: 110, render: (_, record) => record.thinking_enabled === true ? <Tag color="purple">Thinking</Tag> : <Tag>Standard</Tag> },
                             { title: t('reasoningEffort'), dataIndex: 'reasoning_effort', width: 115, render: (value) => value || '-' },
-                            { title: 'Input $/M', dataIndex: 'input_price_per_m', width: 105, render: (value) => value ?? 0 },
-                            { title: 'Output $/M', dataIndex: 'output_price_per_m', width: 112, render: (value) => value ?? 0 },
+                            { title: locale === 'zh' ? '输入 /M' : 'Input /M', dataIndex: 'input_price_per_m', width: 130, render: (value,row) => { const prices = row.pricing_mode === 'models_dev' ? row.effective_prices : row; const rate = prices?.input_price_per_m; return rate == null ? (locale === 'zh' ? '未定价' : 'Unpriced') : `${rate} ${prices.currency || prices.pricing_currency || 'USD'}`; } },
+                            { title: locale === 'zh' ? '输出 /M' : 'Output /M', dataIndex: 'output_price_per_m', width: 130, render: (value,row) => { const prices = row.pricing_mode === 'models_dev' ? row.effective_prices : row; const rate = prices?.output_price_per_m; return rate == null ? (locale === 'zh' ? '未定价' : 'Unpriced') : `${rate} ${prices.currency || prices.pricing_currency || 'USD'}`; } },
                             {
                               title: '', width: 185, fixed: 'right', render: (_, record) => (
                                 <Space className="table-actions">
@@ -1587,13 +1630,13 @@ export default function AdminPage() {
                 ) : (
                   <Empty description={providerCatalog.stats.total ? (locale === 'zh' ? '没有符合当前筛选条件的模型' : 'No models match the current filters') : t('noProvider')} />
                 )}
-              </Card>
+              </Card></div>
             ),
           },
           // ===== 交易所配置 =====
           {
             key: 'exchanges',
-            label: t('exchangeProfiles'),
+            label: locale === 'zh' ? '交易账户' : 'Trading accounts',
             children: (
               <Card className="panel-card" title={t('exchangeProfiles')} extra={
                 <Button type="primary" onClick={openAddProfile}>{t('addProfile')}</Button>
@@ -1621,6 +1664,7 @@ export default function AdminPage() {
               </Card>
             ),
           },
+          { key: 'mcp', label: 'MCP', children: <McpSettingsPanel profiles={persistedProfiles} /> },
           {
             key: 'memory',
             label: t('memoryCenter'),
@@ -1632,11 +1676,6 @@ export default function AdminPage() {
                       key: 'rules',
                       label: locale === 'zh' ? '交易规则' : 'Trading rules',
                       children: <TradingRulesPanel agents={payload.agents || []} />,
-                    },
-                    {
-                      key: 'daily',
-                      label: t('dailySummaries'),
-                      children: <DailySummaryPanel dashboard={memoryDashboard} authenticated embedded />,
                     },
                     {
                       key: 'short',
@@ -1775,7 +1814,7 @@ export default function AdminPage() {
             ),
           },
           // ===== 计价 =====
-        ]} />
+        ].sort((a,b)=>ADMIN_TAB_KEYS.indexOf(a.key)-ADMIN_TAB_KEYS.indexOf(b.key))} />
       ) : null}
 
       {/* Task (Agent) Drawer */}
@@ -1783,25 +1822,25 @@ export default function AdminPage() {
         title={editingTaskId ? (editingTask?.title || editingTaskId) : (locale === 'zh' ? '新增任务' : 'Add Task')}
         width={isMobile ? '100vw' : 720}
         open={taskDrawerOpen}
-        closable={!taskSaving}
-        onClose={() => { if (!taskSaving) { setTaskDrawerOpen(false); setEditingTask(null); setEditingTaskId(null); } }}
+        closable={!taskSaving && !deletingTaskId}
+        onClose={() => { if (!taskSaving && !deletingTaskId) { setTaskDrawerOpen(false); setEditingTask(null); setEditingTaskId(null); } }}
         extra={
           <Space>
             {editingTaskId && (
               <Popconfirm
                 title={t('confirmDelete')}
-                description="Delete this config and linked data?"
+                description={locale === 'zh' ? '删除此任务及本系统关联的运行、历史数据？删除不会卖出持仓或撤销交易所委托，交易所资产和委托需自行管理。' : 'Delete this task and its local runtime/history data? This will not sell holdings or cancel exchange orders; manage them directly on the exchange.'}
                 onConfirm={() => deleteAgentData(editingTaskId)}
               >
-                <Button danger disabled={taskSaving}>{t('delete')}</Button>
+                <Button danger loading={deletingTaskId === editingTaskId} disabled={taskSaving || Boolean(deletingTaskId && deletingTaskId !== editingTaskId)}>{t('delete')}</Button>
               </Popconfirm>
             )}
-            <Button type="primary" loading={taskSaving} onClick={saveTask}>{t('save')}</Button>
+            <Button type="primary" loading={taskSaving} disabled={Boolean(deletingTaskId)} onClick={saveTask}>{t('save')}</Button>
           </Space>
         }
       >
         {editingTask && (
-          <div inert={taskSaving || undefined}>
+          <div inert={taskSaving || Boolean(deletingTaskId) || undefined}>
           <Collapse defaultActiveKey={['basic', 'schedule', 'model']} items={[
             {
               key: 'basic',
@@ -1876,6 +1915,7 @@ export default function AdminPage() {
                     />
                     <Text type="secondary">{locale === 'zh' ? '内置默认随版本升级更新；自定义文件保留原有内容。' : 'The built-in default updates with releases; custom files retain their content.'}</Text>
                   </div>
+                  {taskMode !== 'SPOT_DCA' && <div className="form-field field-span-2"><label>{locale === 'zh' ? '行情输入预设' : 'Market input preset'}</label><Select value={editingTask.market_profile || 'legacy'} options={[{value:'legacy',label:locale === 'zh'?'保留原有行情配置':'Existing market configuration'},{value:'hourly',label:locale === 'zh'?'1h 分析 · 1h / 4h / 1d':'Hourly analysis · 1h / 4h / 1d'}]} onChange={(v)=>{updateEditingTask('market_profile',v);if(v==='hourly')updateEditingTask('market_timeframes',['1h','4h','1d']);}}/><Text type="secondary">{locale === 'zh'?'1h 预设各周期计算 600 根历史，仅展示最近 24 / 12 / 7 根已收盘 K 线。':'Hourly preset computes indicators from 600 bars per timeframe and displays 24 / 12 / 7 closed bars.'}</Text></div>}
                   <div className="form-field field-span-2">
                     <label>{locale === 'zh' ? '市场分析周期' : 'Market analysis timeframes'}</label>
                     <Select
@@ -1908,15 +1948,15 @@ export default function AdminPage() {
                   {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
                     <RunScheduleEditor value={editingTask.run_schedule || []}
                       onChange={rules => updateEditingTask('run_schedule', rules)}
-                      onPreset={rules => setEditingTask(previous => ({ ...previous, run_schedule: rules, run_interval: 30 }))} />
+                      onPreset={rules => setEditingTask(previous => ({ ...previous, run_schedule: rules }))} />
                   )}
                   {taskMode === 'SPOT_DCA' && (
                     <>
                       <div className="form-field field-span-2">
-                        <Alert type="info" showIcon message={locale === 'zh' ? '组合共用一份定投预算' : 'One shared portfolio budget'} description={locale === 'zh' ? 'DCA Amount 是每个定投周期整个任务可用的额度，多个标的共享，由 Agent 分配；不会按标的数量倍增。多标的任务不支持统一填写历史持仓数量或成本，余额与成交按各标的读取。' : 'DCA Amount is the total allowance per period, shared across all symbols and allocated by the agent. It is not multiplied by symbol count. Multi-symbol tasks read balances and fills per symbol; legacy initial quantity/cost fields are unavailable.'} />
+                        <Alert type="info" showIcon message={locale === 'zh' ? '组合共用一份定投预算' : 'One shared portfolio budget'} description={locale === 'zh' ? 'DCA Amount 是每次计划运行整个任务可用的额度，多个标的共享，由 Agent 分配；不会按标的数量倍增。多标的任务不支持统一填写历史持仓数量或成本，余额与成交按各标的读取。' : 'DCA Amount is the total allowance per run, shared across all symbols and allocated by the agent. It is not multiplied by symbol count. Multi-symbol tasks read balances and fills per symbol; legacy initial quantity/cost fields are unavailable.'} />
                       </div>
                       <div className="form-field">
-                        <label>{locale === 'zh' ? '每周期组合额度（DCA Amount）' : 'Portfolio allowance per period (DCA Amount)'}</label>
+                        <label>{locale === 'zh' ? '每次运行组合额度（DCA Amount）' : 'Portfolio allowance per run (DCA Amount)'}</label>
                         <InputNumber min={0} value={editingTask.dca_amount ?? 0} onChange={(v) => updateEditingTask('dca_amount', v ?? 0)} style={{ width: '100%' }} />
                       </div>
                       <div className="form-field">
@@ -1924,18 +1964,7 @@ export default function AdminPage() {
                         <InputNumber min={0} value={editingTask.dca_budget ?? null} onChange={(v) => updateEditingTask('dca_budget', v)} style={{ width: '100%' }} placeholder={locale === 'zh' ? '留空不设累计上限' : 'Leave empty for no lifetime cap'} />
                         <Text type="secondary">{locale === 'zh' ? '所有标的累计买入共用此额度，计价币与现货标的一致。' : 'A shared cap on cumulative buys across all symbols, in their quote currency.'}</Text>
                       </div>
-                      <div className="form-field">
-                        <label>DCA Freq</label>
-                        <Select value={editingTask.dca_freq || undefined} options={(payload.options?.dca_freqs || []).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingTask('dca_freq', v)} style={{ width: '100%' }} />
-                      </div>
-                      <div className="form-field">
-                        <label>DCA Time</label>
-                        <Input value={editingTask.dca_time || ''} onChange={(e) => updateEditingTask('dca_time', e.target.value)} />
-                      </div>
-                      <div className="form-field">
-                        <label>DCA Weekday</label>
-                        <InputNumber min={0} max={6} value={editingTask.dca_weekday ?? 0} onChange={(v) => updateEditingTask('dca_weekday', v ?? 0)} style={{ width: '100%' }} />
-                      </div>
+                      <div className="form-field field-span-2"><SpotScheduleEditor config={editingTask} onChange={(value) => updateEditingTask('dca_schedule', value)} /></div>
                       <div className="form-field">
                         <label>Initial Qty</label>
                         <InputNumber min={0} value={editingTask.initial_qty ?? 0} onChange={(v) => updateEditingTask('initial_qty', v ?? 0)} style={{ width: '100%' }} disabled={multiSpotTask} />
@@ -2164,28 +2193,19 @@ export default function AdminPage() {
             },
             {
               key: 'summaryPrompts',
-              label: locale === 'zh' ? '复盘与归档 Prompt' : 'Review and archive prompts',
+              label: locale === 'zh' ? '策略压缩、复盘与归档 Prompt' : 'Strategy summary, review and archive prompts',
               children: (
                 <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                  <Alert type="info" showIcon title={locale === 'zh' ? '交易轮次直接保存决策，不再额外调用逐轮摘要模型。' : 'Trading rounds save the decision directly, without another per-round summary call.'} description={locale === 'zh' ? '短期记忆 Agent 每 4 小时或手动整理证据、复盘并维护未锁定的规则；交易 Agent 只读取规则。日内摘要负责归档。' : 'Every four hours or on manual request, the memory agent reviews evidence and maintains unlocked rules. The trading agent only reads rules. Daily summaries archive the day.'} />
+                  <Alert type="info" showIcon title={locale === 'zh' ? '每轮交易结束由配置的摘要模型压缩策略，模型返回内容完整保存。' : 'Each trading round uses the configured summarizer to compress the strategy and saves its complete response.'} description={locale === 'zh' ? '单轮策略压缩使用下方 Prompt 和任务摘要模型（如 DeepSeek）；原始分析另行保留。每次运行后，短期记忆结合前 4 小时摘要、当前摘要和现有记忆更新，并维护未锁定规则。' : 'Per-round strategy compression uses the prompt below and the task summarizer, such as DeepSeek; the original analysis is retained separately. After each run, short memory incorporates the prior four hours, the current summary and existing memory, and reviews unlocked rules.'} />
                   <div className="form-field">
                     <label>{t('strategyPrompt')}</label>
-                    <Text type="secondary">{locale === 'zh' ? '兼容旧配置，常规交易不再调用此摘要。' : 'Legacy compatibility: regular trading no longer invokes this summary.'}</Text>
+                    <Text type="secondary">{locale === 'zh' ? '每轮生成策略摘要时使用。模型归纳压缩后，系统不再按字符数裁切输出；调用失败会明确标记并保留原始记录。' : 'Used for each strategy summary. The model compresses the analysis; its output is saved without character cuts. A failed call is marked explicitly and preserves the original record.'}</Text>
                     <PromptEditor
                       value={editingTask.strategy_prompt || editingTask.summarizer?.strategy_prompt || ''}
                       onChange={(v) => { updateEditingTask('strategy_prompt', v); updateEditingTaskSummarizer('strategy_prompt', v); }}
                       placeholder={DEFAULT_STRATEGY_PROMPT}
                     />
                     <PromptVarHints content={editingTask.strategy_prompt || editingTask.summarizer?.strategy_prompt || ''} vars={SUMMARIZER_PROMPT_VARS} locale={locale} />
-                  </div>
-                  <div className="form-field">
-                    <label>{t('dailyPrompt')}</label>
-                    <PromptEditor
-                      value={editingTask.daily_prompt || editingTask.summarizer?.daily_prompt || ''}
-                      onChange={(v) => { updateEditingTask('daily_prompt', v); updateEditingTaskSummarizer('daily_prompt', v); }}
-                      placeholder={DEFAULT_DAILY_PROMPT}
-                    />
-                    <PromptVarHints content={editingTask.daily_prompt || editingTask.summarizer?.daily_prompt || ''} vars={SUMMARIZER_PROMPT_VARS} locale={locale} />
                   </div>
                   <div className="form-field">
                     <label>{t('shortMemoryPrompt')}</label>
@@ -2269,6 +2289,8 @@ export default function AdminPage() {
               </div>
             </div>
             <Text type="secondary" className="provider-id">Provider ID: {editingProvider.provider_id}</Text>
+            <div className="form-field"><label>{locale === 'zh' ? '服务接口' : 'API protocol'}</label><Select value={editingProvider.api_protocol || 'chat'} options={[{value:'chat',label:locale === 'zh'?'对话与摘要':'Chat and summaries'},{value:'decisions',label:'b.ai Jev · Decisions API'}]} onChange={(v)=>updateEditingProvider('api_protocol',v)}/></div>
+            {editingProvider.api_protocol !== 'decisions' && <div className="form-field"><label>{locale === 'zh' ? '固定报告输出能力' : 'Report output capability'}</label><Select value={editingProvider.report_output_mode || 'json'} options={[{value:'json',label:locale === 'zh'?'JSON 校验（默认）':'JSON validation (default)'},{value:'json_schema',label:'Native JSON Schema'},{value:'tool',label:locale === 'zh'?'指定报告工具':'Forced report tool'}]} onChange={(v)=>updateEditingProvider('report_output_mode',v)}/><Text type="secondary">{locale === 'zh'?'按渠道实际支持的能力选择；仅在收尾阶段生成报告，格式纠正不重放交易。':'Select the capability supported by this channel. Report repair never repeats trading.'}</Text></div>}
             <div className="form-field">
               <label>Temperature</label>
               <InputNumber min={0} max={2} step={0.1} value={editingProvider.temperature} onChange={(v) => updateEditingProvider('temperature', v)} style={{ width: '100%' }} />
@@ -2298,18 +2320,9 @@ export default function AdminPage() {
                 ]}
                 onChange={(value) => updateEditingProvider('system_prompt_role', value)}
               />
-              <Text type="secondary">{locale === 'zh' ? '若服务商报错或不支持 system role，请选择 User 消息。任务和临时聊天会自动继承。' : 'Choose User message when an endpoint rejects system roles. Task and temporary chats inherit this setting.'}</Text>
+              <Text type="secondary">{locale === 'zh' ? '若服务商报错或不支持 system role，请选择 User 消息。任务和任务聊天会自动继承。' : 'Choose User message when an endpoint rejects system roles. Task and task chats inherit this setting.'}</Text>
             </div>
-            <div className="field-grid">
-              <div className="form-field">
-                <label>Input price ($ / 1M tokens)</label>
-                <InputNumber min={0} step={0.01} value={editingProvider.input_price_per_m ?? 0} onChange={(v) => updateEditingProvider('input_price_per_m', v ?? 0)} style={{ width: '100%' }} />
-              </div>
-              <div className="form-field">
-                <label>Output price ($ / 1M tokens)</label>
-                <InputNumber min={0} step={0.01} value={editingProvider.output_price_per_m ?? 0} onChange={(v) => updateEditingProvider('output_price_per_m', v ?? 0)} style={{ width: '100%' }} />
-              </div>
-            </div>
+            <ProviderPricingFields value={editingProvider} onChange={(patch) => setEditingProvider((prev) => ({ ...prev, ...patch }))}/>
             <SecretField label="API Key" meta={editingProvider.secrets?.api_key} onChange={(v) => updateEditingProviderSecret('api_key', { value: v, clear: false })} onClear={() => updateEditingProviderSecret('api_key', { value: '', clear: true })} />
             <div className="form-field">
               <label>{t('thinkingMode')}</label>

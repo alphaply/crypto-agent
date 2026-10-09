@@ -90,7 +90,7 @@ def export_daily_summaries(
 
 @router.post("/daily-summaries/generate")
 def generate_daily_summary(payload: GenerateDailySummaryRequest, _: dict = Depends(get_current_user)):
-    return {"success": True, **generate_daily_summary_payload(payload.config_id, payload.date)}
+    raise HTTPException(410, "Daily memory has been retired; use rolling short memory")
 
 
 @router.get("/short-memories")

@@ -364,8 +364,8 @@ class ExecutionLedger:
             return result
 
 
-def execution_context(config_id: str, hours=24, limit=20, now=None, scope=None, symbol=None):
-    """Bounded facts separate from model memory; all-time active plans remain visible."""
+def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None, symbol=None):
+    """Complete facts in the requested time window; active plans remain visible."""
     now = now or datetime.now(TZ_CN)
     if now.tzinfo is None:
         now = TZ_CN.localize(now)
@@ -425,7 +425,7 @@ def execution_context(config_id: str, hours=24, limit=20, now=None, scope=None, 
                 missing_fee += 1
             else:
                 fees[currency] = fees.get(currency, 0) + cost
-        if len(facts) < limit:
+        if limit is None or len(facts) < limit:
             facts.append({**fill, 'order_id': row['order_id'], 'symbol': row['symbol'],
                           'role': row['role'] or 'unknown', 'evidence': json.loads(row['link_metadata'] or '{}')})
     active = [{k: p.get(k) for k in ('symbol', 'side', 'state', 'stop_loss', 'take_profit', 'error', 'verified_at')}
@@ -443,7 +443,7 @@ def execution_context(config_id: str, hours=24, limit=20, now=None, scope=None, 
     payload = {'window_hours': hours, 'from_ms': start_ms, 'through_ms': end_ms, 'sync': sync,
                'window_complete': window_complete, 'unknown_owner_fill_count': unknown_count,
                'account_income_by_type_asset_not_agent_pnl': income_totals,
-               'fill_count': len(rows), 'omitted_details': max(0, len(rows) - limit), 'recent_fills': facts,
+               'fill_count': len(rows), 'omitted_details': len(rows) - len(facts), 'recent_fills': facts,
                'known_realized_pnl_before_fees': pnl, 'missing_pnl_count': missing_pnl,
                'fees_by_currency': fees, 'missing_fee_count': missing_fee, 'active_protection': active}
     from backend.utils.execution_metrics import metrics_context
@@ -458,7 +458,7 @@ def execution_context(config_id: str, hours=24, limit=20, now=None, scope=None, 
 
 def recent_activity_data(config_id: str, symbol: str, now=None) -> dict:
     canonical = symbol if ':' in symbol else f'{symbol}:USDT'
-    raw = execution_context(config_id, hours=168, limit=5, now=now, symbol=canonical)
+    raw = execution_context(config_id, hours=168, now=now, symbol=canonical)
     data = json.loads(raw[raw.index('\n{') + 1:])
     return data
 
@@ -466,13 +466,18 @@ def recent_activity_data(config_id: str, symbol: str, now=None) -> dict:
 def recent_activity_summary(config_id: str, symbol: str, now=None) -> str:
     data = recent_activity_data(config_id, symbol, now)
     cycles = data['position_cycles']
+    # The heading defines the seven-day window and the caller records its read
+    # time. A moving query boundary alone is not new trading evidence.
+    evidence = {key: value for key, value in data.items() if key not in {'from_ms', 'through_ms'}}
     return ('【最近7天成交活动（按成交时间，与完整周期盈亏不可相加）】\n'
             f"已归属成交: {data['fill_count']} 条；已确认手续费前盈亏: {data['known_realized_pnl_before_fees']}；"
             f"手续费按币种: {json.dumps(data['fees_by_currency'])}；缺失盈亏: {data['missing_pnl_count']} 条；"
             f"未知归属成交: {data['unknown_owner_fill_count']} 条；无法匹配: {cycles['unmatched_fill_count']} 条；"
             f"混合归属/不完整周期排除: {cycles['excluded_cycle_count']}；"
             f"窗口覆盖完整: {data['window_complete']}；同步: {json.dumps(data['sync'])}\n"
-            f"未闭合周期（非实时持仓）: {json.dumps([{'side': c['side'], 'remaining': c['remaining_base'], 'mixed': c['foreign_entry']} for c in cycles['open_cycles']])}")
+            f"未闭合周期（非实时持仓）: {json.dumps([{'side': c['side'], 'remaining': c['remaining_base'], 'mixed': c['foreign_entry']} for c in cycles['open_cycles']])}\n"
+            '完整窗口成交、持仓周期与执行观察（与以上统计属于同一批证据，不重复计算盈亏）：\n'
+            + json.dumps(evidence, ensure_ascii=False, default=str))
 
 
 def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
@@ -702,13 +707,13 @@ def rebuild_execution_position_history(config_id: str, scope: str, symbol: str):
 
 
 def position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
-    """Return bounded cycle facts for prompts while preserving complete totals."""
+    """Return every reconstructed cycle in the selected time window."""
     rebuilt = _reconstruct_position_cycles(config_id, start_ms, end_ms, scope, symbol)
     completed = rebuilt['completed']
     return {
         'completed_count': len(completed),
-        'completed': completed[-10:],
-        'omitted_completed': max(0, len(completed) - 10),
+        'completed': completed,
+        'omitted_completed': 0,
         'unmatched_fill_count': rebuilt['unmatched_fill_count'],
         'excluded_cycle_count': len(rebuilt['excluded_cycles']),
         'open_cycles': rebuilt['open_cycles'],

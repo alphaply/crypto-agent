@@ -41,6 +41,8 @@ from backend.utils.llm_utils import (
     extract_reasoning_content,
     instruction_message,
     invoke_with_retry,
+    require_complete_response,
+    resolve_summarizer_provider_id,
     sync_langsmith_environment,
 )
 from backend.utils.logger import setup_logger
@@ -217,6 +219,8 @@ def resolve_market_timeframes(agent_config: dict | None = None) -> list[str]:
 
     if str((agent_config or {}).get('mode') or '').upper() == 'SPOT_DCA':
         return list(SPOT_MARKET_TIMEFRAMES)
+    if (agent_config or {}).get('market_profile') == 'hourly':
+        return ['1h', '4h', '1d']
 
     global_timeframes = [str(item).strip() for item in list(getattr(global_config, 'market_timeframes', None) or []) if str(item).strip()]
     if global_timeframes:
@@ -239,28 +243,17 @@ def calculate_next_run_time(agent_config, now_cn):
         return next_run.strftime('%m-%d %H:%M %Z') if next_run else 'N/A'
 
     elif mode == 'SPOT_DCA':
-        dca_time_str = agent_config.get('dca_time', '08:00')
-        try:
-            hour, minute = map(int, dca_time_str.split(':'))
-        except Exception:
-            hour, minute = 8, 0
-        next_run = now_cn.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if agent_config.get('dca_freq', '1d') == '1w':
-            target_weekday = int(agent_config.get('dca_weekday', 0))
-            days_ahead = target_weekday - now_cn.weekday()
-            if days_ahead < 0 or (days_ahead == 0 and now_cn > next_run):
-                days_ahead += 7
-            next_run += timedelta(days=days_ahead)
-        else:
-            if now_cn > next_run:
-                next_run += timedelta(days=1)
-        return next_run.strftime('%m-%d %H:%M')
-
+        from backend.utils.run_schedule import dca_slots
+        slots = dca_slots(agent_config, now_cn, future=True)
+        return slots[0].strftime('%m-%d %H:%M %Z') if slots else 'N/A'
     return "N/A"
 
 # ==========================================
 # 1. Summarizer Pipeline
 # ==========================================
+
+STRATEGY_SUMMARY_FAILURE_PREFIX = "【策略压缩失败；以下为未压缩原始记录】\n"
+
 
 def summarize_content(content: str, agent_config: dict, summary_type: str = "strategy") -> str:
     """使用独立的 LLM 配置对分析内容进行压缩。"""
@@ -270,7 +263,7 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
             content, agent_config,
             operation_id=f'explicit:{config_id}:{hashlib.sha256(content.encode()).hexdigest()}',
             previous=format_short_memory_for_llm(config_id))
-    summarizer_cfg = agent_config.get("summarizer", {})
+    summarizer_cfg = agent_config.get("summarizer") or {}
     
     # 获取配置，优先级：1. agent 专属 summarizer -> 2. 全局运行配置/环境变量 -> 3. agent 自身配置
     model = (summarizer_cfg.get("model") or 
@@ -295,13 +288,14 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
             api_key=api_key,
             base_url=api_base,
             temperature=temperature,
+            extra_body=summarizer_cfg.get("extra_body"),
             thinking_enabled=summarizer_cfg.get("thinking_enabled"),
             reasoning_effort=summarizer_cfg.get("reasoning_effort"),
             compatibility_mode=summarizer_cfg.get("compatibility_mode"),
         )
         default_prompts = {
-            "strategy": "请把以下单轮交易分析压缩成一段中文策略记忆，150字以内。保留趋势判断、关键价位、风险点、持仓/挂单意图和下一步动作。只输出总结文本。\n\n内容：\n{content}",
-            "daily": "请依据以下策略和执行证据生成每日复盘，600字以内。包含市场与策略演变、实际成交与结果、计划执行偏差、风险教训和次日条件；计划不等于成交，缺失盈亏/费用标记未知，不重复计数。只输出复盘文本。\n\n内容：\n{content}",
+            "strategy": "请把以下单轮交易分析压缩为精炼的中文策略摘要。合并重复分析，保留趋势判断、关键价位、风险点、持仓/挂单意图、实际执行结果和下一步条件。不要为字数目标截断条件或结果。只输出摘要文本。\n\n内容：\n{content}",
+            "daily": "请依据以下策略和执行证据生成完整每日复盘，不因字数限制省略有效信息或截断内容。包含市场与策略演变、实际成交与结果、计划执行偏差、风险教训和次日条件；计划不等于成交，缺失盈亏/费用标记未知，不重复计数。只输出复盘文本。\n\n内容：\n{content}",
         }
         prompt_text_key = {
             "strategy": "strategy_prompt",
@@ -313,47 +307,88 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
             "daily": "daily_prompt_file",
             "short_memory": "short_memory_prompt_file",
         }.get(summary_type, "strategy_prompt_file")
-        prompt_template = str(summarizer_cfg.get(prompt_text_key) or "").strip()
+        prompt_template = str(agent_config.get(prompt_text_key) or summarizer_cfg.get(prompt_text_key) or "").strip()
         if not prompt_template:
             prompt_template = resolve_prompt_file_content(
-                summarizer_cfg.get(prompt_file_key),
+                agent_config.get(prompt_file_key) or summarizer_cfg.get(prompt_file_key),
                 PROJECT_ROOT,
                 logger,
                 fallback=default_prompts.get(summary_type, default_prompts["strategy"]),
             )
         prompt = render_prompt(prompt_template, content=content)
+        if '{content}' not in prompt_template:
+            prompt += '\n\n内容：\n' + content
         prompt += '\n\n' + SUMMARY_FACT_POLICY
+        prompt_role = summarizer_cfg.get('system_prompt_role') or agent_config.get('system_prompt_role', 'system')
+        summary_messages = [instruction_message(prompt, prompt_role)]
+        if summary_type == 'report':
+            from backend.agent.trade_report import TradeReport, report_instructions, parse_report_response
+            summary_messages[0] = instruction_message(prompt + '\n\n' + report_instructions(), prompt_role)
+            output_mode = summarizer_cfg.get('report_output_mode') or agent_config.get('report_output_mode', 'json')
+            if output_mode == 'json_schema':
+                llm = llm.bind(response_format={'type': 'json_schema', 'json_schema': {
+                    'name': 'TradeReport', 'strict': True, 'schema': TradeReport.model_json_schema()}})
+            elif output_mode == 'tool':
+                llm = llm.bind_tools([TradeReport], tool_choice='TradeReport')
+
+            def validate_report(response):
+                require_complete_response(response, context='TradeReport')
+                parse_report_response(response)
+
+            for attempt in range(2):
+                try:
+                    response = audited_invoke(lambda: llm.invoke(summary_messages),
+                        config_id=agent_config.get('config_id'), purpose='strategy_summary', model=model,
+                        provider_id=resolve_summarizer_provider_id(agent_config),
+                        tools=[TradeReport] if output_mode == 'tool' else None,
+                        messages=summary_messages, response_validator=validate_report)
+                    return parse_report_response(response).model_dump_json()
+                except Exception as exc:
+                    if attempt:
+                        raise
+                    # Repair is a read-only formatting call; it never re-enters the trade graph.
+                    summary_messages.append(HumanMessage(content='上次报告未通过校验，请仅修复完整JSON。错误：' + str(exc)))
+            raise ValueError('No valid report')
+
+        def validate_summary_response(response) -> None:
+            # Rejected output still consumed tokens. Record usage before checking
+            # completeness, and let the audit retain the actual rejected answer.
+            try:
+                usage = (getattr(response, 'usage_metadata', None)
+                         or response.response_metadata.get('token_usage', {}))
+                if usage:
+                    database.save_token_usage(
+                        symbol=agent_config.get('symbol', 'System'),
+                        config_id=agent_config.get('config_id', 'summarizer'),
+                        model=model,
+                        prompt_tokens=usage.get('input_tokens', usage.get('prompt_tokens', 0)),
+                        completion_tokens=usage.get('output_tokens', usage.get('completion_tokens', 0)),
+                    )
+            except Exception as usage_e:
+                logger.warning(f'⚠️ [Summarizer] Failed to save token usage: {usage_e}')
+            require_complete_response(response, context=f'{summary_type} summary')
+            if not extract_message_text(response).strip():
+                raise ValueError('Summarizer returned empty content')
 
         response = invoke_with_retry(
             lambda: audited_invoke(
-                lambda: llm.invoke([HumanMessage(content=prompt)]),
+                lambda: llm.invoke(summary_messages),
                 config_id=agent_config.get('config_id'),
-                purpose='daily_summary' if summary_type == 'daily' else 'memory_review',
-                model=model, messages=[HumanMessage(content=prompt)]),
+                purpose='daily_summary' if summary_type == 'daily' else 'strategy_summary',
+                model=model, messages=summary_messages,
+                provider_id=resolve_summarizer_provider_id(agent_config),
+                response_validator=validate_summary_response),
             logger=logger,
             context=f"summarizer model={model} config_id={agent_config.get('config_id', 'summarizer')}",
         )
-        
-        # 记录 Token 使用情况
-        try:
-            usage = response.response_metadata.get("token_usage", {})
-            if usage:
-                database.save_token_usage(
-                    symbol=agent_config.get("symbol", "System"),
-                    config_id=agent_config.get("config_id", "summarizer"),
-                    model=model,
-                    prompt_tokens=usage.get("prompt_tokens", 0),
-                    completion_tokens=usage.get("completion_tokens", 0)
-                )
-        except Exception as usage_e:
-            logger.warning(f"⚠️ [Summarizer] Failed to save token usage: {usage_e}")
-
         return extract_message_text(response).strip()
     except Exception as e:
         logger.error(f"❌ [Summarizer Error]: {e}")
         if summary_type in {"daily", "short_memory"}:
             return ""
-        return content[:200] + "..."
+        # Preserve the source when organization fails; slicing it silently loses
+        # the strategy's risk conditions and later execution facts.
+        return STRATEGY_SUMMARY_FAILURE_PREFIX + content
 
 
 def is_invalid_daily_summary(summary: str, source_input: str = "") -> bool:
@@ -546,14 +581,11 @@ def _memory_evidence_section(evidence: str) -> str:
 
 
 def _memory_evidence_fallback(evidence: str) -> str:
-    """Keep bounded aggregate facts if summarization fails, without replaying the ledger."""
-    prefixes = ('证据读取时间：', '统计起点:', '截至快照:', '起点收益率:', '起点收益率/回撤:',
-                '完整平仓周期:', '7天平仓统计:', '过去7天', '历史收益、回撤')
-    aggregates = [line for line in evidence.splitlines() if line.startswith(prefixes)]
+    """Preserve source evidence when organization is unavailable."""
     if not evidence:
         return ""
     return (
-        "\n【历史证据摘要】\n" + '\n'.join(aggregates) +
+        "\n【历史证据】\n" + evidence +
         "\n快照非实时；未剔除出入金/共享账户影响，不能归因为独立策略收益。"
         "盈亏为手续费前，缺失费用未知；成交活动与完整周期不相加，覆盖不明时不声称历史完整。"
     )
@@ -622,7 +654,7 @@ def format_short_memory_text(config_id: str, limit: int = 1) -> str:
 def format_short_memory_for_llm(config_id: str, limit: int = 1, *, include_metadata: bool = False) -> str:
     memories = get_short_memories(config_id, limit=limit)
     entries = [
-        (f"[覆盖 {item.get('bucket_start')} → {item.get('bucket_end')}；更新 {item.get('created_at')}]\n" if include_metadata else '')
+        (f"[覆盖 {item.get('window_start') or item.get('bucket_start')} → {item.get('window_end') or item.get('bucket_end')}；更新 {item.get('created_at')}]\n" if include_metadata else '')
         + str(item.get("market_summary") or "").strip()
         for item in memories
         if str(item.get("market_summary") or "").strip()
@@ -631,13 +663,12 @@ def format_short_memory_for_llm(config_id: str, limit: int = 1, *, include_metad
 
 
 def format_recent_decisions(config_id: str) -> str:
-    """Preserve the latest changes without replaying full reports or execution ledgers."""
+    """Include the complete text of the selected three most recent decisions."""
     rows = get_recent_summary_logic(config_id, limit=3)
     lines = []
     for row in reversed(rows):
         text = str(row.get('strategy_logic') or '').strip()
         if text:
-            text = text if len(text) <= 500 else text[:499] + '…'
             lines.append(f"[{row.get('timestamp')}] {text}")
     return '\n'.join(lines) or '(暂无近期决策摘要)'
 
@@ -663,7 +694,7 @@ def _load_decision_memory(config_id: str) -> tuple[list, str, str, str]:
 
 def _is_invalid_short_memory_summary(summary: str, source_input: str) -> bool:
     text = str(summary or "").strip()
-    if not text or len(text) > 2400:
+    if not text:
         return True
     markers = (
         "Window:",
@@ -683,9 +714,10 @@ def generate_rolling_short_memory_for_config(
     config_id: str,
     agent_config: dict | None = None,
     now_cn: datetime | None = None,
-    hours: int = 12,
-    limit: int = 12,
+    hours: int = 4,
+    limit: int | None = None,
 ) -> bool:
+    """Review the complete time window unless an explicit row limit is requested."""
     now_cn = now_cn or datetime.now(TZ_CN)
     all_configs = global_config.get_all_symbol_configs()
     target_config = agent_config or next((c for c in all_configs if c.get("config_id") == config_id), None)
@@ -693,11 +725,17 @@ def generate_rolling_short_memory_for_config(
         return False
 
     since_time = (now_cn - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-    rows = get_recent_summary_logic(config_id, since_time=since_time, limit=limit)
+    # Stored decision timestamps have second precision. Include the current
+    # second while excluding records beyond the requested review window.
+    end_time = (now_cn + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = get_summary_logic_between(config_id, since_time, end_time)
+    if limit is not None:
+        if limit < 1:
+            raise ValueError('Rolling memory row limit must be positive')
+        rows = rows[-limit:]
     if not rows:
         return False
 
-    rows = list(reversed(rows))
     previous = format_short_memory_for_llm(config_id, limit=1)
     source_text = "\n".join(
         f"[{row.get('timestamp')}] {row.get('strategy_logic')}"
@@ -720,8 +758,7 @@ def generate_rolling_short_memory_for_config(
         return False
     end_stamp = now_cn.strftime("%Y-%m-%d %H:%M:%S")
     save_short_memory(
-        # Memories are read by bucket_start DESC. The lookback beginning would
-        # hide this fresh update behind older turn/window memories.
+        # Keep the legacy edit key; explicit metadata describes the evidence window.
         end_stamp,
         end_stamp,
         target_config.get("symbol", "Unknown"),
@@ -729,6 +766,10 @@ def generate_rolling_short_memory_for_config(
         memory_summary,
         pos_history_text,
         len(rows),
+        window_start=since_time,
+        window_end=end_stamp,
+        source_summary_ids=[row['id'] for row in rows if row.get('id') is not None],
+        run_id=f'rolling:{config_id}:{rows[-1].get("timestamp")}',
     )
     return True
 
@@ -1013,14 +1054,8 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             }))
         formatted_market_data = '\n\n'.join(blocks)
     prompt_template = resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger)
-    if '{history_text}' in prompt_template:
-        # Explicit custom-template compatibility; default decisions do not read
-        # or silently append seven days of duplicate narrative.
-        try:
-            daily_history = get_daily_summaries(config_id, days=7)
-        except Exception as exc:
-            logger.warning('Unable to load custom daily history for %s: %s', config_id, exc)
-            daily_history = [{'summary': '每日复盘读取失败'}]
+    # Legacy templates can keep the variable, but daily memory is no longer read.
+    daily_history = []
     history_entries = []
     if daily_history:
         for ds in daily_history:
@@ -1133,11 +1168,11 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
     # tool interfaces and execution semantics are carried by native tool descriptions.
     if trade_mode == 'SPOT_DCA':
         from backend.utils.spot_execution import spot_budget_status
-        budget_status = spot_budget_status(config_id, agent_config)
+        budget_status = spot_budget_status(config_id, agent_config, configurable.get('spot_cycle_id'))
         quote = symbol.split('/')[-1]
         system_prompt += (
             f'\n\n## 现货组合执行约束\n允许标的：{", ".join(symbols)}。计价币：{quote}。'
-            f'每个定投周期预算 {dca_budget} {quote} 由所有标的共享，同一周期重跑或聊天不重置额度。'
+            f'每次运行预算 {dca_budget} {quote} 由所有标的共享，由你分配；本轮重试和多次工具调用不重置额度。'
             f'任务累计预算：{agent_config.get("dca_budget") if agent_config.get("dca_budget") is not None else "未设置"} {quote}。'
         )
         if '{positions_text}' not in prompt_template:
@@ -1163,6 +1198,8 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
     if '{short_memory_text}' not in prompt_template:
         system_prompt += '\n\n## Short-term memory\n' + short_memory_text
+    if agent_config.get('market_profile') == 'hourly':
+        system_prompt += '\n\n## 当前小时级策略周期\n每1h评估一次；1h决定触发和失效，4h判断结构，1d提供背景。仅使用本轮提供的已收盘K线，不要求15m入场信号。给出单一主策略和未来1h/4h的条件判断。'
     if '{trading_rules_text}' not in prompt_template:
         system_prompt += '\n\n## 长期交易规则\n' + trading_rules_text
     if '{recent_summaries_text}' not in prompt_template:
@@ -1387,6 +1424,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 return audited_invoke(
                     lambda: _stream_agent_turn(llm, turn_messages, configurable=configurable, run_config=config),
                     config_id=config_id, purpose='decision', model=current_model,
+                    provider_id=current_cfg.get('provider_id'),
                     messages=turn_messages, tools=tools)
 
             response = invoke_with_retry(
@@ -1529,7 +1567,8 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             messages = state.messages
             return audited_invoke(
                 lambda: _stream_agent_turn(llm, messages, configurable=configurable, run_config=config),
-                config_id=config_id, purpose='decision', model=model_name, messages=messages, tools=tools)
+                config_id=config_id, purpose='decision', model=model_name, messages=messages, tools=tools,
+                provider_id=agent_config.get('llm_provider_id'))
 
         response = invoke_with_retry(
             invoke_decision,
@@ -1627,16 +1666,27 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
     reasoning_tokens = _collect_agent_reasoning_token_count(state.messages)
 
     failed = any(isinstance(msg, AIMessage) and msg.additional_kwargs.get("invocation_failed") for msg in state.messages)
-    if not final_full_content:
+    if not final_full_content.strip():
         failed = True
         final_full_content = "Error: 模型未返回有效结果，本次分析未完成。"
     if final_full_content:
         # 汇总逻辑仅针对主要内容
-        logic_source = full_content if full_content else final_full_content
-        strategy_logic = decision_journal(state.messages, fallback=logic_source)
+        logic_source = final_full_content
+        journal = decision_journal(state.messages, fallback=logic_source)
+        report_source = journal if failed else summarize_content(
+            journal,
+            {**agent_config, 'config_id': config_id, 'symbol': symbol},
+            summary_type='report',
+        )
+        from backend.agent.trade_report import assemble_report, render_report
+        report = assemble_report(report_source, state.messages, final_full_content)
+        strategy_logic = report['summary']
+        if not failed:
+            final_full_content = render_report(report)
+        run_id = configurable.get('run_id') or 'manual:' + uuid.uuid4().hex
         
         try:
-            database.save_summary(
+            summary_id = database.save_summary(
                 symbol,
                 agent_name,
                 final_full_content,
@@ -1645,6 +1695,9 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 agent_type=agent_type,
                 reasoning_content=reasoning_content,
                 reasoning_tokens=reasoning_tokens,
+                report_json=json.dumps(report, ensure_ascii=False),
+                run_id=run_id,
+                timeframe='1h' if agent_config.get('market_profile') == 'hourly' else (resolve_market_timeframes(agent_config) or ['1h'])[0],
             )
             
             # 针对 SPOT_DCA 模式的增强日志：如果没有任何下单动作，存入一条 NO_ACTION 记录
@@ -1792,9 +1845,19 @@ workflow.add_edge("finalize", END)
 
 app = workflow.compile(name='Crypto Agent')
 
-def run_agent_for_config(config: dict, human_message: str = None, progress_callback=None):
+def run_agent_for_config(config: dict, human_message: str = None, progress_callback=None, *, run_id: str | None = None):
     config_id = config.get('config_id', 'unknown')
     symbol = config['symbol']
+    run_id = run_id or 'manual:' + uuid.uuid4().hex
+    with database.get_db_conn() as conn:
+        columns = {row[1] for row in conn.execute('PRAGMA table_info(summaries)')}
+        if 'run_id' in columns and conn.execute('SELECT 1 FROM summaries WHERE config_id=? AND run_id=?',
+                                               (config_id, run_id)).fetchone():
+            logger.info('Run %s already has a persisted result; trading is not replayed', run_id)
+            return
+    if str(config.get('mode') or '').upper() == 'SPOT_DCA':
+        from backend.utils.spot_execution import ensure_spot_budget_cycle
+        ensure_spot_budget_cycle(config_id, config, run_id, 'scheduled' if run_id.startswith('scheduled:') else 'manual')
     sync_langsmith_environment()
     initial_state = AgentState(
         symbol=symbol,
@@ -1813,7 +1876,8 @@ def run_agent_for_config(config: dict, human_message: str = None, progress_callb
                     "config_id": config_id,
                     "agent_config": config,
                     "progress_callback": progress_callback,
-                    "spot_cycle_id": uuid.uuid4().hex,
+                    "spot_cycle_id": run_id,
+                    "run_id": run_id,
                 }
             },
         )

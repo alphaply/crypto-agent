@@ -1,6 +1,9 @@
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import timedelta
+import json
+
+from backend.summary_memory_source import restore_memory_source
 
 
 class SummaryMemoryStore:
@@ -109,75 +112,117 @@ class SummaryMemoryStore:
             cursor = conn.cursor()
             cursor.execute(
                 '''
-                SELECT strategy_logic, timestamp
+                SELECT strategy_logic, timestamp, content AS _source_content
                 FROM summaries
                 WHERE config_id = ? AND date(timestamp) = ?
                 ORDER BY id ASC
                 ''',
                 (config_id, date_str),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            return [restore_memory_source(row) for row in cursor.fetchall()]
 
     def get_summary_logic_between(self, config_id, start_time, end_time):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
+            columns = {row[1] for row in cursor.execute('PRAGMA table_info(summaries)')}
+            report_field = 'report_json' if 'report_json' in columns else 'NULL AS report_json'
             rows = cursor.execute(
-                '''
-                SELECT strategy_logic, timestamp
+                f'''
+                SELECT id, strategy_logic, timestamp, content AS _source_content, {report_field}
                 FROM summaries
                 WHERE config_id = ?
                   AND timestamp >= ?
                   AND timestamp < ?
-                  AND strategy_logic IS NOT NULL
-                  AND strategy_logic != ''
+                  AND (COALESCE(strategy_logic, '') != '' OR COALESCE(content, '') != '')
                 ORDER BY id ASC
                 ''',
                 (config_id, start_time, end_time),
             ).fetchall()
-            return [dict(row) for row in rows]
+            result = []
+            for row in rows:
+                item = restore_memory_source(row)
+                try:
+                    report = json.loads(item.pop('report_json') or '{}')
+                    receipts = report.get('execution_results') or []
+                    if receipts:
+                        item['strategy_logic'] += '\n实际工具回执：\n' + json.dumps(receipts, ensure_ascii=False)
+                except (ValueError, TypeError, AttributeError):
+                    item['strategy_logic'] += '\n结构化回执无法读取；执行状态未知。'
+                result.append(item)
+            return result
 
-    def save_short_memory(self, bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count):
+    def save_short_memory(self, bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count,
+                          *, window_start=None, window_end=None, source_summary_ids=None, run_id=None):
         created_at = self._timestamp()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
+            conn.execute('BEGIN IMMEDIATE')
+            columns = {row[1] for row in cursor.execute('PRAGMA table_info(short_memories)')}
+            for name, definition in (('window_start', 'TEXT'), ('window_end', 'TEXT'),
+                                     ('source_summary_ids', "TEXT NOT NULL DEFAULT '[]'"),
+                                     ('run_id', 'TEXT'), ('version', 'INTEGER')):
+                if name not in columns:
+                    cursor.execute(f'ALTER TABLE short_memories ADD COLUMN {name} {definition}')
+            existing = cursor.execute('SELECT COALESCE(version,id) AS version FROM short_memories WHERE config_id=? AND bucket_start=?',
+                                      (config_id, bucket_start)).fetchone()
+            version = existing['version'] if existing else cursor.execute(
+                'SELECT COALESCE(MAX(COALESCE(version,id)),0)+1 FROM short_memories WHERE config_id=?', (config_id,)).fetchone()[0]
             cursor.execute(
                 '''
                 INSERT INTO short_memories (
                     bucket_start, bucket_end, symbol, config_id, market_summary,
-                    position_summary, source_count, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    position_summary, source_count, created_at, window_start, window_end,
+                    source_summary_ids, run_id, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(config_id, bucket_start) DO UPDATE SET
                     bucket_end = excluded.bucket_end,
                     symbol = excluded.symbol,
                     market_summary = excluded.market_summary,
                     position_summary = excluded.position_summary,
                     source_count = excluded.source_count,
-                    created_at = excluded.created_at
+                    created_at = excluded.created_at,
+                    window_start = excluded.window_start,
+                    window_end = excluded.window_end,
+                    source_summary_ids = excluded.source_summary_ids,
+                    run_id = excluded.run_id
                 ''',
-                (bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, int(source_count or 0), created_at),
+                (bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, int(source_count or 0), created_at,
+                 window_start or bucket_start, window_end or bucket_end, json.dumps(source_summary_ids or []), run_id, version),
             )
             conn.commit()
+
+    @staticmethod
+    def _memory_payload(row):
+        payload = dict(row)
+        payload['window_start'] = payload.get('window_start') or payload['bucket_start']
+        payload['window_end'] = payload.get('window_end') or payload['bucket_end']
+        payload['version'] = payload.get('version') or payload.get('id')
+        try:
+            payload['source_summary_ids'] = json.loads(payload.get('source_summary_ids') or '[]')
+        except (ValueError, TypeError):
+            payload['source_summary_ids'] = []
+        return payload
 
     def get_short_memories(self, config_id, limit=2):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             rows = cursor.execute(
                 '''
-                SELECT bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count, created_at
+                SELECT *
                 FROM short_memories
                 WHERE config_id = ?
-                ORDER BY bucket_end DESC, created_at DESC
+                ORDER BY bucket_end DESC, id DESC
                 LIMIT ?
                 ''',
                 (config_id, int(limit or 2)),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [self._memory_payload(row) for row in rows]
 
     def list_short_memories(self, symbol=None, config_id=None, limit=200):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             sql = '''
-                SELECT id, bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count, created_at
+                SELECT *
                 FROM short_memories
                 WHERE 1=1
             '''
@@ -188,23 +233,23 @@ class SummaryMemoryStore:
             if config_id and config_id != "ALL":
                 sql += " AND config_id = ?"
                 params.append(config_id)
-            sql += " ORDER BY bucket_end DESC, created_at DESC LIMIT ?"
+            sql += " ORDER BY bucket_end DESC, id DESC LIMIT ?"
             params.append(int(limit or 200))
             rows = cursor.execute(sql, tuple(params)).fetchall()
-            return [dict(row) for row in rows]
+            return [self._memory_payload(row) for row in rows]
 
     def get_short_memory(self, config_id, bucket_start):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             row = cursor.execute(
                 '''
-                SELECT bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count, created_at
+                SELECT *
                 FROM short_memories
                 WHERE config_id = ? AND bucket_start = ?
                 ''',
                 (config_id, bucket_start),
             ).fetchone()
-            return dict(row) if row else None
+            return self._memory_payload(row) if row else None
 
     def update_short_memory(self, config_id, bucket_start, market_summary, position_summary):
         with self._conn_factory() as conn:

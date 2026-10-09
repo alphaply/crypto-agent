@@ -134,14 +134,15 @@ def test_spot_cannot_enter_futures_ledger(local_db):
         ExecutionLedger(ex, 'spot', 'ETH/USDT')
 
 
-def test_context_all_totals_bounded_details_and_unknown_ownership_excluded(local_db):
+def test_context_all_totals_and_details_preserve_owned_fills(local_db):
     ex = Exchange([fill(i, fee={'cost': .01, 'currency': 'USDT'}, info={'realizedPnl': '1'}) for i in range(30)])
     ledger = ExecutionLedger(ex, 'cfg', 'ETH/USDT')
     register_order(ledger.scope, ledger.symbol, 'entry', 'cfg', 'stop_loss', trigger_price=100)
     ledger.sync(now_ms=200000, start_ms=100000)
     text = execution_context('cfg', now=datetime.fromtimestamp(200), scope=ledger.scope)
     data = json.loads(text[text.index('{'):])
-    assert data['fill_count'] == 30 and len(data['recent_fills']) == 20
+    assert data['fill_count'] == 30 and len(data['recent_fills']) == 30
+    assert data['omitted_details'] == 0
     assert data['known_realized_pnl_before_fees'] == 30
     assert data['fees_by_currency']['USDT'] == pytest.approx(.3)
     assert data['recent_fills'][0]['role'] == 'stop_loss'

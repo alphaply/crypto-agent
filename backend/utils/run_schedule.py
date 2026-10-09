@@ -83,7 +83,7 @@ def effective_schedule(config, now):
                     pass
         elapsed = int((now.timestamp() - anchor.timestamp()) // 60)
         return {'interval': rule['interval'], 'elapsed': elapsed, 'name': rule['name'], 'rule_index': index}
-    default = 60 if config.get('mode', 'STRATEGY').upper() == 'STRATEGY' else 15
+    default = 60 if config.get('market_profile') == 'hourly' or str(config.get('mode', 'STRATEGY')).upper() == 'STRATEGY' else 15
     try:
         interval = max(15, min(1440, int(config.get('run_interval') or default)))
     except (ValueError, TypeError):
@@ -118,33 +118,101 @@ def parse_dca_time(raw_time):
         return 8, 0
 
 
+class DcaSchedule(BaseModel):
+    frequency: str = 'daily'
+    days: list[int] = Field(default_factory=lambda: [0])
+    times: list[str] = Field(default_factory=lambda: ['09:00'], min_length=1, max_length=24)
+    timezone: str = 'Asia/Shanghai'
+
+    @model_validator(mode='after')
+    def validate_schedule(self):
+        if self.frequency not in {'daily', 'weekly'}:
+            raise ValueError('frequency must be daily or weekly')
+        if self.timezone not in pytz.all_timezones_set:
+            raise ValueError('未知时区')
+        if not self.days or any(day not in range(7) for day in self.days):
+            raise ValueError('星期使用0（周一）至6（周日）')
+        if any(not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', item) for item in self.times):
+            raise ValueError('执行时间须为00:00至23:59')
+        if len(set(self.times)) != len(self.times) or len(set(self.days)) != len(self.days):
+            raise ValueError('执行时间和星期不能重复')
+        self.times = sorted(self.times)
+        self.days = sorted(self.days)
+        return self
+
+
+def dca_schedule(config):
+    if config.get('dca_schedule'):
+        return DcaSchedule.model_validate(config['dca_schedule'])
+    hour, minute = parse_dca_time(config.get('dca_time'))
+    return DcaSchedule(frequency='weekly' if normalize_dca_freq(config.get('dca_freq')) == '1w' else 'daily',
+                       days=[int(config.get('dca_weekday', 0))], times=[f'{hour:02d}:{minute:02d}'])
+
+
+def dca_slots(config, now, *, future=False, count=3):
+    """Calendar slots use UTC identities, including across DST and process restarts."""
+    schedule = dca_schedule(config)
+    zone = pytz.timezone(schedule.timezone)
+    local = now.astimezone(zone)
+    slots = []
+    for offset in (range(max(15, min(int(count), 20) * 7 + 1)) if future else range(-7, 1)):
+        date = local.date() + timedelta(days=offset)
+        if schedule.frequency == 'weekly' and date.weekday() not in schedule.days:
+            continue
+        for clock in schedule.times:
+            naive = datetime.combine(date, datetime.min.time()) + timedelta(minutes=_minutes(clock))
+            try:
+                value = zone.localize(naive, is_dst=None)
+            except pytz.AmbiguousTimeError:
+                value = zone.localize(naive, is_dst=True)  # One execution for a repeated local slot.
+            except pytz.NonExistentTimeError:
+                continue
+            if (value > now) if future else (value <= now):
+                slots.append(value)
+    return sorted(slots)
+
+
+def latest_dca_slot(config, now):
+    schedule = dca_schedule(config)
+    local = now.astimezone(pytz.timezone(schedule.timezone))
+    slots = dca_slots(config, now)
+    slots = [slot for slot in slots if (slot.date() == local.date() if schedule.frequency == 'daily'
+                                       else slot.isocalendar()[:2] == local.isocalendar()[:2])]
+    return slots[-1] if slots else None
+
+
+def dca_cycle_id(config_id, slot):
+    return f'scheduled:{config_id}:{slot.astimezone(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}'
+
+
+def preview_dca_schedule(config, now=None, count=3):
+    now = now or datetime.now(pytz.timezone(dca_schedule(config).timezone))
+    return [slot.isoformat() for slot in dca_slots(config, now, future=True, count=count)[:max(1, min(int(count), 20))]]
+
+
 def schedule_preview(config, now, *, scheduler_enabled=True, dca_executed=False):
     """Describe nominal dispatch times, not a guarantee of worker completion."""
     mode = str(config.get('mode', 'STRATEGY')).upper()
     state = 'scheduled' if scheduler_enabled and config.get('enabled', True) else 'paused'
     if mode == 'SPOT_DCA':
-        weekly = normalize_dca_freq(config.get('dca_freq')) == '1w'
-        hour, minute = parse_dca_time(config.get('dca_time'))
-        frequency = f"{'Weekly' if weekly else 'Daily'} {hour:02d}:{minute:02d}"
-        if weekly:
-            frequency += f" · {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][int(config.get('dca_weekday', 0))]}"
-        next_run = None
-        # Follow the scheduler's same-day catch-up behavior after a missed slot.
-        for offset in range(15):
-            date = now.date() + timedelta(days=offset)
-            if weekly and date.weekday() != int(config.get('dca_weekday', 0)):
-                continue
-            if dca_executed and (date.isocalendar()[:2] == now.date().isocalendar()[:2] if weekly else offset == 0):
-                continue
-            naive = datetime.combine(date, datetime.min.time()).replace(hour=hour, minute=minute)
-            target = now.tzinfo.localize(naive) if hasattr(now.tzinfo, 'localize') else naive.replace(tzinfo=now.tzinfo)
-            candidate = max(target, now.replace(second=0, microsecond=0) + timedelta(minutes=1))
-            if candidate.date() != date:
-                continue
-            next_run = candidate
-            break
-        rule_name = 'DCA'
-        rule_index = None
+        schedule = dca_schedule(config)
+        future_slots = dca_slots(config, now, future=True)
+        latest = latest_dca_slot(config, now)
+        next_run = (now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+                    if latest and not dca_executed else (future_slots[0] if future_slots else None))
+        if next_run and latest and not dca_executed:
+            local_next = next_run.astimezone(pytz.timezone(schedule.timezone))
+            same_period = (local_next.date() == latest.date() if schedule.frequency == 'daily'
+                           else local_next.isocalendar()[:2] == latest.isocalendar()[:2])
+            if not same_period:
+                next_run = future_slots[0] if future_slots else None
+        return {
+            'state': state, 'frequency': f'{schedule.frequency} ' + ', '.join(schedule.times),
+            'rule_name': 'DCA', 'rule_index': None, 'timezone': schedule.timezone,
+            'next_run_at': next_run.isoformat() if next_run and state != 'paused' else None,
+            'next_run': next_run.strftime('%m-%d %H:%M') if next_run and state != 'paused' else '—',
+            'rules': [], 'default_interval': 60, 'dca_schedule': schedule.model_dump(),
+        }
     else:
         policy = effective_schedule(config, now)
         frequency = f"{policy['interval']}m"

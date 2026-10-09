@@ -6,7 +6,7 @@ export function workspaceSignature(agents = []) {
 export function selectDashboardTab(agents = [], requested) {
   if (requested === 'compare') return 'compare';
   if (agents.some((agent) => agent.config_id === requested)) return requested;
-  return agents.length === 1 ? agents[0].config_id : 'compare';
+  return (agents.find((agent) => agent.enabled !== false) || agents[0])?.config_id || 'compare';
 }
 
 export function activityRecordKey(row) {

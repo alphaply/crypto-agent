@@ -22,7 +22,7 @@ from backend.database import get_short_memory, init_db
 from backend.utils.logger import setup_logger
 from backend.utils.llm_utils import sync_langsmith_environment
 from backend.utils.market_data import MarketTool
-from backend.utils.run_schedule import normalize_dca_freq, parse_dca_time
+from backend.utils.run_schedule import normalize_dca_freq, parse_dca_time, latest_dca_slot, dca_cycle_id
 
 
 load_dotenv()
@@ -277,13 +277,15 @@ def check_dca_executed(config_id, now, freq="1d"):
         return False
 
 
-def dca_was_dispatched(config_id, now, freq):
-    last_run = _last_run_times.get(config_id)
-    if not last_run:
+def dca_was_dispatched(config_id, now, freq=None, config=None):
+    cfg = config or global_config.get_config_by_id(config_id) or {'dca_freq': freq or '1d'}
+    slot = latest_dca_slot(cfg, now)
+    if not slot:
         return False
-    if normalize_dca_freq(freq) == "1w":
-        return last_run.isocalendar()[:2] == now.isocalendar()[:2]
-    return last_run.date() == now.date()
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        return bool(conn.execute('SELECT 1 FROM scheduler_runs WHERE config_id=? AND job_type=? AND scheduled_at>=? AND scheduled_at<=?',
+                                (config_id, AGENT_JOB_TYPE, _scheduled_at(slot.astimezone(TZ_CN)), _scheduled_at(now.astimezone(TZ_CN)))).fetchone())
 
 
 def is_time_to_run(config, now):
@@ -291,27 +293,11 @@ def is_time_to_run(config, now):
     config_id = config.get("config_id")
 
     if mode == "SPOT_DCA":
-        freq = normalize_dca_freq(config.get("dca_freq", "1d"))
-        target_hour, target_minute = parse_dca_time(config.get("dca_time", "08:00"))
-
-        if now.hour < target_hour or (
-            now.hour == target_hour and now.minute < target_minute
-        ):
+        slot = latest_dca_slot(config, now)
+        if slot is None:
             return False
-
-        if freq == "1w":
-            target_weekday = int(config.get("dca_weekday", 0))
-            if now.weekday() != target_weekday:
-                return False
-
-        if dca_was_dispatched(config_id, now, freq):
-            return False
-
-        if check_dca_executed(config_id, now, freq):
-            return False
-
-        return True
-
+        # Includes old releases that persisted the actual catch-up dispatch minute.
+        return not dca_was_dispatched(config_id, now, config=config)
     from backend.utils.run_schedule import schedule_due
     if not schedule_due(config, now):
         return False
@@ -467,7 +453,10 @@ def run_config_agent(config, scheduled_at: str):
         run_agent_for_config(
             config,
             progress_callback=lambda event: _mark_scheduler_progress(config_id, scheduled_at, event),
+            run_id=dca_cycle_id(config_id, TZ_CN.localize(datetime.fromisoformat(scheduled_at))),
         )
+        from backend.agent.memory_updates import tick_memory_updates
+        tick_memory_updates()
         _mark_scheduler_progress(
             config_id,
             scheduled_at,
@@ -652,7 +641,9 @@ def job(now: datetime | None = None):
                 f"[{config_id}] due detected ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
             )
             _last_run_times[config_id] = now
-            if _submit_agent(config, scheduled_at):
+            slot = latest_dca_slot(config, now) if mode == 'SPOT_DCA' else None
+            dispatch_at = _scheduled_at(slot.astimezone(TZ_CN)) if slot else scheduled_at
+            if _submit_agent(config, dispatch_at):
                 agent_queued += 1
 
     heartbeat_key = now.strftime("%Y-%m-%d %H:%M")
@@ -902,6 +893,20 @@ def run_short_memory_job(now: datetime | None = None) -> dict:
     return result
 
 
+def tick_shared_services():
+    """Each service owns its nonblocking cadence and durable retry state."""
+    for module_name, function_name in (
+        ('backend.app.services.news_service', 'tick_news_pipeline'),
+        ('backend.app.services.pricing_service', 'tick_price_sync'),
+        ('backend.agent.memory_updates', 'tick_memory_updates'),
+    ):
+        try:
+            import importlib
+            getattr(importlib.import_module(module_name), function_name)()
+        except Exception as exc:
+            logger.warning('Background service %s failed: %s', function_name, exc)
+
+
 def run_scheduler_forever():
     logger.info(f"[System] scheduler loop started (max_workers={_scheduler_max_workers()})")
 
@@ -918,17 +923,18 @@ def run_scheduler_forever():
         try:
             wait_until_next_minute()
 
+            # Another process can re-enable this scheduler while it is paused.
+            if datetime.now().minute % 5 == 0:
+                global_config.reload_config()
+
+            tick_shared_services()
+
             if not global_config.enable_scheduler:
                 if datetime.now().minute % 10 == 0:
                     logger.info("Scheduler disabled globally, waiting...")
                 continue
 
-            _submit_daily_summary()
-            _submit_short_memory()
             job()
-
-            if datetime.now().minute % 5 == 0:
-                global_config.reload_config()
 
         except Exception as e:
             logger.error(f"Scheduler loop error: {e}")
@@ -952,7 +958,13 @@ def protection_tick():
         if 'mock_exit_orders' in tables:
             mock_ids.update(r[0] for r in conn.execute("SELECT DISTINCT config_id FROM mock_exit_orders WHERE status='OPEN'"))
     ids = {row['config_id'] for row in rows if json.loads(row['payload'])['state'] != 'DONE'}
-    configs = {cfg['config_id']: cfg for cfg in global_config.get_all_symbol_configs()}
+    from backend.mcp.settings import maintenance_profiles
+    try:
+        external_configs = maintenance_profiles()
+    except Exception as exc:
+        logger.error('Cannot load external maintenance profiles: %s', exc)
+        external_configs = []
+    configs = {cfg['config_id']: cfg for cfg in [*global_config.get_all_symbol_configs(), *external_configs] if cfg}
     # Data accounting continues for recently active plans even when decision making
     # is disabled, including fills that arrive after protective cleanup.
     recent = {row['config_id'] for row in rows if json.loads(row['payload']).get('updated_at', 0) > time.time() - 86400}

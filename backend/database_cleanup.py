@@ -1,5 +1,6 @@
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
+import sqlite3
 
 
 class ConfigCleanupStore:
@@ -30,6 +31,7 @@ class ConfigCleanupStore:
                 "mock_positions", "mock_exit_orders", "mock_trade_operations",
                 "trade_action_runs", "trade_operation_requests", "trading_rules", "trading_rule_revisions", "trading_rule_operations",
                 "spot_budget_reservations", "spot_order_fills", "dca_daily_snapshots", "trade_history",
+                "spot_budget_cycles", "memory_update_jobs",
             ]
             existing_tables = {
                 row[0]
@@ -92,8 +94,9 @@ class ConfigCleanupStore:
                 "open_orders_cancelled": cancelled_open_orders,
             }
 
-    def purge_all_data(self, config_id: str):
-        with self._conn_factory() as conn:
+    def purge_all_data(self, config_id: str, *, connection: sqlite3.Connection | None = None):
+        """Purge local data, joining the caller's transaction when supplied."""
+        with nullcontext(connection) if connection is not None else self._conn_factory() as conn:
             cursor = conn.cursor()
             existing_tables = {
                 row[0]
@@ -153,6 +156,7 @@ class ConfigCleanupStore:
                 "mock_positions", "mock_exit_orders", "mock_trade_operations",
                 "trade_action_runs", "trade_operation_requests", "trading_rules", "trading_rule_revisions", "trading_rule_operations",
                 "spot_budget_reservations", "spot_order_fills", "dca_daily_snapshots", "trade_history",
+                "spot_budget_cycles", "memory_update_jobs",
             ):
                 if table in existing_tables:
                     cleanup[f"{table}_deleted"] = cursor.execute(
@@ -160,5 +164,6 @@ class ConfigCleanupStore:
                         (config_id,),
                     ).rowcount
 
-            conn.commit()
+            if connection is None:
+                conn.commit()
             return cleanup

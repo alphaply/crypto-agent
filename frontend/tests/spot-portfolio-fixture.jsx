@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- Standalone browser test entry. */
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import AccessibleConfigProvider from '../src/components/AccessibleConfigProvider';

@@ -39,6 +39,52 @@ def _initialize(conn) -> None:
     for name, column_type in (('client_order_id', 'TEXT'), ('entry_price', 'REAL'), ('amount', 'REAL')):
         if name not in columns:
             conn.execute(f'ALTER TABLE spot_budget_reservations ADD COLUMN {name} {column_type}')
+    conn.execute('''CREATE TABLE IF NOT EXISTS spot_budget_cycles (
+        config_id TEXT NOT NULL, cycle_id TEXT NOT NULL, origin TEXT NOT NULL,
+        budget REAL NOT NULL, created_at REAL NOT NULL,
+        PRIMARY KEY(config_id,cycle_id))''')
+
+
+def ensure_spot_budget_cycle(config_id: str, config: dict, cycle_id: str, origin: str = 'manual') -> str:
+    """A logical run gets one persisted allowance; replay never creates another."""
+    if not cycle_id or not str(cycle_id).strip():
+        raise ValueError('现货交易需要有效运行周期，请重新创建交易运行')
+    amount = config.get('dca_amount')
+    if amount in (None, ''):
+        amount = config.get('dca_budget')
+    amount = _positive(100 if amount in (None, '') else amount, '每次运行组合预算')
+    with database.get_db_conn() as conn:
+        _initialize(conn)
+        conn.execute('INSERT OR IGNORE INTO spot_budget_cycles VALUES (?,?,?,?,?)',
+                     (config_id, str(cycle_id), origin, amount, time.time()))
+        conn.commit()
+    return str(cycle_id)
+
+
+def _cycle_commitments(conn, config_id, cycle_id, reservations):
+    rows = [row for row in reservations if row['cycle_id'] == cycle_id and row['status'] != 'released']
+    # Fill reconciliation changes cost but never transfers an order into another run.
+    total = 0.0
+    seen = set()
+    for row in rows:
+        key = (row['symbol'], str(row['order_id']))
+        if row['order_id'] and key in seen:
+            continue
+        if row['order_id']:
+            seen.add(key)
+        fill = conn.execute('SELECT * FROM spot_order_fills WHERE config_id=? AND symbol=? AND order_id=?',
+                            (config_id, row['symbol'], row['order_id'])).fetchone() if row['order_id'] else None
+        cost = float(row['quote_cost'])
+        if fill:
+            filled_cost = max(float(fill['filled_cost'] or 0), float(fill['filled_qty'] or 0) * float(fill['avg_fill_price'] or 0))
+            if str(fill['status']).upper() in {'CANCELLED', 'CANCELED', 'EXPIRED', 'REJECTED', 'FILLED', 'CLOSED'}:
+                cost = filled_cost
+            else:
+                cost = filled_cost + max(0, float(row['amount'] or 0) - float(fill['filled_qty'] or 0)) * float(row['entry_price'] or 0)
+        if not math.isfinite(cost) or cost < 0:
+            raise ValueError('现货成本无效，需核对后再买入')
+        total += cost
+    return total
 
 
 def _positive(value, name: str) -> float:
@@ -147,7 +193,9 @@ def _reconcile_known_reservations(conn, config_id: str) -> None:
 
 
 def reserve_spot_batch(config_id: str, config: dict, parent_id: str, orders: list) -> None:
-    cycle_id, period_start = spot_budget_period(config)
+    cycle_id = current_spot_cycle_id.get()
+    if not cycle_id:
+        raise ValueError('现货交易缺少运行周期，禁止通过工具调用创建新额度')
     per_cycle = config.get('dca_amount')
     if per_cycle in (None, ''):
         per_cycle = config.get('dca_budget')
@@ -161,14 +209,16 @@ def reserve_spot_batch(config_id: str, config: dict, parent_id: str, orders: lis
     with database.get_db_conn() as conn:
         conn.execute('BEGIN IMMEDIATE')
         _initialize(conn)
+        cycle = conn.execute('SELECT budget FROM spot_budget_cycles WHERE config_id=? AND cycle_id=?',
+                             (config_id, cycle_id)).fetchone()
+        if not cycle:
+            raise ValueError('现货运行周期未注册或旧审批已过期，请重新分析')
+        per_cycle = min(per_cycle, float(cycle['budget']))
         _reconcile_known_reservations(conn, config_id)
         reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=?', (config_id,)).fetchall()
         if any(row['status'] in {'reserved', 'unknown'} for row in reservations):
             raise ValueError('之前的现货下单结果未知或正在提交，待核验后才能继续买入')
-        spent, known = _known_commitments(conn, config_id, created_after=period_start)
-        spent += sum(float(row['quote_cost']) for row in reservations
-                     if row['created_at'] >= period_start and row['status'] != 'released'
-                     and (row['symbol'], str(row['order_id'])) not in known)
+        spent = _cycle_commitments(conn, config_id, cycle_id, reservations)
         if spent + requested > per_cycle + 1e-8:
             raise ValueError(f'所有标的共享本轮预算 {per_cycle:g}，本轮剩余 {max(0, per_cycle-spent):g}，申请 {requested:g}')
         if lifetime is not None:
@@ -188,9 +238,9 @@ def reserve_spot_batch(config_id: str, config: dict, parent_id: str, orders: lis
         conn.commit()
 
 
-def spot_budget_status(config_id: str, config: dict) -> dict:
+def spot_budget_status(config_id: str, config: dict, cycle_id: str | None = None) -> dict:
     """The same durable allowance calculation used by order validation."""
-    cycle_id, period_start = spot_budget_period(config)
+    cycle_id = cycle_id or current_spot_cycle_id.get() or 'unallocated'
     limit = config.get('dca_amount')
     if limit in (None, ''):
         limit = config.get('dca_budget')
@@ -198,12 +248,14 @@ def spot_budget_status(config_id: str, config: dict) -> dict:
     lifetime_limit = config.get('dca_budget')
     lifetime_limit = _nonnegative(lifetime_limit, '任务总预算') if lifetime_limit not in (None, '') else None
     with database.get_db_conn() as conn:
+        _initialize(conn)
+        cycle = conn.execute('SELECT budget FROM spot_budget_cycles WHERE config_id=? AND cycle_id=?',
+                             (config_id, cycle_id)).fetchone()
+        if cycle:
+            limit = min(limit, float(cycle['budget']))
         exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='spot_budget_reservations'").fetchone()
         reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=?', (config_id,)).fetchall() if exists else []
-        spent, known = _known_commitments(conn, config_id, created_after=period_start)
-        spent += sum(float(row['quote_cost']) for row in reservations
-                     if row['created_at'] >= period_start and row['status'] != 'released'
-                     and (row['symbol'], str(row['order_id'])) not in known)
+        spent = _cycle_commitments(conn, config_id, cycle_id, reservations)
         committed, known = _known_commitments(conn, config_id)
         committed += sum(float(row['quote_cost']) for row in reservations
                          if row['status'] != 'released' and (row['symbol'], str(row['order_id'])) not in known)
@@ -214,7 +266,8 @@ def spot_budget_status(config_id: str, config: dict) -> dict:
             'period_remaining': remaining, 'lifetime_limit': lifetime_limit,
             'lifetime_committed': committed, 'lifetime_remaining': lifetime_remaining,
             'pending_unknown': blocked,
-            'available': 0 if blocked else min(remaining, lifetime_remaining) if lifetime_remaining is not None else remaining}
+            'cycle_registered': bool(cycle),
+            'available': 0 if blocked or not cycle else min(remaining, lifetime_remaining) if lifetime_remaining is not None else remaining}
 
 
 def finish_spot_reservation(config_id: str, operation_id: str, status: str, order_id=None) -> None:

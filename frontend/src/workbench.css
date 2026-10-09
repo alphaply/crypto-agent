@@ -1,0 +1,60 @@
+/* Shared navigation and workbench design. */
+.workspace-sidebar { position: fixed; inset: 0 auto 0 0; width: 216px; z-index: 25; display: flex; flex-direction: column; padding: 28px 16px 20px; background: var(--bg-surface); border-right: 1px solid var(--border-soft); }
+.workspace-brand { display: flex; gap: 12px; align-items: center; margin: 0 8px 42px; }
+.workspace-brand-mark { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 11px; color: white; background: #2563eb; font-weight: 750; font-size: 20px; }
+.workspace-brand strong { display: block; font-size: 15px; letter-spacing: -.3px; }
+.workspace-brand small { display: block; margin-top: 4px; font-size: 10px; color: var(--text-muted); }
+.workspace-navigation { display: grid; gap: 7px; }
+.workspace-navigation button { display: flex; align-items: center; gap: 13px; width: 100%; min-height: 46px; border: 0; border-radius: 9px; padding: 12px 16px; background: transparent; text-align: left; font: 500 14px var(--font-sans); color: var(--text-secondary); cursor: pointer; }
+.workspace-navigation button:hover { background: var(--bg-subtle); }
+.workspace-navigation button.is-active { background: var(--accent-soft); color: var(--accent-strong); }
+.workspace-navigation button:focus-visible { outline: 2px solid var(--accent); }
+.workspace-sidebar-footer { margin-top: auto; padding: 20px 8px 0; color: var(--text-muted); font-size: 11px; }
+.workspace-topbar { min-height: 64px; padding: 12px 28px; }
+.workspace-header-actions { justify-content: flex-end; }
+.intelligence-status { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; margin-bottom: 18px; font-size: 12px; }
+.intelligence-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr); gap: 28px; }
+.intelligence-digest { min-width: 0; line-height: 1.85; }
+.intelligence-digest > .markdown-block:first-child { margin-top: 0; }
+.intelligence-sources { min-width: 0; border-left: 1px solid var(--border-soft); padding-left: 24px; max-height: 420px; overflow: auto; }
+.intelligence-sources article { padding: 12px 0; border-bottom: 1px solid var(--border-soft); font-size: 13px; overflow-wrap: anywhere; }
+.intelligence-sources article:first-child { padding-top: 0; }
+.intelligence-sources a:hover { color: var(--accent); }
+.intelligence-source-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; margin-bottom: 4px; }
+.trade-report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 22px; }
+.trade-report-grid section { padding: 18px; border-radius: 10px; background: var(--bg-subtle); min-width: 0; }
+.report-receipts { border-top: 1px solid var(--border-soft); margin-top: 20px; padding-top: 16px; }
+.report-receipts pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 320px; overflow: auto; }
+.settings-stack { display: grid; gap: 20px; min-width: 0; }
+.settings-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.settings-form-grid label { display: grid; align-content: start; gap: 8px; font-size: 13px; }
+.settings-form-grid .ant-input-number, .settings-form-grid .ant-select { width: 100%; }
+.settings-full-width { grid-column: 1 / -1; }
+.settings-status { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: center; }
+.settings-source-row { display: grid; grid-template-columns: 36px minmax(110px, .8fr) minmax(180px, 2fr) 32px; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
+.settings-code { border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-subtle); padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.dashboard-v2 .market-workbench { grid-template-columns: minmax(0, 1fr); }
+.dashboard-v2 .dashboard-command-center { background: var(--bg-surface); box-shadow: none; border-radius: 12px; }
+.dashboard-v2 .dashboard-command-top h2 { font-size: 28px; }
+.dashboard-v2 .agent-overview-shell { grid-template-columns: 115px minmax(0, 1fr); }
+.admin-page > .ant-space-item { width: 100%; }
+.admin-page .responsive-tabs > .ant-tabs-left > .ant-tabs-nav { min-width: 138px; }
+.admin-page .ant-tabs-left > .ant-tabs-content-holder { padding-left: 0; min-width: 0; }
+.admin-page .ant-tabs-left > .ant-tabs-content-holder > .ant-tabs-content { padding-left: 22px; }
+.chat-create-modal .chat-create-grid { gap: 16px; }
+@media (min-width: 992px) { .app-shell { padding-left: 216px; } .app-shell > .page-wrap { padding: 28px; } .app-shell > .page-wrap:has(.x-chat-layout) { padding: 16px 22px; } }
+@media (max-width: 991px) { .workspace-topbar { padding: 12px 18px; } .app-shell > .page-wrap { padding: 18px; } }
+@media (max-width: 700px) {
+  .intelligence-grid, .trade-report-grid, .settings-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .intelligence-sources { border-left: 0; border-top: 1px solid var(--border-soft); padding: 16px 0 0; max-height: 300px; }
+  .settings-source-row { grid-template-columns: 32px minmax(0, 1fr) 30px; gap: 8px; }
+  .settings-source-row .source-url { grid-column: 2 / 3; grid-row: 2; }
+  .settings-full-width { grid-column: auto; }
+  .workspace-header-actions .ant-btn { padding-inline: 8px; }
+  .dashboard-v2 .agent-overview-shell { grid-template-columns: minmax(0, 1fr); }
+  .app-shell > .page-wrap { padding: 12px; }
+}
+
+.workspace-page-title { flex-shrink: 0; white-space: nowrap; }
+.workspace-header-actions { min-width: 0; }
+@media (min-width: 701px) and (max-width: 1100px) { .admin-page .settings-form-grid { grid-template-columns: minmax(0,1fr); } }

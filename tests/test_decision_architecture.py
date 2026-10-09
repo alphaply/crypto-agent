@@ -15,17 +15,29 @@ def test_trading_agents_cannot_edit_rules_even_with_forged_calls(mode, monkeypat
     assert 'not allowed' in tool_registry.run_trade_tool('manage_trading_rules', {'action': 'apply'}, 'cfg', 'BTC/USDT')
 
 
-def test_bounded_journal_keeps_uncertain_execution_before_long_narrative():
+def test_journal_keeps_all_receipts_and_complete_decisions():
+    decision = 'plan only ' * 1000 + 'DECISION_END'
+    receipt = '{"status":"unknown","order_id":"pending-1","details":"' + '待核验' * 200 + 'RECEIPT_END"}'
     messages = [
         AIMessage(content='plan', tool_calls=[{'name': 'open_position_real', 'id': 'entry-1', 'args': {}}]),
-        ToolMessage(tool_call_id='entry-1', content='{"status":"unknown","order_id":"pending-1"}'),
-        AIMessage(content='plan only ' * 1000),
+        ToolMessage(tool_call_id='entry-1', content=receipt),
+        AIMessage(content='checking protection', tool_calls=[{'name': 'close_position_real', 'id': 'exit-2', 'args': {}}]),
+        ToolMessage(tool_call_id='exit-2', content='{"status":"pending","order_id":"pending-2"}'),
+        AIMessage(content=decision),
     ]
     text = decision_journal(messages)
-    assert len(text) <= 500
-    assert 'unknown=1' in text[:100]
+    assert 'unknown=2' in text[:100]
     assert 'pending-1' in text
-    assert '原文截取' in text
+    assert 'pending-2' in text
+    assert receipt in text
+    assert decision in text
+    assert 'checking protection' in text
+    assert '原文截取' not in text
+
+
+def test_journal_preserves_full_fallback_when_model_has_no_text():
+    fallback = '完整待核验条件。' * 1000 + 'FALLBACK_END'
+    assert fallback in decision_journal([], fallback=fallback)
 
 
 def test_default_context_does_not_read_daily_reports(monkeypatch):

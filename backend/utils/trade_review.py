@@ -21,7 +21,7 @@ def daily_exchange_evidence(config: dict, date_str: str) -> str:
             ledger = ExecutionLedger(ex, config['config_id'], config['symbol'])
             ledger.sync(now_ms=end_ms - 1, start_ms=start_ms, min_interval=0)
             ledger.sync_income(start_ms, end_ms - 1)
-            return execution_context(config['config_id'], hours=24, limit=200,
+            return execution_context(config['config_id'], hours=24,
                                      now=start + timedelta(days=1), scope=ledger.scope, symbol=ledger.symbol)
         from backend.utils.spot_portfolio import get_config_symbols
         trades = []
@@ -38,8 +38,8 @@ def daily_exchange_evidence(config: dict, date_str: str) -> str:
             item['realized_pnl'] = trade.get('realizedPnl', info.get('realizedPnl', info.get('fillPnl')))
             unique[(item['symbol'], str(trade.get('id')))] = item
         return '交易所当日成交（优先于本地历史；属于该账户该品种，可能包含手工/其他策略，不得全部归因本Agent；最多5页，完整性未证明；缺失盈亏不填0）：\n' + json.dumps({
-            'returned_fill_count': len(unique), 'omitted_detail_count': max(0, len(unique) - 200),
-            'fills': sorted(unique.values(), key=lambda item: item['timestamp'])[-200:],
+            'returned_fill_count': len(unique), 'omitted_detail_count': 0,
+            'fills': sorted(unique.values(), key=lambda item: item['timestamp']),
         }, ensure_ascii=False, default=str)
     except Exception as exc:
         return f'当日交易所成交读取失败，仅能复盘本地已保存证据，不能声称完整收益：{exc}'
@@ -65,9 +65,7 @@ def daily_execution_evidence(config_id: str, date_str: str) -> str:
                 "opened_at", "closed_at", "close_price", "source", "position_key",
                 "trade_id", "price", "cost", "fee", "fee_currency", "close_time", "is_filled",
             }
-            sections[table] = [{k: v for k, v in dict(row).items() if k in allowed} for row in rows[-200:]]
-            if len(rows) > 200:
-                sections[table + '_omitted_count'] = len(rows) - 200
+            sections[table] = [{k: v for k, v in dict(row).items() if k in allowed} for row in rows]
         if 'trade_history' in existing_tables:
             stats = conn.execute(
                 "SELECT COUNT(*) AS fill_count, SUM(realized_pnl) AS realized_pnl_before_fees "
@@ -81,9 +79,9 @@ def daily_execution_evidence(config_id: str, date_str: str) -> str:
         if 'real_protection_events' in existing_tables:
             sections['protection_changes'] = [
                 {'timestamp': row['timestamp'], 'plan': json.loads(row['payload'])}
-                for row in conn.execute('SELECT timestamp,payload FROM real_protection_events WHERE config_id=? AND date(timestamp)=? ORDER BY id DESC LIMIT 200',
+                for row in conn.execute('SELECT timestamp,payload FROM real_protection_events WHERE config_id=? AND date(timestamp)=? ORDER BY id',
                                         (config_id, date_str)).fetchall()
-            ][::-1]
+            ]
     if not any(sections.values()):
         return ""
     return (

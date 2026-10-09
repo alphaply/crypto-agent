@@ -14,7 +14,7 @@ router = APIRouter(prefix='/api/agent-runs', tags=['agent-runs'], dependencies=[
 @router.get('')
 def list_runs(
     config_id: str | None = Query(None, min_length=1, max_length=200),
-    purpose: Literal['decision', 'memory_review', 'daily_summary'] | None = None,
+    purpose: Literal['decision', 'strategy_summary', 'memory_review', 'daily_summary'] | None = None,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0, le=10000),
 ):

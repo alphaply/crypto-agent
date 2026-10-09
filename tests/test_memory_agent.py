@@ -180,12 +180,30 @@ def test_final_update_without_receipt_is_rejected(environment, monkeypatch):
     assert result.status == "failed" and not result.summary and "without" in result.error
 
 
-def test_memory_limit_and_custom_template_still_has_evidence(environment, monkeypatch):
-    fake = model(monkeypatch, final(summary="长" * 1600))
-    result = memory.run_memory_review(SOURCE, {**CONFIG, "summarizer": {"short_memory_prompt": "自定义整理格式"}}, operation_id="long")
-    assert result.status == "completed" and len(result.summary) <= 1200
-    assert SOURCE in fake.calls[0][-1].content and "自定义整理格式" in fake.calls[0][-1].content
+def test_long_memory_and_reason_are_preserved_with_full_custom_template_evidence(environment, monkeypatch):
+    summary = "正文开头\n" + "长记忆；" * 4000 + "\n正文末尾：必须等日线收盘确认。"
+    reason = "完整理由\n" + "证据交易ID与时间；" * 100 + "\n理由末尾T-last。"
+    source = SOURCE + "\n" + "完整证据；" * 4000 + "\n证据末尾。"
+    fake = model(monkeypatch, final(summary=summary, reason=reason))
+    result = memory.run_memory_review(source, {**CONFIG, "summarizer": {"short_memory_prompt": "自定义整理格式"}}, operation_id="long")
+    assert result.status == "completed"
+    assert result.summary == f"{summary}\n规则复盘：证据不足。{reason}\n程序回执：本轮未修改长期规则。"
+    assert source in fake.calls[0][-1].content and "自定义整理格式" in fake.calls[0][-1].content
     assert "人工锁定" in fake.calls[0][0].content
+
+
+def test_every_applied_rule_version_is_present_in_memory(environment, monkeypatch):
+    changes = [
+        {**add_change(), "content": f"规则{index}：确认到达后才允许入场。"}
+        for index in range(7)
+    ]
+    model(monkeypatch, call("apply", changes), final(conclusion="更新"))
+    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="many-rules")
+    assert result.status == "completed"
+    applied = result.rule_receipts[0]["rules"]
+    assert len(applied) == 7
+    for rule in applied:
+        assert f"{rule['rule_id']} v{rule['revision']}" in result.summary
 
 
 def test_model_fallback_and_custom_file(environment, monkeypatch, tmp_path):
@@ -201,22 +219,85 @@ def test_model_fallback_and_custom_file(environment, monkeypatch, tmp_path):
     assert "自定义文件：" in fake.calls[0][-1].content
 
 
+def test_memory_review_preserves_configured_provider_extra_body(environment, monkeypatch):
+    options = {"thinking": {"type": "disabled"}, "custom_provider_option": "requested"}
+    fake = model(monkeypatch, final())
+    result = memory.run_memory_review(
+        SOURCE, {**CONFIG, "summarizer": {"extra_body": options}}, operation_id="provider-options",
+    )
+    assert result.status == "completed"
+    assert fake.settings["extra_body"] == options
+
+
+@pytest.mark.parametrize("top_prompt,nested_prompt,expected", [
+    ("TOP_INLINE\n{content}", "NESTED_INLINE\n{content}", "TOP_INLINE"),
+    ("", "NESTED_INLINE\n{content}", "NESTED_INLINE"),
+    ("TOP_WITHOUT_PLACEHOLDER", "NESTED_INLINE\n{content}", "TOP_WITHOUT_PLACEHOLDER"),
+])
+def test_top_level_memory_prompt_matches_editor_precedence(
+    environment, monkeypatch, top_prompt, nested_prompt, expected,
+):
+    fake = model(monkeypatch, final())
+    result = memory.run_memory_review(
+        SOURCE,
+        {**CONFIG, "short_memory_prompt": top_prompt,
+         "summarizer": {"short_memory_prompt": nested_prompt}},
+        operation_id="top-level-inline",
+    )
+    assert result.status == "completed"
+    supplied = fake.calls[0][-1].content
+    assert expected in supplied and SOURCE in supplied
+    if top_prompt:
+        assert "NESTED_INLINE" not in supplied
+
+
+@pytest.mark.parametrize("top_file,nested_prompt,expected", [
+    (True, "", "TOP_FILE"),
+    (False, "", "NESTED_FILE"),
+    (True, "NESTED_INLINE\n{content}", "NESTED_INLINE"),
+])
+def test_memory_prompt_file_precedence_matches_strategy_summary(
+    environment, monkeypatch, tmp_path, top_file, nested_prompt, expected,
+):
+    top_path = tmp_path / "top-memory.txt"
+    nested_path = tmp_path / "nested-memory.txt"
+    top_path.write_text("TOP_FILE\n{content}", encoding="utf-8")
+    nested_path.write_text("NESTED_FILE\n{content}", encoding="utf-8")
+    fake = model(monkeypatch, final())
+    result = memory.run_memory_review(
+        SOURCE,
+        {**CONFIG, "short_memory_prompt_file": str(top_path) if top_file else "",
+         "summarizer": {"short_memory_prompt": nested_prompt, "short_memory_prompt_file": str(nested_path)}},
+        operation_id="top-level-file",
+    )
+    assert result.status == "completed"
+    supplied = fake.calls[0][-1].content
+    assert expected in supplied and SOURCE in supplied
+    for marker in {"TOP_FILE", "NESTED_FILE", "NESTED_INLINE"} - {expected}:
+        assert marker not in supplied
+
+
 def test_actual_audit_includes_input_tools_raw_output_and_receipts(environment, monkeypatch):
     from backend import database_agent_runs as audit
 
     monkeypatch.setattr(memory, "_start_audit", START_AUDIT)
     monkeypatch.setattr(memory, "_finish_audit", FINISH_AUDIT)
-    response = final(conclusion="更新")
+    summary = "长记忆开头：" + "全部证据与条件。" * 1500 + "长记忆末尾。"
+    reason = "理由开头：" + "证据引用。" * 100 + "理由末尾。"
+    source = SOURCE + "\n" + "完整来源。" * 2000 + "来源末尾。"
+    response = final(summary=summary, reason=reason, conclusion="更新")
     model(monkeypatch, call("apply", [add_change()]), response)
-    result = memory.run_memory_review(SOURCE, CONFIG, operation_id="audit-window")
+    result = memory.run_memory_review(source, CONFIG, operation_id="audit-window")
     assert result.status == "completed"
     runs = audit.list_agent_runs(config_id="cfg", purpose="memory_review")["runs"]
     assert len(runs) == 2 and all(run["status"] == "success" for run in runs)
     latest = audit.get_agent_run(runs[0]["run_id"])
     assert latest["output"] == response.content
+    assert latest["details"]["memory_summary"] == result.summary
+    assert summary in result.summary and reason in result.summary
     assert latest["details"]["rule_receipts"] == result.rule_receipts
     assert latest["tools"][0]["function"]["name"] == "manage_trading_rules"
-    assert SOURCE in latest["messages"][1]["content"]
+    assert source in latest["messages"][1]["content"]
 
 
 def test_audit_unavailable_does_not_block_review(environment, monkeypatch):
@@ -284,6 +365,8 @@ def test_system_prompt_role_compatibility(environment, monkeypatch, summarizer, 
 @pytest.mark.parametrize("metadata", [
     {"finish_reason": "length"}, {"finish_reason": "content_filter"},
     {"stop_reason": "max_tokens"}, {"status": "incomplete"},
+    {"finish_reason": "max_output_tokens"},
+    {"incomplete_details": {"reason": "max_output_tokens"}},
 ])
 def test_complete_json_with_incomplete_provider_status_is_rejected(environment, monkeypatch, metadata):
     response = final()

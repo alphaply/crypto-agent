@@ -15,6 +15,7 @@ from backend.agent.chat_graph import (
     stream_chat,
     stream_resume_chat,
 )
+from backend.agent.chat_titles import chat_title_source, generate_chat_title
 from backend.config import config as global_config
 from backend.config_store import load_effective_runtime_snapshot, load_management_snapshot
 from backend.database import (
@@ -23,10 +24,10 @@ from backend.database import (
     delete_chat_sessions,
     get_chat_session,
     get_chat_sessions,
+    reset_chat_title_summary,
     touch_chat_session,
     update_chat_session_title,
 )
-from backend.utils.llm_utils import build_chat_model, extract_message_text, invoke_with_retry
 
 from backend.app.services.common import logger, serialize_message
 from backend.app.services.market_catalog_service import SUPPORTED_MARKETS, list_market_symbols_payload
@@ -57,6 +58,8 @@ def _serialize_session(session: dict[str, Any]) -> dict[str, Any]:
     payload = dict(session)
     payload["session_type"] = str(payload.get("session_type") or "task")
     payload["runtime"] = _parse_runtime(payload.pop("runtime_json", "{}"))
+    if payload["session_type"] == "temporary":
+        payload["title"] = str(payload.get("title") or "新建任务").replace("Temporary chat", "新建任务").replace("临时聊天", "新建任务")
     return payload
 
 
@@ -105,6 +108,8 @@ def _management_chat_options() -> dict[str, list[dict[str, Any]]]:
     snapshot = load_management_snapshot()
     providers = []
     for provider in snapshot.get("llm_providers", []):
+        if provider.get("api_protocol") == "decisions":
+            continue
         secret = (provider.get("secrets") or {}).get("api_key") or {}
         providers.append(
             {
@@ -192,11 +197,11 @@ def _resolve_temporary_runtime(runtime: dict[str, Any]) -> tuple[dict[str, Any],
     requested_prompt_role = str(requested.get("system_prompt_role") or "").strip().lower()
 
     if not exchange_profile_id or not provider_id or not symbol:
-        raise ValueError("Temporary chat requires an exchange profile, symbol, and LLM provider")
+        raise ValueError("Analysis task requires an exchange profile, symbol, and LLM provider")
     if market_type not in {"spot", "swap"}:
         raise ValueError("Unsupported market type")
     if len(global_requirement) > 4000:
-        raise ValueError("Temporary chat global requirement is too long")
+        raise ValueError("Task instruction is too long")
 
     snapshot = _runtime_snapshot()
     profile = next(
@@ -273,7 +278,7 @@ def create_chat_session_payload(
     if session_mode == "temporary":
         stored_runtime, _ = _resolve_temporary_runtime(runtime or {})
         symbol = stored_runtime["symbol"]
-        default_title = f"{symbol} | Temporary chat"
+        default_title = f"{symbol} | 新建任务"
         create_chat_session(
             session_id,
             "",
@@ -410,7 +415,7 @@ def compact_chat_memory_payload(session_id: str):
         raise FileNotFoundError("Chat session not found")
     runtime = _effective_session_runtime(session)
     memory = compact_chat_memory(session_id, config_id=session["config_id"], runtime=runtime)
-    return {"session": _serialize_session(session), "conversation_memory": memory}
+    return {"session": _serialize_session(get_chat_session(session_id) or session), "conversation_memory": memory}
 
 
 def stream_chat_events(
@@ -523,8 +528,14 @@ def stream_chat_events(
 
             if pending_approval:
                 yield {"type": "approval_required", "approval": pending_approval}
+            latest_session = session
+            try:
+                latest_session = get_chat_session(session_id) or session
+            except Exception:
+                logger.exception("Chat title readback failed: session=%s", session_id)
             yield {
                 "type": "done",
+                "session": _serialize_session(latest_session),
                 "messages": final_messages,
                 "completion": model_completion,
                 "conversation_memory": conversation_memory,
@@ -576,41 +587,11 @@ def summarize_chat_title_payload(session_id: str):
     if not messages:
         raise ValueError("No messages in the session")
 
-    content_to_summarize = ""
-    for msg in messages[:3]:
-        role = "User" if isinstance(msg, HumanMessage) else "Assistant"
-        content_to_summarize += f"{role}: {extract_message_text(msg)[:200]}\n"
-
     cfg = _session_llm_config(session)
-    llm = build_chat_model(
-        model=cfg.get("model"),
-        api_key=cfg.get("api_key"),
-        base_url=cfg.get("api_base"),
-        temperature=cfg.get("temperature"),
-        extra_body=cfg.get("extra_body"),
-        thinking_enabled=cfg.get("thinking_enabled"),
-        reasoning_effort=cfg.get("reasoning_effort"),
-        compatibility_mode=cfg.get("compatibility_mode"),
-    )
-    summary_prompt = (
-        "Summarize the following conversation into a very short title in Chinese within 6 characters, "
-        "without punctuation.\n\n"
-        f"{content_to_summarize}"
-    )
-    try:
-        response = invoke_with_retry(
-            lambda: llm.invoke([HumanMessage(content=summary_prompt)]),
-            logger=logger,
-            context=f"title-summary session={session_id} model={cfg.get('model')}",
-        )
-        new_title = extract_message_text(response).strip().replace('"', "").replace("'", "")
-    except Exception as exc:
-        logger.warning(f"Title summary failed: {exc}")
-        new_title = "New chat"
-
-    new_title = new_title[:10] if len(new_title) > 10 else new_title
-    update_chat_session_title(session_id, new_title)
-    return {"title": new_title}
+    new_title = generate_chat_title(chat_title_source(state), cfg, session_id=session_id, config_id=session.get("config_id"))
+    if new_title:
+        update_chat_session_title(session_id, new_title)
+    return {"title": new_title or session.get("title") or "", "updated": bool(new_title)}
 
 
 def clear_chat_messages_payload(session_id: str):
@@ -618,6 +599,7 @@ def clear_chat_messages_payload(session_id: str):
     if not session:
         raise FileNotFoundError("Chat session not found")
     delete_chat_threads([session_id])
+    reset_chat_title_summary(session_id)
     touch_chat_session(session_id)
     return {"message": "Chat thread cleared."}
 
