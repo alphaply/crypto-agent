@@ -88,6 +88,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN reasoning_content TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN agent_type TEXT")
+    _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN decision_json TEXT")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS mock_orders (
                     order_id TEXT PRIMARY KEY,

@@ -21,6 +21,8 @@ def local_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'strategy-summary.sqlite'))
     with database.get_db_conn() as conn:
         initialize_schema(conn)
+        from backend.agent.memory_updates import _initialize
+        _initialize(conn)
     for field in ('model', 'api_key', 'api_base'):
         monkeypatch.setattr(agent_graph.global_config, f'global_summarizer_{field}', '')
         monkeypatch.delenv(f'GLOBAL_SUMMARIZER_{field.upper()}', raising=False)
@@ -63,11 +65,7 @@ def test_finalize_uses_configured_deepseek_and_saves_its_complete_summary(local_
         },
     }
     original_config = deepcopy(cfg)
-    report = {'version': 1, 'market_analysis': 'Market analysis', 'strategy': 'One strategy',
-              'decision': {'action': 'HOLD', 'rationale': 'wait'},
-              'forecast': {'next_1h': 'conditional', 'next_4h': 'conditional'},
-              'risks': ['risk'], 'invalidation': 'condition', 'next_watchpoints': ['watch'], 'summary': result}
-    llm = Mock(invoke=Mock(return_value=AIMessage(content=json.dumps(report), response_metadata={'finish_reason': 'stop'})))
+    llm = Mock(invoke=Mock(return_value=AIMessage(content=result, response_metadata={'finish_reason': 'stop'})))
     build = Mock(return_value=llm)
     monkeypatch.setattr(agent_graph, 'build_chat_model', build)
     trade = Mock(side_effect=AssertionError('Finalize must never replay trading tools'))
@@ -90,10 +88,14 @@ def test_finalize_uses_configured_deepseek_and_saves_its_complete_summary(local_
     assert prompt_message.content.count(SUMMARY_FACT_POLICY) == 1
     saved = saved_summary()
     assert saved['strategy_logic'] == result
-    structured = json.loads(saved['report_json'])
-    assert structured['raw_analysis'] == analysis + '\n\n---\n\nFinal decision: wait for confirmation.'
+    structured = json.loads(saved['decision_json'])
+    assert structured['messages'][0]['content'] == analysis
+    assert structured['messages'][0]['tool_calls'][0]['name'] == 'get_account'
     assert structured['execution_results'][0]['result'] == receipt
-    assert '## 行情解析' in saved['content']
+    assert saved['content'] == analysis + '\n\n---\n\nFinal decision: wait for confirmation.'
+    assert saved['report_json'] is None
+    assert structured['summary_status'] == 'completed'
+    assert 'TradeReport' not in prompt_message.content
     with database.get_db_conn() as conn:
         assert conn.execute('SELECT COUNT(*) FROM memory_update_jobs').fetchone()[0] == 1
     assert saved['agent_name'] == 'trade-model'
@@ -129,12 +131,14 @@ def test_summary_failure_keeps_full_labeled_source_without_replaying_trade(local
 
     saved = saved_summary()
     assert saved['strategy_logic'] == agent_graph.STRATEGY_SUMMARY_FAILURE_PREFIX + decision_journal(messages)
-    assert json.loads(saved['report_json'])['raw_analysis'] == messages[0].content
-    assert json.loads(saved['report_json'])['validation_status'] == 'invalid'
+    assert saved['content'] == messages[0].content
+    assert json.loads(saved['decision_json'])['summary_status'] == 'failed'
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM memory_update_jobs').fetchone()[0] == 0
     assert progress[-1]['phase'] == 'completed'
     audits = database_agent_runs.list_agent_runs(config_id='cfg', purpose='strategy_summary')['runs']
-    assert len(audits) == 2 and all(item['status'] == 'error' for item in audits)
-    assert llm.invoke.call_count == 2
+    assert len(audits) == 1 and all(item['status'] == 'error' for item in audits)
+    assert llm.invoke.call_count == 1
     trade.assert_not_called()
 
 
@@ -211,3 +215,49 @@ def test_custom_prompt_without_placeholder_still_receives_complete_source(local_
     prompt = llm.invoke.call_args.args[0][0].content
     assert prompt.startswith(template)
     assert source in prompt and prompt.count(source) == 1
+
+
+def test_decision_summary_memory_order_and_dashboard_evidence(local_db, monkeypatch):
+    from types import SimpleNamespace
+    from backend.agent.memory_updates import process_memory_update
+    from backend.app.services import dashboard_service
+
+    events = []
+    messages = [AIMessage(content='Inspect the account first', tool_calls=[{
+        'id': 'inspect', 'name': 'get_account', 'args': {'symbol': 'ETH/USDT'},
+    }]), ToolMessage(content='{"status":"unknown","detail":"verify existing order"}', tool_call_id='inspect'),
+        AIMessage(content='Wait for reconciliation. No further order.')]
+    class Model:
+        def invoke(self, source):
+            events.append('strategy_summary')
+            assert 'verify existing order' in source[0].content
+            return AIMessage(content='Keep waiting; the existing order is unverified.')
+    monkeypatch.setattr(agent_graph, 'build_chat_model', lambda **_: Model())
+    cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL', 'model': 'decision-model'}
+    agent_graph.finalize_node(state_with(messages), {'configurable': {
+        'config_id': 'cfg', 'agent_config': cfg, 'run_id': 'ordered-run',
+    }})
+    assert events == ['strategy_summary']
+    def memory_model(source, *args, **kwargs):
+        events.append('memory_review')
+        assert 'Keep waiting; the existing order is unverified.' in source
+        assert 'verify existing order' in source
+        assert 'prior memory' in source
+        return 'New memory: reconcile the existing order before further actions.'
+    database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg', 'prior memory', '', 1)
+    monkeypatch.setattr(memory_service, 'organize_memory', memory_model)
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: 'Verified historical evidence')
+    assert process_memory_update('cfg', 'ordered-run', cfg)
+    assert events == ['strategy_summary', 'memory_review']
+    monkeypatch.setattr(dashboard_service, 'global_config', SimpleNamespace(
+        get_all_symbol_configs=lambda: [cfg], get_leverage=lambda _: 1))
+    monkeypatch.setattr(dashboard_service, 'get_paginated_orders', lambda *args, **kwargs: ([], 0))
+    monkeypatch.setattr(dashboard_service, 'get_scheduler_status', lambda: True)
+    agent = dashboard_service.get_dashboard_data('ETH/USDT')[0]
+    assert agent['content'] == 'Inspect the account first\n\n---\n\nWait for reconciliation. No further order.'
+    assert agent['strategy_logic'] == 'Keep waiting; the existing order is unverified.'
+    assert [entry['role'] for entry in agent['decision']['messages']] == ['assistant', 'tool', 'assistant']
+    assert agent['decision']['execution_results'][0]['status'] == 'unknown'
+    assert agent['memory_update']['status'] == 'completed'
+    assert 'report' not in agent and 'report_json' not in agent
+    assert database.get_short_memories('cfg', 1)[0]['run_id'] == 'ordered-run'

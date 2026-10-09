@@ -126,9 +126,10 @@ class SummaryMemoryStore:
             cursor = conn.cursor()
             columns = {row[1] for row in cursor.execute('PRAGMA table_info(summaries)')}
             report_field = 'report_json' if 'report_json' in columns else 'NULL AS report_json'
+            decision_field = 'decision_json' if 'decision_json' in columns else 'NULL AS decision_json'
             rows = cursor.execute(
                 f'''
-                SELECT id, strategy_logic, timestamp, content AS _source_content, {report_field}
+                SELECT id, strategy_logic, timestamp, content AS _source_content, {report_field}, {decision_field}
                 FROM summaries
                 WHERE config_id = ?
                   AND timestamp >= ?
@@ -141,13 +142,10 @@ class SummaryMemoryStore:
             result = []
             for row in rows:
                 item = restore_memory_source(row)
-                try:
-                    report = json.loads(item.pop('report_json') or '{}')
-                    receipts = report.get('execution_results') or []
-                    if receipts:
-                        item['strategy_logic'] += '\n实际工具回执：\n' + json.dumps(receipts, ensure_ascii=False)
-                except (ValueError, TypeError, AttributeError):
-                    item['strategy_logic'] += '\n结构化回执无法读取；执行状态未知。'
+                from backend.utils.decision_record import append_execution_receipts
+                item['strategy_logic'] = append_execution_receipts(item['strategy_logic'], item)
+                item.pop('report_json', None)
+                item.pop('decision_json', None)
                 result.append(item)
             return result
 

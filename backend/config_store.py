@@ -73,7 +73,7 @@ LLM_PROVIDER_SECRET_KEYS = {"api_key"}
 PROVIDER_OPTION_KEYS = (
     "api_protocol", "decisions_api", "models_dev_provider_id", "models_dev_model_id", "pricing_mode",
     "input_price_per_m", "output_price_per_m", "cache_read_price_per_m",
-    "cache_write_price_per_m", "pricing_currency", "report_output_mode",
+    "cache_write_price_per_m", "pricing_currency",
 )
 
 EXCHANGE_PROFILE_SECRET_KEYS = {"api_key", "secret", "passphrase"}
@@ -808,7 +808,6 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
                     payload["thinking_enabled"] = provider.get("thinking_enabled")
                 if provider.get("reasoning_effort"):
                     payload["reasoning_effort"] = provider.get("reasoning_effort")
-                payload["report_output_mode"] = provider.get("report_output_mode", "json")
                 payload["api_protocol"] = provider.get("api_protocol", "chat")
                 if payload.get("system_prompt_role") not in {"system", "user"}:
                     payload["system_prompt_role"] = provider.get("system_prompt_role", "system")
@@ -847,7 +846,6 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
                 if summary_provider.get("extra_body"):
                     summarizer["extra_body"] = summary_provider.get("extra_body")
                 summarizer["compatibility_mode"] = summary_provider.get("compatibility_mode") or "auto"
-                summarizer["report_output_mode"] = summary_provider.get("report_output_mode", "json")
                 summarizer["api_protocol"] = summary_provider.get("api_protocol", "chat")
                 if summarizer.get("system_prompt_role") not in {"system", "user"}:
                     summarizer["system_prompt_role"] = summary_provider.get("system_prompt_role", "system")

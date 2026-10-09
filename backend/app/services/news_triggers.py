@@ -38,7 +38,7 @@ def model_override(config: dict, provider: dict) -> dict:
     result = dict(config)
     for key, default in {'model': '', 'api_key': '', 'api_base': '', 'temperature': 0.1,
                          'extra_body': {}, 'compatibility_mode': 'auto', 'thinking_enabled': None,
-                         'reasoning_effort': '', 'system_prompt_role': 'system', 'report_output_mode': 'json',
+                         'reasoning_effort': '', 'system_prompt_role': 'system',
                          'api_protocol': 'chat'}.items():
         result[key] = provider.get(key, default)
     result.update(llm_provider_id=provider['provider_id'], model_name=provider.get('name') or provider['model'],

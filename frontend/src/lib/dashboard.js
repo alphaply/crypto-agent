@@ -1,6 +1,6 @@
 // Polling execution tokens should not restart market-data requests or charts.
 export function workspaceSignature(agents = []) {
-  return JSON.stringify(agents.map((agent) => [agent.config_id, agent.timestamp, agent.market_timeframes, agent.symbols || [agent.symbol]]));
+  return JSON.stringify(agents.map((agent) => [agent.config_id, agent.timestamp, agent.market_timeframes, agent.symbols || [agent.symbol], agent.memory_update?.status]));
 }
 
 export function selectDashboardTab(agents = [], requested) {

@@ -1,4 +1,4 @@
-"""Offline behavior checks for hourly reports, memory, scheduling and run budgets."""
+"""Offline behavior checks for hourly summaries, memory, scheduling and run budgets."""
 from backend.agent import memory_service, decision_context
 from datetime import datetime
 import json
@@ -13,7 +13,7 @@ from backend import database
 from backend.database_schema import initialize_schema
 from backend.agent import agent_graph
 from backend.agent.memory_updates import enqueue_memory_update, process_memory_update
-from backend.agent.trade_report import TradeReport, assemble_report
+from backend.utils.decision_record import build_decision_record, read_decision_record
 from backend.utils.run_schedule import DcaSchedule, latest_dca_slot, preview_dca_schedule, effective_schedule
 
 
@@ -29,56 +29,38 @@ def at(text):
     return pytz.timezone('Asia/Shanghai').localize(datetime.fromisoformat(text))
 
 
-def draft():
-    return {'version': 1, 'market_analysis': '震荡', 'strategy': '等待突破',
-            'decision': {'action': 'HOLD', 'rationale': '尚未触发'},
-            'forecast': {'next_1h': '突破后确认', 'next_4h': '跌破支撑则失效'},
-            'risks': ['流动性'], 'invalidation': '支撑失守', 'next_watchpoints': ['收盘确认'], 'summary': '等待确认'}
+def test_decision_record_preserves_call_order_arguments_and_unknown_receipt():
+    record = build_decision_record([
+        AIMessage(content='Verify first', tool_calls=[{'id': 't1', 'name': 'open_position_real', 'args': {'amount': 0.1}}]),
+        ToolMessage(content='{"status":"unknown"}', tool_call_id='t1'),
+        AIMessage(content='Await verification')], 'completed')
+    assert [m['role'] for m in record['messages']] == ['assistant', 'tool', 'assistant']
+    assert record['messages'][0]['tool_calls'][0]['args'] == {'amount': 0.1}
+    assert record['execution_results'][0]['status'] == 'unknown'
+    assert record['execution_results'][0]['result'] == '{"status":"unknown"}'
 
 
-def test_report_preserves_actual_unknown_receipt():
-    report = assemble_report(json.dumps(draft()), [
-        AIMessage(content='', tool_calls=[{'id': 't1', 'name': 'open_position_real', 'args': {}}]),
-        ToolMessage(content='{"status":"unknown"}', tool_call_id='t1')], 'original')
-    assert report['validation_status'] == 'valid'
-    assert report['execution_results'] == [{'tool': 'open_position_real', 'tool_call_id': 't1', 'result': '{"status":"unknown"}'}]
-    assert report['raw_analysis'] == 'original'
-    with pytest.raises(ValueError):
-        TradeReport.model_validate({**draft(), 'forecast': {}})
-
-
-def test_report_has_one_readonly_repair(isolated, monkeypatch):
-    responses = iter([AIMessage(content='not json'), AIMessage(content=json.dumps(draft()))])
+@pytest.mark.parametrize('mode', ['json', 'json_schema', 'tool'])
+def test_strategy_summary_ignores_retired_report_mode_and_accepts_plain_text(isolated, monkeypatch, mode):
     calls = []
     class Model:
         def invoke(self, messages):
             calls.append(list(messages))
-            return next(responses)
+            return AIMessage(content='等待确认；订单状态待核验，不重复下单。')
     monkeypatch.setattr(agent_graph, 'build_chat_model', lambda **_: Model())
-    monkeypatch.setattr(agent_graph, 'run_trade_tool', lambda *_: pytest.fail('formatter must not trade'))
-    result = agent_graph.summarize_content('source receipt', {'model': 'offline', 'config_id': 'cfg'}, 'report')
-    assert TradeReport.model_validate_json(result).summary == '等待确认'
-    assert len(calls) == 2 and 'source receipt' in calls[0][0].content
+    result = agent_graph.summarize_content('completed evidence', {'model': 'offline', 'report_output_mode': mode})
+    assert result == '等待确认；订单状态待核验，不重复下单。'
+    assert len(calls) == 1 and 'TradeReport' not in calls[0][0].content
 
 
-@pytest.mark.parametrize('mode', ['json_schema', 'tool'])
-def test_report_native_mode_is_explicit_and_never_executes_submission(isolated, monkeypatch, mode):
-    bindings = []
-    class Model:
-        def bind(self, **kwargs):
-            bindings.append(kwargs)
-            return self
-        def bind_tools(self, tools, **kwargs):
-            bindings.append({'tools': tools, **kwargs})
-            return self
-        def invoke(self, messages):
-            return (AIMessage(content='', tool_calls=[{'id': 'report', 'name': 'TradeReport', 'args': draft()}])
-                    if mode == 'tool' else AIMessage(content=json.dumps(draft())))
-    monkeypatch.setattr(agent_graph, 'build_chat_model', lambda **_: Model())
-    monkeypatch.setattr(agent_graph, 'run_trade_tool', lambda *_: pytest.fail('report submission is not a trade tool'))
-    result = agent_graph.summarize_content('completed evidence', {'model': 'offline', 'report_output_mode': mode}, 'report')
-    assert TradeReport.model_validate_json(result).decision.action == 'HOLD'
-    assert bindings[0].get('tool_choice') == 'TradeReport' if mode == 'tool' else bindings[0]['response_format']['json_schema']['strict']
+def test_legacy_report_recovers_original_without_rewriting_history():
+    row = {'report_json': json.dumps({'raw_analysis': 'original decision', 'summary': 'old summary',
+           'validation_status': 'valid', 'execution_results': [{'tool': 'inspect', 'result': 'unknown'}]})}
+    original = dict(row)
+    record = read_decision_record(row)
+    assert record['raw_analysis'] == 'original decision'
+    assert record['legacy'] and record['execution_results'][0]['result'] == 'unknown'
+    assert row == original
 
 
 def test_memory_per_run_four_hours_retry_and_idempotence(isolated, monkeypatch):

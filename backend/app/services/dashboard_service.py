@@ -765,9 +765,9 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                         "config_id": config_id,
                         "agent_name": model_name,
                         "symbol": config.get("symbol"),
-                        "content": "No analysis data yet.",
-                        "strategy_logic": "N/A",
-                        "timestamp": "N/A",
+                        "content": "",
+                        "strategy_logic": "",
+                        "timestamp": "",
                         "agent_type": None,
                         "id": -1,
                     }
@@ -796,10 +796,22 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 summary_dict["all_orders"] = orders
                 summary_dict["order_total"] = total
                 summary_dict["order_page"] = 1
-                try:
-                    summary_dict["report"] = json.loads(summary_dict.get("report_json") or "null")
-                except (TypeError, ValueError):
-                    summary_dict["report"] = None
+                from backend.utils.decision_record import read_decision_record
+                summary_dict['decision'] = read_decision_record(summary_dict)
+                if summary_dict['decision'] and summary_dict['decision'].get('raw_analysis') is not None:
+                    summary_dict['content'] = summary_dict['decision']['raw_analysis']
+                summary_dict.pop('report_json', None)
+                summary_dict.pop('decision_json', None)
+                summary_dict['memory_update'] = None
+                if summary_dict.get('run_id'):
+                    try:
+                        memory_job = conn.execute(
+                            'SELECT status,attempts,error FROM memory_update_jobs WHERE config_id=? AND run_id=?',
+                            (config_id, summary_dict['run_id']),
+                        ).fetchone()
+                        summary_dict['memory_update'] = dict(memory_job) if memory_job else None
+                    except sqlite3.OperationalError:
+                        pass
                 if latest_execution_row:
                     execution = dict(latest_execution_row)
                     try:

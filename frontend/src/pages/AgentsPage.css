@@ -25,8 +25,14 @@
 .agent-workspace-compact, .agent-view-stack { display: grid; gap: 16px; min-width: 0; }
 .agent-workspace-compact > .ant-tabs { min-width: 0; }
 .agent-workspace-compact .ant-tabs-nav { margin-bottom: 16px; }
-.agent-decision-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
-.agent-decision-summary .markdown-block > :last-child { margin-bottom: 0; }
+.decision-message-list { display: grid; gap: 18px; }
+.decision-model-output + .decision-model-output { border-top: 1px solid var(--border-soft); padding-top: 16px; }
+.decision-tool-result { padding: 12px 16px; background: var(--bg-subtle); border: 1px solid var(--border-soft); border-radius: 8px; min-width: 0; }
+.decision-tool-result pre, .decision-tool-call pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; margin: 10px 0 0; font-size: 12px; }
+.decision-tool-result .ant-typography { overflow-wrap: anywhere; }
+.decision-run-panel .ant-card-head-wrapper { flex-wrap: wrap; gap: 4px 12px; }
+.decision-run-panel .ant-card-head-title { flex: 1 0 170px; }
+.decision-run-panel .ant-card-extra { margin-inline-start: 0; }
 .agent-workspace-compact .market-chart-toolbar { margin-bottom: 12px; }
 .agent-workspace-compact .chart-wrap-large { height: 360px; }
 .agent-workspace-compact .workspace-grid { grid-template-columns: minmax(0, 1fr); }

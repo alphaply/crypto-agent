@@ -182,10 +182,10 @@ def test_finalize_node_saves_configured_strategy_summary_separately_from_raw_ana
     assert 'hold position' in summarize.call_args.args[0]
     assert '本轮无工具调用' in summarize.call_args.args[0]
     assert summarize.call_args.args[1]['config_id'] == 'cfg-test'
-    assert summarize.call_args.kwargs['summary_type'] == 'report'
+    assert summarize.call_args.kwargs['summary_type'] == 'strategy'
     update_memory.assert_not_called()
     import json
-    assert json.loads(save.call_args.kwargs['report_json'])['raw_analysis'] == 'hold position'
+    assert save.call_args.args[2] == 'hold position'
     assert save.call_args.args[3] == 'summary'
 
 
@@ -343,7 +343,7 @@ def test_length_with_complete_tool_call_continues_and_saves_warning():
     sleep.assert_not_called()
     assert model.calls == 2
     import json
-    raw = json.loads(save.call_args.kwargs['report_json'])['raw_analysis']
+    raw = save.call_args.args[2]
     assert "[输出提示]" in raw
     assert "工具执行结果已确认" in raw
     assert progress[-1]['phase'] == 'completed'

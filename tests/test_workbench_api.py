@@ -41,7 +41,7 @@ def test_channel_settings_round_trip_preserves_existing_cadence(runtime_db):
     assert visible['agents'][0]['run_schedule'][0]['interval'] == 20
     assert visible['agents'][0]['market_timeframes'] == ['15m','4h']
     assert visible['globals']['news']['min_score'] == 75
-    assert visible['llm_providers'][0]['report_output_mode'] == 'tool'
+    assert 'report_output_mode' not in visible['llm_providers'][0]
     assert visible['llm_providers'][0]['models_dev_model_id'] == 'original-name'
     assert visible['llm_providers'][1]['input_price_per_m'] == 1.5
 

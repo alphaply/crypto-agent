@@ -54,6 +54,12 @@ test('adding or removing portfolio symbols refreshes workspace data', () => {
   assert.equal(workspaceSignature([agent]), workspaceSignature([{ ...agent, execution: { reasoning_content: 'updated' } }]));
 });
 
+test('completed memory update refreshes the workspace without a new decision', () => {
+  const agent = { config_id: 'eth', timestamp: '2026-10-09 18:00', memory_update: { status: 'pending' } };
+  assert.notEqual(workspaceSignature([agent]), workspaceSignature([{ ...agent, memory_update: { status: 'completed' } }]));
+  assert.equal(workspaceSignature([agent]), workspaceSignature([{ ...agent, memory_update: { status: 'pending', attempts: 1 } }]));
+});
+
 test('single strategy opens directly after switching symbols or deleting an old selection', () => {
   assert.equal(selectDashboardTab([{ config_id: 'btc' }], 'eth'), 'btc');
   assert.equal(selectDashboardTab([{ config_id: 'btc' }], null), 'btc');

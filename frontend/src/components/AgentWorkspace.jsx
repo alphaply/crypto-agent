@@ -23,7 +23,7 @@ import {
   Typography,
   message,
 } from 'antd';
-import TradeReportPanel from '../components/TradeReportPanel';
+import DecisionRunPanel from './DecisionRunPanel';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
@@ -33,7 +33,6 @@ import { EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
 import { chartTimeframeOptions, isChartTimeframe, activityRecordKey } from '../lib/dashboard';
 import { exitModeLabel, resolveExitMode } from '../lib/exitManagement';
-import { splitThinkingContent } from '../lib/thinking';
 import { usePreferences } from '../app/usePreferences';
 import '../pages/DashboardPage.css';
 
@@ -350,7 +349,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   const exitMode = position.exit_management?.mode || resolveExitMode({ ...agent, ...position });
   const independentExits = exitMode === 'independent_exits';
 
-  const [activeView, setActiveView] = useState('overview');
+  const [activeView, setActiveView] = useState('run');
   const [editingMemory, setEditingMemory] = useState(null);
   const [memoryEditText, setMemoryEditText] = useState('');
   const [memorySaving, setMemorySaving] = useState(false);
@@ -443,13 +442,6 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
     );
   }
 
-  const normalizedAnalysis = splitThinkingContent(agent.content || '', agent.reasoning_content || '');
-  const executionReasoning = splitThinkingContent('', agent.execution?.reasoning_content || '').reasoning;
-  const historyReasoningDuplicated = Boolean(
-    executionReasoning
-    && normalizedAnalysis.reasoning
-    && executionReasoning.trim() === normalizedAnalysis.reasoning.trim()
-  );
   const activePositions = workspace?.position?.positions || workspace?.kline?.positions || [];
   const hasDualPosition = activePositions.length > 1;
 
@@ -663,46 +655,33 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
     </Card>
   );
 
-  const analysisPanel = (
-    <Card className="panel-card" title={compact ? (locale === 'zh' ? '推理与执行过程' : 'Reasoning and execution') : t('analysis')}>
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        {!compact ? <TaskExecutionPanel execution={agent.execution} locale={locale} /> : agent.execution?.status === 'FINISHED' ? (
-          <details className="content-disclosure"><summary>{locale === 'zh' ? '查看执行过程与工具调用' : 'Execution details and tool calls'}</summary><TaskExecutionPanel execution={agent.execution} locale={locale} /></details>
-        ) : null}
-        {!compact && <Descriptions size="small" column={1} bordered>
-          <Descriptions.Item label={t('executedAt')}>{agent.timestamp || '-'}</Descriptions.Item>
-          <Descriptions.Item label={t('nextRun')}>{agent.next_run || '-'} · {agent.schedule?.timezone || ''}</Descriptions.Item>
-        </Descriptions>}
-        {!agent.report || agent.report.validation_status === 'invalid' ? <MarkdownBlock content={normalizedAnalysis.content || ''} /> : null}
-        {!historyReasoningDuplicated ? (
-          <ReasoningBlock
-            title={t('reasoning')}
-            content={normalizedAnalysis.reasoning}
-            reasoningTokens={agent.reasoning_tokens || 0}
-          />
-        ) : null}
-        {agent.strategy_logic ? (
-          <details className="content-disclosure strategy-block">
-            <summary>{t('strategyLogic')}</summary>
-            <MarkdownBlock content={agent.strategy_logic} />
-          </details>
-        ) : null}
-      </Space>
+  const decisionPanel = <DecisionRunPanel agent={agent} />;
+  const summaryPanel = (
+    <Card className="panel-card" title={locale === 'zh' ? '2 · 策略摘要' : '2 · Strategy summary'}>
+      <Text type="secondary">{locale === 'zh' ? '本轮决策与工具调用结束后，由配置的摘要模型整理。' : 'Produced by the configured summarizer after this decision and its tool calls finish.'}</Text>
+      {agent.decision?.summary_status === 'failed' && <Alert type="warning" showIcon title={locale === 'zh' ? '策略摘要失败，以下保留完整原始记录。' : 'Summary failed. The complete source is preserved below.'} />}
+      {agent.decision?.summary_status === 'skipped' && <Alert type="warning" showIcon title={locale === 'zh' ? '决策未完成，已跳过策略摘要与记忆更新。' : 'Decision incomplete. Summary and memory updates were skipped.'} />}
+      <MarkdownBlock content={agent.strategy_logic || (locale === 'zh' ? '暂无策略摘要' : 'No strategy summary yet')} />
     </Card>
   );
-
+  const memoryStatus = agent.memory_update?.status;
+  const memoryLabels = locale === 'zh'
+    ? { pending: '本轮记忆等待更新，以下为最近可用记忆。', completed: '本轮记忆已更新', failed: '本轮记忆更新失败，保留上一版本。', partial: '本轮记忆更新未完成，保留上一版本。' }
+    : { pending: 'Memory update pending. Latest available memory is shown below.', completed: 'Memory updated for this run', failed: 'Memory update failed. Previous version retained.', partial: 'Memory update incomplete. Previous version retained.' };
   const memoryPanel = (
     <Card
       className="panel-card"
-      title={t('shortMemories')}
+      title={locale === 'zh' ? '3 · 短期记忆' : '3 · Short-term memory'}
       extra={shortMemories[0] && authenticated ? (
         <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openMemoryEdit(shortMemories[0])} />
       ) : null}
     >
+      {memoryStatus && <Alert type={memoryStatus === 'completed' ? 'success' : ['failed', 'partial'].includes(memoryStatus) ? 'warning' : 'info'} showIcon title={memoryLabels[memoryStatus] || memoryStatus} description={agent.memory_update?.error || undefined} style={{ marginBottom: 12 }} />}
+      {!memoryStatus && !agent.decision?.legacy && ['failed', 'skipped'].includes(agent.decision?.summary_status) && <Alert type="info" showIcon title={locale === 'zh' ? '策略摘要未完成，本轮未更新记忆；以下为最近可用记忆。' : 'Summary incomplete; no memory update for this run. Latest available memory is shown below.'} style={{ marginBottom: 12 }} />}
       {shortMemories[0] ? (() => {
         const memory = shortMemories[0];
         return (
-          <details className="content-disclosure">
+          <details className="content-disclosure" open>
             <summary>{memory.window_start || memory.bucket_start} → {memory.window_end || memory.bucket_end}</summary>
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Text type="secondary" className="memory-source-meta">
@@ -827,17 +806,13 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
         {urgentExecution && <TaskExecutionPanel execution={agent.execution} locale={locale} />}
         <Tabs activeKey={activeView} onChange={setActiveView} items={[
           {
-            key: 'overview', label: locale === 'zh' ? '概览' : 'Overview',
-            children: <div className="agent-view-stack">
-              <TradeReportPanel report={agent.report} summaryOnly onOpenReport={() => setActiveView('report')} />
-              {chartPanel}{positionPanel}{ordersPanel}
-            </div>,
+            key: 'run', label: locale === 'zh' ? '运行过程' : 'Run activity',
+            children: <div className="agent-view-stack">{decisionPanel}{summaryPanel}{memoryPanel}</div>,
           },
           {
-            key: 'report', label: locale === 'zh' ? '运行报告' : 'Run report',
-            children: <div className="agent-view-stack"><TradeReportPanel report={agent.report} />{analysisPanel}</div>,
+            key: 'overview', label: locale === 'zh' ? '行情与账户' : 'Market and account',
+            children: <div className="agent-view-stack">{chartPanel}{positionPanel}{ordersPanel}</div>,
           },
-          { key: 'memory', label: t('shortMemories'), children: memoryPanel },
           {
             key: 'history', label: locale === 'zh' ? '交易记录' : 'Trade history',
             children: <div className="agent-view-stack">
@@ -853,10 +828,10 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       {chartPanel}
-      <TradeReportPanel report={agent.report} />
+      {decisionPanel}{summaryPanel}
       {positionPanel}
       {authenticated && !spotMode ? <PositionCycleHistory key={agent.config_id} configId={agent.config_id} /> : null}
-      {analysisPanel}{memoryPanel}{ordersPanel}{recentOrdersPanel}
+      {memoryPanel}{ordersPanel}{recentOrdersPanel}
     </Space>
   );
 }

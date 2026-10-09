@@ -195,7 +195,6 @@ class LlmProviderPayload(BaseModel):
     system_prompt_role: Literal["system", "user"] = "system"
     api_protocol: Literal["chat", "decisions"] = "chat"
     decisions_api: Literal["bai", "typesafe"] = "bai"
-    report_output_mode: Literal["json", "json_schema", "tool"] = "json"
     models_dev_provider_id: str = ""
     models_dev_model_id: str = ""
     pricing_mode: Literal["manual", "models_dev"] = "manual"

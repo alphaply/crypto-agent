@@ -240,7 +240,7 @@ STRATEGY_SUMMARY_FAILURE_PREFIX = "【策略压缩失败；以下为未压缩原
 
 def summarize_content(content: str, agent_config: dict, summary_type: str = "strategy") -> str:
     """使用独立的 LLM 配置对分析内容进行压缩。"""
-    if summary_type not in {'strategy', 'report'}:
+    if summary_type != 'strategy':
         raise ValueError(f'Unsupported summary type: {summary_type}')
     summarizer_cfg = agent_config.get("summarizer") or {}
     
@@ -287,35 +287,6 @@ def summarize_content(content: str, agent_config: dict, summary_type: str = "str
         prompt += '\n\n' + SUMMARY_FACT_POLICY
         prompt_role = summarizer_cfg.get('system_prompt_role') or agent_config.get('system_prompt_role', 'system')
         summary_messages = [instruction_message(prompt, prompt_role)]
-        if summary_type == 'report':
-            from backend.agent.trade_report import TradeReport, report_instructions, parse_report_response
-            summary_messages[0] = instruction_message(prompt + '\n\n' + report_instructions(), prompt_role)
-            output_mode = summarizer_cfg.get('report_output_mode') or agent_config.get('report_output_mode', 'json')
-            if output_mode == 'json_schema':
-                llm = llm.bind(response_format={'type': 'json_schema', 'json_schema': {
-                    'name': 'TradeReport', 'strict': True, 'schema': TradeReport.model_json_schema()}})
-            elif output_mode == 'tool':
-                llm = llm.bind_tools([TradeReport], tool_choice='TradeReport')
-
-            def validate_report(response):
-                require_complete_response(response, context='TradeReport')
-                parse_report_response(response)
-
-            for attempt in range(2):
-                try:
-                    response = audited_invoke(lambda: llm.invoke(summary_messages),
-                        config_id=agent_config.get('config_id'), purpose='strategy_summary', model=model,
-                        provider_id=resolve_summarizer_provider_id(agent_config),
-                        tools=[TradeReport] if output_mode == 'tool' else None,
-                        messages=summary_messages, response_validator=validate_report)
-                    return parse_report_response(response).model_dump_json()
-                except Exception as exc:
-                    if attempt:
-                        raise
-                    # Repair is a read-only formatting call; it never re-enters the trade graph.
-                    summary_messages.append(HumanMessage(content='上次报告未通过校验，请仅修复完整JSON。错误：' + str(exc)))
-            raise ValueError('No valid report')
-
         def validate_summary_response(response) -> None:
             # Rejected output still consumed tokens. Record usage before checking
             # completeness, and let the audit retain the actual rejected answer.
@@ -1162,16 +1133,17 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
         # 汇总逻辑仅针对主要内容
         logic_source = final_full_content
         journal = decision_journal(state.messages, fallback=logic_source)
-        report_source = journal if failed else summarize_content(
+        if not failed:
+            _emit_task_progress(configurable, phase="summarizing", message="决策与工具调用已结束，正在生成策略摘要")
+        strategy_logic = journal if failed else summarize_content(
             journal,
             {**agent_config, 'config_id': config_id, 'symbol': symbol},
-            summary_type='report',
+            summary_type='strategy',
         )
-        from backend.agent.trade_report import assemble_report, render_report
-        report = assemble_report(report_source, state.messages, final_full_content)
-        strategy_logic = report['summary']
-        if not failed:
-            final_full_content = render_report(report)
+        summary_status = ('skipped' if failed else 'failed'
+                          if strategy_logic.startswith(STRATEGY_SUMMARY_FAILURE_PREFIX) else 'completed')
+        from backend.utils.decision_record import build_decision_record
+        decision_record = build_decision_record(state.messages, summary_status)
         run_id = configurable.get('run_id') or 'manual:' + uuid.uuid4().hex
         
         try:
@@ -1184,7 +1156,8 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 agent_type=agent_type,
                 reasoning_content=reasoning_content,
                 reasoning_tokens=reasoning_tokens,
-                report_json=json.dumps(report, ensure_ascii=False),
+                decision_json=json.dumps(decision_record, ensure_ascii=False),
+                enqueue_memory=summary_status == "completed",
                 run_id=run_id,
                 timeframe='1h' if agent_config.get('market_profile') == 'hourly' else (resolve_market_timeframes(agent_config) or ['1h'])[0],
             )

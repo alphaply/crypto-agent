@@ -5,7 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import threading
 import time
-import json
 
 from backend import database
 from backend.agent.memory_workflow import memory_review_lease
@@ -57,7 +56,8 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
             beginning = (end - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
             columns = {item[1] for item in conn.execute('PRAGMA table_info(summaries)')}
             report_field = 'report_json' if 'report_json' in columns else 'NULL AS report_json'
-            rows = conn.execute(f'''SELECT id,timestamp,strategy_logic,{report_field} FROM summaries
+            decision_field = 'decision_json' if 'decision_json' in columns else 'NULL AS decision_json'
+            rows = conn.execute(f'''SELECT id,timestamp,strategy_logic,{report_field},{decision_field} FROM summaries
                 WHERE config_id=? AND timestamp>=? AND timestamp<=? AND id<=?
                 ORDER BY timestamp,id''', (config_id, beginning, row['timestamp'], row['id'])).fetchall()
         try:
@@ -65,15 +65,8 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
             evidence = memory.format_recent_position_history_for_memory(config_id, agent_config)
             entries = []
             for item in rows:
-                text = str(item['strategy_logic'] or '')
-                if item['report_json']:
-                    try:
-                        report = json.loads(item['report_json'])
-                        receipts = report.get('execution_results') or []
-                        if receipts:
-                            text += '\n实际工具回执：\n' + json.dumps(receipts, ensure_ascii=False)
-                    except (ValueError, TypeError, AttributeError):
-                        text += '\n结构化回执无法读取；执行状态未知。'
+                from backend.utils.decision_record import append_execution_receipts
+                text = append_execution_receipts(str(item['strategy_logic'] or ''), dict(item))
                 entries.append(f"[{item['timestamp']}] {text}")
             source = ('过去4h滚动窗口：' + beginning + ' → ' + row['timestamp']
                       + '\n当前短期记忆：\n' + previous + '\n本轮及前4h摘要（只出现一次）：\n'
