@@ -76,9 +76,40 @@ def default_news_sources() -> list[dict]:
     ]
 
 
+class NewsTriggerRule(BaseModel):
+    config_id: str = Field(min_length=1, max_length=120)
+    enabled: bool = False
+    provider_id: str = ''
+    keywords: list[str] = Field(default_factory=list, max_length=50)
+    categories: list[str] = Field(default_factory=list, max_length=30)
+    source_ids: list[str] = Field(default_factory=list, max_length=40)
+    min_score: float | None = Field(default=None, ge=0, le=100)
+    cooldown_seconds: int = Field(default=1800, ge=60, le=86400)
+    max_runs_per_day: int = Field(default=4, ge=1, le=100)
+    max_age_seconds: int = Field(default=600, ge=60, le=3600)
+
+    @model_validator(mode='after')
+    def bounded_rules(self):
+        for values in (self.keywords, self.categories, self.source_ids):
+            if any(not value.strip() or len(value) > 120 for value in values):
+                raise ValueError('Trigger filters must contain 1–120 characters')
+        if self.enabled and not self.provider_id:
+            raise ValueError('Select a model for the news-triggered agent')
+        if self.enabled and not (self.keywords or self.categories or self.source_ids or self.min_score is not None):
+            raise ValueError('Configure at least one news trigger filter')
+        return self
+
+
 class NewsSettings(BaseModel):
     enabled: bool = True
-    refresh_seconds: int = Field(default=3600, ge=300, le=86400)
+    refresh_seconds: int = Field(default=3600, ge=60, le=86400)
+    scoring_mode: Literal['jev', 'llm', 'off'] = 'jev'
+    summary_mode: Literal['full', 'rolling'] = 'rolling'
+    summary_min_seconds: int = Field(default=300, ge=0, le=86400)
+    stream_refresh_enabled: bool = False
+    summary_instructions: str = Field(default='', max_length=5000)
+    trace_mode: Literal['off', 'summary', 'full'] = 'off'
+    trigger_rules: list[NewsTriggerRule] = Field(default_factory=list, max_length=100)
     scorer_provider_id: str = ''
     scorer_instructions: str = Field(default=DEFAULT_SCORER_INSTRUCTIONS, min_length=1, max_length=5000)
     scorer_criteria: list[str] = Field(default_factory=lambda: list(DEFAULT_SCORER_CRITERIA), min_length=2, max_length=10)
@@ -94,6 +125,10 @@ class NewsSettings(BaseModel):
     def unique_sources(self):
         if len({s.id for s in self.sources}) != len(self.sources):
             raise ValueError('News source IDs must be unique')
+        if len({r.config_id for r in self.trigger_rules}) != len(self.trigger_rules):
+            raise ValueError('Only one news trigger rule per task is allowed')
+        if self.scoring_mode == 'off' and any(r.enabled and r.min_score is not None for r in self.trigger_rules):
+            raise ValueError('Score-based triggers require scoring to be enabled')
         if self.max_items > self.candidate_limit:
             raise ValueError('max_items must not exceed candidate_limit')
         if any(not value.strip() or len(value) > 2000 for value in self.scorer_criteria):

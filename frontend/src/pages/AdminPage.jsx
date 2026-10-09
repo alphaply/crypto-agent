@@ -1274,7 +1274,7 @@ export default function AdminPage() {
           {
             key: 'intelligence',
             label: locale === 'zh' ? '消息聚合' : 'News aggregation',
-            children: <NewsSettingsPanel value={payload.globals.news} onChange={(value) => updateGlobal('news', value)} providers={payload.llm_providers} profiles={persistedProfiles} polymarket={payload.globals.polymarket} onPolymarketChange={(value) => updateGlobal('polymarket', value)} blockbeatsKey={payload.globals.secrets?.global_blockbeats_api_key} onBlockbeatsKeyChange={(patch) => updateGlobalSecret('global_blockbeats_api_key', patch)} />,
+            children: <NewsSettingsPanel value={payload.globals.news} onChange={(value) => updateGlobal('news', value)} providers={payload.llm_providers} profiles={persistedProfiles} agents={payload.agents} polymarket={payload.globals.polymarket} onPolymarketChange={(value) => updateGlobal('polymarket', value)} blockbeatsKey={payload.globals.secrets?.global_blockbeats_api_key} onBlockbeatsKeyChange={(patch) => updateGlobalSecret('global_blockbeats_api_key', patch)} />,
           },
           // ===== 运行配置 =====
           {
@@ -1294,6 +1294,11 @@ export default function AdminPage() {
                   <div className="form-field">
                     <label>LangChain Tracing</label>
                     <Switch checked={payload.globals.langchain_tracing} onChange={(c) => updateGlobal('langchain_tracing', c)} />
+                  </div>
+                  <div className="form-field">
+                    <label>{locale === 'zh' ? '摘要/记忆等辅助调用远程追踪' : 'Trace auxiliary summary/memory calls'}</label>
+                    <Switch checked={payload.globals.langchain_background_tracing === true} onChange={(c) => updateGlobal('langchain_background_tracing', c)} />
+                    <Text type="secondary">{locale === 'zh' ? '默认关闭，仍保留本地调用与费用记录；Agent 决策和聊天保留完整追踪。消息处理在消息聚合中单独设置。' : 'Off by default; local call/cost records remain. Agent decisions and chats keep full tracing. News tracing is configured separately.'}</Text>
                   </div>
                   <div className="form-field">
                     <label>LangChain Project</label>

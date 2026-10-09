@@ -112,6 +112,7 @@ class Config:
         self.exchange_profiles = snapshot.get("exchange_profiles") or []
         self.leverage = int(snapshot.get("leverage", self.DEFAULT_LEVERAGE))
         self.langchain_tracing = bool(snapshot.get("langchain_tracing", False))
+        self.langchain_background_tracing = bool(snapshot.get("langchain_background_tracing", False))
         self.langchain_project = snapshot.get("langchain_project", "crypto-agent")
         self.llm_timeout_seconds = float(snapshot.get("llm_timeout_seconds", 120.0))
         self.llm_max_retries = int(snapshot.get("llm_max_retries", 2))

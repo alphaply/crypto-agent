@@ -4,6 +4,7 @@ from contextvars import ContextVar
 import os
 
 pipeline_run_id = ContextVar('news_pipeline_run_id', default=None)
+news_trace_mode = ContextVar('news_trace_mode', default='full')
 
 
 class SafeSpan:
@@ -20,6 +21,9 @@ class SafeSpan:
 @contextmanager
 def news_span(name, *, inputs=None, run_type='chain', metadata=None):
     """Trace only explicit safe inputs, never a provider config or HTTP headers."""
+    if news_trace_mode.get() == 'off' or (news_trace_mode.get() == 'summary' and name != 'news.refresh'):
+        yield None
+        return
     try:
         from langsmith import trace, utils
         enabled = utils.tracing_is_enabled()

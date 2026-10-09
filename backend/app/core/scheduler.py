@@ -466,8 +466,10 @@ def run_config_agent(config, scheduled_at: str):
         {"phase": "preparing", "message": "正在准备市场、账户与历史上下文"},
     )
     try:
+        from backend.app.services.news_triggers import trigger_message
         run_agent_for_config(
             config,
+            **({'human_message': trigger_message(config)} if config.get('_news_event') else {}),
             progress_callback=lambda event: _mark_scheduler_progress(config_id, scheduled_at, event),
             run_id=dca_cycle_id(config_id, TZ_CN.localize(datetime.fromisoformat(scheduled_at))),
         )
@@ -648,6 +650,7 @@ def job(now: datetime | None = None):
     maintenance_queued = 0
     agent_due = 0
     agent_queued = 0
+    regularly_due = set()
 
     for config in active_configs:
         _submit_execution_sync(config)
@@ -655,6 +658,7 @@ def job(now: datetime | None = None):
             maintenance_queued += 1
 
         if is_time_to_run(config, now):
+            regularly_due.add(config['config_id'])
             config_id = config.get("config_id", "unknown")
             mode = str(config.get("mode", "STRATEGY")).upper()
             agent_due += 1
@@ -666,6 +670,12 @@ def job(now: datetime | None = None):
             dispatch_at = _scheduled_at(slot.astimezone(TZ_CN)) if slot else scheduled_at
             if _submit_agent(config, dispatch_at):
                 agent_queued += 1
+
+    try:
+        from backend.app.services.news_triggers import dispatch_news
+        agent_queued += dispatch_news(active_configs, lambda config: _submit_agent(config, scheduled_at), now=now, regularly_due=regularly_due)
+    except Exception as exc:
+        logger.warning('News dispatch unavailable: %s', type(exc).__name__)
 
     heartbeat_key = now.strftime("%Y-%m-%d %H:%M")
     if now.minute % 10 == 0 and heartbeat_key != _last_heartbeat_key:

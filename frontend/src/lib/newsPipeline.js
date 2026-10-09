@@ -8,6 +8,7 @@ export function pipelineCounts(run = {}) {
     fetched: count(values.fetched ?? run.candidate_count),
     candidates: count(values.candidates ?? run.candidate_count),
     scored: count(values.scored ?? run.scored_count),
+    skipped: count(values.skipped),
     cached: count(values.cached),
     failed: count(values.failed ?? run.score_failures),
     selected: count(values.selected ?? run.selected_count),
@@ -20,7 +21,7 @@ export function pipelineCounts(run = {}) {
 export function pipelineProgress(run = {}) {
   const values = pipelineCounts(run);
   const total = count(run.progress?.total ?? values.candidates);
-  const completed = Math.min(total, count(run.progress?.completed ?? values.scored + values.failed));
+  const completed = Math.min(total, count(run.progress?.completed ?? values.scored + values.failed + values.skipped));
   return { total, completed, percent: total ? Math.round(completed / total * 100) : 0 };
 }
 

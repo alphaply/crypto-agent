@@ -152,6 +152,22 @@ def latest_snapshot() -> dict | None:
     return {**json.loads(row['payload_json']), 'snapshot_id': row['id']} if row else None
 
 
+def publish_events(items: list[dict], owner: str) -> bool:
+    """Publish trigger observations before summaries, under the news lease."""
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        initialize(conn)
+        conn.execute('BEGIN IMMEDIATE')
+        lease = conn.execute("SELECT lease_owner,lease_until FROM shared_pipeline_state WHERE name='news'").fetchone()
+        if not lease or lease['lease_owner'] != owner or (lease['lease_until'] or '') < now_iso():
+            return False
+        payload = {'as_of': now_iso(), 'trigger_items': items, 'snapshot_id': owner}
+        conn.execute('INSERT INTO shared_pipeline_state(name,payload_json) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET payload_json=excluded.payload_json',
+                     ('news-events', json.dumps(payload, ensure_ascii=False)))
+        conn.commit()
+    return True
+
+
 def publish_snapshot(payload: dict, owner: str) -> bool:
     from backend.database import get_db_conn
     with get_db_conn() as conn:

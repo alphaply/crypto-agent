@@ -177,6 +177,7 @@ def test_langsmith_parent_child_context_crosses_scoring_worker(processing, monke
     from langsmith import tracing_context, get_current_run_tree
     from langsmith.run_trees import RunTree
     snapshot, _ = processing
+    snapshot['news']['trace_mode'] = 'full'
     monkeypatch.setenv('LANGSMITH_API_KEY', 'fake-offline-tracing-key')
     monkeypatch.setattr(RunTree, 'get_url', lambda self: f'https://smith.example.test/runs/{self.id}')
     monkeypatch.setattr(news_service, 'collect_candidates', lambda *a: ([article()], {'fixture': {'status': 'ok'}}, {}))

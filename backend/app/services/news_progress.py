@@ -38,7 +38,7 @@ class NewsProgress:
         if stage == 'collect':
             completed, total = counts['sources_completed'], counts['sources_total']
         elif stage == 'score':
-            completed, total = counts['scored'] + counts['failed'], counts['candidates']
+            completed, total = counts['scored'] + counts['failed'] + counts.get('skipped', 0), counts['candidates']
         else:
             completed, total = (1 if stage == 'complete' else 0), 1
         self.value['progress'] = {'completed': completed, 'total': total,
@@ -72,10 +72,11 @@ class NewsProgress:
                 for key in ('score', 'cached', 'run_id', 'trace_url', 'trace_id', 'attempts', 'weighted_score', 'score_rounding_delta'):
                     if key in scoring:
                         row[key] = scoring[key]
-                self.value['counts']['scored'] += 1
+                counter = 'skipped' if scoring.get('method') == 'off' else 'scored'
+                self.value['counts'][counter] = self.value['counts'].get(counter, 0) + 1
                 self.value['counts']['cached'] += int(bool(scoring.get('cached')))
             if error:
-                row['error'] = str(error) if isinstance(error, JevError) else 'Jev scoring request failed'
+                row['error'] = str(error) if isinstance(error, JevError) else 'News scoring request failed'
                 row['error_code'] = error.code if isinstance(error, JevError) else 'scoring_error'
                 if isinstance(error, JevError):
                     row.update({key: value for key, value in error.details.items()
@@ -90,7 +91,7 @@ class NewsProgress:
                     row['status'] = 'selected' if index in selected_indexes else 'filtered'
             counts = self.value['counts']
             counts['selected'] = len(selected_indexes)
-            counts['filtered'] = counts['scored'] - len(selected_indexes)
+            counts['filtered'] = counts['scored'] + counts.get('skipped', 0) - len(selected_indexes)
             self.value['stage'] = 'summarize'
             self._save()
 

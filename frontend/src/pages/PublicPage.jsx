@@ -9,7 +9,7 @@ import { usePreferences } from '../app/usePreferences';
 const { Title, Paragraph, Text } = Typography;
 const purposeNames = {
   decision: '交易决策', strategy_summary: '运行摘要', memory_review: '短期记忆',
-  chat: '聊天', chat_summary: '聊天压缩', news_score: 'Jev 消息评分',
+  chat: '聊天', chat_summary: '聊天压缩', news_score: '消息评分',
   news_summary: '消息摘要', daily_summary: '历史每日归档', legacy: '历史统计',
 };
 

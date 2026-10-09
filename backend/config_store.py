@@ -34,6 +34,7 @@ DEFAULT_GLOBAL_SETTINGS: dict[str, Any] = {
     "enable_scheduler": True,
     "trading_mode": "REAL",
     "langchain_tracing": False,
+    "langchain_background_tracing": False,
     "langchain_project": "crypto-agent",
     "llm_timeout_seconds": 120.0,
     "llm_max_retries": 2,
@@ -1003,6 +1004,17 @@ def save_runtime_snapshot(
         exchange_profiles_payload,
     )
     profiles_by_id = {str(profile.get("profile_id")): profile for profile in exchange_profiles}
+    agent_by_id = {a['config_id']: a for a in normalized_agents}
+    provider_by_id = {p['provider_id']: p for p in llm_providers}
+    for rule in settings['news']['trigger_rules']:
+        if not rule['enabled']:
+            continue
+        task = agent_by_id.get(rule['config_id'])
+        if not task or task.get('mode') == 'SPOT_DCA' or task.get('mcp_profile'):
+            raise ValueError('News trigger requires an existing non-DCA agent task')
+        provider = provider_by_id.get(rule['provider_id'])
+        if not provider or provider.get('api_protocol') == 'decisions' or str(provider.get('model', '')).lower().startswith('jev'):
+            raise ValueError('News trigger requires an existing generative model provider')
     for agent in normalized_agents:
         if agent.get("mode") != "SPOT_DCA":
             continue

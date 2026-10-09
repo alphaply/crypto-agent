@@ -34,7 +34,15 @@ def audited_invoke(
         logger.warning('Cannot record model input: %s', exc)
     response = None
     try:
-        response = operation()
+        from contextlib import nullcontext
+        from langsmith import tracing_context
+        from backend.config import config as global_config
+        # Agent/chat calls retain normal tracing. Auxiliary calls still have
+        # local audit/cost records even when remote tracing is suppressed.
+        auxiliary = purpose not in {'decision', 'agent', 'chat'} and not str(purpose).startswith('news_')
+        trace_context = tracing_context(enabled=False) if auxiliary and not getattr(global_config, 'langchain_background_tracing', False) else nullcontext()
+        with trace_context:
+            response = operation()
         if response_validator is not None:
             response_validator(response)
     except Exception as exc:

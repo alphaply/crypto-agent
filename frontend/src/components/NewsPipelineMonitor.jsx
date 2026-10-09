@@ -66,9 +66,9 @@ export default function NewsPipelineMonitor({ status, history = [], error, refre
   const traceUrl = safeTraceUrl(run.trace_url);
   const stats = [
     [zh ? '候选消息' : 'Candidates', counts.candidates, zh ? `采集 ${counts.fetched} 条` : `${counts.fetched} collected`],
-    [zh ? '评分成功' : 'Scored', counts.scored, zh ? `缓存命中 ${counts.cached} 条` : `${counts.cached} cached`],
+    [run.scoring_mode === 'off' ? (zh ? '跳过评分' : 'Scoring skipped') : (zh ? '评分成功' : 'Scored'), run.scoring_mode === 'off' ? run.counts?.skipped || 0 : counts.scored, zh ? `缓存命中 ${counts.cached} 条` : `${counts.cached} cached`],
     [zh ? '评分失败' : 'Failed', counts.failed, zh ? '可在下方查看原因' : 'See reasons below'],
-    [zh ? '摘要入选' : 'Selected', counts.selected, zh ? `已过滤 ${counts.filtered} 条` : `${counts.filtered} filtered`],
+    [zh ? '本轮入选' : 'Selected this round', counts.selected, zh ? `已过滤 ${counts.filtered} 条` : `${counts.filtered} filtered`],
     [zh ? '本轮耗时' : 'Duration', durationLabel(run.elapsed_ms), clock(run.started_at || run.last_attempt_at)],
   ];
   return <Card className="panel-card news-pipeline" title={zh ? '消息处理监控' : 'News processing monitor'} extra={<Button icon={<ReloadOutlined />} onClick={onRefresh} loading={refreshing} disabled={status?.running}>{status?.running ? (zh ? '处理中' : 'Processing') : (zh ? '立即更新' : 'Refresh now')}</Button>}>
@@ -82,6 +82,7 @@ export default function NewsPipelineMonitor({ status, history = [], error, refre
     {error && <Alert type="warning" showIcon title={zh ? '状态读取失败，显示最近收到的数据' : 'Status refresh failed; showing last received data'} description={error} />}
     {detailError && <Alert type="error" showIcon title={detailError} />}
     {detailLoading ? <div className="news-pipeline-loading"><Spin /></div> : <>
+      {run.summary_reused && <Alert type="info" showIcon title={run.summary_deferred ? (zh ? '新消息已采集，摘要等待最小生成间隔' : 'New articles collected; summary deferred by its interval') : (zh ? '摘要输入未变化，已复用，未调用摘要模型' : 'Summary inputs unchanged; reused without a model call')} description={`${zh ? '摘要生成于' : 'Summary generated at'} ${clock(run.summary_as_of)}`} />}
       {run.error && <Alert type={state === 'error' ? 'error' : 'warning'} showIcon title={state === 'error' ? (zh ? '本轮未发布，继续使用上次成功快照' : 'No new snapshot published; keeping the last successful result') : (zh ? '部分消息未完成处理' : 'Some items could not be processed')} description={state === 'degraded' && counts.failed ? (zh ? `${counts.failed} 条评分失败；已从 ${counts.scored} 条成功结果中筛选 ${counts.selected} 条生成摘要。下方可查看失败原因和调用记录。` : `${counts.failed} items failed scoring. ${counts.selected} of ${counts.scored} successful results were selected for the summary. See the item errors and call records below.`) : run.error} />}
       <div className="news-pipeline-stats">{stats.map(([label, value, caption], index) => <div key={label} className={`news-stat ${index === 2 && counts.failed ? 'news-stat-error' : ''}`}><span>{label}</span><strong>{value}</strong><small>{caption}</small></div>)}</div>
       {run.run_id || run.stage ? <div className="news-pipeline-stages">

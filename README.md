@@ -22,7 +22,7 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 - 聊天每次成功压缩上下文后自动总结会话标题，支持 reasoning 模型；标题生成失败保留原名。后台可直接删除现货任务及本地关联记录，交易所持仓和挂单需自行处理（[操作说明](docs/WORKBENCH.md#聊天标题与任务删除)）。
 - 模型按渠道独立计价，支持 models.dev 每 6 小时同步、人工覆盖、缓存费用和长期用量记录；未定价不显示为免费。
 - `/mcp` Streamable HTTP 服务为 WorkBuddy / ChatGPT 提供共享数据、标的搜索和扁平参数交易工具，支持现货买入、归属库存卖出及交易所原生 TP/SL/OCO；独立交易配置、权限和持久幂等回执，标的可指定或明确设置为不限制（[工具与接入说明](docs/MCP.md)）。
-- 全局消息每小时聚合：原有宏观与加密来源、Polymarket、律动官方 JSON API、币安官方公告连接；律动 API Key 在消息聚合页单独配置。支持 TypeSafe 官方 Jev System One 与 B.AI Decisions 评分，筛选后由普通模型生成统一快照。后台显示阶段进度、评分/来源分布、逐条失败明细、运行历史及 LangSmith 追踪，各 Agent、Chat、Dashboard 与 MCP 共享已发布快照。
+- 全局消息支持独立抓取与摘要间隔，抓取最短 1 分钟：宏观与加密来源、Polymarket、律动官方 JSON API、币安官方公告连接。评分可关闭、使用 Jev 或普通 LLM 批量评分；普通模型生成滚动摘要，输入未变化时复用快照。消息触发可为各任务指定独立模型、来源/关键词/类别、冷却与每日次数。后台提供本地处理明细及可选 LangSmith 追踪，各 Agent、Chat、Dashboard 与 MCP 共享摘要（[消息流水线与配置](docs/NEWS_PIPELINE.md)）。
 - SQLite 本地状态存储
 - Docker 部署，Web 服务和调度器分容器运行
 
@@ -271,7 +271,7 @@ uv run backend/utils/test_agent_connection.py
 
 ### LangSmith 追踪
 
-后台需要同时启用 `langchain_tracing`、设置项目名称并保存 LangSmith API Key；只填写 key 不会自动开启追踪。保存后会刷新 SDK 的环境变量、项目和客户端缓存，后续新运行使用最新配置，无需重启 Web 进程。独立调度进程在下一次运行前同步配置。共享消息聚合会记录整轮父运行，以及采集、单条 Jev 评分和摘要子运行；管理员可从消息处理监控直接打开追踪，追踪失败不影响业务处理。
+后台需要同时启用 `langchain_tracing`、设置项目名称并保存 LangSmith API Key；只填写 key 不会自动开启追踪。保存后刷新 SDK 配置，后续运行使用最新配置。Agent 决策和聊天保留完整追踪；辅助摘要/记忆调用默认不上传，可通过 `langchain_background_tracing` 打开。共享消息另设 `news.trace_mode`：默认 `off`，`summary` 每轮仅一条概要，`full` 保留采集、评分和摘要子运行用于排障。远程追踪关闭不影响本地处理、调用和费用记录；追踪失败不影响业务处理。这里没有对 Agent 执行做随机采样。
 
 环境变量配置支持 `LANGSMITH_TRACING=true`、`LANGSMITH_PROJECT=crypto-agent`、`LANGSMITH_API_KEY`，也兼容旧版 `LANGCHAIN_*` 名称。美国区使用默认地址；欧洲区需在部署环境设置 `LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com`。不要将 key 提交到仓库。
 

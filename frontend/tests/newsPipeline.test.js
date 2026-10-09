@@ -19,6 +19,12 @@ test('score histogram excludes missing, failed and invalid scores, retaining exa
   assert.equal(groups[0].failed, 1); assert.equal(groups[0].selected, 1); assert.equal(groups[1].pending, 1);
 });
 
+test('disabled scoring completes progress without inventing successful scores', () => {
+  const run = { counts: { candidates: 8, skipped: 8, scored: 0 } };
+  assert.equal(pipelineCounts(run).scored, 0);
+  assert.deepEqual(pipelineProgress(run), { total: 8, completed: 8, percent: 100 });
+});
+
 test('trace links allow HTTPS without credentials and duration handles absent data', () => {
   assert.equal(safeTraceUrl('javascript:alert(1)'), '');
   assert.equal(safeTraceUrl('https://user:password@smith.langchain.com'), '');
