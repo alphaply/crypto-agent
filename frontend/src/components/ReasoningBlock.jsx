@@ -57,7 +57,11 @@ export default function ReasoningBlock({
     }
   }, [streaming]);
 
-  if (!reasoning && !streaming) return null;
+  if (!reasoning && !streaming && !reasoningTokens) return null;
+
+  const displayContent = reasoning || (streaming
+    ? (isZh ? '等待服务商返回可展示的推理内容…' : 'Waiting for displayable reasoning from the provider…')
+    : (isZh ? '服务商仅返回推理 token 用量，未提供可展示的推理文本。' : 'The provider reported reasoning-token usage without displayable reasoning text.'));
 
   const toggleExpand = () => {
     userInteractedRef.current = true;
@@ -74,7 +78,7 @@ export default function ReasoningBlock({
         className="reasoning-block__trigger"
         onClick={toggleExpand}
         aria-expanded={expanded}
-        aria-controls={expanded && reasoning ? contentId : undefined}
+        aria-controls={expanded ? contentId : undefined}
       >
         <span className="reasoning-block__icon">
           {streaming ? <LoadingOutlined spin /> : (expanded ? <DownOutlined /> : <RightOutlined />)}
@@ -100,10 +104,10 @@ export default function ReasoningBlock({
         </span>
       </button>
 
-      {expanded && reasoning ? (
+      {expanded ? (
         <div id={contentId} className="reasoning-block__content" aria-live={streaming ? 'polite' : 'off'}>
           <div className="reasoning-block__body">
-            <MarkdownBlock content={reasoning} streaming={streaming} />
+            <MarkdownBlock content={displayContent} streaming={streaming} />
           </div>
         </div>
       ) : null}

@@ -142,9 +142,9 @@ def test_decision_prompt_only_loads_compressed_history_and_current_protection(lo
     assert '当前保护摘要' not in prompt
     assert ('本地核验非实时成交证明' in prompt) == (mode == 'REAL' and exit_mode != 'independent_exits')
     assert prompt.count('本地核验非实时成交证明') <= 1
-    assert f'exit_mode={exit_mode}' in prompt
+    assert 'exit_mode=' not in prompt
     if exit_mode == 'independent_exits':
-        assert '附带 TP/SL 为空不代表没有独立退出单' in prompt
+        assert '附带 TP/SL 为空不代表没有独立退出单' not in prompt
         assert '本系统独立 SL 未覆盖数量' in prompt
     assert '加仓通过 open' not in prompt and 'close 的 exit_type' not in prompt
     assert '## 决策与复盘要求' not in prompt

@@ -23,7 +23,8 @@ MEMORY = decision_context.DecisionMemory('dynamic-memory', 'recent-decisions', '
 def test_retired_sections_removed_without_losing_active_context(template):
     prompt = decision_context.render_decision_prompt(template, MEMORY, symbol='ETH/USDT', positions_text='live-position')
     assert 'ETH/USDT' in prompt and 'live-position' in prompt
-    assert all(prompt.count(text) == 1 for text in vars(MEMORY).values())
+    assert all(prompt.count(text) == 1 for text in ('dynamic-memory', 'recent-decisions'))
+    assert 'human-rule' not in prompt
     for retired in ('Daily Memory', 'daily memory', '暂无历史记录', '{history_text}', 'Old subsection', 'stale', '每日记忆', 'old review', '自定义历史标题'):
         assert retired not in prompt
 
@@ -32,17 +33,17 @@ def test_explicit_memory_fields_not_repeated_and_escaped_fields_are_literals():
     template = 'literal {{short_memory_text}}\n{recent_summaries_text}\n{trading_rules_text}'
     prompt = decision_context.render_decision_prompt(template, MEMORY)
     assert '{short_memory_text}' in prompt
-    assert all(prompt.count(text) == 1 for text in vars(MEMORY).values())
+    assert all(prompt.count(text) == 1 for text in ('dynamic-memory', 'recent-decisions'))
+    assert 'human-rule' not in prompt
 
 
 def test_failed_memory_source_does_not_erase_other_sources(monkeypatch):
     monkeypatch.setattr(decision_context, 'format_short_memory_for_llm', Mock(side_effect=RuntimeError('unavailable')))
     monkeypatch.setattr(decision_context, 'format_recent_decisions', lambda _: 'retained recent evidence')
-    monkeypatch.setattr(decision_context, 'format_trading_rules_context', lambda _: 'retained human rule')
     loaded = decision_context.load_decision_memory('cfg')
     assert '读取失败' in loaded.short_memory_text
     assert loaded.recent_summaries_text == 'retained recent evidence'
-    assert loaded.trading_rules_text == 'retained human rule'
+    assert loaded.trading_rules_text == ''
 
 
 @pytest.mark.parametrize('role,expected', [('system', SystemMessage), ('user', HumanMessage)])
@@ -64,7 +65,8 @@ def test_actual_trade_and_bound_chat_prompt_remove_daily_sections(tmp_path, monk
     assert isinstance(prompt, expected) and prompt.additional_kwargs['is_instruction']
     assert 'keep-this' in prompt.content and 'Daily Memory' not in prompt.content
     assert 'history_context' not in result.model_dump()
-    assert all(prompt.content.count(text) == 1 for text in vars(MEMORY).values())
+    assert all(prompt.content.count(text) == 1 for text in ('dynamic-memory', 'recent-decisions'))
+    assert 'human-rule' not in prompt.content
 
 
 def test_retired_daily_and_batch_scheduler_entry_points_are_removed():

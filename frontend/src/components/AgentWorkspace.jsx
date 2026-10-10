@@ -24,6 +24,7 @@ import {
   message,
 } from 'antd';
 import DecisionRunPanel from './DecisionRunPanel';
+import DecisionMessages from './DecisionMessages';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
@@ -88,6 +89,9 @@ function TaskExecutionPanel({ execution, locale }) {
       : (locale === 'zh' ? '最近任务执行失败' : 'Latest task failed');
   const alertType = failed ? 'error' : completed ? 'success' : 'info';
   const statusColor = failed ? 'error' : completed ? 'success' : 'processing';
+  const phaseLabel = locale === 'zh'
+    ? ({ thinking: '模型分析', tool_planning: '调用已规划', tool_running: '工具执行中', finalizing: '整理结果', failed: '执行失败' }[execution.phase] || execution.phase || execution.status)
+    : execution.phase || execution.status;
 
   return (
     <Alert
@@ -97,7 +101,7 @@ function TaskExecutionPanel({ execution, locale }) {
       message={
         <Space size={8} wrap>
           <span>{title}</span>
-          <Tag color={statusColor}>{execution.phase || execution.status}</Tag>
+          <Tag color={statusColor}>{phaseLabel}</Tag>
           {execution.finished_at || execution.updated_at ? (
             <Text type="secondary">{execution.finished_at || execution.updated_at}</Text>
           ) : null}
@@ -106,7 +110,7 @@ function TaskExecutionPanel({ execution, locale }) {
       description={
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Text>{execution.progress_message || execution.error || ''}</Text>
-          {toolCalls.length ? (
+          {!execution.decision?.messages?.length && toolCalls.length ? (
             <div className="task-execution-tools">
               {toolCalls.map((call, index) => (
                 <Tag key={call.id || `${call.name}-${index}`} color={call.status === 'failed' ? 'error' : call.status === 'completed' ? 'success' : 'blue'}>
@@ -115,15 +119,19 @@ function TaskExecutionPanel({ execution, locale }) {
               ))}
             </div>
           ) : null}
-          <ReasoningBlock
+          {execution.decision?.messages?.length ? <DecisionMessages
+            messages={execution.decision.messages}
+            zh={locale === 'zh'} active={active} phase={execution.phase}
+            toolCalls={toolCalls} startedAt={execution.started_at_iso || execution.started_at}
+          /> : <ReasoningBlock
             title={active
               ? (locale === 'zh' ? '实时推理' : 'Live reasoning')
               : (locale === 'zh' ? '最近任务推理' : 'Latest task reasoning')}
             content={execution.reasoning_content || ''}
-            streaming={active}
+            streaming={active && execution.phase === 'thinking'}
             reasoningTokens={execution.reasoning_tokens || 0}
             startedAt={execution.started_at_iso || execution.started_at || execution.created_at || execution.scheduled_at}
-          />
+          />}
         </Space>
       }
     />

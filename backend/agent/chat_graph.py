@@ -86,7 +86,7 @@ class ChatState(TypedDict):
 def _get_chat_tools(cfg: Dict[str, Any]):
     if cfg.get("read_only"):
         return []
-    return get_trade_tools_for_mode(cfg.get("mode", "STRATEGY"))
+    return get_trade_tools_for_mode(cfg.get("mode", "STRATEGY"), cfg)
 
 
 def _resolve_temporary_chat_config(runtime: Dict[str, Any]) -> Dict[str, Any]:

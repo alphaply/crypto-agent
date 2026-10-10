@@ -58,6 +58,10 @@ def _emit_task_progress(configurable: dict, *, phase: str, message: str, **paylo
     if not callable(callback):
         return
     try:
+        messages = payload.pop('decision_messages', None)
+        if messages is not None:
+            from backend.utils.decision_record import build_decision_record
+            payload['decision'] = build_decision_record(messages, 'running')
         callback({"phase": phase, "message": message, **payload})
     except Exception as exc:
         logger.warning("Task progress callback failed: %s", exc)
@@ -71,7 +75,7 @@ def _emit_agent_retry(configurable, messages, attempt, total, error_type, exc, m
         retry_attempt=attempt, total_attempts=total, error_type=error_type,
         reasoning_content=_collect_agent_reasoning(messages),
         reasoning_tokens=_collect_agent_reasoning_token_count(messages),
-        tool_calls=[],
+        decision_messages=messages,
     )
 
 
@@ -122,8 +126,6 @@ def _stream_agent_response(
         combined_chunk = chunk if combined_chunk is None else combined_chunk + chunk
 
         reasoning_delta = extract_reasoning_content(chunk)
-        if not reasoning_delta:
-            continue
         streamed_reasoning += reasoning_delta
 
         now = time.monotonic()
@@ -132,16 +134,16 @@ def _stream_agent_response(
             or len(streamed_reasoning) - last_progress_size >= 256
         )
         if should_emit:
-            partial = AIMessage(
-                content="",
-                additional_kwargs={"reasoning_content": streamed_reasoning},
-            )
+            partial = message_chunk_to_message(combined_chunk)
+            if streamed_reasoning:
+                partial.additional_kwargs['reasoning_content'] = streamed_reasoning
             _emit_task_progress(
                 configurable,
                 phase="thinking",
                 message="模型正在流式推理",
                 reasoning_content=_collect_agent_reasoning(messages + [partial]),
                 reasoning_tokens=_collect_agent_reasoning_token_count(messages),
+                decision_messages=messages + [partial],
             )
             last_progress_at = now
             last_progress_size = len(streamed_reasoning)
@@ -665,11 +667,6 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
     if trade_mode in {'REAL', 'STRATEGY'} and '{orders_text}' not in prompt_template:
         system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
-    if agent_config.get('market_profile') == 'hourly':
-        system_prompt += '\n\n## 当前小时级策略周期\n每1h评估一次；1h决定触发和失效，4h判断结构，1d提供背景。仅使用本轮提供的已收盘K线，不要求15m入场信号。给出单一主策略和未来1h/4h的条件判断。'
-    if trade_mode in {'REAL', 'STRATEGY'}:
-        exit_mode = effective_exit_mode(agent_config)
-        system_prompt += f'\n\n当前退出模式：exit_mode={exit_mode}。'
     prompt_role = agent_config.get("system_prompt_role", "system")
     instruction = instruction_message(system_prompt, prompt_role)
     instruction.additional_kwargs["is_instruction"] = True
@@ -821,7 +818,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             "name": agent_config.get("model", "default"),
         }]
 
-    tools = get_trade_tools_for_mode(trade_mode)
+    tools = get_trade_tools_for_mode(trade_mode, agent_config)
     logger.info(
         "[ToolRegistry] Bound tools for mode=%s: %s",
         trade_mode,
@@ -857,6 +854,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             ),
             reasoning_content=_collect_agent_reasoning(turn_messages),
             reasoning_tokens=_collect_agent_reasoning_token_count(turn_messages),
+            decision_messages=turn_messages,
         )
 
         try:
@@ -914,6 +912,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 reasoning_content=_collect_agent_reasoning(turn_messages + [response]),
                 reasoning_tokens=_collect_agent_reasoning_token_count(turn_messages + [response]),
                 tool_calls=response_tool_calls,
+                decision_messages=turn_messages + [response],
             )
 
             try:
@@ -999,7 +998,7 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
         if agent_config.get('extra_body'):
             kwargs["extra_body"] = agent_config.get('extra_body')
 
-        tools = get_trade_tools_for_mode(trade_mode)
+        tools = get_trade_tools_for_mode(trade_mode, agent_config)
         logger.info(
             "[ToolRegistry] Bound tools for small agent mode=%s: %s",
             trade_mode,
@@ -1252,6 +1251,7 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
             reasoning_content=_collect_agent_reasoning(state.messages),
             reasoning_tokens=_collect_agent_reasoning_token_count(state.messages),
             tool_calls=progress_calls,
+            decision_messages=state.messages + tool_outputs,
         )
 
         try:
@@ -1270,6 +1270,10 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
         for item in progress_calls:
             if item["id"] == str(tool_call.get("id") or ""):
                 item["status"] = status
+        _emit_task_progress(
+            configurable, phase="tool_running", message=f"工具 {tool_name} 已返回：{status}",
+            tool_calls=progress_calls, decision_messages=state.messages + tool_outputs,
+        )
 
     _emit_task_progress(
         configurable,
@@ -1278,6 +1282,7 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
         reasoning_content=_collect_agent_reasoning(state.messages),
         reasoning_tokens=_collect_agent_reasoning_token_count(state.messages),
         tool_calls=progress_calls,
+        decision_messages=state.messages + tool_outputs,
     )
 
     return state.model_copy(update={"messages": state.messages + tool_outputs})

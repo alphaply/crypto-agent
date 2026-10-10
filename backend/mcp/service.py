@@ -199,8 +199,9 @@ def trading_tools(profile_id):
     cfg = get_runtime_profile('mcp:' + profile_id)
     if not cfg:
         raise ValueError('Unknown MCP profile')
-    result = [{'name': tool.name, 'description': tool.description, 'inputSchema': tool.args_schema.model_json_schema()}
-              for tool in get_trade_tools_for_mode(cfg['mode'])
+    result = [{'name': tool.name, 'description': tool.description,
+               'inputSchema': tool.args_schema if isinstance(tool.args_schema, dict) else tool.args_schema.model_json_schema()}
+              for tool in get_trade_tools_for_mode(cfg['mode'], cfg)
               if tool.name != 'adopt_position_real' or cfg.get('exit_mode') == 'independent_exits']
     if cfg['market_type'] == 'spot':
         from .spot_orders import tool_schemas

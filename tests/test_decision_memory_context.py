@@ -40,7 +40,7 @@ def test_recent_decisions_are_three_chronological_complete_summaries(local_db):
     assert 'other task' not in '\n'.join(lines)
 
 
-def test_market_failure_still_includes_rules_recent_and_working_memory(local_db, monkeypatch):
+def test_market_failure_keeps_active_memory_without_retired_rules(local_db, monkeypatch):
     from backend.database_rules import change_trading_rules
     change_trading_rules('cfg', [{'action': 'add', 'content': 'Verify executed amounts'}], actor='human')
     database.save_short_memory('2026-10-01 01:00:00', '2026-10-01 02:00:00', 'ETH/USDT', 'cfg', 'Previous thesis', '', 1)
@@ -52,9 +52,9 @@ def test_market_failure_still_includes_rules_recent_and_working_memory(local_db,
     state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={},)
     result = agent_graph.start_node(state, {'configurable': {'config_id': 'cfg', 'agent_config': {'mode': 'STRATEGY'}}})
     prompt = result.messages[0].content
-    assert 'Verify executed amounts' in prompt and 'Previous thesis' in prompt
+    assert 'Verify executed amounts' not in prompt and 'Previous thesis' in prompt
     assert '[覆盖 2026-10-01 01:00:00 → 2026-10-01 02:00:00' in prompt
-    assert '最近三轮决策摘要' in prompt and 'exit_mode=attached_required' in prompt
+    assert '最近三轮决策摘要' in prompt and 'exit_mode=' not in prompt
 
 
 def test_compaction_never_splits_tool_request_from_result(monkeypatch):
@@ -101,7 +101,7 @@ def test_independent_exit_context_exposes_order_ids_types_quantities_and_uncerta
     rendered = independent_exit_context(account)
     assert 'stop-order' in rendered and 'stop_market' in rendered and 'trigger=90' in rendered
     assert 'remaining=0.4' in rendered and 'LONG=0.6' in rendered
-    assert '附带 TP/SL 为空不代表没有独立退出单' in rendered
+    assert '附带 TP/SL 为空不代表没有独立退出单' not in rendered
     real = {'real_positions': [{'side': 'LONG', 'amount': 1}]}
     plans = [{'symbol': 'ETH/USDT:USDT', 'state': 'ACTIVE', 'side': 'LONG', 'execution_mode': 'independent_exits',
               'exits': [{'id': 'real-stop', 'exit_type': 'stop_market', 'trigger_price': 90,

@@ -14,7 +14,7 @@ def test_visible_position_without_matching_cycle_is_not_presented_as_managed(pla
                                     plans=plans, contract_size=1, symbol='ETH/USDT')
     assert 'LONG 可见交易所持仓，但本任务没有活跃独立退出周期' in text
     assert 'LONG=2.0' in text and '待核验=True' in text
-    assert '不能将手动仓或其他任务持仓自动认领' in text
+    assert '不能将手动仓或其他任务持仓自动认领' not in text
 
 
 def test_matching_active_cycle_and_coverage_are_retained():
@@ -56,6 +56,6 @@ def test_manual_adoption_is_distinguished_from_agent_entry_and_missing_cycle_has
             'adoption': {'amount': .37, 'adopted_at': 100}}
     text = independent_exit_context(account, plans=[plan], contract_size=1, symbol='ETH/USDT')
     assert '来源为用户委托接管的手动仓' in text
-    assert '不是本任务开仓成交' in text and '接管本身不创建止盈止损' in text
+    assert '不是本任务开仓成交' in text
     missing = independent_exit_context(account, plans=[], contract_size=1, symbol='ETH/USDT')
-    assert 'adopt_position_real' in missing and 'expected_amount' in missing
+    assert '没有活跃独立退出周期' in missing and 'adopt_position_real' not in missing

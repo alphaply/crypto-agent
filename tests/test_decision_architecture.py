@@ -47,6 +47,5 @@ def test_default_context_does_not_read_daily_reports(monkeypatch):
     monkeypatch.setattr(database, 'get_daily_summaries', daily)
     monkeypatch.setattr(decision_context, 'format_short_memory_for_llm', lambda *_, **__: 'memory')
     monkeypatch.setattr(decision_context, 'format_recent_decisions', lambda *_: 'decisions')
-    monkeypatch.setattr(decision_context, 'format_trading_rules_context', lambda *_: 'rules')
-    assert decision_context.load_decision_memory('cfg') == decision_context.DecisionMemory('memory', 'decisions', 'rules')
+    assert decision_context.load_decision_memory('cfg') == decision_context.DecisionMemory('memory', 'decisions')
     daily.assert_not_called()

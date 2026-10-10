@@ -173,6 +173,9 @@ def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> 
     if tool_calls is not None:
         assignments.append("tool_calls_json = ?")
         params.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
+    if event.get('decision') is not None:
+        assignments.append('decision_json = ?')
+        params.append(json.dumps(event['decision'], ensure_ascii=False, default=str))
     params.extend([str(config_id), AGENT_JOB_TYPE, str(scheduled_at)])
 
     with get_db_conn() as conn:

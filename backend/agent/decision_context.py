@@ -1,10 +1,9 @@
-"""Read task memory and render decision prompts without retired daily context."""
+"""Read active task memory and remove retired prompt injections."""
 from dataclasses import dataclass
 import re
 from string import Formatter
 
 from backend.database import get_recent_summary_logic, get_short_memories
-from backend.database_rules import format_trading_rules_context
 from backend.utils.logger import setup_logger
 from backend.utils.prompt_utils import render_prompt
 
@@ -42,7 +41,7 @@ def format_recent_decisions(config_id: str) -> str:
 class DecisionMemory:
     short_memory_text: str
     recent_summaries_text: str
-    trading_rules_text: str
+    trading_rules_text: str = ''  # Retired placeholder, retained for old callers/templates.
 
 
 def load_decision_memory(config_id: str) -> DecisionMemory:
@@ -50,7 +49,6 @@ def load_decision_memory(config_id: str) -> DecisionMemory:
     sources = (
         ('short_memory_text', lambda: format_short_memory_for_llm(config_id, include_metadata=True), '(短期记忆读取失败)'),
         ('recent_summaries_text', lambda: format_recent_decisions(config_id), '(近期摘要读取失败)'),
-        ('trading_rules_text', lambda: format_trading_rules_context(config_id), '(交易规则读取失败；不得假设没有规则)'),
     )
     values = {}
     for name, read, fallback in sources:
@@ -63,11 +61,14 @@ def load_decision_memory(config_id: str) -> DecisionMemory:
 
 
 _HEADING = re.compile(r'^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$')
-_DAILY_TITLE = re.compile(r'^(?:daily\s+memory|每日记忆|日报记忆|每日总结)$', re.IGNORECASE)
+_RETIRED_TITLE = re.compile(
+    r'^(?:daily\s+memory|每日记忆|日报记忆|每日总结|长期交易规则|有效长期规则|'
+    r'long[- ]term\s+(?:trading\s+)?rules|当前小时级策略周期)$', re.IGNORECASE,
+)
 
 
 def clean_decision_template(template: str) -> str:
-    """Retire known daily sections at render time, preserving custom source files."""
+    """Remove known retired sections at render time, preserving custom source files."""
     lines = []
     retired_level = None
     for line in template.splitlines():
@@ -76,7 +77,7 @@ def clean_decision_template(template: str) -> str:
             level, title = len(heading[1]), heading[2]
             if retired_level is not None and level <= retired_level:
                 retired_level = None
-            if _DAILY_TITLE.fullmatch(title):
+            if _RETIRED_TITLE.fullmatch(title):
                 retired_level = level if retired_level is None else min(level, retired_level)
         if retired_level is None:
             lines.append(line)
@@ -84,9 +85,10 @@ def clean_decision_template(template: str) -> str:
     # An older user template may rename the heading while keeping only the
     # retired placeholder underneath it. Drop that otherwise empty section too.
     cleaned = re.sub(
-        r'(?m)^ {0,3}#{1,6}[^\n]+\n[ \t]*\{history_text\}[ \t]*'
+        r'(?m)^ {0,3}#{1,6}[^\n]+\n[ \t]*\{(?:history_text|trading_rules_text)\}[ \t]*'
         r'(?:\n[ \t]*\(暂无历史记录\)[ \t]*)?(?=\n|$)', '', cleaned,
     )
+    cleaned = re.sub(r'(?m)^当前退出模式：exit_mode=\w+。\s*$', '', cleaned)
     return cleaned.strip()
 
 
@@ -100,11 +102,11 @@ def render_decision_prompt(template: str, memory: DecisionMemory, **values) -> s
     fields = prompt_fields(template)
     # Retired variables resolve to empty text even in old inline custom templates.
     values.update(history_text='', **vars(memory))
+    values['trading_rules_text'] = ''
     prompt = render_prompt(template, **values).strip()
     sections = (
         ('short_memory_text', 'Short-term memory'),
         ('recent_summaries_text', '最近三轮决策摘要（历史计划，不是成交证明）'),
-        ('trading_rules_text', '长期交易规则'),
     )
     for field, title in sections:
         if field not in fields:

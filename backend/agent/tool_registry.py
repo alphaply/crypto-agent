@@ -46,9 +46,14 @@ _TOOL_BY_NAME = {
 }
 
 
-def get_trade_tools_for_mode(mode: str | None):
+def get_trade_tools_for_mode(mode: str | None, config: dict | None = None):
     trade_mode = str(mode or "STRATEGY").upper()
-    return list(_TOOLS_BY_MODE.get(trade_mode, _TOOLS_BY_MODE["STRATEGY"]))
+    tools = list(_TOOLS_BY_MODE.get(trade_mode, _TOOLS_BY_MODE["STRATEGY"]))
+    if config is None or trade_mode == 'SPOT_DCA':
+        return tools
+    from backend.agent.tool_interfaces import specialize_trade_tool
+    return [specialized for tool in tools
+            if (specialized := specialize_trade_tool(tool, {**config, 'mode': trade_mode})) is not None]
 
 
 def _normalize_tool_args(tool_name: str, args: Any) -> dict[str, Any]:

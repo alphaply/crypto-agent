@@ -743,7 +743,7 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                     latest_execution_row = conn.execute(
                         """
                         SELECT status, phase, progress_message, reasoning_content, reasoning_tokens,
-                               tool_calls_json, scheduled_at, started_at, finished_at,
+                               tool_calls_json, decision_json, scheduled_at, started_at, finished_at,
                                created_at, updated_at, error
                         FROM scheduler_runs
                         WHERE config_id = ? AND job_type = 'agent'
@@ -818,6 +818,8 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                         execution["tool_calls"] = json.loads(execution.pop("tool_calls_json") or "[]")
                     except (TypeError, json.JSONDecodeError):
                         execution["tool_calls"] = []
+                    execution['decision'] = read_decision_record(execution)
+                    execution.pop('decision_json', None)
                     execution["started_at_iso"] = _scheduler_timestamp_iso(
                         execution.get("started_at") or execution.get("created_at")
                     )
