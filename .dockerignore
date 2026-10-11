@@ -1,6 +1,9 @@
 .git
 .idea
 .vscode
+.agents
+.vite
+openspec
 .venv
 venv
 __pycache__

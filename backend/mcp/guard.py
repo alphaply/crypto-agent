@@ -21,6 +21,7 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
         return
     from backend import database
     from backend.utils.execution_ledger import account_scope
+    from backend.utils.exit_orders import is_conditional, order_reference
     from backend.utils.order_ownership import symbol_aliases
     exchange = market_tool.exchange
     if getattr(market_tool, 'market_type', None) == 'spot':
@@ -45,9 +46,13 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
             for row in conn.execute(f'SELECT order_id,config_id,role,payload FROM execution_order_links WHERE account_scope=? AND symbol IN ({placeholders})', (scope, *aliases)):
                 links[str(row['order_id'])] = {'config_id': row['config_id'], 'role': row['role'], **json.loads(row['payload'])}
     for plan in plans:
+        independent = plan.get('execution_mode') == 'independent_exits'
         for role, records in (('entry', plan.get('entries', [])), ('exit', [*plan.get('legs', []), *plan.get('exits', []), *([plan['exit_order']] if plan.get('exit_order') else [])])):
             for record in records:
-                for order_id in (record.get('id'), record.get('execution_order_id')):
+                # A conditional parent cannot own a regular fill with the same
+                # numeric ID. Only its observed execution child can own fills.
+                parent_id = order_reference(record, current=False) if independent and role == 'exit' and is_conditional(record) else record.get('id')
+                for order_id in (parent_id, record.get('execution_order_id')):
                     if order_id:
                         links.setdefault(str(order_id), {'config_id': config_id, 'role': role, 'side': plan['side']})
     canonical = perpetual_symbol(exchange, symbol)
@@ -141,6 +146,29 @@ def assert_entry_allowed(market_tool, symbol):
     assert_position_owner(market_tool, symbol)
 
 
+def is_exposure_increasing(tool_name, args, config_id, symbol):
+    """Classify edits from an owned target, never from caller-supplied role hints."""
+    if tool_name in {'open', 'open_position_spot_dca', 'open_position_real', 'update_entry_order_real'}:
+        return True
+    if tool_name == 'edit':
+        from backend.agent.independent_tools import describe_order
+        target = describe_order(config_id, symbol, args['order_id'])
+        if target.get('kind') not in {'entry', 'exit'}:
+            raise ValueError('Cannot verify edit target role')
+        return target['kind'] == 'entry'
+    if tool_name == 'execute_trade_actions':
+        # Inspect every edit before the first action can write, including edits
+        # after an entry; those targets must already exist and belong to us.
+        increasing = False
+        for action in args.get('actions', []):
+            if action.get('action') == 'edit':
+                increasing = is_exposure_increasing('edit', action, config_id, symbol) or increasing
+            elif action.get('action') in {'open', 'amend_entry'}:
+                increasing = True
+        return increasing
+    return False
+
+
 def preflight_tool(tool_name, args, config_id, symbol):
     if not str(config_id).startswith('mcp:'):
         return
@@ -154,13 +182,11 @@ def preflight_tool(tool_name, args, config_id, symbol):
         # The explicit adoption service verifies current ownership and quantity.
         # Requiring an existing cycle here would make adoption unreachable.
         return
-    risky = tool_name in {'open_position_real', 'update_entry_order_real'}
-    if tool_name == 'execute_trade_actions':
-        risky = any(action.get('action') in {'open', 'amend_entry'} for action in args.get('actions', []) if isinstance(action, dict))
+    risky = is_exposure_increasing(tool_name, args, config_id, symbol)
     if risky:
         from backend.utils.market_data import MarketTool
         assert_entry_allowed(MarketTool(config_id=config_id), symbol)
-    elif tool_name not in {'cancel_orders_real', 'cancel_orders_spot'}:
+    elif tool_name not in {'cancel', 'cancel_orders_real', 'cancel_orders_spot'}:
         if tool_name == 'execute_trade_actions' and all(action.get('action') == 'cancel' for action in args.get('actions', [])):
             return
         from backend.utils.market_data import MarketTool

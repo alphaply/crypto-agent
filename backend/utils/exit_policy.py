@@ -59,7 +59,7 @@ def assert_exit_mode_change_allowed(previous: dict, updated: dict) -> None:
                     'SELECT episode_id FROM mock_positions WHERE config_id=? AND quantity>0', (cid,)))
             if 'mock_exit_orders' in tables:
                 blockers.extend(str(r[0]) for r in conn.execute(
-                    "SELECT order_id FROM mock_exit_orders WHERE config_id=? AND status IN ('OPEN','PENDING','UNKNOWN')", (cid,)))
+                    "SELECT order_id FROM mock_exit_orders WHERE config_id=? AND status IN ('OPEN','WAITING_TRIGGER','PENDING','UNKNOWN')", (cid,)))
         if "trade_action_runs" in tables:
             blockers.extend(str(r[0]) for r in conn.execute(
                 "SELECT operation_id FROM trade_action_runs WHERE config_id=? AND status IN ('running','unknown','pending')", (cid,)))

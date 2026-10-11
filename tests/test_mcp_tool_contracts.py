@@ -69,6 +69,182 @@ def spot_arguments():
     return {'orders': [{'action': 'BUY_LIMIT', 'amount': 1, 'entry_price': 10, 'reason': 'approved test'}]}
 
 
+def enable_independent_profile():
+    profile = store.get('profile', 'swap')
+    store.put('profile', 'swap', {**profile, 'exit_mode': 'independent_exits'})
+
+
+def test_canonical_mcp_tools_use_same_v2_payload_and_persist_version(contracts):
+    _, _, dispatch, server = contracts
+    enable_independent_profile()
+    request = {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT', 'side': 'LONG',
+               'order_type': 'take_profit_market', 'close_all': True, 'trigger_price': 12,
+               'reason': 'final remainder', 'operation_id': 'canonical-all-0001'}
+    first = call(server, 'close', request)
+    assert first['status'] == 'submitted'
+    assert dispatch.call_args.args[:2] == ('close', {
+        'side': 'LONG', 'order_type': 'take_profit_market', 'reason': 'final remainder',
+        'close_all': True, 'trigger_price': 12.0,
+    })
+    # The legacy dispatcher calling the SAME canonical action shares a receipt.
+    assert call(server, 'execute_trade', {
+        'profile_id': 'swap', 'symbol': request['symbol'], 'operation_id': request['operation_id'],
+        'tool_name': 'close', 'arguments': {key: value for key, value in request.items() if key not in {'profile_id', 'symbol', 'operation_id'}},
+    }) == first
+    dispatch.assert_called_once()
+    with store.connection() as conn:
+        row = conn.execute('SELECT contract_version,request_json FROM mcp_operation_requests WHERE operation_id=?',
+                           (request['operation_id'],)).fetchone()
+    assert row['contract_version'] == 2 and json.loads(row['request_json'])['contract_version'] == 2
+
+
+def test_canonical_mcp_rejects_shapes_before_dispatch_and_preserves_legacy_tp(contracts):
+    _, _, dispatch, server = contracts
+    enable_independent_profile()
+    base = {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT', 'side': 'LONG',
+            'order_type': 'take_profit_limit', 'amount': .2, 'price': 12, 'reason': 'target', 'operation_id': 'invalid-new-tp-0001'}
+    assert call(server, 'close', base)['status'] == 'failed'  # No trigger must not select v1.
+    invalid_all = {**base, 'amount': None, 'close_all': True, 'trigger_price': 12}
+    result = call(server, 'close', invalid_all)
+    assert result['status'] == 'failed' and result['error_code'] == 'unsupported_combination'
+    for bad in ({**base, 'amount': True}, {**base, 'amount': 0}, {**base, 'unknown': 1},
+                {**base, 'close_all': 1}, {**base, 'price': '12'}):
+        with pytest.raises(ToolError):
+            call(server, 'close', bad)
+    dispatch.assert_not_called()
+    legacy = {'profile_id': 'swap', 'symbol': base['symbol'], 'pos_side': 'LONG', 'exit_type': 'take_profit_limit',
+              'amount': .2, 'price': 12, 'reason': 'legacy target', 'operation_id': 'legacy-limit-0001'}
+    assert call(server, 'close_perpetual', legacy)['status'] == 'submitted'
+    assert dispatch.call_args.args[0] == 'close_position_real'
+    assert dispatch.call_args.args[1]['orders'][0]['exit_type'] == 'take_profit_limit'
+    assert 'trigger_price' not in dispatch.call_args.args[1]['orders'][0] or dispatch.call_args.args[1]['orders'][0]['trigger_price'] is None
+
+
+def test_new_tools_cannot_bypass_profile_mode_or_cancel_scope(contracts):
+    caller, _, dispatch, server = contracts
+    request = {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT', 'side': 'LONG', 'amount': .2,
+               'price': 10, 'reason': 'entry', 'operation_id': 'wrong-mode-0001'}
+    assert call(server, 'open', request)['status'] == 'failed'
+    dispatch.assert_not_called()
+    enable_independent_profile()
+    no_cancel = {**caller, 'scopes': ['read', 'trade']}
+    actions = [{'action': 'open', 'side': 'LONG', 'amount': .2, 'price': 10, 'reason': 'entry'},
+               {'action': 'cancel', 'order_id': 'regular:1', 'reason': 'cancel'}]
+    mixed = service.execute(no_cancel, 'swap', request['symbol'], 'execute_trade_actions',
+                            {'contract_version': 2, 'actions': actions}, 'mixed-scope-0001')
+    assert mixed['status'] == 'failed' and 'cancel' in mixed['error']
+    dispatch.assert_not_called()
+    cancel_only = {**caller, 'scopes': ['read', 'cancel']}
+    assert service.execute(cancel_only, 'swap', request['symbol'], 'execute_trade_actions',
+                           {'contract_version': 2, 'actions': actions[1:]}, 'cancel-only-0001')['status'] == 'submitted'
+
+
+def test_edit_role_is_owned_not_supplied_and_replay_needs_no_live_target(contracts, monkeypatch):
+    from backend.agent import independent_tools
+    caller, exchange, dispatch, server = contracts
+    enable_independent_profile()
+    describe = Mock(return_value={'kind': 'exit'})
+    monkeypatch.setattr(independent_tools, 'describe_order', describe)
+    profile = store.get('profile', 'swap')
+    store.put('profile', 'swap', {**profile, 'symbol_scope': 'all', 'symbols': []})
+    exchange.markets['ETH/USDT:USDT']['active'] = False
+    args = {'order_id': 'algo:123', 'trigger_price': 9, 'reason': 'exit change'}
+    no_cancel = {**caller, 'scopes': ['read', 'trade']}
+    first = service.execute(no_cancel, 'swap', 'ETH/USDT:USDT', 'edit', args, 'edit-exit-0001')
+    assert first['status'] == 'submitted'
+    describe.side_effect = ValueError('target no longer live')
+    assert service.execute(no_cancel, 'swap', 'ETH/USDT:USDT', 'edit', args, 'edit-exit-0001') == first
+    assert describe.call_count == 1 and dispatch.call_count == 1
+    describe.side_effect = None
+    describe.return_value = {'kind': 'entry'}
+    denied = service.execute(caller, 'swap', 'ETH/USDT:USDT', 'edit', {'order_id': 'regular:1', 'price': 10, 'reason': 'entry'}, 'edit-entry-0001')
+    assert denied['status'] == 'failed' and dispatch.call_count == 1
+    rejected_hint = service.execute(caller, 'swap', 'ETH/USDT:USDT', 'edit', {**args, 'kind': 'exit'}, 'edit-fake-0001')
+    assert rejected_hint['status'] == 'failed'
+
+
+def test_flat_batch_mcp_publishes_v2_and_rejects_legacy_nested_action(contracts):
+    _, _, dispatch, server = contracts
+    enable_independent_profile()
+    args = {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT', 'operation_id': 'flat-batch-0001', 'contract_version': 2,
+            'actions': [{'action': 'open', 'side': 'LONG', 'amount': .2, 'price': 10, 'reason': 'stage'}]}
+    assert call(server, 'execute_trade_actions', args)['status'] == 'submitted'
+    assert dispatch.call_args.args[1]['contract_version'] == 2
+    assert 'order' not in dispatch.call_args.args[1]['actions'][0]
+    with pytest.raises(ToolError):
+        call(server, 'execute_trade_actions', {**args, 'actions': [{'action': 'open', 'order': {'amount': .2}}]})
+    dispatch.assert_called_once()
+
+
+def test_legacy_batch_fingerprint_keeps_original_recursive_defaults(contracts):
+    caller, _, dispatch, _ = contracts
+    enable_independent_profile()
+    action = {'action': 'close', 'order': {'pos_side': 'LONG', 'exit_type': 'take_profit_limit', 'price': 12, 'amount': .2, 'reason': 'legacy'}}
+    # This is the request encoded by the pre-upgrade typed legacy schema.
+    expected = {'actions': [{'action': 'close', 'order': {
+        'action': 'CLOSE', 'pos_side': 'LONG', 'entry_price': 0, 'exit_type': 'take_profit_limit',
+        'price': 12.0, 'amount': .2, 'reason': 'legacy',
+    }}]}
+    assert service.validate_trade_arguments('execute_trade_actions', {'actions': [action]}) == expected
+    request = {'symbol': 'ETH/USDT:USDT', 'tool': 'execute_trade_actions', 'arguments': expected}
+    old_receipt = {'status': 'submitted', 'operation_id': 'old-batch-replay', 'result': {'legacy': True}}
+    store.reserve_operation('swap', 'old-batch-replay', caller['id'], request)
+    store.complete_operation('swap', 'old-batch-replay', old_receipt)
+    assert service.execute(caller, 'swap', request['symbol'], request['tool'], {'actions': [action]}, 'old-batch-replay') == old_receipt
+    dispatch.assert_not_called()
+    with pytest.raises(ValueError, match='Unsupported'):
+        service.validate_trade_arguments('execute_trade_actions', {'actions': [{**action, 'order': {**action['order'], 'amount_usdt': 10}}]})
+
+
+@pytest.mark.parametrize('child_filled,child_status', [(0, 'triggered'), (.1, 'partially_filled')])
+def test_independent_orders_read_merges_namespaced_owned_and_external_orders_without_writes(contracts, monkeypatch, child_filled, child_status):
+    from backend.utils import independent_exits
+    caller, exchange, dispatch, _ = contracts
+    enable_independent_profile()
+    regular = [
+        {'id': '1', 'status': 'open', 'filled': 0, 'amount': .2, 'info': {'secret': 'hidden'}},
+        {'id': '2', 'status': 'open', 'filled': 0, 'amount': .1},
+        {'id': '8', 'status': 'open', 'filled': child_filled, 'amount': .3},
+    ]
+    algo = [{'id': '1', 'status': 'open', 'amount': None}, {'id': '7', 'status': 'open', 'amount': .3}]
+    fetch = Mock(side_effect=lambda symbol, limit, params: algo if params.get('trigger') else regular)
+    exchange.fetch_open_orders = fetch
+    exchange.create_order = Mock(side_effect=AssertionError('read must never create'))
+    exchange.cancel_order = Mock(side_effect=AssertionError('read must never cancel'))
+    exchange.edit_order = Mock(side_effect=AssertionError('read must never edit'))
+    context = {'entries': [
+        {'id': '1', 'order_id': 'regular:1', 'exchange_channel': 'regular', 'side': 'LONG',
+         'quantity_mode': 'fixed', 'remaining_amount': .2, 'order_status': 'open'},
+        {'id': '4', 'order_id': 'regular:4', 'exchange_channel': 'regular', 'side': 'LONG',
+         'quantity_mode': 'fixed', 'remaining_amount': .1, 'order_status': 'open'},
+    ], 'exits': [
+        {'id': '1', 'order_id': 'algo:1', 'exchange_channel': 'algo', 'side': 'LONG', 'order_type': 'stop_market',
+         'quantity_mode': 'all', 'amount': None, 'remaining_amount': None, 'order_status': 'waiting_trigger', 'coverage_estimate': .5},
+        {'id': '7', 'execution_order_id': '8', 'order_id': 'regular:8', 'parent_order_id': 'algo:7', 'exchange_channel': 'regular',
+         'side': 'LONG', 'order_type': 'take_profit_limit', 'quantity_mode': 'fixed', 'order_status': 'triggered', 'remaining_amount': .3 - child_filled},
+    ], 'uncovered': {'LONG': 0, 'SHORT': 0}, 'quantity_conflict': True,
+       'quantity_conflicts': [{'side': 'LONG', 'group': 'take_profit', 'excess_amount': .1}],
+       'exit_groups': {'LONG': {'take_profit': {'fixed_remaining': .6, 'position_amount': .5}}}, 'pending': False}
+    readonly = SimpleNamespace(snapshot=Mock(return_value=context), reconcile_all=Mock(side_effect=AssertionError('no recovery writes')))
+    monkeypatch.setattr(independent_exits, 'IndependentExits', lambda _: readonly)
+    result = service.query({**caller, 'scopes': ['read']}, 'orders', profile_id='swap', symbol='ETH/USDT:USDT')
+    indexed = {row['order_id']: row for row in result}
+    assert set(indexed) == {'regular:1', 'regular:2', 'regular:4', 'algo:1', 'regular:8'}
+    assert indexed['regular:1']['kind'] == 'entry' and indexed['regular:1']['modifiable'] is True
+    assert indexed['algo:1']['quantity_mode'] == 'all' and indexed['algo:1']['amount'] is None
+    assert indexed['algo:1']['order_status'] == 'waiting_trigger'
+    assert indexed['regular:8']['order_status'] == child_status
+    assert indexed['regular:2']['ownership'] == 'external_or_untracked' and indexed['regular:2']['modifiable'] is False
+    assert indexed['regular:4']['order_status'] == 'unknown' and indexed['regular:4']['pending'] is True
+    assert indexed['regular:4']['modifiable'] is False
+    assert indexed['regular:4']['uncovered']['LONG'] is None
+    assert indexed['algo:1']['quantity_conflict'] is True
+    assert all('info' not in row for row in result)
+    assert fetch.call_count == 2
+    for writer in (exchange.create_order, exchange.cancel_order, exchange.edit_order, readonly.reconcile_all, dispatch):
+        writer.assert_not_called()
+
+
 def test_symbols_are_canonical_scoped_and_filtered_before_paging(contracts):
     caller, _, dispatch, server = contracts
     first = call(server, 'list_symbols', {'profile_id': 'swap', 'limit': 1})

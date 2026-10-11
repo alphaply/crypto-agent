@@ -148,11 +148,11 @@ export default function KlineChart({ payload, chartKey, timeframe = '1h' }) {
       const desired = new Map();
       const addLines = (rows, prefix, options) => (rows || []).forEach((row, index) => {
         const price = Number(prefix === 'position' ? row.entry_price : row.price);
-        if (Number.isFinite(price) && price > 0) desired.set(`${prefix}:${index}`, { price, ...options(row), axisLabelVisible: true, title: '' });
+        if (Number.isFinite(price) && price > 0) desired.set(`${prefix}:${index}`, { price, ...options(row), axisLabelVisible: true, title: prefix === 'risk' ? `${row.label || ''}${row.quantity_mode === 'all' ? ' ALL' : ''}` : '' });
       });
       addLines(nextPayload?.positions, 'position', row => ({ color: row.side === 'SHORT' ? '#f97316' : '#22c55e', lineWidth: 2, lineStyle: 2 }));
       addLines(nextPayload?.pending_orders, 'order', () => ({ color: '#38bdf8', lineWidth: 1, lineStyle: 1 }));
-      addLines(nextPayload?.risk_lines, 'risk', row => ({ color: row.type === 'take_profit' ? UP : DOWN, lineWidth: 1, lineStyle: 3 }));
+      addLines(nextPayload?.risk_lines, 'risk', row => ({ color: row.type === 'limit' ? '#38bdf8' : row.type === 'take_profit' ? UP : DOWN, lineWidth: 1, lineStyle: 3 }));
       for (const [key, entry] of overlays) {
         if (!desired.has(key)) { candleSeries.removePriceLine(entry.line); overlays.delete(key); }
       }

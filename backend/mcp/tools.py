@@ -10,6 +10,7 @@ from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from pydantic import ConfigDict, Field, create_model, model_validator
 
 from . import service
+from backend.agent.trading_contracts import OrderType, PositiveNumber, TradeAction
 
 OperationId = Annotated[str, Field(pattern=r'^[a-zA-Z0-9_.:-]{8,160}$', description='Caller-supplied stable ID. Reuse only for the identical request; never generate a new ID to retry an unknown result.')]
 Amount = Annotated[float, Field(gt=0, allow_inf_nan=False, description='Exact base-asset quantity, not quote-currency cost or contract count.')]
@@ -33,6 +34,11 @@ TOOL_CATALOG = [
         ('buy_spot', 'trade', 'Place one spot limit buy with flat arguments'),
         ('create_spot_exit', 'trade', 'Sell owned spot quantity or place native TP/SL/OCO'),
         ('cancel_spot_exit', 'cancel', 'Cancel an MCP-owned spot exit'),
+        ('open', 'trade', 'Independent mode: place a limit entry with canonical version 2 fields'),
+        ('close', 'trade', 'Independent mode: fixed staged exits or supported dynamic close-all'),
+        ('edit', 'trade', 'Independent mode: edit an owned entry/exit with remaining quantity'),
+        ('cancel', 'cancel', 'Independent mode: cancel one owned regular or conditional order'),
+        ('execute_trade_actions', 'trade / cancel', 'Independent mode: ordered version 2 actions, not an atomic transaction'),
         ('open_perpetual', 'trade', 'Place one linear perpetual limit entry'),
         ('adopt_perpetual_position', 'trade', 'Explicitly adopt a user-owned manual perpetual position for management'),
         ('close_perpetual', 'trade', 'Reduce or close an owned perpetual position'),
@@ -57,11 +63,15 @@ def normalize_tool_input(tool_name, value):
     # Only the conventional args envelope is flattened at the MCP boundary.
     # execute_trade.arguments remains the explicit business-argument container.
     result = service.unwrap_arguments(value, wrappers=('args',))
-    numeric = {'amount', 'expected_amount', 'entry_price', 'price', 'trigger_price', 'stop_loss', 'take_profit',
+    numeric = {'amount', 'remaining_amount', 'expected_amount', 'entry_price', 'price', 'trigger_price', 'stop_loss', 'take_profit',
                'stop_limit_price', 'take_profit_limit_price', 'limit', 'offset'}
     for key in numeric & result.keys():
         if isinstance(result[key], bool):
             raise ValueError(f'{key} must be a number, not a boolean')
+    if 'close_all' in result and result['close_all'] is not None and type(result['close_all']) is not bool:
+        raise ValueError('close_all must be a boolean')
+    if 'contract_version' in result and type(result['contract_version']) is not int:
+        raise ValueError('contract_version must be an integer')
     return result
 
 
@@ -128,7 +138,7 @@ def register_tools(server):
         return await query('positions', profile_id=profile_id, symbol=symbol)
 
     async def get_orders(profile_id: ProfileId, symbol: Symbol, limit: int = 100) -> list[dict]:
-        """Read open exchange orders. Visibility does not authorize modifying another strategy's orders."""
+        """Read open orders without submitting/canceling/reconciling writes. Independent mode merges regular/algo orders with owned entry/exit facts: exact order_id, quantity_mode, order_status, coverage and quantity conflicts. ownership=external_or_untracked is read-only; visibility does not authorize modification. local_record missing from exchange lists is pending verification, not proof of a fill."""
         return await query('orders', profile_id=profile_id, symbol=symbol, limit=limit)
 
     async def get_spot_inventory(profile_id: ProfileId, symbol: Symbol) -> dict:
@@ -136,7 +146,7 @@ def register_tools(server):
         return await query('spot_inventory', profile_id=profile_id, symbol=symbol)
 
     async def get_trading_tools(profile_id: ProfileId) -> list[dict]:
-        """Read schemas for execute_trade's tool_name and arguments. Prefer the flat buy_spot/create_spot_exit/open_perpetual tools to avoid nested arguments. Unknown fields are rejected."""
+        """Read this profile's supported schemas. Independent perpetual mode recommends open/close/edit/cancel and version 2 execute_trade_actions. Legacy entries are marked; spot and attached modes retain their existing tools. Unknown fields are rejected."""
         return await query('tools', profile_id=profile_id)
 
     async def buy_spot(profile_id: ProfileId, symbol: Symbol, amount: Amount, entry_price: Price,
@@ -161,6 +171,39 @@ def register_tools(server):
                                reason: Reason, operation_id: OperationId) -> dict:
         """Cancel an owned spot exit by exit_id from its receipt/inventory, including its linked native OCO. Requires cancel scope. Flat fields; never guess an ID."""
         return await execute(profile_id, symbol, 'cancel_spot_exit', {'exit_id': exit_id, 'reason': reason}, operation_id)
+
+    async def open(profile_id: ProfileId, symbol: Symbol, side: Literal['LONG', 'SHORT'],
+                   amount: PositiveNumber, price: PositiveNumber, reason: Reason, operation_id: OperationId) -> dict:
+        """Independent mode limit entry. LONG buys; SHORT sells; amount is base quantity. Multiple calls may stage entries; both directions require Hedge Mode. No attached TP/SL: after confirmed fills, close may install exits now or in a later round. Example: {"profile_id":"swap","symbol":"BTC/USDT:USDT","side":"LONG","amount":0.001,"price":50000,"reason":"first stage","operation_id":"entry-stage-0001"}. submitted is not filled; inspect an unknown operation before retrying."""
+        return await execute(profile_id, symbol, 'open', dict(side=side, amount=amount, price=price, reason=reason), operation_id)
+
+    async def close(profile_id: ProfileId, symbol: Symbol, side: Literal['LONG', 'SHORT'], order_type: OrderType,
+                    reason: Reason, operation_id: OperationId, amount: PositiveNumber | None = None,
+                    close_all: bool | None = None, price: PositiveNumber | None = None,
+                    trigger_price: PositiveNumber | None = None) -> dict:
+        """Independent mode exits for an already filled LONG/SHORT side. Choose amount>0 in base units OR close_all=true. market: no prices; limit: price; stop_market/take_profit_market: trigger_price; stop_limit/take_profit_limit: both. all is supported only for market (verified submission-time quantity) or conditional market (exchange closes the actual remaining side at trigger, including later additions). Fixed TP/SL stages retain their requested quantities. Example: {"profile_id":"swap","symbol":"BTC/USDT:USDT","side":"LONG","order_type":"take_profit_market","close_all":true,"trigger_price":60000,"reason":"final target","operation_id":"last-target-0001"}. status is the operation; order_status is execution evidence, never assume submitted means filled."""
+        arguments = dict(side=side, order_type=order_type, reason=reason, amount=amount, close_all=close_all,
+                         price=price, trigger_price=trigger_price)
+        return await execute(profile_id, symbol, 'close', {k: v for k, v in arguments.items() if v is not None}, operation_id)
+
+    async def edit(profile_id: ProfileId, symbol: Symbol, order_id: str, reason: Reason, operation_id: OperationId,
+                   remaining_amount: PositiveNumber | None = None, price: PositiveNumber | None = None,
+                   trigger_price: PositiveNumber | None = None) -> dict:
+        """Independent mode: edit an owned live order. At least one change; remaining_amount means unfilled base quantity for BOTH entries and exits. Omitted fields stay unchanged; all cannot accept quantity. Regular LIMIT accepts price/remaining_amount, no trigger; market cannot be edited. Native edit or persisted cancel_replace is selected by capability; inspect current/previous order_id and edit_method. Example: {"profile_id":"swap","symbol":"BTC/USDT:USDT","order_id":"regular:123","remaining_amount":0.001,"price":51000,"reason":"revised level","operation_id":"edit-entry-0001"}. Unknown results must be reconciled, not replaced with another operation ID."""
+        arguments = dict(order_id=order_id, reason=reason, remaining_amount=remaining_amount, price=price, trigger_price=trigger_price)
+        return await execute(profile_id, symbol, 'edit', {k: v for k, v in arguments.items() if v is not None}, operation_id)
+
+    async def cancel(profile_id: ProfileId, symbol: Symbol, order_id: str, reason: Reason, operation_id: OperationId) -> dict:
+        """Independent mode: cancel an owned entry/exit by its exact returned order_id. Uses regular/algo identity and follows a verified triggered child to cancel its unfilled portion. Requires cancel permission. It does not close a position. Example: {"profile_id":"swap","symbol":"BTC/USDT:USDT","order_id":"algo:456","reason":"invalidated condition","operation_id":"cancel-exit-0001"}. Report only the verified receipt."""
+        return await execute(profile_id, symbol, 'cancel', dict(order_id=order_id, reason=reason), operation_id)
+
+    async def execute_trade_actions(profile_id: ProfileId, symbol: Symbol, operation_id: OperationId,
+                                    contract_version: Literal[2], actions: Annotated[list[TradeAction], Field(min_length=1, max_length=20)]) -> dict:
+        """Independent mode ordered combination of the same open/close/edit/cancel fields. Requires contract_version=2 and 1–20 flat actions; legacy nested order is invalid here. Validate the whole batch before submission, then run sequentially; failed/pending/unknown stops later actions as not_executed, without rollback. open does not wait for fills. Example: {"profile_id":"swap","symbol":"BTC/USDT:USDT","operation_id":"entry-batch-0001","contract_version":2,"actions":[{"action":"open","side":"LONG","amount":0.001,"price":50000,"reason":"first stage"}]}. Mixed cancel/trade requires both permissions; this is not the legacy execute_trade dispatcher."""
+        return await execute(profile_id, symbol, 'execute_trade_actions', {
+            'contract_version': contract_version,
+            'actions': [item.model_dump(exclude_none=True) if hasattr(item, 'model_dump') else item for item in actions],
+        }, operation_id)
 
     async def open_perpetual(profile_id: ProfileId, symbol: Symbol, side: Literal['LONG', 'SHORT'],
                              amount: Amount, entry_price: Price, reason: Reason, operation_id: OperationId,
@@ -220,6 +263,7 @@ def register_tools(server):
     functions = {function.__name__: function for function in (
         list_profiles, list_symbols, get_news, get_market, get_balance, get_positions, get_orders,
         get_spot_inventory, get_trading_tools, buy_spot, create_spot_exit, cancel_spot_exit,
+        open, close, edit, cancel, execute_trade_actions,
         open_perpetual, adopt_perpetual_position, close_perpetual, amend_perpetual_entry, update_perpetual_protection,
         cancel_order, execute_trade, get_operation,
     )}

@@ -157,20 +157,42 @@ def _reconciled_receipt(conn, row):
                     status = str(record.get('status') or '').lower()
                     if _operation_matches(record.get('cancel_operation_id'), row['operation_id']) and status not in {'canceled', 'cancelled', 'closed', 'filled', 'expired', 'rejected'}:
                         return None
-                    if not record.get('id') or status not in {'open', 'closed', 'filled', 'canceled', 'cancelled', 'expired', 'rejected'}:
+                    if not record.get('id') or status not in {'open', 'waiting_trigger', 'triggered', 'partially_filled', 'closed', 'filled', 'canceled', 'cancelled', 'expired', 'rejected'}:
                         return None
                     if matching_details:
                         detail_statuses = {item.get('state') for item in matching_details}
                         if not detail_statuses <= {'confirmed', 'unchanged', 'rejected'}:
                             return None
                         status = 'rejected' if 'rejected' in detail_statuses else 'confirmed'
+                    replacement_error = record.get('replacement_error') if _operation_matches(record.get('last_operation_id'), row['operation_id']) else None
+                    if replacement_error:
+                        status = 'rejected'
                     evidence_ids = [detail.get('operation_id') for detail in matching_details] + list(reversed(operation_fields))
                     evidence_id = next(value for value in evidence_ids if _operation_matches(value, row['operation_id']))
+                    from backend.utils.exit_orders import canonical_order_type, order_reference, observed_order_status
+                    verified_fill = record.get('filled') if record.get('fill_verified', True) else None
+                    actual_amount = record.get('execution_amount', record.get('submission_amount')) if record.get('quantity_mode') == 'all' else record.get('amount')
+                    actual_remaining = max(float(actual_amount) - float(verified_fill), 0) if actual_amount is not None and verified_fill is not None else None
+                    version = record.get('contract_version', 1)
+                    factor = plan.get('contract_size') if version == 2 else 1
+                    factor = float(factor) if isinstance(factor, (int, float)) and math.isfinite(factor) and factor > 0 else None
+                    def quantity(value):
+                        return float(value) * factor if value is not None and factor is not None else None
                     observed.append({
                         'id': record['id'], 'status': status, 'operation_id': evidence_id,
+                        'order_id': order_reference(record) if record.get('contract_version') == 2 else str(record['id']),
+                        'order_status': observed_order_status(record), 'contract_version': record.get('contract_version', 1),
+                        'order_type': canonical_order_type(record), 'quantity_mode': record.get('quantity_mode', 'fixed'),
+                        'resolved_amount': record.get('resolved_amount'),
+                        'parent_order_id': order_reference(record, current=False) if record.get('execution_order_id') else None,
                         'side': plan.get('side'), 'exit_type': record.get('exit_type'),
                         'price': record.get('price'), 'trigger_price': record.get('trigger_price'),
-                        'amount': record.get('amount'), 'filled': record.get('filled'), 'quantity_unit': 'contracts',
+                        'amount': None if record.get('quantity_mode') == 'all' else quantity(record.get('amount')),
+                        'filled': quantity(verified_fill), 'filled_amount': quantity(verified_fill),
+                        'actual_remaining': quantity(actual_remaining),
+                        'remaining': None if record.get('quantity_mode') == 'all' else quantity(actual_remaining),
+                        'quantity_unit': 'base' if version == 2 else 'contracts',
+                        **({'error': replacement_error} if replacement_error else {}),
                     })
             except (ValueError, TypeError, AttributeError):
                 # Corrupt local evidence must never authorize a replay or report success.

@@ -199,7 +199,7 @@ def test_committed_mock_operation_recovers_lost_outer_receipt(local_db):
     callback = Mock(side_effect=TimeoutError('Result persistence lost'))
     run_once('cfg', 'ETH/USDT', 'call', {}, callback)
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO mock_trade_operations VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result) VALUES(?,?,?,?)',
                      ('cfg', 'ETH/USDT', 'call:0:0', json.dumps({'id': 'mock-order', 'status': 'filled'})))
         conn.commit()
     result = run_once('cfg', 'ETH/USDT', 'call', {}, callback)

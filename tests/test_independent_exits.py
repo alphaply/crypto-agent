@@ -44,11 +44,12 @@ def test_mock_aggregate_mean_cost_partial_exit_and_no_growth(local_db):
     snapshot=store.snapshot()
     assert snapshot['positions'][0]['amount']==1.5
     assert snapshot['positions'][0]['price']==110
-    assert sorted(row['remaining'] for row in snapshot['exits'])==[.75,.75,1.5]
+    assert sorted(row['remaining'] for row in snapshot['exits'])==[1,1,2]
+    assert snapshot['quantity_conflict'] and not snapshot['pending']
     store.open(entry(100,1))
     fill_entries(store,high=115,low=100)
     assert store.snapshot()['positions'][0]['amount']==2.5
-    assert store.snapshot()['uncovered']['LONG']==1
+    assert store.snapshot()['uncovered']['LONG']==.5
     assert len([row for row in store.snapshot()['exits'] if row['order_id']==tp1['id']])==1
     with database.get_db_conn() as conn:
         assert conn.execute("SELECT balance FROM mock_accounts WHERE config_id='cfg'").fetchone()[0]==10005
@@ -124,14 +125,17 @@ def test_mock_exit_caps_ownership_and_amendment(local_db):
     local_db.open(entry())
     fill_entries(local_db)
     first=local_db.close('LONG',.7,'take_profit_limit',100,price=120)
+    alternative=local_db.close('LONG',.4,'take_profit_limit',100,price=130)
+    assert local_db.snapshot()['quantity_conflict']
     with pytest.raises(ValueError,match='exceed'):
-        local_db.close('LONG',.4,'take_profit_limit',100,price=130)
+        local_db.close('LONG',1.1,'take_profit_limit',100,price=130)
     local_db.amend_exit(first['id'],amount=.5,current_price=100,price=125)
     local_db.close('LONG',.5,'take_profit_limit',100,price=130)
     with pytest.raises(ValueError,match='owned'):
         MockIndependentTrading('other','ETH/USDT').cancel(first['id'])
     local_db.cancel(first['id'])
-    assert len(local_db.snapshot()['exits'])==1
+    assert len(local_db.snapshot()['exits'])==2
+    local_db.cancel(alternative['id'])
 
 
 class Exchange:
@@ -218,7 +222,8 @@ def test_real_fixed_quantities_partial_exit_and_no_whole_position_legs(live_serv
     assert all('closePosition' not in row['params'] and 'closeFraction' not in row['params'] for row in ex.calls)
     svc.close('ETH/USDT','LONG',.2,'market')
     snapshot=svc.snapshot('ETH/USDT')
-    assert sorted(row['remaining'] for row in snapshot['exits'])==[.4,.4,.8]
+    assert sorted(row['remaining'] for row in snapshot['exits'])==[.5,.5,1]
+    assert snapshot['quantity_conflict'] and not snapshot['pending']
     assert ex.quantity==pytest.approx(.8)
     plan=svc._load('ETH/USDT:USDT','LONG')
     assert plan['legs']==[] and plan['state']=='ACTIVE'
@@ -288,8 +293,10 @@ def test_real_late_entry_fill_with_lagging_empty_position_never_finishes_cycle(l
 def test_real_caps_and_explicit_amend_replacement(live_service):
     svc,ex=live_service
     first=svc.close('ETH/USDT','LONG',.7,'take_profit_limit',price=120)
+    svc.close('ETH/USDT','LONG',.4,'take_profit_limit',price=130)
+    assert svc.snapshot('ETH/USDT')['quantity_conflict']
     with pytest.raises(ValueError,match='exceed'):
-        svc.close('ETH/USDT','LONG',.4,'take_profit_limit',price=130)
+        svc.close('ETH/USDT','LONG',1.1,'take_profit_limit',price=130)
     changed=svc.amend_exit('ETH/USDT',first['id'],amount=.5,price=125,operation_id='amend')
     assert changed['id']!=first['id']
     count=len(ex.calls)

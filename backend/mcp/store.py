@@ -25,6 +25,10 @@ def connection():
                 fingerprint TEXT NOT NULL, principal TEXT NOT NULL, state TEXT NOT NULL,
                 result TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
                 PRIMARY KEY(profile_id,operation_id));
+            CREATE TABLE IF NOT EXISTS mcp_operation_requests (
+                profile_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+                contract_version INTEGER NOT NULL, request_json TEXT NOT NULL,
+                PRIMARY KEY(profile_id,operation_id));
         """)
         yield conn
 
@@ -88,6 +92,9 @@ def reserve_operation(profile_id, operation_id, principal, request):
                 "message": "This operation was already started; inspect its orders before any further action."}
         now = time.time()
         conn.execute("INSERT INTO mcp_operations VALUES(?,?,?,?,?,?,?,?)", (profile_id, operation_id, fingerprint, principal, 'started', None, now, now))
+        conn.execute('INSERT INTO mcp_operation_requests VALUES(?,?,?,?)', (
+            profile_id, operation_id, request.get('contract_version', 1),
+            json.dumps(request, sort_keys=True, ensure_ascii=False, separators=(',', ':'))))
         conn.commit()
     return None
 

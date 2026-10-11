@@ -88,6 +88,75 @@ class ExecutionLedger:
             self.lock = _locks.setdefault(f'{self.scope}:{self.symbol}', threading.Lock())
         self.index_saved_plans()
 
+    def _retire_legacy_algo_aliases(self, plans, legacy_rows):
+        """Quarantine old bare algo IDs without deleting any execution evidence.
+
+        Trades report regular order IDs. Before channel-qualified identities,
+        a persisted algo parent could occupy that namespace and claim unrelated
+        fills. History and current plans are both needed: a later child or a
+        genuine regular order can prove that the same numeric ID is also valid.
+        """
+        from backend.utils.exit_orders import is_conditional, parse_order_reference
+        conditional_ids, regular_ids = set(), set()
+
+        def identity(owner, value):
+            return (owner, parse_order_reference(value)[1]) if value is not None else None
+
+        for owner, plan in plans:
+            for entry in plan.get('entries', []):
+                if entry.get('id'):
+                    regular_ids.add(identity(owner, entry['id']))
+            if (plan.get('exit_order') or {}).get('id'):
+                regular_ids.add(identity(owner, plan['exit_order']['id']))
+            independent = plan.get('execution_mode') == 'independent_exits'
+            for record in [*plan.get('legs', []), *plan.get('exits', [])]:
+                if record.get('id'):
+                    destination = conditional_ids if independent and is_conditional(record) else regular_ids
+                    destination.add(identity(owner, record['id']))
+                if record.get('execution_order_id'):
+                    regular_ids.add(identity(owner, record['execution_order_id']))
+        for row in legacy_rows:
+            if str(row['side'] or '').upper() in {'BUY', 'SELL'} and str(row['event_type'] or '').upper() == 'ORDER_CREATED':
+                regular_ids.add(identity(row['config_id'], row['order_id']))
+
+        affected = set()
+        with get_db_conn() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            for owner, raw_id in conditional_ids:
+                link = conn.execute('SELECT * FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+                                    (self.scope, self.symbol, raw_id)).fetchone()
+                if not link or link['config_id'] != owner:
+                    continue
+                try:
+                    metadata = json.loads(link['payload'])
+                except (TypeError, ValueError):
+                    metadata = {}
+                # An entry, an explicitly indexed regular order, or an actual
+                # child is positive evidence; the algo collision cannot erase it.
+                if (owner, raw_id) in regular_ids or link['role'] == 'entry' or metadata.get('exchange_channel') == 'regular':
+                    regular_ids.add((owner, raw_id))
+                    continue
+                canonical = 'algo:' + raw_id
+                parent = conn.execute('SELECT config_id,payload FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+                                      (self.scope, self.symbol, canonical)).fetchone()
+                if parent and parent['config_id'] != owner:
+                    raise ValueError('Order ownership conflict')
+                parent_metadata = json.loads(parent['payload']) if parent else {}
+                parent_metadata.update(exchange_channel='algo', legacy_alias_retired=raw_id,
+                                       legacy_alias_role=link['role'], legacy_alias_metadata=metadata)
+                conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?) ON CONFLICT(account_scope,symbol,order_id) '
+                             'DO UPDATE SET payload=excluded.payload',
+                             (self.scope, self.symbol, canonical, owner, link['role'], json.dumps(parent_metadata)))
+                conn.execute('DELETE FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=? AND config_id=?',
+                             (self.scope, self.symbol, raw_id, owner))
+                # Keep trade IDs, timestamps, order IDs and raw fill payloads. Only
+                # the unproven attribution is removed, including previous ingests.
+                conn.execute('UPDATE execution_fills SET config_id=NULL WHERE account_scope=? AND symbol=? AND order_id=? AND config_id=?',
+                             (self.scope, self.symbol, raw_id, owner))
+                affected.add(owner)
+            conn.commit()
+        return conditional_ids, regular_ids, affected
+
     def index_saved_plans(self):
         """Recover ownership after restart without assigning arbitrary account trades."""
         with get_db_conn() as conn:
@@ -105,17 +174,26 @@ class ExecutionLedger:
                 "AND (symbol=? OR symbol=?) ORDER BY id",
                 (self.config_id, self.symbol, self.symbol.split(':')[0]),
             ).fetchall()
-        indexed = False
+        plans = []
         for row in [*event_rows, *rows]:
             try:
                 plan = json.loads(row['payload'])
             except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(plan, dict):
                 continue
             scope = plan.get('account_scope')
             if scope and scope != self.scope:
                 continue
             if not scope and row['config_id'] != self.config_id:
                 continue
+            plans.append((row['config_id'], plan))
+        conditional_ids, regular_ids, affected = self._retire_legacy_algo_aliases(plans, legacy_rows)
+        indexed = False
+        for owner, plan in plans:
+            if any(item.get('id') or item.get('execution_order_id') for item in
+                   [*plan.get('entries', []), *plan.get('legs', []), *plan.get('exits', [])]) or (plan.get('exit_order') or {}).get('id'):
+                affected.add(owner)
             common = {
                 'side': plan.get('side'),
                 'episode_id': plan.get('episode_id'),
@@ -127,37 +205,45 @@ class ExecutionLedger:
                     self.scope,
                     self.symbol,
                     item.get('id'),
-                    row['config_id'],
+                    owner,
                     'entry',
                     refresh=False,
                     planned_entry=item.get('price'),
+                    exchange_channel='regular',
                     **common,
                 )
                 indexed = indexed or bool(item.get('id'))
             for item in [*plan.get('legs', []), *plan.get('exits', [])]:
-                order_id = item.get('execution_order_id') or item.get('id')
+                from backend.utils.exit_orders import is_conditional, exit_group, order_reference
+                independent = plan.get('execution_mode') == 'independent_exits'
+                # Algo IDs must not claim regular fills with the same numeric ID.
+                parent_id = order_reference(item, current=False) if independent and is_conditional(item) else item.get('id')
+                order_id = item.get('execution_order_id') or parent_id
+                group = exit_group(item) if independent else None
+                role = ('stop_loss' if group == 'stop_loss' or item.get('kind') == 'sl' else
+                        'agent_exit' if group in {'limit', 'market'} else 'take_profit')
                 register_order(
                     self.scope,
                     self.symbol,
                     order_id,
-                    row['config_id'],
-                    ('agent_exit' if item.get('exit_type') == 'market' else 'stop_loss'
-                     if item.get('kind') == 'sl' or item.get('exit_type') == 'stop_market' else 'take_profit'),
+                    owner,
+                    role,
                     refresh=False,
                     trigger_price=item.get('trigger_price'),
+                    exchange_channel=('algo' if str(order_id).startswith('algo:') else 'regular') if independent else None,
                     **common,
                 )
                 indexed = indexed or bool(order_id)
-                if item.get('execution_order_id') and item.get('id') and item['execution_order_id'] != item['id']:
+                if item.get('execution_order_id') and parent_id and item['execution_order_id'] != parent_id:
                     register_order(
                         self.scope,
                         self.symbol,
-                        item.get('id'),
-                        row['config_id'],
-                        ('agent_exit' if item.get('exit_type') == 'market' else 'stop_loss'
-                         if item.get('kind') == 'sl' or item.get('exit_type') == 'stop_market' else 'take_profit'),
+                        parent_id,
+                        owner,
+                        role,
                         refresh=False,
                         trigger_price=item.get('trigger_price'),
+                        exchange_channel=('algo' if str(parent_id).startswith('algo:') else 'regular') if independent else None,
                         **common,
                     )
             if plan.get('exit_order'):
@@ -166,9 +252,10 @@ class ExecutionLedger:
                     self.scope,
                     self.symbol,
                     order_id,
-                    row['config_id'],
+                    owner,
                     plan.get('exit_reason', 'emergency_exit'),
                     refresh=False,
+                    exchange_channel='regular',
                     **common,
                 )
                 indexed = indexed or bool(order_id)
@@ -176,6 +263,12 @@ class ExecutionLedger:
         # Older versions recorded agent entry/exit IDs in orders but had no execution links.
         # This migration only claims orders already scoped to this exact configuration.
         for row in legacy_rows:
+            from backend.utils.exit_orders import parse_order_reference
+            identity = (row['config_id'], parse_order_reference(row['order_id'])[1])
+            if identity in conditional_ids and identity not in regular_ids:
+                # An old CLOSE_ORDER_CREATED event cannot disambiguate an algo
+                # parent from an identically numbered regular execution.
+                continue
             raw_side = str(row['side'] or '').upper()
             event_type = str(row['event_type'] or '').upper()
             if raw_side.startswith('CLOSE_'):
@@ -203,11 +296,14 @@ class ExecutionLedger:
                 take_profit=row['take_profit'],
                 stop_loss=row['stop_loss'],
                 reason=row['reason'],
+                exchange_channel='regular',
             )
             indexed = indexed or bool(row['order_id'])
 
         if indexed:
-            rebuild_execution_position_history(self.config_id, self.scope, self.symbol)
+            affected.add(self.config_id)
+        for owner in affected:
+            rebuild_execution_position_history(owner, self.scope, self.symbol)
 
     def status(self):
         with get_db_conn() as conn:

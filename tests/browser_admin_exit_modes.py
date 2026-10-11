@@ -86,6 +86,15 @@ def main():
                 page.get_by_text("已保存", exact=True).wait_for()
             page.reload()
             assert edit("legacy-real").inner_text().strip() == modes["independent_exits"]
+            drawer.get_by_role("button", name="Close", exact=True).click()
+            drawer.wait_for(state="hidden")
+            panel = page.get_by_test_id('independent-exits-v2')
+            panel.scroll_into_view_if_needed()
+            text = panel.inner_text()
+            for expected in ('限价退出', '触发限价止损', '触发市价止盈', '委托价', '触发价', '全部', 'waiting_trigger', 'triggered', '固定退出档合计超过当前仓位'):
+                assert expected in text, expected
+            assert '待核验操作' not in text
+            panel.screenshot(path=str(output / f'independent-exits-v2-{width}.png'))
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "mobile overflow"
             assert not errors, errors
             page.close()

@@ -13,6 +13,11 @@ import uuid
 import ccxt
 
 from backend.utils.position_protection import PositionProtection, TERMINAL, _lock
+from backend.utils.exit_orders import (
+    LIMIT_TYPES, canonical_order_type, exit_group, is_conditional,
+    normalize_close, observed_order_status, order_reference, parse_order_reference,
+    positive_number, validate_exit_order,
+)
 
 
 EXIT_TYPES = {"market", "take_profit_limit", "stop_market"}
@@ -57,19 +62,38 @@ def validate_exit(exit_type, side, reference, price=None, trigger_price=None):
 
 
 class IndependentExits(PositionProtection):
+    def _load(self, symbol, side):
+        plan = super()._load(symbol, side)
+        if plan and plan.get('execution_mode') == 'independent_exits':
+            for record in plan.get('entries', []) + plan.get('exits', []):
+                record.setdefault('contract_version', 1)
+                record.setdefault('order_type', canonical_order_type(record))
+                record.setdefault('quantity_mode', 'fixed')
+                record.setdefault('exchange_channel', 'algo' if is_conditional(record) else 'regular')
+                if record.get('id'):
+                    record.setdefault('exchange_order_id', str(record['id']))
+        return plan
+
     def _new(self, symbol, side, sl=None, tp=None):
         plan = super()._new(symbol, side, None, None)
         plan.update(execution_mode="independent_exits", exits=[], ever_filled=False)
         return plan
 
     def _save(self, plan):
+        # Persist the exchange's verified conversion factor for restart recovery,
+        # which cannot assume that stored contract quantities are base units.
+        plan['contract_size'] = positive(self._market(plan['symbol']).get('contractSize') or 1,
+                                         'contract size')
         super()._save(plan)
         from backend.utils.execution_ledger import register_order
         for record in plan.get("exits", []):
-            for oid in {record.get("id"), record.get("execution_order_id")} - {None}:
+            # Algo and ordinary numeric IDs occupy different namespaces. Actual
+            # fills refer to the ordinary child ID, never the algo parent ID.
+            parent = order_reference(record, current=False) if is_conditional(record) else record.get('id')
+            for oid in {parent, record.get("execution_order_id")} - {None}:
                 register_order(self.account_scope, plan["symbol"], oid, self.config_id,
-                               "agent_exit" if record["exit_type"] == "market" else
-                               "stop_loss" if record["exit_type"] == "stop_market" else "take_profit",
+                               "stop_loss" if exit_group(record) == 'stop_loss' else
+                               "take_profit" if exit_group(record) == 'take_profit' else 'agent_exit',
                                episode_id=plan["episode_id"], side=plan["side"],
                                trigger_price=record.get("trigger_price"),
                                planned_exit=record.get("price"))
@@ -78,7 +102,12 @@ class IndependentExits(PositionProtection):
         value = f"{self.config_id}:{operation_id}" if operation_id else uuid.uuid4().hex
         return prefix + hashlib.sha256(value.encode()).hexdigest()[:28]
 
+    def _exit_reference(self, plan, record):
+        return self._trigger_reference({**plan, 'trigger_basis': record.get('trigger_basis', plan.get('trigger_basis', 'last'))})
+
     def _remaining(self, record):
+        if record.get('quantity_mode') == 'all':
+            return None
         return max(float(record.get("amount", 0)) - float(record.get("filled", 0)), 0)
 
     @staticmethod
@@ -95,22 +124,82 @@ class IndependentExits(PositionProtection):
             record.update(filled=previous_filled, fill_pending=True)
             return False
         record["filled"] = max(filled, previous_filled)
+        record['fill_verified'] = True
         record.pop("fill_pending", None)
         return True
 
     def _query(self, record, symbol, trigger=False):
         previous_filled = float(record.get("filled", 0))
         previous_status = record.get("status")
-        order = super()._query(record, symbol, trigger)
+        child = record.get('execution_order_id')
+        conditional = is_conditional(record) and not child
+        params = {'trigger': True} if conditional else {}
+        if not record.get('id'):
+            key = 'clientAlgoId' if conditional and self.ex.id in {'binance', 'binanceusdm'} else 'clientOrderId'
+            params[key] = record['client_id']
+        try:
+            order = self.ex.fetch_order(child or record.get('id'), symbol, params=params)
+        except ccxt.OrderNotFound:
+            return None
+        if not order or not order.get('id'):
+            raise RuntimeError('Exchange returned no verifiable order ID')
+        if not child:
+            record.update(id=str(order['id']), exchange_order_id=str(order['id']))
+        info = order.get('info') or {}
+        if conditional:
+            native_status = str(info.get('algoStatus') or info.get('state') or '').upper()
+            record['parent_status'] = native_status or order.get('status')
+            actual = info.get('actualOrderId') or (info.get('ordId') if self.ex.id == 'okx' else None)
+            if str(actual) in {'0', '-1'}:
+                actual = None
+            if actual and str(actual) not in {'0', '-1'}:
+                record.update(execution_order_id=str(actual), parent_algo_id=record['id'], triggered=True)
+                return self._query(record, symbol)
+            if native_status in {'NEW', 'LIVE'} and order.get('filled') is None and not record.get('cancel_confirmed_at'):
+                record.update(status='open', waiting_trigger=True, fill_verified=False)
+                record.pop('fill_pending', None)
+                return order
+            if native_status in {'TRIGGERED', 'TRIGGERING', 'FINISHED', 'EFFECTIVE'} and not actual:
+                record.update(status='open', triggered=True, fill_pending=True)
+                record.pop('waiting_trigger', None)
+                raise RuntimeError('Conditional order triggered; execution order identity is unverified')
+            if (native_status in {'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'}
+                    and not record.get('triggered') and not actual and order.get('filled') is None):
+                order = {**order, 'filled': previous_filled,
+                         'status': {'CANCELED': 'canceled', 'CANCELLED': 'canceled',
+                                    'EXPIRED': 'expired', 'REJECTED': 'rejected'}[native_status]}
+            record['waiting_trigger'] = order.get('status') == 'open' and not record.get('triggered')
+        else:
+            record.pop('waiting_trigger', None)
+        record['status'] = order.get('status')
         if (order is not None and record.get('cancel_confirmed_at') and previous_status in TERMINAL
                 and order.get('status') not in TERMINAL):
             record.update(status=previous_status, filled=previous_filled, fill_pending=True)
             raise RuntimeError("Cancellation fill outcome is unverified; awaiting a terminal order response")
         if order is not None and not self._record_fill(record, order, previous_filled):
             raise RuntimeError("Order fill quantity is unverified; reconcile the existing order ID")
+        if (child or not conditional) and order.get('amount') is not None:
+            actual_amount = positive(order['amount'], 'execution quantity', zero=True)
+            if record.get('quantity_mode') == 'all':
+                record['execution_amount'] = actual_amount
+                record['resolved_amount'] = actual_amount * float(self._market(symbol).get('contractSize') or 1)
+            else:
+                record['amount'] = actual_amount
+        amendment = record.get('amendment')
+        if amendment and amendment.get('state') == 'pending':
+            if order.get('price') == amendment['price'] and order.get('amount') == amendment['amount']:
+                record.update(price=amendment['price'], amount=amendment['amount'])
+                amendment['state'] = 'confirmed'
+            elif record['status'] in TERMINAL:
+                amendment['state'] = 'terminal_unconfirmed'
         return order
 
     def _record_cancel_fill(self, record, response):
+        info = response.get('info') or {}
+        if is_conditional(record) and info.get('algoId') and 'code' in info and 'executedQty' not in info:
+            # CCXT may synthesize filled=0 for an ACK with no execution fields.
+            # It is cancellation proof, not proof of the cumulative child fills.
+            response = {**response, 'filled': None}
         return self._record_fill(record, response, float(record.get('filled', 0)))
 
     def _position(self, plan):
@@ -164,16 +253,51 @@ class IndependentExits(PositionProtection):
         pending = record.get("status") != "rejected" and bool(
             not record.get("id") or record.get("status") in {None, "submitting"}
             or record.get("fill_pending") or record.get("replacement")
+            or record.get('amendment', {}).get('state') in {'pending', 'terminal_unconfirmed'}
             or plan.get("error") or plan["state"] == "EXITING"
             or plan.get("unobserved_entry_fills") or plan.get("cleanup_fill_unseen"))
-        return {"id": record.get("id"), "client_id": record.get("client_id"),
+        remaining = self._remaining(record)
+        amount = record.get('amount')
+        all_quantity = record.get('quantity_mode') == 'all'
+        actual_total = record.get('execution_amount', record.get('submission_amount')) if all_quantity else amount
+        actual_remaining = max(float(actual_total) - float(record.get('filled', 0)), 0) * contract_size if actual_total is not None else None
+        result = {"id": record.get("id"), "client_id": record.get("client_id"),
                 "status": record.get("status"), "episode_id": plan["episode_id"],
-                "amount": float(record.get("amount", 0)) * contract_size,
-                "remaining": self._remaining(record) * contract_size,
+                "amount": float(amount) * contract_size if amount is not None and not all_quantity else None,
+                "remaining": remaining * contract_size if remaining is not None else None,
                 "exit_type": record.get("exit_type"), "price": record.get("price"),
                 "trigger_price": record.get("trigger_price"),
                 "protection_state": plan["state"], "error": plan.get("error"),
                 "pending": pending}
+        status = observed_order_status(record)
+        result.update(order_id=order_reference(record), order_status=status,
+                      parent_order_id=order_reference(record, current=False) if record.get('execution_order_id') else None,
+                      exchange_order_id=record.get('execution_order_id') or record.get('id'),
+                      exchange_channel='regular' if record.get('execution_order_id') else
+                          record.get('exchange_channel', 'algo' if is_conditional(record) else 'regular'),
+                      contract_version=record.get('contract_version', 1),
+                      order_type=canonical_order_type(record), quantity_mode=record.get('quantity_mode', 'fixed'),
+                      filled_amount=(float(record.get('filled', 0)) * contract_size
+                                     if record.get('fill_verified', True) else None),
+                      remaining_amount=actual_remaining, actual_remaining=actual_remaining,
+                      requested_amount=record.get('requested_amount'),
+                      resolved_amount=record.get('resolved_amount'),
+                      trigger_basis=record.get('trigger_basis', plan.get('trigger_basis', 'last')),
+                      side=plan['side'], pos_side=plan['side'])
+        if record.get('replacement') or record.get('replaces'):
+            result['edit_method'] = 'cancel_replace'
+            result['previous_order_id'] = record.get('replaces_reference') or record.get('replaces')
+        if record.get('amendment'):
+            result['edit_method'] = 'native'
+            result['amendment_state'] = record['amendment']['state']
+        if record.get('contract_version', 1) >= 2:
+            result['status'] = ('failed' if record.get('status') == 'rejected' or record.get('replacement_error')
+                                or record.get('amendment', {}).get('state') == 'rejected' else
+                                'pending' if pending else 'completed' if record.get('status') in TERMINAL
+                                or record.get('amendment', {}).get('state') == 'confirmed' else 'submitted')
+        if record.get('replacement_error'):
+            result.update(error=record['replacement_error'], error_code='quantity_conflict')
+        return result
 
     def _active_plan(self, symbol, side, *, create=False):
         plan = self._load(symbol, side)
@@ -189,11 +313,14 @@ class IndependentExits(PositionProtection):
             raise ValueError("Independent orders require reconciliation before another action")
         return plan
 
-    def open(self, symbol, op, operation_id=None):
+    def open(self, symbol, op, operation_id=None, contract_version=1):
         from backend.mcp.guard import assert_entry_allowed
         assert_entry_allowed(self.mt, symbol)
         if op.stop_loss is not None or op.take_profit is not None:
             raise ValueError("Independent mode uses the close tool for exits; entry TP/SL must be omitted")
+        if contract_version == 2:
+            positive_number(op.amount, 'amount')
+            positive_number(op.entry_price, 'price')
         with _lock(self.account_scope):
             market = self._market(symbol)
             symbol = market["symbol"]
@@ -212,9 +339,25 @@ class IndependentExits(PositionProtection):
                                   str(p.get("side", "")).upper() != side
                                   for p in self.ex.fetch_positions([symbol])):
                 raise ValueError("Close opposite exposure before opening in one-way mode")
+            if not hedged:
+                opposite = self._load(symbol, 'SHORT' if side == 'LONG' else 'LONG')
+                if opposite and opposite.get('state') != 'DONE' and any(
+                        entry.get('status') not in TERMINAL for entry in opposite.get('entries', [])):
+                    raise ValueError('Opposite entry is pending in one-way mode')
+                # Exchange orders cover external entries and another process's
+                # in-flight submissions as well as the local plan.
+                if hasattr(self.ex, 'fetch_open_orders'):
+                    opposite_action = 'sell' if side == 'LONG' else 'buy'
+                    for order in self.ex.fetch_open_orders(symbol):
+                        info = order.get('info') or {}
+                        reduce_only = order.get('reduceOnly', info.get('reduceOnly', False))
+                        if (str(order.get('side') or info.get('side') or '').lower() == opposite_action
+                                and str(reduce_only).lower() != 'true'):
+                            raise ValueError('Opposite entry is pending in one-way mode')
             record = dict(client_id=self._client_id(operation_id, "cae"), operation_id=operation_id,
                           id=None, status="submitting", amount=amount, price=price,
-                          filled=0, created_at=time.time())
+                          filled=0, created_at=time.time(), contract_version=contract_version,
+                          order_type='limit', quantity_mode='fixed', exchange_channel='regular')
             plan["entries"].append(record)
             self._save(plan)
             params = {**self._params(side, hedged), "clientOrderId": record["client_id"], "timeInForce": "GTC"}
@@ -225,12 +368,16 @@ class IndependentExits(PositionProtection):
     def _submit(self, plan, record, order_type, side, params):
         try:
             order = self.ex.create_order(plan["symbol"], order_type, side,
-                                         record["amount"], record.get("price"), params)
+                                         record.get('submission_amount', record["amount"]), record.get("price"), params)
             if not order or not order.get("id"):
                 raise RuntimeError("Submission outcome unknown; reconcile by client ID")
             previous_filled = float(record.get("filled", 0))
             record.update(id=str(order["id"]), status=order.get("status") or "open")
-            self._record_fill(record, order, previous_filled)
+            record['exchange_order_id'] = str(order['id'])
+            if is_conditional(record) and order.get('filled') is None:
+                record['fill_verified'] = False
+            else:
+                self._record_fill(record, order, previous_filled)
             if not record.get("exit_type"):
                 new_fill = max(float(record["filled"]) - previous_filled, 0)
                 if new_fill:
@@ -251,20 +398,38 @@ class IndependentExits(PositionProtection):
     def _submit_exit(self, plan, record, pos):
         hedged = bool(pos.get("hedged", self.ex.fetch_position_mode(plan["symbol"]).get("hedged")))
         params = {**self._params(plan["side"], hedged, closing=True), "clientOrderId": record["client_id"]}
-        if not hedged:
+        kind = canonical_order_type(record)
+        dynamic_all = record.get('quantity_mode') == 'all' and is_conditional(record)
+        if dynamic_all:
+            params.pop('reduceOnly', None)
+            if self.ex.id in {'binance', 'binanceusdm'}:
+                params['closePosition'] = True
+            elif self.ex.id == 'okx' and not hedged:
+                params.update(closeFraction='1', reduceOnly=True)
+            else:
+                raise ValueError('unsupported_combination: adapter does not support dynamic conditional all')
+        elif not hedged:
             params["reduceOnly"] = True
-        if record["exit_type"] == "stop_market":
-            params["stopLossPrice"] = record["trigger_price"]
+        if is_conditional(record):
+            params['stopLossPrice' if kind.startswith('stop_') else 'takeProfitPrice'] = record['trigger_price']
             if self.ex.id in {"binance", "binanceusdm"}:
-                params["workingType"] = "CONTRACT_PRICE"
-        if record["exit_type"] == "take_profit_limit":
+                params['workingType'] = 'MARK_PRICE' if record.get('trigger_basis', plan.get('trigger_basis')) == 'mark' else 'CONTRACT_PRICE'
+            elif self.ex.id == 'okx':
+                params['slTriggerPxType' if kind.startswith('stop_') else 'tpTriggerPxType'] = record.get('trigger_basis', plan.get('trigger_basis', 'last'))
+        if kind in LIMIT_TYPES:
             params["timeInForce"] = "GTC"
-        # In particular, never set closePosition / closeFraction, even for full exits.
-        self._submit(plan, record, "limit" if record["exit_type"] == "take_profit_limit" else "market",
-                     "sell" if plan["side"] == "LONG" else "buy", params)
+        self._submit(plan, record, 'limit' if kind in LIMIT_TYPES else 'market',
+                      "sell" if plan["side"] == "LONG" else "buy", params)
 
-    def close(self, symbol, pos_side, amount, exit_type="market", price=None,
-              trigger_price=None, reason="", operation_id=None):
+    def close(self, symbol, pos_side, amount=None, exit_type="market", price=None,
+              trigger_price=None, reason="", operation_id=None, contract_version=1, close_all=False):
+        intent = normalize_close(exit_type, amount, close_all, contract_version)
+        kind = intent['order_type']
+        if contract_version == 2:
+            if price is not None:
+                positive_number(price, 'price')
+            if trigger_price is not None:
+                positive_number(trigger_price, 'trigger price')
         with _lock(self.account_scope):
             market = self._market(symbol)
             symbol = market["symbol"]
@@ -284,22 +449,34 @@ class IndependentExits(PositionProtection):
                 price = float(self.ex.price_to_precision(symbol, positive(price, "price")))
             if trigger_price is not None:
                 trigger_price = float(self.ex.price_to_precision(symbol, positive(trigger_price, "trigger price")))
-            validate_exit(exit_type, pos_side, self._trigger_reference(plan), price, trigger_price)
-            amount = positive(amount, "amount", zero=True)
+            validate_exit_order(kind, pos_side, self._trigger_reference(plan), price, trigger_price)
             available = float(pos["contracts"])
-            requested = amount / float(market.get("contractSize") or 1) if amount else available
+            contract_size = float(market.get('contractSize') or 1)
+            requested = amount / contract_size if amount else available
             if requested > available + 1e-12:
                 raise ValueError("Exit quantity exceeds the current position")
-            quantity = float(self.ex.amount_to_precision(symbol, requested))
-            positive(quantity, "rounded amount")
-            outstanding = sum(self._remaining(r) for r in plan["exits"]
-                              if r["exit_type"] == exit_type and r.get("status") not in TERMINAL)
-            if exit_type != "market" and outstanding + quantity > available + 1e-12:
-                raise ValueError("Outstanding exits of this type would exceed the position")
+            dynamic_all = close_all and kind != 'market'
+            if dynamic_all:
+                hedged = bool(self.ex.fetch_position_mode(symbol).get('hedged'))
+                if self.ex.id not in {'binance', 'binanceusdm'} and not (self.ex.id == 'okx' and not hedged):
+                    raise ValueError('unsupported_combination: adapter does not support dynamic conditional all')
+                from backend.mcp.guard import assert_position_owner
+                assert_position_owner(self.mt, symbol, plan_override=plan, adopted_only=True)
+                quantity = None
+            else:
+                quantity = float(self.ex.amount_to_precision(symbol, requested))
+                positive(quantity, "rounded amount")
             record = dict(client_id=self._client_id(operation_id), operation_id=operation_id,
-                          id=None, status="submitting", amount=quantity, filled=0,
+                          id=None, status="submitting", amount=None if close_all else quantity, filled=0,
                           exit_type=exit_type, price=price, trigger_price=trigger_price,
-                          reason=reason, created_at=time.time())
+                          reason=reason, created_at=time.time(), contract_version=contract_version,
+                          order_type=kind, quantity_mode=intent['quantity_mode'],
+                          exchange_channel='algo' if kind not in {'market', 'limit'} else 'regular',
+                          requested_amount=None if close_all else quantity * contract_size,
+                          resolved_amount=quantity * contract_size if close_all and kind == 'market' else None,
+                          trigger_basis=plan.get('trigger_basis', 'last'))
+            if close_all and kind == 'market':
+                record['submission_amount'] = quantity
             plan["exits"].append(record)
             self._save(plan)
             self._submit_exit(plan, record, pos)
@@ -308,26 +485,110 @@ class IndependentExits(PositionProtection):
 
     def _find_order(self, symbol, order_id):
         symbol = self._market(symbol)["symbol"]
+        channel, raw_id = parse_order_reference(order_id)
+        matches = []
         for side in ("LONG", "SHORT"):
             plan = self._load(symbol, side)
             if not plan or plan.get("execution_mode") != "independent_exits":
                 continue
             for record in plan.get("entries", []) + plan.get("exits", []):
-                if str(record.get("id")) == str(order_id):
-                    return plan, record
+                identities = [(record.get('exchange_channel') or ('algo' if is_conditional(record) else 'regular'), record.get('id'))]
+                if record.get('execution_order_id'):
+                    identities.append(('regular', record['execution_order_id']))
+                for actual_channel, actual_id in identities:
+                    if actual_id is not None and str(actual_id) == raw_id and (channel is None or channel == actual_channel):
+                        matches.append((plan, record))
+        if len(matches) > 1:
+            raise ValueError('Ambiguous order identity; use the qualified order_id returned by query')
+        if matches:
+            return matches[0]
         raise ValueError("Order is not owned by this independent configuration")
+
+    def describe_order(self, symbol, order_id):
+        with _lock(self.account_scope):
+            plan, record = self._find_order(symbol, order_id)
+            if record.get('status') not in TERMINAL or record.get('fill_pending'):
+                self._query(record, plan['symbol'])
+                self._save(plan)
+            result = self._result(plan, record)
+            return {**result, 'kind': 'exit' if record.get('exit_type') else 'entry',
+                    'side': plan['side'], 'amount': result['amount'],
+                    'filled_amount': result['filled_amount'], 'remaining_amount': result['actual_remaining'],
+                    'price': record.get('price'), 'order_id': order_reference(record)}
+
+    def _cancel(self, record, plan, trigger=False, *, allow_child=True):
+        if record.get('status') in TERMINAL and not record.get('fill_pending'):
+            return
+        order = self._query(record, plan['symbol'])
+        if order is None:
+            raise RuntimeError('Order absent during cleanup; keep plan blocked for reconciliation')
+        if record.get('status') in TERMINAL:
+            return
+        if record.get('execution_order_id') and not allow_child:
+            return
+        target = record.get('execution_order_id') or record['id']
+        conditional = is_conditional(record) and not record.get('execution_order_id')
+        target_key = ('algo:' if conditional else 'regular:') + str(target)
+        if (record.get('cancel_target') != target_key or not record.get('cancel_requested_at')
+                or time.time() - record['cancel_requested_at'] >= 15):
+            record.update(cancel_requested_at=time.time(), cancel_target=target_key)
+            self._save(plan)
+            try:
+                response = self.ex.cancel_order(target, plan['symbol'], params={'trigger': True} if conditional else {}) or {}
+            except ccxt.NetworkError:
+                response = None
+            except ccxt.OrderNotFound:
+                response = None
+            else:
+                info = response.get('info') or {}
+                actual = info.get('actualOrderId') or (info.get('ordId') if conditional and self.ex.id == 'okx' else None)
+                if conditional and actual and str(actual) not in {'0', '-1'}:
+                    record.update(execution_order_id=str(actual), parent_algo_id=record['id'], triggered=True)
+                    self._save(plan)
+                    return self._cancel(record, plan, allow_child=allow_child)
+                if conditional and str(info.get('algoStatus') or '').upper() in {'TRIGGERED', 'TRIGGERING', 'FINISHED'}:
+                    self._query(record, plan['symbol'])
+                    return self._cancel(record, plan, allow_child=allow_child)
+                status = response.get('status')
+                same_order = str(response.get('id') or info.get('algoId') or '') == str(target)
+                if same_order and conditional and str(info.get('code')) == '200' and status is None:
+                    status = 'canceled'
+                if same_order and status in TERMINAL:
+                    record.update(status=status, cancel_confirmed_at=time.time())
+                    record.pop('waiting_trigger', None)
+                    if not self._record_cancel_fill(record, response):
+                        plan['error'] = 'Cancellation confirmed but cumulative fill is unverified; reconcile the existing order ID'
+                        self._save(plan)
+                        raise RuntimeError(plan['error'])
+                    self._save(plan)
+                    return
+        for delay in (0, .15, .35, .75, 1.5, 2, 2, 2, 3, 3):
+            if delay:
+                time.sleep(delay)
+            try:
+                self._query(record, plan['symbol'])
+            except ccxt.NetworkError:
+                continue
+            if conditional and record.get('execution_order_id'):
+                return self._cancel(record, plan, allow_child=allow_child)
+            if record.get('status') in TERMINAL and not record.get('fill_pending'):
+                record['cancel_confirmed_at'] = time.time()
+                self._save(plan)
+                return
+        raise RuntimeError('Cancellation not confirmed; reconcile the existing order before continuing')
 
     def cancel(self, symbol, order_id, operation_id=None):
         with _lock(self.account_scope):
             plan, record = self._find_order(symbol, order_id)
             successors = [item for item in plan.get('exits', [])
-                          if str(item.get('replaces')) == str(order_id)]
+                          if str(item.get('replaces')) == str(record.get('id'))]
             if record.get('replacement') or successors:
                 raise ValueError('Order has a replacement intent or successor; reconcile and cancel the current exit ID')
+            record.pop('replacement_error', None)
             if operation_id:
                 record['cancel_operation_id'] = operation_id
                 self._save(plan)
-            self._cancel(record, plan, record.get("exit_type") == "stop_market")
+            self._cancel(record, plan)
             self._reconcile(plan)
             return self._result(plan, record)
 
@@ -340,8 +601,16 @@ class IndependentExits(PositionProtection):
                            price=price, trigger_price=trigger_price, reason=reason,
                            operation_id=operation_id, client_id=self._client_id(operation_id))
             record["replacement"] = request
+        # Keep the attempted edit recoverable even when no successor is needed
+        # (for example a trigger race or fills exhausting its target).
+        record['last_operation_id'] = request.get('operation_id')
+        self._save(plan)
+        self._cancel(record, plan, allow_child=False)
+        if record.get('execution_order_id'):
+            record.pop('replacement', None)
+            record['replacement_error'] = 'order_already_triggered: edit the current execution order explicitly'
             self._save(plan)
-        self._cancel(record, plan, record["exit_type"] == "stop_market")
+            return record
         if record.get("status") == "closed" and not record.get("fill_pending"):
             record.pop("replacement", None)
             self._save(plan)
@@ -356,20 +625,30 @@ class IndependentExits(PositionProtection):
             plan["error"] = "Exit replacement pending position verification; do not repeat the order"
             self._save(plan)
             raise
-        quantity = max(request["remaining"] - max(float(record.get("filled", 0)) - request["original_filled"], 0), 0)
-        others = sum(self._remaining(r) for r in plan["exits"] if r is not record and
-                     r["exit_type"] == record["exit_type"] and r.get("status") not in TERMINAL)
-        quantity = min(quantity, max(float(pos["contracts"]) - others, 0))
-        quantity = float(self.ex.amount_to_precision(plan["symbol"], quantity))
+        dynamic_all = record.get('quantity_mode') == 'all'
+        quantity = None if dynamic_all else max(request["remaining"] - max(float(record.get("filled", 0)) - request["original_filled"], 0), 0)
+        if quantity is not None and quantity > float(pos['contracts']) + 1e-12:
+            record.pop('replacement', None)
+            record['replacement_error'] = 'Replacement quantity exceeds current position; choose a new explicit amount'
+            record['last_operation_id'] = request.get('operation_id')
+            self._save(plan)
+            return record
+        if quantity is not None:
+            quantity = float(self.ex.amount_to_precision(plan["symbol"], quantity))
         record.pop("replacement", None)
-        if quantity <= 0:
+        if quantity is not None and quantity <= 0:
             self._save(plan)
             return record
         replacement = dict(client_id=request["client_id"], operation_id=request["operation_id"],
                            id=None, status="submitting", filled=0, amount=quantity,
                            exit_type=record["exit_type"], price=request["price"],
-                           trigger_price=request["trigger_price"], reason=request["reason"],
-                           replaces=record["id"], created_at=time.time())
+                            trigger_price=request["trigger_price"], reason=request["reason"],
+                            replaces=record["id"], replaces_reference=order_reference(record, current=False),
+                            created_at=time.time(), contract_version=record.get('contract_version', 1),
+                            order_type=canonical_order_type(record), quantity_mode=record.get('quantity_mode', 'fixed'),
+                            exchange_channel=record.get('exchange_channel', 'algo' if is_conditional(record) else 'regular'),
+                            trigger_basis=record.get('trigger_basis', plan.get('trigger_basis', 'last')),
+                            requested_amount=quantity * float(self._market(plan['symbol']).get('contractSize') or 1) if quantity is not None else None)
         plan["exits"].append(replacement)
         self._save(plan)
         self._submit_exit(plan, replacement, pos)
@@ -389,7 +668,7 @@ class IndependentExits(PositionProtection):
                 raise ValueError("Reconcile the position and exit orders first")
             price = record.get("price") if price is None else float(self.ex.price_to_precision(plan["symbol"], positive(price, "price")))
             trigger_price = record.get("trigger_price") if trigger_price is None else float(self.ex.price_to_precision(plan["symbol"], positive(trigger_price, "trigger price")))
-            validate_exit(record["exit_type"], plan["side"], self._trigger_reference(plan), price, trigger_price)
+            validate_exit_order(canonical_order_type(record), plan["side"], self._exit_reference(plan, record), price, trigger_price)
             contract_size = float(self._market(plan["symbol"]).get("contractSize") or 1)
             remaining = self._remaining(record) if amount is None else positive(amount, "remaining amount") / contract_size
             remaining = float(self.ex.amount_to_precision(plan['symbol'],remaining))
@@ -398,9 +677,7 @@ class IndependentExits(PositionProtection):
             if minimum is not None and remaining < float(minimum):
                 raise ValueError('Amended remaining amount is below the exchange minimum')
             pos = self._position(plan)
-            others = sum(self._remaining(r) for r in plan["exits"] if r is not record and
-                         r["exit_type"] == record["exit_type"] and r.get("status") not in TERMINAL)
-            if others + remaining > float(pos["contracts"]) + 1e-12:
+            if remaining > float(pos["contracts"]) + 1e-12:
                 raise ValueError("Amended exit quantities exceed position")
             result = self._replace(plan, record, remaining, price=price, trigger_price=trigger_price,
                                    reason=reason, operation_id=operation_id)
@@ -412,6 +689,117 @@ class IndependentExits(PositionProtection):
         # Native edit intent is persisted by the shared entry amendment implementation.
         return super().amend_entry(symbol, order_id, entry_price if entry_price is not None else price,
                                    amount, reason, pos_side, operation_id=operation_id)
+
+    def edit(self, symbol, order_id, remaining_amount=None, price=None, trigger_price=None,
+             reason='', operation_id=None):
+        """Edit a managed order; the quantity target is its unfilled base amount."""
+        if all(value is None for value in (remaining_amount, price, trigger_price)):
+            raise ValueError('Provide price, trigger_price or remaining_amount')
+        if not str(reason).strip():
+            raise ValueError('An edit reason is required')
+        for name, value in (('remaining_amount', remaining_amount), ('price', price), ('trigger_price', trigger_price)):
+            if value is not None:
+                positive_number(value, name)
+        with _lock(self.account_scope):
+            plan, record = self._find_order(symbol, order_id)
+            existing = self._existing_operation(plan, operation_id)
+            if existing:
+                return self._v2_result(plan, existing)
+            if operation_id and record.get('last_operation_id') == operation_id:
+                return self._v2_result(plan, record)
+            amendment = record.get('amendment') or {}
+            if operation_id and amendment.get('operation_id') == operation_id:
+                return self._v2_result(plan, record)
+            if not record.get('exit_type'):
+                from backend.mcp.guard import assert_entry_allowed
+                assert_entry_allowed(self.mt, plan['symbol'])
+            self._reconcile(plan)
+            order = self._query(record, plan['symbol'])
+            if order is None:
+                raise RuntimeError('Order outcome unresolved; reconcile the original identity')
+            requested_channel, requested_id = parse_order_reference(order_id)
+            is_child = (record.get('execution_order_id') and requested_id == record['execution_order_id']
+                        and requested_channel != 'algo')
+            if record.get('execution_order_id') and not is_child:
+                record['last_operation_id'] = operation_id
+                record['replacement_error'] = 'order_already_triggered: edit the current execution order explicitly'
+                self._save(plan)
+                return {**self._v2_result(plan, record), 'status': 'failed',
+                        'error_code': 'order_already_triggered',
+                        'error': 'Condition already triggered; explicitly edit the returned execution order_id'}
+            if record.get('status') in TERMINAL:
+                raise ValueError('Order already ended; do not reopen it as an edit')
+            if record.get('replacement') or record.get('amendment', {}).get('state') == 'pending' or plan.get('error'):
+                raise ValueError('Order modification is unresolved; reconcile before another edit')
+            kind = canonical_order_type(record)
+            effective_kind = ('limit' if kind in LIMIT_TYPES else 'market') if is_child else kind
+            if effective_kind == 'market':
+                raise ValueError('Market execution orders cannot be edited')
+            if record.get('quantity_mode') == 'all' and remaining_amount is not None:
+                raise ValueError('Dynamic all orders do not accept remaining_amount')
+            new_price = record.get('price') if price is None else float(self.ex.price_to_precision(plan['symbol'], positive(price, 'price')))
+            new_trigger = record.get('trigger_price') if trigger_price is None else float(self.ex.price_to_precision(plan['symbol'], positive(trigger_price, 'trigger price')))
+            if effective_kind == 'limit':
+                if trigger_price is not None:
+                    raise ValueError('Regular orders cannot edit trigger_price')
+                validate_exit_order('limit', plan['side'], self._exit_reference(plan, record), new_price)
+            else:
+                validate_exit_order(kind, plan['side'], self._exit_reference(plan, record), new_price, new_trigger)
+            contract_size = float(self._market(plan['symbol']).get('contractSize') or 1)
+            remaining = self._remaining(record) if remaining_amount is None else positive(remaining_amount, 'remaining amount') / contract_size
+            if remaining is not None:
+                remaining = float(self.ex.amount_to_precision(plan['symbol'], remaining))
+                positive(remaining, 'remaining amount')
+                minimum = (self._market(plan['symbol']).get('limits') or {}).get('amount', {}).get('min')
+                if minimum is not None and remaining < float(minimum):
+                    raise ValueError('Amended remaining amount is below the exchange minimum')
+            if record.get('exit_type'):
+                pos = self._position(plan)
+                if not pos:
+                    raise ValueError('Exit edit requires an already filled position')
+                if remaining is not None and remaining > float(pos['contracts']) + 1e-12:
+                    raise ValueError('Amended exit quantity exceeds position')
+            record.pop('replacement_error', None)
+            if effective_kind != 'limit':
+                result = self._replace(plan, record, remaining, price=new_price, trigger_price=new_trigger,
+                                       reason=reason, operation_id=operation_id)
+                self._reconcile(plan)
+                return self._v2_result(plan, result)
+            # Both venues modify the existing LIMIT, preserving its side and
+            # close-only semantics. Never fall back to recreation after a timeout.
+            if self.ex.id not in {'binance', 'binanceusdm', 'okx'}:
+                raise ValueError('unsupported_combination: native LIMIT edit unavailable')
+            total = float(self.ex.amount_to_precision(plan['symbol'], float(record.get('filled', 0)) + remaining))
+            record['amendment'] = dict(state='pending', price=new_price, amount=total,
+                                       remaining=remaining, filled_at_verification=float(record.get('filled', 0)),
+                                       operation_id=operation_id, reason=reason, requested_at=time.time())
+            self._save(plan)
+            target = record.get('execution_order_id') or record['id']
+            side = ('sell' if plan['side'] == 'LONG' else 'buy') if record.get('exit_type') else ('buy' if plan['side'] == 'LONG' else 'sell')
+            try:
+                self.ex.edit_order(target, plan['symbol'], 'limit', side, total, new_price)
+            except ccxt.ExchangeError:
+                record['amendment']['state'] = 'rejected'
+                self._save(plan)
+                raise
+            except Exception as exc:
+                plan['error'] = f'Amendment outcome unresolved: {exc}'
+                self._save(plan)
+                raise
+            self._query(record, plan['symbol'])
+            self._save(plan)
+            self._reconcile(plan)
+            return self._v2_result(plan, record)
+
+    def _v2_result(self, plan, record):
+        result = self._result(plan, record)
+        result['contract_version'] = 2
+        result['status'] = ('failed' if record.get('replacement_error') or record.get('status') == 'rejected'
+                            or record.get('amendment', {}).get('state') == 'rejected' else
+                            'pending' if result['pending'] else 'completed')
+        if str(record.get('replacement_error', '')).startswith('order_already_triggered'):
+            result['error_code'] = 'order_already_triggered'
+        return result
 
     def _cleanup(self, plan):
         plan["state"] = "EXITING"
@@ -480,7 +868,8 @@ class IndependentExits(PositionProtection):
                         raise RuntimeError(f"Order state unresolved: {record['client_id']}")
                     if record.get("amendment", {}).get("state") == "pending":
                         raise RuntimeError("Entry amendment outcome unresolved")
-            if plan.get('adoption'):
+            if plan.get('adoption') or any(r.get('quantity_mode') == 'all' and is_conditional(r)
+                                          and r.get('status') not in TERMINAL for r in plan.get('exits', [])):
                 from backend.mcp.guard import assert_position_owner
                 assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True)
             pos = self._position(plan)
@@ -518,28 +907,9 @@ class IndependentExits(PositionProtection):
             # queried above and is never recreated merely because an ACK was lost.
             replacements = [record for record in plan['exits'] if record.get('replacement')]
             for record in replacements:
-                self._cancel(record, plan, record['exit_type'] == 'stop_market')
-            for record in replacements:
                 self._replace(plan, record, record["replacement"]["remaining"])
-            for kind in ("take_profit_limit", "stop_market"):
-                live = [r for r in plan["exits"] if r["exit_type"] == kind and r.get("status") not in TERMINAL]
-                total = sum(self._remaining(r) for r in live)
-                quantity = float(pos["contracts"])
-                if total > quantity + 1e-12:
-                    ratio = quantity / total
-                    # Cancel all affected orders before replacing. This prevents the
-                    # first replacement from stealing capacity from later siblings.
-                    targets = [(r, self._remaining(r) * ratio) for r in live]
-                    for record, target in targets:
-                        record["replacement"] = dict(remaining=target, original_filled=float(record.get("filled", 0)),
-                            price=record.get("price"), trigger_price=record.get("trigger_price"),
-                            reason="position reduced; proportional quantity correction", operation_id=None,
-                            client_id=self._client_id(None))
-                    self._save(plan)
-                    for record, _ in targets:
-                        self._cancel(record, plan, kind == "stop_market")
-                    for record, target in targets:
-                        self._replace(plan, record, target)
+            # Quantity conflicts are observable facts, never an automatic
+            # allocation policy. Only pre-existing persisted replacements resume.
             plan["verified_at"] = time.time()
             self._save(plan)
         except Exception as exc:
@@ -551,8 +921,9 @@ class IndependentExits(PositionProtection):
 
     def snapshot(self, symbol):
         symbol = self._market(symbol)["symbol"]
-        result = {"mode": "independent_exits", "exits": [], "adopted_positions": [],
-                  "uncovered": {"LONG": 0.0, "SHORT": 0.0}, "pending": False}
+        result = {"mode": "independent_exits", "exits": [], "entries": [], "adopted_positions": [],
+                  "uncovered": {"LONG": 0.0, "SHORT": 0.0}, "pending": False,
+                  'quantity_conflict': False, 'quantity_conflicts': [], 'exit_groups': {}}
         contract_size = float(self._market(symbol).get("contractSize") or 1)
         for side in ("LONG", "SHORT"):
             plan = self._load(symbol, side)
@@ -567,17 +938,41 @@ class IndependentExits(PositionProtection):
             position = self._position(plan)
             quantity = float((position or {}).get("contracts", 0)) * contract_size
             stops = 0.0
+            for record in plan.get('entries', []):
+                if record.get('status') not in TERMINAL:
+                    result['entries'].append({**self._result(plan, record), 'kind': 'entry'})
+            groups = {group: {'side': side, 'group': group, 'fixed_remaining': 0.0,
+                             'all_count': 0, 'coverage_estimate': 0.0, 'position_amount': quantity}
+                      for group in ('limit', 'take_profit', 'stop_loss')}
             for record in plan.get("exits", []):
                 result["pending"] |= bool(record.get("replacement") or record.get("fill_pending"))
                 if record.get("status") in TERMINAL:
                     continue
                 item = self._result(plan, record)
-                item.update(order_id=record.get("id"), pos_side=side)
+                item.update(pos_side=side, kind='exit', execution_guaranteed=False)
+                coverage = (quantity if item['quantity_mode'] == 'all' and item['order_status'] == 'waiting_trigger'
+                            else min(item['actual_remaining'] or 0, quantity))
+                item['coverage_estimate'] = coverage if not item['pending'] else None
                 result["exits"].append(item)
-                if record["exit_type"] == "stop_market" and record.get("status") == "open" and not item['pending']:
-                    stops += item["remaining"]
+                group = groups.get(exit_group(record))
+                if group is not None:
+                    if item['quantity_mode'] == 'all':
+                        group['all_count'] += 1
+                    else:
+                        group['fixed_remaining'] += item['remaining'] or 0
+                    if not item['pending']:
+                        group['coverage_estimate'] = min(quantity, group['coverage_estimate'] + coverage)
+                if exit_group(record) == 'stop_loss' and record.get("status") == "open" and not item['pending']:
+                    stops += coverage
                 result["pending"] |= item["pending"] or bool(record.get("replacement"))
             result["uncovered"][side] = max(quantity - stops, 0)
+            for group in groups.values():
+                group['excess_amount'] = max(group['fixed_remaining'] - quantity, 0)
+                group['quantity_conflict'] = group['excess_amount'] > 1e-12
+                if group['quantity_conflict']:
+                    result['quantity_conflicts'].append(group.copy())
+                    result['quantity_conflict'] = True
+            result['exit_groups'][side] = groups
             result["pending"] |= bool(plan.get("error") or plan.get('unobserved_entry_fills')
                                       or plan.get('cleanup_fill_unseen') or plan["state"] == "EXITING"
                                       or any(r.get('fill_pending') for r in plan.get('entries', [])))

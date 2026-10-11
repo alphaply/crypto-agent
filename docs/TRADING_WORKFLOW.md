@@ -70,7 +70,7 @@ Content-Type: application/json
 
 ## 批量操作与退出方式
 
-REAL / STRATEGY 支持 `execute_trade_actions(actions=[...])`，一次调用按顺序执行最多 20 项操作：`open`（含加仓）、`close`（含按数量减仓）、`cancel`、`amend_entry`、`amend_exit`、`update_protection`。开平仓项通过 `order` 传入订单参数，改单和撤单项直接提供订单 ID、修改字段和原因。数量均使用标的币数量；LONG/SHORT 表示持仓方向。
+REAL / STRATEGY 支持 `execute_trade_actions`，一次调用顺序执行最多 20 项操作。独立模式推荐 `contract_version=2` 的平铺 `open/close/edit/cancel`；无版本调用保持旧的嵌套 `order` 格式及 `amend_entry/amend_exit/update_protection` 语义，不可混合两种格式。数量均使用标的币数量；LONG/SHORT 表示持仓方向。完整调用见 [MCP 规范工具](MCP.md#独立退出规范工具-v2)。
 
 整批先校验参数和模式，再逐项执行；失败、待核验或结果未知时停止后续操作，结果逐项标记，已完成操作不回滚。这不是交易所原子事务，提交限价开仓后不能假定已成交并立即退出未成交数量。运行与工具调用 ID 用于防止同一操作重放；未知状态需核对，不能更换 ID 反复提交。
 
@@ -86,11 +86,28 @@ REAL / STRATEGY 支持 `execute_trade_actions(actions=[...])`，一次调用按�
 
 旧 STRATEGY 未配置此字段时保持 `attached_required`。已有持仓、挂单、活动保护计划或待核验操作时不能切换；无法确认实盘账户已清空也会拒绝切换并返回 HTTP 409。SPOT_DCA 不使用这些合约退出设置。
 
-独立模式允许同方向多次入场，在同一方向汇总敞口下按数量减仓。`close_position_real` / `close_position_strategy` 通过 `exit_type=market` 即时退出，`take_profit_limit` + `price` 设置限价止盈，`stop_market` + `trigger_price` 设置触发市价止损；`amount=0` 表示全部当前可退出数量。只退出已有成交仓位，不把退出单当作反向开仓。止盈和止损覆盖分别核算；部分成交或仓位变化后维护剩余覆盖，不能用多个退出单重复退出同一可用数量。
+独立模式允许同轮多次 `open` 分批入场，Hedge 账户允许同币多空；One-way 对向持仓或待成交入场会阻止冲突开仓，已知混合方向的 v2 批次在首次写入前拒绝，系统不自动切换账户模式。Agent 可本轮开仓，下轮再设置退出；本轮已经核验成交也可立即 `close`。提交成功不能当作成交，退出只针对已有归属仓位。
 
-`update_exit_order(order_id, price?, trigger_price?, amount?, reason)` 修改独立退出单，撤销使用对应模式的 `cancel_orders_*`。独立退出不会自动恢复整仓附带 TP/SL；看板展示实际退出模式、每张退出单的类型/价格/数量/剩余量/状态和未被有效止损覆盖的数量。未设置止损、提交未确认或行情不可用时均不能声称已有完整保护。
+新工具 `edit(order_id, remaining_amount?, price?, trigger_price?, reason)` 统一修改入场和退出的目标未成交量；`cancel(order_id, reason)` 撤销挂单。旧 `update_exit_order` 等入口保留兼容。看板同时展示委托价和触发价、固定/全部、实际成交及覆盖估计。覆盖不是成交保证，特别是 SL LIMIT 触发后仍可能无法成交。
 
-独立退出数量在提交时固定，`amount=0` 同样换算为当时的仓位量，后续加仓不扩大旧退出单。减仓后，如果某一类 TP 或 SL 的剩余总量超出仓位，该类订单按比例缩量、保留价格。仓位归零后先确认本任务本轮入场和退出单清理完成，再允许下一轮；撤单期间新增成交或交易所状态未知时继续核验，不提前宣布清理完成。期货工具不会合并同价订单，也不会撤销其他任务或归属未知的订单。
+固定 `amount` 档不再自动缩量或补量。单笔量不能超过当前已核验仓位，但同组挂单合计可超过仓位（例如 0.7 + 0.6 对应 1 BTC），`quantity_conflict` 单独提示冲突，由 Agent 决定 edit/cancel，最终接收和执行以交易所为准；此提示不冒充 pending，不阻止合法管理操作。普通 LIMIT、TP、SL 分组观察覆盖。仓位归零后清理同方向同周期的剩余入场和退出单，核验完成后才允许下一周期；撤单期间迟到的入场成交继续作为残仓管理，不自动平掉。暂时空读或未知状态不能当作归零。
+
+新 `close` 明确二选一：`amount > 0` 或 `close_all=true`。市价 all 取提交前仓位快照，之后新增入场不被这张订单追平；条件市价 all 在触发时动态全平，包括同周期后续加仓，等待期间计划 amount/remaining 为 null，不用零表示。例：1 BTC 设置 TP 0.2、0.3、最后 all；SL 同样可设置固定档及 all。最后一档是独立触发条件，跳空可先触发，不保证前两档依次成交。原生 all 面向交易所账户的该品种该方向，要求完整归属；之后外部手工加仓也属于交易所全平方向范围，不能隔离成某个入场批次。
+
+| order_type | 委托价 price | trigger_price | close_all | Binance USD-M 通道 |
+|---|---|---|---|---|
+| market | 不传 | 不传 | 提交前快照 | `/fapi/v1/order` MARKET |
+| limit | 必填 | 不传 | 不支持 | `/fapi/v1/order` LIMIT |
+| stop_market | 不传 | 必填 | 原生动态 | `/fapi/v1/algoOrder` STOP_MARKET |
+| stop_limit | 必填 | 必填 | 不支持 | `/fapi/v1/algoOrder` STOP |
+| take_profit_market | 不传 | 必填 | 原生动态 | `/fapi/v1/algoOrder` TAKE_PROFIT_MARKET |
+| take_profit_limit | 必填 | 必填 | 不支持 | `/fapi/v1/algoOrder` TAKE_PROFIT |
+
+普通 LIMIT 允许可成交或亏损侧价格；条件单按 LONG/SHORT 和止盈/止损校验触发方向，默认 `CONTRACT_PRICE`，历史记录保留原工作价基准。fixed 在 One-way 使用 reduceOnly，在 Hedge 使用 positionSide；原生 all 使用 closePosition，不带 quantity/reduceOnly。依据：[普通下单](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order)、[条件下单](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order)、[修改普通 LIMIT](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Modify-Order)。
+
+旧工具 `take_profit_limit + price` 仍是普通 LIMIT；旧 `amount=0` 在首次提交时固定为仓位快照，重放不重新计算。不能仅凭缺少 trigger_price 猜测新旧版本。新接口不用 amount=0 表示 all，亦不模拟交易所不支持的 all LIMIT。
+
+模拟条件 LIMIT 分为等待触发、触发后的限价委托和实际成交；不会用触发前的同根行情倒填成交。固定超额档实际成交封顶于剩余仓位，未执行余量单独记录，不反向开仓、不按计划量虚记盈亏。同根行情沿用确定性的 SL 优先顺序，无法还原真实 tick 顺序或保证实盘成交顺序。
 
 ## 实盘 TP/SL
 
@@ -235,10 +252,10 @@ Dashboard 的 K 线刷新保留画布实例和浏览范围；切换交易对或 
 - REAL：`update_entry_order_real` 修改本配置托管限价入场单的 `entry_price` / 总 `amount`；可传 `pos_side=LONG/SHORT` 校验原方向，不能变更方向。`amount` 包含已成交部分。保留已有 TP/SL，不允许修改平仓单或保护单。
 - REAL：`update_position_protection_real` 按 `pos_side` 调整 `stop_loss` / `take_profit`，省略项保留，管理同方向整个仓位及托管待成交计划。两个工具不是原子事务；需要先调保护时，保护必须同时兼容旧、新入场及当前仓位，失败后停止并核对。
 - STRATEGY：`update_entry_order_strategy` 根据 `order_id` 与必填 `pos_side` 修改未成交订单入场价、数量及当前模式允许的 TP/SL，省略项保留，方向、有效期不变。拒绝已成交、过期、其他配置/品种和超过模拟可用余额的订单。
-- STRATEGY：附带保护模式下，已成交仓位使用 `update_position_protection_strategy` 修改保护；独立模式使用 `close_position_strategy` / `update_exit_order` 管理各档退出。两种模式都不能改写历史入场价格。
+- STRATEGY：附带保护模式下，已成交仓位使用 `update_position_protection_strategy` 修改保护；独立模式推荐 `close` / `edit` 管理各档退出，旧入口保留兼容。两种模式都不能改写历史入场价格。
 - 多单待成交价格要求 `SL < Entry < TP`，空单要求 `TP < Entry < SL`（只校验已设置项）。持仓保护以当前触发参考价校验，允许移动止损保护浮盈。LONG/SHORT是持仓方向，不是平仓买卖方向。
 - 实盘入场改单只在 `confirmed` 时报告确认；`pending` 不可重复提交，`unchanged` 表示未改变。保护 `WAITING` 不是已安装保护，`ACTIVE` 且无错误仅代表最近核验通过。
 
-长期规则保留人工编辑及版本存档，但不再注入决策模型；旧规则占位符渲染为空，已知遗留规则和小时级策略章节会被清理。退出模式通过工具参数定义与说明区分，账户快照仅保留退出单与覆盖情况等事实。
+长期规则保留人工编辑及版本存档，但不再注入决策模型；旧规则占位符渲染为空，已知遗留规则和小时级策略章节会被清理。默认提示词按退出模式区分决策规则，自定义文件保留；独立模式运行时追加跨轮执行及数量语义事实，账户快照提供退出单、覆盖与数量冲突。
 
 任务运行时持续保存 `scheduler_runs.decision_json`，前端按轮次显示模型输出、推理文本或摘要、调用参数及工具回执；刷新页面不会丢失已记录的调用。只有推理 token 而没有文本时显示用量及服务商未返回文本的说明，不生成额外推理。历史完成记录继续读取 `summaries.decision_json`。

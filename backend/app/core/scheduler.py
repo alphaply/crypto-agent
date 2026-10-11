@@ -672,7 +672,9 @@ def protection_tick():
         if 'mock_positions' in tables:
             mock_ids.update(r[0] for r in conn.execute('SELECT DISTINCT config_id FROM mock_positions WHERE quantity>0'))
         if 'mock_exit_orders' in tables:
-            mock_ids.update(r[0] for r in conn.execute("SELECT DISTINCT config_id FROM mock_exit_orders WHERE status='OPEN'"))
+            mock_ids.update(r[0] for r in conn.execute(
+                "SELECT DISTINCT config_id FROM mock_exit_orders "
+                "WHERE status IN ('OPEN','WAITING_TRIGGER','PENDING','UNKNOWN')"))
     ids = {row['config_id'] for row in rows if json.loads(row['payload'])['state'] != 'DONE'}
     from backend.mcp.settings import maintenance_profiles
     try:

@@ -3,6 +3,13 @@ from pathlib import Path
 from typing import Any, Dict
 
 from backend.utils.prompts import PROMPT_MAP
+from backend.utils.exit_policy import effective_exit_mode
+from backend.utils.trading_policy import INDEPENDENT_TRADE_PROMPT_BODY
+
+
+def _independent_template(trade_mode: str) -> str:
+    role = '实盘合约交易' if trade_mode == 'REAL' else '模拟合约策略'
+    return f'你是{role}Agent，负责调用工具执行并管理仓位。\n' + INDEPENDENT_TRADE_PROMPT_BODY
 
 
 def _bundled_prompt_directory(project_root: Path) -> Path:
@@ -93,6 +100,7 @@ def resolve_prompt_template(
     logger,
 ) -> str:
     prompt_file = agent_config.get("prompt_file")
+    independent = trade_mode in {'REAL', 'STRATEGY'} and effective_exit_mode(agent_config) == 'independent_exits'
 
     if isinstance(prompt_file, str) and prompt_file.strip():
         try:
@@ -101,6 +109,12 @@ def resolve_prompt_template(
             if file_path and file_path.exists():
                 content = file_path.read_text(encoding="utf-8").strip()
                 if content:
+                    bundled_defaults = {
+                        (_bundled_prompt_directory(project_root) / name).resolve(): PROMPT_MAP[mode].strip()
+                        for name, mode in (('real.txt', 'REAL'), ('strategy.txt', 'STRATEGY'))
+                    }
+                    if independent and bundled_defaults.get(file_path.resolve()) == content:
+                        return _independent_template(trade_mode)
                     logger.info(f"Using custom prompt file: {file_path}")
                     return content
                 logger.warning(f"Prompt file is empty, fallback to default template: {file_path}")
@@ -112,7 +126,7 @@ def resolve_prompt_template(
         except Exception as e:
             logger.warning(f"Failed to load prompt file, fallback to default template: raw={prompt_file!r}, error={e}")
 
-    return PROMPT_MAP.get(trade_mode) or PROMPT_MAP.get("STRATEGY", "")
+    return _independent_template(trade_mode) if independent else PROMPT_MAP.get(trade_mode) or PROMPT_MAP.get("STRATEGY", "")
 
 
 def render_prompt(template: str, **kwargs) -> str:

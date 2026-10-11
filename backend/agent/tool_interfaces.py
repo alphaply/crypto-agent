@@ -18,11 +18,23 @@ def specialize_trade_tool(tool, config: dict):
     mode = effective_exit_mode(config)
     independent = mode == 'independent_exits'
     name = tool.name
+    if name in {'open', 'close', 'edit', 'cancel'}:
+        return tool if independent else None
     if independent and name.startswith('update_position_protection_'):
         return None
     if not independent and name in {'update_exit_order', 'adopt_position_real'}:
         return None
-    schema = deepcopy(tool.args_schema.model_json_schema())
+    from backend.agent.trade_batch import LegacyTradeActionsSchema
+    from backend.agent.trading_contracts import CanonicalTradeActionsSchema
+    if name == 'execute_trade_actions' and independent:
+        return tool.model_copy(update={
+            'args_schema': CanonicalTradeActionsSchema.model_json_schema(),
+            'description': '顺序执行最多20项独立交易动作。必填contract_version=2；actions使用action=open/close/edit/cancel及单项工具相同的平铺参数。'
+                           '先校验整批结构/权限/已知模式，再逐项核验执行；failed/pending/unknown停止后续并返回not_executed。'
+                           '非原子事务；提交open不等于等待成交。例：{"contract_version":2,"actions":[{"action":"open","side":"LONG","amount":0.2,"price":100,"reason":"第一档"}]}。'
+                           + INDEPENDENT_EXIT_HELP,
+        })
+    schema = deepcopy((LegacyTradeActionsSchema if name == 'execute_trade_actions' else tool.args_schema).model_json_schema())
     definitions = schema.get('$defs', {})
     for key in ('OpenOrderReal', 'OpenOrderStrategy'):
         order = definitions.get(key)

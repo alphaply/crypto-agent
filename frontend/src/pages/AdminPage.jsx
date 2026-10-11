@@ -1911,7 +1911,7 @@ export default function AdminPage() {
                       />
                       <Text type="secondary">
                         {locale === 'zh'
-                          ? ({ attached_required: '每次开仓需提供止盈和止损。', attached_optional: '开仓时可单独提供或省略止盈止损。', independent_exits: '通过独立退出单按数量设置止盈或止损，支持分批减仓。' }[resolveExitMode(editingTask)])
+                          ? ({ attached_required: '每次开仓需提供止盈和止损。', attached_optional: '开仓时可单独提供或省略止盈止损。', independent_exits: '可在本轮或后续轮次设置分批止盈止损，固定数量或触发时全部退出。' }[resolveExitMode(editingTask)])
                           : ({ attached_required: 'Each entry requires take profit and stop loss.', attached_optional: 'Entries may supply either, both, or no TP/SL.', independent_exits: 'Separate exits specify price and quantity, supporting partial reductions.' }[resolveExitMode(editingTask)])}
                         {' '}{locale === 'zh' ? '已有持仓、挂单或待核验操作时，需先处理完毕才能切换。' : 'Close positions and resolve outstanding orders before switching modes.'}
                       </Text>

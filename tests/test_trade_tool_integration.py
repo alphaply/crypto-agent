@@ -44,7 +44,7 @@ def test_one_call_multi_exit_and_replay(simulation):
     assert len(simulation.snapshot()['exits']) == 3
     market = {'orders': [{'pos_side': 'LONG', 'exit_type': 'market', 'amount': .5, 'reason': 'reduce'}]}
     call('close_position_strategy', market, 'reduce-call')
-    assert sorted(x['remaining'] for x in simulation.snapshot()['exits']) == [.75, .75, 1.5]
+    assert sorted(x['remaining'] for x in simulation.snapshot()['exits']) == [1, 1, 2]
     assert simulation.snapshot()['positions'][0]['amount'] == 1.5
 
 
@@ -55,7 +55,7 @@ def test_amend_exit_dispatch_and_cancel(simulation):
     order_id = simulation.snapshot()['exits'][0]['order_id']
     updated = call('update_exit_order', {'order_id': order_id, 'trigger_price': 95, 'amount': .5, 'reason': 'revise'}, 'amend')
     assert updated['trigger_price'] == 95 and updated['remaining'] == .5
-    call('cancel_orders_strategy', {'order_id': order_id, 'reason': 'cancel'}, 'cancel')
+    call('cancel_orders_strategy', {'order_id': updated['order_id'], 'reason': 'cancel'}, 'cancel')
     assert simulation.snapshot()['exits'] == []
 
 
@@ -64,6 +64,51 @@ def test_existing_protection_api_cannot_write_independent_mode(simulation, monke
     monkeypatch.setattr(stats_service.global_config, 'get_config_by_id', config.get_config_by_id)
     with pytest.raises(ValueError, match='独立退出'):
         stats_service.update_position_protection_payload('cfg', 'ETH/USDT', 'LONG', stop_loss=90)
+
+
+def test_canonical_cross_round_stages_all_edit_and_cancel(simulation):
+    first = call('open', {'side': 'LONG', 'amount': .4, 'price': 100, 'reason': 'first stage'}, 'v2-entry-1')
+    second = call('open', {'side': 'LONG', 'amount': .6, 'price': 99, 'reason': 'second stage'}, 'v2-entry-2')
+    assert first['status'] == second['status'] == 'submitted'
+    assert first['order_id'].startswith('regular:')
+    assert simulation.snapshot()['exits'] == []
+    simulation.monitor(110, 90, int((time.time() + 60) * 1000))
+    payload = {'contract_version': 2, 'actions': [
+        {'action': 'close', 'side': 'LONG', 'order_type': 'limit', 'amount': .2, 'price': 120, 'reason': 'first TP'},
+        {'action': 'close', 'side': 'LONG', 'order_type': 'limit', 'amount': .3, 'price': 130, 'reason': 'second TP'},
+        {'action': 'close', 'side': 'LONG', 'order_type': 'take_profit_market', 'close_all': True, 'trigger_price': 140, 'reason': 'remaining TP'},
+        {'action': 'close', 'side': 'LONG', 'order_type': 'stop_market', 'close_all': True, 'trigger_price': 90, 'reason': 'remaining SL'},
+    ]}
+    receipt = call('execute_trade_actions', payload, 'v2-stage-exits')
+    assert receipt['status'] == 'submitted'
+    assert len(receipt['results']) == 4
+    outcomes = [row['result'] for row in receipt['results']]
+    assert [row['quantity_mode'] for row in outcomes] == ['fixed', 'fixed', 'all', 'all']
+    assert outcomes[2]['order_status'] == 'waiting_trigger'
+    assert outcomes[2]['requested_amount'] is None
+    assert call('execute_trade_actions', payload, 'v2-stage-exits') == receipt
+    changed = call('edit', {'order_id': outcomes[2]['order_id'], 'trigger_price': 145, 'reason': 'new final target'}, 'v2-edit-final')
+    assert changed['quantity_mode'] == 'all' and changed['edit_method'] == 'cancel_replace'
+    assert changed['order_id'] != outcomes[2]['order_id']
+    call('cancel', {'order_id': outcomes[3]['order_id'], 'reason': 'replace SL thesis'}, 'v2-cancel-sl')
+    simulation.monitor(125, 100, int((time.time() + 120) * 1000))
+    assert simulation.snapshot()['positions'][0]['amount'] == pytest.approx(.8)
+    simulation.monitor(135, 100, int((time.time() + 180) * 1000))
+    assert simulation.snapshot()['positions'][0]['amount'] == pytest.approx(.5)
+    simulation.monitor(150, 140, int((time.time() + 240) * 1000))
+    assert simulation.snapshot()['positions'] == []
+    assert simulation.snapshot()['exits'] == []
+
+
+def test_canonical_batch_cannot_exit_unfilled_entry(simulation):
+    payload = {'contract_version': 2, 'actions': [
+        {'action': 'open', 'side': 'LONG', 'amount': 1, 'price': 100, 'reason': 'entry'},
+        {'action': 'close', 'side': 'LONG', 'order_type': 'market', 'close_all': True, 'reason': 'not filled'},
+        {'action': 'open', 'side': 'SHORT', 'amount': 1, 'price': 110, 'reason': 'must not execute'},
+    ]}
+    receipt = call('execute_trade_actions', payload, 'v2-no-fill')
+    assert [row['status'] for row in receipt['results']] == ['submitted', 'failed', 'not_executed']
+    assert len(simulation.snapshot()['entries']) == 1
 
 
 def test_stats_show_aggregate_position_and_exit_quantities(simulation, monkeypatch):

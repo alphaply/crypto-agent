@@ -620,6 +620,7 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
 
     system_prompt = render_decision_prompt(
         prompt_template, memory_context,
+        exit_mode=effective_exit_mode(agent_config) if trade_mode in {'REAL', 'STRATEGY'} else None,
         model=agent_config.get('model'),
         symbol=', '.join(symbols),
         leverage=leverage,

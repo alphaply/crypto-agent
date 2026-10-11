@@ -111,4 +111,7 @@ def render_decision_prompt(template: str, memory: DecisionMemory, **values) -> s
     for field, title in sections:
         if field not in fields:
             prompt += f'\n\n## {title}\n{getattr(memory, field)}'
+    if values.get('exit_mode') == 'independent_exits':
+        from backend.utils.trading_policy import INDEPENDENT_RUNTIME_POLICY
+        prompt += '\n\n## 当前退出工具事实\n' + INDEPENDENT_RUNTIME_POLICY
     return prompt

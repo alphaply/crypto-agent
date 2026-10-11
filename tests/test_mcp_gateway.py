@@ -173,6 +173,31 @@ def test_batch_preflight_checks_entries_before_protection_dispatch(gateway, monk
     assert not calls
 
 
+def test_canonical_edit_guards_classify_the_owned_target(gateway, monkeypatch):
+    from unittest.mock import Mock
+    from backend.agent import independent_tools
+    from backend.mcp import guard
+    from backend.utils.market_data import MarketTool
+    target = Mock(return_value={'kind': 'entry', 'amount': 1, 'filled_amount': .2})
+    monkeypatch.setattr(independent_tools, 'describe_order', target)
+    monkeypatch.setattr(MarketTool, '__init__', lambda self, **_: None)
+    entry = Mock(side_effect=ValueError('entry leverage limit'))
+    owner = Mock()
+    monkeypatch.setattr(guard, 'assert_entry_allowed', entry)
+    monkeypatch.setattr(guard, 'assert_position_owner', owner)
+    args = {'order_id': 'regular:entry', 'remaining_amount': .5, 'reason': 'revise'}
+    with pytest.raises(ValueError, match='entry leverage'):
+        guard.preflight_tool('edit', args, 'mcp:test', 'ETH/USDT')
+    entry.assert_called_once()
+    owner.assert_not_called()
+    target.return_value = {'kind': 'exit'}
+    guard.preflight_tool('edit', args, 'mcp:test', 'ETH/USDT')
+    owner.assert_called_once()
+    target.return_value = {'kind': 'unknown'}
+    with pytest.raises(ValueError, match='target role'):
+        guard.preflight_tool('edit', args, 'mcp:test', 'ETH/USDT')
+
+
 def test_foreign_and_untracked_positions_fail_closed_but_owned_reduction_allowed(gateway, monkeypatch):
     from backend.mcp.guard import assert_position_owner, preflight_tool
     from backend.utils.execution_ledger import account_scope
@@ -205,6 +230,39 @@ def test_foreign_and_untracked_positions_fail_closed_but_owned_reduction_allowed
         conn.commit()
     with pytest.raises(ValueError, match='Another strategy'):
         assert_position_owner(mt, 'ETH/USDT')
+
+
+def test_algo_parent_cannot_claim_regular_fills_with_same_id(gateway):
+    from backend.mcp.guard import assert_position_owner
+    from backend.utils.execution_ledger import account_scope
+    exchange = SimpleNamespace(id='binanceusdm', apiKey='fake',
+        market=lambda symbol: {'symbol': 'ETH/USDT:USDT', 'contract': True, 'linear': True},
+        fetch_positions=lambda symbols: [{'side': 'long', 'contracts': .75}],
+        fetch_my_trades=lambda *args, **kwargs: [
+            {'id': 'entry-fill', 'order': 'entry-1', 'amount': 1},
+            {'id': 'foreign-fill', 'order': '77', 'amount': .25}])
+    mt = SimpleNamespace(config_id='mcp:test', market_type='swap', exchange=exchange)
+    plan = {'account_scope': account_scope(exchange, mt.config_id),
+            'symbol': 'ETH/USDT:USDT', 'side': 'LONG', 'state': 'ACTIVE',
+            'execution_mode': 'independent_exits',
+            'entries': [{'id': 'entry-1', 'created_at': 100}],
+            'exits': [{'id': '77', 'exchange_channel': 'algo',
+                       'order_type': 'stop_market', 'contract_version': 2}]}
+    with store.connection() as conn:
+        conn.execute('CREATE TABLE real_protection_plans(config_id TEXT,symbol TEXT,side TEXT,payload TEXT)')
+        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+                     ('mcp:test', plan['symbol'], 'LONG', json.dumps(plan)))
+        conn.commit()
+    with pytest.raises(ValueError, match='foreign fills'):
+        assert_position_owner(mt, 'ETH/USDT')
+    plan['exits'][0]['execution_order_id'] = '88'
+    exchange.fetch_my_trades = lambda *args, **kwargs: [
+        {'id': 'entry-fill', 'order': 'entry-1', 'amount': 1},
+        {'id': 'owned-child-fill', 'order': '88', 'amount': .25}]
+    with store.connection() as conn:
+        conn.execute('UPDATE real_protection_plans SET payload=?', (json.dumps(plan),))
+        conn.commit()
+    assert_position_owner(mt, 'ETH/USDT')
 
 
 def test_unknown_operation_never_replays_and_caller_cannot_read_foreign_receipt(gateway, monkeypatch):

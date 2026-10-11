@@ -124,6 +124,61 @@ def list_symbols(profile, exchange, *, keyword='', quote='', limit=50, offset=0)
             'has_more': offset + limit < len(ordered)}
 
 
+def _independent_orders_view(mt, symbol, limit):
+    """Merge read-only exchange lists with owned lifecycle facts; never reconcile writes."""
+    from backend.utils.independent_exits import IndependentExits
+    from backend.utils.exit_orders import order_reference
+    exchange_rows = {}
+    for channel, params in (('regular', {}), ('algo', {'trigger': True})):
+        for original in mt.exchange.fetch_open_orders(symbol, limit=limit, params=params):
+            row = {key: value for key, value in original.items() if key != 'info'}
+            raw_id = row.get('id')
+            if raw_id is None:
+                raise ValueError('Exchange order identity is unavailable')
+            reference = f'{channel}:{raw_id}'
+            row.update(order_id=reference, exchange_order_id=str(raw_id), exchange_channel=channel,
+                       ownership='external_or_untracked', modifiable=False, source='exchange',
+                       order_status='waiting_trigger' if channel == 'algo' else
+                           'partially_filled' if row.get('filled') else str(row.get('status') or 'unknown'))
+            exchange_rows[reference] = row
+    # snapshot reads plan/position evidence only. reconcile_all/_reconcile can
+    # resume persisted replacement writes and MUST NOT be called from a read tool.
+    snapshot = IndependentExits(mt).snapshot(symbol)
+    result = []
+    unseen_sides = set()
+    for kind, records in (('entry', snapshot.get('entries', [])), ('exit', snapshot.get('exits', []))):
+        for item in records:
+            reference = order_reference(item)
+            if not reference:
+                reference = item.get('order_id')
+            live = exchange_rows.pop(reference, None)
+            parent = item.get('parent_order_id')
+            if parent and parent != reference:
+                exchange_rows.pop(parent, None)
+            row = {**(live or {}), **item, 'order_id': reference, 'kind': kind,
+                   'ownership': 'owned', 'modifiable': bool(live),
+                   'source': 'exchange_and_local' if live else 'local_record'}
+            if live:
+                row['order_status'] = ('triggered' if item.get('order_status') == 'triggered'
+                                       and live['order_status'] == 'open' else live['order_status'])
+            else:
+                # Missing from a list is not proof of cancellation or fill.
+                row.update(last_known_order_status=item.get('order_status'), order_status='unknown',
+                           pending=True, coverage_estimate=None)
+                unseen_sides.add(item.get('side') or item.get('pos_side'))
+            result.append(row)
+    uncovered = dict(snapshot.get('uncovered') or {})
+    for side in unseen_sides - {None}:
+        uncovered[side] = None
+    for row in result:
+        row.update(exit_groups=snapshot.get('exit_groups', {}),
+                   quantity_conflict=bool(snapshot.get('quantity_conflict')),
+                   quantity_conflicts=snapshot.get('quantity_conflicts', []),
+                   uncovered=uncovered, execution_guaranteed=False,
+                   snapshot_pending=bool(snapshot.get('pending') or unseen_sides))
+    return [*result, *exchange_rows.values()][:limit]
+
+
 def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=120, keyword='', quote='', offset=0):
     try:
         profile = require(caller, 'read', profile_id)
@@ -138,7 +193,8 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
             if resource == 'tools':
                 result = trading_tools(profile_id)
             else:
-                exchange = market_tool(profile_id).exchange
+                mt = market_tool(profile_id)
+                exchange = mt.exchange
                 symbol = normalize_symbol(profile, symbol, exchange, allow_inactive=True) if symbol else None
                 if profile['market_type'] == 'swap':
                     from .guard import perpetual_symbol
@@ -177,7 +233,11 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                 elif resource == 'orders':
                     if not symbol:
                         raise ValueError('symbol is required for orders')
-                    result = [{k: v for k, v in row.items() if k != 'info'} for row in exchange.fetch_open_orders(symbol, limit=max(1, min(int(limit), 200)))]
+                    order_limit = max(1, min(int(limit), 200))
+                    if profile['market_type'] == 'swap' and profile.get('exit_mode') == 'independent_exits':
+                        result = _independent_orders_view(mt, symbol, order_limit)
+                    else:
+                        result = [{k: v for k, v in row.items() if k != 'info'} for row in exchange.fetch_open_orders(symbol, limit=order_limit)]
                 elif resource == 'market':
                     if not symbol or timeframe not in {'15m', '1h', '4h', '1d', '1w'}:
                         raise ValueError('Provide a configured symbol and supported timeframe')
@@ -201,11 +261,15 @@ def trading_tools(profile_id):
         raise ValueError('Unknown MCP profile')
     result = [{'name': tool.name, 'description': tool.description,
                'inputSchema': tool.args_schema if isinstance(tool.args_schema, dict) else tool.args_schema.model_json_schema()}
-              for tool in get_trade_tools_for_mode(cfg['mode'], cfg)
+              for tool in get_trade_tools_for_mode(cfg['mode'], cfg, include_legacy=True)
               if tool.name != 'adopt_position_real' or cfg.get('exit_mode') == 'independent_exits']
     if cfg['market_type'] == 'spot':
         from .spot_orders import tool_schemas
         result.extend(tool_schemas())
+    elif cfg.get('exit_mode') == 'independent_exits':
+        for item in result:
+            if item['name'] not in {'open', 'close', 'edit', 'cancel', 'execute_trade_actions', 'adopt_position_real'}:
+                item['description'] = '[Legacy compatibility; prefer open/close/edit/cancel] ' + item['description']
     return result
 
 
@@ -299,6 +363,19 @@ def _assert_no_ignored_fields(source, validated, path='arguments'):
 
 
 def validate_trade_arguments(tool_name, arguments):
+    if tool_name == 'execute_trade_actions':
+        from backend.agent.trade_batch import LegacyTradeActionsSchema, TradeActionsSchema
+        from backend.agent.trading_contracts import CanonicalTradeActionsSchema
+        envelope = TradeActionsSchema.model_validate(arguments)
+        source = arguments if envelope.contract_version == 2 else {
+            key: value for key, value in arguments.items() if key != 'contract_version'}
+        model = CanonicalTradeActionsSchema if envelope.contract_version == 2 else LegacyTradeActionsSchema
+        parsed = model.model_validate(source)
+        _assert_no_ignored_fields(source, parsed)
+        values = parsed.model_dump(exclude_none=True)
+        if 'contract_version' in arguments:
+            values['contract_version'] = envelope.contract_version
+        return values
     if tool_name in {'create_spot_exit', 'cancel_spot_exit'}:
         from .spot_orders import TOOL_MODELS
         model = TOOL_MODELS[tool_name]
@@ -307,11 +384,12 @@ def validate_trade_arguments(tool_name, arguments):
         model = _TOOL_BY_NAME[tool_name].args_schema
     parsed = model.model_validate(arguments)
     _assert_no_ignored_fields(arguments, parsed)
-    return parsed.model_dump(exclude_none=True)
+    values = parsed.model_dump(exclude_none=True)
+    return values
 
 
 def trade_scope(tool_name, arguments):
-    if tool_name in {'cancel_orders_spot', 'cancel_orders_real', 'cancel_spot_exit'}:
+    if tool_name in {'cancel', 'cancel_orders_spot', 'cancel_orders_real', 'cancel_spot_exit'}:
         return 'cancel'
     if tool_name == 'execute_trade_actions' and arguments.get('actions') and all(action.get('action') == 'cancel' for action in arguments['actions'] if isinstance(action, dict)):
         return 'cancel'
@@ -350,16 +428,19 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
             require(caller, 'cancel', profile_id)
         unrestricted = profile.get('symbol_scope', 'selected') == 'all'
         exchange = market_tool(profile_id).exchange if unrestricted else None
-        increasing = tool_name in {'open_position_spot_dca', 'open_position_real', 'update_entry_order_real'} or (
-            tool_name == 'execute_trade_actions' and any(
-                isinstance(action, dict) and action.get('action') in {'open', 'amend_entry'}
-                for action in arguments.get('actions', [])
-            )
-        )
-        symbol = normalize_symbol(profile, symbol, exchange, allow_inactive=not increasing)
+        symbol = normalize_symbol(profile, symbol, exchange, allow_inactive=True)
         allowed = {tool['name']: tool for tool in trading_tools(profile_id)}
         if tool_name not in allowed:
             raise PermissionError('Tool is not available for this MCP trading profile')
+        # Validate the financial shape before resolving any target role.
+        validate_trade_arguments(tool_name, arguments)
+        from .guard import is_exposure_increasing
+        target_edit = tool_name == 'edit' or (tool_name == 'execute_trade_actions' and any(
+            item.get('action') == 'edit' for item in arguments.get('actions', [])))
+        # Replayed edits must not need their original order to remain live.
+        increasing = False if target_edit else is_exposure_increasing(tool_name, arguments, 'mcp:' + profile_id, symbol)
+        if increasing:
+            symbol = normalize_symbol(profile, symbol, exchange, allow_inactive=False)
         arguments = deepcopy(arguments)
         call_symbols = [symbol]
         # Per-order spot symbols may vary, but remain within this profile and
@@ -375,6 +456,8 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
             call_symbols = normalize_spot_symbols(call_symbols)
         validated = validate_trade_arguments(tool_name, arguments)
         request = {'symbol': symbol, 'tool': tool_name, 'arguments': validated}
+        if tool_name in {'open', 'close', 'edit', 'cancel'} or validated.get('contract_version') == 2:
+            request['contract_version'] = 2
         previous = store.reserve_operation(profile_id, operation_id, caller['id'], request)
         if previous is not None:
             if tool_name == 'adopt_position_real' and previous.get('status') in {'unknown', 'pending', 'started'}:
@@ -386,6 +469,8 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         stable_id = 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
         cycle_id = None
         with runtime_symbols(cfg_id, call_symbols):
+            if target_edit and is_exposure_increasing(tool_name, validated, cfg_id, symbol):
+                normalize_symbol(profile, symbol, exchange, allow_inactive=False)
             if profile['market_type'] == 'spot' and tool_name not in {'create_spot_exit', 'cancel_spot_exit'}:
                 from backend.utils.spot_execution import ensure_spot_budget_cycle
                 cycle_id = stable_id
@@ -408,6 +493,10 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         result = {'operation_id': operation_id, 'status': tool_result_status(raw), 'result': payload}
     except (ValueError, PermissionError) as exc:
         result = {'operation_id': operation_id, 'status': 'failed', 'error': safe_error(exc, profile_id)}
+        if 'operation_id already belongs' in str(exc):
+            result['error_code'] = 'identity_conflict'
+        elif 'unsupported_combination' in str(exc):
+            result['error_code'] = 'unsupported_combination'
     except Exception as exc:
         # A timeout is never an invitation to repeat a financial write.
         result = {'operation_id': operation_id, 'status': 'unknown', 'error': safe_error(exc, profile_id)}

@@ -21,6 +21,7 @@ from backend.agent.agent_tools import (
     update_exit_order,
 )
 from backend.agent.trade_batch import execute_trade_actions
+from backend.agent.independent_tools import CANONICAL_TOOLS
 from backend.utils.trade_operations import current_operation_id, run_once, tool_result_status
 from backend.utils.logger import setup_logger
 
@@ -44,13 +45,21 @@ _TOOL_BY_NAME = {
     for tools in _TOOLS_BY_MODE.values()
     for tool in tools
 }
+_TOOL_BY_NAME.update({tool.name: tool for tool in CANONICAL_TOOLS})
 
 
-def get_trade_tools_for_mode(mode: str | None, config: dict | None = None):
+def get_trade_tools_for_mode(mode: str | None, config: dict | None = None, *, include_legacy: bool = False):
     trade_mode = str(mode or "STRATEGY").upper()
     tools = list(_TOOLS_BY_MODE.get(trade_mode, _TOOLS_BY_MODE["STRATEGY"]))
     if config is None or trade_mode == 'SPOT_DCA':
         return tools
+    from backend.utils.exit_policy import effective_exit_mode
+    if effective_exit_mode(config) == 'independent_exits':
+        preferred = [*CANONICAL_TOOLS, *([adopt_position_real] if trade_mode == 'REAL' else []), execute_trade_actions]
+        if include_legacy:
+            preferred.extend(tool for tool in tools if tool.name not in {item.name for item in preferred}
+                             and not tool.name.startswith('update_position_protection_'))
+        tools = preferred
     from backend.agent.tool_interfaces import specialize_trade_tool
     return [specialized for tool in tools
             if (specialized := specialize_trade_tool(tool, {**config, 'mode': trade_mode})) is not None]
@@ -119,7 +128,7 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
                     cycle_id: str | None = None) -> str:
     from backend.config import config as runtime_config
     config = runtime_config.get_config_by_id(config_id)
-    if config and tool_name not in {tool.name for tool in get_trade_tools_for_mode(config.get('mode'))}:
+    if config and tool_name not in {tool.name for tool in get_trade_tools_for_mode(config.get('mode'), config, include_legacy=True)}:
         return f"Error: Tool '{tool_name}' is not allowed for this trading mode."
     tool_obj = _TOOL_BY_NAME.get(tool_name)
     if not tool_obj:
@@ -151,6 +160,11 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
         return "\n".join(results)
 
     call_args = _normalize_tool_args(tool_name, args)
+    if tool_name in {tool.name for tool in CANONICAL_TOOLS}:
+        if 'config_id' in call_args and call_args['config_id'] != config_id:
+            raise ValueError('Conflicting trusted context: config_id')
+        if 'symbol' in call_args and call_args['symbol'] != symbol:
+            raise ValueError('Conflicting trusted context: symbol')
     call_args.pop('config_id', None)
     requested_symbol = call_args.pop('symbol', None)
     is_spot = str((config or {}).get('mode', '')).upper() == 'SPOT_DCA'
@@ -169,14 +183,20 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
             symbol = resolve_spot_symbol(config, requested_symbol or symbol)
         except ValueError as exc:
             return json.dumps({'status': 'failed', 'error': str(exc)}, ensure_ascii=False)
-    if tool_name in {'adopt_position_real', 'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy', 'update_exit_order', 'execute_trade_actions'}:
+    if tool_name in {'open', 'close', 'edit', 'cancel', 'adopt_position_real', 'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy', 'update_exit_order', 'execute_trade_actions'}:
         # Dispatch uses .func(), so these scalar arguments need explicit schema validation.
+        supplied_version = 'contract_version' in call_args
         call_args = tool_obj.args_schema.model_validate(call_args).model_dump()
+        if tool_name == 'execute_trade_actions' and not supplied_version:
+            call_args.pop('contract_version', None)  # Preserve legacy operation hashes.
     call_args["config_id"] = config_id
     call_args["symbol"] = symbol
 
     from backend.mcp.guard import preflight_tool
-    preflight_tool(tool_name, call_args, config_id, symbol)
+    # Canonical adapters preflight inside the durable callback, so replay never
+    # needs a formerly live edit target to still exist. Legacy hashes/flow stay intact.
+    if tool_name not in {'open', 'close', 'edit', 'cancel'} and call_args.get('contract_version') != 2:
+        preflight_tool(tool_name, call_args, config_id, symbol)
 
     logger.info(
         "Executing tool call: name=%s config_id=%s symbol=%s arg_keys=%s",
@@ -190,7 +210,10 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
     cycle_token = current_spot_cycle_id.set(cycle_id) if is_spot else None
     try:
         if operation_id:
-            raw = run_once(config_id, symbol, operation_id, {'tool': tool_name, 'args': call_args},
+            request = {'tool': tool_name, 'args': call_args}
+            if tool_name in {'open', 'close', 'edit', 'cancel'} or call_args.get('contract_version') == 2:
+                request['contract_version'] = 2
+            raw = run_once(config_id, symbol, operation_id, request,
                            lambda: tool_obj.func(**call_args))
         else:
             raw = tool_obj.func(**call_args)

@@ -198,6 +198,49 @@ OCO 使用 Binance 原生订单列表或 OKX `cash` 条件单接口，两条互�
 
 外部助手的写入授权交互由客户端提供。服务验证 Token 权限和交易约束后直接执行，不进入站内聊天的审批流程。
 
+### 独立退出规范工具 v2
+
+`REAL/STRATEGY + independent_exits` 推荐 `open/close/edit/cancel`。外部 MCP 每次加上 `profile_id`、`symbol`、唯一 `operation_id`；Agent 工具由运行上下文注入这些身份。所有数量均为标的币数量，非保证金、百分比或合约张数；价格与数量必须是有限正数，布尔值不能代替数量。每项必须提供 reason。
+
+| 工具 | 业务字段 | 语义 |
+|---|---|---|
+| open | side, amount, price, reason | 普通限价入场；可同轮多次调用，双向须 Hedge |
+| close | side, order_type, amount 或 close_all=true, price?, trigger_price?, reason | 只退出已经核验成交的持仓，六类订单见[能力矩阵](TRADING_WORKFLOW.md#批量操作与退出方式) |
+| edit | order_id, remaining_amount?, price?, trigger_price?, reason | 至少一项修改；remaining_amount 为未成交目标量，不能改方向/类型/fixed-all |
+| cancel | order_id, reason | 撤销归属挂单，不能当作平仓 |
+
+以下 JSON 为可校验的工具调用示例；示例 ID 须替换为实际查询或回执返回值。先核验入场成交，再提交退出例子，不能把示例顺序当作成交证明。
+
+```json
+{"tool":"execute_trade_actions","arguments":{"profile_id":"swap","symbol":"BTC/USDT:USDT","operation_id":"entry-stages-v2","contract_version":2,"actions":[{"action":"open","side":"LONG","amount":0.4,"price":60000,"reason":"第一档"},{"action":"open","side":"LONG","amount":0.6,"price":59500,"reason":"第二档"},{"action":"open","side":"SHORT","amount":0.2,"price":62000,"reason":"Hedge 独立空仓"}]}}
+```
+
+```json
+{"tool":"execute_trade_actions","arguments":{"profile_id":"swap","symbol":"BTC/USDT:USDT","operation_id":"tp-stages-v2","contract_version":2,"actions":[{"action":"close","side":"LONG","order_type":"take_profit_market","amount":0.2,"trigger_price":64000,"reason":"第一档止盈"},{"action":"close","side":"LONG","order_type":"take_profit_limit","amount":0.3,"trigger_price":66000,"price":65900,"reason":"第二档止盈"},{"action":"close","side":"LONG","order_type":"take_profit_market","close_all":true,"trigger_price":68000,"reason":"最后退出全部剩余多仓"}]}}
+```
+
+```json
+{"tool":"execute_trade_actions","arguments":{"profile_id":"swap","symbol":"BTC/USDT:USDT","operation_id":"sl-stages-v2","contract_version":2,"actions":[{"action":"close","side":"LONG","order_type":"stop_market","amount":0.2,"trigger_price":58000,"reason":"第一档止损"},{"action":"close","side":"LONG","order_type":"stop_limit","amount":0.3,"trigger_price":57000,"price":56800,"reason":"第二档止损"},{"action":"close","side":"LONG","order_type":"stop_market","close_all":true,"trigger_price":56000,"reason":"最后止损全部剩余多仓"}]}}
+```
+
+```json
+{"tool":"edit","arguments":{"profile_id":"swap","symbol":"BTC/USDT:USDT","operation_id":"edit-entry-v2","order_id":"regular:123","remaining_amount":0.5,"price":60100,"reason":"调整未成交入场"}}
+```
+
+```json
+{"tool":"cancel","arguments":{"profile_id":"swap","symbol":"BTC/USDT:USDT","operation_id":"cancel-exit-v2","order_id":"algo:456","reason":"撤销失效退出条件"}}
+```
+
+`status` 表示操作结果，`order_status` 表示订单状态。`submitted/waiting_trigger/triggered` 均不等于 filled。`quantity_mode=all` 的计划 `amount/remaining` 可空；`resolved_amount`（解析的委托量）、实际 `filled_amount/actual_remaining` 和 `coverage_estimate` 分开报告。独立模式的 `get_orders` 合并普通与条件单的只读状态及本配置覆盖/冲突事实，外部订单明确标记归属未知，读取不会触发补单。`regular:123` 与 `algo:123` 是不同身份；旧裸 ID 只有唯一命中时才接受。
+
+普通 LIMIT 使用 `edit_method=native`；总量 1、已成交 0.2、remaining_amount=0.5 转为交易所总量 0.7，在途成交消耗剩余目标，不重新补量。条件单使用 `cancel_replace`：持久化意图、确认撤销、再提交替代单，回执提供旧新身份，不承诺原子性。已触发父单 edit 返回 `order_already_triggered` 和当前子单引用；对实际活跃 LIMIT 子单另调 edit，可改价/剩余量但不可改触发价。cancel 父单会在核验关联后撤销子单未成交部分，无法确认关联则待核验。
+
+fixed 档不会自动重分配。`quantity_conflict` 不等于 unknown；Agent 可继续管理。条件 all 为账户该方向触发时原生全平，市价 all 为提交前快照；all 不支持任一种 LIMIT。挂单覆盖仅是估计，不是止损成交保证。
+
+新旧映射：旧 open 的 `entry_price` 对应 price，旧 close 的 `pos_side/exit_type` 对应 side/order_type；旧 `take_profit_limit` 永远保持普通 LIMIT，旧 amount=0 保持首次仓位快照。旧 entry 修改 amount 是含已成交的总量，旧 exit 修改 amount 是剩余量；新 edit 统一使用 remaining_amount。无版本批次保留旧嵌套 order；v2 必须显式版本且平铺，不接受混搭。附带模式及现货仍用原工具语义，adopt 本次未扩展。
+
+`execute_trade` 是兼容分发入口，不能绕过同样的模式、权限、归属及额度检查。`execute_trade_actions` 顺序执行，全部字段/模式/权限先校验；失败、pending、unknown 后标记后续项 not_executed，已成功项不回滚。edit 需要 trade（含内部必要撤换），显式 cancel 需要 cancel；混合批次两种权限在首笔前检查。入场 edit 仍按已归属目标及修改后的实际敞口检查增仓额度。
+
 ## 5. 执行与恢复规则
 
 - 标的范围字段为 `symbol_scope: "selected" | "all"`，省略按 `selected` 处理。指定模式必须提供非空 `symbols`；不限制模式可保存 `symbols: []`。支持现货及线性永续合约，合约目录会排除反向合约。每笔请求仍必须传入有效的 `symbol`；账户权限、现货/合约类型、杠杆、订单归属和幂等检查保持生效。

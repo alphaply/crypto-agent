@@ -78,6 +78,162 @@ def test_failed_sync_does_not_advance_checkpoint(local_db):
     assert ledger.sync(now_ms=400000, min_interval=0)['complete']
 
 
+def test_independent_algo_namespace_does_not_claim_regular_fill_on_restart(local_db):
+    ex = Exchange([])
+    ledger = ExecutionLedger(ex, 'cfg', 'ETH/USDT')
+    register_order(ledger.scope, ledger.symbol, '42', 'other', 'entry')
+    plan = {'account_scope': ledger.scope, 'side': 'LONG', 'execution_mode': 'independent_exits',
+            'exits': [{'id': '42', 'contract_version': 2, 'order_type': 'stop_limit', 'execution_order_id': '43'},
+                      {'id': '44', 'exit_type': 'take_profit_limit'}]}
+    with database.get_db_conn() as conn:
+        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('cfg', ledger.symbol, 'LONG', json.dumps(plan)))
+        conn.commit()
+    ExecutionLedger(ex, 'cfg', 'ETH/USDT')
+    with database.get_db_conn() as conn:
+        links = {row['order_id']: (row['config_id'], row['role']) for row in conn.execute('SELECT * FROM execution_order_links')}
+    assert links['42'] == ('other', 'entry')
+    assert links['algo:42'] == ('cfg', 'stop_loss')
+    assert links['43'] == ('cfg', 'stop_loss')
+    assert links['44'] == ('cfg', 'agent_exit')
+
+
+def _save_ledger_plan(ledger, plan, owner='cfg', event=False):
+    with database.get_db_conn() as conn:
+        if event:
+            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+                         ('2026-01-01 00:00:00',owner,ledger.symbol,json.dumps(plan)))
+        else:
+            conn.execute('INSERT OR REPLACE INTO real_protection_plans VALUES(?,?,?,?)',
+                         (owner,ledger.symbol,plan.get('side','LONG'),json.dumps(plan)))
+        conn.commit()
+
+
+def test_upgrade_retires_bare_algo_link_and_unproven_fill_owner_without_losing_fill(local_db):
+    ex=Exchange([])
+    ledger=ExecutionLedger(ex,'cfg','ETH/USDT')
+    register_order(ledger.scope,ledger.symbol,'42','cfg','stop_loss',refresh=False,
+                   side='LONG',episode_id='legacy-episode',trigger_price=90)
+    trade={**fill(9),'order':'42','side':'sell','info':{'positionSide':'LONG','realizedPnl':'-1'}}
+    ledger.ingest([trade],refresh=False)
+    with database.get_db_conn() as conn:
+        before=dict(conn.execute('SELECT * FROM execution_fills').fetchone())
+        # The old order log is also ambiguous and must not recreate the bare ID.
+        conn.execute("INSERT INTO orders(order_id,config_id,symbol,trade_mode,side,event_type) VALUES('42','cfg',?,'REAL','CLOSE_LONG','CLOSE_ORDER_CREATED')",(ledger.symbol,))
+        conn.commit()
+    plan=dict(account_scope=ledger.scope,side='LONG',episode_id='legacy-episode',execution_mode='independent_exits',
+              exits=[dict(id='42',exit_type='stop_market',amount=1,filled=0,status='open',trigger_price=90)])
+    _save_ledger_plan(ledger,plan)
+    restarted=ExecutionLedger(ex,'cfg','ETH/USDT')
+    with database.get_db_conn() as conn:
+        after=dict(conn.execute('SELECT * FROM execution_fills').fetchone())
+        assert after=={**before,'config_id':None}
+        assert not conn.execute("SELECT 1 FROM execution_order_links WHERE order_id='42'").fetchone()
+        parent=conn.execute("SELECT * FROM execution_order_links WHERE order_id='algo:42'").fetchone()
+        metadata=json.loads(parent['payload'])
+        assert metadata['legacy_alias_retired']=='42'
+        assert metadata['legacy_alias_metadata']['episode_id']=='legacy-episode'
+    # Re-ingesting the same exchange fact and restarting cannot resurrect ownership.
+    restarted.ingest([trade],refresh=False)
+    ExecutionLedger(ex,'cfg','ETH/USDT')
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM execution_fills').fetchone()[0]==1
+        assert conn.execute('SELECT config_id FROM execution_fills').fetchone()[0] is None
+
+
+@pytest.mark.parametrize('proof',['entry','ordinary_exit','same_id_child','later_event_child','legacy_entry'])
+def test_upgrade_preserves_proven_regular_identity_colliding_with_algo(local_db,proof):
+    ex=Exchange([])
+    ledger=ExecutionLedger(ex,'cfg','ETH/USDT')
+    register_order(ledger.scope,ledger.symbol,'42','cfg','stop_loss',refresh=False,side='LONG')
+    ledger.ingest([{**fill(1),'order':'42'}],refresh=False)
+    plan=dict(account_scope=ledger.scope,side='LONG',execution_mode='independent_exits',
+              entries=[],exits=[dict(id='42',exit_type='stop_market',amount=1,filled=0,status='open')])
+    if proof=='entry':
+        plan['entries']=[dict(id='42',price=100)]
+    elif proof=='ordinary_exit':
+        plan['exits'].append(dict(id='42',exit_type='take_profit_limit',price=110))
+    elif proof=='same_id_child':
+        plan['exits'][0]['execution_order_id']='42'
+    elif proof=='later_event_child':
+        # The current snapshot may be stale; historical confirmed child evidence
+        # must be considered before interpreting the earlier parent-only event.
+        event={**plan,'exits':[{**plan['exits'][0],'execution_order_id':'42'}]}
+        _save_ledger_plan(ledger,event,event=True)
+    else:
+        with database.get_db_conn() as conn:
+            conn.execute("INSERT INTO orders(order_id,config_id,symbol,trade_mode,side,event_type) VALUES('42','cfg',?,'REAL','BUY','ORDER_CREATED')",(ledger.symbol,))
+            conn.commit()
+    _save_ledger_plan(ledger,plan)
+    ExecutionLedger(ex,'cfg','ETH/USDT')
+    with database.get_db_conn() as conn:
+        links={row['order_id']:row['config_id'] for row in conn.execute('SELECT * FROM execution_order_links')}
+        assert links['42']==links['algo:42']=='cfg'
+        assert conn.execute('SELECT config_id FROM execution_fills').fetchone()[0]=='cfg'
+
+
+def test_retire_old_parent_from_history_without_touching_other_account_or_owner(local_db):
+    ex=Exchange([])
+    ledger=ExecutionLedger(ex,'cfg','ETH/USDT')
+    register_order(ledger.scope,ledger.symbol,'42','other','stop_loss',refresh=False,side='LONG')
+    register_order('different-account',ledger.symbol,'42','other','stop_loss',refresh=False,side='LONG')
+    register_order(ledger.scope,ledger.symbol,'43','external','entry',refresh=False,side='SHORT')
+    register_order(ledger.scope,ledger.symbol,'44','unscoped','stop_loss',refresh=False,side='LONG')
+    ledger.ingest([{**fill(1),'order':'42'},{**fill(2),'order':'43'},{**fill(3),'order':'44'}],refresh=False)
+    historic=dict(account_scope=ledger.scope,side='LONG',execution_mode='independent_exits',state='DONE',
+                  exits=[dict(id='42',exit_type='stop_market',status='closed'),
+                         dict(id='43',exit_type='stop_market',status='canceled')])
+    _save_ledger_plan(ledger,historic,owner='other',event=True)
+    _save_ledger_plan(ledger,dict(side='LONG',execution_mode='independent_exits',
+                                exits=[dict(id='44',exit_type='stop_market')]),owner='unscoped',event=True)
+    ExecutionLedger(ex,'cfg','ETH/USDT')
+    with database.get_db_conn() as conn:
+        links={(row['account_scope'],row['order_id']):row['config_id'] for row in conn.execute('SELECT * FROM execution_order_links')}
+        assert (ledger.scope,'42') not in links
+        assert links[(ledger.scope,'algo:42')]=='other'
+        assert links[('different-account','42')]=='other'
+        assert links[(ledger.scope,'43')]=='external'
+        assert links[(ledger.scope,'44')]=='unscoped'
+        owners={row['order_id']:row['config_id'] for row in conn.execute('SELECT * FROM execution_fills')}
+        assert owners=={'42':None,'43':'external','44':'unscoped'}
+
+
+def test_later_verified_child_reclaims_preserved_unknown_execution(local_db):
+    ex=Exchange([])
+    ledger=ExecutionLedger(ex,'cfg','ETH/USDT')
+    register_order(ledger.scope,ledger.symbol,'42','cfg','stop_loss',refresh=False)
+    ledger.ingest([{**fill(1),'order':'42'}],refresh=False)
+    plan=dict(account_scope=ledger.scope,side='LONG',execution_mode='independent_exits',
+              exits=[dict(id='42',exit_type='stop_market')])
+    _save_ledger_plan(ledger,plan)
+    ExecutionLedger(ex,'cfg','ETH/USDT')
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT config_id FROM execution_fills').fetchone()[0] is None
+    plan['exits'][0]['execution_order_id']='42'
+    _save_ledger_plan(ledger,plan)
+    ExecutionLedger(ex,'cfg','ETH/USDT')
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT config_id FROM execution_fills').fetchone()[0]=='cfg'
+        assert conn.execute('SELECT COUNT(*) FROM execution_fills').fetchone()[0]==1
+
+
+def test_regular_evidence_from_other_config_replaces_old_parent_misattribution(local_db):
+    ex=Exchange([])
+    ledger=ExecutionLedger(ex,'cfg','ETH/USDT')
+    register_order(ledger.scope,ledger.symbol,'42','cfg','stop_loss',refresh=False)
+    ledger.ingest([{**fill(1),'order':'42'}],refresh=False)
+    parent=dict(account_scope=ledger.scope,side='LONG',execution_mode='independent_exits',
+                exits=[dict(id='42',exit_type='stop_market')])
+    regular=dict(account_scope=ledger.scope,side='SHORT',execution_mode='independent_exits',
+                 entries=[dict(id='42',price=100)])
+    _save_ledger_plan(ledger,parent,owner='cfg')
+    _save_ledger_plan(ledger,regular,owner='other')
+    ExecutionLedger(ex,'cfg','ETH/USDT')
+    with database.get_db_conn() as conn:
+        links={row['order_id']:row['config_id'] for row in conn.execute('SELECT * FROM execution_order_links')}
+        assert links=={'42':'other','algo:42':'cfg'}
+        assert conn.execute('SELECT config_id FROM execution_fills').fetchone()[0]=='other'
+
+
 def test_timestamp_overflow_is_incomplete(local_db):
     ex = Exchange([{**fill(i), 'timestamp': 100000} for i in range(1001)])
     result = ExecutionLedger(ex, 'cfg', 'ETH/USDT').sync(now_ms=100000, start_ms=100000)

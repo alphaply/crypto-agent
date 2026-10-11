@@ -1008,11 +1008,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
             else:
                 from backend.utils.independent_exits import IndependentExits
                 snapshot = IndependentExits(mt).snapshot(symbol)
-            risk_lines = [{'price': e.get('trigger_price') or e.get('price'),
-                           'type': 'stop_loss' if e['exit_type'] == 'stop_market' else 'take_profit',
-                           'label': 'SL' if e['exit_type'] == 'stop_market' else 'TP',
-                           'amount': e['remaining'], 'side': e['pos_side'], 'order_id': e['order_id']}
-                          for e in snapshot['exits'] if e.get('trigger_price') or e.get('price')]
+            from backend.utils.exit_context import independent_exit_chart_lines
+            risk_lines = independent_exit_chart_lines(snapshot)
         except Exception as exc:
             logger.warning(f'Independent exit chart refresh failed: {exc}')
 

@@ -1,0 +1,278 @@
+{
+  "evidence": "Actual installed CCXT requests intercepted before transport; no live exchange calls or credentials. Lifecycle and fills are independently verified by test_independent_real_v2.py.",
+  "ccxt_version": "4.5.34",
+  "network_requests": 0,
+  "fixture": "tests/test_independent_binance_v2.py::adapter",
+  "events": [
+    {
+      "step": "round_1_limit_entry",
+      "requests": [
+        {
+          "path": "order",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "BUY",
+            "newClientOrderId": "offline-round1",
+            "newOrderRespType": "RESULT",
+            "type": "LIMIT",
+            "quantity": "1",
+            "price": "100",
+            "positionSide": "LONG",
+            "timeInForce": "GTC"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_2_fixed_market",
+      "requests": [
+        {
+          "path": "order",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "newClientOrderId": "offline-market",
+            "newOrderRespType": "RESULT",
+            "type": "MARKET",
+            "quantity": "0.2",
+            "positionSide": "LONG"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_2_fixed_limit",
+      "requests": [
+        {
+          "path": "order",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "newClientOrderId": "offline-limit",
+            "newOrderRespType": "RESULT",
+            "type": "LIMIT",
+            "quantity": "0.2",
+            "price": "115",
+            "positionSide": "LONG",
+            "timeInForce": "GTC"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_2_fixed_stop_market",
+      "requests": [
+        {
+          "path": "algoOrder",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "clientAlgoId": "offline-stop_market",
+            "newOrderRespType": "RESULT",
+            "type": "STOP_MARKET",
+            "quantity": "0.2",
+            "triggerPrice": "90",
+            "positionSide": "LONG",
+            "workingType": "CONTRACT_PRICE",
+            "algoType": "CONDITIONAL"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_2_fixed_stop_limit",
+      "requests": [
+        {
+          "path": "algoOrder",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "clientAlgoId": "offline-stop_limit",
+            "newOrderRespType": "RESULT",
+            "type": "STOP",
+            "quantity": "0.2",
+            "price": "95",
+            "triggerPrice": "90",
+            "positionSide": "LONG",
+            "workingType": "CONTRACT_PRICE",
+            "timeInForce": "GTC",
+            "algoType": "CONDITIONAL"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_2_fixed_take_profit_market",
+      "requests": [
+        {
+          "path": "algoOrder",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "clientAlgoId": "offline-take_profit_market",
+            "newOrderRespType": "RESULT",
+            "type": "TAKE_PROFIT_MARKET",
+            "quantity": "0.2",
+            "triggerPrice": "110",
+            "positionSide": "LONG",
+            "workingType": "CONTRACT_PRICE",
+            "algoType": "CONDITIONAL"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_2_fixed_take_profit_limit",
+      "requests": [
+        {
+          "path": "algoOrder",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "clientAlgoId": "offline-take_profit_limit",
+            "newOrderRespType": "RESULT",
+            "type": "TAKE_PROFIT",
+            "quantity": "0.2",
+            "price": "115",
+            "triggerPrice": "110",
+            "positionSide": "LONG",
+            "workingType": "CONTRACT_PRICE",
+            "timeInForce": "GTC",
+            "algoType": "CONDITIONAL"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_2_final_all_stop_market",
+      "requests": [
+        {
+          "path": "algoOrder",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "clientAlgoId": "offline-all-stop_market",
+            "newOrderRespType": "RESULT",
+            "type": "STOP_MARKET",
+            "triggerPrice": "80",
+            "positionSide": "LONG",
+            "closePosition": true,
+            "workingType": "CONTRACT_PRICE",
+            "algoType": "CONDITIONAL"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_2_final_all_take_profit_market",
+      "requests": [
+        {
+          "path": "algoOrder",
+          "api": "fapiPrivate",
+          "method": "POST",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "clientAlgoId": "offline-all-take_profit_market",
+            "newOrderRespType": "RESULT",
+            "type": "TAKE_PROFIT_MARKET",
+            "triggerPrice": "130",
+            "positionSide": "LONG",
+            "closePosition": true,
+            "workingType": "CONTRACT_PRICE",
+            "algoType": "CONDITIONAL"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_3_native_limit_edit_remaining_target",
+      "requests": [
+        {
+          "path": "order",
+          "api": "fapiPrivate",
+          "method": "PUT",
+          "params": {
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "orderId": "42",
+            "quantity": "0.7",
+            "price": "125"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_3_query_algo_parent",
+      "requests": [
+        {
+          "path": "algoOrder",
+          "api": "fapiPrivate",
+          "method": "GET",
+          "params": {
+            "symbol": "ETHUSDT",
+            "algoId": "42"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_3_cancel_algo_parent",
+      "requests": [
+        {
+          "path": "algoOrder",
+          "api": "fapiPrivate",
+          "method": "DELETE",
+          "params": {
+            "symbol": "ETHUSDT",
+            "algoId": "42"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_3_query_regular_child",
+      "requests": [
+        {
+          "path": "order",
+          "api": "fapiPrivate",
+          "method": "GET",
+          "params": {
+            "symbol": "ETHUSDT",
+            "orderId": "42"
+          }
+        }
+      ]
+    },
+    {
+      "step": "round_3_cancel_regular_child",
+      "requests": [
+        {
+          "path": "order",
+          "api": "fapiPrivate",
+          "method": "DELETE",
+          "params": {
+            "symbol": "ETHUSDT",
+            "orderId": "42"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -2,6 +2,25 @@
 from __future__ import annotations
 
 import math
+from backend.utils.exit_orders import canonical_order_type, exit_group, order_reference, observed_order_status
+
+
+def independent_exit_chart_lines(snapshot: dict) -> list[dict]:
+    """Keep trigger and execution prices distinct, including legacy ordinary TP limits."""
+    lines = []
+    for order in snapshot.get('exits', []):
+        kind = canonical_order_type(order)
+        group = exit_group(order)
+        label = {'stop_loss': 'SL', 'take_profit': 'TP', 'limit': 'LIMIT'}.get(group, kind)
+        for field, suffix in (('trigger_price', ' TRIGGER'), ('price', ' LIMIT' if kind != 'limit' else '')):
+            if not order.get(field):
+                continue
+            lines.append({'price': order[field], 'type': group, 'label': label + suffix,
+                          'amount': None if order.get('quantity_mode') == 'all' else order.get('remaining'),
+                          'quantity_mode': order.get('quantity_mode', 'fixed'), 'order_type': kind,
+                          'side': order.get('pos_side'), 'order_id': order.get('order_id'),
+                          'order_status': observed_order_status(order)})
+    return lines
 
 
 def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
@@ -16,6 +35,8 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
                                if str(p.get('side')).upper() == side) for side in ('LONG', 'SHORT')}
         size_known = isinstance(contract_size, (int, float)) and math.isfinite(contract_size) and contract_size > 0
         size = contract_size if size_known else 1
+        exposure = dict(quantities)
+        fixed_groups = {}
         coverage_unknown = not size_known or bool(account.get('error')) or plans is None
         if not size_known:
             units = '合约张数（合约面值不可用，不换算币数量）'
@@ -48,14 +69,27 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
                 status = str(record.get('status') or 'unknown').lower()
                 if status in {'closed', 'filled', 'canceled', 'cancelled', 'rejected', 'expired'}:
                     continue
-                remaining = max(float(record.get('amount') or 0) - float(record.get('filled') or 0), 0) * size
-                pending = plan_pending or not record.get('id') or status != 'open'
-                snapshot['exits'].append({**record, 'pos_side': plan.get('side'), 'remaining': remaining, 'pending': pending})
+                all_quantity = record.get('quantity_mode') == 'all'
+                remaining = None if all_quantity else max(float(record.get('amount') or 0) - float(record.get('filled') or 0), 0) * size
+                active = status in {'open', 'new', 'waiting_trigger', 'partially_filled', 'triggered'}
+                pending = plan_pending or not record.get('id') or not active
+                side = plan.get('side')
+                group = exit_group(record)
+                snapshot['exits'].append({**record, 'order_id': order_reference(record),
+                                         'order_type': canonical_order_type(record), 'pos_side': side,
+                                         'order_status': observed_order_status(record),
+                                         'remaining': remaining, 'pending': pending})
                 snapshot['pending'] |= pending
-                if size_known and record.get('exit_type') == 'stop_market' and not pending:
-                    side = plan.get('side')
+                if not all_quantity:
+                    fixed_groups[(side, group)] = fixed_groups.get((side, group), 0) + remaining
+                if size_known and group == 'stop_loss' and not pending:
                     if side in quantities:
-                        quantities[side] = max(0, quantities[side] - remaining)
+                        quantities[side] = max(0, quantities[side] - (exposure[side] if all_quantity else remaining))
+        snapshot['quantity_conflict'] = [
+            {'side': side, 'group': group, 'fixed_remaining': quantity, 'position_amount': exposure.get(side, 0)}
+            for (side, group), quantity in fixed_groups.items()
+            if size_known and quantity > exposure.get(side, 0) + 1e-12
+        ]
         snapshot['uncovered'] = quantities if not coverage_unknown else {'LONG': None, 'SHORT': None}
         if not cycles_readable:
             snapshot['pending'] = True
@@ -67,15 +101,22 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
     lines = [f'独立退出单（{units}；' + ('本地核验记录非实时成交证明' if local_real else '模拟账户快照') + '）。']
     lines.extend(cycle_notes)
     for order in snapshot.get('exits', []):
+        remaining_text = order.get('remaining')
+        if order.get('quantity_mode') == 'all':
+            remaining_text = (f"全部（提交前快照；已解析={order.get('resolved_amount')}）"
+                              if canonical_order_type(order) == 'market' else '全部（触发时该方向仓位）')
         lines.append(
             f"ID={order.get('order_id') or order.get('id') or order.get('client_id') or '未确认'} | "
-            f"{order.get('pos_side')} | {order.get('exit_type')} | price={order.get('price')} | "
-            f"trigger={order.get('trigger_price')} | remaining={order.get('remaining')} | "
-            f"status={order.get('status')} | pending={bool(order.get('pending'))}"
+            f"{order.get('pos_side')} | {canonical_order_type(order)} | price={order.get('price')} | "
+            f"trigger={order.get('trigger_price')} | remaining={remaining_text} | "
+            f"status={observed_order_status(order)} | pending={bool(order.get('pending'))}"
         )
     if not snapshot.get('exits'):
         lines.append('本任务记录活跃独立退出单：0。')
     coverage = snapshot.get('uncovered') or {}
     lines.append('本系统独立 SL 未覆盖数量：' + '；'.join(f"{side}={coverage.get(side) if coverage.get(side) is not None else '未知'}" for side in ('LONG', 'SHORT')))
+    lines.append('覆盖为当前挂单数量估计；条件单等待触发，SL LIMIT 触发后仍需限价成交，不保证退出。')
+    if snapshot.get('quantity_conflict'):
+        lines.append(f"quantity_conflict={snapshot.get('quantity_conflicts') or snapshot['quantity_conflict']}；固定档保持原数量，由 Agent 决定 edit/cancel。")
     lines.append(f"待核验={bool(snapshot.get('pending'))}")
     return '\n'.join(lines)

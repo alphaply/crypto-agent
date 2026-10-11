@@ -78,8 +78,78 @@ class ProtectionAction(ActionBase):
 TradeAction = Annotated[OpenAction | CloseAction | AmendAction | CancelAction | ProtectionAction, Field(discriminator="action")]
 
 
-class TradeActionsSchema(BaseModel):
+class LegacyTradeActionsSchema(BaseModel):
+    model_config = ConfigDict(extra='forbid')
     actions: list[TradeAction] = Field(min_length=1, max_length=20)
+
+
+class TradeActionsSchema(BaseModel):
+    """Execution envelope; recommended v2 and legacy have separate strict parsers."""
+    model_config = ConfigDict(extra='forbid')
+    contract_version: Literal[1, 2] = 1
+    actions: list[dict] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode='before')
+    @classmethod
+    def select_contract(cls, value):
+        from backend.agent.trading_contracts import CanonicalTradeActionsSchema
+        if not isinstance(value, dict):
+            return value
+        version = value.get('contract_version', 1)
+        if type(version) is not int or version not in {1, 2}:
+            raise ValueError('contract_version must be 1 or 2')
+        if version == 2:
+            return CanonicalTradeActionsSchema.model_validate(value).model_dump()
+        legacy = LegacyTradeActionsSchema.model_validate({key: item for key, item in value.items() if key != 'contract_version'})
+        return {**legacy.model_dump(), **({'contract_version': 1} if 'contract_version' in value else {})}
+
+
+def _validate_batch_direction(actions, config_id, symbol, mode):
+    if mode != 'REAL':
+        return
+    sides = {action.side if hasattr(action, 'side') else ('LONG' if action.order.action == 'BUY_LIMIT' else 'SHORT')
+             for action in actions if action.action == 'open'}
+    if len(sides) > 1:
+        from backend.agent.agent_tools import MarketTool
+        if not MarketTool(config_id=config_id).exchange.fetch_position_mode(symbol).get('hedged'):
+            raise ValueError('One-way mode does not support a batch of both LONG and SHORT entries')
+
+
+def _execute_v2(actions, config_id, symbol, mode):
+    from backend.agent.trading_contracts import CanonicalTradeActionsSchema
+    from backend.agent.independent_tools import execute_action
+    from backend.utils.exit_policy import effective_exit_mode
+    from backend.config import config
+    if effective_exit_mode(config.get_config_by_id(config_id)) != 'independent_exits':
+        raise ValueError('Version 2 actions require independent_exits')
+    parsed = CanonicalTradeActionsSchema.model_validate({'contract_version': 2, 'actions': actions})
+    from backend.mcp.guard import preflight_tool
+    try:
+        preflight_tool('execute_trade_actions', parsed.model_dump(), config_id, symbol)
+        _validate_batch_direction(parsed.actions, config_id, symbol, mode)
+    except (ValueError, PermissionError) as exc:
+        return json.dumps({'contract_version': 2, 'status': 'failed', 'error': str(exc),
+                           'results': [{'index': index, 'action': item.action, 'status': 'not_executed'}
+                                       for index, item in enumerate(parsed.actions)]}, ensure_ascii=False)
+    import uuid
+    batch_id = current_operation_id.get() or uuid.uuid4().hex
+    results, blocked_by = [], None
+    for index, action in enumerate(parsed.actions):
+        if blocked_by is not None:
+            results.append({'index': index, 'action': action.action, 'status': 'not_executed', 'blocked_by_index': blocked_by})
+            continue
+        args = action.model_dump(exclude={'action'}, exclude_none=True)
+        raw = run_once(config_id, symbol, f'{batch_id}:{index}',
+                       {'contract_version': 2, 'action': action.action, 'arguments': args},
+                       lambda a=action.action, values=args: execute_action(a, values, config_id, symbol))
+        status = tool_result_status(raw)
+        results.append({'index': index, 'action': action.action, 'status': status,
+                        'result': json.loads(raw) if isinstance(raw, str) else raw})
+        if status in {'failed', 'unknown', 'pending'}:
+            blocked_by = index
+    status = next((row['status'] for row in results if row['status'] in {'failed', 'unknown', 'pending'}),
+                  'submitted' if any(row['status'] == 'submitted' for row in results) else 'completed')
+    return json.dumps({'contract_version': 2, 'status': status, 'operation_id': batch_id, 'results': results}, ensure_ascii=False)
 
 
 def _dispatch(action, config_id, symbol, mode):
@@ -107,7 +177,7 @@ def _dispatch(action, config_id, symbol, mode):
 
 
 @tool(args_schema=TradeActionsSchema)
-def execute_trade_actions(actions: list, config_id: str, symbol: str):
+def execute_trade_actions(actions: list, config_id: str, symbol: str, contract_version: int = 1):
     """一次顺序执行开/加仓(open)、部分退出(close)、撤单(cancel)、入场/退出改单(amend_entry/amend_exit)、保护调整(update_protection)。
     退出仅针对已成交仓位；数量为标的币数量。先校验整批，失败或结果未知停止后续动作；已提交不等于已成交，多个交易所写入不是原子事务。
     返回逐项真实结果和状态；未知操作等待核验，不得换工具或换ID盲目重试。"""
@@ -116,10 +186,14 @@ def execute_trade_actions(actions: list, config_id: str, symbol: str):
     cfg = config.get_config_by_id(config_id)
     if not cfg or cfg.get("mode", "STRATEGY").upper() not in {"REAL", "STRATEGY"}:
         raise ValueError("批量交易仅适用于已有 REAL/STRATEGY 任务")
-    parsed = TradeActionsSchema.model_validate({"actions": actions})
+    envelope = TradeActionsSchema.model_validate({'actions': actions, 'contract_version': contract_version})
+    if envelope.contract_version == 2:
+        return _execute_v2(envelope.actions, config_id, symbol, cfg.get('mode', 'STRATEGY').upper())
+    parsed = LegacyTradeActionsSchema.model_validate({"actions": envelope.actions})
     from backend.mcp.guard import preflight_tool
     preflight_tool('execute_trade_actions', parsed.model_dump(), config_id, symbol)
     mode = cfg.get("mode", "STRATEGY").upper()
+    _validate_batch_direction(parsed.actions, config_id, symbol, mode)
     exit_mode = effective_exit_mode(cfg)
     for action in parsed.actions:
         if action.action == "open":

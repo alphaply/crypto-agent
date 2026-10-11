@@ -2,6 +2,50 @@
 import pytest
 
 from backend.utils.exit_context import independent_exit_context
+from backend.utils.exit_context import independent_exit_chart_lines
+
+
+def test_v2_dynamic_all_and_quantity_conflict_are_not_pending():
+    plan = {'symbol': 'ETH/USDT:USDT', 'side': 'LONG', 'state': 'ACTIVE',
+            'execution_mode': 'independent_exits', 'exits': [
+                {'id': '1', 'status': 'waiting_trigger', 'contract_version': 2, 'order_type': 'stop_limit', 'amount': .7, 'filled': 0, 'price': 90, 'trigger_price': 95},
+                {'id': '2', 'status': 'waiting_trigger', 'contract_version': 2, 'order_type': 'stop_limit', 'amount': .6, 'filled': 0, 'price': 89, 'trigger_price': 94},
+                {'id': '3', 'status': 'waiting_trigger', 'contract_version': 2, 'order_type': 'take_profit_market', 'quantity_mode': 'all', 'amount': None, 'trigger_price': 110},
+            ]}
+    text = independent_exit_context({'real_positions': [{'side': 'long', 'amount': 1}]}, plans=[plan], contract_size=1, symbol='ETH/USDT')
+    assert 'quantity_conflict=' in text and '待核验=False' in text
+    assert 'remaining=全部（触发时该方向仓位）' in text
+    assert 'SL LIMIT 触发后仍需限价成交' in text
+    assert 'algo:3' in text
+
+
+def test_chart_distinguishes_legacy_limit_and_two_conditional_prices():
+    lines = independent_exit_chart_lines({'exits': [
+        {'exit_type': 'take_profit_limit', 'price': 100, 'remaining': .2},
+        {'contract_version': 2, 'order_type': 'stop_limit', 'price': 90, 'trigger_price': 95, 'remaining': .3},
+        {'contract_version': 2, 'order_type': 'take_profit_market', 'trigger_price': 110, 'quantity_mode': 'all', 'remaining': None},
+    ]})
+    assert [line['label'] for line in lines] == ['LIMIT', 'SL TRIGGER', 'SL LIMIT', 'TP TRIGGER']
+    assert lines[0]['type'] == 'limit'
+    assert lines[-1]['amount'] is None and lines[-1]['quantity_mode'] == 'all'
+
+
+def test_raw_real_waiting_trigger_does_not_claim_fill():
+    plan = {'symbol': 'ETH/USDT:USDT', 'side': 'LONG', 'state': 'ACTIVE', 'execution_mode': 'independent_exits',
+            'exits': [{'id': '3', 'status': 'open', 'waiting_trigger': True, 'fill_verified': False,
+                       'contract_version': 2, 'order_type': 'stop_market', 'quantity_mode': 'all', 'amount': None}]}
+    text = independent_exit_context({'real_positions': [{'side': 'long', 'amount': 1}]}, plans=[plan], contract_size=1, symbol='ETH/USDT')
+    assert 'status=waiting_trigger' in text and 'remaining=全部' in text
+    assert '待核验=False' in text
+
+
+def test_market_all_context_is_a_submission_snapshot():
+    text = independent_exit_context({'independent_exits': {'exits': [
+        {'order_type': 'market', 'contract_version': 2, 'quantity_mode': 'all', 'resolved_amount': .5,
+         'amount': None, 'remaining': None, 'order_status': 'open'},
+    ]}})
+    assert '全部（提交前快照；已解析=0.5）' in text
+    assert '触发时该方向仓位）' not in text
 
 
 @pytest.mark.parametrize('plans', [[], [
