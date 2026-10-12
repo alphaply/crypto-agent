@@ -130,6 +130,7 @@ function TaskExecutionPanel({ execution, locale }) {
             content={execution.reasoning_content || ''}
             streaming={active && execution.phase === 'thinking'}
             reasoningTokens={execution.reasoning_tokens || 0}
+            diagnostics={execution.reasoning_diagnostics}
             startedAt={execution.started_at_iso || execution.started_at || execution.created_at || execution.scheduled_at}
           />}
         </Space>

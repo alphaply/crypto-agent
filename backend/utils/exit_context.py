@@ -30,7 +30,7 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
     units = '标的币数量'
     cycle_notes = []
     if local_real:
-        snapshot = {'exits': [], 'uncovered': {'LONG': 0.0, 'SHORT': 0.0}, 'pending': False}
+        snapshot = {'exits': [], 'unresolved_orders': [], 'uncovered': {'LONG': 0.0, 'SHORT': 0.0}, 'pending': False}
         quantities = {side: sum(float(p.get('amount') or 0) for p in account.get('real_positions', [])
                                if str(p.get('side')).upper() == side) for side in ('LONG', 'SHORT')}
         size_known = isinstance(contract_size, (int, float)) and math.isfinite(contract_size) and contract_size > 0
@@ -55,6 +55,8 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
             if plan.get('execution_mode') != 'independent_exits' or plan.get('state') == 'DONE':
                 continue
             managed_sides.add(plan.get('side'))
+            from backend.utils.trade_receipts import unresolved_orders
+            snapshot['unresolved_orders'].extend(unresolved_orders(plan))
             plan_pending = bool(plan.get('error') or plan.get('state') == 'EXITING'
                                 or plan.get('unobserved_entry_fills') or plan.get('cleanup_fill_unseen')
                                 or any(r.get('fill_pending') or r.get('replacement')
@@ -100,6 +102,13 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
                 cycle_notes.append(f'{side} 可见交易所持仓，但本任务没有活跃独立退出周期。')
     lines = [f'独立退出单（{units}；' + ('本地核验记录非实时成交证明' if local_real else '模拟账户快照') + '）。']
     lines.extend(cycle_notes)
+    if snapshot.get('unresolved_orders'):
+        import json
+        lines.append('具体待核验订单（不计入有效保护）：' + json.dumps(snapshot['unresolved_orders'], ensure_ascii=False))
+    if account.get('trade_operation_receipts'):
+        import json
+        lines.append('最新原操作核验记录（优先于历史 unknown；写入前仍须重新核验）：' +
+                     json.dumps(account['trade_operation_receipts'], ensure_ascii=False))
     for order in snapshot.get('exits', []):
         remaining_text = order.get('remaining')
         if order.get('quantity_mode') == 'all':

@@ -27,6 +27,136 @@ def call(name, args, operation_id):
     return json.loads(tool_registry.run_trade_tool(name, args, 'cfg', 'ETH/USDT', operation_id=operation_id))
 
 
+@pytest.fixture
+def real_short(simulation, monkeypatch):
+    """Public dispatch against a deterministic exchange, never a live account."""
+    from test_independent_exits import Exchange, entry
+    from backend.utils.independent_exits import IndependentExits
+
+    class ShortExchange(Exchange):
+        missing_cancel_fill = False
+        position_failure = False
+
+        def fetch_positions(self, symbols):
+            if self.position_failure:
+                raise TimeoutError('position read unavailable')
+            return [dict(side='short', contracts=self.quantity, hedged=True)] if self.quantity else []
+
+        def cancel_order(self, oid, symbol, params):
+            result = super().cancel_order(oid, symbol, params)
+            if self.missing_cancel_fill:
+                self.orders[str(oid)]['filled'] = None
+                result['filled'] = None
+            return result
+
+    exchange = ShortExchange()
+    service = IndependentExits(SimpleNamespace(exchange=exchange, config_id='cfg'))
+    opening = entry()
+    opening.action = 'SELL_LIMIT'
+    first = service.open('ETH/USDT', opening, operation_id='short-entry', contract_version=2)
+    exchange.orders[first['id']].update(status='closed', filled=1)
+    exchange.quantity = 1
+    service.reconcile_all()
+    monkeypatch.setattr(config, 'get_config_by_id', lambda _: {
+        'config_id': 'cfg', 'mode': 'REAL', 'exit_mode': 'independent_exits'})
+    monkeypatch.setattr(agent_tools, '_independent_service', lambda *_: (service, True))
+    return service, exchange
+
+
+def test_market_short_close_keeps_fill_when_cleanup_ack_has_no_fill(real_short):
+    service, exchange = real_short
+    stop = call('close', dict(side='SHORT', order_type='stop_market', amount=1,
+                             trigger_price=110, reason='protect'), 'protect-short')
+    exchange.missing_cancel_fill = True
+    result = call('close', dict(side='SHORT', order_type='market', close_all=True,
+                               reason='exit'), 'market-close-short')
+    assert result['status'] == 'completed'
+    assert result['filled_amount'] == 1
+    assert result['operation_id'] == 'market-close-short'
+    assert result['cleanup']['status'] == 'pending'
+    assert stop['order_id'] in [item['order_id'] for item in result['cleanup']['orders']]
+    assert result['recovery']['target_operation_id'] == 'market-close-short'
+    assert sum(row['type'] == 'market' and 'stopLossPrice' not in row['params']
+               for row in exchange.calls) == 1
+
+
+def test_market_close_preflight_read_failure_is_not_submitted(real_short):
+    _, exchange = real_short
+    exchange.position_failure = True
+    before = len(exchange.calls)
+    result = call('close', dict(side='SHORT', order_type='market', close_all=True,
+                               reason='exit'), 'read-failed-close')
+    assert result['status'] == 'failed'
+    assert result['execution']['submission_state'] == 'not_submitted'
+    assert len(exchange.calls) == before
+
+
+def test_market_close_lost_ack_retains_original_query_identity(real_short):
+    _, exchange = real_short
+    exchange.timeout_next = True
+    result = call('close', dict(side='SHORT', order_type='market', close_all=True,
+                               reason='exit'), 'timeout-close')
+    assert result['status'] == 'unknown'
+    assert result['execution']['submission_state'] == 'unknown'
+    assert result['client_id']
+    assert result['filled_amount'] is None
+    assert result['recovery']['target_operation_id'] == 'timeout-close'
+
+
+def test_confirmed_close_with_late_entry_keeps_residual_separate(real_short):
+    service, exchange = real_short
+    add = call('open', dict(side='SHORT', amount=.3, price=120, reason='add'), 'late-add')
+    cancel = exchange.cancel_order
+    def late_fill(oid, symbol, params):
+        if str(oid) == add['id']:
+            exchange.orders[str(oid)]['filled'] = .3
+            exchange.quantity += .3
+        return cancel(oid, symbol, params)
+    exchange.cancel_order = late_fill
+    result = call('close', dict(side='SHORT', order_type='market', close_all=True, reason='exit'), 'residual-close')
+    assert result['status'] == 'completed' and result['filled_amount'] == 1
+    assert result['position']['amount'] == pytest.approx(.3)
+    assert result['cleanup']['status'] == 'pending'
+    assert len(exchange.calls) == 3
+
+
+@pytest.mark.parametrize('action', ['open', 'close'])
+@pytest.mark.parametrize('failure,expected', [('timeout', 'unknown'), ('generic_exchange', 'unknown'), ('rejected', 'failed')])
+def test_submission_stage_classification_retains_identity(real_short, action, failure, expected):
+    import ccxt
+    _, exchange = real_short
+    calls = []
+    error = {'timeout': ccxt.RequestTimeout, 'generic_exchange': ccxt.ExchangeError, 'rejected': ccxt.InvalidOrder}[failure]
+    def create(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise error('synthetic submission failure')
+    exchange.create_order = create
+    args = dict(side='SHORT', amount=.2, price=120, reason='add') if action == 'open' else dict(side='SHORT', order_type='market', close_all=True, reason='exit')
+    result = call(action, args, 'classification')
+    assert result['status'] == expected
+    assert result['client_id']
+    assert result['execution']['phase'] == 'submit'
+    assert result['execution']['submission_state'] == ('not_submitted' if expected == 'failed' else 'unknown')
+    assert len(calls) == 1
+
+
+def test_accepted_close_survives_post_submission_persistence_failure(real_short, monkeypatch):
+    service, exchange = real_short
+    save = service._save
+    def fail_after_accept(plan):
+        if any(r.get('operation_id') == 'save-failed' and r.get('id') for r in plan['exits']):
+            raise OSError('synthetic database failure')
+        save(plan)
+    monkeypatch.setattr(service, '_save', fail_after_accept)
+    result = call('close', dict(side='SHORT', order_type='market', close_all=True, reason='exit'), 'save-failed')
+    assert result['status'] == 'completed' and result['filled_amount'] == 1
+    assert result['client_id'] and result['exchange_order_id']
+    monkeypatch.setattr(service, '_save', save)
+    recovered = call('get_trade_operation', {'target_operation_id': 'save-failed'}, 'read-after-save-failure')
+    assert recovered['status'] == 'completed'
+    assert len(exchange.calls) == 2
+
+
 def test_one_call_multi_exit_and_replay(simulation):
     opening = {'orders': [{'action': 'BUY_LIMIT', 'entry_price': 100, 'amount': 2, 'reason': 'test'}]}
     first = call('open_position_strategy', opening, 'entry-call')

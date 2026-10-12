@@ -288,6 +288,7 @@ def save_summary(
     timeframe='1h',
     decision_json=None,
     enqueue_memory=True,
+    reasoning_diagnostics=None,
 ):
     """保存 AI 分析结果"""
     return _summary_store.save_summary(
@@ -304,6 +305,7 @@ def save_summary(
         timeframe=timeframe,
         decision_json=decision_json,
         enqueue_memory=enqueue_memory,
+        reasoning_diagnostics=reasoning_diagnostics,
     )
 
 def get_active_agents(symbol):

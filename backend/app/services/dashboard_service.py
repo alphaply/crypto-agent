@@ -742,7 +742,7 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 try:
                     latest_execution_row = conn.execute(
                         """
-                        SELECT status, phase, progress_message, reasoning_content, reasoning_tokens,
+                        SELECT status, phase, progress_message, reasoning_content, reasoning_tokens, reasoning_diagnostics,
                                tool_calls_json, decision_json, scheduled_at, started_at, finished_at,
                                created_at, updated_at, error
                         FROM scheduler_runs

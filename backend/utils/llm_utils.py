@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from langchain_anthropic import ChatAnthropic
+from langchain_anthropic import ChatAnthropic as BaseChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -376,6 +376,13 @@ def resolve_compatibility_mode(
 class ReasoningChatOpenAI(ChatOpenAI):
     """Preserve reasoning fields returned by OpenAI-compatible chat gateways."""
 
+    def _get_request_payload(self, input_: Any, *, stop=None, **kwargs):
+        from backend.utils.reasoning_diagnostics import capture_request
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        capture_request(payload, protocol='openai', base_url=str(self.openai_api_base or ''),
+                        requested=(self.metadata or {}).get('reasoning_request'))
+        return payload
+
     def _create_chat_result(self, response: Any, generation_info: Optional[Dict[str, Any]] = None) -> Any:
         result = super()._create_chat_result(response, generation_info)
         try:
@@ -394,6 +401,9 @@ class ReasoningChatOpenAI(ChatOpenAI):
                     result.generations[index].message.additional_kwargs["reasoning_content"] = reasoning
         except Exception:
             pass
+        from backend.utils.reasoning_diagnostics import attach_diagnostics
+        for generation in result.generations:
+            attach_diagnostics(generation.message)
         return result
 
     def _convert_chunk_to_generation_chunk(
@@ -428,15 +438,28 @@ class ReasoningChatOpenAI(ChatOpenAI):
         return generation
 
     def _stream(self, *args: Any, **kwargs: Any) -> Any:
+        from langchain_core.messages import AIMessageChunk
+        from langchain_core.outputs import ChatGenerationChunk
+        from backend.utils.reasoning_diagnostics import response_diagnostics
+        aggregate = None
         try:
-            yield from super()._stream(*args, **kwargs)
+            for chunk in super()._stream(*args, **kwargs):
+                aggregate = chunk.message if aggregate is None else aggregate + chunk.message
+                yield chunk
         except BadRequestError as exc:
             msg = (str(exc) + " " + str(getattr(exc, "body", ""))).lower()
             if ("only 1 is allowed" in msg or "invalid temperature" in msg) and getattr(self, "temperature", None) != 1.0:
                 self.temperature = 1.0
-                yield from super()._stream(*args, **kwargs)
-                return
-            raise
+                if aggregate is not None:
+                    raise
+                for chunk in super()._stream(*args, **kwargs):
+                    aggregate = chunk.message if aggregate is None else aggregate + chunk.message
+                    yield chunk
+            else:
+                raise
+        if aggregate is not None:
+            yield ChatGenerationChunk(message=AIMessageChunk(content='', additional_kwargs={
+                'reasoning_diagnostics': response_diagnostics(aggregate)}))
 
     def _generate(self, *args: Any, **kwargs: Any) -> Any:
         try:
@@ -467,6 +490,36 @@ class DeepSeekChatOpenAI(ReasoningChatOpenAI):
         except Exception:
             pass
         return payload
+
+
+class ChatAnthropic(BaseChatAnthropic):
+    """Preserve native content/signatures and add request evidence separately."""
+
+    def _get_request_payload(self, input_: Any, *, stop=None, **kwargs):
+        from backend.utils.reasoning_diagnostics import capture_request
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        capture_request(payload, protocol='anthropic', base_url=str(self.anthropic_api_url or ''),
+                        requested=(self.metadata or {}).get('reasoning_request'))
+        return payload
+
+    def _format_output(self, data, **kwargs):
+        from backend.utils.reasoning_diagnostics import attach_diagnostics
+        result = super()._format_output(data, **kwargs)
+        for generation in result.generations:
+            attach_diagnostics(generation.message)
+        return result
+
+    def _stream(self, *args, **kwargs):
+        from langchain_core.messages import AIMessageChunk
+        from langchain_core.outputs import ChatGenerationChunk
+        from backend.utils.reasoning_diagnostics import response_diagnostics
+        aggregate = None
+        for chunk in super()._stream(*args, **kwargs):
+            aggregate = chunk.message if aggregate is None else aggregate + chunk.message
+            yield chunk
+        if aggregate is not None:
+            yield ChatGenerationChunk(message=AIMessageChunk(content='', additional_kwargs={
+                'reasoning_diagnostics': response_diagnostics(aggregate)}))
 
 
 def _provider_default_headers(base_url: Optional[str]) -> Optional[Dict[str, str]]:
@@ -559,6 +612,9 @@ def build_chat_model(
     normalized_effort = str(reasoning_effort or "").strip().lower()
     if normalized_effort not in {"", "none", "low", "medium", "high", "xhigh", "max"}:
         raise ValueError(f"Unsupported reasoning_effort: {reasoning_effort}")
+    diagnostic_metadata = {'reasoning_request': {'effort': normalized_effort or None, 'thinking_enabled': thinking_enabled}}
+    if 'claude-sonnet-5.5' in model.lower() and (normalized_effort == 'none' or thinking_enabled is False):
+        raise ValueError('claude-sonnet-5.5 的关闭推理配置尚未验证支持；请使用明确的 effort 档位。')
 
     if is_fixed_temperature_one_model(model):
         effective_temperature: float | None = 1.0
@@ -595,6 +651,7 @@ def build_chat_model(
             "timeout": get_llm_timeout_seconds(),
             "max_retries": 0,
             "output_version": "v1",
+            "metadata": diagnostic_metadata,
             **thinking_options,
         }
         if not thinking_options or thinking_options.get("thinking", {}).get("type") == "disabled":
@@ -604,7 +661,12 @@ def build_chat_model(
         # Anthropic has no extra_body escape hatch. Forward supported native
         # options as model kwargs so provider settings are not silently lost.
         if next_extra_body:
-            anthropic_kwargs["model_kwargs"] = next_extra_body
+            native_overrides = {'thinking', 'output_config', 'max_tokens', 'temperature', 'top_p', 'top_k',
+                                'stop_sequences', 'tools', 'tool_choice', 'service_tier', 'betas'}
+            anthropic_kwargs.update({key: value for key, value in next_extra_body.items() if key in native_overrides})
+            remaining_native = {key: value for key, value in next_extra_body.items() if key not in native_overrides}
+            if remaining_native:
+                anthropic_kwargs['model_kwargs'] = remaining_native
         return ChatAnthropic(**anthropic_kwargs)
 
     cls = DeepSeekChatOpenAI if resolved_mode == "deepseek" else ReasoningChatOpenAI
@@ -619,6 +681,7 @@ def build_chat_model(
 
     client_kwargs: Dict[str, Any] = {
         "model": model,
+        "metadata": diagnostic_metadata,
         "api_key": api_key,
         "base_url": base_url,
         "temperature": effective_temperature,

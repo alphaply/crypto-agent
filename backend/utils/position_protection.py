@@ -101,6 +101,10 @@ class PositionProtection:
                 "ON CONFLICT(config_id,symbol,side) DO UPDATE SET payload=excluded.payload",
                 (self.config_id, plan["symbol"], plan["side"], json.dumps(plan)),
             )
+            if plan.get('execution_mode') == 'independent_exits':
+                from backend.utils.trade_evidence import initialize_schema, save_plan
+                initialize_schema(conn.cursor())
+                save_plan(conn, self.config_id, plan)
             conn.commit()
         from backend.utils.execution_ledger import rebuild_execution_position_history, register_order
         common_history = {
@@ -749,7 +753,7 @@ class PositionProtection:
                 self._save(plan)
             raise
 
-    def reconcile_all(self):
+    def reconcile_all(self, *, respect_backoff=False):
         with _lock(self.account_scope):
             with get_db_conn() as conn:
                 rows = conn.execute("SELECT payload FROM real_protection_plans WHERE config_id=?", (self.config_id,)).fetchall()
@@ -771,7 +775,7 @@ class PositionProtection:
                             continue
                     if plan.get('execution_mode') == 'independent_exits':
                         from backend.utils.independent_exits import IndependentExits
-                        IndependentExits(self.mt)._reconcile(plan)
+                        IndependentExits(self.mt)._reconcile(plan, respect_backoff=respect_backoff)
                     else:
                         self._reconcile(plan)
                 except Exception:

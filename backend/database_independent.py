@@ -537,7 +537,7 @@ class MockIndependentTrading:
 
     def snapshot(self):
         from backend import database
-        result=dict(mode='independent_exits',positions=[],entries=[],exits=[],uncovered={'LONG':0.0,'SHORT':0.0},
+        result=dict(mode='independent_exits',positions=[],entries=[],exits=[],unresolved_orders=[],uncovered={'LONG':0.0,'SHORT':0.0},
                     pending=False,quantity_conflict=False,quantity_conflicts=[],exit_groups={})
         with database.get_db_conn() as conn:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mock_positions'").fetchone():

@@ -29,6 +29,14 @@ def connection():
                 profile_id TEXT NOT NULL, operation_id TEXT NOT NULL,
                 contract_version INTEGER NOT NULL, request_json TEXT NOT NULL,
                 PRIMARY KEY(profile_id,operation_id));
+            CREATE TABLE IF NOT EXISTS mcp_operation_links (
+                profile_id TEXT NOT NULL, operation_id TEXT NOT NULL, principal TEXT NOT NULL,
+                internal_operation_id TEXT NOT NULL, symbol TEXT NOT NULL,
+                PRIMARY KEY(profile_id,operation_id,principal));
+            CREATE TABLE IF NOT EXISTS mcp_operation_revisions (
+                profile_id TEXT NOT NULL, operation_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                observed_at REAL NOT NULL, result TEXT NOT NULL,
+                PRIMARY KEY(profile_id,operation_id,revision));
         """)
         yield conn
 
@@ -95,12 +103,28 @@ def reserve_operation(profile_id, operation_id, principal, request):
         conn.execute('INSERT INTO mcp_operation_requests VALUES(?,?,?,?)', (
             profile_id, operation_id, request.get('contract_version', 1),
             json.dumps(request, sort_keys=True, ensure_ascii=False, separators=(',', ':'))))
+        conn.execute('INSERT INTO mcp_operation_links VALUES(?,?,?,?,?)',
+                     (profile_id, operation_id, principal, 'mcp:' + digest(principal + ':' + operation_id), request['symbol']))
         conn.commit()
     return None
 
 
 def complete_operation(profile_id, operation_id, result):
     with connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        encoded = json.dumps(result, ensure_ascii=False, default=str)
+        old = conn.execute('SELECT revision,result FROM mcp_operation_revisions WHERE profile_id=? AND operation_id=? '
+                           'ORDER BY revision DESC LIMIT 1', (profile_id, operation_id)).fetchone()
+        if old is None:
+            initial = conn.execute('SELECT result,updated_at FROM mcp_operations WHERE profile_id=? AND operation_id=?',
+                                   (profile_id, operation_id)).fetchone()
+            if initial and initial['result'] and initial['result'] != encoded:
+                conn.execute('INSERT INTO mcp_operation_revisions VALUES(?,?,?,?,?)',
+                             (profile_id, operation_id, 0, initial['updated_at'], initial['result']))
+                old = {'revision': 0, 'result': initial['result']}
+        if old is None or old['result'] != encoded:
+            conn.execute('INSERT INTO mcp_operation_revisions VALUES(?,?,?,?,?)',
+                         (profile_id, operation_id, old['revision'] + 1 if old else 0, time.time(), encoded))
         conn.execute("UPDATE mcp_operations SET state=?,result=?,updated_at=? WHERE profile_id=? AND operation_id=?",
                      (str(result.get('status') or 'completed'), json.dumps(result, ensure_ascii=False, default=str), time.time(), profile_id, operation_id))
         conn.commit()

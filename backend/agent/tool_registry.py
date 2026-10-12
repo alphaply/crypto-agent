@@ -21,7 +21,7 @@ from backend.agent.agent_tools import (
     update_exit_order,
 )
 from backend.agent.trade_batch import execute_trade_actions
-from backend.agent.independent_tools import CANONICAL_TOOLS
+from backend.agent.independent_tools import CANONICAL_TOOLS, READ_ONLY_TRADE_TOOLS
 from backend.utils.trade_operations import current_operation_id, run_once, tool_result_status
 from backend.utils.logger import setup_logger
 
@@ -156,7 +156,7 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
             result = run_trade_tool(tool_name, cancel_args, config_id, symbol,
                                     operation_id=f"{operation_id}:{index}" if operation_id else None, cycle_id=cycle_id)
             results.append(result)
-            stopped = tool_result_status(result) in {'failed', 'unknown'}
+            stopped = tool_result_status(result) in {'failed', 'unknown', 'pending'}
         return "\n".join(results)
 
     call_args = _normalize_tool_args(tool_name, args)
@@ -195,7 +195,7 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
     from backend.mcp.guard import preflight_tool
     # Canonical adapters preflight inside the durable callback, so replay never
     # needs a formerly live edit target to still exist. Legacy hashes/flow stay intact.
-    if tool_name not in {'open', 'close', 'edit', 'cancel'} and call_args.get('contract_version') != 2:
+    if tool_name not in {'open', 'close', 'edit', 'cancel', *READ_ONLY_TRADE_TOOLS} and call_args.get('contract_version') != 2:
         preflight_tool(tool_name, call_args, config_id, symbol)
 
     logger.info(
@@ -209,7 +209,7 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
     from backend.utils.spot_execution import current_spot_cycle_id
     cycle_token = current_spot_cycle_id.set(cycle_id) if is_spot else None
     try:
-        if operation_id:
+        if operation_id and tool_name not in READ_ONLY_TRADE_TOOLS:
             request = {'tool': tool_name, 'args': call_args}
             if tool_name in {'open', 'close', 'edit', 'cancel'} or call_args.get('contract_version') == 2:
                 request['contract_version'] = 2

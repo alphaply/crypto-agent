@@ -87,6 +87,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN config_id TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN reasoning_content TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
+    _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN reasoning_diagnostics TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN agent_type TEXT")
     _execute_best_effort(cursor, "ALTER TABLE summaries ADD COLUMN decision_json TEXT")
 
@@ -408,6 +409,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN progress_message TEXT")
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN reasoning_content TEXT")
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
+    _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN reasoning_diagnostics TEXT")
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'")
     _execute_best_effort(cursor, "ALTER TABLE scheduler_runs ADD COLUMN decision_json TEXT")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_short_memories_config_bucket ON short_memories(config_id, bucket_start)")

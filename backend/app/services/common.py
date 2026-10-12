@@ -63,6 +63,10 @@ def serialize_message(msg):
         "content": extract_message_text(msg),
     }
     if isinstance(msg, AIMessage):
+        from backend.utils.reasoning_diagnostics import extract_diagnostics
+        diagnostics = extract_diagnostics(msg)
+        if diagnostics:
+            payload['reasoning_diagnostics'] = diagnostics
         payload["tool_calls"] = getattr(msg, "tool_calls", []) or []
         reasoning = extract_reasoning_content(msg)
         if reasoning:

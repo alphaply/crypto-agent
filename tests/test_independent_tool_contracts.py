@@ -78,7 +78,7 @@ def test_strict_fields_reject_ignored_or_invalid_intent(model, payload):
 def test_registry_recommends_only_canonical_actions_and_keeps_legacy_execution(independent):
     cfg = {'mode': 'REAL', 'exit_mode': 'independent_exits'}
     tools = tool_registry.get_trade_tools_for_mode('REAL', cfg)
-    assert [item.name for item in tools] == ['open', 'close', 'edit', 'cancel', 'adopt_position_real', 'execute_trade_actions']
+    assert [item.name for item in tools] == ['open', 'close', 'edit', 'cancel', 'get_trade_operation', 'adopt_position_real', 'execute_trade_actions']
     batch = tools[-1].args_schema
     assert 'contract_version' in batch['required'] and batch['properties']['contract_version']['const'] == 2
     compatible = {item.name for item in tool_registry.get_trade_tools_for_mode('REAL', cfg, include_legacy=True)}

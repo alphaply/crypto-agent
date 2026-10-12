@@ -2377,6 +2377,7 @@ export default function AdminPage() {
               </div>
             )}
             <div className="form-field">
+              <Text type="secondary">{locale === 'zh' ? 'effort 已发送不等于服务商已按档位执行。运行记录会分别显示推理文本、用量或未返回证据；B AI Claude 渠道不会自动切换协议。Sonnet 5.5 不接受本项目尚未验证的关闭推理配置。' : 'Sending effort does not prove provider compliance. Runs distinguish text, usage, and missing evidence. B AI Claude channels keep their configured protocol; unverified Sonnet 5.5 reasoning-off settings are rejected.'}</Text>
               <label>extra_body (JSON)</label>
               <TextArea rows={4} value={JSON.stringify(editingProvider.extra_body || {}, null, 2)} onChange={(e) => {
                 try {

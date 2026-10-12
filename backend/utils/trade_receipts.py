@@ -1,0 +1,157 @@
+"""Pure operation receipts: execution facts and cycle maintenance are independent.
+
+No exchange, database or clock access belongs in the projection. Callers supply
+observations, so the same evidence produces the same receipt after a restart.
+"""
+from __future__ import annotations
+
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
+from backend.utils.exit_orders import canonical_order_type, observed_order_status, order_reference
+
+OperationStatus = Literal['failed', 'pending', 'unknown', 'submitted', 'completed', 'skipped', 'not_executed']
+TERMINAL = {'closed', 'filled', 'canceled', 'cancelled', 'expired', 'rejected'}
+
+
+class TradeReceipt(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    receipt_version: Literal[1] = 1
+    contract_version: Literal[2] = 2
+    status: OperationStatus
+    operation_id: str | None
+    action: str
+    execution: dict
+    position: dict
+    cleanup: dict
+    continuation: dict
+    recovery: dict
+
+
+@dataclass
+class TradeAttempt:
+    operation_id: str | None
+    action: str
+    phase: str = 'preflight'
+    submission_state: str = 'not_submitted'
+    plan: dict | None = None
+    record: dict | None = None
+
+
+current_attempt: ContextVar[TradeAttempt | None] = ContextVar('trade_attempt', default=None)
+
+
+def bind_attempt(plan: dict, record: dict, phase: str) -> TradeAttempt | None:
+    attempt = current_attempt.get()
+    if attempt and attempt.operation_id in {
+        record.get('operation_id'), record.get('cancel_operation_id'),
+        record.get('last_operation_id'), (record.get('amendment') or {}).get('operation_id'),
+    }:
+        attempt.plan, attempt.record, attempt.phase = plan, record, phase
+        return attempt
+    return None
+
+
+def unresolved_orders(plan: dict) -> list[dict]:
+    return [dict(order_id=order_reference(r), client_id=r.get('client_id'),
+                 operation_id=r.get('operation_id'), order_status=observed_order_status(r),
+                 side=plan.get('side'), kind='exit' if r.get('exit_type') else 'entry',
+                 reason_code='fill_unverified' if r.get('fill_pending') else 'order_unresolved',
+                 last_error=r.get('query_error'), last_attempt_at=r.get('last_attempt_at'),
+                 next_retry_at=r.get('next_retry_at'), attempt_count=r.get('attempt_count', 0))
+            for r in plan.get('entries', []) + plan.get('exits', [])
+            if r.get('fill_pending') or r.get('query_error') or not r.get('id') or r.get('status') == 'submitting'
+            or r.get('replacement') or (r.get('amendment') or {}).get('state') in {'pending', 'terminal_unconfirmed'}]
+
+
+def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str | None,
+                    action: str, base: dict | None = None, phase: str = 'verify',
+                    submission_state: str | None = None, error: str | None = None) -> dict:
+    plan, record = plan or {}, record or {}
+    result = dict(base or {})
+    factor = float(plan.get('contract_size') or 1)
+    native = record.get('status')
+    verified = bool(record.get('fill_verified') and not record.get('fill_pending'))
+    filled = float(record.get('filled') or 0) * factor if verified else None
+    amount = record.get('execution_amount', record.get('submission_amount')) if record.get('quantity_mode') == 'all' else record.get('amount')
+    remaining = max(float(amount) * factor - filled, 0) if amount is not None and filled is not None else None
+    amendment = record.get('amendment') or {}
+    submission = submission_state or record.get('submission_state') or ('submitted' if record.get('id') else 'unknown')
+    if native == 'rejected' or (action == 'edit' and (record.get('replacement_error') or amendment.get('state') == 'rejected')):
+        status = 'failed'
+    elif submission == 'not_submitted':
+        status = 'failed'
+    elif not record.get('id') or submission == 'unknown':
+        status = 'unknown'
+    elif record.get('fill_pending'):
+        status = 'pending'
+    elif action == 'cancel':
+        status = 'completed' if native in TERMINAL and verified else 'pending'
+    elif action == 'edit' and (record.get('replacement') or amendment.get('state') in {'pending', 'terminal_unconfirmed'}):
+        status = 'pending'
+    elif action == 'edit' and amendment.get('state') == 'confirmed':
+        status = 'completed'
+    elif action == 'edit' and record.get('replaces') and record.get('id'):
+        status = 'completed'
+    elif native in TERMINAL:
+        status = 'completed' if verified else 'pending'
+    else:
+        status = 'submitted'
+    if result.get('status') in {'skipped', 'not_executed'}:
+        status = result['status']
+    blockers = unresolved_orders(plan)
+    cleanup_pending = bool(plan.get('state') == 'EXITING' or plan.get('cleanup_fill_unseen')
+                           or ((plan.get('error') or blockers) and status in {'completed', 'submitted'}))
+    cleanup_status = 'pending' if cleanup_pending else 'completed' if plan.get('state') == 'DONE' else 'not_required'
+    position = dict(plan.get('position_observation') or {
+        'side': plan.get('side'), 'amount': None, 'status': 'unknown', 'observed_at': None})
+    write_times = [float(r.get(key) or 0) for r in plan.get('entries', []) + plan.get('exits', [])
+                   for key in ('created_at', 'cancel_requested_at')]
+    write_times += [float((r.get('amendment') or {}).get('requested_at') or 0)
+                    for r in plan.get('entries', []) + plan.get('exits', [])]
+    if max(write_times, default=0) > float(position.get('observed_at') or 0):
+        position['status'] = 'stale' if position.get('observed_at') else 'unknown'
+    if plan.get('position_error'):
+        position.update(status='stale' if position.get('observed_at') else 'unknown', error=plan['position_error'])
+    if position['status'] != 'verified' and position.get('amount') is not None:
+        position.update(last_known_amount=position['amount'], amount=None)
+    residual_manageable = (plan.get('residual_verified') and position.get('status') == 'verified'
+                           and (position.get('amount') or 0) > 0 and not blockers and not plan.get('read_errors')
+                           and not plan.get('cleanup_fill_unseen') and not plan.get('unobserved_entry_fills'))
+    reason = 'operation_unverified' if status in {'unknown', 'pending'} else 'cleanup_unverified' if cleanup_pending else None
+    result.update(receipt_version=1, contract_version=2, status=status, operation_id=operation_id,
+                  action=action, episode_id=plan.get('episode_id'), pending=status in {'unknown', 'pending'},
+                  filled_amount=filled, remaining_amount=remaining, actual_remaining=remaining,
+                  last_known_filled_amount=float(record.get('filled') or 0) * factor if record.get('fill_verified') else None,
+                  last_known_fill_at=record.get('fill_observed_at'),
+                  execution={'phase': phase, 'submission_state': submission,
+                             'fill_status': 'verified' if verified else 'unverified'},
+                  position=position,
+                  cleanup={'status': cleanup_status, 'orders': blockers,
+                           'error': plan.get('error') if cleanup_pending else None},
+                  continuation={'blocked_actions': (['open'] if residual_manageable else ['open', 'close', 'edit']) if reason else [],
+                                'reason_code': reason, 'side': plan.get('side'),
+                                'blocker_order_ids': [r['order_id'] for r in blockers],
+                                'assessed_at': plan.get('verified_at'), 'advisory': True},
+                  recovery={'tool': 'get_trade_operation',
+                            'target_operation_id': operation_id if record else next((r['operation_id'] for r in blockers if r.get('operation_id')), operation_id),
+                            'blocker_operation_ids': list(dict.fromkeys(r['operation_id'] for r in blockers if r.get('operation_id'))),
+                            'last_error': record.get('query_error'),
+                            'last_attempt_at': record.get('last_attempt_at'),
+                            'next_retry_at': record.get('next_retry_at'),
+                            'attempt_count': record.get('attempt_count', 0)})
+    if record:
+        result.update(id=record.get('id'), client_id=record.get('client_id'), order_id=order_reference(record),
+                      order_status=observed_order_status(record), order_type=canonical_order_type(record),
+                      quantity_mode=record.get('quantity_mode', 'fixed'), side=plan.get('side'),
+                      exchange_order_id=record.get('execution_order_id') or record.get('id'),
+                      exchange_channel='regular' if record.get('execution_order_id') else record.get('exchange_channel'),
+                      parent_order_id=order_reference(record, current=False) if record.get('execution_order_id') else None,
+                      requested_amount=record.get('requested_amount'), resolved_amount=record.get('resolved_amount'))
+    result.pop('error', None)
+    if status in {'failed', 'unknown', 'pending'}:
+        result['error'] = record.get('replacement_error') or record.get('execution_error') or error
+    return TradeReceipt.model_validate(result).model_dump()

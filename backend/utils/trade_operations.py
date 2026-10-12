@@ -215,6 +215,8 @@ def _reconciled_receipt(conn, row):
     request = json.loads(metadata['request_json']) if metadata else None
     result = _merge_reconciled_result(row, observed, request)
     status = tool_result_status(result)
+    from backend.utils.trade_evidence import append_receipt
+    append_receipt(conn, row['config_id'], row['operation_id'], result)
     conn.execute('UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?',
                  (status, json.dumps(result, ensure_ascii=False), time.time(), row['config_id'], row['operation_id']))
     return result
@@ -223,6 +225,23 @@ def _reconciled_receipt(conn, row):
 def reconcile_pending_trade_operations(config_id: str) -> int:
     """Refresh uncertain receipts from local evidence; never call an exchange or tool."""
     from backend import database
+    if is_independent_real(config_id):
+        with database.get_db_conn() as conn:
+            rows = conn.execute('SELECT operation_id,symbol,result FROM trade_action_runs WHERE config_id=?', (config_id,)).fetchall()
+        count = 0
+        for row in rows:
+            with database.get_db_conn() as conn:
+                scoped = has_scoped_evidence(conn, config_id, row['operation_id'])
+                if not scoped:
+                    full = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+                                        (config_id, row['operation_id'])).fetchone()
+                    if full['status'] in {'running', 'pending', 'unknown'} and _reconciled_receipt(conn, full) is not None:
+                        count += 1
+                    conn.commit()
+            if scoped:
+                result = refresh_operation_receipt(config_id, row['symbol'], row['operation_id'], row['result'], read_exchange=False)
+                count += result != _decode_receipt(row['result'])
+        return count
     count = 0
     with database.get_db_conn() as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
@@ -236,6 +255,8 @@ def reconcile_pending_trade_operations(config_id: str) -> int:
 
 
 def initialize_trade_operations_schema(cursor):
+    from backend.utils.trade_evidence import initialize_schema
+    initialize_schema(cursor)
     cursor.execute("""CREATE TABLE IF NOT EXISTS trade_action_runs (
         config_id TEXT NOT NULL, operation_id TEXT NOT NULL, symbol TEXT NOT NULL,
         request_hash TEXT NOT NULL, status TEXT NOT NULL, result TEXT,
@@ -267,10 +288,13 @@ def tool_result_status(result) -> str:
         return "completed"
     if isinstance(result, list):
         statuses = [tool_result_status(item) for item in result]
-        return next((status for status in ('unknown', 'failed', 'submitted') if status in statuses),
+        return next((status for status in ('unknown', 'pending', 'failed', 'submitted') if status in statuses),
                     'skipped' if statuses and all(status == 'skipped' for status in statuses) else 'completed')
     if isinstance(result, dict):
         status = str(result.get("status") or "").lower()
+        if (result.get('receipt_version') == 1 or result.get('contract_version') == 2) and status in {
+                'failed', 'pending', 'unknown', 'submitted', 'completed', 'skipped', 'not_executed'}:
+            return status
         if status == 'not_executed':
             return 'skipped'
         if status == 'partial':
@@ -320,18 +344,27 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
         if row:
             if row["request_hash"] != fingerprint or row["symbol"] != symbol:
                 raise ValueError("操作 ID 已用于不同请求；禁止重用")
-            if row['status'] in {'running', 'unknown', 'pending'}:
+            existing = dict(row)
+            scoped = has_scoped_evidence(conn, config_id, operation_id)
+            if row['status'] in {'running', 'unknown', 'pending'} and not scoped:
                 refreshed = _reconciled_receipt(conn, row)
                 if refreshed is not None:
                     conn.commit()
                     return refreshed
-            if row["result"]:
-                return json.loads(row["result"])
-            return {"status": "unknown", "operation_id": operation_id, "error": "上次操作未确认，需核验实际订单；不会重复提交"}
-        now = time.time()
-        conn.execute("INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)", (config_id, operation_id, symbol, fingerprint, "running", None, now, now))
-        conn.execute('INSERT INTO trade_operation_requests VALUES(?,?,?)', (config_id, operation_id, encoded))
+        else:
+            existing = None
+            now = time.time()
+            conn.execute("INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)", (config_id, operation_id, symbol, fingerprint, "running", None, now, now))
+            conn.execute('INSERT INTO trade_operation_requests VALUES(?,?,?)', (config_id, operation_id, encoded))
         conn.commit()
+    if existing is not None:
+        if scoped and is_independent_real(config_id):
+            # All network reads are outside the reservation transaction. A replay
+            # can refresh evidence but must never reach the financial callback.
+            return refresh_operation_receipt(config_id, symbol, operation_id, existing['result'])
+        return json.loads(existing['result']) if existing['result'] else {
+            'status': 'unknown', 'operation_id': operation_id,
+            'error': '上次操作未确认，需核验实际订单；不会重复提交'}
     token = current_operation_id.set(operation_id)
     try:
         result = callback()
@@ -342,6 +375,36 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
         current_operation_id.reset(token)
     status = tool_result_status(result)
     with database.get_db_conn() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        from backend.utils.trade_evidence import append_receipt
+        append_receipt(conn, config_id, operation_id, result)
         conn.execute("UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?", (status, json.dumps(result, ensure_ascii=False, default=str), time.time(), config_id, operation_id))
         conn.commit()
     return result
+
+
+def is_independent_real(config_id: str) -> bool:
+    from backend.config import config
+    from backend.utils.exit_policy import effective_exit_mode
+    cfg = config.get_config_by_id(config_id) or {}
+    return cfg.get('mode') == 'REAL' and effective_exit_mode(cfg) == 'independent_exits'
+
+
+def has_scoped_evidence(conn, config_id: str, operation_id: str) -> bool:
+    return any(_operation_matches(row[0], operation_id) for row in conn.execute(
+        'SELECT DISTINCT operation_id FROM trade_operation_evidence WHERE config_id=?', (config_id,)))
+
+
+def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, previous=None, *, read_exchange=True):
+    from backend.utils.trade_recovery import recover_operation
+    try:
+        return recover_operation(config_id, symbol, operation_id, read_exchange=read_exchange)
+    except Exception as exc:
+        receipt = _decode_receipt(previous)
+        if isinstance(receipt, dict) and receipt.get('receipt_version') == 1:
+            receipt = dict(receipt)
+            receipt['recovery'] = {**receipt.get('recovery', {}), 'last_error': str(exc)}
+            receipt['position'] = {**receipt.get('position', {}), 'status': 'stale'}
+            return receipt
+        return {'status': 'unknown', 'operation_id': operation_id, 'error': str(exc),
+                'recovery': {'tool': 'get_trade_operation', 'target_operation_id': operation_id}}

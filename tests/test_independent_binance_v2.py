@@ -103,3 +103,50 @@ def test_queries_cancellation_and_native_edit_use_exact_channels(adapter):
     exchange.edit_order('42', symbol, 'limit', 'sell', .7, 120)
     assert calls[-1][0:3:2] == ('order', 'PUT')
     assert calls[-1][-1]['quantity'] == '0.7' and calls[-1][-1]['price'] == '120'
+
+
+def test_cancel_parent_child_share_one_verification_budget(adapter):
+    import time
+    exchange, calls = adapter
+    request = exchange.request
+    deletes, timed_reads = [], []
+    def wire(path, api='public', method='GET', params=None, *args, **kwargs):
+        if method == 'DELETE':
+            deletes.append(path)
+            if path == 'algoOrder':
+                calls.append((path, api, method, dict(params or {})))
+                return dict(algoId='42', algoStatus='FINISHED', actualOrderId='42', symbol='ETHUSDT')
+            calls.append((path, api, method, dict(params or {})))
+            return dict(orderId='42', status='CANCELED', symbol='ETHUSDT')
+        if deletes and method == 'GET':
+            timed_reads.append(exchange.timeout)
+        return request(path, api, method, params, *args, **kwargs)
+    exchange.request = wire
+    original_timeout = exchange.timeout
+    service = IndependentExits(SimpleNamespace(exchange=exchange, config_id='budget'))
+    service._save = lambda _: None
+    record = dict(id='42', order_type='stop_limit', exit_type='stop_limit', contract_version=2,
+                  status='open', filled=0, amount=1, client_id='synthetic-parent', fill_verified=True)
+    plan = dict(symbol='ETH/USDT:USDT', side='LONG', exits=[record])
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match='cumulative fill'):
+        service._cancel(record, plan)
+    assert time.monotonic() - started < 2
+    assert 1 <= len(timed_reads) <= 3 and all(0 < value <= 2000 for value in timed_reads)
+    assert exchange.timeout == original_timeout
+    assert deletes == ['algoOrder', 'order']
+    assert not any(row[2] in {'POST', 'PUT'} for row in calls)
+    assert record['fill_pending'] and record['status'] == 'canceled'
+
+
+def test_old_waiting_parent_cannot_erase_terminal_unverified_fill(adapter):
+    exchange, _ = adapter
+    fetch = exchange.fetch_order
+    exchange.fetch_order = lambda *a, **k: {**fetch(*a, **k), 'filled': None}
+    service = IndependentExits(SimpleNamespace(exchange=exchange, config_id='stale-parent'))
+    record = dict(id='42', order_type='stop_market', contract_version=2, status='closed',
+                  filled=.2, fill_verified=True, fill_pending=True, amount=1, client_id='synthetic-parent')
+    with pytest.raises(RuntimeError, match='terminal order response'):
+        service._query(record, 'ETH/USDT:USDT')
+    assert record['status'] == 'closed' and record['fill_pending']
+    assert record['filled'] == .2

@@ -35,6 +35,7 @@ export default function ReasoningBlock({
   streaming = false,
   reasoningTokens = 0,
   startedAt,
+  diagnostics,
 }) {
   const { locale } = usePreferences();
   const isZh = locale === 'zh';
@@ -57,11 +58,24 @@ export default function ReasoningBlock({
     }
   }, [streaming]);
 
-  if (!reasoning && !streaming && !reasoningTokens) return null;
+  if (typeof diagnostics === 'string') { try { diagnostics = JSON.parse(diagnostics); } catch { diagnostics = null; } }
+  const diagnostic = Array.isArray(diagnostics) ? diagnostics.at(-1) : diagnostics;
+  if (!reasoning && !streaming && !reasoningTokens && !diagnostic) return null;
+
+  const state = reasoning ? 'text_available' : reasoningTokens > 0 ? 'usage_only' : diagnostic?.evidence_state;
+  const evidenceLabels = isZh ? { text_available: '文本可见', usage_only: '仅返回用量', requested_no_evidence: '已请求 · 未返回证据', disabled: '已明确关闭', not_requested: '未请求推理' } : { text_available: 'Text available', usage_only: 'Usage only', requested_no_evidence: 'Requested · no evidence', disabled: 'Explicitly disabled', not_requested: 'Not requested' };
+  const effort = diagnostic?.sent_parameters?.reasoning_effort || diagnostic?.sent_parameters?.output_config?.effort || diagnostic?.requested_effort;
+  const noText = state === 'disabled'
+    ? (isZh ? '本次请求已显式关闭推理。' : 'Reasoning was explicitly disabled for this request.')
+    : state === 'requested_no_evidence'
+      ? (isZh ? '请求已携带推理设置，但服务商未返回推理文本或正数推理用量；无法确认实际执行档位。' : 'Reasoning settings were sent, but no text or positive reasoning usage was returned. Actual effort is unverified.')
+      : state === 'not_requested'
+        ? (isZh ? '本次请求未携带推理设置。' : 'No reasoning settings were sent.')
+        : (isZh ? '服务商仅返回推理 token 用量，未提供可展示的推理文本。' : 'The provider reported reasoning-token usage without displayable reasoning text.');
 
   const displayContent = reasoning || (streaming
     ? (isZh ? '等待服务商返回可展示的推理内容…' : 'Waiting for displayable reasoning from the provider…')
-    : (isZh ? '服务商仅返回推理 token 用量，未提供可展示的推理文本。' : 'The provider reported reasoning-token usage without displayable reasoning text.'));
+    : noText);
 
   const toggleExpand = () => {
     userInteractedRef.current = true;
@@ -99,7 +113,7 @@ export default function ReasoningBlock({
           {streaming ? (
             <ElapsedReasoningMetric startedAt={startedAt} locale={locale} />
           ) : (
-            sizeLabel || (isZh ? '完成' : 'Done')
+            (!reasoning && !reasoningTokens ? evidenceLabels[state] : sizeLabel) || (isZh ? '完成' : 'Done')
           )}
         </span>
       </button>
@@ -107,6 +121,7 @@ export default function ReasoningBlock({
       {expanded ? (
         <div id={contentId} className="reasoning-block__content" aria-live={streaming ? 'polite' : 'off'}>
           <div className="reasoning-block__body">
+            {diagnostic && <p style={{ overflowWrap: 'anywhere', opacity: .75 }}>{diagnostic.model} · {diagnostic.protocol}{effort ? ` · effort=${effort}` : ''} · {evidenceLabels[state]}{diagnostic.configuration_warning ? ` · ${diagnostic.configuration_warning}` : ''}</p>}
             <MarkdownBlock content={displayContent} streaming={streaming} />
           </div>
         </div>

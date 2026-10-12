@@ -19,6 +19,7 @@ def build_decision_record(messages: list, summary_status: str) -> dict:
                 'role': 'assistant', 'content': extract_message_text(msg),
                 'reasoning_content': extract_reasoning_content(msg),
                 'reasoning_tokens': extract_reasoning_token_count(msg),
+                'reasoning_diagnostics': msg.additional_kwargs.get('reasoning_diagnostics'),
                 'tool_calls': _json_value(msg.tool_calls or []),
                 'output_warning': msg.additional_kwargs.get('output_warning', ''),
             })
@@ -39,6 +40,11 @@ def read_decision_record(summary: dict) -> dict | None:
         try:
             record = json.loads(raw)
             if isinstance(record, dict) and isinstance(record.get('messages'), list):
+                from backend.utils.trade_recovery import latest_operation_receipts
+                latest = latest_operation_receipts(summary.get('config_id'), summary.get('symbol', ''))
+                for entry in record['messages']:
+                    if entry.get('role') == 'tool' and entry.get('tool_call_id') in latest:
+                        entry['current_receipt'] = latest[entry['tool_call_id']]
                 return record
         except (ValueError, TypeError):
             pass

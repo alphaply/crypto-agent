@@ -62,6 +62,8 @@ def _emit_task_progress(configurable: dict, *, phase: str, message: str, **paylo
         if messages is not None:
             from backend.utils.decision_record import build_decision_record
             payload['decision'] = build_decision_record(messages, 'running')
+            payload['reasoning_diagnostics'] = [msg.additional_kwargs['reasoning_diagnostics'] for msg in messages
+                                                if isinstance(msg, AIMessage) and msg.additional_kwargs.get('reasoning_diagnostics')]
         callback({"phase": phase, "message": message, **payload})
     except Exception as exc:
         logger.warning("Task progress callback failed: %s", exc)
@@ -608,6 +610,8 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
 
     if trade_mode in {'REAL', 'STRATEGY'} and effective_exit_mode(agent_config) == 'independent_exits':
         from backend.utils.exit_context import independent_exit_context
+        from backend.utils.trade_recovery import latest_operation_receipts
+        account_data['trade_operation_receipts'] = latest_operation_receipts(config_id, symbol)
         contract_size = None
         if trade_mode == 'REAL':
             try:
@@ -1158,6 +1162,8 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 agent_type=agent_type,
                 reasoning_content=reasoning_content,
                 reasoning_tokens=reasoning_tokens,
+                reasoning_diagnostics=[msg.additional_kwargs['reasoning_diagnostics'] for msg in state.messages
+                                       if isinstance(msg, AIMessage) and msg.additional_kwargs.get('reasoning_diagnostics')],
                 decision_json=json.dumps(decision_record, ensure_ascii=False),
                 enqueue_memory=summary_status == "completed",
                 run_id=run_id,
@@ -1228,7 +1234,7 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
         args = tool_call.get("args", {})
-        if stopped:
+        if stopped and tool_name != 'get_trade_operation':
             tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=json.dumps({
                 'status': 'not_executed', 'reason': '前序工具失败或结果待核验，本轮后续操作已停止。'
             }, ensure_ascii=False)))
@@ -1267,7 +1273,7 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
             logger.error("Error executing tool %s: %s", tool_name, e)
             tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=f"Error: {str(e)}"))
             status = "failed"
-        stopped = status in {'failed', 'unknown', 'pending'}
+        stopped = stopped or (tool_name != 'get_trade_operation' and status in {'failed', 'unknown', 'pending'})
         for item in progress_calls:
             if item["id"] == str(tool_call.get("id") or ""):
                 item["status"] = status

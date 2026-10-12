@@ -54,6 +54,7 @@ function normalizeAssistantDraft(draft) {
     content: draft.content || '',
     reasoning_content: draft.reasoning_content || '',
     reasoning_tokens: Number(draft.reasoning_tokens || 0),
+    reasoning_diagnostics: draft.reasoning_diagnostics,
     reasoning_started_at: draft.reasoning_started_at || null,
     pending: Boolean(draft.pending),
     draft: true,
@@ -114,7 +115,7 @@ function MessageBranchActions({ branches, activeSessionId, onSelect, onEdit, dis
   );
 }
 
-function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningStartedAt, role, streaming, status, actions }) {
+function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningDiagnostics, reasoningStartedAt, role, streaming, status, actions }) {
   const { t, locale } = usePreferences();
   if (role === 'tool') return <ToolMessage content={content} locale={locale} />;
   const normalized = splitThinkingContent(content || '', reasoning || '');
@@ -138,6 +139,7 @@ function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningStar
         content={normalized.reasoning}
         streaming={reasoningStreaming}
         reasoningTokens={reasoningTokens}
+        diagnostics={reasoningDiagnostics}
         startedAt={reasoningStartedAt}
       />
       {!hasReasoning && reasoningTokens > 0 ? (
@@ -545,6 +547,7 @@ export default function ChatPage({ token }) {
         extraInfo: {
           reasoning: message.reasoning_content || '',
           reasoningTokens: Number(message.reasoning_tokens || 0),
+          reasoningDiagnostics: message.reasoning_diagnostics,
           reasoningStartedAt: message.reasoning_started_at || null,
           originalRole: message.role,
           streaming: streaming && message === messages.at(-1) && message.role === 'assistant',
@@ -615,6 +618,7 @@ export default function ChatPage({ token }) {
               content: event.completion.content || draftRef.current.content,
               reasoning_content: event.completion.reasoning_content || draftRef.current.reasoning_content,
               reasoning_tokens: Number(event.completion.reasoning_tokens || draftRef.current.reasoning_tokens || 0),
+              reasoning_diagnostics: event.completion.reasoning_diagnostics,
               reasoning_started_at: draftRef.current.reasoning_started_at,
               pending: false,
             };
@@ -958,7 +962,7 @@ export default function ChatPage({ token }) {
                           },
                           ai: {
                             placement: 'start', variant: 'shadow', shape: 'round', rootClassName: 'x-bubble-ai',
-                            contentRender: (content, info) => <MessageContent content={content} reasoning={info?.extraInfo?.reasoning} reasoningTokens={info?.extraInfo?.reasoningTokens} reasoningStartedAt={info?.extraInfo?.reasoningStartedAt} role="assistant" streaming={info?.extraInfo?.streaming} status={info?.extraInfo?.status} />,
+                            contentRender: (content, info) => <MessageContent content={content} reasoning={info?.extraInfo?.reasoning} reasoningTokens={info?.extraInfo?.reasoningTokens} reasoningDiagnostics={info?.extraInfo?.reasoningDiagnostics} reasoningStartedAt={info?.extraInfo?.reasoningStartedAt} role="assistant" streaming={info?.extraInfo?.streaming} status={info?.extraInfo?.status} />,
                           },
                           system: {
                             placement: 'start', variant: 'outlined', shape: 'round', rootClassName: 'x-bubble-system',

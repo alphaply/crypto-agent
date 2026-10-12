@@ -262,7 +262,8 @@ def trading_tools(profile_id):
     result = [{'name': tool.name, 'description': tool.description,
                'inputSchema': tool.args_schema if isinstance(tool.args_schema, dict) else tool.args_schema.model_json_schema()}
               for tool in get_trade_tools_for_mode(cfg['mode'], cfg, include_legacy=True)
-              if tool.name != 'adopt_position_real' or cfg.get('exit_mode') == 'independent_exits']
+              if tool.name != 'get_trade_operation'
+              and (tool.name != 'adopt_position_real' or cfg.get('exit_mode') == 'independent_exits')]
     if cfg['market_type'] == 'spot':
         from .spot_orders import tool_schemas
         result.extend(tool_schemas())
@@ -396,6 +397,49 @@ def trade_scope(tool_name, arguments):
     return 'trade'
 
 
+def _external_operation_receipt(value, stable_id, operation_id, profile_id):
+    if isinstance(value, list):
+        return [_external_operation_receipt(item, stable_id, operation_id, profile_id) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {key: _external_operation_receipt(item, stable_id, operation_id, profile_id) for key, item in value.items()}
+    for key in ('operation_id', 'target_operation_id'):
+        if str(result.get(key, '')).startswith(stable_id):
+            result[key] = operation_id + result[key][len(stable_id):]
+    if result.get('tool') == 'get_trade_operation':
+        result.update(tool='get_operation', target_operation_id=operation_id, profile_id=profile_id)
+    return result
+
+
+def _recover_trade_receipt(caller, profile_id, operation_id):
+    """Reuse the authenticated outer identity, never caller-supplied internal IDs."""
+    cfg = get_runtime_profile('mcp:' + profile_id) or {}
+    if cfg.get('market_type') == 'spot' or cfg.get('exit_mode') != 'independent_exits':
+        return None
+    with store.connection() as conn:
+        row = conn.execute('SELECT r.request_json FROM mcp_operations o JOIN mcp_operation_requests r '
+                           'USING(profile_id,operation_id) WHERE o.profile_id=? AND o.operation_id=? AND o.principal=?',
+                           (profile_id, operation_id, caller['id'])).fetchone()
+    if not row:
+        return None
+    request = json.loads(row['request_json'])
+    if request.get('tool') == 'adopt_position_real':
+        return None
+    stable_id = 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        inner = conn.execute('SELECT result FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+                             ('mcp:' + profile_id, stable_id)).fetchone()
+    if not inner:
+        return None
+    from backend.utils.trade_operations import refresh_operation_receipt, tool_result_status
+    payload = refresh_operation_receipt('mcp:' + profile_id, request['symbol'], stable_id, inner['result'])
+    result = sanitize({'operation_id': operation_id, 'status': tool_result_status(payload),
+                       'result': _external_operation_receipt(payload, stable_id, operation_id, profile_id)}, profile_id)
+    store.complete_operation(profile_id, operation_id, result)
+    return result
+
+
 def _recover_adoption_receipt(caller, profile_id, operation_id, symbol=None):
     """Recover a committed local adoption after a lost outer receipt, without trading."""
     from backend.utils.position_adoption import find_adoption_receipt
@@ -462,6 +506,8 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         if previous is not None:
             if tool_name == 'adopt_position_real' and previous.get('status') in {'unknown', 'pending', 'started'}:
                 previous = _recover_adoption_receipt(caller, profile_id, operation_id, symbol) or previous
+            else:
+                previous = _recover_trade_receipt(caller, profile_id, operation_id) or previous
             store.audit(caller['id'], tool_name, 'replayed', profile_id=profile_id, operation_id=operation_id)
             return sanitize(previous, profile_id)
         reserved = True
@@ -490,7 +536,8 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
             payload = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, ValueError):
             payload = raw
-        result = {'operation_id': operation_id, 'status': tool_result_status(raw), 'result': payload}
+        result = {'operation_id': operation_id, 'status': tool_result_status(raw),
+                  'result': _external_operation_receipt(payload, stable_id, operation_id, profile_id)}
     except (ValueError, PermissionError) as exc:
         result = {'operation_id': operation_id, 'status': 'failed', 'error': safe_error(exc, profile_id)}
         if 'operation_id already belongs' in str(exc):
@@ -517,6 +564,11 @@ def operation(caller, profile_id, operation_id):
                            (profile_id, operation_id, caller['id'])).fetchone()
     if not row:
         raise ValueError('Operation not found for this caller')
+    recovered_trade = _recover_trade_receipt(caller, profile_id, operation_id)
+    if recovered_trade is not None:
+        with store.connection() as conn:
+            row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=? AND principal=?',
+                               (profile_id, operation_id, caller['id'])).fetchone()
     if row['state'] in {'started', 'unknown', 'pending'}:
         recovered = _recover_adoption_receipt(caller, profile_id, operation_id)
         if recovered is not None:

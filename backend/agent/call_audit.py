@@ -25,6 +25,7 @@ def _response_audit_fields(response) -> dict:
             'completion_status': {key: extra[key] for key in
                                   ('finish_reason', 'stop_reason', 'status', 'incomplete_details', 'refusal') if key in extra},
             'reasoning_content': extract_reasoning_content(response),
+            'reasoning_diagnostics': extra.get('reasoning_diagnostics', {}),
         },
     })
 
@@ -92,6 +93,8 @@ def audited_invoke(
     except Exception as exc:
         logger.warning('Cannot record model input: %s', exc)
     response = None
+    from backend.utils.reasoning_diagnostics import current_request
+    diagnostic_token = current_request.set(None)
     try:
         from contextlib import nullcontext
         from langsmith import tracing_context
@@ -113,9 +116,12 @@ def audited_invoke(
             try:
                 fields = _response_audit_fields(response)
                 fields['details'] = {**fields.get('details', {}), 'request_settings': request_diagnostics(request_settings or {})}
+                if current_request.get():
+                    fields['details']['reasoning_diagnostics'] = {**current_request.get(), 'request_outcome': 'error'}
                 finish_agent_run(run_id, status='error', error=str(exc), **fields)
             except Exception as audit_exc:
                 logger.warning('Cannot record model error: %s', audit_exc)
+        current_request.reset(diagnostic_token)
         raise
     if run_id:
         try:
@@ -124,4 +130,5 @@ def audited_invoke(
             finish_agent_run(run_id, status='success', **fields)
         except Exception as exc:
             logger.warning('Cannot record model result: %s', exc)
+    current_request.reset(diagnostic_token)
     return response

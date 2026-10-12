@@ -173,6 +173,9 @@ def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> 
     if tool_calls is not None:
         assignments.append("tool_calls_json = ?")
         params.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
+    if event.get('reasoning_diagnostics') is not None:
+        assignments.append('reasoning_diagnostics = ?')
+        params.append(json.dumps(event['reasoning_diagnostics'], ensure_ascii=False))
     if event.get('decision') is not None:
         assignments.append('decision_json = ?')
         params.append(json.dumps(event['decision'], ensure_ascii=False, default=str))
@@ -364,7 +367,9 @@ def run_config_maintenance(config):
             if not cached or cached[0] != fingerprint or time.monotonic() - cached[1] > 300:
                 cached = (fingerprint, time.monotonic(), PositionProtection(MarketTool(config_id=config_id)))
                 _protection_clients[config_id] = cached
-            results = cached[2].reconcile_all()
+            results = cached[2].reconcile_all(respect_backoff=True)
+            from backend.utils.trade_operations import reconcile_pending_trade_operations
+            reconcile_pending_trade_operations(config_id)
             for result in results:
                 if result.get("error"):
                     logger.error(f"[PositionProtection] {config_id}: {result}")

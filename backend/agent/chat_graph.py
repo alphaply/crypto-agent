@@ -701,6 +701,10 @@ def model_node(state: ChatState, config: RunnableConfig):
 
     history = list(state.get("messages", []))
     system_prompt = state.get("system_prompt", "")
+    from backend.utils.exit_policy import effective_exit_mode
+    if effective_exit_mode(cfg) == 'independent_exits':
+        from backend.utils.trade_recovery import recovery_context_text
+        system_prompt += recovery_context_text(config_id, symbol)
     conversation_summary = str(state.get("conversation_summary") or "")
     summary_cursor = int(state.get("conversation_summary_cursor") or 0)
     previous_summary = conversation_summary
@@ -811,6 +815,7 @@ def model_node(state: ChatState, config: RunnableConfig):
                 "content": extract_message_text(response),
                 "reasoning_content": extract_reasoning_content(response),
                 "reasoning_tokens": extract_reasoning_token_count(response),
+                "reasoning_diagnostics": response.additional_kwargs.get('reasoning_diagnostics'),
                 "has_tool_calls": bool(response.tool_calls),
             },
         )
@@ -902,7 +907,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
     for call in tool_calls:
         tool_name = call["name"]
         tool_args = call.get("args", {})
-        if stopped:
+        if stopped and tool_name != 'get_trade_operation':
             outputs.append(ToolMessage(tool_call_id=call['id'], content=json.dumps({
                 'status': 'not_executed', 'reason': '前序工具被拒绝、失败或待核验，后续操作未执行。'
             }, ensure_ascii=False)))
@@ -913,7 +918,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
             stopped = True
             continue
 
-        approval = interrupt(
+        approval = True if tool_name == 'get_trade_operation' else interrupt(
             {
                 "type": "tool_approval",
                 "tool_call_id": call["id"],
@@ -942,7 +947,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
                 extra['expected_spot_fingerprint'] = state.get('spot_config_fingerprint', '')
             result = _run_tool(tool_name, tool_args, config_id, symbol, operation_id=call['id'], **extra)
             outputs.append(ToolMessage(tool_call_id=call["id"], content=result))
-            stopped = tool_result_status(result) in {'failed', 'unknown', 'pending'}
+            stopped = stopped or (tool_name != 'get_trade_operation' and tool_result_status(result) in {'failed', 'unknown', 'pending'})
         except Exception as exc:
             logger.error(f"Tool error ({tool_name}): {exc}")
             outputs.append(ToolMessage(tool_call_id=call["id"], content=f"Error: {exc}"))

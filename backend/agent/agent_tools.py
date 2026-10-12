@@ -35,8 +35,14 @@ def _independent_service(config_id, symbol):
 
 def _independent_call(config_id, symbol, action, **kwargs):
     from backend.utils.trade_operations import current_operation_id
+    from backend.utils.trade_receipts import TradeAttempt, current_attempt, project_receipt
+    attempt, token = None, None
     try:
         service, real = _independent_service(config_id, symbol)
+        from backend.utils.independent_exits import IndependentExits
+        if real and isinstance(service, IndependentExits):
+            attempt = TradeAttempt(current_operation_id.get(), 'edit' if action.startswith('amend_') else action)
+            token = current_attempt.set(attempt)
         if not real and action == 'amend_exit':
             kwargs['current_price'] = float(MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
         kwargs['operation_id'] = current_operation_id.get()
@@ -45,12 +51,20 @@ def _independent_call(config_id, symbol, action, **kwargs):
         return json.dumps(result, ensure_ascii=False, default=str)
     except ValueError as exc:
         from backend.utils.independent_exits import IndependentPositionError
-        result = {'status': 'failed', 'error': str(exc)}
+        result = project_receipt(attempt.plan or getattr(exc, 'plan', None), attempt.record,
+                                 operation_id=attempt.operation_id, action=attempt.action, phase=attempt.phase,
+                                 submission_state=attempt.submission_state, error=str(exc)) if attempt else {'status': 'failed', 'error': str(exc)}
         if isinstance(exc, IndependentPositionError):
             result.update(error_code=exc.code, details=exc.details)
         return json.dumps(result, ensure_ascii=False)
     except Exception as exc:
-        return json.dumps({'status': 'unknown', 'error': str(exc)}, ensure_ascii=False)
+        result = project_receipt(attempt.plan or getattr(exc, 'plan', None), attempt.record,
+                                 operation_id=attempt.operation_id, action=attempt.action, phase=attempt.phase,
+                                 submission_state=attempt.submission_state, error=str(exc)) if attempt else {'status': 'unknown', 'error': str(exc)}
+        return json.dumps(result, ensure_ascii=False)
+    finally:
+        if token is not None:
+            current_attempt.reset(token)
 
 
 def _independent_orders(orders, config_id, symbol, opening=False):
@@ -90,7 +104,7 @@ def _independent_orders(orders, config_id, symbol, opening=False):
             item = json.loads(result)
             item['index'] = index
             results.append(item)
-            if tool_result_status(result) in {'failed', 'unknown'}:
+            if tool_result_status(result) in {'failed', 'unknown', 'pending'}:
                 break
         except Exception as exc:
             results.append({'status': 'unknown', 'error': str(exc), 'index': index})

@@ -86,13 +86,16 @@ def test_fallback_gets_another_fresh_snapshot_and_correct_role(fresh_data, monke
             requests.append(list(messages))
             if len(requests) == 1:
                 raise httpx.RemoteProtocolError("disconnected")
-            yield AIMessageChunk(content="fallback result")
+            yield AIMessageChunk(content="fallback result", additional_kwargs={'reasoning_diagnostics': {
+                'model': 'fallback', 'protocol': 'openai', 'evidence_state': 'requested_no_evidence',
+                'sent_parameters': {'reasoning_effort': 'high'}, 'requested_effort': 'high'}})
 
     monkeypatch.setattr(graph, "build_chat_model", Mock(return_value=Model()))
     result = graph.agent_node(initial_state(), {"configurable": {"agent_config": {
         "model": "primary", "fallback_models": [{"model": "fallback", "system_prompt_role": "user"}],
     }}})
     assert result.active_model_name == "fallback"
+    assert result.messages[-1].additional_kwargs['reasoning_diagnostics']['model'] == 'fallback'
     assert isinstance(requests[1][0], HumanMessage)
     assert "price=200" in requests[1][0].content
     fresh_data.get_market_analysis.assert_called_once()

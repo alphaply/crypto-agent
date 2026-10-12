@@ -25,13 +25,14 @@ class SummaryStore:
         timeframe='1h',
         decision_json=None,
         enqueue_memory=True,
+        reasoning_diagnostics=None,
     ):
         timestamp = self._timestamp_factory()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             conn.execute('BEGIN IMMEDIATE')
             columns = {row[1] for row in cursor.execute("PRAGMA table_info(summaries)").fetchall()}
-            for name in ('report_json', 'run_id', 'decision_json'):
+            for name in ('report_json', 'run_id', 'decision_json', 'reasoning_diagnostics'):
                 if name not in columns:
                     cursor.execute(f'ALTER TABLE summaries ADD COLUMN {name} TEXT')
             if run_id:
@@ -93,6 +94,9 @@ class SummaryStore:
                     (timestamp, symbol, timeframe, agent_name, config_id or agent_name, agent_type, content, strategy_logic),
                 )
             summary_id = cursor.lastrowid
+            import json
+            cursor.execute('UPDATE summaries SET reasoning_diagnostics=? WHERE id=?',
+                           (json.dumps(reasoning_diagnostics, ensure_ascii=False) if reasoning_diagnostics is not None else None, summary_id))
             cursor.execute('UPDATE summaries SET report_json=?,run_id=?,decision_json=? WHERE id=?',
                            (report_json, run_id, decision_json, summary_id))
             if run_id and enqueue_memory:

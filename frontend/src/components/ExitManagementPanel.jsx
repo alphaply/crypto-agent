@@ -16,6 +16,10 @@ export default function ExitManagementPanel({ management, hideEmpty = false }) {
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
       {management.error ? <Alert type="error" showIcon title={management.error} /> : null}
       {management.pending ? <Alert type="warning" showIcon title={zh ? '退出单有待核验操作，请等待状态确认。' : 'Exit orders have pending operations. Await confirmation.'} /> : null}
+      {!!management.unresolved_orders?.length && <Alert type="warning" showIcon title={zh ? '具体待核验订单（不计入有效保护）' : 'Unverified orders (excluded from coverage)'} description={management.unresolved_orders.map((order) => <div key={order.order_id || order.client_id} style={{ overflowWrap: 'anywhere' }}>
+        {order.order_id || order.client_id} · {order.kind} · {order.reason_code}
+        {order.operation_id && <div>{zh ? '原操作' : 'Original operation'}：{order.operation_id}</div>}
+      </div>)} />}
       {management.quantity_conflict ? <Alert type="warning" showIcon title={zh ? '固定退出档合计超过当前仓位，数量保持不变，可修改或撤销。' : 'Fixed exits exceed the current position. Quantities remain unchanged; edit or cancel as needed.'} /> : null}
       <Space wrap>
         <Typography.Text type={hasUncovered ? 'warning' : 'secondary'}>

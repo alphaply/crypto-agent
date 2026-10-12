@@ -54,6 +54,9 @@ def execute_action(action: str, arguments: dict, config_id: str, symbol: str) ->
     if action == 'cancel':
         args.pop('reason')  # Service cancellation retains its existing ownership and lifecycle checks.
     args['operation_id'] = current_operation_id.get()
+    from backend.utils.trade_receipts import TradeAttempt, current_attempt, project_receipt
+    attempt = TradeAttempt(args['operation_id'], action)
+    token = current_attempt.set(attempt)
     try:
         preflight_tool(action, arguments, config_id, symbol)
         service, real = agent_tools._independent_service(config_id, symbol)
@@ -61,16 +64,44 @@ def execute_action(action: str, arguments: dict, config_id: str, symbol: str) ->
             args['current_price'] = float(agent_tools.MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
         method = getattr(service, action)
         result = method(symbol, **args) if real else method(**args)
+        if real and result.get('status') == 'skipped' and 'receipt_version' not in result:
+            plan = {'side': arguments.get('side'), 'position_observation': {
+                'side': arguments.get('side'), 'status': 'verified', 'amount': result.get('position_amount', 0)}}
+            result = project_receipt(plan, None, operation_id=attempt.operation_id, action=action,
+                                     base=result, phase='preflight', submission_state='not_submitted')
+        if not real and 'receipt_version' not in result:
+            import time
+            record = dict(result)
+            record.update(id=result.get('exchange_order_id') or result.get('id'),
+                          status={'filled': 'closed', 'waiting_trigger': 'open', 'partially_filled': 'open'}.get(
+                              result.get('order_status'), result.get('order_status') or result.get('status')),
+                          filled=result.get('filled_amount', result.get('filled', 0)), fill_verified=True,
+                          waiting_trigger=result.get('order_status') == 'waiting_trigger',
+                          submission_state='submitted')
+            if record.get('quantity_mode') == 'all':
+                record['execution_amount'] = result.get('resolved_amount')
+            side = result.get('pos_side') or result.get('side') or arguments.get('side')
+            snapshot = service.snapshot()
+            position = next((p for p in snapshot['positions'] if p.get('pos_side') == side), None)
+            plan = {'episode_id': result.get('episode_id'), 'side': side, 'contract_size': 1,
+                    'state': 'ACTIVE' if position else 'WAITING',
+                    'position_observation': {'side': side, 'amount': (position or {}).get('amount', 0),
+                                             'status': 'verified', 'observed_at': time.time()}}
+            result = project_receipt(plan, record, operation_id=attempt.operation_id, action=action, base=result)
+            if action == 'edit' and result['status'] == 'submitted':
+                result['status'] = 'completed'  # Synchronous simulated amendment committed.
         return json.dumps(canonical_receipt(result), ensure_ascii=False, default=str)
-    except ValueError as exc:
-        result = {'status': 'failed', 'contract_version': 2, 'error': str(exc)}
+    except Exception as exc:
+        result = project_receipt(attempt.plan or getattr(exc, 'plan', None), attempt.record, operation_id=attempt.operation_id,
+                                 action=action, phase=attempt.phase,
+                                 submission_state=attempt.submission_state, error=str(exc))
         if hasattr(exc, 'code'):
             result.update(error_code=exc.code, details=getattr(exc, 'details', {}))
         elif 'unsupported_combination' in str(exc):
             result['error_code'] = 'unsupported_combination'
         return json.dumps(result, ensure_ascii=False)
-    except Exception as exc:
-        return json.dumps({'status': 'unknown', 'contract_version': 2, 'error': str(exc)}, ensure_ascii=False)
+    finally:
+        current_attempt.reset(token)
 
 
 @tool('open', args_schema=OpenInput)
@@ -115,4 +146,14 @@ def cancel_trade(order_id: str, reason: str, config_id: str, symbol: str):
     return execute_action('cancel', dict(order_id=order_id, reason=reason), config_id, symbol)
 
 
-CANONICAL_TOOLS = [open_trade, close_trade, edit_trade, cancel_trade]
+@tool('get_trade_operation')
+def get_trade_operation(target_operation_id: str, config_id: str, symbol: str):
+    """只读核验原交易操作。传原回执 recovery.target_operation_id（不是订单 ID）。
+    不重发、不撤改单；保留已确认成交，返回当前仓位、清理阻塞单及核验时间。
+    unknown/pending 后可立即调用；确认相关阻塞解除后才显式提出下一笔交易。"""
+    from backend.utils.trade_operations import refresh_operation_receipt
+    return json.dumps(refresh_operation_receipt(config_id, symbol, target_operation_id), ensure_ascii=False)
+
+
+READ_ONLY_TRADE_TOOLS = {'get_trade_operation'}
+CANONICAL_TOOLS = [open_trade, close_trade, edit_trade, cancel_trade, get_trade_operation]

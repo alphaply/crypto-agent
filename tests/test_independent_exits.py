@@ -479,10 +479,14 @@ def test_unobserved_entry_fill_stops_tool_batch_before_second_order(local_db, mo
         'config_id': 'cfg', 'mode': 'REAL', 'exit_mode': 'independent_exits',
     })
     order = {'action': 'BUY_LIMIT', 'entry_price': 100, 'amount': 1, 'reason': 'test'}
-    result = json.loads(agent_tools.open_position_real.func(orders=[order, order], config_id='cfg', symbol='ETH/USDT'))
-    assert result['status'] == 'unknown'
-    assert result['results'][0]['pending']
-    assert result['results'][1] == {'status': 'not_executed', 'index': 1, 'blocked_by_index': 0}
+    result = json.loads(agent_tools.open_position_real.func(orders=[order, order, order], config_id='cfg', symbol='ETH/USDT'))
+    assert result['status'] == 'failed'
+    assert result['results'][0]['status'] == 'completed'
+    assert result['results'][0]['cleanup']['status'] == 'pending'
+    assert 'open' in result['results'][0]['continuation']['blocked_actions']
+    assert result['results'][1]['status'] == 'failed'
+    assert result['results'][1]['execution']['submission_state'] == 'not_submitted'
+    assert result['results'][2] == {'status': 'not_executed', 'index': 2, 'blocked_by_index': 1}
     assert len(ex.calls) == 1
 
 
@@ -665,7 +669,7 @@ def test_real_cleanup_unverified_cancel_fill_retains_cycle_until_position_visibl
         svc.reconcile_all()
 
     original_cancel, original_positions, original_query = ex.cancel_order, ex.fetch_positions, ex.fetch_order
-    lag = {'hidden': False}
+    lag = {'hidden': False, 'fill_hidden': True}
     canceled_ids, queried_ids = [], []
 
     def cancel(order_id, symbol, params):
@@ -685,7 +689,10 @@ def test_real_cleanup_unverified_cancel_fill_retains_cycle_until_position_visibl
 
     def query(order_id, symbol, params):
         queried_ids.append(str(order_id))
-        return original_query(order_id, symbol, params)
+        result = original_query(order_id, symbol, params)
+        if lag['hidden'] and lag['fill_hidden'] and str(order_id) == add['id']:
+            result['filled'] = ack_fill
+        return result
 
     monkeypatch.setattr(ex, 'cancel_order', cancel)
     monkeypatch.setattr(ex, 'fetch_positions', positions)
@@ -697,10 +704,13 @@ def test_real_cleanup_unverified_cancel_fill_retains_cycle_until_position_visibl
     canceled_entry = next(record for record in plan['entries'] if record['id'] == add['id'])
     assert plan['state'] != 'DONE' and plan['error']
     assert canceled_entry['fill_pending'] is True
+    assert any(item['client_id'] == canceled_entry['client_id']
+               for item in svc.snapshot('ETH/USDT')['unresolved_orders'])
     assert canceled_entry['filled'] == pytest.approx(previous_fill)
     assert canceled_ids == [add['id']]
     assert ex.quantity == pytest.approx(.5 - previous_fill)
     submitted = len(ex.calls)
+    lag['fill_hidden'] = False
 
     restarted = IndependentExits(svc.mt)
     replay = restarted.close('ETH/USDT', 'LONG', 0, 'market', operation_id='full-close')
@@ -743,17 +753,16 @@ def test_cancel_ack_without_fill_keeps_terminal_status_through_stale_open_read(l
         response['filled'] = None
         return response
 
-    ex.cancel_order = cancel
-    with pytest.raises(RuntimeError, match='cumulative fill is unverified'):
-        svc.amend_exit('ETH/USDT', stop['id'], trigger_price=95, operation_id='amend-stop')
-
     def stale_query(*args, **kwargs):
         response = original_query(*args, **kwargs)
-        if str(response['id']) == stop['id']:
+        if cancellations and str(response['id']) == stop['id']:
             response.update(status='open', filled=0)
         return response
 
+    ex.cancel_order = cancel
     ex.fetch_order = stale_query
+    with pytest.raises(RuntimeError, match='cumulative fill is unverified'):
+        svc.amend_exit('ETH/USDT', stop['id'], trigger_price=95, operation_id='amend-stop')
     restarted = IndependentExits(svc.mt)
     assert restarted.reconcile_all()[0]['error']
     plan = restarted._load('ETH/USDT:USDT', 'LONG')

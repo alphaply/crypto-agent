@@ -266,3 +266,10 @@ uv run pytest -q tests/test_mcp_gateway.py tests/test_mcp_tool_contracts.py test
 ```
 
 测试不调用真实交易所、不提交真实交易。实际公网域名和第三方工作区连接需要部署后由账户持有者完成授权联调。
+# 原操作回执恢复
+
+独立交易的 `get_operation(profile_id, operation_id)` 与同 ID 重放会刷新原操作证据。
+只读查询保留 principal/profile 隔离，不 create/edit/cancel，不自动接管或恢复周期归属。
+已成交 close 可同时带 `cleanup.status=pending`；请使用返回的原操作 ID 查询具体 blocker。
+旧批次 `not_executed` 尾部不会因查询、后台对账或重放而执行，后续交易需要明确的新请求。
+首次回执及后续修订分别保存。完整字段和升级边界见 [交易回执与恢复](TRADE_RECEIPTS_AND_RECOVERY.md)。
