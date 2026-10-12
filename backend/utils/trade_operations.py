@@ -419,9 +419,17 @@ def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, pr
             receipt = dict(receipt)
             receipt['recovery'] = {**receipt.get('recovery', {}), 'last_error': str(exc)}
             receipt['position'] = {**receipt.get('position', {}), 'status': 'stale'}
+            if receipt.get('current_position'):
+                receipt['current_position'] = {**receipt['current_position'], 'status': 'stale'}
             receipt['query'] = {'status': 'failed', 'errors': [str(exc)], 'observed_at': time.time()}
-            receipt['continuation'] = {**receipt.get('continuation', {}), 'assessment_state': 'needs_refresh',
-                                       'advisory': True, 'requires_action_assessment': True}
+            old_advice = receipt.get('continuation', {})
+            receipt['continuation'] = {
+                'assessment_state': 'needs_refresh', 'advisory': True, 'requires_action_assessment': True,
+                'scope': old_advice.get('scope'), 'blocked_actions': [], 'rules': [],
+                'previous_assessment': old_advice.get('previous_assessment', old_advice),
+                'next_step': 'Call the intended trading tool directly; it checks current dependencies. '
+                             'A query failure is not a trading denial. Do not resubmit an unknown original write.',
+            }
             return receipt
         return {'status': 'unknown', 'operation_id': operation_id, 'error': str(exc),
                 'query': {'status': 'failed', 'errors': [str(exc)], 'observed_at': time.time()},

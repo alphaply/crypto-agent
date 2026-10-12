@@ -29,7 +29,9 @@ def latest_operation_receipts(config_id: str, symbol: str = '', limit: int = 20)
 def recovery_context_text(config_id: str, symbol: str) -> str:
     receipts = latest_operation_receipts(config_id, symbol)
     return ('\n\n[当前交易核验记录]\n' + json.dumps(receipts, ensure_ascii=False) +
-            '\n这是已保存的最新核验结果；保留历史消息，受影响的新交易仍须工具重新准入。') if receipts else ''
+            '\n这些是历史操作与缓存核验结果。查询失败或needs_refresh不代表交易被禁止；'
+            '有新的仓位/挂单管理意图应直接调用对应工具，由工具在调用内核验。'
+            '不得仅凭旧限制宣称本轮无法交易，也不得换ID重发同一笔未知写入。') if receipts else ''
 
 
 def _intent(request: dict, operation_id: str, evidence_id: str) -> str:
@@ -62,9 +64,21 @@ def _records(plan, operation_id):
 
 
 def recover_operation(config_id: str, symbol: str, operation_id: str, *, service=None, read_exchange=True):
+    """Reload and repeat read-only observations after a concurrent cache update."""
+    from backend.utils.position_protection import ConcurrentProtectionUpdate
+    for attempt in range(3):
+        try:
+            return _recover_operation_once(config_id, symbol, operation_id,
+                                           service=service, read_exchange=read_exchange)
+        except ConcurrentProtectionUpdate:
+            if not read_exchange or attempt == 2:
+                raise
+
+
+def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, service=None, read_exchange=True):
     from backend import database
     from backend.utils.trade_evidence import append_receipt, load_cycles, save_plan
-    from backend.utils.position_protection import _lock
+    from backend.utils.position_protection import _lock, ConcurrentProtectionUpdate
     with database.get_db_conn() as conn:
         row = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=? AND operation_id=?',
                            (config_id, operation_id)).fetchone()
@@ -83,7 +97,9 @@ def recover_operation(config_id: str, symbol: str, operation_id: str, *, service
         service, real = _independent_service(config_id, symbol)
         if not real:
             return previous or {'status': 'unknown', 'operation_id': operation_id}
-    plans = load_cycles(config_id, service.account_scope, symbol, operation_id)
+    # Do not carry a snapshot loaded before a same-process writer releases its lock.
+    with _lock(service.account_scope):
+        plans = load_cycles(config_id, service.account_scope, symbol, operation_id)
     if not plans:
         # No evidence in this account must not borrow a former account's result.
         with database.get_db_conn() as conn:
@@ -95,6 +111,7 @@ def recover_operation(config_id: str, symbol: str, operation_id: str, *, service
         return previous or {'status': 'unknown', 'operation_id': operation_id, 'error': 'Original execution evidence unavailable'}
     projections, query_errors = {}, []
     with _lock(service.account_scope):
+        plans = load_cycles(config_id, service.account_scope, symbol, operation_id)
         for plan in plans:
             current = service._load(plan['symbol'], plan['side'])
             active = current
@@ -124,7 +141,7 @@ def recover_operation(config_id: str, symbol: str, operation_id: str, *, service
                     current_plan = json.loads(current['payload']) if current else {}
                     if current_plan.get('episode_id') == plan['episode_id']:
                         if current_plan.get('record_version', 0) != expected:
-                            raise RuntimeError('Position cycle changed during read; retry original query')
+                            raise ConcurrentProtectionUpdate('Position cycle changed during read; reload observations')
                         conn.execute('UPDATE real_protection_plans SET payload=? WHERE config_id=? AND symbol=? AND side=?',
                                      (json.dumps(plan), config_id, plan['symbol'], plan['side']))
                     conn.commit()
@@ -219,7 +236,7 @@ def recover_operation(config_id: str, symbol: str, operation_id: str, *, service
             latest = conn.execute('SELECT version FROM trade_cycle_evidence WHERE config_id=? AND account_scope=? '
                                   'AND symbol=? AND episode_id=?', (config_id, service.account_scope, plan['symbol'], plan['episode_id'])).fetchone()
             if latest and latest['version'] != plan.get('record_version', 0):
-                raise RuntimeError('Evidence advanced before receipt commit; query original operation again')
+                raise ConcurrentProtectionUpdate('Evidence advanced before receipt commit; reload observations')
         # Preserve even pre-migration receipts before writing a new projection.
         has_original = conn.execute('SELECT 1 FROM trade_receipt_revisions WHERE config_id=? AND operation_id=?',
                                     (config_id, operation_id)).fetchone()

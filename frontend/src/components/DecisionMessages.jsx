@@ -46,7 +46,7 @@ export function ToolReceipt({ item, zh }) {
       {continuation && <p>{continuation.assessment_state === 'needs_refresh'
         ? (zh ? '建议待刷新；新动作会在本次调用内重新取证。' : 'Advisory needs refresh; each action refreshes its own evidence.')
         : (zh ? '以下限制仅适用于所列范围；每笔新动作会自动核验，无需先查询解锁。' : 'Restrictions apply only to the listed scope; each action assesses its own dependencies.')}</p>}
-      {(continuation?.rules || []).map((rule, index) => <Alert key={index} type="warning" showIcon style={{ marginBottom: 8 }}
+      {(continuation?.assessment_state === 'needs_refresh' ? [] : continuation?.rules || []).map((rule, index) => <Alert key={index} type="warning" showIcon style={{ marginBottom: 8 }}
         title={`${rule.action} · ${rule.target || rule.scope?.side || ''}`}
         description={<>{zh ? reasons[rule.reason_code] || rule.reason_code : rule.reason_code}{(rule.blockers || []).map((blocker, i) => <div key={i}>{blocker.order_id || blocker.client_id || blocker.missing_evidence} · {zh ? reasons[blocker.reason_code] || blocker.reason_code : blocker.reason_code}</div>)}
           <div>{zh ? '系统继续核验相关事实；可查询原操作查看进展，无关动作单独判断。' : 'Related evidence is being verified; query the original operation for progress. Unrelated actions are assessed separately.'}</div></>} />)}

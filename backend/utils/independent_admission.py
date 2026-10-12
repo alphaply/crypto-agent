@@ -51,6 +51,14 @@ def assess_admission(plan: dict, action: str | ActionIntent, *, hedged: bool,
     intent = action if isinstance(action, ActionIntent) else action_intent(plan, action, target)
     snapshot = EvidenceSnapshot(plan, hedged, opposite)
     blockers = unresolved_orders(plan)
+    price_only_edit = (intent.action == 'edit' and target is not None
+                       and bool(intent.changed_fields)
+                       and 'remaining_amount' not in intent.changed_fields)
+    if price_only_edit:
+        # Changing an owned order's price does not reuse another order's unknown
+        # quantity. The execution path still verifies target fills, ownership,
+        # current position, and any cancel/replace required for this target.
+        blockers = [b for b in blockers if b.get('client_id') == target.get('client_id')]
     warnings = []
     if plan.get('error'):
         warnings.append({'reason_code': 'historical_diagnostic', 'message': plan['error']})
@@ -68,11 +76,11 @@ def assess_admission(plan: dict, action: str | ActionIntent, *, hedged: bool,
             reason = reason or 'ownership_evidence_unverified'
         if plan.get('position_error') or position.get('status') != 'verified':
             reason = reason or 'position_evidence_unverified'
-        if (plan.get('cleanup_fill_unseen') or plan.get('unobserved_entry_fills')
+        if (not price_only_edit and (plan.get('cleanup_fill_unseen') or plan.get('unobserved_entry_fills')
                 or (plan.get('state') == 'EXITING' and not cycle_quiescent(plan)
-                    and intent.effect in {'increase_exposure', 'modify_entry'})):
+                    and intent.effect in {'increase_exposure', 'modify_entry'}))):
             reason = reason or 'cycle_cleanup_unverified'
-        if not snapshot.hedged and opposite and opposite.get('state') != 'DONE':
+        if not price_only_edit and not snapshot.hedged and opposite and opposite.get('state') != 'DONE':
             shared = unresolved_orders(opposite)
             if (shared or opposite.get('position_error') or opposite.get('cleanup_fill_unseen')
                     or opposite.get('unobserved_entry_fills') or opposite.get('state') == 'EXITING'):
@@ -111,7 +119,8 @@ def continuation_for(plan: dict, *, hedged: bool | None = None, opposite: dict |
             decision = assess_admission(plan, action, hedged=hedged, opposite=opposite, target=record)
             if not decision['allowed']:
                 rules.append({'action': action, 'target': order_reference(record), 'scope': decision['scope'],
-                              'reason_code': decision['reason_code'], 'blockers': decision['blockers']})
+                              'reason_code': decision['reason_code'], 'blockers': decision['blockers'],
+                              'requires_argument_assessment': action == 'edit'})
     verified = bool(plan.get('verified_at') and not plan.get('position_error') and not plan.get('ownership_error'))
     blockers = [b for rule in rules for b in rule['blockers']]
     return {'blocked_actions': [d['intent']['action'] for d in decisions if not d['allowed']],

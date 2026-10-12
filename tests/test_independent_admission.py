@@ -19,6 +19,55 @@ def rejected():
                 submission_evidence=dict(source='exchange_rejection', no_execution=True))
 
 
+@pytest.mark.parametrize('quantity_change', [False, True])
+def test_owned_limit_price_edit_ignores_unrelated_unknown_order(real_short, quantity_change):
+    service, exchange = real_short
+    target = call('close', dict(side='SHORT', order_type='limit', amount=.2, price=90, reason='tp'), 'owned-tp')
+    plan = service._load('ETH/USDT:USDT', 'SHORT')
+    plan['exits'].append(dict(client_id='unrelated-unknown', operation_id='old-unknown',
+                             id=None, status='submitting', amount=.1, filled=0, exit_type='market'))
+    service._save(plan)
+    args = dict(order_id=target['order_id'], price=85, reason='adjust owned target')
+    if quantity_change:
+        args['remaining_amount'] = .3
+    result = call('edit', args, 'edit-owned-tp')
+    if quantity_change:
+        assert result['admission']['decision'] == 'deny'
+        assert exchange.orders[target['id']]['price'] == 90
+    else:
+        assert result['status'] == 'completed'
+        assert result['admission']['allowed']
+        assert exchange.orders[target['id']]['price'] == 85
+    assert len(exchange.calls) == 2  # Original entry and TP only; no duplicate submit.
+
+
+@pytest.mark.parametrize('original_error,allowed', [
+    ('binance {"code":-4130,"msg":"Existing closePosition order"}', True),
+    ('binance {"code":-1007,"msg":"Execution status unknown"}', False),
+])
+def test_pre_receipt_rejection_recovers_only_its_original_audit_error(real_short, original_error, allowed):
+    service, exchange = real_short
+    plan = service._load('ETH/USDT:USDT', 'SHORT')
+    old = dict(client_id='legacy-rejected', operation_id='legacy-stop', status='submitting',
+               id=None, exit_type='stop_market', quantity_mode='all', amount=0, filled=0)
+    plan['exits'].append(old)
+    service._save(plan)
+    old['status'] = 'rejected'
+    plan['error'] = original_error  # Old release stored this only on the cycle.
+    service._save(plan)
+    plan['error'] = 'binance {"code":-2021,"msg":"Unrelated later rejection"}'
+    service._save(plan)
+    result = call('close', dict(side='SHORT', order_type='stop_market', amount=.2,
+                                trigger_price=110, reason='new protection'), 'new-protection')
+    assert result['admission']['allowed'] is allowed
+    assert len(exchange.calls) == (2 if allowed else 1)
+    if allowed:
+        record = service._load('ETH/USDT:USDT', 'SHORT')['exits'][0]
+        assert record['submission_evidence']['code'] == '-4130'
+        assert record['submission_evidence']['audit_event_id']
+        assert record['status'] == 'rejected'
+
+
 @pytest.mark.parametrize('action', ['open', 'close', 'edit', 'cancel'])
 def test_unrelated_failure_cannot_change_valid_admission(action):
     plan = clean_plan()

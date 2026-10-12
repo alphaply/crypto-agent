@@ -33,6 +33,8 @@ def diagnose_cycle(service, symbol, side, current=None):
     if current and current.get('episode_id') != candidate['episode_id']:
         diagnosis['reason_code'] = 'successor_cycle_exists'
         return diagnosis, None
+    from backend.utils.trade_order_evidence import recover_legacy_rejections
+    recover_legacy_rejections(service.config_id, candidate)
     records = candidate.get('entries', []) + candidate.get('exits', [])
     records = [r for r in records if classify_saved_order(r)['state'] != 'not_accepted']
     if candidate.get('history_complete') is False or not records or any(not r.get('id') for r in records):

@@ -376,7 +376,7 @@ class IndependentExits(PositionProtection):
             self._admit(plan, 'open')
         return plan
 
-    def _admit(self, plan, action, target=None):
+    def _admit(self, plan, action, target=None, arguments=None):
         from backend.utils.independent_admission import assess_admission, action_intent
         if action != 'cancel':
             self.collect_readonly(plan)
@@ -396,7 +396,8 @@ class IndependentExits(PositionProtection):
             if opposite and opposite.get('state') != 'DONE':
                 self.collect_readonly(opposite)
         attempt = current_attempt.get()
-        intent = action_intent(plan, action, target, attempt.arguments if attempt else None)
+        intent = action_intent(plan, action, target,
+                               arguments if arguments is not None else attempt.arguments if attempt else None)
         assessment = assess_admission(plan, intent, hedged=hedged, opposite=opposite, target=target)
         if action != 'cancel':
             plan['opposite_evidence'] = ({k: v for k, v in opposite.items() if k != 'opposite_evidence'}
@@ -869,7 +870,8 @@ class IndependentExits(PositionProtection):
                 from backend.mcp.guard import assert_entry_allowed
                 assert_entry_allowed(self.mt, plan['symbol'])
             order = self._query(record, plan['symbol'])
-            self._admit(plan, 'edit', target=record)
+            self._admit(plan, 'edit', target=record, arguments={
+                'price': price, 'trigger_price': trigger_price, 'remaining_amount': remaining_amount})
             if order is None:
                 raise RuntimeError('Order outcome unresolved; reconcile the original identity')
             requested_channel, requested_id = parse_order_reference(order_id)
@@ -1086,6 +1088,8 @@ class IndependentExits(PositionProtection):
 
     def _collect_order_evidence(self, plan, *, respect_backoff=False):
         """Read every unresolved order, including when an earlier read fails."""
+        from backend.utils.trade_order_evidence import recover_legacy_rejections
+        recover_legacy_rejections(self.config_id, plan)
         errors = []
         for record in plan.get('entries', []) + plan.get('exits', []):
             if classify_saved_order(record)['state'] in {'not_accepted', 'terminal_verified'}:

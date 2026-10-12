@@ -14,6 +14,49 @@ def close_args():
     return dict(side='SHORT', order_type='market', close_all=True, reason='exit')
 
 
+@pytest.mark.parametrize('persistent', [False, True])
+def test_query_reloads_concurrent_evidence_without_exchange_writes(real_short, monkeypatch, persistent):
+    service, exchange = real_short
+    stop = call('close', dict(side='SHORT', order_type='limit', amount=.2, price=90, reason='tp'), 'concurrent-stop')
+    reads = []
+    collect = service.collect_readonly
+    def concurrent_collect(plan):
+        collect(plan)
+        reads.append(1)
+        if persistent or len(reads) == 1:
+            fresh = service._load(plan['symbol'], plan['side'])
+            fresh['concurrent_marker'] = len(reads)
+            service._save(fresh)
+        return plan
+    monkeypatch.setattr(service, 'collect_readonly', concurrent_collect)
+    for name in ('create_order', 'cancel_order', 'edit_order'):
+        monkeypatch.setattr(exchange, name, lambda *a, **k: pytest.fail('query submitted a financial write'))
+    result = call('get_trade_operation', {'target_operation_id': 'concurrent-stop'}, 'query-conflict')
+    assert result['status'] == stop['status']
+    assert len(reads) == (3 if persistent else 2)
+    assert service._load('ETH/USDT:USDT', 'SHORT')['concurrent_marker'] == (3 if persistent else 1)
+    if persistent:
+        assert result['query']['status'] == 'failed'
+        assert result['continuation']['assessment_state'] == 'needs_refresh'
+        assert result['continuation']['rules'] == []
+        assert result['continuation']['blocked_actions'] == []
+    else:
+        assert result['query']['status'] == 'completed'
+
+
+def test_query_failure_does_not_publish_cached_trade_denials(real_short, monkeypatch):
+    from backend.utils import trade_recovery
+    from backend.utils.trade_operations import refresh_operation_receipt
+    previous = {'status': 'failed', 'order_status': 'rejected', 'continuation': {
+        'blocked_actions': ['open', 'close', 'edit'], 'rules': [{'action': 'edit', 'target': 'old'}]}}
+    monkeypatch.setattr(trade_recovery, 'recover_operation', Mock(side_effect=RuntimeError('cache unavailable')))
+    result = refresh_operation_receipt('cfg', 'ETH/USDT', 'old', previous)
+    assert result['status'] == 'failed'
+    assert result['continuation']['blocked_actions'] == result['continuation']['rules'] == []
+    assert result['continuation']['previous_assessment'] == previous['continuation']
+    assert result['continuation']['requires_action_assessment']
+
+
 def agent_call(name, args, operation_id):
     from langchain_core.messages import AIMessage
     from backend.agent.agent_graph import tools_node, AgentState

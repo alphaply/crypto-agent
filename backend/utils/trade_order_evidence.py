@@ -77,3 +77,47 @@ def classify_saved_order(record: dict) -> dict:
     classification = classify_order(record)
     record['evidence_classification'] = classification
     return classification
+
+
+def recover_legacy_rejections(config_id: str, plan: dict) -> None:
+    """Recover rejection proof stored on the cycle by pre-receipt versions.
+
+    Only the audit transition from submitting to rejected binds the cycle's
+    error to this order. Later maintenance errors cannot establish this fact.
+    """
+    candidates = {r.get('client_id'): r for r in plan.get('entries', []) + plan.get('exits', [])
+                  if r.get('client_id') and r.get('status') == 'rejected'
+                  and not r.get('submission_evidence') and not r.get('legacy_rejection_checked')
+                  and not r.get('id')}
+    if not candidates or not plan.get('episode_id'):
+        return
+    from backend.database import get_db_conn
+    previous = {}
+    with get_db_conn() as conn:
+        rows = conn.execute('SELECT id,payload FROM real_protection_events WHERE config_id=? AND symbol=? '
+                            'AND json_extract(payload,\'$.episode_id\')=? ORDER BY id',
+                            (config_id, plan['symbol'], plan['episode_id']))
+        for row in rows:
+            event = json.loads(row['payload'])
+            if event.get('account_scope') != plan.get('account_scope'):
+                continue
+            for old in event.get('entries', []) + event.get('exits', []):
+                client_id = old.get('client_id')
+                record = candidates.get(client_id)
+                if record is None:
+                    continue
+                if old.get('status') == 'rejected':
+                    if (previous.get(client_id) == 'submitting'
+                            and old.get('operation_id') == record.get('operation_id')
+                            and not old.get('id') and not old.get('execution_order_id')
+                            and not float(old.get('filled') or 0)):
+                        proof = rejection_evidence(ValueError(old.get('execution_error') or event.get('error') or ''))
+                        if proof:
+                            record['submission_evidence'] = {**proof, 'migrated': True, 'audit_event_id': row['id']}
+                            record['submission_state'] = 'not_submitted'
+                    record['legacy_rejection_checked'] = True
+                    del candidates[client_id]
+                else:
+                    previous[client_id] = old.get('status')
+            if not candidates:
+                break
