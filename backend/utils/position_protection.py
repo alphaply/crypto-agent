@@ -53,11 +53,15 @@ class PositionProtection:
 
     def _load(self, symbol, side):
         with get_db_conn() as conn:
+            conn.execute('BEGIN')
             row = conn.execute(
                 "SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side=?",
                 (self.config_id, symbol, side),
             ).fetchone()
-        plan = json.loads(row["payload"]) if row else None
+            plan = json.loads(row["payload"]) if row else None
+            if plan and plan.get('execution_mode') == 'independent_exits':
+                from backend.utils.trade_evidence import scope_generation
+                plan['scope_generation'] = scope_generation(conn, self.account_scope, symbol)
         if plan and plan['state'] != 'DONE' and plan.get('account_scope') != self.account_scope:
             raise ValueError('Protection plan belongs to different exchange credentials; restore its account configuration')
         return plan
@@ -86,6 +90,9 @@ class PositionProtection:
                         raise ValueError('Another active position cycle prevents manual position adoption')
             if previous.get('record_version', 0) != plan.get('record_version', 0):
                 raise ConcurrentProtectionUpdate('Protection plan changed concurrently; reload before another exchange action')
+            if plan.get('execution_mode') == 'independent_exits':
+                from backend.utils.trade_evidence import reserve_scope
+                reserve_scope(conn, plan)
             plan['record_version'] = plan.get('record_version', 0) + 1
             plan['account_scope'] = self.account_scope
             def audit_view(value):
@@ -768,14 +775,17 @@ class PositionProtection:
                     if str(self.config_id).startswith('mcp:') and plan['state'] != 'DONE':
                         from backend.mcp.guard import assert_position_owner
                         try:
-                            assert_position_owner(self.mt, plan['symbol'])
+                            assert_position_owner(self.mt, plan['symbol'], side=plan.get('side')
+                                                  if plan.get('execution_mode') == 'independent_exits' else None)
                         except Exception as exc:
                             results.append({'symbol': plan['symbol'], 'side': plan['side'], 'state': plan['state'],
                                             'error': f'MCP ownership check failed; no exchange changes: {exc}'})
                             continue
                     if plan.get('execution_mode') == 'independent_exits':
                         from backend.utils.independent_exits import IndependentExits
-                        IndependentExits(self.mt)._reconcile(plan, respect_backoff=respect_backoff)
+                        service = IndependentExits(self.mt)
+                        plan = service._load(plan['symbol'], plan['side'])
+                        service._reconcile(plan, respect_backoff=respect_backoff)
                     else:
                         self._reconcile(plan)
                 except Exception:

@@ -11,7 +11,7 @@
 | unknown | 请求可能到达，尚不能确认提交结果 | 按原 client ID 核验，不换 ID 重发 |
 | failed | 本次请求明确未执行或被拒绝 | 依据阶段和原因修正新请求 |
 | skipped | 已可靠确认无需执行 | 例如目标方向为空仓 |
-| not_executed | 前序失败，本项未执行 | 恢复不会自动重放本项 |
+| not_executed | 显式依赖未完成、实际依赖未核实，或默认批次已停止 | 恢复不会自动重放本项 |
 
 顶层 `error` 属于本次动作；旧单清理错误在 `cleanup.error`。
 `filled_amount`、`remaining_amount` 等无法核实时为 null；最后已知成交量和时间分别是
@@ -34,7 +34,7 @@
   "execution": {"phase": "verify", "submission_state": "submitted", "fill_status": "verified"},
   "position": {"side": "SHORT", "amount": 0, "status": "verified", "observed_at": 123},
   "cleanup": {"status": "pending", "orders": [{"order_id": "algo:example-stop", "reason_code": "fill_unverified"}]},
-  "continuation": {"blocked_actions": ["open", "close", "edit"], "side": "SHORT", "advisory": true},
+  "continuation": {"blocked_actions": ["open", "close"], "side": "SHORT", "assessment_state": "needs_refresh", "advisory": true, "requires_action_assessment": true},
   "recovery": {"tool": "get_trade_operation", "target_operation_id": "example-close-1"}
 }
 ```
@@ -88,8 +88,8 @@ MCP 使用已有 `get_operation(profile_id, operation_id)`。外层 principal/pr
 | 普通 LIMIT edit 拒绝/超时 | 明确拒绝 failed；超时 unknown；按原单查证 | 原单保留、最多一次 edit；receipt_recovery |
 | 条件 cancel_replace | 旧单 canceled 不代表 edit completed | 替代成功才完成；耗尽/拒绝/超时及重启无重复替代；real_v2 |
 | cancel ACK 缺成交、倒退或旧 open | pending；有界补查后保存 blocker | 母子总补查 ≤3 次 / 2 秒；后台遵守退避；主动查询可立即读取 |
-| batch / legacy aliases | 已执行项刷新，尾部 not_executed | completed 清理告警后下一项重新准入；拒绝后停止尾部；batch、integration |
-| Agent / Chat 多工具轮次 | 失败后只读 get_trade_operation 仍可运行 | 新交易保留审批、不自动执行旧尾部；decision_memory_context |
+| batch / legacy aliases | 已执行项刷新，尾部 not_executed | 默认停止；显式 independent 继续无依赖项；batch、scoped_trade_rounds |
+| Agent / Chat 多工具轮次 | 独立模式规范工具逐项准入 | 不因前项拒绝全局停止；Chat 用户拒绝仍停止后续写入；scoped_trade_rounds |
 | MCP get_operation / 重放 | 外部 ID 关联内部 stable ID，回执同步修订 | principal/profile 隔离，read 零金融写入；mcp_trade_recovery、gateway |
 | mock / 旧 all / 其他交易模式 | 共用扩展结构，legacy 保守解析 | mock 账本、旧 all 实际量、现货预算、附带保护均跑全量回归 |
 | 缺失周期 | 只读诊断，授权路径恢复完整原周期 | 缺历史、数量矛盾、跨账户/任务或后继周期拒绝；receipt_recovery |
@@ -100,6 +100,109 @@ MCP 使用已有 `get_operation(profile_id, operation_id)`。外层 principal/pr
 
 ## 证据边界
 
-本次回归使用 fake exchange 和临时数据库。截图对应线上调用未在本地日志中找到；本地
-最新运行记录为 2026-09-07，无法确认截图那笔市价订单的现场成交状态。离线修复不表示
-线上已部署或该笔仓位已核验。
+本次回归使用 fake exchange 和临时数据库，未使用真实交易或模型联网测试。
+没有取得截图原单的线上拒绝代码和完整提交证据；离线修复不表示线上已部署或原仓位已核验。
+
+## 按动作准入，无需先查询解锁
+
+普通 open/close/edit/cancel 在同一次调用内读取必要证据、分类旧失败并评估本次动作。
+明确拒绝的止损保留 failed，但不会阻止有效的新止损；没有新增预检令牌、手工解锁或额外模型轮次。
+真正未知的金融请求不能通过更换 ID 重发。后台继续取证，模型也可主动查询原操作。
+
+| 证据分类 | 判断依据 | 是否限制依赖动作 |
+| --- | --- | --- |
+| not_accepted | 写入前失败证明，或明确交易所业务拒绝代码；无 ID/成交/子单等相反证据 | 不加入未解决集合，不查询不存在订单 |
+| submission_unknown | 无法确认提交、关联撤建/改单未完成、目标撤销在途或读取失败 | 仅限制依赖其执行结果/身份的动作 |
+| live_verified | 活跃订单及成交已核验，或原生条件单可靠等待触发 | 正常存在本身不阻塞；数量冲突单独提示 |
+| terminal_fill_unverified | 终态缺最终成交证据 | 不得把 ACK 当作零成交 |
+| terminal_verified | 终态和最终成交都确认 | 保留审计，停止无意义轮询 |
+
+异常类型、rejected 字样、无 ID、查不到订单或空仓均不能单独证明没有执行。
+新记录保存脱敏 submission_evidence（来源、业务代码、no_execution）；旧记录惰性添加
+evidence_classification/version，只有明确来源才恢复。旧错误没有足够证据时保持未知。
+缺失周期恢复对确定拒绝免除不存在的订单归属链接，其他成交净额与归属要求不变。
+
+| 动作 | 必需事实 | 不单独阻塞的情况 |
+| --- | --- | --- |
+| open / 入场 edit | 权限、额度、模式、归属、当前敞口、相关在途写入、跨周期清理 | 旧拒绝、无关方向维护告警 |
+| close / 条件 fixed/all | 当前可管理仓位、单笔量、相关未知执行、触发/减仓能力；all 独占归属 | 正常在途保护、已知固定档数量冲突、无执行影响失败 |
+| exit edit | 目标归属/身份/成交/修改状态与所需仓位 | 不影响目标或仓位的历史错误 |
+| cancel | 目标归属、当前身份、子单/撤建关联 | 无关仓位接口失败、其他目标未明成交 |
+
+Hedge 方向分开评估；One-way 共享净仓事实。未知平仓、触发子单未明、正在撤建的目标仍有真实依赖。
+reason_code 包括 order_evidence_unverified、position_evidence_unverified、cycle_cleanup_unverified、
+one_way_shared_position_unverified。blockers 给出目标/操作、缺失事实、affected_effect 和 recovery；
+refresh 说明系统已尝试的取证。单纯 plan.error 不作准入开关。
+
+## 查询与执行结果的两个维度
+
+原 status 与 receipt_version=1 不变；admission.version=1 记录本次提交前的判断。
+continuation 是未来建议，包含 rules、作用 scope、evidence_versions、assessment_state 和核验时间。
+目标级 edit/cancel 限制只写 rules；blocked_actions=[] 仅表示没有已知类别级限制，绝不是所有请求获准。
+历史 execution/position 属于原 episode，current_scope/continuation 使用当前周期；缺少当前周期时 needs_refresh。
+
+查询示例：
+
+```json
+{"receipt_version":1,"contract_version":2,"status":"failed","order_status":"rejected",
+ "operation_id":"rejected-stop","action":"close",
+ "execution":{"phase":"submit","submission_state":"not_submitted","fill_status":"unverified"},
+ "position":{"side":"LONG","amount":1,"status":"verified","observed_at":123},
+ "cleanup":{"status":"not_required","orders":[]},
+ "recovery":{"tool":"get_trade_operation","target_operation_id":"rejected-stop"},
+ "query":{"status":"completed","errors":[],"observed_at":123},
+ "admission":{"version":1,"decision":"allow","allowed":true},
+ "continuation":{"blocked_actions":[],"rules":[],"assessment_state":"verified","advisory":true,"requires_action_assessment":true}}
+```
+
+query.status=completed 表示此次取证完成；partial 表示部分事实未返回；failed 表示查询不能完成。
+原交易失败保持 failed。无 query 的旧回执不推断查询成功。Agent 运行节点及 UI 分别显示两种状态。
+MCP 的每个 blocker 都按当前 principal/profile 单独映射到外部操作，get_operation 指向对应父操作；
+无法映射时身份留空并标记 unavailable_in_caller_scope，不暴露内部操作或借用当前操作 ID。
+
+## 独立批次与显式依赖
+
+v2 批次省略 execution_policy 保留旧哈希和 stop_on_error 行为。显式 independent 按顺序分别准入；
+failed/pending/unknown 不阻止无依赖项。depends_on 仅用于此策略，必须为唯一的前项整数索引，不接受布尔值。
+只有 completed 满足依赖；submitted/skipped 不算完成业务前提。整批结构、权限和已知模式在任何写入前检查。
+汇总优先 unknown、pending、failed、submitted、completed；未执行项使整批不能报全部成功，summary 给出逐类计数。
+恢复只刷新已执行项，不补发尾项。规范 Agent/Chat 多工具列表也逐项判断，不通过方向或价格猜模型的先后意图；
+显式业务顺序应使用 depends_on。Chat 仍逐项审批，用户拒绝后停止本轮后续写入。
+
+独立 TP/SL：
+
+```json
+{"contract_version":2,"execution_policy":"independent","actions":[
+ {"action":"close","side":"LONG","order_type":"take_profit_market","amount":0.2,"trigger_price":120,"reason":"止盈"},
+ {"action":"close","side":"LONG","order_type":"stop_market","amount":0.2,"trigger_price":90,"reason":"止损"}]}
+```
+
+显式撤后新建：
+
+```json
+{"contract_version":2,"execution_policy":"independent","actions":[
+ {"action":"cancel","order_id":"algo:123","reason":"替换保护"},
+ {"action":"close","side":"LONG","order_type":"stop_market","amount":0.2,"trigger_price":92,"reason":"新保护","depends_on":[0]}]}
+```
+
+兼容批次：
+
+```json
+{"contract_version":2,"actions":[{"action":"open","side":"LONG","amount":0.2,"price":100,"reason":"入场"}]}
+```
+
+## 维护与并发升级
+
+新动作前只加载/恢复归属和只读取证，不运行全周期撤单/撤建维护；提交后维护和 scheduler 继续推进原清理意图。
+若本次只读取证已证明空仓、全部相关订单终态且无未明成交，可当次完成旧周期的本地记账并新建周期，无需等待调度器或额外查询。
+维护失败不覆盖已确认的本次执行结果。查询没有金融写入。成功订单/仓位读取只清除对应当前错误，审计历史保留。
+
+添加式 trade_scope_generations 以账户和规范标的记录 generation。提交前短事务比较周期版本与 generation，
+保存客户端 ID、在途意图并推进 generation，然后在事务外调用交易所。维护写入同样参加预留。
+跨进程旧快照不直接提交；提交前最多重新取证一次，再次冲突返回未提交。可能已发送后绝不重试金融写入。
+Hedge 对向刷新后可继续，One-way 仍核实共享依赖。该机制不控制外部人工交易。
+
+升级：暂停交易和维护 worker，备份数据库，运行已有 initialize_schema，整体部署后端、调度器和前端。
+迁移幂等，不清空历史；新旧写入 worker 不混跑。回滚保留新表与备份，停用 independent 策略能力；
+旧版不能解释新请求时保持只读，由兼容版本处理在途状态。临时库重复迁移、备份回读与保留证据由
+test_trade_evidence_concurrency 验证；没有执行线上升级或数据库清理。

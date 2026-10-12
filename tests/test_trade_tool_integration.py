@@ -129,7 +129,7 @@ def test_submission_stage_classification_retains_identity(real_short, action, fa
     error = {'timeout': ccxt.RequestTimeout, 'generic_exchange': ccxt.ExchangeError, 'rejected': ccxt.InvalidOrder}[failure]
     def create(*args, **kwargs):
         calls.append((args, kwargs))
-        raise error('synthetic submission failure')
+        raise error('{"code":-2010,"msg":"synthetic rejection"}' if failure == 'rejected' else 'synthetic submission failure')
     exchange.create_order = create
     args = dict(side='SHORT', amount=.2, price=120, reason='add') if action == 'open' else dict(side='SHORT', order_type='market', close_all=True, reason='exit')
     result = call(action, args, 'classification')

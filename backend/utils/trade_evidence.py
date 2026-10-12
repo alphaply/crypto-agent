@@ -10,6 +10,9 @@ import time
 
 
 def initialize_schema(cursor):
+    cursor.execute('''CREATE TABLE IF NOT EXISTS trade_scope_generations (
+        account_scope TEXT NOT NULL, symbol TEXT NOT NULL, generation INTEGER NOT NULL,
+        PRIMARY KEY(account_scope,symbol))''')
     fresh = not cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_cycle_evidence'").fetchone()
     cursor.execute('''CREATE TABLE IF NOT EXISTS trade_cycle_evidence (
         config_id TEXT NOT NULL, account_scope TEXT NOT NULL, symbol TEXT NOT NULL,
@@ -41,6 +44,23 @@ def initialize_schema(cursor):
                         save_plan(cursor.connection, row['config_id'], plan)
                 except (ValueError, TypeError, KeyError):
                     continue  # Incomplete historical evidence cannot establish ownership.
+
+
+def scope_generation(conn, account_scope: str, symbol: str) -> int:
+    row = conn.execute('SELECT generation FROM trade_scope_generations WHERE account_scope=? AND symbol=?',
+                       (account_scope, symbol)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def reserve_scope(conn, plan: dict):
+    from backend.utils.position_protection import ConcurrentProtectionUpdate
+    generation = scope_generation(conn, plan['account_scope'], plan['symbol'])
+    if plan.get('scope_generation', 0) != generation:
+        raise ConcurrentProtectionUpdate('Account/symbol evidence changed; refresh before submission')
+    conn.execute('INSERT INTO trade_scope_generations VALUES(?,?,?) ON CONFLICT(account_scope,symbol) '
+                 'DO UPDATE SET generation=excluded.generation',
+                 (plan['account_scope'], plan['symbol'], generation + 1))
+    plan['scope_generation'] = generation + 1
 
 
 def save_plan(conn, config_id: str, plan: dict, *, expected_version: int | None = None):

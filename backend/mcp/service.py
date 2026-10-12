@@ -269,6 +269,12 @@ def trading_tools(profile_id):
         result.extend(tool_schemas())
     elif cfg.get('exit_mode') == 'independent_exits':
         for item in result:
+            if item['name'] in {'open', 'close', 'edit', 'cancel', 'execute_trade_actions'}:
+                item['capabilities'] = {'contract_version': 2, 'receipt_version': 1, 'admission_version': 1,
+                                        'scoped_admission': True, 'query_required_before_action': False,
+                                        'recovery_tool': 'get_operation', 'query_status_separate': True}
+                if item['name'] == 'execute_trade_actions':
+                    item['capabilities']['execution_policies'] = ['stop_on_error', 'independent']
             if item['name'] not in {'open', 'close', 'edit', 'cancel', 'execute_trade_actions', 'adopt_position_real'}:
                 item['description'] = '[Legacy compatibility; prefer open/close/edit/cancel] ' + item['description']
     return result
@@ -397,17 +403,35 @@ def trade_scope(tool_name, arguments):
     return 'trade'
 
 
-def _external_operation_receipt(value, stable_id, operation_id, profile_id):
+def _external_operation_receipt(value, stable_id, operation_id, profile_id, *, principal=None, mapping=None):
+    if mapping is None:
+        mapping = {stable_id: operation_id}
+        if principal:
+            with store.connection() as conn:
+                rows = conn.execute('SELECT operation_id FROM mcp_operations WHERE profile_id=? AND principal=?',
+                                    (profile_id, principal)).fetchall()
+            mapping.update({'mcp:' + store.digest(principal + ':' + row['operation_id']): row['operation_id'] for row in rows})
     if isinstance(value, list):
-        return [_external_operation_receipt(item, stable_id, operation_id, profile_id) for item in value]
+        return [_external_operation_receipt(item, stable_id, operation_id, profile_id, mapping=mapping) for item in value]
     if not isinstance(value, dict):
         return value
-    result = {key: _external_operation_receipt(item, stable_id, operation_id, profile_id) for key, item in value.items()}
+    result = {key: _external_operation_receipt(item, stable_id, operation_id, profile_id, mapping=mapping) for key, item in value.items()}
+    def external(identity, *, target=False):
+        if not identity:
+            return identity
+        for internal, public in mapping.items():
+            if identity == internal or str(identity).startswith(internal + ':'):
+                return public if target else public + identity[len(internal):]
+        result['identity_status'] = 'unavailable_in_caller_scope'
+        return None
     for key in ('operation_id', 'target_operation_id'):
-        if str(result.get(key, '')).startswith(stable_id):
-            result[key] = operation_id + result[key][len(stable_id):]
+        if key in value:
+            result[key] = external(value[key], target=key == 'target_operation_id')
+    if 'blocker_operation_ids' in value:
+        result['blocker_operation_ids'] = list(dict.fromkeys(filter(None, (
+            external(identity, target=True) for identity in value['blocker_operation_ids']))))
     if result.get('tool') == 'get_trade_operation':
-        result.update(tool='get_operation', target_operation_id=operation_id, profile_id=profile_id)
+        result.update(tool='get_operation', profile_id=profile_id)
     return result
 
 
@@ -435,7 +459,7 @@ def _recover_trade_receipt(caller, profile_id, operation_id):
     from backend.utils.trade_operations import refresh_operation_receipt, tool_result_status
     payload = refresh_operation_receipt('mcp:' + profile_id, request['symbol'], stable_id, inner['result'])
     result = sanitize({'operation_id': operation_id, 'status': tool_result_status(payload),
-                       'result': _external_operation_receipt(payload, stable_id, operation_id, profile_id)}, profile_id)
+                       'result': _external_operation_receipt(payload, stable_id, operation_id, profile_id, principal=caller['id'])}, profile_id)
     store.complete_operation(profile_id, operation_id, result)
     return result
 
@@ -537,7 +561,7 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         except (TypeError, ValueError):
             payload = raw
         result = {'operation_id': operation_id, 'status': tool_result_status(raw),
-                  'result': _external_operation_receipt(payload, stable_id, operation_id, profile_id)}
+                  'result': _external_operation_receipt(payload, stable_id, operation_id, profile_id, principal=caller['id'])}
     except (ValueError, PermissionError) as exc:
         result = {'operation_id': operation_id, 'status': 'failed', 'error': safe_error(exc, profile_id)}
         if 'operation_id already belongs' in str(exc):

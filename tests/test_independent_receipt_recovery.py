@@ -71,6 +71,9 @@ def test_close_cleanup_recovery_then_explicit_new_entry_once(real_short):
     historical = call('get_trade_operation', {'target_operation_id': 'close-1'}, 'query-old-cycle')
     assert historical['episode_id'] == original['episode_id']
     assert historical['status'] == 'completed'
+    assert historical['current_scope']['episode_id'] == opened['episode_id']
+    assert historical['position']['episode_id'] == original['episode_id']
+    assert historical['position']['status'] == 'historical'
     assert len(exchange.calls) == 4
 
 
@@ -90,12 +93,24 @@ def test_read_failure_does_not_prevent_other_order_evidence(real_short):
     assert result['status'] == 'completed'
     assert result['filled_amount'] == .3
     assert result['position']['amount'] == .7
+    assert result['query']['status'] == 'partial'
 
 
 def test_read_tool_trusted_context_and_unknown_id(real_short):
     assert call('get_trade_operation', {'target_operation_id': 'someone-else'}, 'query-missing')['error_code'] == 'operation_not_found'
     with pytest.raises(ValueError, match='trusted context'):
         tool_registry.run_trade_tool('get_trade_operation', {'target_operation_id': 'any', 'config_id': 'other'}, 'cfg', 'ETH/USDT')
+
+
+def test_failed_query_preserves_confirmed_execution_and_marks_advice_stale(real_short, monkeypatch):
+    from backend.utils import trade_recovery
+    result = call('close', close_args(), 'confirmed-close')
+    assert result['status'] == 'completed'
+    monkeypatch.setattr(trade_recovery, 'recover_operation', Mock(side_effect=RuntimeError('read cache conflict')))
+    query = call('get_trade_operation', {'target_operation_id': 'confirmed-close'}, 'query-failed')
+    assert query['status'] == 'completed' and query['filled_amount'] == result['filled_amount']
+    assert query['query']['status'] == 'failed'
+    assert query['continuation']['assessment_state'] == 'needs_refresh'
 
 
 def test_cancel_waits_for_own_terminal_fill_and_edit_for_successor(real_short):
@@ -193,7 +208,7 @@ def test_native_edit_refusal_or_lost_ack_preserves_original_order(real_short, fa
     def failing_edit(*args, **kwargs):
         count.append(args[0])
         if failure == 'rejection':
-            raise ccxt.InvalidOrder('native amendment rejected')
+            raise ccxt.InvalidOrder('{"code":-2010,"msg":"native amendment rejected"}')
         edit(*args, **kwargs)
         raise ccxt.RequestTimeout('native amendment ACK lost')
     exchange.edit_order = failing_edit
@@ -224,7 +239,8 @@ def test_changed_account_cannot_reuse_original_evidence(real_short, monkeypatch)
 @pytest.mark.parametrize('hedged', [True, False])
 def test_admission_isolates_hedge_but_blocks_one_way_shared_unknown(real_short, hedged):
     from backend.utils.independent_admission import assess_admission
-    clean = {'side': 'LONG', 'state': 'ACTIVE', 'entries': [], 'exits': []}
+    clean = {'side': 'LONG', 'state': 'ACTIVE', 'entries': [], 'exits': [],
+             'position_observation': {'status': 'verified', 'amount': 1}}
     blocked = {'side': 'SHORT', 'state': 'EXITING', 'exits': [
         {'id': 'old-all', 'quantity_mode': 'all', 'order_type': 'stop_market', 'status': 'canceled',
          'fill_pending': True, 'operation_id': 'old-stop'}]}

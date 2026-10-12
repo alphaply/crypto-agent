@@ -93,17 +93,26 @@ def recover_operation(config_id: str, symbol: str, operation_id: str, *, service
             return {'status': 'unknown', 'operation_id': operation_id, 'error_code': 'account_scope_mismatch',
                     'error': 'Original operation belongs to different exchange credentials'}
         return previous or {'status': 'unknown', 'operation_id': operation_id, 'error': 'Original execution evidence unavailable'}
-    projections = {}
+    projections, query_errors = {}, []
     with _lock(service.account_scope):
         for plan in plans:
             current = service._load(plan['symbol'], plan['side'])
+            active = current
+            historical = bool(active and active.get('episode_id') != plan.get('episode_id'))
             cycle_diagnosis = None
             if read_exchange and (not current or current.get('state') == 'DONE'):
                 from backend.utils.independent_cycle_recovery import diagnose_cycle
                 cycle_diagnosis, _ = diagnose_cycle(service, plan['symbol'], plan['side'], current)
             if read_exchange:
                 expected = plan.get('record_version', 0)
-                service.collect_readonly(plan)
+                if historical:
+                    service._collect_order_evidence(plan)
+                    plan['verified_at'] = time.time()
+                    plan['position_observation'] = {**plan.get('position_observation', {}),
+                                                    'status': 'historical', 'episode_id': plan['episode_id']}
+                else:
+                    service.collect_readonly(plan)
+                query_errors.extend(plan.get('read_errors', []))
                 # Only observation caches change; do not invoke _save/_reconcile
                 # here, since ownership, replacement and maintenance are writes.
                 plan['record_version'] = expected + 1
@@ -119,11 +128,55 @@ def recover_operation(config_id: str, symbol: str, operation_id: str, *, service
                         conn.execute('UPDATE real_protection_plans SET payload=? WHERE config_id=? AND symbol=? AND side=?',
                                      (json.dumps(plan), config_id, plan['symbol'], plan['side']))
                     conn.commit()
+            availability = plan
+            if active and active.get('episode_id') != plan.get('episode_id'):
+                availability = active
+                if read_exchange:
+                    service.collect_readonly(availability)
+                    query_errors.extend(availability.get('read_errors', []))
+            if read_exchange:
+                try:
+                    availability['hedged'] = bool(service.ex.fetch_position_mode(plan['symbol']).get('hedged'))
+                    if not availability['hedged']:
+                        opposite = service._load(plan['symbol'], 'SHORT' if plan['side'] == 'LONG' else 'LONG')
+                        if opposite and opposite.get('state') != 'DONE':
+                            service.collect_readonly(opposite)
+                            query_errors.extend(opposite.get('read_errors', []))
+                        availability['opposite_evidence'] = opposite
+                except Exception as exc:
+                    query_errors.append(str(exc))
+                    availability = {**availability, 'position_error': 'Position mode could not be verified'}
+            from backend.utils.independent_admission import continuation_for
+            if read_exchange and (availability.get('adoption') or str(config_id).startswith('mcp:')):
+                from backend.mcp.guard import assert_position_owner
+                try:
+                    assert_position_owner(service.mt, plan['symbol'], plan_override=availability,
+                                          adopted_only=bool(availability.get('adoption')), side=plan['side'])
+                    availability.pop('ownership_error', None)
+                except Exception as exc:
+                    availability['ownership_error'] = str(exc)
+                    query_errors.append(str(exc))
+            continuation = continuation_for(availability)
+            if not active or active.get('state') == 'DONE':
+                continuation['assessment_state'] = 'needs_refresh'
+                continuation['scope'] = {'account_scope': service.account_scope, 'symbol': plan['symbol'],
+                                         'side': plan['side'], 'episode_id': (active or {}).get('episode_id')}
             for evidence_id, record in _records(plan, operation_id):
                 action = _intent(request, operation_id, evidence_id)
                 receipt = project_receipt(plan, record, operation_id=evidence_id, action=action,
                                           error=record.get('query_error'))
                 receipt['verified_at'] = plan.get('verified_at')
+                receipt['continuation'] = continuation
+                receipt['current_scope'] = continuation['scope']
+                receipt['current_position'] = availability.get('position_observation')
+                receipt['query'] = {'status': 'partial' if query_errors else 'completed',
+                                    'observed_at': time.time(), 'errors': list(dict.fromkeys(query_errors))}
+                original = previous
+                if isinstance(previous, dict) and isinstance(previous.get('results'), list):
+                    original = next((item.get('result') for index, item in enumerate(previous['results'])
+                                     if f'{operation_id}:{item.get("index", index)}' == evidence_id), None)
+                if isinstance(original, dict) and original.get('admission'):
+                    receipt['admission'] = original['admission']
                 if cycle_diagnosis:
                     receipt['cycle_diagnosis'] = cycle_diagnosis
                 old = projections.get(evidence_id)
@@ -145,9 +198,18 @@ def recover_operation(config_id: str, symbol: str, operation_id: str, *, service
                 item.update(status=evidence['status'], result=evidence)
             items.append(item)
         result['results'] = items
+        result['query'] = {'status': 'partial' if query_errors else 'completed',
+                           'observed_at': time.time(), 'errors': list(dict.fromkeys(query_errors))}
         statuses = [tool_result_status(item) for item in items]
         result['status'] = next((s for s in ['unknown', 'pending', 'failed', 'submitted'] if s in statuses),
                                 'partial' if any(i.get('status') == 'not_executed' for i in items) else 'completed')
+        if result.get('execution_policy') == 'independent':
+            item_statuses = [item.get('status') for item in items]
+            result['status'] = next((s for s in ('unknown', 'pending', 'failed') if s in item_statuses),
+                                    'failed' if 'not_executed' in item_statuses else
+                                    'submitted' if 'submitted' in item_statuses else 'completed')
+            result['summary'] = {s: item_statuses.count(s) for s in
+                                 ('completed', 'submitted', 'failed', 'unknown', 'pending', 'not_executed', 'skipped')}
     else:
         from backend.utils.trade_operations import _merge_reconciled_result
         result = _merge_reconciled_result(row, list(projections.values()), request)

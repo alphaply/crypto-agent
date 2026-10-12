@@ -38,7 +38,7 @@ TOOL_CATALOG = [
         ('close', 'trade', 'Independent mode: fixed staged exits or supported dynamic close-all'),
         ('edit', 'trade', 'Independent mode: edit an owned entry/exit with remaining quantity'),
         ('cancel', 'cancel', 'Independent mode: cancel one owned regular or conditional order'),
-        ('execute_trade_actions', 'trade / cancel', 'Independent mode: ordered version 2 actions, not an atomic transaction'),
+        ('execute_trade_actions', 'trade / cancel', 'Version 2 ordered actions; optional independent policy and explicit dependencies'),
         ('open_perpetual', 'trade', 'Place one linear perpetual limit entry'),
         ('adopt_perpetual_position', 'trade', 'Explicitly adopt a user-owned manual perpetual position for management'),
         ('close_perpetual', 'trade', 'Reduce or close an owned perpetual position'),
@@ -198,12 +198,16 @@ def register_tools(server):
         return await execute(profile_id, symbol, 'cancel', dict(order_id=order_id, reason=reason), operation_id)
 
     async def execute_trade_actions(profile_id: ProfileId, symbol: Symbol, operation_id: OperationId,
-                                    contract_version: Literal[2], actions: Annotated[list[TradeAction], Field(min_length=1, max_length=20)]) -> dict:
-        """Independent mode ordered combination of the same open/close/edit/cancel fields. Requires contract_version=2 and 1–20 flat actions; legacy nested order is invalid here. Validate the whole batch before submission, then run sequentially; failed/pending/unknown stops later actions as not_executed, without rollback. open does not wait for fills. Example: {"profile_id":"swap","symbol":"BTC/USDT:USDT","operation_id":"entry-batch-0001","contract_version":2,"actions":[{"action":"open","side":"LONG","amount":0.001,"price":50000,"reason":"first stage"}]}. Mixed cancel/trade requires both permissions; this is not the legacy execute_trade dispatcher."""
-        return await execute(profile_id, symbol, 'execute_trade_actions', {
+                                    contract_version: Literal[2], actions: Annotated[list[TradeAction], Field(min_length=1, max_length=20)],
+                                    execution_policy: Literal['stop_on_error', 'independent'] | None = None) -> dict:
+        """Independent mode ordered open/close/edit/cancel actions. Requires contract_version=2 and 1–20 flat actions. Default stop_on_error stops after failed/pending/unknown. execution_policy=independent assesses each action separately; depends_on lists unique earlier indices that must be completed (submitted is not enough). Each action refreshes its evidence internally; no preliminary query or unlock. Mixed cancel/trade requires both permissions before the first write. No rollback or replay of skipped items. open does not wait for fills."""
+        arguments = {
             'contract_version': contract_version,
             'actions': [item.model_dump(exclude_none=True) if hasattr(item, 'model_dump') else item for item in actions],
-        }, operation_id)
+        }
+        if execution_policy is not None:
+            arguments['execution_policy'] = execution_policy
+        return await execute(profile_id, symbol, 'execute_trade_actions', arguments, operation_id)
 
     async def open_perpetual(profile_id: ProfileId, symbol: Symbol, side: Literal['LONG', 'SHORT'],
                              amount: Amount, entry_price: Price, reason: Reason, operation_id: OperationId,

@@ -1269,11 +1269,19 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
             result = run_trade_tool(tool_name, args, config_id, symbol, operation_id=tool_call['id'], **extra)
             tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=result))
             status = tool_result_status(result)
+            if tool_name == 'get_trade_operation':
+                try:
+                    payload = json.loads(result) if isinstance(result, str) else result
+                    status = payload.get('query', {}).get('status', status)
+                except (TypeError, ValueError, AttributeError):
+                    pass
         except Exception as e:
             logger.error("Error executing tool %s: %s", tool_name, e)
             tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=f"Error: {str(e)}"))
             status = "failed"
-        stopped = stopped or (tool_name != 'get_trade_operation' and status in {'failed', 'unknown', 'pending'})
+        from backend.agent.tool_registry import uses_scoped_admission
+        stopped = stopped or (tool_name != 'get_trade_operation' and status in {'failed', 'unknown', 'pending'}
+                              and not uses_scoped_admission(tool_name, config_id, args))
         for item in progress_calls:
             if item["id"] == str(tool_call.get("id") or ""):
                 item["status"] = status

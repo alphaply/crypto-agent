@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright, expect
 
 
 def main():
-    destination = Path('openspec/changes/archive/2026-10-12-fix-independent-trade-recovery/evidence')
+    destination = Path('openspec/changes/redesign-trade-admission-recovery/evidence')
     destination.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel='msedge', headless=True)
@@ -18,6 +18,10 @@ def main():
             expect(page.locator('.decision-tool-call summary')).not_to_contain_text('待核验')
             expect(page.locator('.decision-tool-call summary')).to_contain_text('已返回')
             expect(page.get_by_text('清理待核验', exact=True)).to_be_visible()
+            expect(page.get_by_text('查询已返回', exact=True)).to_be_visible()
+            expect(page.get_by_text('原交易已拒绝；查询返回不代表交易成功。', exact=True)).to_be_visible()
+            expect(page.get_by_text('建议待刷新；新动作会在本次调用内重新取证。', exact=True)).to_be_visible()
+            expect(page.get_by_text('全面可交易', exact=True)).to_have_count(0)
             expect(page.get_by_text('algo:example-stop · fill_unverified', exact=True)).to_be_visible()
             expect(page.get_by_text('已请求 · 未返回证据', exact=True)).to_be_visible()
             for button in page.locator('.reasoning-block__trigger').all():

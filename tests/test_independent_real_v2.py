@@ -422,7 +422,7 @@ def test_exchange_rejects_competing_exit_without_clearing_existing(service, monk
 
     def reject(*args, **kwargs):
         writes.append((args, kwargs))
-        raise ccxt.InvalidOrder('Exchange competing close-position order rejected')
+        raise ccxt.InvalidOrder('binance {"code":-4130,"msg":"competing close-position order rejected"}')
 
     count = len(ex.calls)
     monkeypatch.setattr(ex, 'create_order', reject)
@@ -461,7 +461,7 @@ def test_native_edit_rejection_replay_is_not_success(service, monkeypatch):
     pending = close(svc, 'limit', .2, price=110)
 
     def reject(*args, **kwargs):
-        raise ccxt.InvalidOrder('native amendment rejected')
+        raise ccxt.InvalidOrder('binance {"code":-2010,"msg":"native amendment rejected"}')
 
     monkeypatch.setattr(ex, 'edit_order', reject)
     with pytest.raises(ccxt.InvalidOrder):

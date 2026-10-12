@@ -239,7 +239,9 @@ fixed 档不会自动重分配。`quantity_conflict` 不等于 unknown；Agent �
 
 新旧映射：旧 open 的 `entry_price` 对应 price，旧 close 的 `pos_side/exit_type` 对应 side/order_type；旧 `take_profit_limit` 永远保持普通 LIMIT，旧 amount=0 保持首次仓位快照。旧 entry 修改 amount 是含已成交的总量，旧 exit 修改 amount 是剩余量；新 edit 统一使用 remaining_amount。无版本批次保留旧嵌套 order；v2 必须显式版本且平铺，不接受混搭。附带模式及现货仍用原工具语义，adopt 本次未扩展。
 
-`execute_trade` 是兼容分发入口，不能绕过同样的模式、权限、归属及额度检查。`execute_trade_actions` 顺序执行，全部字段/模式/权限先校验；失败、pending、unknown 后标记后续项 not_executed，已成功项不回滚。edit 需要 trade（含内部必要撤换），显式 cancel 需要 cancel；混合批次两种权限在首笔前检查。入场 edit 仍按已归属目标及修改后的实际敞口检查增仓额度。
+`execute_trade` 是兼容分发入口，不能绕过同样的模式、权限、归属及额度检查。`execute_trade_actions` 顺序执行，全部字段/模式/权限先校验；默认失败、pending、unknown 后停止。v2 可显式填写 `execution_policy: "independent"`，无依赖项继续逐笔准入；仅此策略支持 `depends_on: [前项索引]`，前项必须 completed，submitted 不满足依赖。省略策略不改变旧请求哈希，旧未执行项不重放。edit 需要 trade（含内部必要撤换），显式 cancel 需要 cancel；混合批次两种权限在首笔前检查。入场 edit 仍按已归属目标及修改后的实际敞口检查增仓额度。
+
+独立模式规范工具自行取证，无需先查询或手工解锁。明确拒绝的旧单不再连带阻塞新单；真实相关未知只限制依赖它的动作。`get_trading_tools` 声明 admission_version=1、scoped_admission、query_required_before_action=false。`get_operation` 回执内 query.status 表示本次查询，status 仍表示原交易结果；每个 blocker 分别映射到调用者可访问的原操作。完整字段和可校验示例见[回执与恢复](TRADE_RECEIPTS_AND_RECOVERY.md)。
 
 ## 5. 执行与恢复规则
 

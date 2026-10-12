@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from backend.utils.exit_orders import canonical_order_type, observed_order_status, order_reference
+from backend.utils.trade_order_evidence import classify_order, UNRESOLVED
 
 OperationStatus = Literal['failed', 'pending', 'unknown', 'submitted', 'completed', 'skipped', 'not_executed']
 TERMINAL = {'closed', 'filled', 'canceled', 'cancelled', 'expired', 'rejected'}
@@ -39,6 +40,8 @@ class TradeAttempt:
     submission_state: str = 'not_submitted'
     plan: dict | None = None
     record: dict | None = None
+    admission: dict | None = None
+    arguments: dict | None = None
 
 
 current_attempt: ContextVar[TradeAttempt | None] = ContextVar('trade_attempt', default=None)
@@ -56,15 +59,22 @@ def bind_attempt(plan: dict, record: dict, phase: str) -> TradeAttempt | None:
 
 
 def unresolved_orders(plan: dict) -> list[dict]:
+    def blocking_operation(record):
+        for key in ('replacement', 'amendment'):
+            pending = record.get(key) or {}
+            if pending and (key == 'replacement' or pending.get('state') in {'pending', 'terminal_unconfirmed'}):
+                return pending.get('operation_id') or record.get('operation_id')
+        if record.get('cancel_requested_at') and record.get('status') not in TERMINAL:
+            return record.get('cancel_operation_id') or record.get('operation_id')
+        return record.get('operation_id')
     return [dict(order_id=order_reference(r), client_id=r.get('client_id'),
-                 operation_id=r.get('operation_id'), order_status=observed_order_status(r),
+                 operation_id=blocking_operation(r), order_status=observed_order_status(r),
                  side=plan.get('side'), kind='exit' if r.get('exit_type') else 'entry',
                  reason_code='fill_unverified' if r.get('fill_pending') else 'order_unresolved',
                  last_error=r.get('query_error'), last_attempt_at=r.get('last_attempt_at'),
                  next_retry_at=r.get('next_retry_at'), attempt_count=r.get('attempt_count', 0))
             for r in plan.get('entries', []) + plan.get('exits', [])
-            if r.get('fill_pending') or r.get('query_error') or not r.get('id') or r.get('status') == 'submitting'
-            or r.get('replacement') or (r.get('amendment') or {}).get('state') in {'pending', 'terminal_unconfirmed'}]
+            if classify_order(r)['state'] in UNRESOLVED]
 
 
 def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str | None,
@@ -118,10 +128,8 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
         position.update(status='stale' if position.get('observed_at') else 'unknown', error=plan['position_error'])
     if position['status'] != 'verified' and position.get('amount') is not None:
         position.update(last_known_amount=position['amount'], amount=None)
-    residual_manageable = (plan.get('residual_verified') and position.get('status') == 'verified'
-                           and (position.get('amount') or 0) > 0 and not blockers and not plan.get('read_errors')
-                           and not plan.get('cleanup_fill_unseen') and not plan.get('unobserved_entry_fills'))
-    reason = 'operation_unverified' if status in {'unknown', 'pending'} else 'cleanup_unverified' if cleanup_pending else None
+    from backend.utils.independent_admission import continuation_for
+    continuation = continuation_for({**plan, 'position_observation': position})
     result.update(receipt_version=1, contract_version=2, status=status, operation_id=operation_id,
                   action=action, episode_id=plan.get('episode_id'), pending=status in {'unknown', 'pending'},
                   filled_amount=filled, remaining_amount=remaining, actual_remaining=remaining,
@@ -132,10 +140,7 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
                   position=position,
                   cleanup={'status': cleanup_status, 'orders': blockers,
                            'error': plan.get('error') if cleanup_pending else None},
-                  continuation={'blocked_actions': (['open'] if residual_manageable else ['open', 'close', 'edit']) if reason else [],
-                                'reason_code': reason, 'side': plan.get('side'),
-                                'blocker_order_ids': [r['order_id'] for r in blockers],
-                                'assessed_at': plan.get('verified_at'), 'advisory': True},
+                  continuation=continuation,
                   recovery={'tool': 'get_trade_operation',
                             'target_operation_id': operation_id if record else next((r['operation_id'] for r in blockers if r.get('operation_id')), operation_id),
                             'blocker_operation_ids': list(dict.fromkeys(r['operation_id'] for r in blockers if r.get('operation_id'))),
@@ -152,6 +157,9 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
                       parent_order_id=order_reference(record, current=False) if record.get('execution_order_id') else None,
                       requested_amount=record.get('requested_amount'), resolved_amount=record.get('resolved_amount'))
     result.pop('error', None)
+    attempt = current_attempt.get()
+    result['admission'] = (attempt.admission if attempt and attempt.admission else
+                           {'version': 1, 'decision': 'not_evaluated', 'allowed': None})
     if status in {'failed', 'unknown', 'pending'}:
         result['error'] = record.get('replacement_error') or record.get('execution_error') or error
     return TradeReceipt.model_validate(result).model_dump()

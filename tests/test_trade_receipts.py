@@ -8,6 +8,35 @@ import pytest
 from backend.utils.trade_receipts import TradeReceipt, project_receipt
 from backend.utils.trade_operations import initialize_trade_operations_schema, tool_result_status
 from backend.utils.trade_evidence import append_receipt, save_plan
+from backend.utils.trade_order_evidence import classify_order, classify_saved_order
+from backend.utils.trade_receipts import unresolved_orders
+
+
+@pytest.mark.parametrize('record,expected', [
+    ({'status': 'rejected', 'submission_state': 'not_submitted',
+      'submission_evidence': {'source': 'exchange_rejection', 'no_execution': True}}, 'not_accepted'),
+    ({'status': 'rejected', 'submission_state': 'not_submitted'}, 'submission_unknown'),
+    ({'status': 'submitting', 'submission_state': 'unknown'}, 'submission_unknown'),
+    ({'id': '1', 'status': 'canceled', 'fill_pending': True}, 'terminal_fill_unverified'),
+    ({'id': '1', 'status': 'open', 'quantity_mode': 'all', 'waiting_trigger': True}, 'live_verified'),
+    ({'id': '1', 'status': 'open', 'fill_verified': True, 'amendment': {'state': 'rejected'}}, 'live_verified'),
+    ({'id': '1', 'status': 'open'}, 'submission_unknown'),
+    ({'id': '1', 'status': 'open', 'fill_verified': True, 'cancel_requested_at': 100}, 'submission_unknown'),
+    ({'id': '1', 'status': 'rejected', 'execution_order_id': '2'}, 'terminal_fill_unverified'),
+    ({'id': '1', 'status': 'closed', 'fill_verified': True}, 'terminal_verified'),
+])
+def test_execution_classification_drives_unresolved_view(record, expected):
+    record = {**record, 'operation_id': 'op', 'client_id': 'client', 'execution_error': 'irrelevant failed unknown'}
+    assert classify_order(record)['state'] == expected
+    assert bool(unresolved_orders({'entries': [record]})) == (expected in {'submission_unknown', 'terminal_fill_unverified'})
+
+
+def test_legacy_rejection_requires_evidence_and_keeps_original_fields():
+    record = dict(status='rejected', submission_state='not_submitted', execution_error='binance {"code":-2021,"msg":"reject"}')
+    original = dict(record)
+    assert classify_saved_order(record)['state'] == 'not_accepted'
+    assert all(record[k] == v for k, v in original.items())
+    assert record['submission_evidence']['migrated'] is True
 
 
 @pytest.mark.parametrize('status', ['failed', 'pending', 'unknown', 'submitted', 'completed', 'skipped', 'not_executed'])
@@ -89,5 +118,10 @@ def test_documented_synthetic_receipt_matches_schema():
     examples = re.findall(r'```json\n(.*?)\n```', document, re.S)
     assert examples
     for sample in examples:
-        TradeReceipt.model_validate(json.loads(sample))
+        payload = json.loads(sample)
+        if 'actions' in payload:
+            from backend.agent.trading_contracts import CanonicalTradeActionsSchema
+            CanonicalTradeActionsSchema.model_validate(payload)
+        else:
+            TradeReceipt.model_validate(payload)
         assert 'sk-' not in sample

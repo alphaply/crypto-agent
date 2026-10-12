@@ -176,6 +176,28 @@ def test_flat_batch_mcp_publishes_v2_and_rejects_legacy_nested_action(contracts)
     dispatch.assert_called_once()
 
 
+def test_flat_mcp_batch_preserves_policy_dependencies_and_replay(contracts):
+    _, _, dispatch, server = contracts
+    enable_independent_profile()
+    args = {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT', 'operation_id': 'independent-batch-0001',
+            'contract_version': 2, 'execution_policy': 'independent', 'actions': [
+                {'action': 'cancel', 'order_id': 'algo:123', 'reason': 'replace'},
+                {'action': 'close', 'side': 'LONG', 'order_type': 'stop_market', 'amount': .2,
+                 'trigger_price': 9, 'reason': 'new stop', 'depends_on': [0]}]}
+    result = call(server, 'execute_trade_actions', args)
+    assert result['status'] == 'submitted'
+    assert dispatch.call_args.args[1]['execution_policy'] == 'independent'
+    assert dispatch.call_args.args[1]['actions'][1]['depends_on'] == [0]
+    assert call(server, 'execute_trade_actions', args) == result
+    dispatch.assert_called_once()
+    with store.connection() as conn:
+        row = conn.execute('SELECT request_json FROM mcp_operation_requests WHERE operation_id=?', (args['operation_id'],)).fetchone()
+    stored = json.loads(row['request_json'])['arguments']
+    assert stored['execution_policy'] == 'independent' and stored['actions'][1]['depends_on'] == [0]
+    with pytest.raises(ToolError):
+        call(server, 'execute_trade_actions', {**args, 'execution_policy': 'unrecognized'})
+
+
 def test_legacy_batch_fingerprint_keeps_original_recursive_defaults(contracts):
     caller, _, dispatch, _ = contracts
     enable_independent_profile()

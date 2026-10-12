@@ -13,6 +13,7 @@ import uuid
 import ccxt
 
 from backend.utils.trade_receipts import bind_attempt, current_attempt, project_receipt, unresolved_orders
+from backend.utils.trade_order_evidence import classify_saved_order, rejection_evidence
 
 from backend.utils.position_protection import PositionProtection, TERMINAL, _lock
 from backend.utils.exit_orders import (
@@ -75,6 +76,7 @@ class IndependentExits(PositionProtection):
                 'reason_code': 'account_scope_mismatch', 'restorable': False}) from exc
         if plan and plan.get('execution_mode') == 'independent_exits':
             for record in plan.get('entries', []) + plan.get('exits', []):
+                classify_saved_order(record)
                 record.setdefault('contract_version', 1)
                 record.setdefault('order_type', canonical_order_type(record))
                 record.setdefault('quantity_mode', 'fixed')
@@ -85,6 +87,10 @@ class IndependentExits(PositionProtection):
 
     def _new(self, symbol, side, sl=None, tp=None):
         plan = super()._new(symbol, side, None, None)
+        from backend.database import get_db_conn
+        from backend.utils.trade_evidence import scope_generation
+        with get_db_conn() as conn:
+            plan['scope_generation'] = scope_generation(conn, self.account_scope, symbol)
         plan.update(execution_mode="independent_exits", exits=[], ever_filled=False)
         return plan
 
@@ -348,11 +354,6 @@ class IndependentExits(PositionProtection):
         if plan and plan["state"] != "DONE":
             if plan.get("execution_mode") != "independent_exits":
                 raise ValueError("An attached protection cycle is still active")
-            try:
-                self._reconcile(plan)
-            except Exception as exc:
-                exc.plan = plan
-                raise
         if not plan or plan["state"] == "DONE":
             if not create:
                 return None
@@ -365,26 +366,62 @@ class IndependentExits(PositionProtection):
             else:
                 plan = self._new(symbol, side)
         self._admit(plan, 'open' if create else 'close')
+        from backend.utils.independent_admission import cycle_quiescent
+        if create and plan.get('ever_filled') and cycle_quiescent(plan):
+            # All cleanup facts already hold: finish local bookkeeping without
+            # cancelling/editing anything or waiting for another model turn.
+            plan.update(state='DONE', error=None)
+            self._save(plan)
+            plan = self._new(symbol, side)
+            self._admit(plan, 'open')
         return plan
 
-    def _admit(self, plan, action):
-        from backend.utils.independent_admission import assess_admission
-        hedged = bool(self.ex.fetch_position_mode(plan['symbol']).get('hedged'))
+    def _admit(self, plan, action, target=None):
+        from backend.utils.independent_admission import assess_admission, action_intent
+        if action != 'cancel':
+            self.collect_readonly(plan)
+            if plan.get('adoption'):
+                from backend.mcp.guard import assert_position_owner
+                try:
+                    assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True, side=plan['side'])
+                    plan.pop('ownership_error', None)
+                except Exception as exc:
+                    plan['ownership_error'] = str(exc)
+        hedged = bool(self.ex.fetch_position_mode(plan['symbol']).get('hedged')) if action != 'cancel' else True
+        if action != 'cancel':
+            plan['hedged'] = hedged
         opposite = None
         if not hedged:
             opposite = self._load(plan['symbol'], 'SHORT' if plan['side'] == 'LONG' else 'LONG')
             if opposite and opposite.get('state') != 'DONE':
                 self.collect_readonly(opposite)
-        assessment = assess_admission(plan, action, hedged=hedged, opposite=opposite)
+        attempt = current_attempt.get()
+        intent = action_intent(plan, action, target, attempt.arguments if attempt else None)
+        assessment = assess_admission(plan, intent, hedged=hedged, opposite=opposite, target=target)
+        if action != 'cancel':
+            plan['opposite_evidence'] = ({k: v for k, v in opposite.items() if k != 'opposite_evidence'}
+                                         if opposite and not hedged else None)
+        attempt = current_attempt.get()
+        if attempt:
+            attempt.admission = assessment
         if not assessment['allowed']:
-            exc = IndependentPositionError('Independent orders require reconciliation before another action',
+            exc = IndependentPositionError('Action dependency unverified: ' + str(assessment['reason_code']) +
+                                           ('; ' + plan['ownership_error'] if plan.get('ownership_error') else ''),
                                            code='trade_recovery_required', details=assessment)
             exc.plan = plan
             raise exc
 
+    def _maintain_after(self, plan):
+        """Maintenance failures cannot rewrite this operation's known execution."""
+        try:
+            self._reconcile(plan)
+        except Exception as exc:
+            plan['maintenance_error'] = str(exc)
+
     def open(self, symbol, op, operation_id=None, contract_version=1):
         from backend.mcp.guard import assert_entry_allowed
-        assert_entry_allowed(self.mt, symbol)
+        entry_side = {'BUY_LIMIT': 'LONG', 'SELL_LIMIT': 'SHORT'}.get(getattr(op, 'action', None))
+        assert_entry_allowed(self.mt, symbol, **({'side': entry_side} if entry_side else {}))
         if op.stop_loss is not None or op.take_profit is not None:
             raise ValueError("Independent mode uses the close tool for exits; entry TP/SL must be omitted")
         if contract_version == 2:
@@ -431,7 +468,7 @@ class IndependentExits(PositionProtection):
             self._save(plan)
             params = {**self._params(side, hedged), "clientOrderId": record["client_id"], "timeInForce": "GTC"}
             self._submit(plan, record, "limit", "buy" if side == "LONG" else "sell", params)
-            self._reconcile(plan)
+            self._maintain_after(plan)
             return self._result(plan, record)
 
     def _submit(self, plan, record, order_type, side, params):
@@ -443,7 +480,13 @@ class IndependentExits(PositionProtection):
             order = self.ex.create_order(plan["symbol"], order_type, side,
                                          record.get('submission_amount', record["amount"]), record.get("price"), params)
         except (ccxt.InvalidOrder, ccxt.InsufficientFunds, ccxt.AuthenticationError, ccxt.PermissionDenied) as exc:
+            proof = rejection_evidence(exc)
+            if proof is None:
+                record['execution_error'] = str(exc)
+                self._save(plan)
+                raise
             record["status"] = "rejected"
+            record['submission_evidence'] = proof
             record['submission_state'] = 'not_submitted'
             record['execution_error'] = str(exc)
             if attempt:
@@ -544,7 +587,7 @@ class IndependentExits(PositionProtection):
                 if self.ex.id not in {'binance', 'binanceusdm'} and not (self.ex.id == 'okx' and not hedged):
                     raise ValueError('unsupported_combination: adapter does not support dynamic conditional all')
                 from backend.mcp.guard import assert_position_owner
-                assert_position_owner(self.mt, symbol, plan_override=plan, adopted_only=True)
+                assert_position_owner(self.mt, symbol, plan_override=plan, adopted_only=True, side=plan['side'])
                 quantity = None
             else:
                 quantity = float(self.ex.amount_to_precision(symbol, requested))
@@ -563,7 +606,7 @@ class IndependentExits(PositionProtection):
             plan["exits"].append(record)
             self._save(plan)
             self._submit_exit(plan, record, pos)
-            self._reconcile(plan)
+            self._maintain_after(plan)
             return self._result(plan, record)
 
     def _find_order(self, symbol, order_id):
@@ -600,7 +643,7 @@ class IndependentExits(PositionProtection):
                     'price': record.get('price'), 'order_id': order_reference(record)}
 
     def _cancel(self, record, plan, trigger=False, *, allow_child=True, verify_budget=None):
-        if record.get('status') in TERMINAL and not record.get('fill_pending'):
+        if classify_saved_order(record)['state'] in {'not_accepted', 'terminal_verified'}:
             return
         order = self._query(record, plan['symbol'], budget=verify_budget)
         if order is None:
@@ -680,17 +723,17 @@ class IndependentExits(PositionProtection):
     def cancel(self, symbol, order_id, operation_id=None):
         with _lock(self.account_scope):
             plan, record = self._find_order(symbol, order_id)
-            self._admit(plan, 'cancel')
             successors = [item for item in plan.get('exits', [])
                           if str(item.get('replaces')) == str(record.get('id'))]
             if record.get('replacement') or successors:
                 raise ValueError('Order has a replacement intent or successor; reconcile and cancel the current exit ID')
+            self._admit(plan, 'cancel', target=record)
             record.pop('replacement_error', None)
             if operation_id:
                 record['cancel_operation_id'] = operation_id
                 self._save(plan)
             self._cancel(record, plan)
-            self._reconcile(plan)
+            self._maintain_after(plan)
             return self._result(plan, record)
 
     def _replace(self, plan, record, remaining, *, price=None, trigger_price=None,
@@ -762,11 +805,10 @@ class IndependentExits(PositionProtection):
             existing = self._existing_operation(plan, operation_id)
             if existing:
                 return self._result(plan, existing)
-            self._reconcile(plan)
-            self._admit(plan, 'edit')
+            self._admit(plan, 'edit', target=record)
             if not record.get("exit_type") or record["exit_type"] == "market" or record.get("status") in TERMINAL:
                 raise ValueError("Only an open independent TP/SL exit can be amended")
-            if plan.get("error") or not self._position(plan):
+            if not self._position(plan):
                 raise ValueError("Reconcile the position and exit orders first")
             price = record.get("price") if price is None else float(self.ex.price_to_precision(plan["symbol"], positive(price, "price")))
             trigger_price = record.get("trigger_price") if trigger_price is None else float(self.ex.price_to_precision(plan["symbol"], positive(trigger_price, "trigger price")))
@@ -783,7 +825,7 @@ class IndependentExits(PositionProtection):
                 raise ValueError("Amended exit quantities exceed position")
             result = self._replace(plan, record, remaining, price=price, trigger_price=trigger_price,
                                    reason=reason, operation_id=operation_id)
-            self._reconcile(plan)
+            self._maintain_after(plan)
             return self._result(plan, result)
 
     def amend_entry(self, symbol, order_id, price=None, amount=None, reason="", pos_side=None, operation_id=None,
@@ -793,8 +835,7 @@ class IndependentExits(PositionProtection):
         assert_entry_allowed(self.mt, symbol)
         with _lock(self.account_scope):
             plan, record = self._find_order(symbol, order_id)
-            self.collect_readonly(plan)
-            self._admit(plan, 'edit')
+            self._admit(plan, 'edit', target=record)
             if current_attempt.get() is not None:
                 factor = float(self._market(plan['symbol']).get('contractSize') or 1)
                 remaining = float(amount) - float(record.get('filled') or 0) * factor if amount is not None else None
@@ -827,9 +868,8 @@ class IndependentExits(PositionProtection):
             if not record.get('exit_type'):
                 from backend.mcp.guard import assert_entry_allowed
                 assert_entry_allowed(self.mt, plan['symbol'])
-            self._reconcile(plan)
             order = self._query(record, plan['symbol'])
-            self._admit(plan, 'edit')
+            self._admit(plan, 'edit', target=record)
             if order is None:
                 raise RuntimeError('Order outcome unresolved; reconcile the original identity')
             requested_channel, requested_id = parse_order_reference(order_id)
@@ -844,7 +884,7 @@ class IndependentExits(PositionProtection):
                         'error': 'Condition already triggered; explicitly edit the returned execution order_id'}
             if record.get('status') in TERMINAL:
                 raise ValueError('Order already ended; do not reopen it as an edit')
-            if record.get('replacement') or record.get('amendment', {}).get('state') == 'pending' or plan.get('error'):
+            if record.get('replacement') or record.get('amendment', {}).get('state') == 'pending':
                 raise ValueError('Order modification is unresolved; reconcile before another edit')
             kind = canonical_order_type(record)
             effective_kind = ('limit' if kind in LIMIT_TYPES else 'market') if is_child else kind
@@ -878,7 +918,7 @@ class IndependentExits(PositionProtection):
             if effective_kind != 'limit':
                 result = self._replace(plan, record, remaining, price=new_price, trigger_price=new_trigger,
                                        reason=reason, operation_id=operation_id)
-                self._reconcile(plan)
+                self._maintain_after(plan)
                 return self._v2_result(plan, result)
             # Both venues modify the existing LIMIT, preserving its side and
             # close-only semantics. Never fall back to recreation after a timeout.
@@ -897,7 +937,13 @@ class IndependentExits(PositionProtection):
             try:
                 self.ex.edit_order(target, plan['symbol'], 'limit', side, total, new_price)
             except (ccxt.InvalidOrder, ccxt.InsufficientFunds, ccxt.AuthenticationError, ccxt.PermissionDenied) as exc:
+                proof = rejection_evidence(exc)
+                if proof is None:
+                    record['execution_error'] = str(exc)
+                    self._save(plan)
+                    raise
                 record['amendment']['state'] = 'rejected'
+                record['amendment']['submission_evidence'] = proof
                 record['execution_error'] = str(exc)
                 if attempt:
                     attempt.submission_state = 'not_submitted'
@@ -911,15 +957,21 @@ class IndependentExits(PositionProtection):
                 attempt.submission_state = 'submitted'
             self._query(record, plan['symbol'])
             self._save(plan)
-            self._reconcile(plan)
+            self._maintain_after(plan)
             return self._v2_result(plan, record)
 
     def _v2_result(self, plan, record):
         result = self._result(plan, record)
         result['contract_version'] = 2
-        result['status'] = ('failed' if record.get('replacement_error') or record.get('status') == 'rejected'
-                            or record.get('amendment', {}).get('state') == 'rejected' else
-                            'pending' if result['pending'] else 'completed')
+        if 'receipt_version' in result:
+            attempt = current_attempt.get()
+            operation_id = (attempt.operation_id if attempt else
+                            (record.get('amendment') or {}).get('operation_id') or record.get('last_operation_id') or record.get('operation_id'))
+            result = project_receipt(plan, record, action='edit', operation_id=operation_id, base=result)
+        if 'receipt_version' not in result:
+            result['status'] = ('failed' if record.get('replacement_error') or record.get('status') == 'rejected'
+                                or record.get('amendment', {}).get('state') == 'rejected' else
+                                'pending' if result['pending'] else 'completed')
         if str(record.get('replacement_error', '')).startswith('order_already_triggered'):
             result['error_code'] = 'order_already_triggered'
         return result
@@ -984,7 +1036,7 @@ class IndependentExits(PositionProtection):
             if plan.get('adoption') or any(r.get('quantity_mode') == 'all' and is_conditional(r)
                                           and r.get('status') not in TERMINAL for r in plan.get('exits', [])):
                 from backend.mcp.guard import assert_position_owner
-                assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True)
+                assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True, side=plan['side'])
             pos = self._position(plan)
             if not pos and plan.get("ever_filled") and plan["state"] != "EXITING":
                 # A second read may already show an eventually consistent
@@ -1036,7 +1088,7 @@ class IndependentExits(PositionProtection):
         """Read every unresolved order, including when an earlier read fails."""
         errors = []
         for record in plan.get('entries', []) + plan.get('exits', []):
-            if record.get('status') in TERMINAL and not record.get('fill_pending'):
+            if classify_saved_order(record)['state'] in {'not_accepted', 'terminal_verified'}:
                 continue
             if respect_backoff and record.get('next_retry_at', 0) > time.time():
                 errors.append(record.get('query_error') or 'Order verification backing off')
@@ -1069,7 +1121,11 @@ class IndependentExits(PositionProtection):
         """Refresh evidence without reconciliation, cleanup, replacement or adoption."""
         errors = self._collect_order_evidence(plan)
         try:
-            self._position(plan)
+            pos = self._position(plan)
+            plan.pop('position_error', None)
+            if pos:
+                plan.pop('unobserved_entry_fills', None)
+                plan.pop('cleanup_fill_unseen', None)
         except Exception as exc:
             plan['position_error'] = str(exc)
             errors.append(str(exc))

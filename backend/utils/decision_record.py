@@ -28,6 +28,11 @@ def build_decision_record(messages: list, summary_status: str) -> dict:
             receipt = {'tool': msg.name or calls.get(msg.tool_call_id, {}).get('name', 'tool'),
                        'tool_call_id': msg.tool_call_id, 'result': result,
                        'status': tool_result_status(result)}
+            if receipt['tool'] == 'get_trade_operation':
+                try:
+                    receipt['status'] = json.loads(result).get('query', {}).get('status', receipt['status'])
+                except (TypeError, ValueError, AttributeError):
+                    pass
             receipts.append(receipt)
             entries.append({'role': 'tool', **receipt})
     return {'version': 1, 'messages': entries, 'execution_results': receipts, 'summary_status': summary_status}

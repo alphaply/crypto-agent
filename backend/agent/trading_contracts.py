@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_serializer, model_validator
 
 
 PositiveNumber = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
@@ -66,19 +66,30 @@ class CancelInput(TradingInput):
     reason: Reason
 
 
-class OpenAction(OpenInput):
+class BatchDependencies(TradingInput):
+    depends_on: list[StrictInt] | None = None
+
+    @model_serializer(mode='wrap')
+    def omit_implicit(self, handler):
+        result = handler(self)
+        if 'depends_on' not in self.model_fields_set:
+            result.pop('depends_on', None)
+        return result
+
+
+class OpenAction(OpenInput, BatchDependencies):
     action: Literal['open']
 
 
-class CloseAction(CloseInput):
+class CloseAction(CloseInput, BatchDependencies):
     action: Literal['close']
 
 
-class EditAction(EditInput):
+class EditAction(EditInput, BatchDependencies):
     action: Literal['edit']
 
 
-class CancelAction(CancelInput):
+class CancelAction(CancelInput, BatchDependencies):
     action: Literal['cancel']
 
 
@@ -88,6 +99,26 @@ TradeAction = Annotated[OpenAction | CloseAction | EditAction | CancelAction, Fi
 class CanonicalTradeActionsSchema(TradingInput):
     contract_version: Literal[2] = Field(description='新平铺动作必须显式填写 2；不接受旧 order 嵌套格式')
     actions: list[TradeAction] = Field(min_length=1, max_length=20)
+    execution_policy: Literal['stop_on_error', 'independent'] = 'stop_on_error'
+
+    @model_validator(mode='after')
+    def validate_dependencies(self):
+        for index, action in enumerate(self.actions):
+            if 'depends_on' not in action.model_fields_set:
+                continue
+            if self.execution_policy != 'independent' or action.depends_on is None:
+                raise ValueError('depends_on requires independent policy and an index list')
+            dependencies = action.depends_on
+            if len(set(dependencies)) != len(dependencies) or any(i < 0 or i >= index for i in dependencies):
+                raise ValueError('depends_on must contain unique earlier action indices')
+        return self
+
+    @model_serializer(mode='wrap')
+    def omit_implicit(self, handler):
+        result = handler(self)
+        if 'execution_policy' not in self.model_fields_set:
+            result.pop('execution_policy', None)
+        return result
 
 
 CANONICAL_MODELS = {'open': OpenInput, 'close': CloseInput, 'edit': EditInput, 'cancel': CancelInput}

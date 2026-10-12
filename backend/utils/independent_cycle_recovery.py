@@ -5,6 +5,7 @@ import time
 from backend.database import get_db_conn, _current_timestamp
 from backend.utils.trade_receipts import unresolved_orders
 from backend.utils.trade_operations import _same_symbol
+from backend.utils.trade_order_evidence import classify_saved_order
 
 
 def diagnose_cycle(service, symbol, side, current=None):
@@ -33,6 +34,7 @@ def diagnose_cycle(service, symbol, side, current=None):
         diagnosis['reason_code'] = 'successor_cycle_exists'
         return diagnosis, None
     records = candidate.get('entries', []) + candidate.get('exits', [])
+    records = [r for r in records if classify_saved_order(r)['state'] != 'not_accepted']
     if candidate.get('history_complete') is False or not records or any(not r.get('id') for r in records):
         diagnosis['reason_code'] = 'incomplete_history'
         return diagnosis, None
@@ -73,11 +75,15 @@ def diagnose_cycle(service, symbol, side, current=None):
 
 
 def restore_cycle(service, symbol, side, current=None):
+    from backend.utils.trade_evidence import scope_generation, reserve_scope
+    with get_db_conn() as conn:
+        generation = scope_generation(conn, service.account_scope, symbol)
     diagnosis, candidate = diagnose_cycle(service, symbol, side, current)
     if not candidate:
         return None, diagnosis
     from backend.utils.trade_evidence import save_plan
     expected = candidate.get('record_version', 0)
+    candidate['scope_generation'] = generation
     candidate.update(state='ACTIVE', error=None, ever_filled=True, record_version=expected + 1,
                      restored_at=time.time(), restoration={'reason': diagnosis['reason_code'], 'original_episode_id': candidate['episode_id']})
     candidate.pop('flat_candidate', None)
@@ -98,6 +104,7 @@ def restore_cycle(service, symbol, side, current=None):
             other = json.loads(row['payload'])
             if other.get('account_scope') == service.account_scope and row['config_id'] != service.config_id and other.get('state') != 'DONE':
                 raise RuntimeError('Position ownership changed before restoration')
+        reserve_scope(conn, candidate)
         save_plan(conn, service.config_id, candidate, expected_version=expected)
         conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?) ON CONFLICT(config_id,symbol,side) '
                      'DO UPDATE SET payload=excluded.payload', (service.config_id, symbol, side, json.dumps(candidate)))

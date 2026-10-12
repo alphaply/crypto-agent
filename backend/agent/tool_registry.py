@@ -29,6 +29,15 @@ from backend.utils.logger import setup_logger
 logger = setup_logger("ToolRegistry")
 
 
+def uses_scoped_admission(tool_name: str, config_id: str, arguments: dict | None = None) -> bool:
+    from backend.config import config
+    from backend.utils.exit_policy import effective_exit_mode
+    canonical = tool_name in {'open', 'close', 'edit', 'cancel'} or (
+        tool_name == 'execute_trade_actions' and (arguments or {}).get('contract_version') == 2)
+    cfg = config.get_config_by_id(config_id) or {}
+    return canonical and cfg.get('mode', 'STRATEGY').upper() in {'REAL', 'STRATEGY'} and effective_exit_mode(cfg) == 'independent_exits'
+
+
 _CANCEL_TOOL_NAMES = {"cancel_orders_real", "cancel_orders_strategy"}
 
 _TOOLS_BY_MODE = {

@@ -72,7 +72,7 @@ Content-Type: application/json
 
 REAL / STRATEGY 支持 `execute_trade_actions`，一次调用顺序执行最多 20 项操作。独立模式推荐 `contract_version=2` 的平铺 `open/close/edit/cancel`；无版本调用保持旧的嵌套 `order` 格式及 `amend_entry/amend_exit/update_protection` 语义，不可混合两种格式。数量均使用标的币数量；LONG/SHORT 表示持仓方向。完整调用见 [MCP 规范工具](MCP.md#独立退出规范工具-v2)。
 
-整批先校验参数和模式，再逐项执行；失败、待核验或结果未知时停止后续操作，结果逐项标记，已完成操作不回滚。这不是交易所原子事务，提交限价开仓后不能假定已成交并立即退出未成交数量。运行与工具调用 ID 用于防止同一操作重放；未知状态需核对，不能更换 ID 反复提交。
+整批先校验参数和模式，再逐项执行；默认失败、待核验或未知时停止。独立模式 v2 可显式选 execution_policy=independent，无依赖项继续；depends_on 指定必须 completed 的前项。规范 Agent/Chat 多工具列表按实际依赖逐项准入，不因历史拒绝全局停止；Chat 用户拒绝仍停止本轮后续写入。工具内自动取证，无需额外查询解锁。结果逐项标记，已完成操作不回滚。这不是交易所原子事务，提交限价开仓后不能假定已成交并立即退出未成交数量。运行与工具调用 ID 防止重放；未知状态不能更换 ID 反复提交。示例见[回执与恢复](TRADE_RECEIPTS_AND_RECOVERY.md)。
 
 回执恢复只更新已有证据的对应操作项，保留先前失败项和 `not_executed` 未执行项。缺少请求信息或任一应执行项缺少确认时仍返回 `unknown`；已确认部分操作、其余明确未执行时返回 `partial`，后续依赖操作仍停止。恢复不会重放未执行动作，也不会把部分结果标为整批完成。
 

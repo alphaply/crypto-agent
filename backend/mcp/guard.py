@@ -14,7 +14,7 @@ def perpetual_symbol(exchange, symbol):
     return market['symbol']
 
 
-def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_only=False):
+def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_only=False, side=None):
     """Fail closed on shared or untracked perpetual exposure, using read-only evidence."""
     config_id = str(getattr(market_tool, 'config_id', '') or '')
     if not config_id.startswith('mcp:') and not adopted_only:
@@ -26,6 +26,7 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
     exchange = market_tool.exchange
     if getattr(market_tool, 'market_type', None) == 'spot':
         return
+    scoped_side = side if side and exchange.fetch_position_mode(symbol).get('hedged') else None
     aliases = symbol_aliases(market_tool, symbol)
     scope = account_scope(exchange, config_id)
     plans = []
@@ -57,6 +58,9 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
                         links.setdefault(str(order_id), {'config_id': config_id, 'role': role, 'side': plan['side']})
     canonical = perpetual_symbol(exchange, symbol)
     positions = [row for row in exchange.fetch_positions([canonical]) if abs(float(row.get('contracts') or 0)) > 0]
+    if scoped_side:
+        plans = [plan for plan in plans if plan.get('side') == scoped_side]
+        positions = [row for row in positions if str(row.get('side', '')).upper() == scoped_side]
     adoptions = [plan['adoption'] for plan in plans if plan.get('adoption')]
     if not positions and not adoptions:
         return
@@ -97,6 +101,10 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
         if str(trade['id']) in baseline_ids:
             continue  # Explicitly observed before adoption; never attribute historical manual fills.
         link = links.get(str(trade.get('order')))
+        if scoped_side:
+            trade_side = str((link or {}).get('side') or (trade.get('info') or {}).get('positionSide') or '').upper()
+            if trade_side in {'LONG', 'SHORT'} and trade_side != scoped_side:
+                continue
         if not link or link.get('config_id') != config_id:
             raise ValueError('Untracked or foreign fills share this position; MCP modification denied')
         side = str(link.get('side') or '').upper()
@@ -111,7 +119,7 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
         raise ValueError('Exchange position does not match solely owned fills; MCP modification denied')
 
 
-def assert_entry_allowed(market_tool, symbol):
+def assert_entry_allowed(market_tool, symbol, *, side=None):
     config_id = str(getattr(market_tool, 'config_id', '') or '')
     if not config_id.startswith('mcp:'):
         return  # Internal agents deliberately retain their existing leverage policy.
@@ -143,7 +151,7 @@ def assert_entry_allowed(market_tool, symbol):
         raise ValueError('Cannot verify actual exchange leverage; MCP exposure increase denied') from exc
     if max(values) > maximum:
         raise ValueError(f'Actual exchange leverage {max(values):g}x exceeds MCP limit {maximum}x; close/cancel remains available')
-    assert_position_owner(market_tool, symbol)
+    assert_position_owner(market_tool, symbol, **({'side': side} if side else {}))
 
 
 def is_exposure_increasing(tool_name, args, config_id, symbol):
@@ -182,12 +190,22 @@ def preflight_tool(tool_name, args, config_id, symbol):
         # The explicit adoption service verifies current ownership and quantity.
         # Requiring an existing cycle here would make adoption unreachable.
         return
+    side = args.get('side')
+    if tool_name == 'edit':
+        from backend.agent.independent_tools import describe_order
+        target = describe_order(config_id, symbol, args['order_id'])
+        side = target.get('side') or target.get('pos_side')
     risky = is_exposure_increasing(tool_name, args, config_id, symbol)
+    if (tool_name == 'execute_trade_actions' and args.get('contract_version') == 2
+            and args.get('execution_policy') == 'independent'):
+        # Gateway permissions and target roles are checked for the whole batch;
+        # live leverage/position dependencies belong to each executing action.
+        return
     if risky:
         from backend.utils.market_data import MarketTool
-        assert_entry_allowed(MarketTool(config_id=config_id), symbol)
+        assert_entry_allowed(MarketTool(config_id=config_id), symbol, **({'side': side} if side else {}))
     elif tool_name not in {'cancel', 'cancel_orders_real', 'cancel_orders_spot'}:
         if tool_name == 'execute_trade_actions' and all(action.get('action') == 'cancel' for action in args.get('actions', [])):
             return
         from backend.utils.market_data import MarketTool
-        assert_position_owner(MarketTool(config_id=config_id), symbol)
+        assert_position_owner(MarketTool(config_id=config_id), symbol, **({'side': side} if side else {}))

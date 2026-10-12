@@ -13,6 +13,33 @@ from backend.config import config
 from backend.database_schema import initialize_schema
 
 
+@pytest.mark.parametrize('dependencies', [[True], [1], [-1], [0, 0], ['0'], None])
+def test_batch_dependencies_are_strict_backward_unique_indices(dependencies):
+    from backend.agent.trading_contracts import CanonicalTradeActionsSchema
+    actions = [{'action': 'cancel', 'order_id': 'regular:1', 'reason': 'remove'},
+               {'action': 'cancel', 'order_id': 'regular:2', 'reason': 'remove', 'depends_on': dependencies}]
+    with pytest.raises(ValidationError):
+        CanonicalTradeActionsSchema.model_validate(dict(contract_version=2, execution_policy='independent', actions=actions))
+
+
+def test_batch_policy_hash_compatibility_and_metadata_boundaries():
+    from backend.agent.trading_contracts import CanonicalTradeActionsSchema, CancelInput
+    from backend.agent.trade_batch import TradeActionsSchema
+    actions = [{'action': 'cancel', 'order_id': 'regular:1', 'reason': 'remove'}]
+    original = {'contract_version': 2, 'actions': actions}
+    assert TradeActionsSchema.model_validate(original).model_dump() == original
+    assert CanonicalTradeActionsSchema.model_validate(original).model_dump() == original
+    explicit = {**original, 'execution_policy': 'stop_on_error'}
+    assert TradeActionsSchema.model_validate(explicit).model_dump() == explicit
+    for invalid in [dict(contract_version=1, actions=actions, execution_policy='independent'),
+                    {**original, 'execution_policy': 'guess'},
+                    {**original, 'actions': [{**actions[0], 'depends_on': []}]}]:
+        with pytest.raises(ValidationError):
+            TradeActionsSchema.model_validate(invalid)
+    with pytest.raises(ValidationError):
+        CancelInput.model_validate(dict(order_id='regular:1', reason='remove', depends_on=[]))
+
+
 @pytest.fixture
 def independent(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'independent-contracts.sqlite'))

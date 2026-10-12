@@ -56,14 +56,38 @@ def execute_action(action: str, arguments: dict, config_id: str, symbol: str) ->
     args['operation_id'] = current_operation_id.get()
     from backend.utils.trade_receipts import TradeAttempt, current_attempt, project_receipt
     attempt = TradeAttempt(args['operation_id'], action)
+    attempt.arguments = arguments
     token = current_attempt.set(attempt)
     try:
         preflight_tool(action, arguments, config_id, symbol)
         service, real = agent_tools._independent_service(config_id, symbol)
+        if not real:
+            import time
+            from backend.utils.independent_admission import action_intent, assess_admission
+            target = service.describe_order(arguments['order_id']) if action in {'edit', 'cancel'} else None
+            side = arguments.get('side') or (target or {}).get('side') or (target or {}).get('pos_side')
+            snapshot = service.snapshot()
+            position = next((p for p in snapshot['positions'] if p.get('pos_side') == side), {})
+            evidence = {'account_scope': 'simulation:' + config_id, 'symbol': symbol, 'side': side,
+                        'episode_id': position.get('episode_id'), 'state': 'ACTIVE' if position else 'WAITING',
+                        'entries': [], 'exits': [], 'verified_at': time.time(),
+                        'position_observation': {'status': 'verified', 'amount': position.get('amount', 0)}}
+            if target:
+                target = {**target, 'exit_type': target.get('order_type') if target.get('kind') == 'exit' else None}
+            attempt.admission = assess_admission(evidence, action_intent(evidence, action, target, arguments),
+                                                 hedged=True, target=target)
         if not real and action in {'close', 'edit'}:
             args['current_price'] = float(agent_tools.MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
         method = getattr(service, action)
-        result = method(symbol, **args) if real else method(**args)
+        from backend.utils.position_protection import ConcurrentProtectionUpdate
+        for refresh in range(2):
+            try:
+                result = method(symbol, **args) if real else method(**args)
+                break
+            except ConcurrentProtectionUpdate:
+                if refresh or attempt.phase != 'preflight' or attempt.submission_state != 'not_submitted':
+                    raise
+                attempt.plan, attempt.record, attempt.admission = None, None, None
         if real and result.get('status') == 'skipped' and 'receipt_version' not in result:
             plan = {'side': arguments.get('side'), 'position_observation': {
                 'side': arguments.get('side'), 'status': 'verified', 'amount': result.get('position_amount', 0)}}
@@ -150,7 +174,8 @@ def cancel_trade(order_id: str, reason: str, config_id: str, symbol: str):
 def get_trade_operation(target_operation_id: str, config_id: str, symbol: str):
     """只读核验原交易操作。传原回执 recovery.target_operation_id（不是订单 ID）。
     不重发、不撤改单；保留已确认成交，返回当前仓位、清理阻塞单及核验时间。
-    unknown/pending 后可立即调用；确认相关阻塞解除后才显式提出下一笔交易。"""
+    query.status表示本次查询是否完成，顶层status保留原交易结果。
+    普通交易会自行核验依赖，不要求先调用本工具；unknown/pending 可查询原操作，不重复发送未知写入。"""
     from backend.utils.trade_operations import refresh_operation_receipt
     return json.dumps(refresh_operation_receipt(config_id, symbol, target_operation_id), ensure_ascii=False)
 

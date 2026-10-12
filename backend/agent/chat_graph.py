@@ -947,11 +947,14 @@ def tools_node(state: ChatState, config: RunnableConfig):
                 extra['expected_spot_fingerprint'] = state.get('spot_config_fingerprint', '')
             result = _run_tool(tool_name, tool_args, config_id, symbol, operation_id=call['id'], **extra)
             outputs.append(ToolMessage(tool_call_id=call["id"], content=result))
-            stopped = stopped or (tool_name != 'get_trade_operation' and tool_result_status(result) in {'failed', 'unknown', 'pending'})
+            from backend.agent.tool_registry import uses_scoped_admission
+            stopped = stopped or (tool_name != 'get_trade_operation' and tool_result_status(result) in {'failed', 'unknown', 'pending'}
+                                  and not uses_scoped_admission(tool_name, config_id, tool_args))
         except Exception as exc:
             logger.error(f"Tool error ({tool_name}): {exc}")
             outputs.append(ToolMessage(tool_call_id=call["id"], content=f"Error: {exc}"))
-            stopped = True
+            from backend.agent.tool_registry import uses_scoped_admission
+            stopped = stopped or not uses_scoped_admission(tool_name, config_id, tool_args)
 
     return {"messages": outputs, "symbol": symbol}
 

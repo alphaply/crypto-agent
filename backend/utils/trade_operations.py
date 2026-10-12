@@ -398,13 +398,31 @@ def has_scoped_evidence(conn, config_id: str, operation_id: str) -> bool:
 def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, previous=None, *, read_exchange=True):
     from backend.utils.trade_recovery import recover_operation
     try:
-        return recover_operation(config_id, symbol, operation_id, read_exchange=read_exchange)
+        result = recover_operation(config_id, symbol, operation_id, read_exchange=read_exchange)
+        if read_exchange and isinstance(result, dict):
+            result.setdefault('query', {'status': 'failed' if result.get('error_code') in {
+                'operation_not_found', 'account_scope_mismatch'} else 'completed',
+                'observed_at': time.time(), 'errors': [result['error']] if result.get('error') else []})
+            result.setdefault('continuation', {'assessment_state': 'needs_refresh', 'blocked_actions': [],
+                                               'rules': [], 'advisory': True, 'requires_action_assessment': True})
+        return result
     except Exception as exc:
+        if previous is None:
+            from backend.database import get_db_conn
+            with get_db_conn() as conn:
+                saved = conn.execute('SELECT symbol,result FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+                                     (config_id, operation_id)).fetchone()
+            if saved and _same_symbol(saved['symbol'], symbol):
+                previous = saved['result']
         receipt = _decode_receipt(previous)
-        if isinstance(receipt, dict) and receipt.get('receipt_version') == 1:
+        if isinstance(receipt, dict):
             receipt = dict(receipt)
             receipt['recovery'] = {**receipt.get('recovery', {}), 'last_error': str(exc)}
             receipt['position'] = {**receipt.get('position', {}), 'status': 'stale'}
+            receipt['query'] = {'status': 'failed', 'errors': [str(exc)], 'observed_at': time.time()}
+            receipt['continuation'] = {**receipt.get('continuation', {}), 'assessment_state': 'needs_refresh',
+                                       'advisory': True, 'requires_action_assessment': True}
             return receipt
         return {'status': 'unknown', 'operation_id': operation_id, 'error': str(exc),
+                'query': {'status': 'failed', 'errors': [str(exc)], 'observed_at': time.time()},
                 'recovery': {'tool': 'get_trade_operation', 'target_operation_id': operation_id}}

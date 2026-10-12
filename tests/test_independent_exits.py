@@ -346,8 +346,10 @@ def test_real_filled_entry_ack_waits_for_position_across_restart(local_db, fille
 
     restarted = IndependentExits(svc.mt)
     restarted.reconcile_all()
-    with pytest.raises(ValueError, match='reconciliation'):
+    with pytest.raises(IndependentPositionError) as blocked:
         restarted.close('ETH/USDT', 'LONG', 0, 'market', operation_id='not-yet-visible')
+    assert blocked.value.code == 'trade_recovery_required'
+    assert blocked.value.details['reason_code'] == 'cycle_cleanup_unverified'
     assert restarted._load('ETH/USDT:USDT', 'LONG')['state'] != 'DONE'
     assert len(ex.calls) == 1
     assert ex.orders[opened['id']]['status'] == ('closed' if filled == 1 else 'open')
@@ -375,8 +377,8 @@ def test_terminal_ack_without_fill_is_queried_before_cycle_cleanup(local_db):
 
     ex.create_order = incomplete_ack
     ex.fetch_positions = lambda symbols: []
-    with pytest.raises(RuntimeError, match='fill quantity is unverified'):
-        svc.open('ETH/USDT', entry(), operation_id='incomplete-ack')
+    result = svc.open('ETH/USDT', entry(), operation_id='incomplete-ack')
+    assert result['pending']  # Incomplete own fill stays pending; maintenance no longer throws.
     plan = svc._load('ETH/USDT:USDT', 'LONG')
     assert plan['state'] != 'DONE'
     assert plan['entries'][0]['id'] == '1' and plan['entries'][0]['fill_pending']
@@ -697,8 +699,8 @@ def test_real_cleanup_unverified_cancel_fill_retains_cycle_until_position_visibl
     monkeypatch.setattr(ex, 'cancel_order', cancel)
     monkeypatch.setattr(ex, 'fetch_positions', positions)
     monkeypatch.setattr(ex, 'fetch_order', query)
-    with pytest.raises(RuntimeError):
-        svc.close('ETH/USDT', 'LONG', 0, 'market', operation_id='full-close')
+    result = svc.close('ETH/USDT', 'LONG', 0, 'market', operation_id='full-close')
+    assert result['pending']  # Legacy projection retains cleanup pending without throwing.
 
     plan = svc._load('ETH/USDT:USDT', 'LONG')
     canceled_entry = next(record for record in plan['entries'] if record['id'] == add['id'])
