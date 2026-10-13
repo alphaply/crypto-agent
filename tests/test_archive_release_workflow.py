@@ -53,6 +53,7 @@ function Mock-Command {
 }
 function git { Mock-Command git $args }
 function npm { Mock-Command npm $args }
+function npm.cmd { Mock-Command npm $args }
 function docker { Mock-Command docker $args }
 function openspec { Mock-Command openspec $args }
 function Start-Sleep {}

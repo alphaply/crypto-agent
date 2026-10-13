@@ -52,8 +52,10 @@ try {
     Invoke-Checked openspec @('validate', '--specs', '--strict')
 
     $stage = 'frontend build'
-    Invoke-Checked npm @('ci', '--prefix', 'frontend')
-    Invoke-Checked npm @('run', 'build', '--prefix', 'frontend')
+    # The Windows npm.ps1 shim is incompatible with inherited StrictMode.
+    $npmExecutable = if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { 'npm.cmd' } else { 'npm' }
+    Invoke-Checked $npmExecutable @('ci', '--prefix', 'frontend')
+    Invoke-Checked $npmExecutable @('run', 'build', '--prefix', 'frontend')
     $stage = 'Docker build'
     Invoke-Checked docker @('build', '-f', 'Dockerfile.prebuilt',
         '--label', "org.opencontainers.image.revision=$commit",
