@@ -118,7 +118,7 @@
 - **THEN** 保留原平仓成交事实并单列新增成交与残仓，未观察到残仓前仍保留核验；不自动补平、不提前结束周期
 
 ### Requirement: Visible state is consistent across real and simulated trading
-内置 Agent 上下文、MCP 查询和前端展示 SHALL 对齐 fixed/all、订单类型、触发/限价、当前有效身份、真实剩余量、SL 覆盖估计与数量冲突。未触发或限价止损的挂单覆盖 SHALL 不被描述为保证成交。模拟与实盘 SHALL 采用相同数量语义与周期规则。已终态但成交仍待核验的订单 SHALL 在单独的待核验记录中保持可见，包含身份、最后已知成交、未核实事项及时间，不把最后已知量当成最终成交量或有效保护覆盖。
+内置 Agent 上下文、MCP 查询和前端展示 SHALL 对齐 fixed/all、订单类型、触发/限价、当前有效身份、真实剩余量、SL 覆盖估计与数量冲突；一致性指事实和语义一致，不要求默认输入包含相同的完整历史回执。未触发或限价止损的挂单覆盖 SHALL 不被描述为保证成交。模拟与实盘 SHALL 采用相同数量语义与周期规则。已终态但成交仍待核验的订单 SHALL 在单独的待核验记录中保持可见，包含身份、最后已知成交、未核实事项及时间，不把最后已知量当成最终成交量或有效保护覆盖。默认决策上下文 SHALL 仅呈现当前相关异常；完整历史保留按需查询。
 
 #### Scenario: Dynamic coverage display
 - **WHEN** 账户存在一笔已核验的 stop_market all 与部分定量止盈
@@ -126,7 +126,11 @@
 
 #### Scenario: Canceled order still needs fill verification
 - **WHEN** 入场单或退出单已确认撤销但最终成交量未确认
-- **THEN** 挂单列表可将其排除出活跃单，但 Agent、MCP 和前端的待核验视图保留该单及原操作关联，不只显示笼统 pending
+- **THEN** 挂单列表可将其排除出活跃单，但 Agent 当前相关异常、MCP 和前端的待核验视图保留该单及原操作关联，不只显示笼统 pending
+
+#### Scenario: Historical receipts and current views have different detail
+- **WHEN** 原周期已确认结束且无残留影响，当前为新的已核验周期
+- **THEN** Agent 默认状态只展示当前周期事实及相关异常，MCP 和历史页面仍能查询原周期完整回执，两者不把旧周期持仓当成当前持仓
 
 ### Requirement: Continuation is scoped to verified trading dependencies
 后续交易 SHALL 在执行时按账户、任务、标的、方向、目标订单、动作意图及持仓模式检查准入；每项限制 SHALL 对应本次动作依赖的具体证据。历史错误、明确拒绝、无关订单读取失败或周期维护状态本身不得阻止依赖已核实的动作。涉及未知提交/成交、旧 all、晚到入场或归属不明的相关动作 SHALL 保留限制。权限、幂等、有效数量、方向及交易所能力约束 SHALL 保留；只读核验 SHALL 始终可在既有授权范围内进行。
@@ -187,7 +191,7 @@
 - **THEN** 该拒绝不导致 incomplete_history 或缺少订单归属；恢复保留其审计记录及原 episode_id
 
 ### Requirement: Reconciliation makes bounded progress
-系统 SHALL 对撤单及成交待核验执行有界的前台查证和可恢复的后台重试，保留最后尝试时间、下一次核验提示与阻塞证据。单笔失败 SHALL 不妨碍收集其他订单只读证据；清理与撤建写入仍须满足原意图和依赖。暂时网络失败不得清空已确认事实，核验长期失败须可诊断而非无限静默等待。查询、后台维护与写入准入 SHALL 使用一致的证据分类；已确认无执行影响的拒绝不再进入交易所核验队列，历史分类修正不得删除原始记录或重发订单。
+系统 SHALL 对撤单及成交待核验执行有界的前台查证和可恢复的后台重试，保留最后尝试时间、下一次核验提示与阻塞证据。单笔失败 SHALL 不妨碍收集其他订单只读证据；清理与撤建写入仍须满足原意图和依赖。暂时网络失败不得清空已确认事实，核验长期失败须可诊断而非无限静默等待。查询、后台维护与写入准入 SHALL 使用一致的证据分类；已确认无执行影响的拒绝不再进入交易所核验队列，历史分类修正不得删除原始记录或重发订单。已终结且无未解决关联的操作 SHALL 不因常规维护反复生成无事实变化的回执修订或刷新其证据时间；新相关证据仍须更新关联结果，按需查询继续可用。
 
 #### Scenario: Cancellation acknowledgement lacks fill fields
 - **WHEN** 撤销 ACK 已确认但缺少累计成交，随后原身份查单返回完整终态
@@ -204,6 +208,14 @@
 #### Scenario: Persistent read failure remains actionable
 - **WHEN** 未知提交在多次查证后仍无法确认
 - **THEN** 保留最后错误、尝试次数、下次重试和受影响动作；不以超时、订单不存在或单次空仓自动证明未执行，也不阻止无依赖动作
+
+#### Scenario: Unchanged terminal history stays historical
+- **WHEN** 连续后台维护期间，一笔已结束操作及关联订单、清理结果均无证据变化
+- **THEN** 不反复刷新该操作的回执修订、更新时间或核验时间，默认状态不因维护轮次将它重新列为当前事项
+
+#### Scenario: A completed execution still needs cleanup updates
+- **WHEN** 原平仓 completed，但关联清理或晚到入场仍未核实
+- **THEN** 后台继续推进相关证据并更新原操作投影，不因为顶层 completed 就停止恢复，也不重复提交平仓
 
 ### Requirement: Unrelated diagnostics cannot reduce action availability
 系统 SHALL 以顺畅执行有效交易为默认行为。每个阻塞 SHALL 对应当前请求的具体硬约束、已声明依赖或必须核实的相关执行事实；不得仅因旧错误数量、动作同方向、调用顺序猜测或无关异常增加限制。加入无关历史诊断 SHALL 不改变相同请求在相同相关证据下的准入结论。
@@ -243,7 +255,7 @@
 - **THEN** 回执保留确认成交，单列维护问题和具体后续限制，不把本次动作降级为执行未知
 
 ### Requirement: Trading availability explains specific dependencies
-Agent、MCP、模拟交易与前端 SHALL 一致展示原操作结果、当前证据、告警及动作限制。每个阻塞 SHALL 提供作用范围、具体原因、可用的操作/订单/客户端身份、核验时间及恢复建议；未知可用性不得显示为全面允许。缓存建议 SHALL 明示为参考，执行仍重新准入；相同证据与动作不得产生相反的查询和执行判断。
+Agent、MCP、模拟交易与前端 SHALL 以一致事实表达原操作结果、当前证据、告警及动作限制；默认 Agent 输入仅投影当前相关部分，历史诊断保留按需查看。每个阻塞 SHALL 提供作用范围、具体原因、可用的操作/订单/客户端身份、真实证据观察时间及恢复建议；未知可用性不得显示为全面允许。缓存建议 SHALL 明示为参考，执行仍重新准入；相同证据与动作不得产生相反的查询和执行判断。旧周期或未刷新建议 SHALL 不作为当前禁止或允许结论，单纯历史 error 不构成整个周期待核验。
 
 #### Scenario: Query and immediate admission agree on a rejected stop
 - **WHEN** 查询确认原止损无执行影响，随后无证据变化地请求新的有效止损
@@ -255,4 +267,8 @@ Agent、MCP、模拟交易与前端 SHALL 一致展示原操作结果、当前�
 
 #### Scenario: Missing evidence is not an empty allow list
 - **WHEN** 当前可用性未核验或查询失败，只保留旧操作结果
-- **THEN** 展示待刷新及缺失证据，不把空 blocked_actions 解释为所有新交易可执行
+- **THEN** 展示待刷新及缺失证据，不把空 blocked_actions 解释为所有新交易可执行，也不将旧 blocked_actions 继续展示为当前封锁
+
+#### Scenario: Historical diagnostic does not change coverage certainty
+- **WHEN** 当前仓位和止损单证据已核验，周期保留一条无执行影响的旧错误说明
+- **THEN** 当前保护覆盖与异常状态不因该错误字符串降级，旧说明仍可在审计中查看

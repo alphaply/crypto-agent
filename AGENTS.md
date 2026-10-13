@@ -56,3 +56,11 @@ PRs should include:
 ## Documentation Maintenance
 - Keep `README.md` and `docs/` in sync with actual FastAPI/React behavior
 - Remove references to deleted Flask/Jinja flows when they are no longer present
+
+## OpenSpec Archive and Release
+- An archive request includes syncing the selected change into the main specs and releasing the verified change, unless the user explicitly narrows the request.
+- Follow `openspec/specs/archive-release-workflow/spec.md` and `docs/DEPLOYMENT_GUIDE.md`. Validate the synced specs and completed tasks before moving the change into the dated archive directory.
+- Stage only the change's implementation, tests, docs, synced specs and archive. Preserve unrelated local files, including untracked `.agents/` content. Commit with a focused message on `beta`; never force-push or discard unrelated work to release.
+- After committing, run `powershell -NoProfile -File scripts/release-archived-change.ps1 -ArchiveName <YYYY-MM-DD-change-name>`. This rebuilds the frontend and Docker image, runs an isolated scheduler-disabled smoke test, pushes `origin/beta`, and publishes `alphaply712/crypto-agent:git-<short-sha>` and `:latest`.
+- Report the archive path, checks, Git commit and image digest. If a step fails, stop dependent steps and report the exact completed and pending stages; archiving files alone does not mean release succeeded.
+- Publishing an image does not restart production containers. Production rollout is a separate action when requested by the user.

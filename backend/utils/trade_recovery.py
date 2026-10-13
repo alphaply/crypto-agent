@@ -8,6 +8,83 @@ from backend.utils.trade_receipts import project_receipt
 from backend.utils.trade_operations import _decode_receipt, _operation_matches, _same_symbol, tool_result_status
 
 
+def operation_evidence(config_id: str, symbol: str, operation_ids, *, account_scope: str) -> dict:
+    """Exact referenced receipts, independent of age/page; scope comes from the caller.
+
+    A child's identity is resolved only through a stored batch item. Similar sizes,
+    prices and an unrelated flat position are never evidence of its execution.
+    """
+    from backend.database import get_db_conn
+    ids = list(dict.fromkeys(str(i) for i in operation_ids if i))
+    output = {i: {'resolution': 'unresolved', 'operation_id': i} for i in ids}
+    if not config_id or not symbol or not account_scope:
+        return {i: {**v, 'resolution': 'unavailable'} for i, v in output.items()}
+    try:
+        with get_db_conn() as conn:
+            rows = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=?', (config_id,)).fetchall()
+            evidence = conn.execute('SELECT operation_id,account_scope,symbol,version FROM trade_operation_evidence '
+                                    'WHERE config_id=?', (config_id,)).fetchall()
+        refreshed = {}
+        for identity in ids:
+            # A refreshed parent can contain newer evidence than the child's
+            # original run row. Parent candidates still require an exact item.
+            candidates = sorted((r for r in rows if _same_symbol(r['symbol'], symbol)
+                                 and (r['operation_id'] == identity or identity.startswith(r['operation_id'] + ':'))),
+                                key=lambda r: (r['updated_at'], len(r['operation_id'])), reverse=True)
+            for row in candidates:
+                receipt = _decode_receipt(row['result'])
+                if not isinstance(receipt, dict):
+                    continue
+                parent = row['operation_id']
+                if parent != identity:
+                    item = next((item for n, item in enumerate(receipt.get('results', []))
+                                 if identity == f'{parent}:{item.get("index", n)}'), None)
+                    if item is None:
+                        continue
+                    receipt = item if item.get('status') == 'not_executed' else item.get('result', item)
+                associated = [e for e in evidence if _same_symbol(e['symbol'], symbol)
+                              and _operation_matches(e['operation_id'], identity)]
+                # Unsubmitted batch tails inherit the parent's scope, never execution.
+                if not associated:
+                    associated = [e for e in evidence if _same_symbol(e['symbol'], symbol)
+                                  and _operation_matches(e['operation_id'], parent)]
+                if associated and any(e['account_scope'] != account_scope for e in associated):
+                    output[identity] = {**output[identity], 'resolution': 'account_scope_mismatch'}
+                    break
+                if not associated and not account_scope.startswith('mock:'):
+                    output[identity] = {**output[identity], 'resolution': 'unavailable'}
+                    break
+                if associated:
+                    if parent not in refreshed:
+                        from backend.utils.position_protection import PositionProtection
+                        service = object.__new__(PositionProtection)
+                        service.config_id, service.account_scope = config_id, account_scope
+                        refreshed[parent] = recover_operation(config_id, symbol, parent, service=service, read_exchange=False)
+                    fresh = refreshed[parent]
+                    if isinstance(fresh, dict):
+                        if parent == identity:
+                            receipt = fresh
+                        else:
+                            item = next((item for n, item in enumerate(fresh.get('results', []))
+                                         if identity == f'{parent}:{item.get("index", n)}'), None)
+                            if item:
+                                receipt = item if item.get('status') == 'not_executed' else item.get('result', item)
+                output[identity] = {'operation_id': identity, 'parent_operation_id': parent,
+                                    'resolution': 'matched', 'latest': receipt,
+                                    'source': 'local_execution_evidence',
+                                    'evidence_version': max((e['version'] for e in associated), default=None),
+                                    'receipt_updated_at': row['updated_at']}
+                break
+    except Exception as exc:
+        output = {i: {**v, 'resolution': 'unavailable', 'error': str(exc)} for i, v in output.items()}
+    return output
+
+
+def _stale_advice(continuation):
+    return {**continuation, 'assessment_state': 'needs_refresh', 'rules': [], 'blocked_actions': [],
+            'requires_action_assessment': True, 'previous_assessment': continuation}
+
+
 def latest_operation_receipts(config_id: str, symbol: str = '', limit: int = 20) -> dict:
     """Local observations for decision/UI context, never a new exchange request."""
     from backend.database import get_db_conn
@@ -58,7 +135,7 @@ def _records(plan, operation_id):
     for record in plan.get('entries', []) + plan.get('exits', []):
         ids = [record.get(key) for key in ('operation_id', 'cancel_operation_id', 'last_operation_id')]
         ids += [(record.get(key) or {}).get('operation_id') for key in ('amendment', 'replacement')]
-        for evidence_id in set(ids) - {None, ''}:
+        for evidence_id in sorted(set(ids) - {None, ''}):
             if _operation_matches(evidence_id, operation_id):
                 yield evidence_id, record
 
@@ -77,7 +154,7 @@ def recover_operation(config_id: str, symbol: str, operation_id: str, *, service
 
 def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, service=None, read_exchange=True):
     from backend import database
-    from backend.utils.trade_evidence import append_receipt, load_cycles, save_plan
+    from backend.utils.trade_evidence import append_receipt, load_cycles, save_plan, evidence_fingerprint
     from backend.utils.position_protection import _lock, ConcurrentProtectionUpdate
     with database.get_db_conn() as conn:
         row = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=? AND operation_id=?',
@@ -93,10 +170,19 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
     if not any(_operation_matches(item['operation_id'], operation_id) for item in identities):
         return previous or {'status': 'unknown', 'operation_id': operation_id, 'error': 'Original execution evidence unavailable'}
     if service is None:
-        from backend.agent.agent_tools import _independent_service
-        service, real = _independent_service(config_id, symbol)
-        if not real:
-            return previous or {'status': 'unknown', 'operation_id': operation_id}
+        if read_exchange:
+            from backend.agent.agent_tools import _independent_service
+            service, real = _independent_service(config_id, symbol)
+            if not real:
+                return previous or {'status': 'unknown', 'operation_id': operation_id}
+        else:
+            from backend.utils.position_protection import PositionProtection
+            from backend.utils.trade_evidence import configured_account_scope
+            # _load uses only the database. In particular, avoid MarketTool's
+            # constructor, which loads exchange markets even for a local read.
+            service = object.__new__(PositionProtection)
+            service.config_id = config_id
+            service.account_scope = configured_account_scope(config_id)
     # Do not carry a snapshot loaded before a same-process writer releases its lock.
     with _lock(service.account_scope):
         plans = load_cycles(config_id, service.account_scope, symbol, operation_id)
@@ -112,6 +198,14 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
     projections, query_errors = {}, []
     with _lock(service.account_scope):
         plans = load_cycles(config_id, service.account_scope, symbol, operation_id)
+        fingerprint = evidence_fingerprint(plans, operation_id)
+        if not read_exchange:
+            with database.get_db_conn() as conn:
+                watermark = conn.execute('SELECT fingerprint FROM trade_receipt_watermarks WHERE config_id=? '
+                                         'AND account_scope=? AND operation_id=?',
+                                         (config_id, service.account_scope, operation_id)).fetchone()
+            if watermark and watermark['fingerprint'] == fingerprint:
+                return previous
         for plan in plans:
             current = service._load(plan['symbol'], plan['side'])
             active = current
@@ -174,8 +268,8 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
                     availability['ownership_error'] = str(exc)
                     query_errors.append(str(exc))
             continuation = continuation_for(availability)
-            if not active or active.get('state') == 'DONE':
-                continuation['assessment_state'] = 'needs_refresh'
+            if not read_exchange or query_errors or not active or active.get('state') == 'DONE':
+                continuation = _stale_advice(continuation)
                 continuation['scope'] = {'account_scope': service.account_scope, 'symbol': plan['symbol'],
                                          'side': plan['side'], 'episode_id': (active or {}).get('episode_id')}
             for evidence_id, record in _records(plan, operation_id):
@@ -186,8 +280,13 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
                 receipt['continuation'] = continuation
                 receipt['current_scope'] = continuation['scope']
                 receipt['current_position'] = availability.get('position_observation')
-                receipt['query'] = {'status': 'partial' if query_errors else 'completed',
-                                    'observed_at': time.time(), 'errors': list(dict.fromkeys(query_errors))}
+                receipt['projected_at'] = time.time()
+                receipt['evidence_source'] = 'exchange_read' if read_exchange else 'local_projection'
+                receipt['query'] = ({'status': 'partial' if query_errors else 'completed',
+                                     'queried_at': time.time(), 'observed_at': plan.get('verified_at'),
+                                     'source': 'exchange_read', 'errors': list(dict.fromkeys(query_errors))}
+                                    if read_exchange else {'status': 'not_requested', 'source': 'local_projection',
+                                                           'observed_at': plan.get('verified_at')})
                 original = previous
                 if isinstance(previous, dict) and isinstance(previous.get('results'), list):
                     original = next((item.get('result') for index, item in enumerate(previous['results'])
@@ -215,8 +314,8 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
                 item.update(status=evidence['status'], result=evidence)
             items.append(item)
         result['results'] = items
-        result['query'] = {'status': 'partial' if query_errors else 'completed',
-                           'observed_at': time.time(), 'errors': list(dict.fromkeys(query_errors))}
+        result['query'] = next(iter(projections.values()))['query']
+        result['projected_at'] = time.time()
         statuses = [tool_result_status(item) for item in items]
         result['status'] = next((s for s in ['unknown', 'pending', 'failed', 'submitted'] if s in statuses),
                                 'partial' if any(i.get('status') == 'not_executed' for i in items) else 'completed')
@@ -245,5 +344,8 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
         revision = append_receipt(conn, config_id, operation_id, result)
         conn.execute('UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?',
                      (tool_result_status(result), json.dumps(result), time.time(), config_id, operation_id))
+        conn.execute('INSERT INTO trade_receipt_watermarks VALUES(?,?,?,?) ON CONFLICT(config_id,account_scope,operation_id) '
+                     'DO UPDATE SET fingerprint=excluded.fingerprint',
+                     (config_id, service.account_scope, operation_id, evidence_fingerprint(plans, operation_id)))
         conn.commit()
     return result

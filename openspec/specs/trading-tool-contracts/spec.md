@@ -180,7 +180,7 @@
 - **THEN** edit 返回 failed 和拒绝原因，同时保留原订单的已知状态；不把原单视作撤销或把该拒绝标为未知
 
 ### Requirement: Callers can query an original operation without trading writes
-内置 Agent 和聊天 SHALL 提供按原操作 ID 查询的工具，MCP SHALL 提供相同行为的操作查询。查询 SHALL 检查任务、账户、标的及调用者归属，可刷新交易所只读证据和本地回执；不得新建、撤销、修改订单或恢复撤建写入。前序交易失败或待核验 SHALL 不阻止合法恢复查询，查询失败不得覆盖已有执行事实。查询 SHALL 分别表达此次读取的成功/部分成功/失败与原操作的执行结果，并标识当前准入建议的证据范围和新鲜度。
+内置 Agent 和聊天 SHALL 提供按原操作 ID 查询的工具，MCP SHALL 提供相同行为的操作查询。查询 SHALL 检查任务、账户、标的及调用者归属，可刷新交易所只读证据和本地回执；不得新建、撤销、修改订单或恢复撤建写入。前序交易失败或待核验 SHALL 不阻止合法恢复查询，查询失败不得覆盖已有执行事实。查询 SHALL 分别表达此次读取的成功/部分成功/失败与原操作的执行结果，并标识当前准入建议的证据范围和新鲜度。查询或本地投影生成时间 SHALL 与实际证据观察时间区分；仅重组本地缓存不得宣称已刷新交易所证据。原操作查询是按需能力，SHALL NOT 成为每轮决策的必经步骤。
 
 #### Scenario: Agent checks the original close
 - **WHEN** Agent 收到待核验回执后以其原操作 ID 发起查询
@@ -200,14 +200,18 @@
 
 #### Scenario: Query cannot refresh current scope
 - **WHEN** 旧操作可读取，但当前周期、账户或仓位依赖不能重新核验
-- **THEN** 保留原操作结果，标识查询部分成功或失败及缺项；当前可用性为待刷新，不能复用旧周期的允许建议
+- **THEN** 保留原操作结果，标识查询部分成功或失败及缺项；当前可用性为待刷新，不能复用旧周期的允许或禁止建议
+
+#### Scenario: Local regeneration is not an exchange observation
+- **WHEN** 后台只根据已保存证据重组原操作回执，未读取交易所
+- **THEN** 回执标识证据来源和原观察时间；本地生成成功不表示仓位、订单或当前准入已经在生成时刻重新核验
 
 ### Requirement: Reconciled evidence reaches all receipt consumers
-已核验的操作证据 SHALL 同步到原操作回执、当前 Agent 上下文、聊天和 MCP 操作查询/同 ID 重放。恢复 SHALL 以原请求意图判断完成，保留首次回执及后续核验记录；新周期替换活跃周期后仍须能查询历史操作。确认成交不得因其他订单清理未知退回成交未知，旧快照不得覆盖较新的已确认事实。
+已核验的操作证据 SHALL 同步到原操作回执、当前 Agent/聊天状态视图、记忆证据和 MCP 操作查询/同 ID 重放。默认决策输入 SHALL 使用当前事实及相关异常的投影，完整历史回执按需读取，不要求各消费者逐轮注入同一份原始 JSON。恢复 SHALL 以原请求意图判断完成，保留首次回执及后续核验记录；新周期替换活跃周期后仍须能查询历史操作。确认成交不得因其他订单清理未知退回成交未知，旧快照不得覆盖较新的已确认事实。记忆消费 SHALL 对相同身份采用最新结果，保留原结果作为历史，不将未执行批次项推定为已执行。
 
 #### Scenario: Background reconciliation resolves a close
 - **WHEN** 后台核验到原平仓已成交且清理完成
-- **THEN** 内置 Agent 下一次读取及 MCP get_operation/同 ID 重放均返回恢复后的结果，不停留在首次 unknown，也不再次提交订单
+- **THEN** 内置 Agent 下一次默认状态不再显示该旧限制，记忆证据取得解决结果；MCP get_operation/同 ID 重放仍返回恢复后的完整回执，不停留在首次 unknown，也不再次提交订单
 
 #### Scenario: Canceled source does not prove successful replacement
 - **WHEN** edit 的旧单撤销已确认，但替代单被拒绝或结果未明
@@ -215,7 +219,15 @@
 
 #### Scenario: Completed cycle is replaced
 - **WHEN** 新周期创建后查询旧周期某次待核验或已完成操作
-- **THEN** 仍按旧操作及其订单证据返回结果，不错误关联新周期或丢失查询身份
+- **THEN** 仍按旧操作及其订单证据返回结果，不错误关联新周期或丢失查询身份；该历史查询不使旧持仓或旧准入建议进入下一轮默认状态
+
+#### Scenario: Memory gets the reconciled result rather than only a display overlay
+- **WHEN** 原始工具回执为 unknown，当前同身份回执为 completed，记忆通过摘要记录消费执行证据
+- **THEN** 实际传入记忆整理的证据包含最新结果及与原始结果的关联，不只在历史消息展示字段中补充当前回执
+
+#### Scenario: An unresolved item is older than the recent receipt page
+- **WHEN** 记忆或当前异常引用的操作未出现在最新一页回执，或属于已离开摘要窗口的批次子项
+- **THEN** 消费者按原身份在授权范围内读取关联证据，不因最近记录条数限制丢失真实未决问题或其解决结果
 
 ### Requirement: Admission receipts provide scoped decisions and recovery instructions
 规范交易和查询 SHALL 提供版本化的准入说明，区分本次请求的允许、带告警允许、拒绝及未评估；包含动作/目标范围、证据版本与时间、阻塞项、告警和恢复建议。查询中的建议不是新交易授权，执行 SHALL 重新核验。兼容 blocked_actions SHALL 不扩大目标级限制为全局禁止，空列表 SHALL 不代表已获全面准入；所有入口对相同动作及证据 SHALL 使用一致结论。

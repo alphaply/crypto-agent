@@ -701,10 +701,6 @@ def model_node(state: ChatState, config: RunnableConfig):
 
     history = list(state.get("messages", []))
     system_prompt = state.get("system_prompt", "")
-    from backend.utils.exit_policy import effective_exit_mode
-    if effective_exit_mode(cfg) == 'independent_exits':
-        from backend.utils.trade_recovery import recovery_context_text
-        system_prompt += recovery_context_text(config_id, symbol)
     conversation_summary = str(state.get("conversation_summary") or "")
     summary_cursor = int(state.get("conversation_summary_cursor") or 0)
     previous_summary = conversation_summary

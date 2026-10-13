@@ -60,6 +60,7 @@ def real_short(simulation, monkeypatch):
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: {
         'config_id': 'cfg', 'mode': 'REAL', 'exit_mode': 'independent_exits'})
     monkeypatch.setattr(agent_tools, '_independent_service', lambda *_: (service, True))
+    monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope', lambda _: service.account_scope)
     return service, exchange
 
 

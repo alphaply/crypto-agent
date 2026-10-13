@@ -7,9 +7,13 @@ from __future__ import annotations
 
 import json
 import time
+import hashlib
 
 
 def initialize_schema(cursor):
+    cursor.execute('''CREATE TABLE IF NOT EXISTS trade_receipt_watermarks (
+        config_id TEXT NOT NULL, account_scope TEXT NOT NULL, operation_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL, PRIMARY KEY(config_id,account_scope,operation_id))''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS trade_scope_generations (
         account_scope TEXT NOT NULL, symbol TEXT NOT NULL, generation INTEGER NOT NULL,
         PRIMARY KEY(account_scope,symbol))''')
@@ -123,3 +127,44 @@ def load_cycles(config_id: str, account_scope: str, symbol: str, operation_id: s
             plan = json.loads(row['payload'])
             plans[plan['episode_id']] = plan
     return list(plans.values())
+
+
+def configured_account_scope(config_id: str) -> str:
+    """Resolve trusted credentials locally. Never construct a network client here."""
+    from backend.config import config
+    cfg = config.get_config_by_id(config_id)
+    if not cfg:
+        raise ValueError('Task configuration unavailable')
+    if str(cfg.get('mode', 'STRATEGY')).upper() != 'REAL':
+        return 'mock:' + config_id
+    exchange, key, _, _ = config.get_exchange_credentials(config_id=config_id)
+    if not key:
+        raise ValueError('Account credentials unavailable')
+    exchange_id = 'binanceusdm' if exchange == 'binance' else exchange
+    return hashlib.sha256(f'{exchange_id}:{key}'.encode()).hexdigest()
+
+
+_VOLATILE_EVIDENCE = {'updated_at', 'verified_at', 'observed_at', 'fill_observed_at',
+                      'last_attempt_at', 'next_retry_at', 'attempt_count', 'record_version',
+                      'scope_generation', 'assessed_at', 'projected_at', 'queried_at'}
+
+
+def evidence_fingerprint(plans: list[dict], operation_id: str) -> str:
+    """Fingerprint original execution and its cleanup dependencies, not later cycles."""
+    from backend.utils.trade_recovery import _records
+    def stable(value):
+        if isinstance(value, dict):
+            return {k: stable(v) for k, v in value.items() if k not in _VOLATILE_EVIDENCE}
+        if isinstance(value, list):
+            return [stable(v) for v in value]
+        return value
+    values = []
+    for plan in sorted(plans, key=lambda p: str(p.get('episode_id'))):
+        values.append({
+            'episode_id': plan.get('episode_id'), 'state': plan.get('state'),
+            'records': [{'operation_id': op, 'record': record} for op, record in _records(plan, operation_id)],
+            'dependencies': plan.get('entries', []) + plan.get('exits', []),
+            **{k: plan.get(k) for k in ('position_observation', 'position_error',
+                                        'unobserved_entry_fills', 'cleanup_fill_unseen', 'residual_verified')},
+        })
+    return hashlib.sha256(json.dumps(stable(values), sort_keys=True, default=str).encode()).hexdigest()

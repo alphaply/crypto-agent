@@ -641,6 +641,7 @@ class MarketTool:
             "real_open_orders": [],
             "mock_open_orders": [],
             "error": None,
+            "evidence_state": {},
         }
         
         try:
@@ -697,10 +698,14 @@ class MarketTool:
                             } for p in all_positions if float(p['contracts']) > 0
                         ]
                         status_data["real_positions"] = real_positions
+                        modes = {p.get('hedged') for p in all_positions if p.get('hedged') is not None}
+                        status_data['hedged'] = next(iter(modes)) if len(modes) == 1 else None
+                    status_data['evidence_state']['positions'] = {'source': 'exchange', 'observed_at': time.time()}
                 except Exception as e:
                     logger.warning(f"Fetch real positions error (maybe spot market?): {e}")
                     status_data["real_positions"] = []
                     status_data["error"] = "Failed to refresh real positions"
+                    status_data['evidence_state']['positions'] = {'source': 'exchange', 'error': str(e)}
 
                 # 实盘挂单
                 try:
@@ -714,6 +719,7 @@ class MarketTool:
                             trigger_orders = self.exchange.fetch_open_orders(symbol, params={'trigger': True})
                         except Exception as te:
                             logger.warning(f"Fetch trigger orders error: {te}")
+                            status_data['evidence_state']['trigger_orders'] = {'source': 'exchange', 'error': str(te)}
                     
                     # 合并订单
                     all_orders = regular_orders + trigger_orders
@@ -788,10 +794,19 @@ class MarketTool:
                             'amount': amount,
                             'status': o.get('status')
                         })
+                        filtered_orders[-1].update(
+                            exchange_channel='algo' if info.get('algoId') or o in trigger_orders else 'regular',
+                            order_type=order_type.lower(), trigger_price=stop_price or None,
+                            quantity_mode='all' if close_all else 'fixed',
+                            remaining=(float(o['remaining']) * float(market.get('contractSize') or 1)
+                                       if o.get('remaining') is not None and not close_all else None),
+                        )
                     status_data["real_open_orders"] = filtered_orders
+                    status_data['evidence_state']['orders'] = {'source': 'exchange', 'observed_at': time.time()}
                 except Exception as e:
                     logger.warning(f"Fetch real orders error: {e}")
                     status_data["error"] = "Failed to refresh real open orders"
+                    status_data['evidence_state']['orders'] = {'source': 'exchange', 'error': str(e)}
             else:
                 # 模拟模式
                 # 获取策略沙盒内的资金（破产会自动重置回10000并在数据库记1笔failures）

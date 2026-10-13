@@ -14,6 +14,52 @@ def close_args():
     return dict(side='SHORT', order_type='market', close_all=True, reason='exit')
 
 
+def test_identity_reader_has_no_page_limit_and_preserves_batch_tail(real_short):
+    from backend.utils.trade_recovery import operation_evidence
+    service, exchange = real_short
+    exchange.timeout_next = True
+    first = call('execute_trade_actions', {'contract_version': 2, 'actions': [
+        {'action': 'close', **close_args()},
+        {'action': 'open', 'side': 'SHORT', 'amount': 1, 'price': 120, 'reason': 'later'}]}, 'old-batch')
+    current = call('get_trade_operation', {'target_operation_id': 'old-batch'}, 'read-batch')
+    with database.get_db_conn() as conn:
+        for index in range(25):
+            conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+                         ('cfg', f'unrelated-{index}', 'ETH/USDT', 'hash', 'completed',
+                          json.dumps({'status': 'completed', 'filled_amount': .30}), 0, 9999999999))
+        conn.commit()
+    refs = ['old-batch', 'old-batch:0', 'old-batch:1', 'missing-.37']
+    values = operation_evidence('cfg', 'ETH/USDT', refs, account_scope=service.account_scope)
+    assert first['results'][0]['status'] == 'unknown'
+    assert values['old-batch']['latest']['results'] == current['results']
+    assert values['old-batch:0']['latest']['status'] == 'completed'
+    assert values['old-batch:1']['latest']['status'] == 'not_executed'
+    assert values['missing-.37']['resolution'] == 'unresolved'
+    assert operation_evidence('cfg', 'ETH/USDT', refs, account_scope='other')['old-batch']['resolution'] == 'account_scope_mismatch'
+    assert operation_evidence('other-task', 'ETH/USDT', refs, account_scope=service.account_scope)['old-batch']['resolution'] == 'unresolved'
+
+
+def test_local_maintenance_time_and_durable_watermark(real_short, monkeypatch):
+    from backend.utils.trade_recovery import recover_operation
+    service, exchange = real_short
+    original = call('close', close_args(), 'retired-close')
+    for name in ('create_order', 'cancel_order', 'edit_order', 'load_markets', 'fetch_positions', 'fetch_order'):
+        monkeypatch.setattr(exchange, name, lambda *a, **k: pytest.fail('local projection contacted exchange'))
+    local = recover_operation('cfg', 'ETH/USDT', 'retired-close', read_exchange=False)
+    assert local['status'] == original['status'] == 'completed'
+    assert local['query']['status'] == 'not_requested'
+    assert local['query']['observed_at'] == local['verified_at']
+    assert local['continuation']['rules'] == local['continuation']['blocked_actions'] == []
+    with database.get_db_conn() as conn:
+        stamp = conn.execute("SELECT updated_at FROM trade_action_runs WHERE operation_id='retired-close'").fetchone()[0]
+        count = conn.execute("SELECT count(*) FROM trade_receipt_revisions WHERE operation_id='retired-close'").fetchone()[0]
+    for _ in range(3):
+        assert reconcile_pending_trade_operations('cfg') == 0
+    with database.get_db_conn() as conn:
+        assert conn.execute("SELECT updated_at FROM trade_action_runs WHERE operation_id='retired-close'").fetchone()[0] == stamp
+        assert conn.execute("SELECT count(*) FROM trade_receipt_revisions WHERE operation_id='retired-close'").fetchone()[0] == count
+
+
 @pytest.mark.parametrize('persistent', [False, True])
 def test_query_reloads_concurrent_evidence_without_exchange_writes(real_short, monkeypatch, persistent):
     service, exchange = real_short
@@ -357,7 +403,8 @@ def test_persistent_unknown_blocks_dependent_writes_after_read_query(real_short)
         receipt = call('get_trade_operation', {'target_operation_id': 'still-unknown'}, 'readonly')
         assert receipt['status'] == 'unknown'
         assert receipt['recovery']['last_error']
-        assert 'open' in receipt['continuation']['blocked_actions']
+        assert receipt['continuation']['assessment_state'] == 'needs_refresh'
+        assert receipt['continuation']['blocked_actions'] == []
     next_trade = call('open', dict(side='SHORT', amount=1, price=100, reason='blocked'), 'new-after-unknown')
     assert next_trade['status'] == 'failed'
     assert next_trade['execution']['submission_state'] == 'not_submitted'

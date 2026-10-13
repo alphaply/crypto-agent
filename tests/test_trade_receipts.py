@@ -125,3 +125,12 @@ def test_documented_synthetic_receipt_matches_schema():
         else:
             TradeReceipt.model_validate(payload)
         assert 'sk-' not in sample
+def test_historical_diagnostic_does_not_create_a_cleanup_dependency():
+    from backend.utils.trade_receipts import project_receipt
+    record = dict(id='finished', operation_id='original', status='closed', filled=.3,
+                  amount=.3, fill_verified=True, submission_state='submitted')
+    plan = dict(side='LONG', state='DONE', error='historical rejection of another order',
+                position_observation={'status': 'verified', 'amount': 0}, entries=[], exits=[record])
+    receipt = project_receipt(plan, record, operation_id='original', action='close')
+    assert receipt['status'] == 'completed' and receipt['filled_amount'] == .3
+    assert receipt['cleanup']['status'] == 'completed'

@@ -129,7 +129,7 @@ class SummaryMemoryStore:
             decision_field = 'decision_json' if 'decision_json' in columns else 'NULL AS decision_json'
             rows = cursor.execute(
                 f'''
-                SELECT id, strategy_logic, timestamp, content AS _source_content, {report_field}, {decision_field}
+                SELECT id, config_id, symbol, strategy_logic, timestamp, content AS _source_content, {report_field}, {decision_field}
                 FROM summaries
                 WHERE config_id = ?
                   AND timestamp >= ?

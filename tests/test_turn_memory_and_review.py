@@ -9,6 +9,7 @@ import backend.database as database
 from backend.database_schema import initialize_schema
 from backend.agent import agent_graph
 from backend.agent import memory_updates
+from test_trade_tool_integration import simulation, real_short, call
 
 
 def run_persisted_memory(config_id, cfg, strategy, messages):
@@ -18,6 +19,46 @@ def run_persisted_memory(config_id, cfg, strategy, messages):
     database.save_summary(cfg.get('symbol', 'ETH/USDT'), 'test', strategy, strategy,
                           config_id=config_id, run_id=run_id, report_json=json.dumps(report))
     return memory_updates.process_memory_update(config_id, run_id, {**cfg, 'config_id': config_id})
+
+
+@pytest.mark.parametrize('writer', ['per_run', 'rolling'])
+def test_actual_memory_model_receives_latest_identity_in_both_writers(real_short, monkeypatch, writer):
+    from backend.agent import memory_agent, context_projections
+    from test_context_projections import response_for
+    from unittest.mock import Mock
+    from datetime import datetime
+    _, exchange = real_short
+    exchange.timeout_next = True
+    original = call('close', dict(side='SHORT', close_all=True, order_type='market', reason='exit'), 'memory-close')
+    raw = json.dumps({'messages': [], 'execution_results': [
+        {'tool': 'close', 'tool_call_id': 'memory-close', 'result': json.dumps(original)}]})
+    call('get_trade_operation', {'target_operation_id': 'memory-close'}, 'read-memory-close')
+    stamp = '2026-10-13 10:00:00'
+    with database.get_db_conn() as conn:
+        sid = conn.execute('INSERT INTO summaries(config_id,symbol,timestamp,strategy_logic,decision_json) VALUES(?,?,?,?,?)',
+                           ('cfg', 'ETH/USDT', stamp, '本轮策略条件只出现一次', raw)).lastrowid
+        conn.commit()
+    cfg = dict(config_id='cfg', symbol='ETH/USDT', mode='REAL', exit_mode='independent_exits', model='offline')
+    sent = []
+    def invoke(messages):
+        sent.append(messages[-1].content)
+        return AIMessage(content=json.dumps(response_for(context_projections.prepare_review('cfg'))))
+    monkeypatch.setattr(memory_agent, 'build_chat_model', lambda **_: Mock(invoke=invoke))
+    monkeypatch.setattr(memory_agent, 'invoke_with_retry', lambda op, **_: op())
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *a: '本地业绩证据')
+    if writer == 'per_run':
+        memory_updates.enqueue_memory_update('cfg', 'evidence-run', sid)
+        assert memory_updates.process_memory_update('cfg', 'evidence-run', cfg)
+    else:
+        assert memory_service.generate_rolling_short_memory_for_config('cfg', cfg,
+            now_cn=memory_service.TZ_CN.localize(datetime(2026, 10, 13, 10, 1)))
+    assert len(sent) == 1
+    assert sent[0].count('本轮策略条件只出现一次') == 1
+    assert sent[0].count('实际工具回执（原始结果与同身份最新证据') == 1
+    assert '"current_evidence": {"operation_id": "memory-close"' in sent[0]
+    assert '"resolution": "matched"' in sent[0] and '"status": "completed"' in sent[0]
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT decision_json FROM summaries WHERE id=?', (sid,)).fetchone()[0] == raw
 
 
 @pytest.fixture

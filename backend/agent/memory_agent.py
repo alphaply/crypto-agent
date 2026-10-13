@@ -53,6 +53,7 @@ class MemoryReviewResult:
     status: str = "failed"
     rule_receipts: list[dict] = field(default_factory=list)
     error: str = ""
+    projection_metadata: dict = field(default_factory=dict)
 
 
 class _ReviewDraft(BaseModel):
@@ -155,6 +156,8 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
     details = {"agent_name": "memory:" + config_id, "operation_id": operation_id,
                "rule_receipts": [], "mode": "memory_only"}
     try:
+        from backend.agent.context_projections import enabled, prepare_review, review_input, PROJECTION_POLICY, validate_review
+        projection_context = prepare_review(config_id) if enabled(agent_config) else None
         settings = _model_settings(agent_config)
         details['request_settings'] = request_diagnostics(settings)
         model = str(settings.get("model") or "")
@@ -170,7 +173,11 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
         custom_prompt = render_prompt(template, content=source)
         if "{content}" not in template:
             custom_prompt += "\n\n证据：\n" + source
-        instruction = instruction_message(MEMORY_REVIEW_POLICY, summarizer.get("system_prompt_role") or agent_config.get("system_prompt_role", "system"))
+        policy = MEMORY_REVIEW_POLICY
+        if projection_context is not None:
+            policy += '\n' + PROJECTION_POLICY
+            custom_prompt += review_input(projection_context, custom_prompt)
+        instruction = instruction_message(policy, summarizer.get("system_prompt_role") or agent_config.get("system_prompt_role", "system"))
         evidence = f"本任务：{config_id}；交易标的：{symbol}\n\n" + custom_prompt
         messages = ([HumanMessage(content=instruction.content + "\n\n" + evidence)]
                     if isinstance(instruction, HumanMessage) else [instruction, HumanMessage(content=evidence)])
@@ -192,6 +199,11 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
                     _require_complete_response(response)
                     if getattr(response, "tool_calls", None) or getattr(response, "invalid_tool_calls", None):
                         raise ValueError("Memory tools and automatic rule maintenance are disabled")
+                    if projection_context is not None:
+                        text = extract_message_text(response).strip()
+                        if text.startswith('```') and text.endswith('```'):
+                            text = text.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
+                        return validate_review(json.loads(text), projection_context)
                     return _final_memory(extract_message_text(response))
             except Exception as exc:
                 fields = _response_audit_fields(response)
@@ -200,10 +212,13 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
                 active_audit = None
                 raise
 
-        summary = invoke_with_retry(invoke_model, logger=logger, context=f"memory model={model} config_id={config_id}")
+        output = invoke_with_retry(invoke_model, logger=logger, context=f"memory model={model} config_id={config_id}")
+        metadata = output if isinstance(output, dict) else {}
+        summary = metadata['summary'] if metadata else output
         _finish_audit(active_audit, status="success", output=extract_message_text(response), usage=usage,
-                      details={**_response_audit_fields(response).get('details', {}), **details, "memory_summary": summary})
-        return MemoryReviewResult(summary=summary, status="completed")
+                      details={**_response_audit_fields(response).get('details', {}), **details, "memory_summary": summary,
+                               'projection_metadata': metadata})
+        return MemoryReviewResult(summary=summary, status="completed", projection_metadata=metadata)
     except Exception as exc:
         # Transport retries wrap errors for user display. Keep validation's
         # provider stop reason available to the memory job and manual endpoint.

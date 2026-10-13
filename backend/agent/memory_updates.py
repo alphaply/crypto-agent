@@ -57,7 +57,7 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
             columns = {item[1] for item in conn.execute('PRAGMA table_info(summaries)')}
             report_field = 'report_json' if 'report_json' in columns else 'NULL AS report_json'
             decision_field = 'decision_json' if 'decision_json' in columns else 'NULL AS decision_json'
-            rows = conn.execute(f'''SELECT id,timestamp,strategy_logic,{report_field},{decision_field} FROM summaries
+            rows = conn.execute(f'''SELECT id,config_id,symbol,timestamp,strategy_logic,{report_field},{decision_field} FROM summaries
                 WHERE config_id=? AND timestamp>=? AND timestamp<=? AND id<=?
                 ORDER BY timestamp,id''', (config_id, beginning, row['timestamp'], row['id'])).fetchall()
         try:
@@ -127,3 +127,16 @@ def tick_memory_updates():
             cfg = config.get_config_by_id(cid)
             if cfg:
                 _active[cid] = _executor.submit(process_memory_update, cid, row['run_id'], dict(cfg))
+        # Reuse this executor and the same per-task lease. Projection conversion
+        # also progresses on quiet tasks with no new strategy summary.
+        from backend.agent.context_projections import enabled, ensure_sources, process_projection_updates
+        for cfg in config.get_all_symbol_configs():
+            cid = cfg.get('config_id')
+            if not cid or cid in _active or cid in selected or not cfg.get('enabled', True) or not enabled(cfg):
+                continue
+            try:
+                sources = ensure_sources(cid)
+                if any(s['projection']['status'] == 'pending' and s['projection']['next_attempt'] <= time.time() for s in sources):
+                    _active[cid] = _executor.submit(process_projection_updates, cid, dict(cfg))
+            except Exception as exc:
+                logger.warning('Cannot queue strategy projection for %s: %s', cid, exc)

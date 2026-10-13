@@ -22,7 +22,7 @@ from langgraph.graph import StateGraph, END
 
 from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool, tool_result_status
-from backend.agent.decision_context import load_decision_memory, render_decision_prompt, clean_decision_template
+from backend.agent.decision_context import load_decision_memory, render_decision_prompt, clean_decision_template, prompt_fields
 from backend.agent.call_audit import audited_invoke
 from backend.utils.decision_journal import decision_journal
 from backend.utils.exit_policy import effective_exit_mode
@@ -440,6 +440,7 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         market_full = {}
         news_context = {}
         account_data = {
+            'error': '行情或账户刷新失败，当前账户状态未知',
             'balance': 0,
             'available_balance': 0,
             'real_open_orders': [],
@@ -447,7 +448,10 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             'real_positions': []
         }
 
-    memory_context = load_decision_memory(config_id)
+    if trade_mode in {'REAL', 'STRATEGY'} and effective_exit_mode(agent_config) == 'independent_exits':
+        memory_context = load_decision_memory(config_id, agent_config)
+    else:
+        memory_context = load_decision_memory(config_id)
 
     if is_real_exec:
         try:
@@ -609,18 +613,31 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         positions_text = format_positions_to_agent_friendly(display_mock_positions)
 
     if trade_mode in {'REAL', 'STRATEGY'} and effective_exit_mode(agent_config) == 'independent_exits':
-        from backend.utils.exit_context import independent_exit_context
-        from backend.utils.trade_recovery import latest_operation_receipts
-        account_data['trade_operation_receipts'] = latest_operation_receipts(config_id, symbol)
+        from backend.utils.trade_context import load_trade_plans, load_pending_operations, project_trade_state, render_positions, render_orders
+        from backend.utils.execution_ledger import account_scope
         contract_size = None
+        scoped_plans = []
+        scope = ('unavailable:' if trade_mode == 'REAL' else 'mock:') + config_id
+        current_evidence = dict(memory_context.execution_evidence)
         if trade_mode == 'REAL':
             try:
-                contract_size = float(market_tool.exchange.market(symbol).get('contractSize') or 1)
+                scope = account_scope(market_tool.exchange, config_id)
+                scoped_plans = load_trade_plans(config_id, scope, symbol)
+                current_evidence.update(load_pending_operations(config_id, scope, symbol))
             except (AttributeError, KeyError, TypeError, ValueError):
-                pass
-        orders_friendly_text += '\n\n' + independent_exit_context(
-            account_data, plans=protection_plans if trade_mode == 'REAL' else None,
-            contract_size=contract_size, symbol=symbol)
+                scoped_plans = None
+            except Exception as exc:
+                logger.warning('Current trade evidence unavailable: %s', exc)
+                scoped_plans = None
+            try:
+                contract_size = float(market_tool.exchange.market(symbol).get('contractSize'))
+            except (AttributeError, KeyError, TypeError, ValueError):
+                pass  # Missing units must not hide otherwise readable order identities.
+        current_state = project_trade_state(account_data, config_id=config_id, account_scope=scope,
+            symbol=symbol, plans=scoped_plans, contract_size=contract_size,
+            referenced_evidence=current_evidence)
+        positions_text = render_positions(current_state)
+        orders_friendly_text = render_orders(current_state)
 
     system_prompt = render_decision_prompt(
         prompt_template, memory_context,
@@ -670,8 +687,11 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         )
         if '{orders_text}' not in prompt_template:
             system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
-    if trade_mode in {'REAL', 'STRATEGY'} and '{orders_text}' not in prompt_template:
+    if trade_mode in {'REAL', 'STRATEGY'} and 'orders_text' not in prompt_fields(prompt_template):
         system_prompt += '\n\n## 当前挂单\n' + orders_friendly_text
+    if (trade_mode in {'REAL', 'STRATEGY'} and effective_exit_mode(agent_config) == 'independent_exits'
+            and 'positions_text' not in prompt_fields(prompt_template)):
+        system_prompt += '\n\n## 当前持仓\n' + positions_text
     prompt_role = agent_config.get("system_prompt_role", "system")
     instruction = instruction_message(system_prompt, prompt_role)
     instruction.additional_kwargs["is_instruction"] = True

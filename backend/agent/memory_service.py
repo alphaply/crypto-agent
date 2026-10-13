@@ -1,5 +1,6 @@
 """Short-term memory evidence, consolidation and persistence, independent of trading graphs."""
 from datetime import datetime, timedelta
+from contextvars import ContextVar
 
 import pytz
 
@@ -11,6 +12,7 @@ from backend.utils.logger import setup_logger
 
 TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
 logger = setup_logger(__name__)
+_projection_metadata = ContextVar('memory_projection_metadata', default=None)
 
 
 class MemoryReviewError(RuntimeError):
@@ -19,7 +21,14 @@ class MemoryReviewError(RuntimeError):
 
 def save_short_memory(*args, **kwargs):
     verify_memory_lease()
-    return _save_short_memory(*args, **kwargs)
+    result = _save_short_memory(*args, **kwargs)
+    metadata = _projection_metadata.get()
+    if metadata:
+        from backend.agent.context_projections import attach_new_memory
+        config_id = kwargs.get('config_id') or args[3]
+        summary = kwargs.get('market_summary') or args[4]
+        attach_new_memory(config_id, metadata, summary)
+    return result
 
 
 def format_recent_position_history_for_memory(config_id: str, agent_config: dict) -> str:
@@ -58,16 +67,26 @@ def format_memory_evidence(evidence: str) -> str:
 def organize_memory(source: str, agent_config: dict, *, operation_id: str) -> str:
     """Consolidate short-term memory; automatic rule maintenance is suspended."""
     from backend.agent.memory_agent import run_memory_review
+    from backend.agent.context_projections import persist_projections
 
+    _projection_metadata.set(None)
     stored = get_review_result(operation_id)
     if stored:
         verify_memory_lease()
+        if stored['config_id'] != agent_config['config_id']:
+            raise MemoryReviewError('Memory operation belongs to another task')
+        metadata = stored.get('projection_metadata') or {}
+        persist_projections(agent_config['config_id'], metadata)
+        _projection_metadata.set(metadata)
         return stored['summary'] if stored['status'] == 'completed' else ''
     result = run_memory_review(source, agent_config, operation_id=operation_id)
     if result.status in {'completed', 'partial'}:
         save_review_result(agent_config['config_id'], operation_id, result)
     if result.status == 'completed':
         verify_memory_lease()
+        metadata = result.projection_metadata
+        persist_projections(agent_config['config_id'], metadata)
+        _projection_metadata.set(metadata)
         return result.summary
     logger.warning('Memory review %s: %s', result.status, result.error)
     if result.status == 'partial':

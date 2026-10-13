@@ -1,5 +1,14 @@
 schema: spec-driven
 
+operations:
+  archive:
+    guidance:
+      - 用户要求 archive 时默认同时同步主规范并执行 Git 和 Docker 发版；用户明确缩小范围时以本次要求为准。
+      - 遵循 AGENTS.md、openspec/specs/archive-release-workflow/spec.md 与 docs/DEPLOYMENT_GUIDE.md；完成任务、同步并校验主规范后再归档。
+      - 仅提交本变更的实现、测试、文档、主规范和归档到 beta，保留无关本地修改，不得强推。
+      - 提交后执行 powershell -NoProfile -File scripts/release-archived-change.ps1 -ArchiveName <YYYY-MM-DD-change-name>，自动重建前端与 Docker、隔离烟测、推送 origin/beta 并发布镜像。
+      - 报告 Git commit、镜像标签和 digest；失败则停止后续步骤并报告部分完成状态。镜像发布不隐含生产容器重启。
+
 # Project context (optional)
 # Add only constraints that should guide OpenSpec artifacts and workflows.
 # Include constraints an agent cannot infer by reading the code.

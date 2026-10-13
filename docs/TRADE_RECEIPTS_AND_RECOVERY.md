@@ -220,3 +220,20 @@ needs_refresh 表示尚未评估，既不代表全面允许，也不代表禁止
 
 已归属挂单只改价格时，无关订单的未知执行不再形成连带限制；目标订单自身的未明修改、归属、当前仓位及交易所限制仍校验。
 改变剩余数量时继续核验相关敞口与执行量，不能用改价格路径绕过数量检查。
+
+### 决策证据与时间
+
+`operation_evidence` 按可信任务、账户、标的和原操作 ID 读取，不使用最近页作为引用边界。
+批次父回执和子操作使用保存的 index 关联；取更新的同身份结果，未执行尾项不转成成交。
+跨账户、不存在或不可读分别返回范围不符、未关联、不可用，不用相近数量或空仓推断解决。
+
+`position.observed_at`、`fill_observed_at`、`verified_at` 是实际观察时间；`query.queried_at`
+是显式查询时间；`projected_at` 和 `receipt_updated_at` 是本地生成时间。后台本地投影返回
+`query.status=not_requested`、`source=local_projection`，不构造交易所客户端。
+查询部分失败、本地投影或无当前周期时，旧建议仅在 `previous_assessment` 保留，当前
+`rules`/`blocked_actions` 为空且 `assessment_state=needs_refresh`；已确认执行事实保留。
+
+添加式 `trade_receipt_watermarks` 保存账户/操作的证据指纹。指纹覆盖原周期订单、清理和成交依赖，
+不包含重试时间、投影时间或无关后继周期。重复维护不增加终结历史修订或更新其时间；
+`completed + cleanup.pending` 仍随关联证据推进。水位和回执同事务保存，重启后继续使用。
+这些操作只写本地证据；实际交易准入、维护撤单和同 ID 幂等仍由执行层负责。

@@ -121,11 +121,16 @@ def continuation_for(plan: dict, *, hedged: bool | None = None, opposite: dict |
                 rules.append({'action': action, 'target': order_reference(record), 'scope': decision['scope'],
                               'reason_code': decision['reason_code'], 'blockers': decision['blockers'],
                               'requires_argument_assessment': action == 'edit'})
-    verified = bool(plan.get('verified_at') and not plan.get('position_error') and not plan.get('ownership_error'))
+    verified = bool(plan.get('verified_at') and not plan.get('position_error') and not plan.get('ownership_error')
+                    and (plan.get('position_observation') or {}).get('status') == 'verified')
     blockers = [b for rule in rules for b in rule['blockers']]
-    return {'blocked_actions': [d['intent']['action'] for d in decisions if not d['allowed']],
+    result = {'blocked_actions': [d['intent']['action'] for d in decisions if not d['allowed']],
             'rules': rules, 'assessment_state': 'verified' if verified else 'needs_refresh',
             'reason_code': next((d['reason_code'] for d in decisions if not d['allowed']), None),
             'side': plan.get('side'), 'blocker_order_ids': list(dict.fromkeys(b.get('order_id') for b in blockers if b.get('order_id'))),
             'assessed_at': plan.get('verified_at'), 'advisory': True, 'requires_action_assessment': True,
             'scope': decisions[0]['scope'], 'evidence_versions': decisions[0]['evidence_versions']}
+    if not verified:
+        previous = dict(result)
+        result.update(rules=[], blocked_actions=[], previous_assessment=previous)
+    return result

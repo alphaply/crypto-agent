@@ -57,7 +57,7 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
             managed_sides.add(plan.get('side'))
             from backend.utils.trade_receipts import unresolved_orders
             snapshot['unresolved_orders'].extend(unresolved_orders(plan))
-            plan_pending = bool(plan.get('error') or plan.get('state') == 'EXITING'
+            plan_pending = bool(plan.get('position_error') or plan.get('ownership_error') or plan.get('state') == 'EXITING'
                                 or plan.get('unobserved_entry_fills') or plan.get('cleanup_fill_unseen')
                                 or any(r.get('fill_pending') or r.get('replacement')
                                        for r in plan.get('entries', []) + plan.get('exits', [])))
@@ -105,10 +105,6 @@ def independent_exit_context(account: dict, *, plans: list[dict] | None = None,
     if snapshot.get('unresolved_orders'):
         import json
         lines.append('具体待核验订单（不计入有效保护）：' + json.dumps(snapshot['unresolved_orders'], ensure_ascii=False))
-    if account.get('trade_operation_receipts'):
-        import json
-        lines.append('最新原操作核验记录（优先于历史 unknown；写入前仍须重新核验）：' +
-                     json.dumps(account['trade_operation_receipts'], ensure_ascii=False))
     for order in snapshot.get('exits', []):
         remaining_text = order.get('remaining')
         if order.get('quantity_mode') == 'all':

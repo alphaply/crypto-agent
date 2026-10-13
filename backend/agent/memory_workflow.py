@@ -30,6 +30,8 @@ def _initialize_results(conn):
         operation_id TEXT PRIMARY KEY, config_id TEXT NOT NULL, status TEXT NOT NULL,
         summary TEXT NOT NULL, rule_receipts TEXT NOT NULL, error TEXT NOT NULL,
         created_at REAL NOT NULL)''')
+    if 'projection_metadata' not in {r[1] for r in conn.execute('PRAGMA table_info(memory_review_results)')}:
+        conn.execute("ALTER TABLE memory_review_results ADD COLUMN projection_metadata TEXT NOT NULL DEFAULT '{}'")
 
 
 def get_review_result(operation_id: str) -> dict | None:
@@ -40,16 +42,20 @@ def get_review_result(operation_id: str) -> dict | None:
             return None
         result = dict(row)
         result['rule_receipts'] = json.loads(result['rule_receipts'])
+        result['projection_metadata'] = json.loads(result['projection_metadata'])
         return result
 
 
 def save_review_result(config_id: str, operation_id: str, result) -> None:
     """Persist terminal outcomes independently of memory, including partial writes."""
+    verify_memory_lease()
     with database.get_db_conn() as conn:
         _initialize_results(conn)
         conn.execute('''INSERT OR IGNORE INTO memory_review_results
-            VALUES (?, ?, ?, ?, ?, ?, ?)''', (operation_id, config_id, result.status,
-            result.summary, json.dumps(result.rule_receipts, ensure_ascii=False), result.error, time.time()))
+            (operation_id,config_id,status,summary,rule_receipts,error,created_at,projection_metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (operation_id, config_id, result.status,
+            result.summary, json.dumps(result.rule_receipts, ensure_ascii=False), result.error, time.time(),
+            json.dumps(getattr(result, 'projection_metadata', {}), ensure_ascii=False)))
         conn.commit()
 
 

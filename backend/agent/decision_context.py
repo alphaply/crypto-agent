@@ -1,5 +1,5 @@
 """Read active task memory and remove retired prompt injections."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from string import Formatter
 
@@ -42,10 +42,22 @@ class DecisionMemory:
     short_memory_text: str
     recent_summaries_text: str
     trading_rules_text: str = ''  # Retired placeholder, retained for old callers/templates.
+    execution_evidence: dict = field(default_factory=dict)
 
 
-def load_decision_memory(config_id: str) -> DecisionMemory:
+def load_decision_memory(config_id: str, agent_config: dict | None = None) -> DecisionMemory:
     """Keep each local source available even when another source fails."""
+    from backend.config import config
+    from backend.agent.context_projections import enabled, load_strategy_views
+    cfg = agent_config if agent_config is not None else config.get_config_by_id(config_id)
+    if enabled(cfg):
+        try:
+            short, recent, evidence = load_strategy_views(config_id)
+            return DecisionMemory(short, recent, execution_evidence=evidence)
+        except Exception as exc:
+            logger.warning('Strategy projections unavailable for %s: %s', config_id, exc)
+            return DecisionMemory('（策略背景整理中/暂不可用）', '（近期策略投影暂不可用）',
+                                  execution_evidence={'context': {'resolution': 'unavailable'}})
     sources = (
         ('short_memory_text', lambda: format_short_memory_for_llm(config_id, include_metadata=True), '(短期记忆读取失败)'),
         ('recent_summaries_text', lambda: format_recent_decisions(config_id), '(近期摘要读取失败)'),
@@ -101,7 +113,8 @@ def render_decision_prompt(template: str, memory: DecisionMemory, **values) -> s
     template = clean_decision_template(template)
     fields = prompt_fields(template)
     # Retired variables resolve to empty text even in old inline custom templates.
-    values.update(history_text='', **vars(memory))
+    values.update(history_text='', short_memory_text=memory.short_memory_text,
+                  recent_summaries_text=memory.recent_summaries_text)
     values['trading_rules_text'] = ''
     prompt = render_prompt(template, **values).strip()
     sections = (

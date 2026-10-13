@@ -73,7 +73,36 @@ def read_decision_record(summary: dict) -> dict | None:
 def append_execution_receipts(text: str, summary: dict) -> str:
     record = read_decision_record(summary)
     if record and record.get('execution_results'):
-        text += '\n实际工具回执：\n' + json.dumps(record['execution_results'], ensure_ascii=False)
+        text += '\n实际工具回执（原始结果与同身份最新证据，最新证据优先）：\n' + json.dumps(
+            memory_execution_evidence(summary, record), ensure_ascii=False)
     elif record and record.get('unavailable'):
         text += '\n结构化回执无法读取；执行状态未知。'
     return text
+
+
+def memory_execution_evidence(summary: dict, record: dict | None = None) -> list:
+    """Consumer overlay only. Never change the persisted decision or first receipt."""
+    record = record if record is not None else read_decision_record(summary)
+    originals = (record or {}).get('execution_results') or []
+    refs = [execution_identity(r) for r in originals if isinstance(r, dict) and execution_identity(r)]
+    from backend.utils.trade_recovery import operation_evidence
+    from backend.utils.trade_evidence import configured_account_scope
+    try:
+        scope = configured_account_scope(summary.get('config_id'))
+        latest = operation_evidence(summary.get('config_id'), summary.get('symbol'), refs, account_scope=scope)
+    except Exception:
+        latest = {i: {'resolution': 'unavailable', 'operation_id': i} for i in refs}
+    return [{**r, 'current_evidence': latest.get(execution_identity(r), {'resolution': 'unresolved'})}
+            if isinstance(r, dict) else r for r in originals]
+
+
+def execution_identity(item: dict) -> str | None:
+    from backend.utils.trade_operations import _decode_receipt
+    result = _decode_receipt(item.get('result'))
+    if isinstance(result, dict) and result.get('operation_id'):
+        return str(result['operation_id'])
+    if item.get('tool') in {'open', 'close', 'edit', 'cancel', 'execute_trade_actions',
+                             'open_position_real', 'close_position_real', 'open_position_strategy',
+                             'close_position_strategy', 'cancel_order', 'update_order'}:
+        return item.get('tool_call_id')
+    return None

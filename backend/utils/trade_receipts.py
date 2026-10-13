@@ -114,7 +114,9 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
         status = result['status']
     blockers = unresolved_orders(plan)
     cleanup_pending = bool(plan.get('state') == 'EXITING' or plan.get('cleanup_fill_unseen')
-                           or ((plan.get('error') or blockers) and status in {'completed', 'submitted'}))
+                           or plan.get('unobserved_entry_fills')
+                           or (plan.get('residual_verified') and (plan.get('position_observation') or {}).get('amount'))
+                           or (blockers and status in {'completed', 'submitted'}))
     cleanup_status = 'pending' if cleanup_pending else 'completed' if plan.get('state') == 'DONE' else 'not_required'
     position = dict(plan.get('position_observation') or {
         'side': plan.get('side'), 'amount': None, 'status': 'unknown', 'observed_at': None})

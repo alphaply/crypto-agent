@@ -127,6 +127,19 @@ def test_decision_prompt_only_loads_compressed_history_and_current_protection(lo
         monkeypatch.setattr(database, name, lambda *_, **__: None)
     database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg',
                                'compressed lessons only', 'heavy raw ledger must stay stored', 1)
+    if exit_mode == 'independent_exits':
+        from backend.agent import context_projections
+        from backend.utils import trade_evidence
+        monkeypatch.setattr(agent_graph.global_config, 'get_config_by_id', lambda _: {
+            'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': mode, 'exit_mode': exit_mode})
+        monkeypatch.setattr(trade_evidence, 'configured_account_scope', lambda _: 'fixture-account')
+        context = context_projections.prepare_review('cfg')
+        strategy = {'strategy_text': 'compressed lessons only', 'execution_refs': [], 'unlinked_execution_notes': []}
+        metadata = context_projections.validate_review({
+            'summary': 'compressed lessons only', 'memory': strategy,
+            'projections': [{**{k: s[k] for k in ('source_kind', 'source_id', 'source_hash')}, **strategy}
+                            for s in context['sources']]}, context)
+        context_projections.persist_projections('cfg', metadata)
     state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={},)
     result = agent_graph.start_node(state, {'configurable': {
         'config_id': 'cfg', 'agent_config': {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': mode,
@@ -145,7 +158,7 @@ def test_decision_prompt_only_loads_compressed_history_and_current_protection(lo
     assert 'exit_mode=' not in prompt
     if exit_mode == 'independent_exits':
         assert '附带 TP/SL 为空不代表没有独立退出单' not in prompt
-        assert '本系统独立 SL 未覆盖数量' in prompt
+        assert 'SL 未覆盖估计与固定数量冲突' in prompt
     assert '加仓通过 open' not in prompt and 'close 的 exit_type' not in prompt
     assert '## 决策与复盘要求' not in prompt
     assert '按下方共同复盘要求' not in prompt

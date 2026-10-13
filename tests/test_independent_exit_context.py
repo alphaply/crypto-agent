@@ -5,6 +5,15 @@ from backend.utils.exit_context import independent_exit_context
 from backend.utils.exit_context import independent_exit_chart_lines
 
 
+def test_historical_error_and_receipts_are_not_current_pending():
+    text = independent_exit_context({'real_positions': [], 'trade_operation_receipts': {'old': {'status': 'unknown'}}},
+        plans=[{'symbol': 'ETH/USDT', 'side': 'LONG', 'execution_mode': 'independent_exits',
+                'state': 'ACTIVE', 'error': 'old rejection', 'entries': [], 'exits': []}],
+        contract_size=1, symbol='ETH/USDT')
+    assert '待核验=False' in text
+    assert '最新原操作' not in text and 'old rejection' not in text
+
+
 def test_v2_dynamic_all_and_quantity_conflict_are_not_pending():
     plan = {'symbol': 'ETH/USDT:USDT', 'side': 'LONG', 'state': 'ACTIVE',
             'execution_mode': 'independent_exits', 'exits': [

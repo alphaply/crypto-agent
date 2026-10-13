@@ -163,3 +163,20 @@ docker image inspect alphaply712/crypto-agent:latest --format '{{json .RepoDiges
 ```
 
 推送镜像不会自动重建服务器容器。`.env`、`pricing.json`、SQLite 数据库及 WAL 文件由 `.dockerignore` 排除，不能作为镜像发布内容。
+
+## OpenSpec 归档后的自动发版
+
+本项目将 archive 请求视为完整交付：先同步主规范、核对任务与验收结果，再归档并发版。用户明确要求“仅归档”时按该次范围执行。持久规则记录在 `AGENTS.md`、`openspec/config.yaml` 和 `openspec/specs/archive-release-workflow/spec.md`；归档技能读取这些规则后执行下列流程。
+
+1. 将选定变更的增量规范合并到主规范，保留未修改要求与场景，运行 `openspec validate --specs --strict` 和该变更的严格校验。
+2. 将已完成变更移动到 `openspec/changes/archive/YYYY-MM-DD-<change-name>`，保留验收记录和元数据；已有目标不得覆盖。
+3. 仅暂存本次实现、测试、文档、主规范和归档，在 `beta` 提交。无关工作（包括未跟踪的本地 `.agents/`）保留，不能直接用 `git add .` 混入。
+4. 在仓库根目录运行发布入口，归档名替换为实际目录名：
+
+   ```powershell
+   powershell -NoProfile -File scripts/release-archived-change.ps1 -ArchiveName 2026-10-13-refine-decision-state-context
+   ```
+
+该入口检查已提交的归档和干净的镜像输入，重新安装锁定的前端依赖、构建前端，再通过 `Dockerfile.prebuilt` 构建带 Git revision 的镜像。烟测使用一次性空数据容器、关闭调度器、不挂载生产数据，检查 `/health` 与前端入口后自动清理。成功后推送 `origin/beta`，依次发布 `alphaply712/crypto-agent:git-<short-sha>` 和 `:latest`，输出 commit 与镜像 digest。
+
+任一步失败都停止后续步骤，并报告已推送的阶段。修复后可对同一归档重新运行入口；不能将“目录已归档”当成“发布成功”。该流程由归档 Agent 按项目规则调用，直接运行裸 `openspec archive` 命令不会触发 Git 或 Docker 钩子。生产容器更新继续使用上面的部署流程，在用户请求部署时执行。

@@ -402,7 +402,8 @@ def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, pr
         if read_exchange and isinstance(result, dict):
             result.setdefault('query', {'status': 'failed' if result.get('error_code') in {
                 'operation_not_found', 'account_scope_mismatch'} else 'completed',
-                'observed_at': time.time(), 'errors': [result['error']] if result.get('error') else []})
+                'queried_at': time.time(), 'observed_at': result.get('verified_at'), 'source': 'local_lookup',
+                'errors': [result['error']] if result.get('error') else []})
             result.setdefault('continuation', {'assessment_state': 'needs_refresh', 'blocked_actions': [],
                                                'rules': [], 'advisory': True, 'requires_action_assessment': True})
         return result
@@ -421,7 +422,9 @@ def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, pr
             receipt['position'] = {**receipt.get('position', {}), 'status': 'stale'}
             if receipt.get('current_position'):
                 receipt['current_position'] = {**receipt['current_position'], 'status': 'stale'}
-            receipt['query'] = {'status': 'failed', 'errors': [str(exc)], 'observed_at': time.time()}
+            receipt['query'] = {'status': 'failed', 'errors': [str(exc)], 'queried_at': time.time(),
+                                'observed_at': receipt.get('verified_at'),
+                                'source': 'exchange_read' if read_exchange else 'local_projection'}
             old_advice = receipt.get('continuation', {})
             receipt['continuation'] = {
                 'assessment_state': 'needs_refresh', 'advisory': True, 'requires_action_assessment': True,
@@ -432,5 +435,6 @@ def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, pr
             }
             return receipt
         return {'status': 'unknown', 'operation_id': operation_id, 'error': str(exc),
-                'query': {'status': 'failed', 'errors': [str(exc)], 'observed_at': time.time()},
+                'query': {'status': 'failed', 'errors': [str(exc)], 'queried_at': time.time(),
+                          'observed_at': None, 'source': 'exchange_read' if read_exchange else 'local_projection'},
                 'recovery': {'tool': 'get_trade_operation', 'target_operation_id': operation_id}}
