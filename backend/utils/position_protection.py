@@ -70,10 +70,17 @@ class PositionProtection:
         plan["updated_at"] = time.time()
         with get_db_conn() as conn:
             conn.execute('BEGIN IMMEDIATE')
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
+            mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
+            has_registry = bool(active_agents or mcp_profiles)
+
             for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol=? AND config_id!=?',
                                     (plan['symbol'], self.config_id)).fetchall():
                 other = json.loads(row['payload'])
                 if other.get('account_scope') == self.account_scope and other['state'] != 'DONE':
+                    if has_registry and row['config_id'] not in (active_agents | mcp_profiles):
+                        continue
                     raise ValueError('Another config owns protection for this exchange account and symbol')
             plan['account_scope'] = self.account_scope
             previous_row = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side=?',

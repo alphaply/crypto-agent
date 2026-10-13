@@ -1129,6 +1129,10 @@ def save_runtime_snapshot(
                     "DELETE FROM secret_store WHERE scope = 'agent' AND scope_id = ?",
                     (removed_id,),
                 )
+                conn.execute(
+                    "DELETE FROM real_protection_plans WHERE config_id = ?",
+                    (removed_id,),
+                )
 
             for sort_order, agent in enumerate(normalized_agents):
                 config_id = agent["config_id"]

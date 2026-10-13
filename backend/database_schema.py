@@ -429,4 +429,17 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     initialize_trade_operations_schema(cursor)
     from backend.agent.context_projections import initialize_schema as initialize_context_projections
     initialize_context_projections(conn)
+
+    # Clean up orphaned real_protection_plans for deleted agent configs
+    tables = {row[0] for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "agent_configs" in tables and "real_protection_plans" in tables:
+        agent_rows = cursor.execute("SELECT config_id FROM agent_configs").fetchall()
+        if agent_rows:
+            active_agents = {r[0] for r in agent_rows}
+            mcp_profiles = set()
+            if "mcp_records" in tables:
+                mcp_profiles = {'mcp:' + r[0] for r in cursor.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()}
+            allowed = active_agents | mcp_profiles
+            placeholders = ','.join('?' for _ in allowed)
+            cursor.execute(f"DELETE FROM real_protection_plans WHERE config_id NOT IN ({placeholders})", tuple(allowed))
     conn.commit()

@@ -776,3 +776,16 @@ def test_cancel_ack_without_fill_keeps_terminal_status_through_stale_open_read(l
     assert not snapshot['pending'] and snapshot['uncovered']['LONG'] == 0
     assert snapshot['exits'][0]['trigger_price'] == 95
     assert len(ex.calls) == 3 and cancellations == [stop['id']]
+
+
+def test_unmanaged_order_cancellation_in_independent_exits(live_service):
+    svc, ex = live_service
+    # When an order is not tracked in the independent plan, but is on exchange
+    ex.fetch_open_orders = lambda sym, params=None: [{'id': 'ext-manual-999', 'symbol': 'ETH/USDT:USDT', 'side': 'sell', 'type': 'limit'}]
+    ex.cancel_order = lambda oid, sym, params=None: {'id': oid, 'status': 'canceled'}
+
+    result = svc.cancel('ETH/USDT', 'ext-manual-999')
+    assert result['status'] == 'completed'
+    assert result.get('unmanaged') is True
+    assert result['order_id'] == 'ext-manual-999'
+

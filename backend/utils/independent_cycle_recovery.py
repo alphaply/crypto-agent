@@ -16,12 +16,22 @@ def diagnose_cycle(service, symbol, side, current=None):
         history = conn.execute('SELECT payload FROM trade_cycle_evidence WHERE config_id=?', (service.config_id,)).fetchall()
         links = conn.execute('SELECT order_id,config_id FROM execution_order_links WHERE account_scope=? AND symbol=?',
                              (service.account_scope, symbol)).fetchall()
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
+        mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
+    has_active_registry = bool(active_agents or mcp_profiles)
     for row in all_current:
         plan = json.loads(row['payload'])
-        if (_same_symbol(plan.get('symbol'), symbol) and plan.get('account_scope') == service.account_scope
-                and row['config_id'] != service.config_id and plan.get('state') != 'DONE'):
-            diagnosis['reason_code'] = 'competing_ownership'
-            return diagnosis, None
+        if (not _same_symbol(plan.get('symbol'), symbol) or plan.get('account_scope') != service.account_scope
+                or row['config_id'] == service.config_id or plan.get('state') in ('DONE', 'WAITING')
+                or (plan.get('side') and plan.get('side') != side)):
+            continue
+        if has_active_registry and row['config_id'] not in (active_agents | mcp_profiles):
+            continue
+        diagnosis['reason_code'] = 'competing_ownership'
+        diagnosis['competing_config_id'] = row['config_id']
+        diagnosis['competing_side'] = plan.get('side')
+        return diagnosis, None
     candidates = [json.loads(row['payload']) for row in history]
     candidates = [p for p in candidates if _same_symbol(p.get('symbol'), symbol) and p.get('side') == side]
     matching = [p for p in candidates if p.get('account_scope') == service.account_scope]
@@ -104,8 +114,13 @@ def restore_cycle(service, symbol, side, current=None):
             raise RuntimeError('Position cycle changed before restoration')
         for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol=?', (symbol,)):
             other = json.loads(row['payload'])
-            if other.get('account_scope') == service.account_scope and row['config_id'] != service.config_id and other.get('state') != 'DONE':
-                raise RuntimeError('Position ownership changed before restoration')
+            if (other.get('account_scope') == service.account_scope and row['config_id'] != service.config_id
+                    and other.get('state') not in ('DONE', 'WAITING') and other.get('side') == side):
+                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
+                mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
+                if not (active_agents or mcp_profiles) or row['config_id'] in (active_agents | mcp_profiles):
+                    raise RuntimeError('Position ownership changed before restoration')
         reserve_scope(conn, candidate)
         save_plan(conn, service.config_id, candidate, expected_version=expected)
         conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?) ON CONFLICT(config_id,symbol,side) '

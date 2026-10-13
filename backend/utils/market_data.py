@@ -1138,7 +1138,8 @@ class MarketTool:
                     if not is_spot:
                         from backend.utils.order_ownership import assert_owned_perpetual_order
                         ownership = assert_owned_perpetual_order(self, symbol, str(cancel_id),
-                                                                getattr(self, 'config_id', None) or agent_name)
+                                                                getattr(self, 'config_id', None) or agent_name,
+                                                                allow_unmanaged=True)
                     else:
                         from backend.utils.spot_execution import assert_owned_spot_order
                         ownership = assert_owned_spot_order(

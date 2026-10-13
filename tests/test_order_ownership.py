@@ -141,3 +141,21 @@ def test_generic_exchange_spot_alias_resolves_perpetual_plan(tool):
         conn.commit()
     result=assert_owned_perpetual_order(tool,'BTC/USDT','sl-only-plan')
     assert result['source']=='real_protection_plans' and result['trigger']
+
+
+def test_unmanaged_exchange_order_can_be_cancelled(tool):
+    tool.exchange.fetch_open_orders = lambda symbol, params=None: [{'id': 'manual-open-123', 'side': 'buy', 'type': 'limit'}]
+    # Default allow_unmanaged=False -> raises
+    with pytest.raises(ValueError, match='Unknown order ownership'):
+        assert_owned_perpetual_order(tool, 'BTC/USDT', 'manual-open-123')
+
+    # allow_unmanaged=True -> succeeds
+    res = assert_owned_perpetual_order(tool, 'BTC/USDT', 'manual-open-123', allow_unmanaged=True)
+    assert res['source'] == 'exchange_unmanaged_order'
+    assert res['role'] == 'unmanaged'
+
+    # Can be cancelled via place_real_order
+    cancel_res = tool.place_real_order('BTC/USDT', 'CANCEL', {'cancel_order_id': 'manual-open-123'})
+    assert cancel_res['status'] == 'cancelled'
+    assert any(c[0] == 'manual-open-123' for c in tool.exchange.cancelled)
+

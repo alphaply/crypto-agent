@@ -584,7 +584,7 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
         from backend.utils.order_ownership import symbol_aliases
         if agent_config.get('mode', '').upper() == 'REAL':
             from backend.utils.order_ownership import assert_owned_perpetual_order
-            assert_owned_perpetual_order(market_tool, symbol, oid, config_id)
+            assert_owned_perpetual_order(market_tool, symbol, oid, config_id, allow_unmanaged=True)
         aliases = symbol_aliases(market_tool, symbol)
         placeholders = ','.join('?' for _ in aliases)
         with database.get_db_conn() as _conn:

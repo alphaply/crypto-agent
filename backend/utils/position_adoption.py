@@ -91,15 +91,26 @@ def _assert_no_local_conflicts(service: IndependentExits, aliases: tuple[str, ..
     placeholders = ",".join("?" for _ in aliases)
     current = current_operation_id.get()
     with database.get_db_conn() as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
+        mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
+        has_active_registry = bool(active_agents or mcp_profiles)
+
         for row in conn.execute(
             f"SELECT config_id,payload FROM real_protection_plans WHERE symbol IN ({placeholders})", aliases
         ):
             plan = json.loads(row["payload"])
             if plan.get("state") == "DONE":
                 continue
-            if (row["config_id"] == service.config_id or not plan.get("account_scope")
-                    or plan["account_scope"] == service.account_scope):
+            if row["config_id"] != service.config_id:
+                if has_active_registry and row["config_id"] not in (active_agents | mcp_profiles):
+                    continue
+                if plan.get("account_scope") and plan["account_scope"] != service.account_scope:
+                    continue
                 raise ValueError("An active or unresolved position cycle already owns this account and symbol; adoption denied")
+            else:
+                if not plan.get("account_scope") or plan["account_scope"] == service.account_scope:
+                    raise ValueError("An active or unresolved position cycle already owns this account and symbol; adoption denied")
         for row in conn.execute(
             f"SELECT config_id,operation_id,status FROM trade_action_runs WHERE symbol IN ({placeholders}) "
             "AND status IN ('running','unknown','pending')", aliases,
@@ -180,7 +191,9 @@ def _assert_no_open_orders(exchange, symbol: str) -> None:
         if not isinstance(orders, list):
             raise ValueError("Existing orders cannot be verified; adoption denied")
         if orders:
-            raise ValueError("Existing regular or trigger orders must be reviewed before adoption; no orders were cancelled or changed")
+            order_ids = [str(o.get('id') or o.get('orderId')) for o in orders if o.get('id') or o.get('orderId')]
+            ids_hint = f" (open order IDs: {', '.join(order_ids)})" if order_ids else ""
+            raise ValueError(f"Existing regular or trigger orders must be reviewed before adoption{ids_hint}; no orders were cancelled or changed")
 
 
 def _trade_boundary(exchange, symbol: str, since_ms: int) -> dict[str, dict]:

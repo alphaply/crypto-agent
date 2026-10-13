@@ -275,16 +275,27 @@ class IndependentExits(PositionProtection):
         contract_size = positive(self._market(symbol).get("contractSize") or 1, "contract size")
         from backend.utils.independent_cycle_recovery import diagnose_cycle
         diagnosis, _ = diagnose_cycle(self, symbol, side, plan)
+        next_action = (
+            "Verify this symbol, position side, exchange account and task ownership; "
+            "if the user requested management of a manually opened position, use adopt_position_real "
+            "(MCP: adopt_perpetual_position) with its exact expected_amount first. "
+            "Otherwise reconcile the original task's entry and exit records. "
+            "Do not create another entry or retry an unknown order with a new operation ID."
+        )
+        if diagnosis.get('reason_code') == 'competing_ownership':
+            competing = diagnosis.get('competing_config_id')
+            comp_side = diagnosis.get('competing_side')
+            next_action = (
+                f"Another active task '{competing}' owns an active {comp_side} position cycle on this symbol and account. "
+                f"Close or resolve the position under task '{competing}' first, or manage it under that task. "
+                "Do not create another entry or retry an unknown order with a new operation ID."
+            )
         raise IndependentPositionError(
             "An exchange position exists but has no active independent position cycle",
             code="independent_position_cycle_missing",
             details={**diagnosis, "symbol": symbol, "pos_side": side, "cycle_state": cycle_state,
                      "position_amount": float(position["contracts"]) * contract_size,
-                     "next_action": "Verify this symbol, position side, exchange account and task ownership; "
-                                    "if the user requested management of a manually opened position, use adopt_position_real "
-                                    "(MCP: adopt_perpetual_position) with its exact expected_amount first. "
-                                    "Otherwise reconcile the original task's entry and exit records. "
-                                    "Do not create another entry or retry an unknown order with a new operation ID."},
+                     "next_action": next_action},
         )
 
     def _existing_operation(self, plan, operation_id):
@@ -723,7 +734,14 @@ class IndependentExits(PositionProtection):
 
     def cancel(self, symbol, order_id, operation_id=None):
         with _lock(self.account_scope):
-            plan, record = self._find_order(symbol, order_id)
+            try:
+                plan, record = self._find_order(symbol, order_id)
+            except ValueError as exc:
+                if 'not owned by this independent configuration' in str(exc):
+                    unmanaged = self._cancel_unmanaged_exchange_order(symbol, order_id)
+                    if unmanaged is not None:
+                        return unmanaged
+                raise
             successors = [item for item in plan.get('exits', [])
                           if str(item.get('replaces')) == str(record.get('id'))]
             if record.get('replacement') or successors:
@@ -736,6 +754,24 @@ class IndependentExits(PositionProtection):
             self._cancel(record, plan)
             self._maintain_after(plan)
             return self._result(plan, record)
+
+    def _cancel_unmanaged_exchange_order(self, symbol, order_id):
+        from backend.utils.order_ownership import assert_owned_perpetual_order
+        tool = getattr(self, 'mt', None)
+        if tool is not None:
+            try:
+                ownership = assert_owned_perpetual_order(tool, symbol, str(order_id), self.config_id, allow_unmanaged=True)
+            except ValueError:
+                return None
+            if ownership.get('source') == 'exchange_unmanaged_order':
+                is_trigger = ownership.get('trigger', False)
+                try:
+                    res = self.ex.cancel_order(order_id, symbol, params={'trigger': True} if is_trigger else {})
+                except Exception:
+                    res = self.ex.cancel_order(order_id, symbol)
+                return {'status': 'completed', 'action': 'cancel', 'order_id': str(order_id),
+                        'unmanaged': True, 'response': res}
+        return None
 
     def _replace(self, plan, record, remaining, *, price=None, trigger_price=None,
                  reason="quantity correction", operation_id=None):

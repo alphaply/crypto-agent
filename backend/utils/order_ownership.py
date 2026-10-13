@@ -24,7 +24,9 @@ def symbol_aliases(market_tool, symbol: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(aliases))
 
 
-def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str, config_id: str | None = None) -> dict:
+def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str,
+                                 config_id: str | None = None,
+                                 allow_unmanaged: bool = False) -> dict:
     """Reject unknown/foreign IDs without contacting an exchange cancellation API.
 
     Account-scoped execution links override older local order logs. Historical
@@ -41,6 +43,10 @@ def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str, config
     placeholders = ','.join('?' for _ in aliases)
     with database.get_db_conn() as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
+        mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
+        has_registry = bool(active_agents or mcp_profiles)
+
         if 'execution_order_links' in tables:
             links = conn.execute(f'SELECT config_id,role,payload FROM execution_order_links WHERE account_scope=? '
                                  f'AND symbol IN ({placeholders}) AND order_id=?',
@@ -55,6 +61,8 @@ def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str, config
         if 'real_protection_plans' in tables:
             for row in conn.execute(f'SELECT config_id,payload FROM real_protection_plans WHERE symbol IN ({placeholders})', aliases):
                 plan = json.loads(row['payload'])
+                if plan.get('state') == 'DONE':
+                    continue
                 records = [*plan.get('entries', []), *plan.get('legs', []), *plan.get('exits', [])]
                 if plan.get('exit_order'):
                     records.append(plan['exit_order'])
@@ -67,6 +75,8 @@ def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str, config
                         raise ValueError('Order belongs to previous exchange credentials; restore its original account')
                     continue
                 if row['config_id'] != config_id:
+                    if has_registry and row['config_id'] not in (active_agents | mcp_profiles):
+                        continue
                     raise ValueError('Order belongs to another configuration; cancellation rejected')
                 owned_plan = {'source': 'real_protection_plans', 'account_scope': scope,
                               'role': match.get('exit_type') or match.get('kind') or 'entry',
@@ -80,4 +90,24 @@ def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str, config
                                (str(order_id), config_id, *aliases)).fetchone()
             if row:
                 return {'source': 'legacy_order_log', 'account_scope': scope, 'role': 'legacy'}
+
+        if allow_unmanaged:
+            exchange = getattr(market_tool, 'exchange', None)
+            if exchange is not None and hasattr(exchange, 'fetch_open_orders'):
+                try:
+                    params_list = [{}, {'trigger': True}] if getattr(exchange, 'id', '') != 'okx' else [
+                        {}, *({'trigger': True, 'ordType': kind} for kind in ('trigger', 'oco', 'conditional', 'move_order_stop', 'trailing_stop'))
+                    ]
+                    for params in params_list:
+                        for alias in aliases:
+                            open_orders = exchange.fetch_open_orders(alias, params=params)
+                            if isinstance(open_orders, list):
+                                for o in open_orders:
+                                    if str(o.get('id') or o.get('orderId')) == str(order_id):
+                                        is_trigger = bool(params.get('trigger') or o.get('trigger') or str(o.get('type') or '').lower() in ('stop', 'stop_market', 'take_profit', 'take_profit_market'))
+                                        return {'source': 'exchange_unmanaged_order', 'account_scope': scope,
+                                                'role': 'unmanaged', 'trigger': is_trigger}
+                except Exception:
+                    pass
+
     raise ValueError('Unknown order ownership for this configuration and symbol; cancellation rejected')
