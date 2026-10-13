@@ -12,6 +12,7 @@ from backend.app.schemas.payloads import (
     GenerateShortMemoryRequest,
     UpdateShortMemoryRequest,
     UpdateDailySummaryRequest,
+    ShortMemoryKey,
 )
 from backend.app.services.dashboard_service import (
     build_history_payload,
@@ -27,6 +28,7 @@ from backend.app.services.dashboard_service import (
     delete_short_memories_payload,
     update_daily_summary_payload,
     update_short_memory_payload,
+    clear_short_memory_snapshot_payload,
 )
 
 
@@ -144,6 +146,14 @@ def update_short_memory(payload: UpdateShortMemoryRequest, _: dict = Depends(get
                 payload.position_summary,
             ),
         }
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete('/short-memories/execution-snapshot')
+def clear_short_memory_snapshot(payload: ShortMemoryKey, _: dict = Depends(get_current_user)):
+    try:
+        return {'success': True, **clear_short_memory_snapshot_payload(payload.config_id, payload.bucket_start)}
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

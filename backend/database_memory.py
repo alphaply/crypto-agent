@@ -270,10 +270,19 @@ class SummaryMemoryStore:
             cursor.execute(
                 '''
                 UPDATE short_memories
-                SET market_summary = ?, position_summary = ?
+                SET market_summary = ?, position_summary = COALESCE(?, position_summary)
                 WHERE config_id = ? AND bucket_start = ?
                 ''',
                 (market_summary, position_summary, config_id, bucket_start),
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def clear_short_memory_snapshot(self, config_id: str, bucket_start: str) -> int:
+        with self._conn_factory() as conn:
+            cursor = conn.execute(
+                "UPDATE short_memories SET position_summary='' WHERE config_id=? AND bucket_start=?",
+                (config_id, bucket_start),
             )
             conn.commit()
             return cursor.rowcount

@@ -13,6 +13,7 @@ from backend.database import (
     clean_financial_data,
     delete_daily_summary as db_delete_daily_summary,
     delete_short_memories as db_delete_short_memories,
+    clear_short_memory_snapshot as db_clear_short_memory_snapshot,
     delete_summaries_by_symbol,
     get_active_agents,
     get_daily_summaries,
@@ -1185,11 +1186,18 @@ def update_daily_summary_payload(date_str: str, config_id: str, summary_content:
     return {"message": "Daily summary updated."}
 
 
-def update_short_memory_payload(config_id: str, bucket_start: str, market_summary: str, position_summary: str):
+def update_short_memory_payload(config_id: str, bucket_start: str, market_summary: str, position_summary: str | None):
     updated = db_update_short_memory(config_id, bucket_start, market_summary, position_summary)
     if not updated:
         raise FileNotFoundError("Short memory not found")
     return {"message": "Short memory updated.", "updated": updated}
+
+
+def clear_short_memory_snapshot_payload(config_id: str, bucket_start: str):
+    updated = db_clear_short_memory_snapshot(config_id, bucket_start)
+    if not updated:
+        raise FileNotFoundError('Short memory not found')
+    return {'message': 'Execution snapshot cleared.', 'updated': updated}
 
 
 def delete_short_memories_payload(

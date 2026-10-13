@@ -6,6 +6,21 @@
 
 ## Requirements
 
+### Requirement: Historical memory snapshots can be cleared independently
+Agent 短期记忆及历史列表中的成交事实快照 SHALL 明确为整理时保存的历史证据副本，完整原文按需在限定高度区域中查看。已登录用户 SHALL 能按任务和单条记忆身份清除该快照，保留策略正文、已发布策略视图和原始交易记录。清除 SHALL 不改变执行状态、触发交易或关闭后续新记忆的快照生成。
+
+#### Scenario: Clear a large old snapshot
+- **WHEN** 用户在指定记忆展开成交事实快照并确认清除
+- **THEN** 服务仅清空该记忆的 position_summary；其他任务、记忆及审计证据不变，页面隐藏已清快照，重复清除同一现存记录成功，找不到该记忆时返回未找到
+
+#### Scenario: Editing strategy after clearing preserves the clear
+- **WHEN** 用户清除快照后保存一个之前打开的策略正文编辑框
+- **THEN** 正文编辑不重新提交旧快照，省略快照字段的更新仅改变策略正文，兼容显式更新快照的既有请求
+
+#### Scenario: Public users only view snapshots
+- **WHEN** 未登录用户查看记忆或直接请求清除快照
+- **THEN** 页面不显示清除入口，写入接口拒绝未认证请求
+
 ### Requirement: Default trading context describes current state
 REAL/STRATEGY 独立退出模式的默认决策和绑定任务聊天 SHALL 使用同一当前交易状态语义，展示当前持仓、活跃挂单、保护覆盖、数量冲突和相关异常。完整历史操作回执、回执修订列表和旧准入建议 SHALL NOT 被逐轮默认注入。市场、消息及有效策略背景继续可用；本轮工具结果和用户明确请求的历史查询不属于该默认注入限制。
 

@@ -25,6 +25,7 @@ import {
 } from 'antd';
 import DecisionRunPanel from './DecisionRunPanel';
 import DecisionMemoryStatus from './DecisionMemoryStatus';
+import MemoryExecutionSnapshot from './MemoryExecutionSnapshot';
 import DecisionMessages from './DecisionMessages';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
@@ -420,7 +421,6 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
         config_id: editingMemory.config_id,
         bucket_start: editingMemory.bucket_start,
         market_summary: memoryEditText,
-        position_summary: editingMemory.position_summary || '',
       });
       setEditingMemory(null);
       message.success(t('saved'));
@@ -698,7 +698,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
                 {locale === 'zh' ? '更新于' : 'Updated'} {memory.created_at} · {locale === 'zh' ? '来源' : 'Sources'} {memory.source_count ?? 0} {memory.version ? ` · v${memory.version}` : ''}
               </Text>
               <MarkdownBlock content={memory.market_summary || ''} />
-              {memory.position_summary ? <details className="content-disclosure"><summary>{locale === 'zh' ? '成交事实快照' : 'Execution snapshot'}</summary><MarkdownBlock content={memory.position_summary} /></details> : null}
+              <MemoryExecutionSnapshot key={`${memory.config_id}:${memory.bucket_start}`} memory={memory} authenticated={authenticated} locale={locale} />
             </Space>
           </details>
         );
@@ -919,7 +919,6 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
       config_id: editingRow.config_id,
       bucket_start: editingRow.bucket_start,
       market_summary: values.market_summary || '',
-      position_summary: editingRow?.position_summary || '',
     });
     setModalOpen(false);
     await loadRows();
@@ -1055,7 +1054,9 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
               <Space direction="vertical" style={{ width: '100%' }}>
                 <MarkdownBlock content={row.market_summary || ''} />
                 {!!row.source_summary_ids?.length && <Text type="secondary">{locale === 'zh' ? '来源摘要：' : 'Source summaries: '}{row.source_summary_ids.join(', ')}</Text>}
-                {row.position_summary ? <details><summary>本轮成交事实快照</summary><MarkdownBlock content={row.position_summary} /></details> : null}
+                <MemoryExecutionSnapshot key={`${row.config_id}:${row.bucket_start}`} memory={row} authenticated={authenticated} locale={locale}
+                  onCleared={({ config_id, bucket_start }) => setRows((current) => current.map((item) =>
+                    item.config_id === config_id && item.bucket_start === bucket_start ? { ...item, position_summary: '' } : item))} />
               </Space>
             ),
           }}

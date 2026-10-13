@@ -481,6 +481,10 @@ def update_short_memory(config_id, bucket_start, market_summary, position_summar
     return _summary_memory_store.update_short_memory(config_id, bucket_start, market_summary, position_summary)
 
 
+def clear_short_memory_snapshot(config_id: str, bucket_start: str) -> int:
+    return _summary_memory_store.clear_short_memory_snapshot(config_id, bucket_start)
+
+
 def delete_short_memories(symbol=None, config_id=None, bucket_start_from=None, bucket_start_to=None, buckets=None):
     return _summary_memory_store.delete_short_memories(
         symbol=symbol,

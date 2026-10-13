@@ -262,7 +262,7 @@ class UpdateShortMemoryRequest(BaseModel):
     config_id: str
     bucket_start: str
     market_summary: str = ""
-    position_summary: str = ""
+    position_summary: str | None = None
 
 
 class UpdateDailySummaryRequest(BaseModel):

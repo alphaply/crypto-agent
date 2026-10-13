@@ -116,3 +116,7 @@
   padding-block: 8px;
   overflow-wrap: anywhere;
 }
+
+.memory-execution-snapshot { width: 100%; min-width: 0; }
+.memory-snapshot-content { max-height: 360px; overflow: auto; width: 100%; overflow-wrap: anywhere; }
+.memory-snapshot-content pre { white-space: pre-wrap; overflow-wrap: anywhere; }
