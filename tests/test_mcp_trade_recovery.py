@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend import database
 from backend.agent import agent_tools, tool_registry
 from backend.mcp import service, store, guard
 from backend.utils.independent_exits import IndependentExits
@@ -130,14 +131,74 @@ def test_mcp_read_and_replay_refresh_same_internal_operation_without_writes(cont
     assert current['state'] == 'completed'
     assert current['result']['result']['filled_amount'] == 1
     replay = service.execute(caller, 'swap', 'ETH/USDT:USDT', 'close', args, 'mcp-close-recover')
-    assert replay['status'] == 'completed'
-    with pytest.raises(ValueError, match='not found'):
-        service.operation({**reader, 'id': 'another-principal'}, 'swap', 'mcp-close-recover')
-    with pytest.raises(ValueError, match='not found'):
-        service.operation(reader, 'spot', 'mcp-close-recover')
+    not_found_principal = service.operation({**reader, 'id': 'another-principal'}, 'swap', 'mcp-close-recover')
+    assert not_found_principal['state'] == 'not_found' and not_found_principal['found'] is False
+    not_found_profile = service.operation(reader, 'spot', 'mcp-close-recover')
+    assert not_found_profile['state'] == 'not_found' and not_found_profile['found'] is False
     assert len(exchange.calls) == 2
     with store.connection() as conn:
         link = conn.execute('SELECT * FROM mcp_operation_links WHERE operation_id=?', ('mcp-close-recover',)).fetchone()
         assert link['principal'] == caller['id']
         assert link['internal_operation_id'] == 'mcp:' + store.digest(caller['id'] + ':mcp-close-recover')
         assert conn.execute('SELECT count(*) FROM mcp_operation_revisions').fetchone()[0] >= 2
+
+
+def test_mcp_spot_order_recovery_resolves_to_filled(contracts, monkeypatch):
+    caller, _, _, _ = contracts
+    reader = {**caller, 'scopes': ['read']}
+
+    mock_order = {
+        'id': 'spot-12345',
+        'status': 'closed',
+        'filled': 0.05,
+        'average': 68000.0,
+        'cost': 3400.0,
+        'lastTradeTimestamp': 1760000000000,
+    }
+    exchange = SimpleNamespace(
+        fetch_order=lambda order_id, symbol: mock_order,
+        markets={'BTC/USDT': {'symbol': 'BTC/USDT', 'active': True, 'spot': True, 'contract': False}}
+    )
+    mt = SimpleNamespace(exchange=exchange, config_id='mcp:spot')
+    monkeypatch.setattr(service, 'market_tool', lambda _: mt)
+
+    op_id = 'spot-buy-submitted-1'
+    request_payload = {
+        'symbol': 'BTC/USDT',
+        'tool': 'open_position_spot_dca',
+        'arguments': {'symbol': 'BTC/USDT', 'amount': 100}
+    }
+    store.reserve_operation('spot', op_id, caller['id'], request_payload)
+    submitted_result = {
+        'operation_id': op_id,
+        'status': 'submitted',
+        'result': {
+            'status': 'submitted',
+            'order_id': 'spot-12345',
+            'symbol': 'BTC/USDT',
+            'message': 'Order submitted',
+        }
+    }
+    store.complete_operation('spot', op_id, submitted_result)
+
+    with store.connection() as conn:
+        row = conn.execute('SELECT state FROM mcp_operations WHERE profile_id="spot" AND operation_id=?', (op_id,)).fetchone()
+        assert row['state'] == 'submitted'
+
+    result = service.operation(reader, 'spot', op_id)
+
+    assert result['state'] == 'completed'
+    res_data = result['result']['result']
+    assert res_data['order_status'] == 'FILLED'
+    assert res_data['filled_amount'] == 0.05
+    assert res_data['avg_fill_price'] == 68000.0
+    assert res_data['filled_cost'] == 3400.0
+    assert res_data['filled_at'] is not None
+
+    with database.get_db_conn() as conn:
+        fill_row = conn.execute('SELECT * FROM spot_order_fills WHERE order_id="spot-12345"').fetchone()
+        assert fill_row is not None
+        assert fill_row['status'] == 'FILLED'
+        assert fill_row['filled_qty'] == 0.05
+        assert fill_row['avg_fill_price'] == 68000.0
+

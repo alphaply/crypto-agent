@@ -166,11 +166,9 @@ def test_owned_inventory_deducts_base_fees_and_reserves_live_sells(spot):
     assert len(spot.writes) == 1
 
 
-@pytest.mark.parametrize('change', ['manual_balance', 'withdrawal', 'foreign_fill', 'foreign_lock', 'missing_fee', 'incomplete_fills'])
+@pytest.mark.parametrize('change', ['withdrawal', 'foreign_fill', 'foreign_lock', 'missing_fee', 'incomplete_fills'])
 def test_unproven_or_shared_inventory_cannot_be_sold(spot, change):
-    if change == 'manual_balance':
-        spot.balance_extra = 1
-    elif change == 'withdrawal':
+    if change == 'withdrawal':
         spot.balance_extra = -1
     elif change == 'foreign_fill':
         spot.trades.append({**spot.trades[0], 'id': 'foreign', 'order': 'manual'})
@@ -183,6 +181,22 @@ def test_unproven_or_shared_inventory_cannot_be_sold(spot, change):
     with pytest.raises(ValueError):
         create()
     assert spot.writes == []
+
+
+def test_coexisting_manual_holdings_tolerated_and_bounded(spot):
+    spot.balance_extra = 5
+    stock = exits.inventory('mcp:test', 'BTC/USDT')
+    assert stock['owned_quantity'] == pytest.approx(9.99)
+    assert stock['untracked_holdings'] == pytest.approx(5.0)
+    assert stock['available_quantity'] == pytest.approx(9.99)
+
+    row = create({'amount': 3}, 'manual-coexist-op')
+    assert row['status'] == 'open'
+    assert len(spot.writes) == 1
+
+    with pytest.raises(ValueError, match='exceeds verified unreserved MCP-owned inventory'):
+        create({'amount': 7.5}, 'oversell-beyond-mcp-owned')
+
 
 
 @pytest.mark.parametrize('evidence', ['buy', 'unknown_budget'])

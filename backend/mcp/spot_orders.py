@@ -342,13 +342,18 @@ def _inventory(mt, symbol):
     free = _number(asset.get('free', (balance.get('free') or {}).get(base)), 'spot free balance')
     used = _number(asset.get('used', (balance.get('used') or {}).get(base)), 'spot locked balance')
     tolerance = max(1e-10, abs(owned) * 1e-8)
-    if owned < -tolerance or not math.isclose(total, owned, rel_tol=1e-8, abs_tol=1e-10):
+    if owned < -tolerance or total < owned - tolerance:
         raise ValueError('Account base balance differs from verified MCP-owned inventory; manual/shared holdings or transfers need reconciliation')
-    if free > total + tolerance or not math.isclose(free + used, total, rel_tol=1e-8, abs_tol=1e-10) or used > reserved + tolerance:
+    untracked_holdings = max(0.0, total - owned)
+    safe_owned = max(0.0, min(owned, total))
+    available = max(0.0, min(free, safe_owned - reserved))
+    if free > total + tolerance or not math.isclose(free + used, total, rel_tol=1e-8, abs_tol=1e-10) or used > reserved + untracked_holdings + tolerance:
         raise ValueError('Unexplained spot balance locks prevent safe selling')
     return {'symbol': symbol, 'base_asset': base, 'owned_quantity': max(0, owned),
-            'reserved_quantity': reserved, 'available_quantity': max(0, min(free, owned - reserved)),
-            'exchange_free': free, 'exchange_locked': used, 'account_scope': scope,
+            'reserved_quantity': reserved, 'available_quantity': available,
+            'exchange_free': free, 'exchange_locked': used,
+            'untracked_holdings': untracked_holdings,
+            'account_scope': scope,
             '_exit_filled_quantity': sum(row['filled'] for row in exits),
             'exits': [_receipt(row) for row in exits]}
 
@@ -390,7 +395,7 @@ def capabilities(exchange, market):
              'stop_limit_price': 'Required when stop_loss_market is false; optional otherwise',
              'take_profit_limit_price': 'Required when take_profit_market is false; optional otherwise',
              'trigger_directions': 'For sells: stop_loss < current price < take_profit',
-             'inventory_policy': 'Only verified exclusive MCP-owned inventory; shared/manual holdings and unknown exits block selling'}
+             'inventory_policy': 'Verified MCP-owned inventory bounded by exchange free balance; coexists safely with manual/shared holdings'}
     if exchange.id == 'binance':
         return {**rules, 'market': 'MARKET' in types, 'limit': 'LIMIT' in types,
                 'stop_loss_market': 'STOP_LOSS' in types, 'stop_loss_limit': 'STOP_LOSS_LIMIT' in types,

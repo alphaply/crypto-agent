@@ -477,3 +477,134 @@ def test_flat_cancel_uses_real_spot_dispatcher_and_rejects_foreign_orders(contra
                                             'operation_id': 'real-cancel-0001'})
     assert cancelled['status'] == 'completed'
     assert writes == [('ETH/USDT', 'BUY_LIMIT'), ('ETH/USDT', 'CANCEL')]
+
+
+def test_mcp_get_operation_returns_structured_not_found_without_raising(contracts):
+    _, _, _, server = contracts
+    result = call(server, 'get_operation', {'profile_id': 'spot', 'operation_id': 'non-existent-op-0001'})
+    assert result['state'] == 'not_found'
+    assert result['found'] is False
+    assert result['error_code'] == 'operation_not_found'
+    assert 'Operation not found' in result['message']
+
+
+def test_mcp_spot_inventory_tolerates_preexisting_balance_and_bnb_fees(contracts, monkeypatch):
+    _, exchange, _, server = contracts
+    monkeypatch.setattr(spot_orders, '_tool', lambda config_id, symbol: (SimpleNamespace(config_id=config_id, exchange=exchange), exchange.market(symbol)))
+
+    database.save_order_log('buy-bnb-fee-1', 'BTC/USDT', 'MCP', 'buy', 100, 0, 0, 'owned buy',
+                            trade_mode='SPOT_DCA', config_id='mcp:spot', amount=2, status='FILLED')
+
+    exchange.fetch_balance = lambda: {'BTC': {'total': 10.0, 'free': 10.0, 'used': 0.0}}
+    exchange.fetch_my_trades = lambda *args, **kwargs: [{'id': 'fill-bnb-1', 'order': 'buy-bnb-fee-1', 'symbol': 'BTC/USDT', 'side': 'buy', 'amount': 2, 'fee': {'cost': 0.005, 'currency': 'BNB'}}]
+    exchange.fetch_order = lambda order_id, symbol, params=None: {'id': order_id, 'symbol': symbol, 'side': 'buy', 'status': 'closed', 'amount': 2, 'filled': 2}
+    exchange.id = 'binance'
+    exchange.market_info = {'orderTypes': ['MARKET', 'LIMIT', 'STOP_LOSS', 'STOP_LOSS_LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT'], 'ocoAllowed': True}
+    exchange.amount_to_precision = lambda symbol, amount: str(amount)
+    exchange.price_to_precision = lambda symbol, price: str(price)
+
+    result = call(server, 'get_spot_inventory', {'profile_id': 'spot', 'symbol': 'BTC/USDT'})
+    assert result['symbol'] == 'BTC/USDT'
+    assert result['owned_quantity'] == 2.0
+    assert result['untracked_holdings'] == 8.0
+    assert result['available_quantity'] == 2.0
+    assert result['exchange_free'] == 10.0
+
+
+def test_mcp_create_spot_exit_bounded_by_mcp_owned_with_preexisting_holdings(contracts, monkeypatch):
+    _, exchange, _, server = contracts
+    monkeypatch.setattr(spot_orders, '_tool', lambda config_id, symbol: (SimpleNamespace(config_id=config_id, exchange=exchange), exchange.market(symbol)))
+
+    database.save_order_log('buy-exit-coexist-1', 'BTC/USDT', 'MCP', 'buy', 100, 0, 0, 'owned buy',
+                            trade_mode='SPOT_DCA', config_id='mcp:spot', amount=3, status='FILLED')
+
+    exchange.fetch_balance = lambda: {'BTC': {'total': 15.0, 'free': 15.0, 'used': 0.0}}
+    exchange.fetch_my_trades = lambda *args, **kwargs: [{'id': 'fill-exit-1', 'order': 'buy-exit-coexist-1', 'symbol': 'BTC/USDT', 'side': 'buy', 'amount': 3, 'fee': {'cost': 0.003, 'currency': 'BTC'}}]
+    orders = {
+        'buy-exit-coexist-1': {'id': 'buy-exit-coexist-1', 'symbol': 'BTC/USDT', 'side': 'buy', 'status': 'closed', 'amount': 3, 'filled': 3},
+        'exchange-exit-1': {'id': 'exchange-exit-1', 'symbol': 'BTC/USDT', 'side': 'sell', 'status': 'open', 'amount': 2, 'filled': 0},
+    }
+    exchange.fetch_order = lambda order_id, symbol, params=None: orders.get(order_id, {'id': order_id, 'symbol': symbol, 'side': 'sell', 'status': 'open', 'amount': 0, 'filled': 0})
+    exchange.id = 'binance'
+    exchange.market_info = {'orderTypes': ['MARKET', 'LIMIT', 'STOP_LOSS', 'STOP_LOSS_LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT'], 'ocoAllowed': True}
+    exchange.markets['BTC/USDT']['info'] = exchange.market_info
+    exchange.markets['BTC/USDT']['id'] = 'BTCUSDT'
+    exchange.amount_to_precision = lambda symbol, amount: str(amount)
+    exchange.price_to_precision = lambda symbol, price: str(price)
+    exchange.create_order = lambda symbol, kind, side, amount, price, params: {'id': 'exchange-exit-1'}
+
+    exit_result = call(server, 'create_spot_exit', {
+        'profile_id': 'spot',
+        'symbol': 'BTC/USDT',
+        'amount': 2,
+        'exit_type': 'limit',
+        'price': 105,
+        'reason': 'take profit',
+        'operation_id': 'spot-exit-coexist-0001'
+    })
+    assert exit_result['status'] in {'open', 'submitted'}
+
+    oversell = call(server, 'create_spot_exit', {
+        'profile_id': 'spot',
+        'symbol': 'BTC/USDT',
+        'amount': 5,
+        'exit_type': 'limit',
+        'price': 105,
+        'reason': 'take profit',
+        'operation_id': 'spot-exit-oversell-0002'
+    })
+    assert oversell['status'] == 'failed'
+    assert 'exceeds verified unreserved MCP-owned inventory' in oversell.get('error', '')
+
+
+def test_mcp_get_order_and_get_trade_history_read_only_contracts(contracts):
+    caller, exchange, _, server = contracts
+
+    tools = {t['name']: t for t in TOOL_CATALOG}
+    assert tools['get_order']['scope'] == 'read'
+    assert tools['get_trade_history']['scope'] == 'read'
+
+    exchange.fetch_order = lambda order_id, symbol, params=None: {
+        'id': order_id,
+        'symbol': symbol,
+        'status': 'closed',
+        'filled': 0.5,
+        'average': 50000.0,
+        'cost': 25000.0,
+        'timestamp': 1760000000000,
+        'info': {'secret': 'hidden'},
+    }
+    exchange.fetch_my_trades = lambda symbol, limit=50: [
+        {
+            'id': 'fill-101',
+            'order': 'order-101',
+            'symbol': symbol,
+            'side': 'buy',
+            'amount': 0.5,
+            'price': 50000.0,
+            'cost': 25000.0,
+            'timestamp': 1760000000000,
+            'info': {'secret': 'hidden'},
+        }
+    ]
+
+    order_data = call(server, 'get_order', {'profile_id': 'spot', 'symbol': 'BTC/USDT', 'order_id': 'order-101'})
+    assert order_data['id'] == 'order-101'
+    assert order_data['symbol'] == 'BTC/USDT'
+    assert order_data['status'] == 'closed'
+    assert order_data['filled'] == 0.5
+    assert order_data['average'] == 50000.0
+    assert 'info' not in order_data
+
+    trades = call(server, 'get_trade_history', {'profile_id': 'spot', 'symbol': 'BTC/USDT', 'limit': 10})
+    assert len(trades) == 1
+    assert trades[0]['id'] == 'fill-101'
+    assert trades[0]['side'] == 'buy'
+    assert trades[0]['amount'] == 0.5
+    assert 'info' not in trades[0]
+
+    read_only_caller = {**caller, 'scopes': ['read']}
+    order_read = service.query(read_only_caller, 'order', profile_id='spot', symbol='BTC/USDT', order_id='order-101')
+    assert order_read['id'] == 'order-101'
+    trades_read = service.query(read_only_caller, 'trade_history', profile_id='spot', symbol='BTC/USDT', limit=5)
+    assert len(trades_read) == 1

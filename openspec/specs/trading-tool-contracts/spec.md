@@ -180,7 +180,7 @@
 - **THEN** edit 返回 failed 和拒绝原因，同时保留原订单的已知状态；不把原单视作撤销或把该拒绝标为未知
 
 ### Requirement: Callers can query an original operation without trading writes
-内置 Agent 和聊天 SHALL 提供按原操作 ID 查询的工具，MCP SHALL 提供相同行为的操作查询。查询 SHALL 检查任务、账户、标的及调用者归属，可刷新交易所只读证据和本地回执；不得新建、撤销、修改订单或恢复撤建写入。前序交易失败或待核验 SHALL 不阻止合法恢复查询，查询失败不得覆盖已有执行事实。查询 SHALL 分别表达此次读取的成功/部分成功/失败与原操作的执行结果，并标识当前准入建议的证据范围和新鲜度。查询或本地投影生成时间 SHALL 与实际证据观察时间区分；仅重组本地缓存不得宣称已刷新交易所证据。原操作查询是按需能力，SHALL NOT 成为每轮决策的必经步骤。
+内置 Agent 和聊天 SHALL 提供按原操作 ID 查询的工具，MCP SHALL 提供相同行为的操作查询。查询 SHALL 检查任务、账户、标的及调用者归属，可刷新交易所只读证据和本地回执；不得新建、撤销、修改订单或恢复撤建写入。前序交易失败或待核验 SHALL 不阻止合法恢复查询，查询失败不得覆盖已有执行事实。查询不存在或不属于当前调用者的操作 ID 时，系统 SHALL 返回结构化的未找到结果，不得抛出未捕获异常或协议错误。查询 SHALL 分别表达此次读取的成功/部分成功/失败与原操作的执行结果，并标识当前准入建议的证据范围和新鲜度。查询或本地投影生成时间 SHALL 与实际证据观察时间区分；仅重组本地缓存不得宣称已刷新交易所证据。原操作查询是按需能力，SHALL NOT 成为每轮决策的必经步骤。
 
 #### Scenario: Agent checks the original close
 - **WHEN** Agent 收到待核验回执后以其原操作 ID 发起查询
@@ -193,6 +193,10 @@
 #### Scenario: Read permission does not resume replacement
 - **WHEN** 只具备 read 权限的 MCP 调用者查询一个正在撤建的 edit
 - **THEN** 返回原单和替代意图的证据，但不提交替代单、不撤单，其他调用者的操作仍不可见
+
+#### Scenario: Query for non-existent or unowned operation returns structured not found
+- **WHEN** 调用者查询一个不存在的 operation_id 或属于其他调用者的操作
+- **THEN** 系统返回包含 operation_id、state="not_found"、status="failed" 及友好原因的结构化字典，不抛出工具执行异常或 INVALID_ARGUMENT 协议错误
 
 #### Scenario: Successful query of a rejected operation
 - **WHEN** 原止损确实失败，此次查询成功读取其拒绝证据和当前作用范围
@@ -207,11 +211,15 @@
 - **THEN** 回执标识证据来源和原观察时间；本地生成成功不表示仓位、订单或当前准入已经在生成时刻重新核验
 
 ### Requirement: Reconciled evidence reaches all receipt consumers
-已核验的操作证据 SHALL 同步到原操作回执、当前 Agent/聊天状态视图、记忆证据和 MCP 操作查询/同 ID 重放。默认决策输入 SHALL 使用当前事实及相关异常的投影，完整历史回执按需读取，不要求各消费者逐轮注入同一份原始 JSON。恢复 SHALL 以原请求意图判断完成，保留首次回执及后续核验记录；新周期替换活跃周期后仍须能查询历史操作。确认成交不得因其他订单清理未知退回成交未知，旧快照不得覆盖较新的已确认事实。记忆消费 SHALL 对相同身份采用最新结果，保留原结果作为历史，不将未执行批次项推定为已执行。
+已核验的操作证据 SHALL 同步到原操作回执、当前 Agent/聊天状态视图、记忆证据和 MCP 操作查询/同 ID 重放。现货买入与退出操作查询 SHALL 支持只读核验交易所订单事实，在确认成交后将原 submitted 回执刷新为 FILLED/PARTIAL/CANCELLED，并附带成交时间戳与均价。默认决策输入 SHALL 使用当前事实及相关异常的投影，完整历史回执按需读取，不要求各消费者逐轮注入同一份原始 JSON。恢复 SHALL 以原请求意图判断完成，保留首次回执及后续核验记录；新周期替换活跃周期后仍须能查询历史操作。确认成交不得因其他订单清理未知退回成交未知，旧快照不得覆盖较新的已确认事实。记忆消费 SHALL 对相同身份采用最新结果，保留原结果作为历史，不将未执行批次项推定为已执行。
 
 #### Scenario: Background reconciliation resolves a close
 - **WHEN** 后台核验到原平仓已成交且清理完成
 - **THEN** 内置 Agent 下一次默认状态不再显示该旧限制，记忆证据取得解决结果；MCP get_operation/同 ID 重放仍返回恢复后的完整回执，不停留在首次 unknown，也不再次提交订单
+
+#### Scenario: Spot order fill reconciles submitted receipt
+- **WHEN** 现货买单已在交易所撮合成交，调用者通过 MCP get_operation 查询该操作
+- **THEN** 系统只读核验交易所订单状态，将回执更新为 FILLED，附带成交数量、成交均价及成交时间戳，不再停留在 submitted
 
 #### Scenario: Canceled source does not prove successful replacement
 - **WHEN** edit 的旧单撤销已确认，但替代单被拒绝或结果未明
@@ -326,3 +334,15 @@ Agent SHALL 能直接调用规范交易工具，系统 SHALL 在该次调用内�
 #### Scenario: Omitted fields retain request identity
 - **WHEN** 旧 v2 请求省略策略和依赖并被重新校验或重放
 - **THEN** 序列化保持省略，操作身份与默认停止行为不变，已执行动作不重复提交
+
+### Requirement: MCP provides read-only order and trade inspection tools
+MCP 服务 SHALL 提供只读的 `get_order`（按交易所 order_id 查询单笔订单详情）和 `get_trade_history`（查询最近成交明细）工具，便于外部 Agent 在订单已离开未成交挂单列表后核验成交事实。
+
+#### Scenario: Query filled order by order_id
+- **WHEN** 订单已撮合成交且不再出现在 get_orders 未成交列表中，Agent 调用 get_order(order_id)
+- **THEN** 系统只读返回该订单在交易所的终态（status、filled、avg_price、filled_at），不产生任何交易写入
+
+#### Scenario: Query recent trades
+- **WHEN** Agent 调用 get_trade_history 查询标的最近成交明细
+- **THEN** 系统只读返回该 Profile 授权范围内的成交记录列表，包含成交时间戳、数量、价格与方向
+

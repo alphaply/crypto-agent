@@ -179,7 +179,7 @@ def _independent_orders_view(mt, symbol, limit):
     return [*result, *exchange_rows.values()][:limit]
 
 
-def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=120, keyword='', quote='', offset=0):
+def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=120, keyword='', quote='', offset=0, order_id=None):
     try:
         profile = require(caller, 'read', profile_id)
         if resource == 'news':
@@ -238,6 +238,29 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                         result = _independent_orders_view(mt, symbol, order_limit)
                     else:
                         result = [{k: v for k, v in row.items() if k != 'info'} for row in exchange.fetch_open_orders(symbol, limit=order_limit)]
+                elif resource == 'order':
+                    if not symbol or not order_id:
+                        raise ValueError('symbol and order_id are required for order query')
+                    try:
+                        raw = exchange.fetch_order(str(order_id), symbol)
+                        result = {k: v for k, v in raw.items() if k != 'info'}
+                    except Exception as exc:
+                        from backend import database
+                        with database.get_db_conn() as conn:
+                            local_row = conn.execute(
+                                'SELECT * FROM orders WHERE order_id=? AND config_id=? LIMIT 1',
+                                (str(order_id), 'mcp:' + profile_id)
+                            ).fetchone()
+                        if local_row:
+                            result = dict(local_row)
+                        else:
+                            raise exc
+                elif resource == 'trade_history':
+                    if not symbol:
+                        raise ValueError('symbol is required for trade_history query')
+                    trade_limit = max(1, min(int(limit), 200))
+                    raw_trades = exchange.fetch_my_trades(symbol, limit=trade_limit)
+                    result = [{k: v for k, v in trade.items() if k != 'info'} for trade in raw_trades]
                 elif resource == 'market':
                     if not symbol or timeframe not in {'15m', '1h', '4h', '1d', '1w'}:
                         raise ValueError('Provide a configured symbol and supported timeframe')
@@ -435,10 +458,134 @@ def _external_operation_receipt(value, stable_id, operation_id, profile_id, *, p
     return result
 
 
+def _recover_spot_trade_receipt(caller, profile_id, operation_id):
+    """Recover and synchronize exchange fill evidence for spot operations."""
+    with store.connection() as conn:
+        op_row = conn.execute('SELECT o.state, o.result, r.request_json FROM mcp_operations o '
+                              'LEFT JOIN mcp_operation_requests r USING(profile_id,operation_id) '
+                              'WHERE o.profile_id=? AND o.operation_id=? AND o.principal=?',
+                              (profile_id, operation_id, caller['id'])).fetchone()
+    if not op_row:
+        return None
+    request = json.loads(op_row['request_json']) if op_row['request_json'] else {}
+    tool_name = request.get('tool')
+    stored_result = json.loads(op_row['result']) if op_row['result'] else {}
+    stable_id = 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
+    cfg_id = 'mcp:' + profile_id
+
+    # 1. Spot Exits (create_spot_exit, cancel_spot_exit)
+    if tool_name in {'create_spot_exit', 'cancel_spot_exit'}:
+        from .spot_orders import _rows, _refresh, _receipt, _tool
+        rows = [r for r in _rows(cfg_id) if r.get('operation_id') == stable_id]
+        if rows:
+            exit_row = rows[0]
+            try:
+                mt, _ = _tool(cfg_id, exit_row['symbol'])
+                _refresh(mt.exchange, exit_row)
+                receipt = _receipt(exit_row)
+                result = sanitize({'operation_id': operation_id, 'status': receipt['status'], 'result': receipt}, profile_id)
+                store.complete_operation(profile_id, operation_id, result)
+                return result
+            except Exception:
+                pass
+        return None
+
+    # 2. Spot Buys (open_position_spot_dca, buy_spot)
+    res_body = stored_result.get('result', stored_result)
+    results_list = res_body.get('results') if isinstance(res_body, dict) else None
+    if results_list is None and isinstance(res_body, dict) and res_body.get('order_id'):
+        results_list = [res_body]
+
+    if not results_list:
+        return None
+
+    changed = False
+    new_results = []
+    mt = None
+    from backend import database
+    for item in results_list:
+        if not isinstance(item, dict):
+            new_results.append(item)
+            continue
+        order_id = item.get('order_id')
+        symbol = item.get('symbol') or request.get('symbol')
+        cur_status = str(item.get('status') or '').lower()
+        if not order_id or not symbol or cur_status in {'filled', 'completed', 'failed', 'cancelled', 'canceled'}:
+            new_results.append(item)
+            continue
+        try:
+            if mt is None:
+                mt = market_tool(profile_id)
+            od = mt.exchange.fetch_order(str(order_id), symbol)
+            exch_status = str(od.get('status') or '').lower()
+            filled_qty = float(od.get('filled') or 0)
+            avg_price = float(od.get('average') or od.get('price') or item.get('entry_price') or 0)
+            filled_cost = float(od.get('cost') or (filled_qty * avg_price))
+            fill_ts = od.get('lastTradeTimestamp') or od.get('timestamp')
+            filled_at = None
+            if fill_ts:
+                try:
+                    from datetime import datetime
+                    filled_at = datetime.fromtimestamp(float(fill_ts) / 1000, database.TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
+
+            local_status = 'FILLED' if exch_status in ('closed', 'filled') else \
+                           'CANCELLED' if exch_status in ('canceled', 'cancelled', 'expired', 'rejected') else \
+                           'PARTIAL' if filled_qty > 0 else 'OPEN'
+
+            with database.get_db_conn() as conn:
+                conn.execute('''UPDATE orders SET status=?, filled_amount=?, filled_cost=?,
+                    avg_fill_price=?, filled_at=? WHERE order_id=? AND config_id=? AND symbol=?
+                    AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''',
+                    (local_status, filled_qty, filled_cost, avg_price, filled_at, str(order_id), cfg_id, symbol))
+                conn.commit()
+            database.upsert_spot_order_fill(str(order_id), cfg_id, symbol, local_status, filled_qty, filled_cost, avg_price, filled_at)
+
+            updated_item = dict(item)
+            updated_item.update({
+                'order_id': str(order_id),
+                'order_status': local_status,
+                'status': 'completed' if local_status == 'FILLED' else 'cancelled' if local_status == 'CANCELLED' else item.get('status', 'submitted'),
+                'filled_amount': filled_qty,
+                'filled_cost': filled_cost,
+                'avg_fill_price': avg_price,
+                'filled_at': filled_at,
+            })
+            if local_status == 'FILLED':
+                updated_item['message'] = '现货委托已全部成交'
+            new_results.append(updated_item)
+            changed = True
+        except Exception:
+            new_results.append(item)
+
+    if changed:
+        all_completed = all(r.get('status') == 'completed' or r.get('order_status') == 'FILLED' for r in new_results if isinstance(r, dict))
+        any_failed = any(r.get('status') in {'failed', 'cancelled'} for r in new_results if isinstance(r, dict))
+        overall_status = 'completed' if all_completed else 'failed' if any_failed else stored_result.get('status', 'submitted')
+        updated_payload = dict(res_body) if isinstance(res_body, dict) else {}
+        if 'results' in res_body:
+            updated_payload['results'] = new_results
+        elif new_results:
+            updated_payload.update(new_results[0])
+        result = sanitize({
+            'operation_id': operation_id,
+            'status': overall_status,
+            'result': updated_payload,
+            'reconciled': True,
+        }, profile_id)
+        store.complete_operation(profile_id, operation_id, result)
+        return result
+
+    return None
+
+
 def _recover_trade_receipt(caller, profile_id, operation_id):
     """Reuse the authenticated outer identity, never caller-supplied internal IDs."""
     cfg = get_runtime_profile('mcp:' + profile_id) or {}
-    if cfg.get('market_type') == 'spot' or cfg.get('exit_mode') != 'independent_exits':
+    if cfg.get('market_type') == 'spot':
+        return _recover_spot_trade_receipt(caller, profile_id, operation_id)
+    if cfg.get('exit_mode') != 'independent_exits':
         return None
     with store.connection() as conn:
         row = conn.execute('SELECT r.request_json FROM mcp_operations o JOIN mcp_operation_requests r '
@@ -587,7 +734,14 @@ def operation(caller, profile_id, operation_id):
         row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=? AND principal=?',
                            (profile_id, operation_id, caller['id'])).fetchone()
     if not row:
-        raise ValueError('Operation not found for this caller')
+        return sanitize({
+            'operation_id': operation_id,
+            'state': 'not_found',
+            'status': 'failed',
+            'found': False,
+            'error_code': 'operation_not_found',
+            'message': 'Operation not found for this caller'
+        }, profile_id)
     recovered_trade = _recover_trade_receipt(caller, profile_id, operation_id)
     if recovered_trade is not None:
         with store.connection() as conn:

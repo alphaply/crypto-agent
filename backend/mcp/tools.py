@@ -18,6 +18,7 @@ Price = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 Reason = Annotated[str, Field(min_length=1, description='Why this specific order or change is requested.')]
 ProfileId = Annotated[str, Field(min_length=1, description='An authorized profile_id returned by list_profiles.')]
 Symbol = Annotated[str, Field(min_length=1, description='Exact canonical symbol returned by list_symbols, for example BTC/USDT or BTC/USDT:USDT.')]
+OrderId = Annotated[str, Field(min_length=1, max_length=100, description='Exchange or client order ID.')]
 
 TOOL_CATALOG = [
     {'name': name, 'scope': scope, 'description': description}
@@ -29,6 +30,8 @@ TOOL_CATALOG = [
         ('get_balance', 'read', 'Read exchange balances'),
         ('get_positions', 'read', 'Read perpetual positions'),
         ('get_orders', 'read', 'Read open exchange orders'),
+        ('get_order', 'read', 'Read single order details by order_id from exchange or local records'),
+        ('get_trade_history', 'read', 'Read recent trades/fills for an authorized symbol'),
         ('get_spot_inventory', 'read', 'Read MCP-owned spot quantity and pending exits'),
         ('get_trading_tools', 'read', 'Read legacy dispatch schemas'),
         ('buy_spot', 'trade', 'Place one spot limit buy with flat arguments'),
@@ -140,6 +143,15 @@ def register_tools(server):
     async def get_orders(profile_id: ProfileId, symbol: Symbol, limit: int = 100) -> list[dict]:
         """Read open orders without submitting/canceling/reconciling writes. Independent mode merges regular/algo orders with owned entry/exit facts: exact order_id, quantity_mode, order_status, coverage and quantity conflicts. ownership=external_or_untracked is read-only; visibility does not authorize modification. local_record missing from exchange lists is pending verification, not proof of a fill."""
         return await query('orders', profile_id=profile_id, symbol=symbol, limit=limit)
+
+    async def get_order(profile_id: ProfileId, symbol: Symbol, order_id: OrderId) -> dict:
+        """Read single order status, filled quantity, average price and timestamps by order_id."""
+        return await query('order', profile_id=profile_id, symbol=symbol, order_id=order_id)
+
+    async def get_trade_history(profile_id: ProfileId, symbol: Symbol,
+                                limit: Annotated[int, Field(ge=1, le=200)] = 50) -> list[dict]:
+        """Read recent executed trades/fills for an authorized symbol within profile scope."""
+        return await query('trade_history', profile_id=profile_id, symbol=symbol, limit=limit)
 
     async def get_spot_inventory(profile_id: ProfileId, symbol: Symbol) -> dict:
         """Read spot base quantity attributed to this MCP profile, available quantity and pending exits. Does not sell or cancel anything."""
@@ -267,6 +279,7 @@ def register_tools(server):
 
     functions = {function.__name__: function for function in (
         list_profiles, list_symbols, get_news, get_market, get_balance, get_positions, get_orders,
+        get_order, get_trade_history,
         get_spot_inventory, get_trading_tools, buy_spot, create_spot_exit, cancel_spot_exit,
         open, close, edit, cancel, execute_trade_actions,
         open_perpetual, adopt_perpetual_position, close_perpetual, amend_perpetual_entry, update_perpetual_protection,
