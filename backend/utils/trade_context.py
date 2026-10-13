@@ -14,6 +14,7 @@ from backend.utils.trade_operations import _same_symbol
 from backend.utils.trade_order_evidence import classify_order, UNRESOLVED, TERMINAL
 from backend.utils.trade_receipts import unresolved_orders
 from backend.utils.independent_admission import assess_admission, cycle_quiescent
+from backend.utils.trade_context_format import render_positions, render_orders
 
 
 @dataclass(frozen=True)
@@ -256,20 +257,3 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
                               dict(sources=evidence, local_cycles='unavailable' if plans is None and not is_mock else 'read',
                                    positions='unavailable' if position_failed else 'read',
                                    cycle_versions={p['episode_id']: p.get('record_version') for p in cycles}))
-
-
-def render_positions(state: DecisionTradeState) -> str:
-    if not state.positions:
-        return '当前持仓：未知（账户读取不完整）。' if state.evidence_state['positions'] == 'unavailable' else '当前持仓：无。'
-    return '\n'.join('持仓：' + json.dumps(p, ensure_ascii=False) for p in state.positions)
-
-
-def render_orders(state: DecisionTradeState) -> str:
-    lines = ['当前有效订单（标的币数量；all 条件单为触发时该方向全部仓位）：']
-    lines += [json.dumps(o, ensure_ascii=False) for o in state.orders] or ['无已确认有效订单。']
-    lines.append('SL 未覆盖估计与固定数量冲突：' + json.dumps(state.coverage, ensure_ascii=False))
-    lines.append('挂单不保证成交；SL LIMIT 触发后仍需限价成交。null 表示未知，不是零。')
-    lines.append('当前相关执行异常：' + ('\n' + '\n'.join(json.dumps(i, ensure_ascii=False) for i in state.issues)
-                                         if state.issues else '无（当前数据源读取完整）。'))
-    lines.append('异常按账户、方向和目标说明缺项；执行层在具体动作内核验，历史建议不构成本轮许可或封锁。')
-    return '\n'.join(lines)

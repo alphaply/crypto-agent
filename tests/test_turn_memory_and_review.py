@@ -39,6 +39,7 @@ def test_actual_memory_model_receives_latest_identity_in_both_writers(real_short
                            ('cfg', 'ETH/USDT', stamp, '本轮策略条件只出现一次', raw)).lastrowid
         conn.commit()
     cfg = dict(config_id='cfg', symbol='ETH/USDT', mode='REAL', exit_mode='independent_exits', model='offline')
+    monkeypatch.setattr(memory_service.global_config, 'get_config_by_id', lambda cid: cfg if cid == 'cfg' else None)
     sent = []
     def invoke(messages):
         sent.append(messages[-1].content)

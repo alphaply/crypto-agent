@@ -1,18 +1,19 @@
 """Short-term memory evidence, consolidation and persistence, independent of trading graphs."""
 from datetime import datetime, timedelta
-from contextvars import ContextVar
 
 import pytz
 
 from backend.agent.decision_context import format_short_memory_for_llm
-from backend.agent.memory_workflow import serialized_memory_review, get_review_result, save_review_result, verify_memory_lease
+from backend.agent.memory_workflow import (
+    serialized_memory_review, get_review_result, save_review_result, verify_memory_lease,
+    _review_projection as _projection_metadata,
+)
 from backend.config import config as global_config
 from backend.database import get_summary_logic_between, save_short_memory as _save_short_memory
 from backend.utils.logger import setup_logger
 
 TZ_CN = pytz.timezone(getattr(global_config, 'timezone', 'Asia/Shanghai'))
 logger = setup_logger(__name__)
-_projection_metadata = ContextVar('memory_projection_metadata', default=None)
 
 
 class MemoryReviewError(RuntimeError):
@@ -21,14 +22,10 @@ class MemoryReviewError(RuntimeError):
 
 def save_short_memory(*args, **kwargs):
     verify_memory_lease()
-    result = _save_short_memory(*args, **kwargs)
     metadata = _projection_metadata.get()
     if metadata:
-        from backend.agent.context_projections import attach_new_memory
-        config_id = kwargs.get('config_id') or args[3]
-        summary = kwargs.get('market_summary') or args[4]
-        attach_new_memory(config_id, metadata, summary)
-    return result
+        kwargs['decision_projection'] = metadata
+    return _save_short_memory(*args, **kwargs)
 
 
 def format_recent_position_history_for_memory(config_id: str, agent_config: dict) -> str:

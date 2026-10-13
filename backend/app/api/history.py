@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
 from backend.app.core.deps import get_current_user
+from backend.app.schemas.decision_memory import RetryDecisionMemoryRequest
+from backend.app.services.decision_memory_service import projection_status, retry_failed_projections
 from backend.app.schemas.payloads import (
     CleanHistoryRequest,
     DeleteDailySummaryRequest,
@@ -110,6 +112,24 @@ def generate_short_memory(payload: GenerateShortMemoryRequest, _: dict = Depends
         return {"success": True, **generate_short_memory_payload(payload.config_id, payload.bucket_start)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get('/short-memories/projections/status')
+def short_memory_projection_status(config_id: str, _: dict = Depends(get_current_user)):
+    try:
+        return {'success': True, **projection_status(config_id)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post('/short-memories/projections/retry')
+def retry_short_memory_projections(payload: RetryDecisionMemoryRequest, _: dict = Depends(get_current_user)):
+    try:
+        return {'success': True, **retry_failed_projections(payload.config_id)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.put("/short-memories")

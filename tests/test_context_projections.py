@@ -74,7 +74,7 @@ def test_additive_schema_hash_manual_edit_and_original_audit(sources, monkeypatc
     assert database.get_short_memories('cfg', 1)[0] == original
     database.update_short_memory('cfg', original['bucket_start'], '新人工观点；旧 unknown 禁止交易', '')
     edited = load_decision_memory('cfg', CFG)
-    assert '整理中' in edited.short_memory_text
+    assert '尚无已发布' in edited.short_memory_text
     assert '新人工观点' not in edited.short_memory_text
     assert len(calls) == 1  # Decision reads never invoke a model.
     assert projections.process_projection_updates('cfg', CFG)
@@ -148,7 +148,7 @@ def test_task_symbol_change_does_not_reuse_previous_symbol_strategy(sources, mon
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: {**CFG, 'symbol': 'BTC/USDT'})
     memory = load_decision_memory('cfg', {**CFG, 'symbol': 'BTC/USDT'})
     assert THESIS not in memory.short_memory_text + memory.recent_summaries_text
-    assert '暂不可用' in memory.short_memory_text
+    assert '尚无已发布' in memory.short_memory_text
 
 
 def test_background_projection_lease_backoff_restart_and_retry_bound(sources, monkeypatch):
@@ -169,7 +169,7 @@ def test_background_projection_lease_backoff_restart_and_retry_bound(sources, mo
     assert all(s['projection']['status'] == 'failed' for s in projections.ensure_sources('cfg'))
     assert not projections.process_projection_updates('cfg', CFG) and len(calls) == 3
     memory = load_decision_memory('cfg', CFG)
-    assert '整理中/暂不可用' in memory.short_memory_text
+    assert '尚无已发布' in memory.short_memory_text
     assert LEGACY not in memory.short_memory_text + memory.recent_summaries_text
 
 
@@ -262,10 +262,10 @@ def test_agent_and_bound_chat_use_current_state_without_history_or_old_bans(sour
     chat = chat_graph.start_node({'q': '检查当前仓位'}, config)
     assert prompt == chat['system_prompt']
     for identity in ('mock:entry-A', 'mock:sl-A', 'mock:tp-A', 'mock:tp-B'):
-        assert prompt.count('"order_id": "' + identity + '"') == 1
+        assert prompt.count(identity) == 1
     for forbidden in ('HISTORICAL_RECEIPT', 'irrelevant-history', '旧 unknown', '禁止加仓', '最新原操作核验记录', '[当前交易核验记录]'):
         assert forbidden not in prompt
-    assert 'MARKET_RETAINED NEWS_RETAINED' in prompt and THESIS in prompt and '持仓：' in prompt
+    assert 'MARKET_RETAINED NEWS_RETAINED' in prompt and THESIS in prompt and '多仓 0.15' in prompt
     assert path.read_text(encoding='utf-8') == template
     with database.get_db_conn() as conn:
         for n in range(100):

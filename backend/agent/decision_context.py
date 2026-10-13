@@ -56,7 +56,7 @@ def load_decision_memory(config_id: str, agent_config: dict | None = None) -> De
             return DecisionMemory(short, recent, execution_evidence=evidence)
         except Exception as exc:
             logger.warning('Strategy projections unavailable for %s: %s', config_id, exc)
-            return DecisionMemory('（策略背景整理中/暂不可用）', '（近期策略投影暂不可用）',
+            return DecisionMemory('（已发布短期策略记忆读取失败）', '（已发布策略摘要读取失败）',
                                   execution_evidence={'context': {'resolution': 'unavailable'}})
     sources = (
         ('short_memory_text', lambda: format_short_memory_for_llm(config_id, include_metadata=True), '(短期记忆读取失败)'),
@@ -111,6 +111,11 @@ def prompt_fields(template: str) -> set[str]:
 
 def render_decision_prompt(template: str, memory: DecisionMemory, **values) -> str:
     template = clean_decision_template(template)
+    recent_title = ('近期已发布策略摘要（最多三条；历史计划，不是成交证明）'
+                    if values.get('exit_mode') == 'independent_exits'
+                    else '最近三轮决策摘要（历史计划，不是成交证明）')
+    if values.get('exit_mode') == 'independent_exits':
+        template = template.replace('最近三轮决策摘要（历史计划，不是成交证明）', recent_title)
     fields = prompt_fields(template)
     # Retired variables resolve to empty text even in old inline custom templates.
     values.update(history_text='', short_memory_text=memory.short_memory_text,
@@ -119,7 +124,7 @@ def render_decision_prompt(template: str, memory: DecisionMemory, **values) -> s
     prompt = render_prompt(template, **values).strip()
     sections = (
         ('short_memory_text', 'Short-term memory'),
-        ('recent_summaries_text', '最近三轮决策摘要（历史计划，不是成交证明）'),
+        ('recent_summaries_text', recent_title),
     )
     for field, title in sections:
         if field not in fields:

@@ -24,6 +24,7 @@ import {
   message,
 } from 'antd';
 import DecisionRunPanel from './DecisionRunPanel';
+import DecisionMemoryStatus from './DecisionMemoryStatus';
 import DecisionMessages from './DecisionMessages';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
@@ -1035,6 +1036,8 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
           ) : null}
         </Space>
         {authenticated ? <Text type="secondary">{locale === 'zh' ? '每次运行后结合前 4 小时摘要更新短期记忆，选择任务可手动整理。' : 'Memory refreshes after each run using the previous four hours. Select a task to refresh manually.'}</Text> : null}
+        {authenticated && filter.config_id && filter.config_id !== 'ALL'
+          ? <DecisionMemoryStatus key={filter.config_id} configId={filter.config_id} refreshKey={rows} locale={locale} /> : null}
         {authenticated && reviewResult ? <Alert type={reviewResult.type} showIcon title={`${reviewResult.configId} · ${reviewResult.title}`} description={<Space direction="vertical" style={{ width: '100%' }}>{reviewResult.error ? <Text>{reviewResult.error}</Text> : null}{reviewResult.receipts.length ? <details><summary>{locale === 'zh' ? '规则工具回执' : 'Rule tool receipts'} ({reviewResult.receipts.length})</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 300, overflow: 'auto', fontSize: 12 }}>{JSON.stringify(reviewResult.receipts, null, 2)}</pre></details> : null}</Space>} /> : null}
         <Table
           size="small"

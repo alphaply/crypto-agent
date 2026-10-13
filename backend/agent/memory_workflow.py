@@ -12,6 +12,7 @@ from backend.utils.logger import setup_logger
 
 logger = setup_logger('MemoryWorkflow')
 _active_lease = ContextVar('active_memory_review_lease', default=None)
+_review_projection = ContextVar('memory_projection_metadata', default=None)
 
 
 def verify_memory_lease() -> None:
@@ -81,6 +82,7 @@ def memory_review_lease(config_id: str):
             except Exception as exc:
                 logger.warning('Cannot renew review lease: %s', exc)
     token = _active_lease.set((config_id, owner)) if changed else None
+    projection_token = _review_projection.set(None) if changed else None
     worker = Thread(target=renew, name='memory-review-lease', daemon=True) if changed else None
     if worker:
         worker.start()
@@ -92,6 +94,8 @@ def memory_review_lease(config_id: str):
             worker.join(timeout=1)
         if token is not None:
             _active_lease.reset(token)
+        if projection_token is not None:
+            _review_projection.reset(projection_token)
         if changed:
             with database.get_db_conn() as conn:
                 conn.execute('DELETE FROM memory_review_leases WHERE config_id=? AND owner=?', (config_id, owner))

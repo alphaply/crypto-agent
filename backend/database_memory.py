@@ -150,7 +150,7 @@ class SummaryMemoryStore:
             return result
 
     def save_short_memory(self, bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count,
-                          *, window_start=None, window_end=None, source_summary_ids=None, run_id=None):
+                          *, window_start=None, window_end=None, source_summary_ids=None, run_id=None, decision_projection=None):
         created_at = self._timestamp()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
@@ -187,6 +187,11 @@ class SummaryMemoryStore:
                 (bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, int(source_count or 0), created_at,
                  window_start or bucket_start, window_end or bucket_end, json.dumps(source_summary_ids or []), run_id, version),
             )
+            if decision_projection:
+                from backend.agent.context_projections import publish_new_memory
+                row = cursor.execute('SELECT * FROM short_memories WHERE config_id=? AND bucket_start=?',
+                                     (config_id, bucket_start)).fetchone()
+                publish_new_memory(conn, config_id, dict(row), decision_projection)
             conn.commit()
 
     @staticmethod

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import time
+import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +16,8 @@ from backend.utils.trade_recovery import operation_evidence
 
 VERSION = 1
 MAX_ATTEMPTS = 3
+logger = logging.getLogger(__name__)
+SOURCE_TABLES = {'short_memory': 'short_memories', 'strategy_summary': 'summaries'}
 
 
 def enabled(cfg: dict | None) -> bool:
@@ -30,6 +33,18 @@ def initialize_schema(conn):
         status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
         PRIMARY KEY(config_id,account_scope,source_kind,source_id,source_hash,projection_version))''')
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(decision_context_projections)')}
+    if 'publication_revision' not in columns:
+        conn.execute('SAVEPOINT projection_upgrade')
+        try:
+            conn.execute('ALTER TABLE decision_context_projections ADD COLUMN publication_revision INTEGER NOT NULL DEFAULT 1')
+            # Marker and repair must commit together, even on old SQLite layouts.
+            conn.execute("UPDATE decision_context_projections SET status='pending',attempts=0,next_attempt=0 WHERE status='failed'")
+            conn.execute('RELEASE projection_upgrade')
+        except Exception:
+            conn.execute('ROLLBACK TO projection_upgrade')
+            conn.execute('RELEASE projection_upgrade')
+            raise
 
 
 def _hash(value) -> str:
@@ -43,7 +58,7 @@ def _source(kind: str, row: dict) -> dict:
                 timestamp=row.get('window_end') or row.get('bucket_end') or row.get('timestamp'), row=row)
 
 
-def current_sources(config_id: str) -> list[dict]:
+def current_sources(config_id: str, kind: str | None = None) -> list[dict]:
     from backend.config import config
     symbol = (config.get_config_by_id(config_id) or {}).get('symbol')
     predicate, args = '', [config_id]
@@ -54,9 +69,9 @@ def current_sources(config_id: str) -> list[dict]:
         args.append(canonical)
     with database.get_db_conn() as conn:
         memories = conn.execute('SELECT * FROM short_memories WHERE config_id=?' + predicate +
-                                ' ORDER BY bucket_end DESC,id DESC LIMIT 1', args).fetchall()
+                                ' ORDER BY bucket_end DESC,id DESC LIMIT 1', args).fetchall() if kind != 'strategy_summary' else []
         summaries = conn.execute('SELECT * FROM summaries WHERE config_id=?' + predicate +
-                                 ' ORDER BY timestamp DESC,id DESC LIMIT 3', args).fetchall()
+                                 ' ORDER BY timestamp DESC,id DESC LIMIT 3', args).fetchall() if kind != 'short_memory' else []
     return [_source(kind, dict(r)) for kind, rows in [('short_memory', memories), ('strategy_summary', summaries)] for r in rows]
 
 
@@ -88,10 +103,13 @@ def source_refs(config_id: str, source: dict) -> list[str]:
                             if isinstance(r, dict) and r.get('operation_id'))
     # Older memory can retain references beyond its latest four-hour window.
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
         for row in conn.execute('SELECT execution_refs FROM decision_context_projections WHERE config_id=? '
-                                'AND source_kind=? AND source_id=?', (config_id, source['source_kind'], source['source_id'])):
-            refs.update(json.loads(row['execution_refs']))
+                                'AND account_scope=? AND source_kind=? AND source_id=? AND source_hash=? AND projection_version=?',
+                                key(config_id, trade_evidence.configured_account_scope(config_id), source)):
+            saved_refs = json.loads(row['execution_refs'])
+            if not isinstance(saved_refs, list) or any(not isinstance(ref, str) for ref in saved_refs):
+                raise ValueError('Invalid saved execution references')
+            refs.update(saved_refs)
     return sorted(refs)
 
 
@@ -100,6 +118,53 @@ def key(config_id, scope, source):
 
 
 KEY_WHERE = 'config_id=? AND account_scope=? AND source_kind=? AND source_id=? AND source_hash=? AND projection_version=?'
+
+
+def _original(conn, config_id: str, projection: dict) -> dict | None:
+    from backend.config import config
+    from backend.utils.trade_operations import _same_symbol
+    table = SOURCE_TABLES[projection['source_kind']]
+    row = conn.execute(f'SELECT * FROM {table} WHERE config_id=? AND id=?',
+                       (config_id, projection['source_id'])).fetchone()
+    symbol = (config.get_config_by_id(config_id) or {}).get('symbol')
+    if not row or not symbol or not _same_symbol(row['symbol'], symbol):
+        return None
+    if projection.get('symbol') and not _same_symbol(projection['symbol'], symbol):
+        return None
+    source = _source(projection['source_kind'], dict(row))
+    return source if source['source_hash'] == projection['source_hash'] else None
+
+
+def stored_sources(config_id: str, scope: str, kind: str, *, status: str | None = None,
+                   diagnostics: list | None = None, limit: int | None = None) -> list[dict]:
+    """Pure read of still-valid versions; one corrupt row cannot hide its peers."""
+    sources = []
+    with database.get_db_conn() as conn:
+        conn.execute('BEGIN')
+        ordering = 's.timestamp'
+        if kind == 'short_memory':
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(short_memories)')}
+            ordering = "COALESCE(NULLIF(s.window_end,''),s.bucket_end)" if 'window_end' in columns else 's.bucket_end'
+        rows = conn.execute('SELECT p.* FROM decision_context_projections p '
+                            f'JOIN {SOURCE_TABLES[kind]} s ON CAST(s.id AS TEXT)=p.source_id AND s.config_id=p.config_id '
+                            'WHERE p.config_id=? AND p.account_scope=? AND p.source_kind=? AND p.projection_version=?'
+                            + (' AND p.status=?' if status else '') + f' ORDER BY {ordering} DESC,s.id DESC',
+                            (config_id, scope, kind, VERSION, *((status,) if status else ())))
+        for row in rows:
+            try:
+                projection = dict(row)
+                source = _original(conn, config_id, projection)
+                if source:
+                    if not isinstance(projection['strategy_text'], str):
+                        raise ValueError('Strategy text is not readable')
+                    sources.append({**source, 'projection': projection})
+                    if limit and len(sources) >= limit:
+                        break
+            except (ValueError, TypeError, KeyError):
+                logger.exception('Invalid strategy source %s/%s', config_id, row['source_id'])
+                if diagnostics is not None:
+                    diagnostics.append(f"{kind}:{row['source_id']}")
+    return sources
 
 
 def ensure_sources(config_id: str, *, account_scope: str | None = None) -> list[dict]:
@@ -115,6 +180,12 @@ def ensure_sources(config_id: str, *, account_scope: str | None = None) -> list[
                                key(config_id, scope, s)).fetchone()
             s['projection'] = dict(row)
         conn.commit()
+    # Finish sources queued before a newer decision moved the current window.
+    identities = {(s['source_kind'], s['source_id'], s['source_hash']) for s in sources}
+    for kind in SOURCE_TABLES:
+        for source in stored_sources(config_id, scope, kind, status='pending'):
+            if (kind, source['source_id'], source['source_hash']) not in identities:
+                sources.append(source)
     return sources
 
 
@@ -151,12 +222,13 @@ execution_refs 只能选提供的原操作候选ID，不能含 allowed、blocked
 
 
 def prepare_review(config_id: str) -> dict:
+    from backend.config import config
     scope = trade_evidence.configured_account_scope(config_id)
     sources = ensure_sources(config_id, account_scope=scope)
     pending = [s for s in sources if s['projection']['status'] == 'pending' and s['projection']['next_attempt'] <= time.time()]
     candidates = {s['source_kind'] + ':' + s['source_id']: source_refs(config_id, s) for s in sources}
     refs = sorted({ref for values in candidates.values() for ref in values})
-    symbol = sources[0]['row']['symbol'] if sources else ''
+    symbol = (config.get_config_by_id(config_id) or {}).get('symbol') or (sources[0]['row']['symbol'] if sources else '')
     evidence = operation_evidence(config_id, symbol, refs, account_scope=scope)
     return dict(config_id=config_id, account_scope=scope, symbol=symbol, sources=pending,
                 candidates=candidates, evidence=evidence, all_refs=refs, projection_version=VERSION)
@@ -197,7 +269,19 @@ def validate_review(value: dict, context: dict) -> dict:
     if seen != set(expected):
         raise ValueError('Projection response omitted a supplied source')
     return {**review.model_dump(), 'account_scope': context['account_scope'], 'config_id': context['config_id'],
-            'projection_version': VERSION}
+            'projection_version': VERSION, 'symbol': context['symbol']}
+
+
+def _publication_scope(config_id: str, metadata: dict) -> str:
+    from backend.config import config
+    from backend.utils.trade_operations import _same_symbol
+    scope = trade_evidence.configured_account_scope(config_id)
+    if metadata.get('account_scope') != scope:
+        raise ValueError('Account changed during memory projection')
+    current_symbol = (config.get_config_by_id(config_id) or {}).get('symbol')
+    if metadata.get('symbol') and not _same_symbol(metadata['symbol'], current_symbol):
+        raise ValueError('Symbol changed during memory projection')
+    return scope
 
 
 def persist_projections(config_id: str, metadata: dict):
@@ -205,15 +289,13 @@ def persist_projections(config_id: str, metadata: dict):
     verify_memory_lease()
     if not metadata or metadata.get('config_id') != config_id or metadata.get('projection_version') != VERSION:
         return
-    scope = trade_evidence.configured_account_scope(config_id)
-    if metadata.get('account_scope') != scope:
-        raise ValueError('Account changed during memory projection')
-    sources = {(s['source_kind'], s['source_id'], s['source_hash']) for s in current_sources(config_id)}
+    scope = _publication_scope(config_id, metadata)
     with database.get_db_conn() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         initialize_schema(conn)
         for p in metadata.get('projections', []):
-            if (p['source_kind'], p['source_id'], p['source_hash']) not in sources:
-                continue  # A manual edit or newer source arrived during the model call.
+            if not _original(conn, config_id, p):
+                continue  # Manual edits/deletions invalidate results, newer rows do not.
             conn.execute("UPDATE decision_context_projections SET strategy_text=?,execution_refs=?,unlinked_execution_notes=?,"
                          "status='ready',error='',updated_at=? WHERE " + KEY_WHERE,
                          (p['strategy_text'], json.dumps(p['execution_refs']), json.dumps(p['unlinked_execution_notes']),
@@ -221,55 +303,68 @@ def persist_projections(config_id: str, metadata: dict):
         conn.commit()
 
 
-def attach_new_memory(config_id: str, metadata: dict, summary: str):
-    if not metadata or metadata.get('summary') != summary:
-        return
-    sources = ensure_sources(config_id)
-    memory = next((s for s in sources if s['source_kind'] == 'short_memory' and s['text'] == summary), None)
-    if memory:
-        p = {k: memory[k] for k in ('source_kind', 'source_id', 'source_hash')}
-        persist_projections(config_id, {**metadata, 'projections': [{**p, **metadata['memory']}]})
+def publish_new_memory(conn, config_id: str, row: dict, metadata: dict):
+    """Publish using the caller's raw-memory transaction; any error rolls back both."""
+    scope = _publication_scope(config_id, metadata)
+    if (metadata.get('config_id') != config_id or metadata.get('account_scope') != scope
+            or metadata.get('projection_version') != VERSION or metadata.get('summary') != row['market_summary']):
+        raise ValueError('Memory projection does not match saved memory/scope')
+    source = _source('short_memory', row)
+    if not _original(conn, config_id, source):
+        raise ValueError('Memory symbol changed during publication')
+    projection = StrategyProjection.model_validate(metadata['memory'])
+    if _EXECUTION_BAN.search(projection.strategy_text):
+        raise ValueError('Memory projection contains execution restrictions')
+    initialize_schema(conn)
+    conn.execute('INSERT INTO decision_context_projections '
+                 '(config_id,account_scope,source_kind,source_id,source_hash,projection_version,symbol,updated_at,'
+                 'strategy_text,execution_refs,unlinked_execution_notes,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,\'ready\') '
+                 'ON CONFLICT(config_id,account_scope,source_kind,source_id,source_hash,projection_version) DO UPDATE SET '
+                 "strategy_text=excluded.strategy_text,execution_refs=excluded.execution_refs,"
+                 "unlinked_execution_notes=excluded.unlinked_execution_notes,status='ready',error='',updated_at=excluded.updated_at",
+                 (*key(config_id, scope, source), row['symbol'], time.time(), projection.strategy_text,
+                  json.dumps(projection.execution_refs), json.dumps(projection.unlinked_execution_notes)))
 
 
 def load_strategy_views(config_id: str) -> tuple[str, str, dict]:
+    from backend.config import config
     scope = trade_evidence.configured_account_scope(config_id)
-    sources = ensure_sources(config_id, account_scope=scope)
-    texts = {'short_memory': [], 'strategy_summary': []}
+    symbol = (config.get_config_by_id(config_id) or {}).get('symbol', '')
+    texts = {}
     refs = set()
-    for s in sources:
-        p = s['projection']
-        # Pending/failed legacy prose must not leak back into the decision prompt.
-        if p['status'] == 'ready':
-            texts[s['source_kind']].append(f"[截至 {s['timestamp']}] {p['strategy_text'] or '(无策略背景)'}")
-            refs.update(json.loads(p['execution_refs']))
-        else:
-            refs.update(source_refs(config_id, s))
-            if s['source_kind'] == 'strategy_summary':
-                texts['strategy_summary'].append(f"[截至 {s['timestamp']}] （策略背景整理中/暂不可用）")
-    if not texts['short_memory']:
-        # A newer queued memory need not discard a still-valid older thesis.
-        # The content hash also excludes manually edited sources here.
-        from backend.config import config
-        from backend.utils.trade_operations import _same_symbol
-        current_symbol = (config.get_config_by_id(config_id) or {}).get('symbol')
-        with database.get_db_conn() as conn:
-            old = conn.execute("SELECT p.*,m.bucket_end FROM decision_context_projections p "
-                               "JOIN short_memories m ON CAST(m.id AS TEXT)=p.source_id AND m.config_id=p.config_id "
-                               "WHERE p.config_id=? AND p.account_scope=? AND p.source_kind='short_memory' AND p.status='ready' "
-                               "AND p.projection_version=? ORDER BY m.bucket_end DESC,m.id DESC", (config_id, scope, VERSION)).fetchall()
-            for row in old:
-                original = conn.execute('SELECT * FROM short_memories WHERE config_id=? AND id=?', (config_id, row['source_id'])).fetchone()
-                if original and current_symbol and not _same_symbol(original['symbol'], current_symbol):
-                    continue
-                if original and _source('short_memory', dict(original))['source_hash'] == row['source_hash']:
-                    texts['short_memory'].append(f"[截至 {row['bucket_end']}；较新背景整理中] {row['strategy_text']}")
-                    refs.update(json.loads(row['execution_refs']))
-                    break
-    symbol = sources[0]['row']['symbol'] if sources else ''
-    evidence = operation_evidence(config_id, symbol, refs, account_scope=scope)
-    missing = '（策略背景整理中/暂不可用；原文保留供历史查看）'
-    return ('\n\n'.join(texts['short_memory']) or missing,
-            '\n'.join(reversed(texts['strategy_summary'])) or missing, evidence)
+    reference_failure = False
+    for kind, limit, label in [('short_memory', 1, '短期策略记忆'), ('strategy_summary', 3, '策略摘要')]:
+        published = []
+        try:
+            published = stored_sources(config_id, scope, kind, status='ready', limit=limit)
+            texts[kind] = '\n\n'.join(f"[截至 {s['timestamp']}] {s['projection']['strategy_text'] or '(无策略背景)'}"
+                                       for s in reversed(published)) or f'（尚无已发布{label}）'
+        except Exception:
+            logger.exception('Unable to read published %s for %s', kind, config_id)
+            texts[kind] = f'（已发布{label}读取失败）'
+            reference_failure = True
+        # Resolve references separately, including candidates not yet published.
+        try:
+            candidates = current_sources(config_id, kind)
+        except Exception:
+            logger.exception('Unable to read current %s references for %s', kind, config_id)
+            candidates = []
+            reference_failure = True
+        for source in [*published, *candidates]:
+            try:
+                refs.update(source_refs(config_id, source))
+            except Exception:
+                logger.exception('Unable to read strategy references for %s/%s', config_id, source['source_id'])
+                reference_failure = True
+    try:
+        evidence = operation_evidence(config_id, symbol, sorted(refs), account_scope=scope)
+    except Exception:
+        logger.exception('Unable to resolve strategy execution references for %s', config_id)
+        evidence = {ref: {'resolution': 'unavailable'} for ref in refs}
+        reference_failure = True
+    if reference_failure:
+        evidence['context'] = {'resolution': 'unavailable'}
+    return texts['short_memory'], texts['strategy_summary'], evidence
 
 
 def process_projection_updates(config_id: str, cfg: dict) -> bool:

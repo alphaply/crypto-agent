@@ -158,7 +158,7 @@ def test_decision_prompt_only_loads_compressed_history_and_current_protection(lo
     assert 'exit_mode=' not in prompt
     if exit_mode == 'independent_exits':
         assert '附带 TP/SL 为空不代表没有独立退出单' not in prompt
-        assert 'SL 未覆盖估计与固定数量冲突' in prompt
+        assert '止损未覆盖估计' in prompt
     assert '加仓通过 open' not in prompt and 'close 的 exit_type' not in prompt
     assert '## 决策与复盘要求' not in prompt
     assert '按下方共同复盘要求' not in prompt
