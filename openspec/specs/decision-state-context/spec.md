@@ -172,7 +172,7 @@ REAL/STRATEGY 独立退出模式的默认决策和绑定任务聊天 SHALL 使�
 - **THEN** 按原兼容行为取得完整记忆正文，不要求投影字段、不启用投影格式纠正或规则工具
 
 ### Requirement: Projection format correction is bounded and auditable
-对独立模式中已完整结束且无工具调用的响应，系统 SHALL 允许 JSON 或字段结构错误触发至多一次格式纠正阶段。首次请求、传输重试及纠正阶段的实际模型请求 SHALL 共享每次整理最多三次的上限，正常有效响应只调用一次。系统 SHALL 分别保留各次请求、原始响应、错误类别、所属整理操作及已返回用量，只有通过完整校验的结果可作为成功发布依据。
+对独立模式中已完整结束且无工具调用的响应，系统 SHALL 允许 JSON 或字段结构错误触发格式纠正；结构、来源、覆盖及引用均有效但策略文字混入执行限制或解锁结论时 SHALL 允许内容分离纠正。两类错误 SHALL 共享至多一次纠正阶段，使用原来源快照及可信错误路径要求重新返回完整对象。首次请求、传输重试及纠正阶段的实际模型请求 SHALL 共享每次整理最多三次的上限，正常有效响应只调用一次。系统 SHALL 分别保留各次请求、原始响应、错误类别、所属整理操作及已返回用量，只有通过完整校验的结果可作为成功发布依据。
 
 #### Scenario: Summary-only response is corrected
 - **WHEN** 第一次模型响应只有有效 `summary`，缺少 `memory` 和 `projections`，且仍有请求预算
@@ -183,19 +183,35 @@ REAL/STRATEGY 独立退出模式的默认决策和绑定任务聊天 SHALL 使�
 - **THEN** 所有实际请求合计不超过三次，纠正阶段至多启动一次；预算耗尽时保留具体失败状态，不重置计数再次调用
 
 #### Scenario: Correction fails again
-- **WHEN** 纠正响应仍缺字段或无法解析为约定 JSON
+- **WHEN** 纠正响应仍缺字段、无法解析为约定 JSON 或仍混入执行限制，即使前后错误类别不同
 - **THEN** 本次整理失败，错误可追溯，系统不补空字段、不复制混合原文充当策略、不缓存为成功，也不覆盖已发布内容
 
 #### Scenario: Incomplete and semantic failures remain rejected
-- **WHEN** 服务商报告截断或拒绝、响应包含工具调用，或者完整结构中的来源身份、哈希、覆盖、执行引用或权限语义校验失败
-- **THEN** 系统拒绝本次结果，不把这类错误转换为格式纠正许可，不执行工具，不放宽发布校验
+- **WHEN** 服务商报告截断或拒绝、响应包含工具调用，或者来源身份、哈希、覆盖、执行引用或额外结构化权限字段校验失败，即使同时混入错误执行叙述
+- **THEN** 系统拒绝本次结果，不启动格式或内容纠正，不执行工具，不放宽发布校验
+
+#### Scenario: Misplaced execution narrative is separated
+- **WHEN** 完整响应的来源和引用均有效，但 strategy_text 含旧 unknown 禁令或 allowed、blocked_actions、已解锁等执行结论
+- **THEN** 在剩余预算内启动一次内容纠正，要求保留完整 summary，将执行叙述放入 unlinked_execution_notes、可信身份放入 execution_refs；重新验证完整输出，不由程序删句或把纠正当成交易许可
+
+#### Scenario: Independent strategy conditions do not become execution bans
+- **WHEN** 文字说明历史回执不能证明成交，或旧 unknown 仅供审计，另一个句子要求等四小时收盘确认前不加仓
+- **THEN** 校验不把无关跨句内容拼成执行禁令；直接以未核验为由禁止加仓的叙述仍触发内容分离校验
 
 #### Scenario: Failed attempt and successful correction retain separate costs
 - **WHEN** 初次结构校验失败而后续纠正成功，两次响应均提供用量
 - **THEN** 首次调用保留失败状态和原始输出，后续调用独立记录成功；两次真实用量各记录一次，并能关联同一整理操作与不同尝试阶段
 
 ### Requirement: Legacy projection format failures recover once per contract revision
-输出契约修复后，系统 SHALL 对能够确认为旧契约缺少 `memory`/`projections`、来源与当前范围仍有效的终止投影和记忆生成任务，按契约修订只进行一次后台重新排队，不依赖新交易产生。恢复 SHALL 原子保留原失败诊断与修订标记，沿用租约、退避、每项最多三次工作尝试及成功结果复用。已发布内容、原始证据和交易状态 SHALL 保持完整。
+输出契约修复后，系统 SHALL 对能够确认为旧契约缺少 `memory`/`projections`、来源与当前范围仍有效的终止投影和记忆生成任务，按契约修订只进行一次后台重新排队，不依赖新交易产生。内容分离修订 SHALL 另定向恢复此前精确执行叙述校验错误，不重置已使用缺字段修订预算的任务。恢复 SHALL 原子保留原失败诊断、之前修订的恢复诊断与修订标记，沿用租约、退避、每项最多三次工作尝试及成功结果复用。已发布内容、原始证据和交易状态 SHALL 保持完整。
+
+#### Scenario: Content repair restores earlier failed memory work
+- **WHEN** 旧修订的任务因精确错误 Strategy projection contains an execution permission/restriction 终止，来源与当前范围仍有效
+- **THEN** 后台只恢复一次，使其经过严格校验及有界内容纠正后发布记忆与摘要；新发布记忆记录当前修订，后续扫描不会重复恢复
+
+#### Scenario: New repair does not reset earlier format failures
+- **WHEN** 缺字段任务已在格式修订中耗尽尝试，随后升级内容分离修订
+- **THEN** 该任务保留失败状态和预算；反复跳过无法核实范围的任务也不反复嵌套同一修订的诊断
 
 #### Scenario: Failed existing memory and summaries publish for the first time
 - **WHEN** 当前范围内已有有效短期记忆原文和三条有效摘要，相关转换因旧缺字段错误终止且没有已发布策略
@@ -210,7 +226,7 @@ REAL/STRATEGY 独立退出模式的默认决策和绑定任务聊天 SHALL 使�
 - **THEN** 同一契约修订不会再次自动重置它，保留失败原因供现有管理重试入口处理；其他有效已发布内容继续可用
 
 #### Scenario: Unrelated or invalid sources are excluded from recovery
-- **WHEN** 候选行已经成功、属于旧 partial 写入、源正文已修改或删除、属于其他范围、无法核实当前范围，或错误属于鉴权、截断、语义校验等无关故障
+- **WHEN** 候选行已经成功、属于旧 partial 写入、源正文已修改或删除、属于其他范围、无法核实当前范围，或错误属于鉴权、截断、伪造来源/引用等无关故障
 - **THEN** 本次自动恢复不重新排队该行，不改写它的原始失败证据，不使其他有效内容失效
 
 #### Scenario: Existing ready views survive the contract repair

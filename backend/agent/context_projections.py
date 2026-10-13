@@ -213,12 +213,24 @@ class ProjectionReview(BaseModel):
     projections: list[SourceProjection]
 
 
+class ProjectionContentError(ValueError):
+    """Narrative separation can be regenerated, never treated as permission."""
+
+    code = 'execution_narrative'
+
+    def __init__(self, paths: list[str]):
+        self.paths = paths
+        super().__init__('Strategy projection contains an execution permission/restriction; fields=' + ','.join(paths))
+
+
 PROJECTION_POLICY = '''本次输出契约：完整策略投影JSON，summary、memory、projections 均必填。
 summary 保存完整记忆原文供审计；篇幅与执行事实整理要求适用于原文，memory/projections 只保留纯策略。
 没有待转换来源时 projections 显式为 []，memory 仍须提供本次新记忆的策略内容，不能省略或补空对象。
 对提供的每个待转换来源输出一条 projections；不改来源ID/哈希。strategy_text 保留市场假设、关键价位、策略理由、
 等四小时收盘确认等观察条件及历史教训，不保存账户持仓、挂单或执行许可结论。
-例如“旧 unknown 未核验所以禁止加仓”只进入执行引用；“等四小时收盘前不加仓”作为策略条件保留。
+例如“旧 unknown 未核验所以禁止加仓”的执行叙述放入 unlinked_execution_notes；“等四小时收盘前不加仓”作为策略条件保留。
+工具错误、回执 JSON、allowed/blocked_actions 和已解锁等状态叙述不得复制进 strategy_text。
+有可信身份时填 execution_refs；需保留的执行叙述或无身份疑虑放 unlinked_execution_notes，原文 summary 保持完整。
 execution_refs 只能选提供的原操作候选ID，不能含 allowed、blocked_actions 或已解决等权限/状态判断。
 无身份的旧疑虑进入 unlinked_execution_notes；不能用另一笔0.30成交解决0.37事件。
 同身份最新证据优先；模型不负责恢复、解锁或证明成交，程序每次读取时解析执行引用。不要截断正文。'''
@@ -258,8 +270,11 @@ def review_input(context: dict, supplied_text: str = '') -> str:
         dict(sources=sources, candidates=context['candidates'], current_execution_evidence=context['evidence']), ensure_ascii=False)
 
 
-_EXECUTION_BAN = re.compile(r'(?:unknown|pending|待核验|未核验|回执|清理未完成|执行结果未知).{0,80}(?:禁止|不得|不能|不允许|不加仓|解锁)|'
-                            r'(?:禁止|不得|不能|不允许|不加仓).{0,80}(?:unknown|pending|核验|执行结果未知)|'
+_CLAUSE = r'[^。！？!?；;\r\n]{0,80}'
+_EXECUTION_BAN = re.compile(r'(?:unknown|pending|待核验|未核验|清理未完成|执行结果未知)' + _CLAUSE + r'(?:禁止|不得|不能|不允许|不加仓|解锁)|'
+                            r'(?:禁止|不得|不能|不允许|不加仓)' + _CLAUSE + r'(?:unknown|pending|核验|执行结果未知)|'
+                            r'(?:unknown|pending|待核验|未核验|清理未完成|执行结果未知)' + _CLAUSE
+                            + r'[。；;\r\n]+\s*(?:因此|所以|仍然|暂时)?(?:禁止|不得|不能|不允许|不加仓)|'
                             r'blocked_actions|\ballowed\b|已解锁|全面放行', re.I)
 
 
@@ -268,8 +283,6 @@ def validate_review(value: dict, context: dict) -> dict:
     expected = {(s['source_kind'], s['source_id'], s['source_hash']): s for s in context['sources']}
     seen = set()
     for projection in [review.memory, *review.projections]:
-        if _EXECUTION_BAN.search(projection.strategy_text):
-            raise ValueError('Strategy projection contains an execution permission/restriction')
         if isinstance(projection, SourceProjection):
             identity = (projection.source_kind, projection.source_id, projection.source_hash)
             if identity not in expected or identity in seen:
@@ -282,6 +295,13 @@ def validate_review(value: dict, context: dict) -> dict:
             raise ValueError('Projection execution identity is not in the trusted source chain')
     if seen != set(expected):
         raise ValueError('Projection response omitted a supplied source')
+    # Validate every identity/ref first. A mixed security + narrative error must
+    # never be turned into a request to rewrite away invalid evidence.
+    paths = [path for path, projection in [('memory.strategy_text', review.memory),
+             *[(f'projections.{i}.strategy_text', p) for i, p in enumerate(review.projections)]]
+             if _EXECUTION_BAN.search(projection.strategy_text)]
+    if paths:
+        raise ProjectionContentError(paths)
     return {**review.model_dump(), 'account_scope': context['account_scope'], 'config_id': context['config_id'],
             'projection_version': VERSION, 'symbol': context['symbol'], 'source_guards': context.get('source_guards', [])}
 
@@ -327,6 +347,8 @@ def persist_projections(config_id: str, metadata: dict):
 
 def publish_new_memory(conn, config_id: str, row: dict, metadata: dict):
     """Publish using the caller's raw-memory transaction; any error rolls back both."""
+    from backend.agent.memory_contract_recovery import CONTRACT_REVISION
+
     scope = _publication_scope(config_id, metadata)
     if (metadata.get('config_id') != config_id or metadata.get('account_scope') != scope
             or metadata.get('projection_version') != VERSION or metadata.get('summary') != row['market_summary']):
@@ -340,12 +362,13 @@ def publish_new_memory(conn, config_id: str, row: dict, metadata: dict):
     initialize_schema(conn)
     conn.execute('INSERT INTO decision_context_projections '
                  '(config_id,account_scope,source_kind,source_id,source_hash,projection_version,symbol,updated_at,'
-                 'strategy_text,execution_refs,unlinked_execution_notes,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,\'ready\') '
+                 'strategy_text,execution_refs,unlinked_execution_notes,review_contract_revision,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,\'ready\') '
                  'ON CONFLICT(config_id,account_scope,source_kind,source_id,source_hash,projection_version) DO UPDATE SET '
                  "strategy_text=excluded.strategy_text,execution_refs=excluded.execution_refs,"
-                 "unlinked_execution_notes=excluded.unlinked_execution_notes,status='ready',error='',updated_at=excluded.updated_at",
+                 "unlinked_execution_notes=excluded.unlinked_execution_notes,review_contract_revision=excluded.review_contract_revision,"
+                 "status='ready',error='',updated_at=excluded.updated_at",
                  (*key(config_id, scope, source), row['symbol'], time.time(), projection.strategy_text,
-                  json.dumps(projection.execution_refs), json.dumps(projection.unlinked_execution_notes)))
+                  json.dumps(projection.execution_refs), json.dumps(projection.unlinked_execution_notes), CONTRACT_REVISION))
 
 
 def load_strategy_views(config_id: str) -> tuple[str, str, dict]:

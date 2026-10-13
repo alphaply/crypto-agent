@@ -59,7 +59,7 @@ Daily memory 以及旧固定四小时批次已停用，历史数据保留归档�
 - 有原文而 `published.short_memory` 为空：尚未成功发布。`pending` 是待整理投影数，`not_generated` 是有效原文尚无投影记录的数量，不代表缺少原文。
 - `failed` 或 `errors` 非空：查看来源 ID、`attempts` 和 `error`；`read_errors` 则表示读取异常。已发布项通过 `published` 中的 `source_id`、`as_of` 确认来源和截至时间。
 
-本次输出契约修复在后台 tick 中定向恢复旧 `ProjectionReview` 缺少 `memory`/`projections` 的终止失败：原文投影须仍匹配当前任务、账户、标的及内容哈希；无记忆原文的失败生成任务须有未变化的摘要和可信账户关联。无法核实范围、无关错误、completed/partial 或来源编辑删除的记录不自动重排。重新排队后每项仍最多尝试三次，重启不会再次重置同一契约修订的预算；已有可用内容保持可读。
+输出契约修复在后台 tick 中定向恢复旧 `ProjectionReview` 缺少 `memory`/`projections` 的终止失败；修订 2 另恢复此前精确报错 `Strategy projection contains an execution permission/restriction` 的终止失败，使其使用有界内容纠正流程。原文投影须仍匹配当前任务、账户、标的及内容哈希；无记忆原文的失败生成任务须有未变化的摘要和可信账户关联。无法核实范围、无关错误、completed/partial 或来源编辑删除的记录不自动重排。重新排队后每项仍最多尝试三次；修订 1 已耗尽的缺字段任务不会因修订 2 获得新预算，重启也不会反复重置。已有可用内容保持可读，旧错误和之前的恢复诊断保留。
 
 两个工作表的 `review_contract_revision` 与 `contract_recovery` 保存修订、恢复结果及原错误/尝试次数，生成任务还保存 `review_source`；这些是后台诊断字段，不是页面新增指标。“重试失败整理”只作用于有效的 failed 投影，不能重排记忆生成任务。自动恢复只覆盖本次明确识别的旧故障；其他无原文场景需正常生成流程。上线核对须看到实际已发布内容及下一轮 Prompt，不能仅以错误消失或重启成功判断恢复。
 

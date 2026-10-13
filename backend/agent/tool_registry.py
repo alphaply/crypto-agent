@@ -29,9 +29,16 @@ from backend.utils.logger import setup_logger
 logger = setup_logger("ToolRegistry")
 
 
+def canonical_tool_name(tool_name: str) -> str:
+    """Accept case-only variants of canonical actions, without widening modes."""
+    canonical = tool_name.lower()
+    return canonical if canonical in {'open', 'close', 'edit', 'cancel'} else tool_name
+
+
 def uses_scoped_admission(tool_name: str, config_id: str, arguments: dict | None = None) -> bool:
     from backend.config import config
     from backend.utils.exit_policy import effective_exit_mode
+    tool_name = canonical_tool_name(tool_name)
     canonical = tool_name in {'open', 'close', 'edit', 'cancel'} or (
         tool_name == 'execute_trade_actions' and (arguments or {}).get('contract_version') == 2)
     cfg = config.get_config_by_id(config_id) or {}
@@ -120,6 +127,7 @@ def _summarize_result(result: Any, limit: int = 300) -> str:
 
 def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, operation_id: str | None = None,
                    cycle_id: str | None = None, expected_spot_fingerprint: str | None = None) -> str:
+    tool_name = canonical_tool_name(tool_name)
     if tool_name == 'manage_trading_rules':
         return 'Error: Trading rule changes belong to the memory review agent; not allowed in trading or chat.'
     from backend.config import config as runtime_config

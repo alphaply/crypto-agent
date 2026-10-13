@@ -6,7 +6,7 @@ import re
 
 from backend import database
 
-CONTRACT_REVISION = 1
+CONTRACT_REVISION = 2
 TABLES = {'decision_context_projections', 'memory_update_jobs'}
 
 
@@ -42,6 +42,13 @@ def is_legacy_projection_failure(error: str) -> bool:
     return len(fields) == len(set(fields)) == int(header[1])
 
 
+def is_recoverable_contract_failure(row: dict) -> bool:
+    revision = row['review_contract_revision']
+    # Revision 2 must not give revision 1's exhausted format jobs a new budget.
+    return (revision < 1 and is_legacy_projection_failure(row['error'])) or (
+        revision < 2 and row['error'] == 'Strategy projection contains an execution permission/restriction')
+
+
 def job_source(conn, config_id: str, summary_id: int, scope: str, symbol: str) -> dict | None:
     from backend.agent.context_projections import _source
     from backend.utils.trade_operations import _same_symbol
@@ -55,8 +62,16 @@ def job_source(conn, config_id: str, summary_id: int, scope: str, symbol: str) -
 
 
 def _diagnostic(row: dict, **extra) -> str:
+    previous = row.get('contract_recovery') or '{}'
+    try:
+        previous = json.loads(previous)
+    except (TypeError, ValueError):
+        pass
+    if isinstance(previous, dict) and previous.get('revision') == CONTRACT_REVISION:
+        previous = previous.get('previous_recovery')
     return json.dumps({'revision': CONTRACT_REVISION, 'previous_error': row['error'],
-                       'previous_attempts': row['attempts'], **extra}, ensure_ascii=False)
+                       'previous_attempts': row['attempts'],
+                       **({'previous_recovery': previous} if previous else {}), **extra}, ensure_ascii=False)
 
 
 def recover_legacy_failures(config_id: str, cfg: dict) -> dict:
@@ -89,7 +104,7 @@ def recover_legacy_failures(config_id: str, cfg: dict) -> dict:
             # account supplied the original evidence before rows are stamped.
             for saved in jobs:
                 job = dict(saved)
-                if not is_legacy_projection_failure(job['error']):
+                if not is_recoverable_contract_failure(job):
                     continue
                 if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_review_results'").fetchone():
                     stored = conn.execute('SELECT status FROM memory_review_results WHERE config_id=? AND operation_id=?',
@@ -108,9 +123,9 @@ def recover_legacy_failures(config_id: str, cfg: dict) -> dict:
                 elif prior_source == {}:
                     witnesses = conn.execute('SELECT DISTINCT account_scope FROM decision_context_projections '
                                              "WHERE config_id=? AND source_kind='strategy_summary' AND source_id=? "
-                                             'AND source_hash=? AND projection_version=? AND review_contract_revision<?',
+                                             'AND source_hash=? AND projection_version=? AND review_contract_revision<=?',
                                              (config_id, source['source_id'], source['source_hash'],
-                                              projections.VERSION, CONTRACT_REVISION)).fetchall()
+                                              projections.VERSION, job['review_contract_revision'])).fetchall()
                     trusted = {row['account_scope'] for row in witnesses} == {scope}
                 else:
                     trusted = False
@@ -128,7 +143,7 @@ def recover_legacy_failures(config_id: str, cfg: dict) -> dict:
                                 (config_id, scope, projections.VERSION, CONTRACT_REVISION)).fetchall()
             for saved in rows:
                 row = dict(saved)
-                if not is_legacy_projection_failure(row['error']) or not projections._original(conn, config_id, row):
+                if not is_recoverable_contract_failure(row) or not projections._original(conn, config_id, row):
                     continue
                 counts['projections'] += conn.execute("UPDATE decision_context_projections SET status='pending',attempts=0,"
                                                      "next_attempt=0,error='',review_contract_revision=?,contract_recovery=? WHERE "

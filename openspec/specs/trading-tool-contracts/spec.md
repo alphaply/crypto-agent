@@ -271,6 +271,17 @@
 - **WHEN** 当前轮包含无法识别作用范围的旧工具或异常结果
 - **THEN** 对无法证明独立性的后续写入保留停止语义，同时允许授权的只读查询
 
+### Requirement: Canonical action names tolerate case-only model variations
+Agent 和绑定任务聊天的 open、close、edit、cancel 工具执行入口 SHALL 将仅大小写不同的名称归一化后进行原有模式、参数、归属及准入校验。能力发现仍使用规范小写名，不增加其他别名、文件操作或交易权限；聊天写入 SHALL 保持原审批要求。归一化动作与规范名 SHALL 共享既有操作身份和幂等保护。
+
+#### Scenario: Capitalized edit replays the same operation
+- **WHEN** 模型调用 Edit 且提供合法交易改单参数，随后以相同操作身份调用 edit
+- **THEN** 系统按规范 edit 校验和执行，已完成的同一操作不重复提交，不仅因大小写返回模式不允许
+
+#### Scenario: Case variation grants no additional capabilities
+- **WHEN** Edit 用于不支持独立改单的模式、带文件编辑参数，或聊天用户拒绝审批
+- **THEN** 原模式、参数或审批检查拒绝执行，不操作文件、不绕过权限，也不把未知工具名称猜测为交易动作
+
 ### Requirement: Execution policies are explicit and backward compatible
 系统 SHALL 在规范工具 schema、说明和能力发现中声明支持的执行策略及依赖语义。省略策略的旧请求 SHALL 保持原哈希和停止语义，显式新策略及依赖 SHALL 参与持久化身份校验。恢复不得改变原批次策略，旧客户端不认识新增回执字段时 SHALL 仍能读取原 status、错误及订单身份。
 

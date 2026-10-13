@@ -110,18 +110,18 @@ def test_transport_and_correction_share_actual_budget(sources, monkeypatch, sequ
         assert not result.summary and not result.projection_metadata
 
 
-@pytest.mark.parametrize('corruption', ['source', 'hash', 'reference', 'permission', 'ban', 'omitted', 'length', 'tool', 'refusal'])
+@pytest.mark.parametrize('corruption', ['source', 'hash', 'reference', 'permission', 'omitted', 'length', 'tool', 'refusal'])
 def test_semantic_incomplete_tool_and_refusal_never_correct(sources, monkeypatch, corruption):
     context = projections.prepare_review('cfg')
     value = response_for(context)
+    # Even mixed content + identity/permission failures are not correctable.
+    value['memory']['strategy_text'] = '旧 unknown 未核验所以禁止加仓'
     if corruption in {'source', 'hash'}:
         value['projections'][0]['source_' + ('id' if corruption == 'source' else 'hash')] = 'forged'
     elif corruption == 'reference':
         value['memory']['execution_refs'] = ['forged']
     elif corruption == 'permission':
         value['memory']['allowed'] = True
-    elif corruption == 'ban':
-        value['memory']['strategy_text'] = '旧 unknown 未核验所以禁止加仓'
     elif corruption == 'omitted':
         value['projections'] = []
     item = response(value, **({'finish_reason': 'length'} if corruption == 'length' else {}))

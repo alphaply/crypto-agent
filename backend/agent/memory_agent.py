@@ -192,7 +192,9 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
     details = {"agent_name": "memory:" + config_id, "operation_id": operation_id,
                "rule_receipts": [], "mode": "memory_only"}
     try:
-        from backend.agent.context_projections import enabled, prepare_review, review_input, projection_output_policy
+        from backend.agent.context_projections import (
+            enabled, prepare_review, review_input, projection_output_policy, ProjectionContentError,
+        )
         projection_context = prepare_review(config_id) if enabled(agent_config) else None
         if projection_context is not None:
             from backend.agent.memory_contract_recovery import mark_review_attempt
@@ -266,6 +268,8 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
             except Exception as exc:
                 if isinstance(exc, ProjectionFormatError):
                     details['validation_error'] = {'category': 'format', 'code': exc.code, 'paths': exc.paths}
+                elif isinstance(exc, ProjectionContentError):
+                    details['validation_error'] = {'category': 'content_separation', 'code': exc.code, 'paths': exc.paths}
                 elif isinstance(exc, ValueError):
                     details['validation_error'] = {'category': 'response_validation'}
                 fields = _response_audit_fields(response)
@@ -274,18 +278,26 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
                 active_audit = None
                 raise
 
-        for format_attempt in range(2):
+        for correction_attempt in range(2):
             try:
                 output = invoke_with_retry(invoke_model, logger=logger, context=f"memory model={model} config_id={config_id}")
                 break
             except Exception as exc:
                 original = exc.original if isinstance(exc, LLMInvocationError) else exc
-                if not isinstance(original, ProjectionFormatError) or format_attempt or model_calls >= MAX_MODEL_CALLS:
+                if not isinstance(original, (ProjectionFormatError, ProjectionContentError)) or correction_attempt or model_calls >= MAX_MODEL_CALLS:
                     raise
-                details['phase'] = 'format_correction'
-                messages = review_messages('上次响应格式校验失败：' + original.code + '；字段：'
-                                           + ', '.join(original.paths) + '。请重新返回符合上述契约的完整JSON对象，'
-                                           '不能仅返回summary或补空对象；仅使用本次提供的来源。')
+                if isinstance(original, ProjectionContentError):
+                    details['phase'] = 'content_correction'
+                    correction = ('上次响应混入执行状态或许可结论；字段：' + ', '.join(original.paths)
+                                  + '。重新返回完整JSON：strategy_text 仅保留市场假设、价位、策略条件和教训；'
+                                  '把工具错误、回执、执行限制和解锁叙述放入 unlinked_execution_notes，'
+                                  '可信操作身份放 execution_refs。保留 summary 原文；不得伪造引用、补空策略或宣布已获交易许可。')
+                else:
+                    details['phase'] = 'format_correction'
+                    correction = ('上次响应格式校验失败：' + original.code + '；字段：'
+                                  + ', '.join(original.paths) + '。请重新返回符合上述契约的完整JSON对象，'
+                                  '不能仅返回summary或补空对象；仅使用本次提供的来源。')
+                messages = review_messages(correction)
         metadata = output if isinstance(output, dict) else {}
         summary = metadata['summary'] if metadata else output
         _finish_audit(active_audit, status="success", output=extract_message_text(response), usage=usage,
