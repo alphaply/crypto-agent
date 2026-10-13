@@ -163,7 +163,7 @@ MCP 的每个 blocker 都按当前 principal/profile 单独映射到外部操作
 ## 独立批次与显式依赖
 
 v2 批次省略 execution_policy 保留旧哈希和 stop_on_error 行为。显式 independent 按顺序分别准入；
-failed/pending/unknown 不阻止无依赖项。depends_on 仅用于此策略，必须为唯一的前项整数索引，不接受布尔值。
+failed/pending/unknown 不阻止无依赖项。depends_on 仅用于此策略，必须为唯一的前项整数索引（从 0 开始且小于当前动作索引），不接受 null、布尔值或字符串；无依赖时省略该字段。即使 `depends_on: []` 也要求显式 independent，`independent_exits` 任务模式不会代替这个批次参数。非法批次在首次交易写入前整批拒绝，错误指向具体动作字段；系统不会自动切换策略或删除依赖。
 只有 completed 满足依赖；submitted/skipped 不算完成业务前提。整批结构、权限和已知模式在任何写入前检查。
 汇总优先 unknown、pending、failed、submitted、completed；未执行项使整批不能报全部成功，summary 给出逐类计数。
 恢复只刷新已执行项，不补发尾项。规范 Agent/Chat 多工具列表也逐项判断，不通过方向或价格猜模型的先后意图；

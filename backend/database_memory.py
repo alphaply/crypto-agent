@@ -150,11 +150,21 @@ class SummaryMemoryStore:
             return result
 
     def save_short_memory(self, bucket_start, bucket_end, symbol, config_id, market_summary, position_summary, source_count,
-                          *, window_start=None, window_end=None, source_summary_ids=None, run_id=None, decision_projection=None):
+                          *, window_start=None, window_end=None, source_summary_ids=None, run_id=None, decision_projection=None,
+                          source_guard=None):
         created_at = self._timestamp()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             conn.execute('BEGIN IMMEDIATE')
+            if source_guard:
+                from backend.agent.memory_contract_recovery import job_source
+                from backend.utils.trade_evidence import configured_account_scope
+                if source_guard != job_source(conn, config_id, source_guard['source_id'],
+                                              configured_account_scope(config_id), symbol):
+                    raise ValueError('Memory recovery source or account changed before publication')
+            if decision_projection:
+                from backend.agent.context_projections import verify_publication_sources
+                verify_publication_sources(conn, config_id, decision_projection)
             columns = {row[1] for row in cursor.execute('PRAGMA table_info(short_memories)')}
             for name, definition in (('window_start', 'TEXT'), ('window_end', 'TEXT'),
                                      ('source_summary_ids', "TEXT NOT NULL DEFAULT '[]'"),

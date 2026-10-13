@@ -45,6 +45,8 @@ def initialize_schema(conn):
             conn.execute('ROLLBACK TO projection_upgrade')
             conn.execute('RELEASE projection_upgrade')
             raise
+    from backend.agent.memory_contract_recovery import initialize_contract_state
+    initialize_contract_state(conn, 'decision_context_projections')
 
 
 def _hash(value) -> str:
@@ -168,14 +170,16 @@ def stored_sources(config_id: str, scope: str, kind: str, *, status: str | None 
 
 
 def ensure_sources(config_id: str, *, account_scope: str | None = None) -> list[dict]:
+    from backend.agent.memory_contract_recovery import CONTRACT_REVISION
     sources = current_sources(config_id)
     scope = account_scope or trade_evidence.configured_account_scope(config_id)
     with database.get_db_conn() as conn:
         initialize_schema(conn)
         for s in sources:
             conn.execute('INSERT OR IGNORE INTO decision_context_projections '
-                         '(config_id,account_scope,source_kind,source_id,source_hash,projection_version,symbol,updated_at) VALUES(?,?,?,?,?,?,?,?)',
-                         (*key(config_id, scope, s), s['row']['symbol'], time.time()))
+                         '(config_id,account_scope,source_kind,source_id,source_hash,projection_version,symbol,updated_at,review_contract_revision) '
+                         'VALUES(?,?,?,?,?,?,?,?,?)',
+                         (*key(config_id, scope, s), s['row']['symbol'], time.time(), CONTRACT_REVISION))
             row = conn.execute('SELECT * FROM decision_context_projections WHERE ' + KEY_WHERE,
                                key(config_id, scope, s)).fetchone()
             s['projection'] = dict(row)
@@ -209,16 +213,25 @@ class ProjectionReview(BaseModel):
     projections: list[SourceProjection]
 
 
-PROJECTION_POLICY = '''独立退出模式的输出格式覆盖前面的单 summary 格式：
-{"summary":"完整记忆原文（供审计）","memory":{"strategy_text":"新记忆中的纯策略背景","execution_refs":[],"unlinked_execution_notes":[]},
-"projections":[{"source_kind":"short_memory 或 strategy_summary","source_id":"提供的来源ID","source_hash":"提供的哈希",
-"strategy_text":"该来源的纯策略文字","execution_refs":[],"unlinked_execution_notes":[]}]}
+PROJECTION_POLICY = '''本次输出契约：完整策略投影JSON，summary、memory、projections 均必填。
+summary 保存完整记忆原文供审计；篇幅与执行事实整理要求适用于原文，memory/projections 只保留纯策略。
+没有待转换来源时 projections 显式为 []，memory 仍须提供本次新记忆的策略内容，不能省略或补空对象。
 对提供的每个待转换来源输出一条 projections；不改来源ID/哈希。strategy_text 保留市场假设、关键价位、策略理由、
 等四小时收盘确认等观察条件及历史教训，不保存账户持仓、挂单或执行许可结论。
 例如“旧 unknown 未核验所以禁止加仓”只进入执行引用；“等四小时收盘前不加仓”作为策略条件保留。
 execution_refs 只能选提供的原操作候选ID，不能含 allowed、blocked_actions 或已解决等权限/状态判断。
 无身份的旧疑虑进入 unlinked_execution_notes；不能用另一笔0.30成交解决0.37事件。
 同身份最新证据优先；模型不负责恢复、解锁或证明成交，程序每次读取时解析执行引用。不要截断正文。'''
+
+
+def projection_output_policy() -> str:
+    """Build the example through the same model that validates responses."""
+    example = ProjectionReview(
+        summary='完整记忆原文（供审计）', memory=StrategyProjection(strategy_text='新记忆中的纯策略背景'),
+        projections=[SourceProjection(source_kind='short_memory 或 strategy_summary', source_id='提供的来源ID',
+                                      source_hash='提供的哈希', strategy_text='该来源的纯策略文字')],
+    )
+    return PROJECTION_POLICY + '\n完整格式示例：\n' + json.dumps(example.model_dump(), ensure_ascii=False)
 
 
 def prepare_review(config_id: str) -> dict:
@@ -231,7 +244,8 @@ def prepare_review(config_id: str) -> dict:
     symbol = (config.get_config_by_id(config_id) or {}).get('symbol') or (sources[0]['row']['symbol'] if sources else '')
     evidence = operation_evidence(config_id, symbol, refs, account_scope=scope)
     return dict(config_id=config_id, account_scope=scope, symbol=symbol, sources=pending,
-                candidates=candidates, evidence=evidence, all_refs=refs, projection_version=VERSION)
+                candidates=candidates, evidence=evidence, all_refs=refs, projection_version=VERSION,
+                source_guards=[{k: s[k] for k in ('source_kind', 'source_id', 'source_hash')} for s in sources])
 
 
 def review_input(context: dict, supplied_text: str = '') -> str:
@@ -269,7 +283,15 @@ def validate_review(value: dict, context: dict) -> dict:
     if seen != set(expected):
         raise ValueError('Projection response omitted a supplied source')
     return {**review.model_dump(), 'account_scope': context['account_scope'], 'config_id': context['config_id'],
-            'projection_version': VERSION, 'symbol': context['symbol']}
+            'projection_version': VERSION, 'symbol': context['symbol'], 'source_guards': context.get('source_guards', [])}
+
+
+def verify_publication_sources(conn, config_id: str, metadata: dict) -> None:
+    """Check before the raw-memory upsert, inside its transaction."""
+    _publication_scope(config_id, metadata)
+    for source in metadata.get('source_guards', []):
+        if not _original(conn, config_id, source):
+            raise ValueError('Memory source changed before publication')
 
 
 def _publication_scope(config_id: str, metadata: dict) -> str:

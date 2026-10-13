@@ -31,9 +31,12 @@ def specialize_trade_tool(tool, config: dict):
             'args_schema': CanonicalTradeActionsSchema.model_json_schema(),
             'description': '顺序执行最多20项独立交易动作。必填contract_version=2；actions使用action=open/close/edit/cancel及单项工具相同的平铺参数。'
                            '先校验整批结构/权限/已知模式，再逐项核验执行。execution_policy省略或stop_on_error时失败/未知停止后续；'
-                           'independent时无依赖项继续，各项可用depends_on指定必须completed的前项索引；submitted不满足依赖。'
+                           '填写depends_on必须在顶层显式选择execution_policy="independent"；independent_exits不自动选择批次策略。'
+                           'depends_on省略表示无依赖；提供时是非null整数数组，索引从0开始且只能指向不重复的此前项，必须completed；submitted不满足依赖。'
                            '无需提前查询，工具在当前调用内核验实际依赖；历史拒绝不阻止有效新动作。'
-                           '非原子事务；提交open不等于等待成交。例：{"contract_version":2,"actions":[{"action":"open","side":"LONG","amount":0.2,"price":100,"reason":"第一档"}]}。'
+                           '非原子事务；提交open不等于等待成交。依赖示例：{"contract_version":2,"execution_policy":"independent","actions":'
+                           '[{"action":"cancel","order_id":"algo:原订单ID","reason":"撤旧保护"},'
+                           '{"action":"close","side":"LONG","order_type":"stop_market","amount":0.2,"trigger_price":92,"reason":"新保护","depends_on":[0]}]}。'
                            + INDEPENDENT_EXIT_HELP,
         })
     schema = deepcopy((LegacyTradeActionsSchema if name == 'execute_trade_actions' else tool.args_schema).model_json_schema())

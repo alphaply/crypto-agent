@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+import json
 import threading
 import time
 
@@ -23,15 +24,18 @@ def _initialize(conn):
         status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(config_id,run_id))''')
+    from backend.agent.memory_contract_recovery import initialize_contract_state
+    initialize_contract_state(conn, 'memory_update_jobs')
 
 
 def enqueue_memory_update(config_id, run_id, summary_id):
+    from backend.agent.memory_contract_recovery import CONTRACT_REVISION
     if not summary_id:
         raise ValueError('Memory update requires a persisted summary ID')
     with database.get_db_conn() as conn:
         _initialize(conn)
-        conn.execute('INSERT OR IGNORE INTO memory_update_jobs(config_id,run_id,summary_id) VALUES (?,?,?)',
-                     (config_id, run_id, summary_id))
+        conn.execute('INSERT OR IGNORE INTO memory_update_jobs(config_id,run_id,summary_id,review_contract_revision) VALUES (?,?,?,?)',
+                     (config_id, run_id, summary_id, CONTRACT_REVISION))
         conn.commit()
 
 
@@ -48,19 +52,31 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
                 return bool(job and job['status'] == 'completed')
             if job['next_attempt'] > time.time():
                 return False
-            row = conn.execute('SELECT id,timestamp FROM summaries WHERE id=? AND config_id=?',
-                               (job['summary_id'], config_id)).fetchone()
-            if not row:
-                return False
-            end = datetime.fromisoformat(row['timestamp'])
-            beginning = (end - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
-            columns = {item[1] for item in conn.execute('PRAGMA table_info(summaries)')}
-            report_field = 'report_json' if 'report_json' in columns else 'NULL AS report_json'
-            decision_field = 'decision_json' if 'decision_json' in columns else 'NULL AS decision_json'
-            rows = conn.execute(f'''SELECT id,config_id,symbol,timestamp,strategy_logic,{report_field},{decision_field} FROM summaries
-                WHERE config_id=? AND timestamp>=? AND timestamp<=? AND id<=?
-                ORDER BY timestamp,id''', (config_id, beginning, row['timestamp'], row['id'])).fetchall()
         try:
+            from backend.agent.memory_contract_recovery import CONTRACT_REVISION, job_source
+            from backend.utils.trade_evidence import configured_account_scope
+            # Recovered jobs retain a source/account witness across restarts.
+            # A mismatch fails before model work and is checked again at save.
+            captured_source = json.loads(job['review_source'])
+            with database.get_db_conn() as conn:
+                if captured_source and captured_source != job_source(
+                        conn, config_id, job['summary_id'], configured_account_scope(config_id), agent_config.get('symbol', '')):
+                    raise ValueError('Memory recovery source or account changed')
+                conn.execute('UPDATE memory_update_jobs SET review_contract_revision=? WHERE config_id=? AND run_id=?',
+                             (CONTRACT_REVISION, config_id, run_id))
+                conn.commit()
+                row = conn.execute('SELECT id,timestamp FROM summaries WHERE id=? AND config_id=?',
+                                   (job['summary_id'], config_id)).fetchone()
+                if not row:
+                    raise ValueError('Memory source summary no longer exists')
+                end = datetime.fromisoformat(row['timestamp'])
+                beginning = (end - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+                columns = {item[1] for item in conn.execute('PRAGMA table_info(summaries)')}
+                report_field = 'report_json' if 'report_json' in columns else 'NULL AS report_json'
+                decision_field = 'decision_json' if 'decision_json' in columns else 'NULL AS decision_json'
+                rows = conn.execute(f'''SELECT id,config_id,symbol,timestamp,strategy_logic,{report_field},{decision_field} FROM summaries
+                    WHERE config_id=? AND timestamp>=? AND timestamp<=? AND id<=?
+                    ORDER BY timestamp,id''', (config_id, beginning, row['timestamp'], row['id'])).fetchall()
             previous = memory.format_short_memory_for_llm(config_id)
             evidence = memory.format_recent_position_history_for_memory(config_id, agent_config)
             entries = []
@@ -76,12 +92,17 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
                                             operation_id='run-memory:' + run_id)
             if memory.is_invalid_memory(result, source):
                 raise ValueError('记忆整理未返回有效结果，旧记忆已保留')
+            if captured_source:
+                with database.get_db_conn() as conn:
+                    if captured_source != job_source(conn, config_id, job['summary_id'],
+                                                      configured_account_scope(config_id), agent_config.get('symbol', '')):
+                        raise ValueError('Memory recovery source or account changed')
             # Stable subsecond identity prevents same-second manual runs overwriting one another.
             key = end.replace(microsecond=int(row['id']) % 1000000).isoformat(sep=' ', timespec='microseconds')
             memory.save_short_memory(key, row['timestamp'], agent_config.get('symbol', 'Unknown'), config_id,
                                     result, evidence, len(rows), window_start=beginning,
                                     window_end=row['timestamp'], source_summary_ids=[item['id'] for item in rows],
-                                    run_id=run_id)
+                                    run_id=run_id, **({'source_guard': captured_source} if captured_source else {}))
             with database.get_db_conn() as conn:
                 conn.execute("UPDATE memory_update_jobs SET status='completed',error='' WHERE config_id=? AND run_id=?",
                              (config_id, run_id))
@@ -113,6 +134,14 @@ def tick_memory_updates():
                 except Exception as exc:
                     logger.warning('Memory worker failed: %s', exc)
                 _active.pop(config_id, None)
+        from backend.agent.memory_contract_recovery import recover_legacy_failures
+        for cfg in config.get_all_symbol_configs():
+            cid = cfg.get('config_id')
+            if cid and cid not in _active:
+                try:
+                    recover_legacy_failures(cid, dict(cfg))
+                except Exception as exc:
+                    logger.warning('Cannot recover memory contract failure for %s: %s', cid, exc)
         with database.get_db_conn() as conn:
             _initialize(conn)
             rows = conn.execute("SELECT * FROM memory_update_jobs WHERE status='pending' ORDER BY summary_id").fetchall()

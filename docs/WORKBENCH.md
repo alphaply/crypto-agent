@@ -51,7 +51,17 @@ Daily memory 以及旧固定四小时批次已停用，历史数据保留归档�
 
 管理员在「短期记忆」选择具体任务后，可查看“决策可用记忆”的发布截至时间、待整理/失败/尚未生成数，以及整理错误。“重试失败整理”只重新排队有效的 failed 来源，沿用同一后台租约和最多三次尝试；不调用交易工具。排队期间每 30 秒刷新状态，也可手动刷新。下方历史表格继续展示可编辑、可导出的完整原文；公开页面没有管理状态与重试入口。
 
-管理接口为 `GET /api/history/short-memories/projections/status?config_id=...` 与 `POST /api/history/short-memories/projections/retry`（JSON 仅含 `config_id`），均需登录。升级保留已发布内容，历史 failed 来源只获得一次有界自动修复机会；再次重启不会重置尝试次数。原文和新策略视图在同一事务保存，发布失败时一并回滚。
+管理接口为 `GET /api/history/short-memories/projections/status?config_id=...` 与 `POST /api/history/short-memories/projections/retry`（JSON 仅含 `config_id`），均需登录。原文和新策略视图在同一事务保存，发布失败时一并回滚。
+
+“尚无已发布短期策略记忆”只说明没有可用策略视图，需要结合原文列表和状态判别：
+
+- 原文列表为空：当前没有短期记忆原文。只有摘要时可以先发布摘要；投影重试不会补造短期记忆。
+- 有原文而 `published.short_memory` 为空：尚未成功发布。`pending` 是待整理投影数，`not_generated` 是有效原文尚无投影记录的数量，不代表缺少原文。
+- `failed` 或 `errors` 非空：查看来源 ID、`attempts` 和 `error`；`read_errors` 则表示读取异常。已发布项通过 `published` 中的 `source_id`、`as_of` 确认来源和截至时间。
+
+本次输出契约修复在后台 tick 中定向恢复旧 `ProjectionReview` 缺少 `memory`/`projections` 的终止失败：原文投影须仍匹配当前任务、账户、标的及内容哈希；无记忆原文的失败生成任务须有未变化的摘要和可信账户关联。无法核实范围、无关错误、completed/partial 或来源编辑删除的记录不自动重排。重新排队后每项仍最多尝试三次，重启不会再次重置同一契约修订的预算；已有可用内容保持可读。
+
+两个工作表的 `review_contract_revision` 与 `contract_recovery` 保存修订、恢复结果及原错误/尝试次数，生成任务还保存 `review_source`；这些是后台诊断字段，不是页面新增指标。“重试失败整理”只作用于有效的 failed 投影，不能重排记忆生成任务。自动恢复只覆盖本次明确识别的旧故障；其他无原文场景需正常生成流程。上线核对须看到实际已发布内容及下一轮 Prompt，不能仅以错误消失或重启成功判断恢复。
 
 ## 合约独立退出与平仓排查
 

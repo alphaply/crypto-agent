@@ -3,13 +3,18 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_serializer, model_validator
 
 
 PositiveNumber = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 Reason = Annotated[str, Field(min_length=1)]
 Side = Literal['LONG', 'SHORT']
 OrderType = Literal['market', 'limit', 'take_profit_market', 'take_profit_limit', 'stop_market', 'stop_limit']
+EXECUTION_POLICY_DESCRIPTION = (
+    '省略或 stop_on_error：失败/待核验/未知停止后续，不允许任何动作填写 depends_on。'
+    '使用 depends_on 必须显式选择 independent：未满足依赖项不执行，其他无依赖项继续逐项准入。'
+    '任务的 independent_exits 模式不会自动选择此策略。'
+)
 
 
 class TradingInput(BaseModel):
@@ -67,7 +72,17 @@ class CancelInput(TradingInput):
 
 
 class BatchDependencies(TradingInput):
-    depends_on: list[StrictInt] | None = None
+    depends_on: list[StrictInt] = Field(default_factory=list, description=(
+        '可省略；提供时要求批次顶层显式 execution_policy="independent"。必须为非 null 整数数组；'
+        '索引从0开始，只能引用不重复且小于本动作索引的前项，前项必须 completed，submitted 不满足依赖。'
+        '无依赖时省略；不接受 null、布尔值或字符串。'))
+
+    @field_validator('depends_on', mode='before')
+    @classmethod
+    def require_index_list(cls, value):
+        if value is None:
+            raise ValueError('depends_on must be an index list, not null; omit the field when no dependency is intended')
+        return value
 
     @model_serializer(mode='wrap')
     def omit_implicit(self, handler):
@@ -99,18 +114,20 @@ TradeAction = Annotated[OpenAction | CloseAction | EditAction | CancelAction, Fi
 class CanonicalTradeActionsSchema(TradingInput):
     contract_version: Literal[2] = Field(description='新平铺动作必须显式填写 2；不接受旧 order 嵌套格式')
     actions: list[TradeAction] = Field(min_length=1, max_length=20)
-    execution_policy: Literal['stop_on_error', 'independent'] = 'stop_on_error'
+    execution_policy: Literal['stop_on_error', 'independent'] = Field('stop_on_error', description=EXECUTION_POLICY_DESCRIPTION)
 
     @model_validator(mode='after')
     def validate_dependencies(self):
         for index, action in enumerate(self.actions):
             if 'depends_on' not in action.model_fields_set:
                 continue
-            if self.execution_policy != 'independent' or action.depends_on is None:
-                raise ValueError('depends_on requires independent policy and an index list')
+            if self.execution_policy != 'independent':
+                raise ValueError(f'actions[{index}].depends_on requires explicit execution_policy="independent"; '
+                                 'omitted policy defaults to stop_on_error. Omit depends_on only if no dependency is intended')
             dependencies = action.depends_on
             if len(set(dependencies)) != len(dependencies) or any(i < 0 or i >= index for i in dependencies):
-                raise ValueError('depends_on must contain unique earlier action indices')
+                raise ValueError(f'actions[{index}].depends_on must contain unique earlier action indices '
+                                 f'(zero-based integers >= 0 and < {index})')
         return self
 
     @model_serializer(mode='wrap')

@@ -10,7 +10,7 @@ from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from pydantic import ConfigDict, Field, create_model, model_validator
 
 from . import service
-from backend.agent.trading_contracts import OrderType, PositiveNumber, TradeAction
+from backend.agent.trading_contracts import EXECUTION_POLICY_DESCRIPTION, OrderType, PositiveNumber, TradeAction
 
 OperationId = Annotated[str, Field(pattern=r'^[a-zA-Z0-9_.:-]{8,160}$', description='Caller-supplied stable ID. Reuse only for the identical request; never generate a new ID to retry an unknown result.')]
 Amount = Annotated[float, Field(gt=0, allow_inf_nan=False, description='Exact base-asset quantity, not quote-currency cost or contract count.')]
@@ -199,8 +199,9 @@ def register_tools(server):
 
     async def execute_trade_actions(profile_id: ProfileId, symbol: Symbol, operation_id: OperationId,
                                     contract_version: Literal[2], actions: Annotated[list[TradeAction], Field(min_length=1, max_length=20)],
-                                    execution_policy: Literal['stop_on_error', 'independent'] | None = None) -> dict:
-        """Independent mode ordered open/close/edit/cancel actions. Requires contract_version=2 and 1–20 flat actions. Default stop_on_error stops after failed/pending/unknown. execution_policy=independent assesses each action separately; depends_on lists unique earlier indices that must be completed (submitted is not enough). Each action refreshes its evidence internally; no preliminary query or unlock. Mixed cancel/trade requires both permissions before the first write. No rollback or replay of skipped items. open does not wait for fills."""
+                                    execution_policy: Annotated[Literal['stop_on_error', 'independent'] | None,
+                                                                Field(description=EXECUTION_POLICY_DESCRIPTION)] = None) -> dict:
+        """Independent mode ordered open/close/edit/cancel actions. Requires contract_version=2 and 1–20 flat actions. Default stop_on_error stops after failed/pending/unknown and forbids depends_on. Any depends_on requires explicit execution_policy=independent (independent_exits does not set it). Omit depends_on when unused; never null. It lists unique zero-based earlier indices that must be completed, not merely submitted. Example: {"contract_version":2,"execution_policy":"independent","actions":[{"action":"cancel","order_id":"algo:old","reason":"replace"},{"action":"close","side":"LONG","order_type":"stop_market","amount":0.2,"trigger_price":92,"reason":"new stop","depends_on":[0]}]}. Each action refreshes evidence internally. Mixed cancel/trade requires both permissions before the first write. No rollback or replay of skipped items; open does not wait for fills."""
         arguments = {
             'contract_version': contract_version,
             'actions': [item.model_dump(exclude_none=True) if hasattr(item, 'model_dump') else item for item in actions],
