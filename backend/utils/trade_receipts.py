@@ -132,6 +132,7 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
         position.update(last_known_amount=position['amount'], amount=None)
     from backend.utils.independent_admission import continuation_for
     continuation = continuation_for({**plan, 'position_observation': position})
+    is_converged_terminal = bool(record.get('status') in TERMINAL and not record.get('fill_pending') and not cleanup_pending)
     result.update(receipt_version=1, contract_version=2, status=status, operation_id=operation_id,
                   action=action, episode_id=plan.get('episode_id'), pending=status in {'unknown', 'pending'},
                   filled_amount=filled, remaining_amount=remaining, actual_remaining=remaining,
@@ -148,7 +149,7 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
                             'blocker_operation_ids': list(dict.fromkeys(r['operation_id'] for r in blockers if r.get('operation_id'))),
                             'last_error': record.get('query_error'),
                             'last_attempt_at': record.get('last_attempt_at'),
-                            'next_retry_at': record.get('next_retry_at'),
+                            'next_retry_at': None if is_converged_terminal else record.get('next_retry_at'),
                             'attempt_count': record.get('attempt_count', 0)})
     if record:
         result.update(id=record.get('id'), client_id=record.get('client_id'), order_id=order_reference(record),

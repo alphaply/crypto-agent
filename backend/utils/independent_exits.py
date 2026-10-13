@@ -1094,6 +1094,12 @@ class IndependentExits(PositionProtection):
         for record in plan.get('entries', []) + plan.get('exits', []):
             if classify_saved_order(record)['state'] in {'not_accepted', 'terminal_verified'}:
                 continue
+            if record.get('status') in TERMINAL and not record.get('fill_pending') and (
+                    record.get('fill_verified') or float(record.get('filled') or 0) == 0):
+                record['fill_verified'] = True
+                record.pop('next_retry_at', None)
+                record.pop('query_error', None)
+                continue
             if respect_backoff and record.get('next_retry_at', 0) > time.time():
                 errors.append(record.get('query_error') or 'Order verification backing off')
                 continue

@@ -169,6 +169,9 @@ def stored_sources(config_id: str, scope: str, kind: str, *, status: str | None 
     return sources
 
 
+MAX_PENDING_SOURCES = 5
+
+
 def ensure_sources(config_id: str, *, account_scope: str | None = None) -> list[dict]:
     from backend.agent.memory_contract_recovery import CONTRACT_REVISION
     sources = current_sources(config_id)
@@ -184,12 +187,20 @@ def ensure_sources(config_id: str, *, account_scope: str | None = None) -> list[
                                key(config_id, scope, s)).fetchone()
             s['projection'] = dict(row)
         conn.commit()
-    # Finish sources queued before a newer decision moved the current window.
+    # Finish sources queued before a newer decision moved the current window (bounded).
     identities = {(s['source_kind'], s['source_id'], s['source_hash']) for s in sources}
+    pending_count = sum(1 for s in sources if s.get('projection', {}).get('status') == 'pending')
     for kind in SOURCE_TABLES:
-        for source in stored_sources(config_id, scope, kind, status='pending'):
+        if pending_count >= MAX_PENDING_SOURCES:
+            break
+        budget = MAX_PENDING_SOURCES - pending_count
+        for source in stored_sources(config_id, scope, kind, status='pending', limit=budget):
             if (kind, source['source_id'], source['source_hash']) not in identities:
                 sources.append(source)
+                identities.add((kind, source['source_id'], source['source_hash']))
+                pending_count += 1
+                if pending_count >= MAX_PENDING_SOURCES:
+                    break
     return sources
 
 
@@ -248,6 +259,7 @@ def projection_output_policy() -> str:
 
 def prepare_review(config_id: str) -> dict:
     from backend.config import config
+    from backend.utils.decision_record import compact_evidence_payload
     scope = trade_evidence.configured_account_scope(config_id)
     sources = ensure_sources(config_id, account_scope=scope)
     pending = [s for s in sources if s['projection']['status'] == 'pending' and s['projection']['next_attempt'] <= time.time()]
@@ -255,8 +267,9 @@ def prepare_review(config_id: str) -> dict:
     refs = sorted({ref for values in candidates.values() for ref in values})
     symbol = (config.get_config_by_id(config_id) or {}).get('symbol') or (sources[0]['row']['symbol'] if sources else '')
     evidence = operation_evidence(config_id, symbol, refs, account_scope=scope)
+    compact_evidence = {k: compact_evidence_payload(v) for k, v in evidence.items()}
     return dict(config_id=config_id, account_scope=scope, symbol=symbol, sources=pending,
-                candidates=candidates, evidence=evidence, all_refs=refs, projection_version=VERSION,
+                candidates=candidates, evidence=compact_evidence, all_refs=refs, projection_version=VERSION,
                 source_guards=[{k: s[k] for k in ('source_kind', 'source_id', 'source_hash')} for s in sources])
 
 

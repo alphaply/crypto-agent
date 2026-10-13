@@ -291,3 +291,63 @@ def test_agent_and_bound_chat_use_current_state_without_history_or_old_bans(sour
     assert captured[0][0].content == prompt
     assert captured[0][-1].content == history[-1].content
     assert len(history) == 3
+
+
+def test_ensure_sources_bounds_pending_sources_and_prepare_review_compacts_evidence(sources, monkeypatch):
+    from backend.agent.context_projections import ensure_sources, prepare_review, review_input, MAX_PENDING_SOURCES
+    # Insert 15 old pending summaries in database
+    with database.get_db_conn() as conn:
+        for n in range(15):
+            conn.execute('INSERT INTO summaries(id,config_id,symbol,timestamp,strategy_logic) '
+                         'VALUES(?,?,?,?,?)',
+                         (1000 + n, 'cfg', 'ETH/USDT', f'2026-10-10 10:{n:02d}:00', f'旧策略摘要 {n}'))
+        conn.commit()
+
+    all_sources = ensure_sources('cfg')
+    pending_sources = [s for s in all_sources if s['projection']['status'] == 'pending']
+    # Must be bounded by MAX_PENDING_SOURCES
+    assert len(pending_sources) <= MAX_PENDING_SOURCES
+
+    # Test prepare_review evidence is compacted
+    context = prepare_review('cfg')
+    assert len(context['sources']) <= MAX_PENDING_SOURCES
+    # If any evidence is present, ensure continuation and recovery are stripped
+    for ref, ev in context['evidence'].items():
+        if isinstance(ev.get('latest'), dict):
+            assert 'continuation' not in ev['latest']
+            assert 'recovery' not in ev['latest']
+            assert 'admission' not in ev['latest']
+
+    # Test review_input output is clean
+    input_text = review_input(context)
+    assert '策略投影来源' in input_text
+    assert 'continuation' not in input_text
+    assert 'previous_assessment' not in input_text
+
+
+def test_canceled_order_without_fill_pending_converges_without_spin(real_short):
+    service, exchange = real_short
+    plan = {
+        'symbol': 'ETH/USDT',
+        'side': 'SHORT',
+        'account_scope': service.account_scope,
+        'entries': [],
+        'exits': [
+            {
+                'id': 'algo-123',
+                'client_id': 'c123',
+                'status': 'canceled',
+                'filled': 0.0,
+                'fill_pending': False,
+                'exit_type': 'stop_market',
+                'attempt_count': 5,
+            }
+        ]
+    }
+    # First collection should mark fill_verified and avoid incrementing attempt_count
+    service._collect_order_evidence(plan)
+    rec = plan['exits'][0]
+    assert rec.get('fill_verified') is True
+    assert rec.get('attempt_count') == 5
+    assert 'next_retry_at' not in rec
+

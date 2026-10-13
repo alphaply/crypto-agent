@@ -120,6 +120,8 @@ regular:8389766294627213395 | 多仓限价入场 | 0.1 | 限价 2385 | 挂单中
 原始结果和最新证据分别传入实际记忆消费者，不仅用于页面 `current_receipt`。同身份最新结果优先，
 批次子项按保存的 index 关联，not_executed 保持未执行，不能用0.30或新账户的空仓解决原0.37事件。
 
+复盘输入回执自动裁剪内部执行引擎元数据（`compact_execution_receipt`）：剥离 `continuation`、`admission`、`recovery`、`attempt_count`、`previous_assessment`、`evidence_versions` 等治理/轮询标记，仅保留订单号、执行状态、成交量、剩余量、触发价、方向等关键业务状态。瞬态 schema 参数校验失败（如 `TradeActionsSchema` 报错）不作为阻断证据注入复盘提示；终态且无未决成交的订单（如已撤单且成交为0）即时标记 `fill_verified` 并清除重试，阻断 `attempt_count` 无限累加。单次复盘待转换来源严格限制上限为 5 条（`MAX_PENDING_SOURCES = 5`），防止积压的未整理历史摘要暴涨提示词体积。
+
 `decision_context_projections` 保存版本、来源种类/ID/内容哈希、strategy_text、execution_refs、
 unlinked_execution_notes 及处理状态。模型仅分离策略背景和执行陈述；执行引用必须来自可信工具链，
 不能添加权限、跨任务来源或伪造身份。原始 memory 和 strategy_logic 不就地清洗。

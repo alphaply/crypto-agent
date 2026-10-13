@@ -70,11 +70,111 @@ def read_decision_record(summary: dict) -> dict | None:
         return {'messages': [], 'execution_results': [], 'unavailable': True}
 
 
+def is_transient_schema_error(result: str | None) -> bool:
+    if not result or not isinstance(result, str):
+        return False
+    indicators = (
+        'validation error for',
+        'pydantic.dev',
+        'Input should be',
+        'Value error, depends_on requires',
+        'ValidationError',
+    )
+    return any(ind in result for ind in indicators)
+
+
+def compact_action_payload(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return item
+    compact = {}
+    for k in (
+        'action', 'status', 'side', 'pos_side', 'amount', 'filled_amount',
+        'remaining_amount', 'actual_remaining', 'requested_amount', 'price',
+        'trigger_price', 'exit_type', 'order_type', 'order_id', 'exchange_order_id',
+        'order_status', 'edit_method', 'previous_order_id', 'protection_state',
+        'pending', 'operation_id'
+    ):
+        if k in item and item[k] is not None:
+            compact[k] = item[k]
+    pos = item.get('position')
+    if isinstance(pos, dict) and pos.get('amount') is not None:
+        compact['position'] = {'side': pos.get('side'), 'amount': pos.get('amount'), 'status': pos.get('status')}
+    err = item.get('error') or (item.get('cleanup') or {}).get('error')
+    if err:
+        compact['error'] = err
+    return compact
+
+
+def compact_receipt_payload(payload):
+    from backend.utils.trade_operations import _decode_receipt
+    data = _decode_receipt(payload)
+    if not isinstance(data, dict):
+        return payload
+    if 'results' in data and isinstance(data['results'], list):
+        compact_batch = {
+            'status': data.get('status'),
+            'operation_id': data.get('operation_id'),
+            'execution_policy': data.get('execution_policy'),
+            'results': [
+                {
+                    'index': r.get('index'),
+                    'action': r.get('action'),
+                    'status': r.get('status'),
+                    'result': compact_action_payload(r.get('result', {})),
+                }
+                for r in data['results'] if isinstance(r, dict)
+            ]
+        }
+        if 'summary' in data:
+            compact_batch['summary'] = data['summary']
+        return compact_batch
+    return compact_action_payload(data)
+
+
+def compact_evidence_payload(evidence: dict) -> dict:
+    if not isinstance(evidence, dict):
+        return evidence
+    compact = {
+        'resolution': evidence.get('resolution'),
+        'operation_id': evidence.get('operation_id'),
+    }
+    if 'parent_operation_id' in evidence:
+        compact['parent_operation_id'] = evidence['parent_operation_id']
+    if 'latest' in evidence:
+        compact['latest'] = compact_receipt_payload(evidence['latest'])
+    if 'error' in evidence:
+        compact['error'] = evidence['error']
+    return compact
+
+
+def compact_execution_receipt(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return item
+    compact = {
+        'tool': item.get('tool'),
+        'tool_call_id': item.get('tool_call_id'),
+        'status': item.get('status'),
+    }
+    raw_res = item.get('result')
+    if is_transient_schema_error(raw_res):
+        compact['status'] = 'failed'
+        compact['error'] = 'parameter_validation_failed'
+        return compact
+
+    compact_res = compact_receipt_payload(raw_res)
+    compact['result'] = json.dumps(compact_res, ensure_ascii=False) if isinstance(compact_res, (dict, list)) else raw_res
+    if 'current_evidence' in item:
+        compact['current_evidence'] = compact_evidence_payload(item['current_evidence'])
+    return compact
+
+
 def append_execution_receipts(text: str, summary: dict) -> str:
     record = read_decision_record(summary)
     if record and record.get('execution_results'):
-        text += '\n实际工具回执（原始结果与同身份最新证据，最新证据优先）：\n' + json.dumps(
-            memory_execution_evidence(summary, record), ensure_ascii=False)
+        evidence = memory_execution_evidence(summary, record)
+        if evidence:
+            text += '\n实际工具回执（原始结果与同身份最新证据，最新证据优先）：\n' + json.dumps(
+                evidence, ensure_ascii=False)
     elif record and record.get('unavailable'):
         text += '\n结构化回执无法读取；执行状态未知。'
     return text
@@ -84,7 +184,8 @@ def memory_execution_evidence(summary: dict, record: dict | None = None) -> list
     """Consumer overlay only. Never change the persisted decision or first receipt."""
     record = record if record is not None else read_decision_record(summary)
     originals = (record or {}).get('execution_results') or []
-    refs = [execution_identity(r) for r in originals if isinstance(r, dict) and execution_identity(r)]
+    valid_originals = [r for r in originals if isinstance(r, dict) and not is_transient_schema_error(r.get('result'))]
+    refs = [execution_identity(r) for r in valid_originals if execution_identity(r)]
     from backend.utils.trade_recovery import operation_evidence
     from backend.utils.trade_evidence import configured_account_scope
     try:
@@ -92,15 +193,19 @@ def memory_execution_evidence(summary: dict, record: dict | None = None) -> list
         latest = operation_evidence(summary.get('config_id'), summary.get('symbol'), refs, account_scope=scope)
     except Exception:
         latest = {i: {'resolution': 'unavailable', 'operation_id': i} for i in refs}
-    return [{**r, 'current_evidence': latest.get(execution_identity(r), {'resolution': 'unresolved'})}
-            if isinstance(r, dict) else r for r in originals]
+    return [compact_execution_receipt({**r, 'current_evidence': latest.get(execution_identity(r), {'resolution': 'unresolved'})})
+            for r in valid_originals]
 
 
 def execution_identity(item: dict) -> str | None:
     from backend.utils.trade_operations import _decode_receipt
+    if is_transient_schema_error(item.get('result')):
+        return None
     result = _decode_receipt(item.get('result'))
     if isinstance(result, dict) and result.get('operation_id'):
         return str(result['operation_id'])
+    if item.get('status') == 'failed' and not isinstance(result, dict):
+        return None
     if item.get('tool') in {'open', 'close', 'edit', 'cancel', 'execute_trade_actions',
                              'open_position_real', 'close_position_real', 'open_position_strategy',
                              'close_position_strategy', 'cancel_order', 'update_order'}:
