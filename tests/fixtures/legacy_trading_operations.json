@@ -1,0 +1,398 @@
+[
+  {
+    "name": "unversioned",
+    "payload": {
+      "actions": [
+        {
+          "action": "cancel",
+          "order_id": "regular:0",
+          "reason": "fixture cancel"
+        },
+        {
+          "action": "cancel",
+          "order_id": "regular:1",
+          "reason": "fixture cancel"
+        },
+        {
+          "action": "cancel",
+          "order_id": "regular:2",
+          "reason": "fixture cancel"
+        }
+      ]
+    },
+    "parent_request": {
+      "tool": "execute_trade_actions",
+      "args": {
+        "actions": [
+          {
+            "action": "cancel",
+            "order_id": "regular:0",
+            "reason": "fixture cancel"
+          },
+          {
+            "action": "cancel",
+            "order_id": "regular:1",
+            "reason": "fixture cancel"
+          },
+          {
+            "action": "cancel",
+            "order_id": "regular:2",
+            "reason": "fixture cancel"
+          }
+        ],
+        "config_id": "fixture-task",
+        "symbol": "ETH/USDT"
+      }
+    },
+    "fingerprint": "244b842bc239d3f687356a2ccc00c7647a5fc723c474aa0c553b00bb39061905",
+    "children": [
+      {
+        "operation_id": "unversioned:0",
+        "request": {
+          "action": "cancel",
+          "order_id": "regular:0",
+          "reason": "fixture cancel"
+        },
+        "fingerprint": "58bb3a603350cfbdf3ed957e5258d7cbf2f7f1751f8bf46831c30851a0232f39"
+      },
+      {
+        "operation_id": "unversioned:1",
+        "request": {
+          "action": "cancel",
+          "order_id": "regular:1",
+          "reason": "fixture cancel"
+        },
+        "fingerprint": "9f121650b994098edcf592293ae896bb8816d5030da4d4eb159a7a5806cd66d1"
+      }
+    ],
+    "statuses": [
+      "completed",
+      "unknown",
+      "not_executed"
+    ],
+    "receipt": {
+      "status": "unknown",
+      "operation_id": "unversioned",
+      "results": [
+        {
+          "index": 0,
+          "action": "cancel",
+          "status": "completed",
+          "result": {
+            "receipt_version": 1,
+            "status": "completed",
+            "order_status": "canceled",
+            "order_id": "regular:0"
+          }
+        },
+        {
+          "index": 1,
+          "action": "cancel",
+          "status": "unknown",
+          "result": {
+            "receipt_version": 1,
+            "status": "unknown",
+            "error": "fixture timeout"
+          }
+        },
+        {
+          "index": 2,
+          "action": "cancel",
+          "status": "not_executed",
+          "blocked_by_index": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "v1",
+    "payload": {
+      "actions": [
+        {
+          "action": "cancel",
+          "order_id": "regular:0",
+          "reason": "fixture cancel"
+        },
+        {
+          "action": "cancel",
+          "order_id": "regular:1",
+          "reason": "fixture cancel"
+        },
+        {
+          "action": "cancel",
+          "order_id": "regular:2",
+          "reason": "fixture cancel"
+        }
+      ],
+      "contract_version": 1
+    },
+    "parent_request": {
+      "tool": "execute_trade_actions",
+      "args": {
+        "contract_version": 1,
+        "actions": [
+          {
+            "action": "cancel",
+            "order_id": "regular:0",
+            "reason": "fixture cancel"
+          },
+          {
+            "action": "cancel",
+            "order_id": "regular:1",
+            "reason": "fixture cancel"
+          },
+          {
+            "action": "cancel",
+            "order_id": "regular:2",
+            "reason": "fixture cancel"
+          }
+        ],
+        "config_id": "fixture-task",
+        "symbol": "ETH/USDT"
+      }
+    },
+    "fingerprint": "bdd4377c7f676384f1dc9699a465db2ff37523e33ec6bea0b007cd4da1716215",
+    "children": [
+      {
+        "operation_id": "v1:0",
+        "request": {
+          "action": "cancel",
+          "order_id": "regular:0",
+          "reason": "fixture cancel"
+        },
+        "fingerprint": "58bb3a603350cfbdf3ed957e5258d7cbf2f7f1751f8bf46831c30851a0232f39"
+      },
+      {
+        "operation_id": "v1:1",
+        "request": {
+          "action": "cancel",
+          "order_id": "regular:1",
+          "reason": "fixture cancel"
+        },
+        "fingerprint": "9f121650b994098edcf592293ae896bb8816d5030da4d4eb159a7a5806cd66d1"
+      }
+    ],
+    "statuses": [
+      "completed",
+      "unknown",
+      "not_executed"
+    ],
+    "receipt": {
+      "status": "unknown",
+      "operation_id": "v1",
+      "results": [
+        {
+          "index": 0,
+          "action": "cancel",
+          "status": "completed",
+          "result": {
+            "receipt_version": 1,
+            "status": "completed",
+            "order_status": "canceled",
+            "order_id": "regular:0"
+          }
+        },
+        {
+          "index": 1,
+          "action": "cancel",
+          "status": "unknown",
+          "result": {
+            "receipt_version": 1,
+            "status": "unknown",
+            "error": "fixture timeout"
+          }
+        },
+        {
+          "index": 2,
+          "action": "cancel",
+          "status": "not_executed",
+          "blocked_by_index": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "v2",
+    "payload": {
+      "actions": [
+        {
+          "action": "cancel",
+          "order_id": "regular:0",
+          "reason": "fixture cancel"
+        },
+        {
+          "action": "cancel",
+          "order_id": "regular:1",
+          "reason": "fixture cancel"
+        },
+        {
+          "action": "cancel",
+          "order_id": "regular:2",
+          "reason": "fixture cancel"
+        }
+      ],
+      "contract_version": 2
+    },
+    "parent_request": {
+      "tool": "execute_trade_actions",
+      "args": {
+        "contract_version": 2,
+        "actions": [
+          {
+            "order_id": "regular:0",
+            "reason": "fixture cancel",
+            "action": "cancel"
+          },
+          {
+            "order_id": "regular:1",
+            "reason": "fixture cancel",
+            "action": "cancel"
+          },
+          {
+            "order_id": "regular:2",
+            "reason": "fixture cancel",
+            "action": "cancel"
+          }
+        ],
+        "config_id": "fixture-task",
+        "symbol": "ETH/USDT"
+      },
+      "contract_version": 2
+    },
+    "fingerprint": "2db67498af6397c135cd8be6b9b37f522155818c1c3afe60061650d257d02015",
+    "children": [
+      {
+        "operation_id": "v2:0",
+        "request": {
+          "contract_version": 2,
+          "action": "cancel",
+          "arguments": {
+            "order_id": "regular:0",
+            "reason": "fixture cancel"
+          }
+        },
+        "fingerprint": "af3addbbda50ee2031180ffad09d633ad9629311b6df7e345f2d7b1f9cb854c1"
+      },
+      {
+        "operation_id": "v2:1",
+        "request": {
+          "contract_version": 2,
+          "action": "cancel",
+          "arguments": {
+            "order_id": "regular:1",
+            "reason": "fixture cancel"
+          }
+        },
+        "fingerprint": "344e504b640158aee2d9fe000cdb5200fdbaac16376671d4011dde62f80ace56"
+      }
+    ],
+    "statuses": [
+      "completed",
+      "unknown",
+      "not_executed"
+    ],
+    "receipt": {
+      "status": "unknown",
+      "operation_id": "v2",
+      "results": [
+        {
+          "index": 0,
+          "action": "cancel",
+          "status": "completed",
+          "result": {
+            "receipt_version": 1,
+            "status": "completed",
+            "order_status": "canceled",
+            "order_id": "regular:0"
+          }
+        },
+        {
+          "index": 1,
+          "action": "cancel",
+          "status": "unknown",
+          "result": {
+            "receipt_version": 1,
+            "status": "unknown",
+            "error": "fixture timeout"
+          }
+        },
+        {
+          "index": 2,
+          "action": "cancel",
+          "status": "not_executed",
+          "blocked_by_index": 1
+        }
+      ],
+      "contract_version": 2,
+      "execution_policy": "stop_on_error",
+      "summary": {
+        "completed": 1,
+        "submitted": 0,
+        "failed": 0,
+        "unknown": 1,
+        "pending": 0,
+        "not_executed": 1,
+        "skipped": 0
+      }
+    }
+  },
+  {
+    "name": "single",
+    "tool": "cancel_orders_strategy",
+    "payload": {
+      "order_id": "regular:1",
+      "reason": "fixture cancel"
+    },
+    "parent_request": {
+      "tool": "cancel_orders_strategy",
+      "args": {
+        "order_id": "regular:1",
+        "reason": "fixture cancel",
+        "config_id": "fixture-task",
+        "symbol": "ETH/USDT"
+      }
+    },
+    "fingerprint": "677c9b6bab237275e26d5d17712511c0ac649e6718bf3cea32cb6a4f38f2a020",
+    "status": "completed",
+    "receipt": {
+      "receipt_version": 1,
+      "status": "completed",
+      "order_status": "canceled",
+      "order_id": "regular:1"
+    }
+  },
+  {
+    "name": "v2all",
+    "tool": "close",
+    "payload": {
+      "side": "SHORT",
+      "order_type": "market",
+      "reason": "fixture all",
+      "close_all": true
+    },
+    "parent_request": {
+      "tool": "close",
+      "contract_version": 2,
+      "args": {
+        "side": "SHORT",
+        "order_type": "market",
+        "reason": "fixture all",
+        "close_all": true,
+        "amount": null,
+        "price": null,
+        "trigger_price": null,
+        "config_id": "fixture-task",
+        "symbol": "ETH/USDT"
+      }
+    },
+    "fingerprint": "73f230f76e5a7328b26307e8a1b0ad2c7e283b32c75c97c916cc6f87b762ccf5",
+    "receipt": {
+      "receipt_version": 1,
+      "contract_version": 2,
+      "status": "completed",
+      "order_status": "filled",
+      "filled_amount": 0.5,
+      "quantity_mode": "all"
+    }
+  }
+]

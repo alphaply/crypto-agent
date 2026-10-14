@@ -1,5 +1,6 @@
 """Regression coverage for complete memory text across review and prompt boundaries."""
 from backend.agent import memory_service, decision_context
+from backend.agent.strategy_material import strategy_material
 
 from datetime import datetime, timedelta
 from unittest.mock import Mock
@@ -87,13 +88,14 @@ def test_every_memory_writer_preserves_long_input_and_output(local_db, monkeypat
 
     assert changed
     source = organizer.call_args.args[0]
-    assert previous in source and strategy in source and evidence in source
+    assert strategy_material(strategy) in source
+    assert evidence not in source
     if writer == 'run':
-        assert __import__('json').dumps(execution, ensure_ascii=False) in source
+        assert __import__('json').dumps(execution, ensure_ascii=False) not in source
     saved = database.get_short_memories('cfg', 1)[0]
     assert saved['market_summary'] == reviewed
     assert saved['position_summary'] == evidence
-    assert decision_context.format_short_memory_for_llm('cfg') == reviewed
+    assert database.get_short_memories('cfg', 1)[0]['market_summary'] == reviewed
 
 
 def test_rolling_review_reads_every_record_within_selected_window(local_db, monkeypatch):
@@ -118,7 +120,7 @@ def test_rolling_review_reads_every_record_within_selected_window(local_db, monk
 
     assert memory_service.generate_rolling_short_memory_for_config('cfg', CONFIG, now_cn=NOW, hours=12)
     source = organizer.call_args.args[0]
-    assert all(record[2] in source for record in records)
+    assert all(strategy_material(record[2]) in source for record in records)
     assert 'too-old' not in source and 'future-evidence' not in source and 'another-config-evidence' not in source
     assert database.get_short_memories('cfg', 1)[0]['source_count'] == len(records)
 
@@ -134,6 +136,8 @@ def test_complete_memory_and_recent_decisions_reach_trading_prompt(local_db, mon
             [(f'2026-10-01 0{index}:00:00', 'cfg', text) for index, text in enumerate(decisions)],
         )
         conn.commit()
+    from memory_test_support import publish_strategy_views
+    publish_strategy_views(monkeypatch)
     market = Mock()
     market.get_market_analysis.side_effect = RuntimeError('Offline market')
     monkeypatch.setattr(agent_graph, 'MarketTool', lambda **_: market)

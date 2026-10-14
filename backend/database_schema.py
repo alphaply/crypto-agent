@@ -427,6 +427,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     initialize_agent_runs_schema(cursor)
     initialize_independent_schema(cursor)
     initialize_trade_operations_schema(cursor)
+    from backend.mcp.store import initialize_schema as initialize_mcp_schema
+    from backend.utils.position_management import initialize_schema as initialize_management_schema
+    initialize_mcp_schema(conn)
+    initialize_management_schema(conn)
     from backend.agent.context_projections import initialize_schema as initialize_context_projections
     initialize_context_projections(conn)
 

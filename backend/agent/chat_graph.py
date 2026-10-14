@@ -176,12 +176,13 @@ def _temporary_account_context_text(account_context: Dict[str, Any]) -> str:
     if not account_context.get("available"):
         return f"Account data is unavailable for this turn: {account_context.get('error') or 'Unknown error'}"
 
-    positions_text = format_positions_to_agent_friendly(account_context.get("real_positions", []))
+    positions_text = format_positions_to_agent_friendly(account_context.get("real_positions", []),
+        observation=(account_context.get('evidence_state') or {}).get('positions'))
     orders_text = format_orders_to_agent_friendly(
         [
             {**order, "id": order.get("id") or order.get("order_id")}
             for order in account_context.get("real_open_orders", [])
-        ]
+        ], observation={'error': 'incomplete' if account_context.get('orders_complete') is False else None}
     )
     return (
         f"Balance: {account_context.get('balance', 0)}\n"
@@ -914,7 +915,32 @@ def tools_node(state: ChatState, config: RunnableConfig):
             stopped = True
             continue
 
-        approval = True if tool_name == 'get_trade_operation' else interrupt(
+        batch_approvals = None
+        is_v3_batch = tool_name == 'execute_trade_actions' and tool_args.get('contract_version') == 3
+        if is_v3_batch:
+            from backend.agent.unified_trading import validate_for_config
+            try:
+                validate_for_config(tool_args, cfg, default_symbol=symbol)
+            except ValueError as exc:
+                outputs.append(ToolMessage(tool_call_id=call['id'], content=json.dumps({
+                    'status': 'failed', 'phase': 'preflight', 'submitted': False,
+                    'error_code': 'invalid_request', 'error': str(exc)}, ensure_ascii=False)))
+                stopped = True
+                continue
+            # Collect per-action decisions before reserving a durable financial
+            # callback: a LangGraph interrupt must never leave it half reserved.
+            batch_approvals = {}
+            for action_index, action in enumerate(tool_args.get('actions', [])):
+                decision = interrupt({
+                    'type': 'tool_approval', 'tool_call_id': call['id'], 'tool_name': tool_name,
+                    'tool_args': action, 'action_index': action_index, 'batch_args': tool_args,
+                    'config_id': config_id, 'symbol': action.get('symbol') or symbol,
+                })
+                accepted = bool(decision.get('approved')) if isinstance(decision, dict) else decision is True
+                batch_approvals[action_index] = accepted
+                if not accepted:
+                    break
+        approval = True if tool_name == 'get_trade_operation' or is_v3_batch else interrupt(
             {
                 "type": "tool_approval",
                 "tool_call_id": call["id"],
@@ -941,8 +967,18 @@ def tools_node(state: ChatState, config: RunnableConfig):
             if state.get('spot_config_fingerprint') or str(cfg.get('mode') or '').upper() == 'SPOT_DCA':
                 # Empty means an old checkpoint without a verified decision snapshot.
                 extra['expected_spot_fingerprint'] = state.get('spot_config_fingerprint', '')
-            result = _run_tool(tool_name, tool_args, config_id, symbol, operation_id=call['id'], **extra)
+            from backend.agent.unified_trading import current_batch_approvals
+            approval_token = current_batch_approvals.set(batch_approvals)
+            try:
+                result = _run_tool(tool_name, tool_args, config_id, symbol, operation_id=call['id'], **extra)
+            finally:
+                current_batch_approvals.reset(approval_token)
             outputs.append(ToolMessage(tool_call_id=call["id"], content=result))
+            if is_v3_batch:
+                try:
+                    stopped = stopped or bool(json.loads(result).get('rejected_by_user'))
+                except (ValueError, TypeError, AttributeError):
+                    pass
             from backend.agent.tool_registry import uses_scoped_admission
             stopped = stopped or (tool_name != 'get_trade_operation' and tool_result_status(result) in {'failed', 'unknown', 'pending'}
                                   and not uses_scoped_admission(tool_name, config_id, tool_args))

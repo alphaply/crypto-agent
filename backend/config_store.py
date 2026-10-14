@@ -287,6 +287,8 @@ def _ensure_provider_tables(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    if 'physical_account_id' not in _column_names(conn, 'exchange_profiles'):
+        conn.execute('ALTER TABLE exchange_profiles ADD COLUMN physical_account_id TEXT')
 
 
 def _has_runtime_storage(conn: sqlite3.Connection) -> bool:
@@ -336,7 +338,8 @@ def normalize_agent_market_settings(agent: dict[str, Any]) -> dict[str, Any]:
         if str(symbols[0]).strip().upper() != str(payload.get("symbol") or "").strip().upper():
             raise ValueError("Non-spot task symbols must match symbol")
         payload.pop("symbols", None)
-    return payload
+    from backend.utils.management_policy import normalize_management
+    return normalize_management(payload)
 
 
 def _normalize_agents(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -751,7 +754,7 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
 
         profile_rows = conn.execute(
             """
-            SELECT profile_id, name, exchange, market_type
+            SELECT profile_id, name, exchange, market_type, physical_account_id
             FROM exchange_profiles
             ORDER BY exchange ASC, name ASC, profile_id ASC
             """
@@ -764,6 +767,7 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
                 "name": row["name"],
                 "exchange": row["exchange"] or "binance",
                 "market_type": row["market_type"] or "swap",
+                "physical_account_id": row['physical_account_id'],
             }
             profile.update(profile_secret_map.get(row["profile_id"], {}))
             profiles.append(profile)
@@ -862,6 +866,7 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
                 exchange = str(profile.get("exchange") or payload.get("exchange") or "binance").lower()
                 payload["exchange"] = exchange
                 payload["market_type"] = profile.get("market_type") or payload.get("market_type") or "swap"
+                payload['physical_account_id'] = profile.get('physical_account_id')
                 if profile.get("api_key"):
                     if not payload.get("api_key"):
                         payload["api_key"] = profile.get("api_key")
@@ -1023,8 +1028,18 @@ def save_runtime_snapshot(
     with _get_conn() as conn:
         _ensure_agent_config_sort_order(conn)
         _ensure_provider_tables(conn)
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         try:
+            from backend.utils.position_management import synchronize_configuration
+            previous_snapshot = load_runtime_snapshot(connection=conn)
+            if previous_snapshot:
+                # Attach the old credential witness before applying a rotation,
+                # including scopes created by discovery before the first save.
+                synchronize_configuration(conn, previous_snapshot)
+                old_accounts = {row['profile_id']: row for row in previous_snapshot.get('exchange_profiles') or []}
+                for profile in exchange_profiles:
+                    if profile.get('physical_account_id') is None:
+                        profile['physical_account_id'] = (old_accounts.get(profile.get('profile_id')) or {}).get('physical_account_id')
             conn.execute("DELETE FROM app_settings")
             timestamp = _now()
             conn.executemany(
@@ -1099,8 +1114,8 @@ def save_runtime_snapshot(
                 conn.execute(
                     """
                     INSERT INTO exchange_profiles (
-                        profile_id, name, exchange, market_type, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
+                        profile_id, name, exchange, market_type, updated_at, physical_account_id
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         profile_id,
@@ -1108,6 +1123,7 @@ def save_runtime_snapshot(
                         str(profile.get("exchange") or "binance").lower(),
                         str(profile.get("market_type") or "swap"),
                         timestamp,
+                        profile.get('physical_account_id'),
                     ),
                 )
                 secret_updates = dict(profile.get("secrets") or {})
@@ -1127,10 +1143,6 @@ def save_runtime_snapshot(
                 conn.execute("DELETE FROM agent_configs WHERE config_id = ?", (removed_id,))
                 conn.execute(
                     "DELETE FROM secret_store WHERE scope = 'agent' AND scope_id = ?",
-                    (removed_id,),
-                )
-                conn.execute(
-                    "DELETE FROM real_protection_plans WHERE config_id = ?",
                     (removed_id,),
                 )
 
@@ -1174,6 +1186,11 @@ def save_runtime_snapshot(
                 validate_snapshot(candidate)
             if transaction_hook is not None:
                 transaction_hook(conn)
+            synchronize_configuration(conn, load_runtime_snapshot(connection=conn) or {})
+            for removed_id in removed_ids:
+                # Active exclusive plans must remain visible to the retirement
+                # guard; deleting them earlier would erase the only inventory proof.
+                conn.execute('DELETE FROM real_protection_plans WHERE config_id=?', (removed_id,))
             conn.commit()
         except Exception:
             conn.rollback()

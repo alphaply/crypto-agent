@@ -288,7 +288,7 @@ class MockTradingStore:
         conn.execute('INSERT INTO mock_balance_history(config_id,symbol,timestamp,balance,unrealized_pnl,total_equity) VALUES(?,?,?,?,0,?)',
                      (config_id,symbol,self._timestamp(),balance,balance))
 
-    def reduce_positions(self, config_id, symbol, pos_side, amount, current_price, reason=''):
+    def reduce_positions(self, config_id, symbol, pos_side, amount, current_price, reason='', operation_id=None):
         """Reduce attached simulated exposure proportionally, without FIFO lots.
 
         Proportional reductions preserve the aggregate average entry cost while
@@ -300,11 +300,28 @@ class MockTradingStore:
             raise ValueError('A finite positive current price is required')
         with self._conn_factory() as conn:
             conn.execute('BEGIN IMMEDIATE')
+            if operation_id is not None:
+                from backend.database_independent import initialize_independent_schema
+                initialize_independent_schema(conn.cursor())
+                intent = json.dumps({'contract_version': 3, 'action': 'close', 'side': pos_side,
+                                     'amount': amount, 'reason': reason}, sort_keys=True)
+                old = conn.execute('SELECT result,request_json FROM mock_trade_operations WHERE config_id=? AND symbol=? AND operation_id=?',
+                                   (config_id, symbol, operation_id)).fetchone()
+                if old:
+                    if old['request_json'] != intent:
+                        raise ValueError('identity_conflict: operation ID belongs to another simulated close')
+                    return json.loads(old['result'])
             rows=conn.execute("SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND side=? AND status='OPEN' AND is_filled=1 ORDER BY order_id",
                               (config_id,symbol,'BUY' if pos_side=='LONG' else 'SELL')).fetchall()
             total=sum(float(row['amount']) for row in rows)
             if not total:
-                return {'status':'no_position','closed_amount':0,'realized_pnl':0,'orders':[]}
+                result = {'status':'no_position','closed_amount':0,'realized_pnl':0,'orders':[]}
+                if operation_id is not None:
+                    result.update(status='skipped', contract_version=3, receipt_version=1, operation_id=operation_id)
+                    conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(?,?,?,?,?)',
+                                 (config_id, symbol, operation_id, json.dumps(result), intent))
+                    conn.commit()
+                return result
             quantity=float(amount) or total
             if quantity>total+1e-12:
                 raise ValueError('Reduction quantity exceeds filled exposure')
@@ -345,9 +362,15 @@ class MockTradingStore:
                      history_amount,cumulative,json.dumps(payload),self._timestamp()))
                 result.append({'order_id':row['order_id'],'closed_amount':reduced,'remaining':remaining,'realized_pnl':pnl})
             self._credit_balance(conn,config_id,symbol,total_pnl)
+            receipt = {'status':'closed' if proportion==1 else 'reduced','closed_amount':quantity,
+                       'remaining':total-quantity,'realized_pnl':total_pnl,'orders':result}
+            if operation_id is not None:
+                receipt.update(status='completed', order_status='filled', filled_amount=quantity,
+                               price=current_price, contract_version=3, receipt_version=1, operation_id=operation_id)
+                conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(?,?,?,?,?)',
+                             (config_id, symbol, operation_id, json.dumps(receipt), intent))
             conn.commit()
-            return {'status':'closed' if proportion==1 else 'reduced','closed_amount':quantity,
-                    'remaining':total-quantity,'realized_pnl':total_pnl,'orders':result}
+            return receipt
 
     def auto_close_expired_orders(self, config_id=None, symbol=None):
         current_ts = self._epoch_factory()

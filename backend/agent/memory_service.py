@@ -29,36 +29,13 @@ def save_short_memory(*args, **kwargs):
 
 
 def format_recent_position_history_for_memory(config_id: str, agent_config: dict) -> str:
-    """Read full historical evidence only when updating memory, never per decision."""
-    from backend.utils.performance_context import performance_context
-
-    try:
-        symbol = agent_config.get('symbol', '')
-        mode = str(agent_config.get('mode') or 'STRATEGY').upper()
-        result = performance_context(config_id, symbol, mode)
-        if result:
-            result = f"证据读取时间：{datetime.now(TZ_CN).strftime('%Y-%m-%d %H:%M:%S %Z')}\n" + result
-        if mode == 'REAL':
-            from backend.utils.execution_ledger import recent_activity_summary
-            try:
-                result += '\n' + recent_activity_summary(config_id, symbol)
-            except Exception:
-                result += '\n最近7天成交活动暂不可用，不能据此断言历史完整。'
-        return result
-    except Exception as e:
-        logger.warning(f"Failed to fetch historical performance for memory: {e}")
-        return "历史收益、回撤与7天平仓证据读取失败，不能据此断言没有交易或收益为零。"
+    """Historical ledgers are on-demand evidence, never consolidation input."""
+    return ''
 
 
 def format_memory_evidence(evidence: str) -> str:
-    if not evidence:
-        return ""
-    return (
-        "\n\n## 历史表现与成交事实（仅用于更新短期记忆）\n"
-        "压缩时保留统计截至时间、收益/回撤、完整平仓样本与手续费前盈亏及主要教训；"
-        "注明快照非实时且未剔除出入金/共享账户影响、缺失数字未知，"
-        "成交活动与完整周期盈亏不能相加，不逐笔复制账本。\n" + evidence
-    )
+    # Compatibility entry point: performance and ledgers have explicit detail APIs.
+    return ''
 
 
 def organize_memory(source: str, agent_config: dict, *, operation_id: str) -> str:
@@ -66,8 +43,18 @@ def organize_memory(source: str, agent_config: dict, *, operation_id: str) -> st
     from backend.agent.memory_agent import run_memory_review
     from backend.agent.context_projections import persist_projections
 
+    from backend.agent.strategy_material import strategy_material
+    source = strategy_material(source) or '暂无有效策略素材。'
     _projection_metadata.set(None)
     stored = get_review_result(operation_id)
+    from backend.agent.context_projections import VERSION
+    from backend.agent.strategy_material import validate_strategy_text
+    compatible = stored and (stored['status'] == 'partial' or
+        (not stored.get('projection_metadata') and validate_strategy_text(stored.get('summary', ''))) or
+        (stored.get('projection_metadata') or {}).get('projection_version') == VERSION)
+    if stored and not compatible:
+        operation_id += f':strategy-v{VERSION}'
+        stored = get_review_result(operation_id)
     if stored:
         verify_memory_lease()
         if stored['config_id'] != agent_config['config_id']:

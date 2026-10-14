@@ -169,15 +169,9 @@ def compact_execution_receipt(item: dict) -> dict:
 
 
 def append_execution_receipts(text: str, summary: dict) -> str:
-    record = read_decision_record(summary)
-    if record and record.get('execution_results'):
-        evidence = memory_execution_evidence(summary, record)
-        if evidence:
-            text += '\n实际工具回执（原始结果与同身份最新证据，最新证据优先）：\n' + json.dumps(
-                evidence, ensure_ascii=False)
-    elif record and record.get('unavailable'):
-        text += '\n结构化回执无法读取；执行状态未知。'
-    return text
+    # The decision JSON remains intact; only semantic strategy reaches memory.
+    from backend.agent.strategy_material import strategy_material
+    return strategy_material(text)
 
 
 def memory_execution_evidence(summary: dict, record: dict | None = None) -> list:
@@ -204,10 +198,5 @@ def execution_identity(item: dict) -> str | None:
     result = _decode_receipt(item.get('result'))
     if isinstance(result, dict) and result.get('operation_id'):
         return str(result['operation_id'])
-    if item.get('status') == 'failed' and not isinstance(result, dict):
-        return None
-    if item.get('tool') in {'open', 'close', 'edit', 'cancel', 'execute_trade_actions',
-                             'open_position_real', 'close_position_real', 'open_position_strategy',
-                             'close_position_strategy', 'cancel_order', 'update_order'}:
-        return item.get('tool_call_id')
+    # A model tool-call ID is not proof of a persisted financial submission.
     return None

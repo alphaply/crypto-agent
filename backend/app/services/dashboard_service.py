@@ -1097,7 +1097,8 @@ def get_daily_summaries_payload(config_id: str, days: int = 7):
 
 
 def get_short_memories_payload(config_id: str, limit: int = 2):
-    return {"short_memories": get_short_memories(config_id, limit=limit)}
+    from backend.app.services.memory_view_service import strategy_memory_rows
+    return {"short_memories": strategy_memory_rows(get_short_memories(config_id, limit=limit))}
 
 
 def list_short_memories_payload(
@@ -1105,7 +1106,8 @@ def list_short_memories_payload(
     config_id: str | None = None,
     limit: int = 200,
 ):
-    return {"short_memories": list_short_memories(symbol=symbol, config_id=config_id, limit=limit)}
+    from backend.app.services.memory_view_service import strategy_memory_rows
+    return {"short_memories": strategy_memory_rows(list_short_memories(symbol=symbol, config_id=config_id, limit=limit))}
 
 
 def generate_short_memory_payload(config_id: str, bucket_start: str | None = None):

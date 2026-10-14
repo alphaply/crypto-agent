@@ -30,6 +30,54 @@ def _get_exchange_timeout_ms() -> int:
         logger.warning(f"Invalid EXCHANGE_TIMEOUT_MS={raw_value!r}, falling back to 15000ms")
         return 15000
 
+
+def _refresh_exclusive_management(tool, symbol):
+    """Legacy explicit maintenance helper; account queries never call this."""
+    from backend.mcp.resilience import Budget, current_budget, setting
+    from backend.utils.position_management import ensure_managed, management_snapshot
+    from backend.utils.independent_exits import IndependentExits
+    parent_budget = current_budget.get()
+    deadline = time.monotonic() + setting('MANAGEMENT_DISCOVERY_BUDGET_SECONDS', 5)
+    if parent_budget:
+        deadline = min(deadline, parent_budget.deadline)
+    budget = Budget(deadline, uuid.uuid4().hex, 'read', stage='management_discovery')
+    token = current_budget.set(budget)
+    original_fetch = getattr(tool.exchange, 'fetch', None)
+
+    def bounded_fetch(*args, **kwargs):
+        seconds = budget.remaining('management_exchange_read')
+        previous = tool.exchange.timeout
+        tool.exchange.timeout = max(1, min(previous, int(seconds * 1000)))
+        try:
+            result = original_fetch(*args, **kwargs)
+            budget.remaining('management_exchange_response')
+            return result
+        finally:
+            tool.exchange.timeout = previous
+
+    if original_fetch and hasattr(tool.exchange, 'timeout'):
+        tool.exchange.fetch = bounded_fetch
+    failure = None
+    try:
+        ensure_managed(IndependentExits(tool), symbol)
+        budget.remaining('management_projection')
+    except Exception as exc:
+        failure = str(exc)
+    finally:
+        if original_fetch and hasattr(tool.exchange, 'timeout'):
+            tool.exchange.fetch = original_fetch
+        current_budget.reset(token)
+    try:
+        projection = management_snapshot(tool.config_id, symbol)
+    except Exception:
+        projection = {'policy': 'exclusive_scope', 'scopes': []}
+    projection['complete'] = failure is None
+    if failure:
+        projection['error'] = failure
+        for scope in projection.get('scopes', []):
+            scope.update(sync_status='partial', error=failure)
+    return projection
+
 class MarketTool:
     def __init__(
         self,
@@ -130,13 +178,29 @@ class MarketTool:
         else:
             self.exchange = ccxt.binanceusdm(config)
 
+        # MCP uses fresh mutable clients, with shared immutable metadata and
+        # account pacing. Other runtime paths retain their existing behavior.
+        from backend.mcp.resilience import current_budget
+        mcp_budget = current_budget.get()
+        if mcp_budget:
+            from backend.mcp.exchange_runtime import account_key, install_transport, load_catalogue
+            self.mcp_account_key = account_key(exchange_name, requested_market_type,
+                                               [api_key, secret, passphrase, proxy_port])
+            install_transport(self.exchange, self.mcp_account_key)
         try:
-            self.exchange.load_markets()
+            if mcp_budget:
+                self.market_observed_at = load_catalogue(self.exchange, self.mcp_account_key)
+            else:
+                self.exchange.load_markets()
             logger.info(
                 f"✅ 交易所连接成功 [exchange={exchange_name}, market={requested_market_type}, "
                 f"config_id={config_id}, symbol={self.symbol}]"
             )
         except Exception as e:
+            if mcp_budget:
+                # Missing metadata is not an initialized client, and signed
+                # request URLs/credentials must not appear in warning logs.
+                raise
             logger.warning(
                 f"⚠️ 初始化加载市场失败 [exchange={exchange_name}, market={requested_market_type}, "
                 f"config_id={config_id}, symbol={self.symbol}]: {e}"
@@ -646,8 +710,14 @@ class MarketTool:
         
         try:
             if is_real:
-                balance_info = self.exchange.fetch_balance()
-                is_spot = (getattr(self, 'market_type', None) == 'spot' or self.exchange.options.get('defaultType') == 'spot')
+                is_spot = (getattr(self, 'market_type', None) == 'spot' or getattr(self.exchange, 'options', {}).get('defaultType') == 'spot')
+                try:
+                    balance_info = self.exchange.fetch_balance()
+                except Exception as exc:
+                    balance_info = {}
+                    status_data['balance'] = status_data['available_balance'] = None
+                    status_data['evidence_state']['balance'] = {'source': 'exchange', 'error': str(exc)}
+
                 quote_asset = symbol.split('/')[1].split(':')[0] if is_spot and '/' in symbol else 'USDT'
                 quote_balance = balance_info.get(quote_asset) or balance_info.get(quote_asset.lower()) or {}
                 
@@ -668,8 +738,9 @@ class MarketTool:
                 else:
                     usdt_available = float((balance_info.get('free') or {}).get(quote_asset) or 0)
                 
-                status_data["balance"] = usdt_total
-                status_data["available_balance"] = usdt_available
+                if not status_data['evidence_state'].get('balance', {}).get('error'):
+                    status_data["balance"] = usdt_total
+                    status_data["available_balance"] = usdt_available
                 status_data['quote_asset'] = quote_asset
                 logger.debug(f"[{symbol}] Balance(total)={usdt_total:.4f}, Balance(available)={usdt_available:.4f}")
                 
@@ -694,7 +765,7 @@ class MarketTool:
                                 'side': str(p.get('side', '')).upper(), # 'LONG' or 'SHORT'
                                 'amount': float(p['contracts']) * float(p.get('contractSize') or 1),
                                 'entry_price': float(p['entryPrice']),
-                                'unrealized_pnl': float(p['unrealizedPnl'])
+                                'unrealized_pnl': float(p.get('unrealizedPnl') or 0)
                             } for p in all_positions if float(p['contracts']) > 0
                         ]
                         status_data["real_positions"] = real_positions
@@ -710,31 +781,32 @@ class MarketTool:
                 # 实盘挂单
                 try:
                     # 1. 获取常规挂单 (LIMIT, etc.)
-                    regular_orders = self.exchange.fetch_open_orders(symbol)
-                    
-                    # 2. 获取条件委托/触发单 (STOP_MARKET, etc.)
-                    trigger_orders = []
+                    regular_orders, trigger_orders = [], []
+                    try:
+                        regular_orders = [{**row, '_channel': 'regular'} for row in self.exchange.fetch_open_orders(symbol)]
+                    except Exception as exc:
+                        status_data['evidence_state']['orders'] = {'source': 'exchange', 'error': str(exc)}
+                    trigger_errors = []
                     if not is_spot:
-                        try:
-                            trigger_orders = self.exchange.fetch_open_orders(symbol, params={'trigger': True})
-                        except Exception as te:
-                            logger.warning(f"Fetch trigger orders error: {te}")
-                            status_data['evidence_state']['trigger_orders'] = {'source': 'exchange', 'error': str(te)}
-                    
-                    # 合并订单
+                        from backend.utils.position_adoption import OKX_ALGO_ORDER_TYPES
+                        kinds = OKX_ALGO_ORDER_TYPES if getattr(self.exchange, 'id', None) == 'okx' else [None]
+                        for kind in kinds:
+                            params = {'trigger': True, **({'ordType': kind} if kind else {})}
+                            try:
+                                trigger_orders.extend({**row, '_channel': 'algo'} for row in self.exchange.fetch_open_orders(symbol, params=params))
+                            except Exception as exc:
+                                trigger_errors.append({'channel': kind or 'algo', 'error': str(exc)})
+                        if trigger_errors:
+                            status_data['evidence_state']['trigger_orders'] = {'source': 'exchange', 'error': 'Some conditional order channels are unavailable', 'channels': trigger_errors}
                     all_orders = regular_orders + trigger_orders
-                    
-                    logger.info(f"[{symbol}] Fetched {len(regular_orders)} regular + {len(trigger_orders)} trigger orders")
-                    for i, o in enumerate(all_orders):
-                        logger.info(f"  Order #{i}: ID={o.get('id')} Type={o.get('type')} Status={o.get('status')} Price={o.get('price')} StopPrice={o.get('stopPrice')} Amount={o.get('amount')} RawInfo={o.get('info')}")
-                    
+                    logger.debug(f'[{symbol}] Fetched {len(regular_orders)} regular and {len(trigger_orders)} conditional orders')
                     filtered_orders = []
                     seen_order_keys = set()
                     for o in all_orders:
                         # 从 exchange 的原始响应中提取 positionSide (针对币安 USDM)
                         # ccxt 统一结构中通常在 o['info']['positionSide']
                         info = o.get('info', {})
-                        key = (str(o.get('id')), str(info.get('algoId') or ''))
+                        key = (o['_channel'], str(o.get('id')))
                         if key in seen_order_keys:
                             continue
                         seen_order_keys.add(key)
@@ -743,6 +815,9 @@ class MarketTool:
                         # 核心修复：处理条件单 (STOP_MARKET, TAKE_PROFIT_MARKET 等)
                         # 这些订单在 fetch_open_orders 中 price 为 0 或 None，实际价格在 stopPrice 中
                         order_type = str(info.get('orderType') or info.get('type') or info.get('ordType') or o.get('type') or '').upper()
+                        normalized_type = str(o.get('type') or order_type).lower()
+                        if normalized_type in {'limit', 'market'} and (o.get('triggerPrice') or o.get('stopPrice')):
+                            normalized_type = ('take_profit_' if 'TAKE_PROFIT' in order_type else 'stop_') + normalized_type
                         
                         # 安全转换 float
                         def safe_float(val, default=0.0):
@@ -795,14 +870,15 @@ class MarketTool:
                             'status': o.get('status')
                         })
                         filtered_orders[-1].update(
-                            exchange_channel='algo' if info.get('algoId') or o in trigger_orders else 'regular',
-                            order_type=order_type.lower(), trigger_price=stop_price or None,
+                            exchange_channel=o['_channel'], observed_at=time.time(),
+                            order_type=normalized_type, trigger_price=stop_price or None,
                             quantity_mode='all' if close_all else 'fixed',
                             remaining=(float(o['remaining']) * float(market.get('contractSize') or 1)
                                        if o.get('remaining') is not None and not close_all else None),
                         )
                     status_data["real_open_orders"] = filtered_orders
-                    status_data['evidence_state']['orders'] = {'source': 'exchange', 'observed_at': time.time()}
+                    status_data['evidence_state'].setdefault('orders', {'source': 'exchange', 'observed_at': time.time()})
+                    status_data['orders_complete'] = not status_data['evidence_state'].get('orders', {}).get('error') and not trigger_errors
                 except Exception as e:
                     logger.warning(f"Fetch real orders error: {e}")
                     status_data["error"] = "Failed to refresh real open orders"
@@ -829,6 +905,24 @@ class MarketTool:
             logger.error(f"Account Status Error: {e}")
             status_data["error"] = str(e)
         
+        if is_real:
+            try:
+                from backend.app.services.stats_service import _local_management_projection, _management_order_metadata, _management_position_metadata
+                from backend.utils.position_management import resource_management_status
+                from backend.utils.execution_ledger import account_scope
+                projection, records = _local_management_projection(self.config_id, symbol, self.runtime_config, account_scope(self.exchange, self.config_id))
+                projection['resource_states'] = {side: resource_management_status(self, symbol, side) for side in (
+                    ['SPOT'] if is_spot else ['LONG', 'SHORT'])}
+                if not status_data.get('management', {}).get('error'):
+                    status_data['management'] = projection
+                status_data['real_positions'] = _management_position_metadata(status_data['real_positions'], status_data['management'])
+                for row in status_data['real_open_orders']:
+                    row['qualified_order_id'] = row['exchange_channel'] + ':' + row['order_id']
+                    row['exchange_order_id'] = row['order_id']
+                    row['order_id'] = row['qualified_order_id']
+                status_data['real_open_orders'] = [_management_order_metadata(row, records, status_data['management']) for row in status_data['real_open_orders']]
+            except Exception as exc:
+                status_data.setdefault('management', {'policy': 'visible_first_claim', 'scopes': []}).update(complete=False, error=str(exc))
         return status_data
 
     def get_market_analysis(self, symbol, mode='STRATEGY', timeframes=None):

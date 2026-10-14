@@ -66,8 +66,27 @@ _TOOL_BY_NAME.update({tool.name: tool for tool in CANONICAL_TOOLS})
 
 def get_trade_tools_for_mode(mode: str | None, config: dict | None = None, *, include_legacy: bool = False):
     trade_mode = str(mode or "STRATEGY").upper()
+    if not include_legacy:
+        from backend.agent.unified_trading import unified_schema_for_config
+        cfg = {**(config or {}), 'mode': trade_mode}
+        query = next(tool for tool in CANONICAL_TOOLS if tool.name == 'get_trade_operation')
+        return [execute_trade_actions.model_copy(update={
+            'args_schema': unified_schema_for_config(cfg),
+            'description': '一次按顺序执行1–20项交易动作。contract_version=3；单笔用一项数组。'
+                           '动作与参数按当前模式提供，数量是基础币；edit.remaining_amount为目标未成交量。'
+                           '默认失败/待核验/未知停止；depends_on要求显式independent且此前项completed。'
+                           '不等待限价成交，不回滚已执行项；未知原写入核验原operation_id，不能换ID重发。'
+                           '合法动作内部核验并自动纳管授权目标，无需先adopt。include=["account"]末尾可选一次账户摘要。',
+        }), query.model_copy(update={'args_schema': {
+            'type': 'object', 'properties': {'target_operation_id': {'type': 'string', 'minLength': 1,
+                'description': '原回执的 operation_id；不是订单 ID'}},
+            'required': ['target_operation_id'], 'additionalProperties': False}, 'description':
+            '只读核验原操作target_operation_id；不重发、不撤改单、不续跑未执行尾项。'
+            'query.status是读取结果，status是原操作结果。正常交易无需先查询解锁。'})]
     tools = list(_TOOLS_BY_MODE.get(trade_mode, _TOOLS_BY_MODE["STRATEGY"]))
     if config is None or trade_mode == 'SPOT_DCA':
+        if include_legacy:
+            tools.extend(tool for tool in [execute_trade_actions, *CANONICAL_TOOLS[-1:]] if tool.name not in {item.name for item in tools})
         return tools
     from backend.utils.exit_policy import effective_exit_mode
     if effective_exit_mode(config) == 'independent_exits':
@@ -76,6 +95,9 @@ def get_trade_tools_for_mode(mode: str | None, config: dict | None = None, *, in
             preferred.extend(tool for tool in tools if tool.name not in {item.name for item in preferred}
                              and not tool.name.startswith('update_position_protection_'))
         tools = preferred
+    query = next(tool for tool in CANONICAL_TOOLS if tool.name == 'get_trade_operation')
+    if query.name not in {tool.name for tool in tools}:
+        tools.append(query)
     from backend.agent.tool_interfaces import specialize_trade_tool
     return [specialized for tool in tools
             if (specialized := specialize_trade_tool(tool, {**config, 'mode': trade_mode})) is not None]
@@ -177,7 +199,8 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
         return "\n".join(results)
 
     call_args = _normalize_tool_args(tool_name, args)
-    if tool_name in {tool.name for tool in CANONICAL_TOOLS}:
+    is_v3 = tool_name == 'execute_trade_actions' and call_args.get('contract_version') == 3
+    if tool_name in {tool.name for tool in CANONICAL_TOOLS} or is_v3:
         if 'config_id' in call_args and call_args['config_id'] != config_id:
             raise ValueError('Conflicting trusted context: config_id')
         if 'symbol' in call_args and call_args['symbol'] != symbol:
@@ -212,7 +235,7 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
     from backend.mcp.guard import preflight_tool
     # Canonical adapters preflight inside the durable callback, so replay never
     # needs a formerly live edit target to still exist. Legacy hashes/flow stay intact.
-    if tool_name not in {'open', 'close', 'edit', 'cancel', *READ_ONLY_TRADE_TOOLS} and call_args.get('contract_version') != 2:
+    if tool_name not in {'open', 'close', 'edit', 'cancel', *READ_ONLY_TRADE_TOOLS} and call_args.get('contract_version') not in {2, 3}:
         preflight_tool(tool_name, call_args, config_id, symbol)
 
     logger.info(
@@ -226,7 +249,17 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
     from backend.utils.spot_execution import current_spot_cycle_id
     cycle_token = current_spot_cycle_id.set(cycle_id) if is_spot else None
     try:
-        if operation_id and tool_name not in READ_ONLY_TRADE_TOOLS:
+        if tool_name == 'get_trade_operation':
+            from backend.agent.unified_trading import query_unified_operation
+            raw = query_unified_operation(config_id, symbol, call_args['target_operation_id'])
+            if raw is None:
+                raw = tool_obj.func(**call_args)
+        elif is_v3:
+            # v3 owns its parent reservation. Legacy callbacks/hashes above stay unchanged.
+            raw = tool_obj.func(**call_args)
+            from backend.agent.unified_trading import compact_trade_receipt
+            raw = compact_trade_receipt(raw)
+        elif operation_id and tool_name not in READ_ONLY_TRADE_TOOLS:
             request = {'tool': tool_name, 'args': call_args}
             if tool_name in {'open', 'close', 'edit', 'cancel'} or call_args.get('contract_version') == 2:
                 request['contract_version'] = 2

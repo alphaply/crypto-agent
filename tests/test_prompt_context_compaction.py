@@ -127,19 +127,18 @@ def test_decision_prompt_only_loads_compressed_history_and_current_protection(lo
         monkeypatch.setattr(database, name, lambda *_, **__: None)
     database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg',
                                'compressed lessons only', 'heavy raw ledger must stay stored', 1)
-    if exit_mode == 'independent_exits':
-        from backend.agent import context_projections
-        from backend.utils import trade_evidence
-        monkeypatch.setattr(agent_graph.global_config, 'get_config_by_id', lambda _: {
-            'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': mode, 'exit_mode': exit_mode})
-        monkeypatch.setattr(trade_evidence, 'configured_account_scope', lambda _: 'fixture-account')
-        context = context_projections.prepare_review('cfg')
-        strategy = {'strategy_text': 'compressed lessons only', 'execution_refs': [], 'unlinked_execution_notes': []}
-        metadata = context_projections.validate_review({
-            'summary': 'compressed lessons only', 'memory': strategy,
-            'projections': [{**{k: s[k] for k in ('source_kind', 'source_id', 'source_hash')}, **strategy}
-                            for s in context['sources']]}, context)
-        context_projections.persist_projections('cfg', metadata)
+    from backend.agent import context_projections
+    from backend.utils import trade_evidence
+    monkeypatch.setattr(agent_graph.global_config, 'get_config_by_id', lambda _: {
+        'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': mode, 'exit_mode': exit_mode})
+    monkeypatch.setattr(trade_evidence, 'configured_account_scope', lambda _: 'fixture-account')
+    context = context_projections.prepare_review('cfg')
+    strategy = {'strategy_text': 'compressed lessons only', 'execution_refs': [], 'unlinked_execution_notes': []}
+    metadata = context_projections.validate_review({
+        'summary': 'compressed lessons only', 'memory': strategy,
+        'projections': [{**{k: s[k] for k in ('source_kind', 'source_id', 'source_hash')}, **strategy}
+                        for s in context['sources']]}, context)
+    context_projections.persist_projections('cfg', metadata)
     state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={},)
     result = agent_graph.start_node(state, {'configurable': {
         'config_id': 'cfg', 'agent_config': {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': mode,
@@ -170,7 +169,7 @@ def test_decision_prompt_only_loads_compressed_history_and_current_protection(lo
 
 
 def test_native_bound_schema_contains_amendment_and_protection_contracts():
-    tools = {tool.name: convert_to_openai_tool(tool)['function'] for tool in get_trade_tools_for_mode('REAL')}
+    tools = {tool.name: convert_to_openai_tool(tool)['function'] for tool in get_trade_tools_for_mode('REAL', include_legacy=True)}
     amend = tools['update_entry_order_real']
     protect = tools['update_position_protection_real']
     close = tools['close_position_real']
@@ -184,7 +183,7 @@ def test_native_bound_schema_contains_amendment_and_protection_contracts():
 
 @pytest.mark.parametrize('mode', ['REAL', 'STRATEGY'])
 def test_open_tool_schema_carries_all_exit_modes_without_prompt_tutorial(mode):
-    tools = {tool.name: convert_to_openai_tool(tool)['function'] for tool in get_trade_tools_for_mode(mode)}
+    tools = {tool.name: convert_to_openai_tool(tool)['function'] for tool in get_trade_tools_for_mode(mode, include_legacy=True)}
     description = tools[f'open_position_{mode.lower()}']['description']
     assert 'attached_required必须同时提供TP和SL' in description
     assert 'attached_optional选填' in description

@@ -21,7 +21,17 @@ _guard = threading.Lock()
 
 def account_scope(exchange, config_id: str) -> str:
     key = str(getattr(exchange, 'apiKey', '') or config_id)
-    return hashlib.sha256(f'{exchange.id}:{key}'.encode()).hexdigest()
+    legacy = hashlib.sha256(f'{exchange.id}:{key}'.encode()).hexdigest()
+    with get_db_conn() as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'management_execution_scopes' in tables:
+            kind = getattr(exchange, 'options', {}).get('defaultType') or ('spot' if getattr(exchange, 'spot', False) else 'swap')
+            canonical = conn.execute('SELECT s.legacy_scope FROM management_account_aliases a '
+                                     'JOIN management_execution_scopes s ON s.physical_account=a.physical_account '
+                                     'WHERE a.legacy_scope=? AND s.market_type=?', (legacy, kind)).fetchone()
+            if canonical:
+                return canonical[0]
+    return legacy
 
 
 def number(value):
@@ -58,7 +68,20 @@ def register_order(
         existing = conn.execute('SELECT config_id,payload FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
                                 (scope, symbol, str(order_id))).fetchone()
         if existing and existing['config_id'] != config_id:
-            raise ValueError('Order ownership conflict')
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            granted = False
+            if 'visible_management_claims' in tables:
+                granted = conn.execute("SELECT 1 FROM visible_management_claims c JOIN management_resource_links r ON r.claim_id=c.claim_id "
+                                       "WHERE c.owner=? AND c.state='owned' AND r.identity=? AND r.original_owner=? LIMIT 1",
+                                       (config_id, str(order_id), existing['config_id'])).fetchone()
+                if not granted:
+                    granted = conn.execute("SELECT 1 FROM real_protection_plans WHERE config_id=? AND symbol=? "
+                                           "AND json_extract(payload,'$.original_owner')=? LIMIT 1",
+                                           (config_id, symbol, existing['config_id'])).fetchone()
+            if not granted:
+                raise ValueError('Order ownership conflict')
+            # Current management may change. Original fill provenance never does.
+            return
         if existing:
             metadata = {**json.loads(existing['payload']), **{k: v for k, v in metadata.items() if v is not None}}
         conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?) ON CONFLICT(account_scope,symbol,order_id) '
@@ -362,63 +385,128 @@ class ExecutionLedger:
             state = self.status()
             if start_ms is None and now_ms - state.get('attempted_at', 0) < min_interval * 1000:
                 return state
-            # Short memory reports seven days, so the first reconciliation must cover
-            # the same interval. Later runs resume from the durable checkpoint.
             initial = now_ms - 7 * 24 * 3600 * 1000
+            covered = merge_intervals(state.get('covered_intervals', []))
+            previous_through = int(state.get('through_ms', initial))
             if start_ms is not None:
                 start = int(start_ms)
             else:
-                covered = merge_intervals(state.get('covered_intervals', []))
-                previous_through = int(state.get('through_ms', initial))
-                history_covered = any(
-                    left <= initial and right >= previous_through
-                    for left, right in covered
-                )
-                # Upgrade old 24-hour checkpoints by filling the missing six days once.
+                history_covered = any(left <= initial and right >= previous_through
+                                      for left, right in covered)
                 start = previous_through - 60000 if history_covered else initial
             start = max(0, min(start, now_ms))
-            # Save attempts even on failure; avoid retrying every five-second protection tick.
-            state.update(attempted_at=now_ms, complete=False, error=None)
-            self._status(state)
-            calls = 0
             limit = 1000 if self.exchange.id in {'binance', 'binanceusdm'} else 100
+            day = 24 * 3600 * 1000
+            calls = 0
 
-            def fetch_window(left, right):
-                nonlocal calls
-                calls += 1
-                if calls > max_calls:
-                    raise RuntimeError('Reconciliation page budget reached; checkpoint retained')
-                rows = self.exchange.fetch_my_trades(self.symbol, since=left, limit=limit,
-                                                      params={'until': right})
-                rows = rows or []
-                selected = [r for r in rows if left <= int(r.get('timestamp') or 0) <= right]
-                self.ingest(selected, refresh=False)
-                if len(rows) >= limit:
-                    if left == right:
-                        raise RuntimeError('Too many fills within one millisecond; completeness unknown')
-                    middle = (left + right) // 2
-                    fetch_window(left, middle)
-                    fetch_window(middle + 1, right)
-                elif any(int(r.get('timestamp') or 0) < left or int(r.get('timestamp') or 0) > right for r in rows):
-                    raise RuntimeError('Exchange did not honor requested time window')
+            def gaps(left, right, intervals):
+                cursor = left
+                result = []
+                for low, high in merge_intervals(intervals):
+                    if high < cursor or low > right:
+                        continue
+                    if low > cursor:
+                        result.append([cursor, min(right, low - 1)])
+                    cursor = max(cursor, high + 1)
+                    if cursor > right:
+                        break
+                if cursor <= right:
+                    result.append([cursor, right])
+                return result
+
+            def chunks(left, right):
+                result = []
+                while left <= right:
+                    end = min(right, left + day - 1)
+                    result.append([left, end])
+                    left = end + 1
+                return result
+
+            # Save the split frontier, not just daily roots. An exhausted budget
+            # can then resume after completed leaves, even after process restart.
+            pending = [[max(start, int(left)), min(now_ms, int(right))]
+                       for left, right in state.get('pending_windows', [])
+                       if int(right) >= start and int(left) <= now_ms]
+            jobs = list(pending)
+            for left, right in gaps(start, now_ms, covered + jobs):
+                jobs.extend(chunks(left, right))
+
+            scans = [list(window) for window in state.get('scan_windows', [])]
+            if not pending and covered:
+                # Late REST/stream facts can appear in a previously covered
+                # interval. Reuse the previous sparse partitions so refreshing
+                # dense recent history does not rediscover the whole split tree.
+                low, high = max(start, previous_through - 60000), min(now_ms, previous_through)
+                if low <= high:
+                    refreshed = []
+                    for left, right, _count in scans:
+                        left, right = max(low, int(left)), min(high, int(right))
+                        if left <= right:
+                            refreshed.append([left, right])
+                    for left, right in gaps(low, high, refreshed):
+                        refreshed.extend(chunks(left, right))
+                    for left, right in refreshed:
+                        jobs.extend(gaps(left, right, jobs))
+            jobs.sort()
+            state.update(attempted_at=now_ms, complete=False, error=None,
+                         pending_windows=jobs, pending_from_ms=start, pending_through_ms=now_ms)
+            self._status(state)
+
+            def record_leaf(left, right, count):
+                nonlocal scans, covered
+                # A fresh leaf replaces its previous partitions. Counts on old
+                # clipped pieces remain conservative until they are refreshed.
+                revised = []
+                for old_left, old_right, old_count in scans:
+                    if old_right < left or old_left > right:
+                        revised.append([old_left, old_right, old_count])
+                    else:
+                        if old_left < left:
+                            revised.append([old_left, left - 1, old_count])
+                        if old_right > right:
+                            revised.append([right + 1, old_right, old_count])
+                revised.append([left, right, count])
+                scans = []
+                for window in sorted(revised):
+                    if (scans and scans[-1][1] + 1 == window[0]
+                            and scans[-1][2] + window[2] < limit
+                            and window[1] - scans[-1][0] < day):
+                        scans[-1][1] = window[1]
+                        scans[-1][2] += window[2]
+                    else:
+                        scans.append(window)
+                covered = merge_intervals(covered + [[left, right]])
+                state.update(from_ms=covered[-1][0], through_ms=covered[-1][1],
+                             covered_intervals=covered, scan_windows=scans)
 
             try:
-                # Binance limits an individual time range; daily chunks also bound recovery work.
-                cursor = start
-                while cursor <= now_ms:
-                    end = min(now_ms, cursor + 24 * 3600 * 1000 - 1)
-                    fetch_window(cursor, end)
-                    # Retain completed chunks across long outages even if a later chunk
-                    # hits the call budget. Never include the failed chunk in coverage.
-                    intervals = merge_intervals(state.get('covered_intervals', []) + [[cursor, end]])
-                    state.update(from_ms=intervals[-1][0], through_ms=intervals[-1][1], covered_intervals=intervals)
+                while jobs:
+                    if calls >= max_calls:
+                        raise RuntimeError('Reconciliation page budget reached; checkpoint retained')
+                    left, right = jobs[0]
+                    calls += 1
+                    rows = self.exchange.fetch_my_trades(self.symbol, since=left, limit=limit,
+                                                         params={'until': right}) or []
+                    if any(int(row.get('timestamp') or 0) < left
+                           or int(row.get('timestamp') or 0) > right for row in rows):
+                        raise RuntimeError('Exchange did not honor requested time window')
+                    self.ingest(rows, refresh=False)
+                    if len(rows) >= limit:
+                        if left == right:
+                            raise RuntimeError('Too many fills within one millisecond; completeness unknown')
+                        middle = (left + right) // 2
+                        jobs[:1] = [[left, middle], [middle + 1, right]]
+                    else:
+                        record_leaf(left, right, len(rows))
+                        jobs.pop(0)
+                    # Persist every completed leaf and split frontier. Ingest is
+                    # idempotent if a crash happens between the two commits.
+                    state.update(pending_windows=list(jobs), calls=calls)
                     self._status(state)
-                    cursor = end + 1
-                intervals = merge_intervals(state.get('covered_intervals', []) + [[start, now_ms]])
-                state.update(from_ms=intervals[-1][0], through_ms=intervals[-1][1], covered_intervals=intervals,
-                             complete=True, error=None, calls=calls)
+                state.update(complete=any(left <= start and right >= now_ms
+                                          for left, right in covered), error=None, calls=calls)
             except Exception as exc:
-                state.update(error=str(exc), calls=calls)
+                state.update(error=str(exc), calls=calls, pending_windows=list(jobs))
             rebuild_execution_position_history(self.config_id, self.scope, self.symbol)
             self._status(state)
             return state
@@ -563,20 +651,13 @@ def recent_activity_data(config_id: str, symbol: str, now=None) -> dict:
 
 
 def recent_activity_summary(config_id: str, symbol: str, now=None) -> str:
+    """Compact realized performance; accounting diagnostics are on-demand only."""
+    from backend.utils.performance_context import profit_metric
     data = recent_activity_data(config_id, symbol, now)
-    cycles = data['position_cycles']
-    # The heading defines the seven-day window and the caller records its read
-    # time. A moving query boundary alone is not new trading evidence.
-    evidence = {key: value for key, value in data.items() if key not in {'from_ms', 'through_ms'}}
-    return ('【最近7天成交活动（按成交时间，与完整周期盈亏不可相加）】\n'
-            f"已归属成交: {data['fill_count']} 条；已确认手续费前盈亏: {data['known_realized_pnl_before_fees']}；"
-            f"手续费按币种: {json.dumps(data['fees_by_currency'])}；缺失盈亏: {data['missing_pnl_count']} 条；"
-            f"未知归属成交: {data['unknown_owner_fill_count']} 条；无法匹配: {cycles['unmatched_fill_count']} 条；"
-            f"混合归属/不完整周期排除: {cycles['excluded_cycle_count']}；"
-            f"窗口覆盖完整: {data['window_complete']}；同步: {json.dumps(data['sync'])}\n"
-            f"未闭合周期（非实时持仓）: {json.dumps([{'side': c['side'], 'remaining': c['remaining_base'], 'mixed': c['foreign_entry']} for c in cycles['open_cycles']])}\n"
-            '完整窗口成交、持仓周期与执行观察（与以上统计属于同一批证据，不重复计算盈亏）：\n'
-            + json.dumps(evidence, ensure_ascii=False, default=str))
+    currency = symbol.split(':')[-1] if ':' in symbol else symbol.split('/')[-1]
+    metric = profit_metric(data, currency)
+    value = f"{metric['amount']:+.2f} {currency}" if metric['available'] else '暂不可完整统计'
+    return f"最近7天已实现盈亏（已归属成交、扣同币种费用）：{value}。"
 
 
 def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):

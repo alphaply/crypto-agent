@@ -13,7 +13,8 @@ def _tool_names(tools):
 
 
 def test_trade_tools_for_real_mode_include_cancel_real():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL")) == [
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL")) == ["execute_trade_actions", "get_trade_operation"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL", include_legacy=True)) == [
         "open_position_real",
         "close_position_real",
         "adopt_position_real",
@@ -22,18 +23,23 @@ def test_trade_tools_for_real_mode_include_cancel_real():
         "update_entry_order_real",
         "update_exit_order",
         "execute_trade_actions",
+        "get_trade_operation",
     ]
 
 
 def test_trade_tools_for_spot_dca_mode_include_cancel_real():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA")) == [
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA")) == ["execute_trade_actions", "get_trade_operation"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA", include_legacy=True)) == [
         "open_position_spot_dca",
         "cancel_orders_real",
+        "execute_trade_actions",
+        "get_trade_operation",
     ]
 
 
 def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY")) == [
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY")) == ["execute_trade_actions", "get_trade_operation"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY", include_legacy=True)) == [
         "open_position_strategy",
         "cancel_orders_strategy",
         "close_position_strategy",
@@ -41,11 +47,12 @@ def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
         "update_entry_order_strategy",
         "update_exit_order",
         "execute_trade_actions",
+        "get_trade_operation",
     ]
 
 
 def test_chat_tools_for_real_mode_include_cancel_real():
-    assert "cancel_orders_real" in _tool_names(chat_graph._get_chat_tools({"mode": "REAL"}))
+    assert _tool_names(chat_graph._get_chat_tools({"mode": "REAL"})) == ["execute_trade_actions", "get_trade_operation"]
 
 
 def test_spot_cannot_dispatch_futures_amendment(monkeypatch):
@@ -56,7 +63,7 @@ def test_spot_cannot_dispatch_futures_amendment(monkeypatch):
 
 def test_cancel_real_tool_schema_uses_single_order_id():
     cancel_tool = next(
-        tool for tool in tool_registry.get_trade_tools_for_mode("REAL")
+        tool for tool in tool_registry.get_trade_tools_for_mode("REAL", include_legacy=True)
         if tool.name == "cancel_orders_real"
     )
 
@@ -66,7 +73,7 @@ def test_cancel_real_tool_schema_uses_single_order_id():
 
 def test_cancel_strategy_tool_schema_uses_order_id_and_reason():
     cancel_tool = next(
-        tool for tool in tool_registry.get_trade_tools_for_mode("STRATEGY")
+        tool for tool in tool_registry.get_trade_tools_for_mode("STRATEGY", include_legacy=True)
         if tool.name == "cancel_orders_strategy"
     )
 

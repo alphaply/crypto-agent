@@ -41,9 +41,11 @@ def test_manual_review_uses_rolling_four_hours_and_reports_existing_result(local
     assert generate.call_count == 1
 
 
-def test_latest_memory_uses_coverage_end_not_bucket_start(local_db):
+def test_latest_memory_uses_coverage_end_not_bucket_start(local_db, monkeypatch):
     database.save_short_memory('2026-10-06 10:15:00', '2026-10-06 10:15:00', 'ETH/USDT', 'cfg', 'rolling', '', 1)
     database.save_short_memory('2026-10-06 08:00:00', '2026-10-06 12:00:00', 'ETH/USDT', 'cfg', 'completed batch', '', 3)
+    from memory_test_support import publish_strategy_views
+    publish_strategy_views(monkeypatch)
     assert decision_context.format_short_memory_for_llm('cfg') == 'completed batch'
 
 

@@ -26,13 +26,15 @@ def test_daily_memory_is_seven_calendar_days_not_seven_rows(local_db):
     assert [x['date'] for x in store.get_daily_summaries('cfg')] == ['2026-10-01', '2026-09-30', '2026-09-25']
 
 
-def test_recent_decisions_are_three_chronological_complete_summaries(local_db):
+def test_recent_decisions_are_three_chronological_complete_summaries(local_db, monkeypatch):
     with database.get_db_conn() as conn:
         for index in range(4):
             conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic) VALUES(?,?,?)',
                          ('cfg', f'2026-10-01 0{index}:00:00', str(index) * 700))
         conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic) VALUES(?,?,?)', ('other', '2026-10-01', 'other task'))
         conn.commit()
+    from memory_test_support import publish_strategy_views
+    publish_strategy_views(monkeypatch)
     lines = decision_context.format_recent_decisions('cfg').splitlines()
     assert len(lines) == 3
     assert all(len(line.split('] ', 1)[1]) == 700 for line in lines)
@@ -44,6 +46,8 @@ def test_market_failure_keeps_active_memory_without_retired_rules(local_db, monk
     from backend.database_rules import change_trading_rules
     change_trading_rules('cfg', [{'action': 'add', 'content': 'Verify executed amounts'}], actor='human')
     database.save_short_memory('2026-10-01 01:00:00', '2026-10-01 02:00:00', 'ETH/USDT', 'cfg', 'Previous thesis', '', 1)
+    from memory_test_support import publish_strategy_views
+    publish_strategy_views(monkeypatch)
     market = Mock()
     market.get_market_analysis.side_effect = RuntimeError('Exchange offline')
     monkeypatch.setattr(agent_graph, 'MarketTool', lambda **_: market)
@@ -53,7 +57,7 @@ def test_market_failure_keeps_active_memory_without_retired_rules(local_db, monk
     result = agent_graph.start_node(state, {'configurable': {'config_id': 'cfg', 'agent_config': {'mode': 'STRATEGY'}}})
     prompt = result.messages[0].content
     assert 'Verify executed amounts' not in prompt and 'Previous thesis' in prompt
-    assert '[覆盖 2026-10-01 01:00:00 → 2026-10-01 02:00:00' in prompt
+    assert '[截至 2026-10-01 02:00:00]' in prompt
     assert '最近三轮决策摘要' in prompt and 'exit_mode=' not in prompt
 
 

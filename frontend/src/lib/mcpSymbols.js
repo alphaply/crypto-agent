@@ -1,8 +1,9 @@
+import { managementDraft } from './positionManagement.js';
 export const MCP_SYMBOL_PAGE_SIZE = 50;
 
 export function mcpProfileDraft(profile) {
   return {
-    ...profile,
+    ...managementDraft(profile),
     symbol_scope: profile.symbol_scope === 'all' ? 'all' : 'selected',
     symbols: [...(profile.symbols || [])],
   };

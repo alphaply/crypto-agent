@@ -39,6 +39,8 @@ _mcp_spot_maintenance_at = {}
 _execution_sync_futures = {}
 _execution_sync_executor = None
 _execution_sync_last = {}
+_exclusive_maintenance_retry = {}
+_maintenance_run_locks = {}
 
 AGENT_JOB_TYPE = "agent"
 MAINTENANCE_JOB_TYPE = "maintenance"
@@ -330,12 +332,60 @@ def _snapshot_real_equity(config, mt):
         logger.warning(f"[EquitySnapshot] REAL snapshot failed {config_id}: {exc}")
 
 
+def _run_exclusive_maintenance(manager, config):
+    """A failed book/receipt must not starve another symbol or recovery phase."""
+    from backend.utils.position_management import ensure_managed, cleanup_previous_orders, recover_reservations
+    if config.get('position_management_policy') == 'visible_first_claim':
+        from backend.utils.position_management import discover_management_symbols, ensure_visible_management
+        symbols = discover_management_symbols(manager.mt, config)
+    else:
+        symbols = list(dict.fromkeys(scope['symbol'] for scope in config.get('management_scopes') or []))
+    for symbol in symbols:
+        for phase, callback in (('recovery', recover_reservations), ('discovery', ensure_managed),
+                                ('cleanup', cleanup_previous_orders)):
+            key = (config['config_id'], symbol, phase)
+            prior = _exclusive_maintenance_retry.get(key, {})
+            if time.monotonic() < prior.get('next_at', 0):
+                continue
+            try:
+                if phase == 'discovery' and config.get('position_management_policy') == 'visible_first_claim':
+                    ensure_visible_management(manager.mt, symbol, discover=True)
+                elif phase == 'recovery' and config.get('position_management_policy') == 'visible_first_claim':
+                    from backend.utils.position_management import reconcile_visible_actions
+                    reconcile_visible_actions(manager.config_id)
+                    callback(manager, symbol)
+                else:
+                    callback(manager, symbol)
+            except Exception as exc:
+                failures = min(6, prior.get('failures', 0) + 1)
+                _exclusive_maintenance_retry[key] = {'failures': failures,
+                                                   'next_at': time.monotonic() + min(60, 30 * 2 ** (failures - 1))}
+                # Signed URLs or exchange headers can occur in exception text.
+                logger.warning('[PositionManagement] owner=%s symbol=%s phase=%s result=%s',
+                               config['config_id'], symbol, phase, type(exc).__name__)
+            else:
+                _exclusive_maintenance_retry[key] = {'failures': 0, 'next_at': time.monotonic() + 30}
+
+
 def run_config_maintenance(config):
+    # The minute scheduler and protection monitor have different future maps.
+    # Merge their work before accessing a cached mutable CCXT client.
+    with _scheduler_lock:
+        lock = _maintenance_run_locks.setdefault(config.get('config_id', 'unknown'), threading.Lock())
+    if not lock.acquire(blocking=False):
+        return
+    try:
+        return _run_config_maintenance(config)
+    finally:
+        lock.release()
+
+
+def _run_config_maintenance(config):
     config_id = config.get("config_id", "unknown")
     symbol = config.get("symbol")
     mode = config.get("mode", "STRATEGY").upper()
 
-    if not symbol:
+    if not symbol and config.get('position_management_policy') != 'visible_first_claim':
         return
 
     if mode == "STRATEGY":
@@ -367,6 +417,10 @@ def run_config_maintenance(config):
             if not cached or cached[0] != fingerprint or time.monotonic() - cached[1] > 300:
                 cached = (fingerprint, time.monotonic(), PositionProtection(MarketTool(config_id=config_id)))
                 _protection_clients[config_id] = cached
+            if config.get('position_management_policy') in {'exclusive_scope', 'visible_first_claim'}:
+                from backend.utils.independent_exits import IndependentExits
+                manager = IndependentExits(cached[2].mt)
+                _run_exclusive_maintenance(manager, config)
             results = cached[2].reconcile_all(respect_backoff=True)
             from backend.utils.trade_operations import reconcile_pending_trade_operations
             reconcile_pending_trade_operations(config_id)
@@ -378,6 +432,12 @@ def run_config_maintenance(config):
 
     elif mode == "SPOT_DCA":
         try:
+            from backend.utils.position_management import management_status
+            if config.get('position_management_policy') == 'visible_first_claim' and (config.get('enabled', True) or management_status(config_id)['scopes']):
+                from backend.utils.position_management import discover_management_symbols, ensure_visible_management
+                stock_tool = MarketTool(config_id=config_id)
+                for stock_symbol in discover_management_symbols(stock_tool, config):
+                    ensure_visible_management(stock_tool, stock_symbol, discover=True)
             from backend.app.services.dashboard_service import calculate_dca_stats
 
             if config.get('mcp_profile'):
@@ -696,6 +756,9 @@ def protection_tick():
                 and _submit_maintenance(cfg)):
             _mcp_spot_maintenance_at[config_id] = time.monotonic()
     configs = {cfg['config_id']: cfg for cfg in [*global_config.get_all_symbol_configs(), *external_configs] if cfg}
+    from backend.utils.position_management import management_status
+    ids.update(cid for cid, cfg in configs.items() if cfg.get('position_management_policy') == 'exclusive_scope'
+               or cfg.get('position_management_policy') == 'visible_first_claim' and (cfg.get('enabled', True) or management_status(cid)['scopes']))
     # Data accounting continues for recently active plans even when decision making
     # is disabled, including fills that arrive after protective cleanup.
     recent = {row['config_id'] for row in rows if json.loads(row['payload']).get('updated_at', 0) > time.time() - 86400}

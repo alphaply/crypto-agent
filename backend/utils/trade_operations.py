@@ -101,6 +101,10 @@ def _reconciled_receipt(conn, row):
     if 'trade_operation_requests' in tables:
         saved_request = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
                                      (row['config_id'], row['operation_id'])).fetchone()
+        if saved_request and json.loads(saved_request['request_json']).get('contract_version') == 3:
+            # v3 mappings may contain bounded hashed child IDs and mode-specific
+            # receipts. Only its versioned query may rebuild those parents.
+            return None
         if saved_request and json.loads(saved_request['request_json']).get('tool') == 'adopt_position_real':
             from backend.utils.position_adoption import find_adoption_receipt
             receipt = find_adoption_receipt(row['config_id'], row['operation_id'], row['symbol'])
@@ -225,11 +229,27 @@ def _reconciled_receipt(conn, row):
 def reconcile_pending_trade_operations(config_id: str) -> int:
     """Refresh uncertain receipts from local evidence; never call an exchange or tool."""
     from backend import database
+    with database.get_db_conn() as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
+            return 0
+        versioned = conn.execute('SELECT r.operation_id,r.symbol,r.result,r.status FROM trade_action_runs r '
+                                 'JOIN trade_operation_requests q ON q.config_id=r.config_id AND q.operation_id=r.operation_id '
+                                 'WHERE r.config_id=? AND json_extract(q.request_json,\'$.contract_version\')=3', (config_id,)).fetchall() if conn.execute(
+                                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_operation_requests'").fetchone() else []
+    v3_ids = {row['operation_id'] for row in versioned}
+    versioned_count = 0
+    from backend.agent.unified_trading import query_unified_operation
+    for row in versioned:
+        if row['status'] in {'unknown', 'pending', 'running', 'submitted'}:
+            result = query_unified_operation(config_id, row['symbol'], row['operation_id'], read_exchange=False)
+            versioned_count += result != _decode_receipt(row['result'])
     if is_independent_real(config_id):
         with database.get_db_conn() as conn:
             rows = conn.execute('SELECT operation_id,symbol,result FROM trade_action_runs WHERE config_id=?', (config_id,)).fetchall()
-        count = 0
+        count = versioned_count
         for row in rows:
+            if row['operation_id'] in v3_ids:
+                continue
             with database.get_db_conn() as conn:
                 scoped = has_scoped_evidence(conn, config_id, row['operation_id'])
                 if not scoped:
@@ -242,12 +262,14 @@ def reconcile_pending_trade_operations(config_id: str) -> int:
                 result = refresh_operation_receipt(config_id, row['symbol'], row['operation_id'], row['result'], read_exchange=False)
                 count += result != _decode_receipt(row['result'])
         return count
-    count = 0
+    count = versioned_count
     with database.get_db_conn() as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
             return 0
         rows = conn.execute("SELECT * FROM trade_action_runs WHERE config_id=? AND status IN ('running','unknown','pending')", (config_id,)).fetchall()
         for row in rows:
+            if row['operation_id'] in v3_ids:
+                continue
             if _reconciled_receipt(conn, row) is not None:
                 count += 1
         conn.commit()
@@ -346,7 +368,7 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
                 raise ValueError("操作 ID 已用于不同请求；禁止重用")
             existing = dict(row)
             scoped = has_scoped_evidence(conn, config_id, operation_id)
-            if row['status'] in {'running', 'unknown', 'pending'} and not scoped:
+            if row['status'] in {'running', 'unknown', 'pending'} and not scoped and request.get('contract_version') != 3:
                 refreshed = _reconciled_receipt(conn, row)
                 if refreshed is not None:
                     conn.commit()
@@ -358,7 +380,7 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
             conn.execute('INSERT INTO trade_operation_requests VALUES(?,?,?)', (config_id, operation_id, encoded))
         conn.commit()
     if existing is not None:
-        if scoped and is_independent_real(config_id):
+        if scoped and is_independent_real(config_id) and request.get('contract_version') != 3:
             # All network reads are outside the reservation transaction. A replay
             # can refresh evidence but must never reach the financial callback.
             return refresh_operation_receipt(config_id, symbol, operation_id, existing['result'])

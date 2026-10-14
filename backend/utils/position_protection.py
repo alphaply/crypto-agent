@@ -35,8 +35,8 @@ class PositionProtection:
         self.mt = market_tool
         self.ex = market_tool.exchange
         self.config_id = market_tool.config_id
-        account_key = str(getattr(self.ex, 'apiKey', '') or self.config_id)
-        self.account_scope = hashlib.sha256(f"{self.ex.id}:{account_key}".encode()).hexdigest()
+        from backend.utils.execution_ledger import account_scope
+        self.account_scope = account_scope(self.ex, self.config_id)
 
     def _market(self, symbol):
         if getattr(self.mt, 'market_type', None) == 'spot':
@@ -64,12 +64,28 @@ class PositionProtection:
                 plan['scope_generation'] = scope_generation(conn, self.account_scope, symbol)
         if plan and plan['state'] != 'DONE' and plan.get('account_scope') != self.account_scope:
             raise ValueError('Protection plan belongs to different exchange credentials; restore its account configuration')
+        if plan and type(self) is PositionProtection and plan.get('management', {}).get('policy') == 'visible_first_claim':
+            from backend.utils.exit_policy import effective_exit_mode
+            mode = effective_exit_mode(getattr(self.mt, 'runtime_config', {}) or {})
+            if mode != 'independent_exits':
+                plan['execution_mode'] = mode
+                ids = {str(leg.get('id')) for leg in plan.get('legs', [])}
+                for record in plan.get('exits', []):
+                    kind = 'sl' if str(record.get('order_type', '')).startswith('stop') else 'tp' if str(record.get('order_type', '')).startswith('take_profit') else None
+                    if kind and str(record.get('id')) not in ids:
+                        plan.setdefault('legs', []).append({**record, 'kind': kind,
+                                                           'coverage': 0 if record.get('quantity_mode') == 'all' else record.get('amount')})
         return plan
 
     def _save(self, plan):
         plan["updated_at"] = time.time()
         with get_db_conn() as conn:
             conn.execute('BEGIN IMMEDIATE')
+            from backend.utils.visible_management import assert_current_owner
+            management = plan.get('management') or {}
+            if not (plan.get('transferred_to') and plan.get('state') == 'DONE'):
+                assert_current_owner(conn, self.config_id, self.account_scope, plan['symbol'], plan['side'],
+                                     claim_id=management.get('claim_id'), version=management.get('claim_version'))
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
             mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
@@ -77,8 +93,14 @@ class PositionProtection:
 
             for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol=? AND config_id!=?',
                                     (plan['symbol'], self.config_id)).fetchall():
+                if plan.get('transferred_to') and plan.get('state') == 'DONE':
+                    continue
                 other = json.loads(row['payload'])
                 if other.get('account_scope') == self.account_scope and other['state'] != 'DONE':
+                    if (plan.get('management', {}).get('hedged') is True
+                            and other.get('management', {}).get('hedged') is True
+                            and other.get('side') != plan.get('side')):
+                        continue
                     if has_registry and row['config_id'] not in (active_agents | mcp_profiles):
                         continue
                     raise ValueError('Another config owns protection for this exchange account and symbol')
@@ -97,7 +119,7 @@ class PositionProtection:
                         raise ValueError('Another active position cycle prevents manual position adoption')
             if previous.get('record_version', 0) != plan.get('record_version', 0):
                 raise ConcurrentProtectionUpdate('Protection plan changed concurrently; reload before another exchange action')
-            if plan.get('execution_mode') == 'independent_exits':
+            if plan.get('execution_mode') == 'independent_exits' and not plan.get('transferred_to'):
                 from backend.utils.trade_evidence import reserve_scope
                 reserve_scope(conn, plan)
             plan['record_version'] = plan.get('record_version', 0) + 1
@@ -129,7 +151,7 @@ class PositionProtection:
         }
         for record in plan.get('entries', []):
             register_order(self.account_scope, plan['symbol'], record.get('id'), self.config_id, 'entry',
-                           refresh=False, planned_entry=record.get('price'), **common_history)
+                           refresh=False, planned_entry=record.get('price'), source=record.get('source', 'agent'), **common_history)
         for record in plan.get('legs', []):
             # Conditional/algo ID can differ from the actual execution order ID.
             register_order(self.account_scope, plan['symbol'], record.get('execution_order_id') or record.get('id'),
@@ -144,10 +166,19 @@ class PositionProtection:
 
     def _new(self, symbol, side, sl, tp):
         previous = self._load(symbol, side) or {}
-        return dict(symbol=symbol, side=side, stop_loss=sl, take_profit=tp,
+        plan = dict(symbol=symbol, side=side, stop_loss=sl, take_profit=tp,
                     state="WAITING", entries=[], legs=[], revision=1, error=None,
                     record_version=previous.get('record_version', 0), trigger_basis='last',
                     episode_id=uuid.uuid4().hex, account_scope=self.account_scope)
+        from backend.utils.visible_management import _active_management
+        claim = _active_management.get()
+        if claim and claim['owner'] == self.config_id and claim['resource'] == symbol:
+            plan['management'] = {'policy': 'visible_first_claim', 'source': 'agent', 'owner': self.config_id,
+                                  'claim_id': claim['claim_id'], 'claim_version': claim['version'],
+                                  'baseline_contracts': 0, 'baseline_at_ms': int(time.time() * 1000),
+                                  'contracts': 0, 'hedged': claim['side'] != 'BOTH', 'sync_status': 'verified',
+                                  'observed_at': time.time()}
+        return plan
 
     def _trigger_reference(self, plan):
         """Never mix a mark-trigger exchange order with a last-price local exit."""
@@ -321,14 +352,21 @@ class PositionProtection:
             return {**order, "protection_state": plan["state"], "protection_error": plan.get("error"),
                     "stop_loss": sl, "take_profit": tp}
 
-    def amend_entry(self, symbol, order_id, price=None, amount=None, reason='', pos_side=None, operation_id=None):
+    def amend_entry(self, symbol, order_id, price=None, amount=None, reason='', pos_side=None, operation_id=None,
+                    remaining_amount=None):
         """Amend a managed perpetual limit entry. Amount means TOTAL base quantity."""
         from backend.mcp.guard import assert_entry_allowed
         assert_entry_allowed(self.mt, symbol)
         if operation_id is None:
             from backend.utils.trade_operations import current_operation_id
             operation_id = current_operation_id.get()
-        if price is None and amount is None:
+        if amount is not None and remaining_amount is not None:
+            raise ValueError('Choose total amount or remaining_amount, not both')
+        if remaining_amount is not None:
+            import math
+            if isinstance(remaining_amount, bool) or not math.isfinite(float(remaining_amount)) or float(remaining_amount) <= 0:
+                raise ValueError('remaining_amount must be a finite positive base quantity')
+        if price is None and amount is None and remaining_amount is None:
             raise ValueError('Provide a new entry price or total quantity')
         if not str(reason).strip():
             raise ValueError('A changed entry condition and amendment reason are required')
@@ -359,6 +397,8 @@ class PositionProtection:
             if not current or entry.get('status') in TERMINAL:
                 raise ValueError('Entry is no longer open')
             contract_size = float(market.get('contractSize') or 1)
+            if remaining_amount is not None:
+                amount = float(current.get('filled') or 0) * contract_size + float(remaining_amount)
             new_price = float(self.ex.price_to_precision(symbol, price if price is not None else entry['price']))
             new_amount = float(self.ex.amount_to_precision(symbol, amount / contract_size if amount is not None else entry['amount']))
             import math
@@ -521,6 +561,10 @@ class PositionProtection:
         # A partial fill racing cancellation must not recreate an unprotected position.
         pos = self._position(plan)
         if pos:
+            if plan.get('management', {}).get('policy') == 'visible_first_claim':
+                plan.update(state='ACTIVE', error='Entry filled during cleanup; verified residual requires explicit management', residual_verified=True)
+                self._save(plan)
+                return
             self._emergency_close(plan, pos)
             if pending_errors:
                 raise RuntimeError('Exit submitted; entry cancellation unresolved: ' + '; '.join(pending_errors))
@@ -531,6 +575,10 @@ class PositionProtection:
         observe(self, plan, None)
         for leg in plan["legs"]:
             self._cancel(leg, plan, True)
+        leg_ids = {str(leg.get('id')) for leg in plan['legs']}
+        for record in plan.get('exits', []):
+            if str(record.get('id')) not in leg_ids:
+                self._cancel(record, plan, record.get('exchange_channel') == 'algo')
         plan.update(state="DONE", error=None)
         self._save(plan)
 
@@ -701,6 +749,10 @@ class PositionProtection:
             self._save(plan)
             pos = self._position(plan)
             if plan["state"] == "EXITING" or (plan["state"] == "ACTIVE" and not pos):
+                if plan.get('management', {}).get('policy') == 'visible_first_claim' and plan['state'] != 'EXITING':
+                    from backend.utils.independent_exits import IndependentExits
+                    if not IndependentExits._flat_confirmed(self, plan):
+                        return
                 self._finish(plan)
                 return
             if not pos:
@@ -732,6 +784,8 @@ class PositionProtection:
                 tp = self._ensure_leg(plan, pos, "tp")
             for old in plan["legs"]:
                 if old is not sl and old is not tp and old.get("status") not in TERMINAL:
+                    if old.get('source') == 'external' and plan.get('management', {}).get('policy') == 'visible_first_claim' and plan.get('stop_loss' if old['kind'] == 'sl' else 'take_profit') is None:
+                        continue
                     self._cancel(old, plan, True)
             plan["state"] = "ACTIVE"
             plan['verified_at'] = time.time()

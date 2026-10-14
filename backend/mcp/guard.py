@@ -16,6 +16,20 @@ def perpetual_symbol(exchange, symbol):
 
 def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_only=False, side=None):
     """Fail closed on shared or untracked perpetual exposure, using read-only evidence."""
+    from backend.utils.management_policy import exclusive
+    if exclusive(getattr(market_tool, 'runtime_config', None), symbol, side):
+        from backend.utils.independent_exits import IndependentExits
+        from backend.utils.position_management import ensure_managed
+        service = IndependentExits(market_tool)
+        if not (plan_override or {}).get('management'):
+            ensure_managed(service, symbol, side)
+        elif plan_override['management'].get('sync_status') != 'verified':
+            raise ValueError('Exclusive position evidence is incomplete')
+        relevant = [plan_override] if plan_override else [service._load(service._market(symbol)['symbol'], s)
+                                                        for s in ([side] if side else ['LONG', 'SHORT'])]
+        if any(p and p.get('ownership_error') for p in relevant):
+            raise ValueError('Exclusive position evidence is incomplete')
+        return
     config_id = str(getattr(market_tool, 'config_id', '') or '')
     if not config_id.startswith('mcp:') and not adopted_only:
         return
@@ -119,7 +133,7 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
         raise ValueError('Exchange position does not match solely owned fills; MCP modification denied')
 
 
-def assert_entry_allowed(market_tool, symbol, *, side=None):
+def assert_entry_allowed(market_tool, symbol, *, side=None, only_capability=False):
     config_id = str(getattr(market_tool, 'config_id', '') or '')
     if not config_id.startswith('mcp:'):
         return  # Internal agents deliberately retain their existing leverage policy.
@@ -151,7 +165,8 @@ def assert_entry_allowed(market_tool, symbol, *, side=None):
         raise ValueError('Cannot verify actual exchange leverage; MCP exposure increase denied') from exc
     if max(values) > maximum:
         raise ValueError(f'Actual exchange leverage {max(values):g}x exceeds MCP limit {maximum}x; close/cancel remains available')
-    assert_position_owner(market_tool, symbol, **({'side': side} if side else {}))
+    if not only_capability:
+        assert_position_owner(market_tool, symbol, **({'side': side} if side else {}))
 
 
 def is_exposure_increasing(tool_name, args, config_id, symbol):

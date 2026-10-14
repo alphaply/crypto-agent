@@ -86,15 +86,18 @@ class LegacyTradeActionsSchema(BaseModel):
 class TradeActionsSchema(BaseModel):
     """Execution envelope; recommended v2 and legacy have separate strict parsers."""
     model_config = ConfigDict(extra='forbid')
-    contract_version: Literal[1, 2] = 1
+    contract_version: Literal[1, 2, 3] = 1
     actions: list[dict] = Field(min_length=1, max_length=20)
     execution_policy: Literal['stop_on_error', 'independent'] = 'stop_on_error'
+    include: list[Literal['account']] | None = None
 
     @model_serializer(mode='wrap')
     def omit_implicit(self, handler):
         result = handler(self)
         if 'execution_policy' not in self.model_fields_set:
             result.pop('execution_policy', None)
+        if 'include' not in self.model_fields_set:
+            result.pop('include', None)
         return result
 
     @model_validator(mode='before')
@@ -104,8 +107,11 @@ class TradeActionsSchema(BaseModel):
         if not isinstance(value, dict):
             return value
         version = value.get('contract_version', 1)
-        if type(version) is not int or version not in {1, 2}:
-            raise ValueError('contract_version must be 1 or 2')
+        if type(version) is not int or version not in {1, 2, 3}:
+            raise ValueError('contract_version must be 1, 2 or 3')
+        if version == 3:
+            from backend.agent.trading_contracts import UnifiedTradeActionsSchema
+            return UnifiedTradeActionsSchema.model_validate(value).model_dump(exclude_none=True)
         if version == 2:
             return CanonicalTradeActionsSchema.model_validate(value).model_dump()
         legacy = LegacyTradeActionsSchema.model_validate({key: item for key, item in value.items() if key != 'contract_version'})
@@ -204,7 +210,7 @@ def _dispatch(action, config_id, symbol, mode):
 
 @tool(args_schema=TradeActionsSchema)
 def execute_trade_actions(actions: list, config_id: str, symbol: str, contract_version: int = 1,
-                          execution_policy: str | None = None):
+                          execution_policy: str | None = None, include: list | None = None):
     """一次顺序执行开/加仓(open)、部分退出(close)、撤单(cancel)、入场/退出改单(amend_entry/amend_exit)、保护调整(update_protection)。
     退出仅针对已成交仓位；数量为标的币数量。先校验整批，默认失败停止；v2可选execution_policy=independent，逐项核验实际依赖，depends_on仅接受已完成前项的索引。
     普通调用自动取证，无需提前查询；已提交不等于已成交，多个交易所写入不是原子事务。
@@ -212,6 +218,14 @@ def execute_trade_actions(actions: list, config_id: str, symbol: str, contract_v
     from backend.config import config
     from backend.utils.exit_policy import effective_exit_mode, validate_entry_protection
     cfg = config.get_config_by_id(config_id)
+    if contract_version == 3:
+        from backend.agent.unified_trading import execute_v3_actions
+        payload = {'contract_version': 3, 'actions': actions}
+        if execution_policy is not None:
+            payload['execution_policy'] = execution_policy
+        if include is not None:
+            payload['include'] = include
+        return execute_v3_actions(payload, config_id=config_id, symbol=symbol, config=cfg)
     if not cfg or cfg.get("mode", "STRATEGY").upper() not in {"REAL", "STRATEGY"}:
         raise ValueError("批量交易仅适用于已有 REAL/STRATEGY 任务")
     values = {'actions': actions, 'contract_version': contract_version}

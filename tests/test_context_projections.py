@@ -42,7 +42,7 @@ def response_for(context, *, thesis=THESIS):
     def draft(refs):
         return dict(strategy_text=thesis, execution_refs=refs,
                     unlinked_execution_notes=['旧0.37疑虑无独立身份，不能用0.30替代核验'])
-    return dict(summary=LEGACY, memory=draft(context['all_refs']), projections=[
+    return dict(summary=thesis, memory=draft(context['all_refs']), projections=[
         {**{k: s[k] for k in ('source_kind', 'source_id', 'source_hash')},
          **draft(context['candidates'][s['source_kind'] + ':' + s['source_id']])} for s in context['sources']])
 
@@ -214,12 +214,15 @@ def test_old_identity_from_memory_is_refreshed_outside_window_and_failed_query_i
     summary = dict(config_id='cfg', symbol='ETH/USDT', decision_json=json.dumps(record))
     call('get_trade_operation', {'target_operation_id': 'old-close'}, 'read-now')
     text = append_execution_receipts('旧摘要', summary)
-    evidence = json.loads(text.split('：\n')[-1])[0]
+    from backend.utils.decision_record import memory_execution_evidence
+    evidence = memory_execution_evidence(summary)[0]
+    assert text == '旧摘要'
     assert json.loads(evidence['result'])['status'] == 'unknown'
     assert evidence['current_evidence']['latest']['status'] == 'completed'
     assert json.loads(summary['decision_json']) == record
     monkeypatch.setattr('backend.utils.trade_recovery.operation_evidence', lambda *a, **k: {'old-close': {'resolution': 'unavailable'}})
-    assert 'unavailable' in append_execution_receipts('', summary)
+    assert append_execution_receipts('', summary) == ''
+    assert memory_execution_evidence(summary)[0]['current_evidence']['resolution'] == 'unavailable'
 
 
 @pytest.mark.parametrize('custom_placeholders', [True, False])
@@ -320,7 +323,9 @@ def test_ensure_sources_bounds_pending_sources_and_prepare_review_compacts_evide
 
     # Test review_input output is clean
     input_text = review_input(context)
-    assert '策略投影来源' in input_text
+    assert '策略来源' in input_text
+    assert 'current_execution_evidence' not in input_text
+    assert 'operation_id' not in input_text
     assert 'continuation' not in input_text
     assert 'previous_assessment' not in input_text
 

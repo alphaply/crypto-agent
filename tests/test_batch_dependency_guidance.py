@@ -1,5 +1,6 @@
 """Model-visible dependencies and runtime rejection have the same contract."""
 import json
+import asyncio
 from unittest.mock import Mock
 
 import pytest
@@ -20,20 +21,22 @@ def actions(dependencies):
 
 
 def test_model_schema_and_example_match_mcp(contracts):
-    *_, server = contracts
+    caller, *_, server = contracts
+    caller['profile_ids'] = ['swap']
+    enable_independent_profile()
     cfg = {'mode': 'REAL', 'exit_mode': 'independent_exits'}
-    agent = next(t for t in tool_registry.get_trade_tools_for_mode('REAL', cfg) if t.name == 'execute_trade_actions')
-    remote = next(t for t in server._tool_manager.list_tools() if t.name == 'execute_trade_actions')
+    agent = next(t for t in tool_registry.get_trade_tools_for_mode('REAL', cfg, include_legacy=True) if t.name == 'execute_trade_actions')
+    remote = next(t for t in asyncio.run(server.list_tools()) if t.name == 'execute_trade_actions')
     for name in ('OpenAction', 'CloseAction', 'EditAction', 'CancelAction'):
         left = agent.args_schema['$defs'][name]['properties']['depends_on']
-        right = remote.parameters['$defs'][name]['properties']['depends_on']
+        right = remote.inputSchema['$defs']['Unified' + name]['properties']['depends_on']
         assert left == right and left['type'] == 'array' and 'anyOf' not in left
         assert 'null' in left['description'] and 'independent' in left['description']
         assert 'depends_on' not in agent.args_schema['$defs'][name]['required']
-    assert agent.args_schema['properties']['execution_policy']['description'] == remote.parameters['properties']['execution_policy']['description']
+    assert agent.args_schema['properties']['execution_policy']['description'] == remote.inputSchema['properties']['execution_policy']['description']
     example = json.loads(agent.description.split('依赖示例：')[1].split('。')[0])
     assert CanonicalTradeActionsSchema.model_validate(example).actions[1].depends_on == [0]
-    assert 'independent_exits' in agent.description and 'never null' in remote.description
+    assert 'independent_exits' in agent.description
 
 
 @pytest.mark.parametrize('policy,deps', [(None, [0]), ('stop_on_error', [0]), (None, []),

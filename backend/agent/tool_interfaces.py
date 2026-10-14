@@ -18,7 +18,9 @@ def specialize_trade_tool(tool, config: dict):
     mode = effective_exit_mode(config)
     independent = mode == 'independent_exits'
     name = tool.name
-    if name in {'open', 'close', 'edit', 'cancel', 'get_trade_operation'}:
+    if name == 'get_trade_operation':
+        return tool
+    if name in {'open', 'close', 'edit', 'cancel'}:
         return tool if independent else None
     if independent and name.startswith('update_position_protection_'):
         return None

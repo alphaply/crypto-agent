@@ -1,5 +1,30 @@
 # 生产部署与升级指南
 
+## MCP 故障定位与恢复
+
+同一诊断时段先比较公网和服务器本机健康，再查 OAuth/MCP/交易所。参考 [MCP 分层排障](MCP.md#mcp-分层排障) 与 [2026-10-14 实测记录](MCP_OUTAGE_2026-10-14.md)。以下只读命令按实际映射端口/容器名替换；不要输出完整环境配置或认证头。
+
+```bash
+date -Is
+docker ps --format '{{.Names}} {{.Status}} {{.Ports}}'
+docker stats --no-stream crypto-agent crypto-agent-scheduler
+curl --connect-timeout 5 --max-time 10 -sS http://127.0.0.1:31421/health
+docker exec crypto-agent python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:7860/health', timeout=5).status)"
+curl --connect-timeout 5 --max-time 10 -sS -o /dev/null -w 'http=%{http_code} tls=%{time_appconnect} total=%{time_total}\n' https://YOUR_DOMAIN/health
+curl --connect-timeout 5 --max-time 10 -sS https://YOUR_DOMAIN/.well-known/oauth-authorization-server/oauth
+curl --connect-timeout 5 --max-time 10 -sS https://YOUR_DOMAIN/.well-known/oauth-protected-resource/mcp
+curl --connect-timeout 5 --max-time 10 -sS https://YOUR_DOMAIN/oauth/.well-known/oauth-authorization-server
+curl --connect-timeout 5 --max-time 10 -sS https://YOUR_DOMAIN/oauth/resource-metadata
+```
+
+只导出故障时段必要的容器和代理日志，先脱敏 OAuth 查询串、签名 URL、Cookie 与密码。TLS 失败先检查入口监听、防火墙、证书和 SNI；标准发现 404 而兼容路径正常时检查反代精确路径和运行镜像版本；本机 health 失败查容器/应用/数据库。不要直接提高代理超时。已有 connector 上依次只读验证 `list_profiles`、余额、订单、行情；各项分别记录，不用新交易验证。
+
+修复前保存实际原配置与镜像 digest，代理语法检查 `nginx -t` 通过后才应用变更；重建保留原数据卷、`CONFIG_MASTER_KEY`、JWT 和 OAuth 密钥引用及未核验交易记录。回退使用原配置或原 digest，禁止拿旧数据库覆盖已发生的新成交。发布镜像与生产容器更新分别记录。恢复需同时有公网 TLS/Web/health/OAuth/已授权 MCP 验收，缺服务器访问时不能声称已定位根因或修复完成。
+
+MCP 并发、预算、缓存和数据库短等待参数见 `.env.template` 与 [MCP 可用性说明](MCP.md#可用性预算与数据完整性)。线程池额度修改需重启，启动执行幂等迁移；任何客户端超时都不释放仍在运行的金融协调，也不重发未知操作。
+
+独占金融范围的 OS 锁保存在交易数据库旁的 `.management-locks`；Docker Web 与 scheduler 共享 `/app/data` 后自然共享这些锁，不能为它们分别挂载锁目录或使用 `/tmp`。容器退出后 OS 自动释放锁，数据库中 running/unknown 仍保留，后台只按原成交/订单证据恢复。不要在服务运行时删除锁文件，删除再新建同名文件会破坏存活 worker 的互斥。正常升级保留数据卷即可，不需要手工“解锁”。
+
 当前发布使用 Docker Hub 镜像 `alphaply712/crypto-agent:latest`。宝塔及已有 Compose 中的镜像名应保持一致；Web 和独立调度容器必须更新到同一镜像。
 
 ## 宝塔镜像更新
@@ -165,6 +190,12 @@ docker image inspect alphaply712/crypto-agent:latest --format '{{json .RepoDiges
 推送镜像不会自动重建服务器容器。`.env`、`pricing.json`、SQLite 数据库及 WAL 文件由 `.dockerignore` 排除，不能作为镜像发布内容。
 
 ## OpenSpec 归档后的自动发版
+
+### v3 交易数据与兼容回滚
+
+升级 v3 前停止旧 worker，保留数据库、WAL 与原交易证据；重复初始化只增量建表，不重算旧 fingerprint 或补发批次尾项。新请求停止后，当前运行时继续核验已尝试项。完整保留 `visible_management_*`、`management_*`（包括 retirement 与 recovery grants）、`unified_trade_batches`、`unified_trade_children`、`unified_native_intents`、`paper_batches`、`paper_batch_children`、`spot_management_intents`、`spot_budget_reservations` 及原交易/MCP/订单账本。
+
+拟回滚时，对一致性备份运行 `uv run python scripts/check-trading-compatibility.py --database <backup.sqlite> --supported-contract-version 2`。只读预检发现持久 owner、活跃 v3 worker、未决原操作、原生客户端身份或接受的恢复责任时返回 `blocked` 和退出码 2；不能让旧运行时管理这些数据。当前支持 v3 的运行时传版本 3。预检不清理资源、不释放 owner、不下单；通过只表示已检查的新契约阻塞项不存在，还须遵守上文既有 v2/all 与条件单的回滚要求。不得覆盖代码或旧备份来消除未决证据。
 
 本项目将 archive 请求视为完整交付：先同步主规范、核对任务与验收结果，再归档并发版。用户明确要求“仅归档”时按该次范围执行。持久规则记录在 `AGENTS.md`、`openspec/config.yaml` 和 `openspec/specs/archive-release-workflow/spec.md`；归档技能读取这些规则后执行下列流程。
 

@@ -1,9 +1,14 @@
 import McpSettingsPanel from '../components/McpSettingsPanel';
+import PositionManagementFields from '../components/PositionManagementFields';
+import ManagementLifecyclePanel from '../components/ManagementLifecyclePanel';
+import { managementDraft, managementError } from '../lib/positionManagement';
 import { PriceSyncPanel, ProviderPricingFields } from '../components/ProviderPricingFields';
 import RunScheduleEditor from '../components/RunScheduleEditor';
 import SpotScheduleEditor from '../components/SpotScheduleEditor';
 import NewsSettingsPanel from '../components/NewsSettingsPanel';
 import ScorerProviderFields from '../components/ScorerProviderFields';
+import ProviderModelSelect from '../components/ProviderModelSelect';
+import { createModelDiscovery, discoveryConnection } from '../lib/providerModelDiscovery';
 import { JEV_PROVIDER_PRESETS } from '../lib/scorerProvider';
 import DatabaseMaintenance from '../components/DatabaseMaintenance';
 import ResponsiveTabs from '../components/ResponsiveTabs';
@@ -11,7 +16,7 @@ import TradingRulesPanel from '../components/TradingRulesPanel';
 import AgentRunsPanel from '../components/AgentRunsPanel';
 import SpotSymbolPicker from '../components/SpotSymbolPicker';
 import MarketSymbolPicker from '../components/MarketSymbolPicker';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Alert,
   Button,
@@ -224,20 +229,22 @@ function buildBlankProfile() {
   };
 }
 
-function SecretField({ label, meta, onChange, onClear }) {
+function SecretField({ label, meta, onChange, onClear, onBlur, id }) {
   const { t } = usePreferences();
   return (
     <div className="form-field">
       <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-        <label>{label}</label>
+        <label htmlFor={id}>{label}</label>
         <Tag color={meta?.configured ? 'green' : 'default'}>
           {meta?.configured ? t('configured') : t('notConfigured')}
         </Tag>
       </Space>
       <Space.Compact style={{ width: '100%' }}>
         <Input
+          id={id}
           value={meta?.value || ''}
           onChange={(event) => onChange(event.target.value)}
+          onBlur={onBlur}
           placeholder={t('notConfigured')} autoComplete="off" spellCheck={false}
         />
         <Button disabled={!meta?.value} onClick={() => navigator.clipboard.writeText(meta.value)}>{t('copy')}</Button>
@@ -467,6 +474,12 @@ export default function AdminPage() {
   // Provider/Profile drawer state
   const [providerDrawerOpen, setProviderDrawerOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState(null);
+  const providerKeyEditRef = useRef({ edited: false, version: 0 });
+  const [modelDiscovery] = useState(() => createModelDiscovery({
+    fetchModels: async (body, signal) => (await api.post('/config/provider-models/discover', body, { signal, silent: true })).data,
+  }));
+  const discoveredModels = useSyncExternalStore(modelDiscovery.subscribe, modelDiscovery.getSnapshot);
+  useEffect(() => () => modelDiscovery.close(), [modelDiscovery]);
   const [providerQuery, setProviderQuery] = useState('');
   const [providerApiBaseFilter, setProviderApiBaseFilter] = useState('__all__');
   const [providerKeyFilter, setProviderKeyFilter] = useState('__all__');
@@ -639,7 +652,7 @@ export default function AdminPage() {
     const initialQty = Number(agent.initial_qty || 0);
     const manualAvg = Number(agent.manual_avg_cost || 0);
     setEditingTask({
-      ...agent,
+      ...managementDraft(agent),
       symbols: taskSymbols(agent),
       market_timeframes: agent.market_timeframes?.length ? agent.market_timeframes : (agent.mode === 'SPOT_DCA' ? [...SPOT_MARKET_TIMEFRAMES] : [...MARKET_TIMEFRAME_OPTIONS]),
       exit_mode: resolveExitMode(agent),
@@ -672,6 +685,11 @@ export default function AdminPage() {
   const saveTask = async () => {
     if (!editingTask || taskSaving || deletingTaskRef.current) return;
     const taskToSave = normalizeTaskForSave(editingTask);
+    const managementValidation = managementError(taskToSave, {
+      supported: taskToSave.mode === 'REAL' && resolveExitMode(taskToSave) === 'independent_exits' && ['binance', 'okx'].includes(taskCatalogContext(taskToSave, payload.exchange_profiles || [], persistedProfiles).exchange?.toLowerCase()),
+      symbols: [taskToSave.symbol], zh: locale === 'zh',
+    });
+    if (managementValidation) { message.error(managementValidation); return; }
     if (taskToSave.mode === 'SPOT_DCA') {
       const symbols = taskToSave.symbols;
       if (!symbols.length || symbols.length > 10 || symbols.some((symbol) => !/^[A-Z0-9][A-Z0-9._-]*\/[A-Z0-9][A-Z0-9._-]*$/.test(symbol) || symbol.split('/')[0] === symbol.split('/')[1]) || new Set(symbols.map((symbol) => symbol.split('/')[1])).size > 1) {
@@ -906,13 +924,25 @@ export default function AdminPage() {
   };
 
   // --- Provider CRUD ---
+  const startProviderDiscovery = (provider) => {
+    providerKeyEditRef.current = { edited: false, version: 0 };
+    modelDiscovery.open(discoveryConnection(provider, persistedProviders.find((p) => p.provider_id === provider.provider_id)));
+  };
+
+  const changeProviderConnection = (next, committed = false) => {
+    modelDiscovery.update(discoveryConnection(next, persistedProviders.find((p) => p.provider_id === next.provider_id), providerKeyEditRef.current), committed);
+  };
+
   const openAddProvider = (apiBase = '') => {
-    setEditingProvider({ ...buildBlankProvider(), api_base: normalizeApiBase(apiBase) });
+    const provider = { ...buildBlankProvider(), api_base: normalizeApiBase(apiBase) };
+    setEditingProvider(provider);
+    startProviderDiscovery(provider);
     setProviderDrawerOpen(true);
   };
 
   const openEditProvider = (provider) => {
     setEditingProvider({ ...provider, secrets: provider.secrets || { api_key: buildBlankSecretMeta() } });
+    startProviderDiscovery(provider);
     setProviderDrawerOpen(true);
   };
 
@@ -943,16 +973,18 @@ export default function AdminPage() {
     });
     setProviderDrawerOpen(false);
     setEditingProvider(null);
+    modelDiscovery.close();
   };
 
   const duplicateProvider = (provider) => {
-    const now = Date.now();
-    setEditingProvider({
+    const copy = {
       ...provider,
-      provider_id: `${provider.provider_id}-copy-${now}`,
-      name: provider.name ? `${provider.name} Copy` : `Provider Copy ${now}`,
+      provider_id: `${provider.provider_id}-copy-${crypto.randomUUID()}`,
+      name: provider.name ? `${provider.name} Copy` : 'Provider Copy',
       secrets: { api_key: buildBlankSecretMeta() },
-    });
+    };
+    setEditingProvider(copy);
+    startProviderDiscovery(copy);
     setProviderDrawerOpen(true);
   };
 
@@ -963,16 +995,19 @@ export default function AdminPage() {
     }));
     setProviderDrawerOpen(false);
     setEditingProvider(null);
+    modelDiscovery.close();
   };
 
-  const updateEditingProvider = (field, value) => {
-    setEditingProvider((prev) => (prev ? { ...prev, [field]: value } : prev));
+  const updateEditingProvider = (field, value, committed = false) => {
+    const next = { ...editingProvider, [field]: value };
+    if (['api_base', 'api_protocol', 'compatibility_mode', 'decisions_api'].includes(field)) changeProviderConnection(next, committed);
+    setEditingProvider(next);
   };
 
   const applyProviderPreset = (preset) => {
-    setEditingProvider((prev) => prev ? {
-      ...prev,
-      name: prev.name || preset.label,
+    const next = {
+      ...editingProvider,
+      name: editingProvider.name || preset.label,
       api_base: preset.api_base,
       model: preset.model,
       compatibility_mode: preset.compatibility_mode,
@@ -980,14 +1015,17 @@ export default function AdminPage() {
       decisions_api: preset.decisions_api || 'bai',
       thinking_enabled: preset.thinking_enabled,
       reasoning_effort: preset.reasoning_effort,
-    } : prev);
+    };
+    changeProviderConnection(next, true);
+    setEditingProvider(next);
   };
 
   const updateEditingProviderSecret = (field, patch) => {
-    setEditingProvider((prev) => ({
-      ...prev,
-      secrets: { ...prev.secrets, [field]: { ...(prev.secrets?.[field] || {}), ...patch } },
-    }));
+    const next = { ...editingProvider, secrets: { ...editingProvider.secrets,
+      [field]: { ...(editingProvider.secrets?.[field] || {}), ...patch } } };
+    providerKeyEditRef.current = { edited: true, version: providerKeyEditRef.current.version + 1 };
+    changeProviderConnection(next);
+    setEditingProvider(next);
   };
 
   // --- Profile CRUD ---
@@ -1858,6 +1896,7 @@ export default function AdminPage() {
       >
         {editingTask && (
           <div inert={taskSaving || Boolean(deletingTaskId) || undefined}>
+          {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
           <Collapse defaultActiveKey={['basic', 'schedule', 'model']} items={[
             {
               key: 'basic',
@@ -1917,6 +1956,12 @@ export default function AdminPage() {
                       </Text>
                     </div>
                   )}
+                  <div className="form-field field-span-2"><PositionManagementFields value={editingTask}
+                    savedPolicy={persistedAgents.find((agent) => agent.config_id === editingTaskId)?.position_management_policy}
+                    onChange={(patch) => setEditingTask((current) => ({ ...current, ...patch }))}
+                    supported={taskMode === 'REAL' && resolveExitMode(editingTask) === 'independent_exits' && ['binance', 'okx'].includes(taskCatalog.exchange?.toLowerCase())}
+                    symbols={editingTask.symbol ? [editingTask.symbol] : []} locale={locale} /></div>
+                  {editingTaskId && <div className="form-field field-span-2"><ManagementLifecyclePanel configId={editingTaskId} /></div>}
                   <div className="form-field">
                     <label>Prompt File</label>
                     <Select
@@ -2245,7 +2290,7 @@ export default function AdminPage() {
         title={editingProvider && payload?.llm_providers?.some((p) => p.provider_id === editingProvider.provider_id) ? 'Edit Provider' : t('addProvider')}
         width={isMobile ? '100vw' : 560}
         open={providerDrawerOpen}
-        onClose={() => { setProviderDrawerOpen(false); setEditingProvider(null); }}
+        onClose={() => { modelDiscovery.close(); setProviderDrawerOpen(false); setEditingProvider(null); }}
         extra={
           <Space>
             {editingProvider && payload?.llm_providers?.some((p) => p.provider_id === editingProvider.provider_id) && (
@@ -2275,7 +2320,7 @@ export default function AdminPage() {
                 options={providerCatalog.endpointDraftOptions}
                 placeholder={locale === 'zh' ? '选择端点后自动填入下方地址' : 'Choose an endpoint to prefill the address'}
                 onChange={(value) => {
-                  if (value) updateEditingProvider('api_base', value);
+                  if (value) updateEditingProvider('api_base', value, true);
                 }}
               />
             </div>
@@ -2293,24 +2338,16 @@ export default function AdminPage() {
                 <label>{t('providerName')}</label>
                 <Input value={editingProvider.name} onChange={(e) => updateEditingProvider('name', e.target.value)} placeholder={locale === 'zh' ? '留空时根据端点和模型自动生成' : 'Generated from endpoint and model when empty'} />
               </div>
-              <div className="form-field">
-                <label>Model *</label>
-                <Input value={editingProvider.model} onChange={(e) => updateEditingProvider('model', e.target.value)} placeholder="e.g. deepseek-chat, gpt-4o" />
-              </div>
               <div className="form-field field-span-2">
-                <label>API Base *</label>
-                <Input value={editingProvider.api_base} onChange={(e) => updateEditingProvider('api_base', e.target.value)} placeholder="e.g. https://api.deepseek.com/v1" />
+                <label htmlFor="provider-api-base">API Base *</label>
+                <Input id="provider-api-base" value={editingProvider.api_base} onChange={(e) => updateEditingProvider('api_base', e.target.value)} onBlur={modelDiscovery.commit} placeholder="e.g. https://api.deepseek.com/v1" />
                 <Text type="secondary">{locale === 'zh' ? '同一地址下的模型会在列表中自动归为一组。' : 'Models using the same address are grouped together automatically.'}</Text>
               </div>
             </div>
             <Text type="secondary" className="provider-id">Provider ID: {editingProvider.provider_id}</Text>
-            <div className="form-field"><label>{locale === 'zh' ? '服务接口' : 'API protocol'}</label><Select value={editingProvider.api_protocol || 'chat'} options={[{value:'chat',label:locale === 'zh'?'对话与摘要':'Chat and summaries'},{value:'decisions',label:locale === 'zh'?'Jev 结构化决策':'Jev structured decisions'}]} onChange={(v)=>updateEditingProvider('api_protocol',v)}/></div>
-            {editingProvider.api_protocol === 'decisions' && <ScorerProviderFields key={`${editingProvider.provider_id}:${editingProvider.api_base}:${editingProvider.decisions_api}`} value={editingProvider} saved={persistedProviders.find((provider) => provider.provider_id === editingProvider.provider_id)} onChange={(patch) => setEditingProvider((prev) => ({ ...prev, ...patch }))} locale={locale} />}
-            {editingProvider.api_protocol !== 'decisions' && <><div className="form-field">
-              <label>Temperature</label>
-              <InputNumber min={0} max={2} step={0.1} value={editingProvider.temperature} onChange={(v) => updateEditingProvider('temperature', v)} style={{ width: '100%' }} />
-            </div>
-            <div className="form-field">
+            <div className="form-field"><label>{locale === 'zh' ? '服务接口' : 'API protocol'}</label><Select aria-label={locale === 'zh' ? '服务接口' : 'API protocol'} value={editingProvider.api_protocol || 'chat'} options={[{value:'chat',label:locale === 'zh'?'对话与摘要':'Chat and summaries'},{value:'decisions',label:locale === 'zh'?'Jev 结构化决策':'Jev structured decisions'}]} onChange={(v)=>updateEditingProvider('api_protocol',v,true)}/></div>
+            {editingProvider.api_protocol === 'decisions' && <ScorerProviderFields value={editingProvider} onChange={(patch) => { const next = { ...editingProvider, ...patch }; changeProviderConnection(next, true); setEditingProvider(next); }} locale={locale} />}
+            {editingProvider.api_protocol !== 'decisions' && <div className="form-field">
               <label>{locale === 'zh' ? '接口兼容模式' : 'API compatibility'}</label>
               <Select
                 value={editingProvider.compatibility_mode || 'auto'}
@@ -2320,10 +2357,16 @@ export default function AdminPage() {
                   { value: 'anthropic', label: 'Anthropic Messages API' },
                   { value: 'deepseek', label: 'DeepSeek Chat Completions' },
                 ]}
-                onChange={(value) => updateEditingProvider('compatibility_mode', value)}
+                onChange={(value) => updateEditingProvider('compatibility_mode', value, true)}
                 style={{ width: '100%' }}
               />
               <Text type="secondary">{locale === 'zh' ? '默认使用 OpenAI Chat Completions。DeepSeek 请显式选择其兼容模式以回传 reasoning_content；只有提供 /v1/messages 的服务才选择 Anthropic。' : 'OpenAI Chat Completions is the default. Select DeepSeek to replay reasoning_content, or Anthropic only for endpoints that expose /v1/messages.'}</Text>
+            </div>}
+            <SecretField id="provider-api-key" label="API Key" meta={editingProvider.secrets?.api_key} onChange={(v) => updateEditingProviderSecret('api_key', { value: v, clear: false })} onClear={() => updateEditingProviderSecret('api_key', { value: '', clear: true })} onBlur={modelDiscovery.commit} />
+            <ProviderModelSelect value={editingProvider.model} onChange={(model) => updateEditingProvider('model', model)} state={discoveredModels} onRefresh={modelDiscovery.refresh} locale={locale} />
+            {editingProvider.api_protocol !== 'decisions' && <><div className="form-field">
+              <label>Temperature</label>
+              <InputNumber min={0} max={2} step={0.1} value={editingProvider.temperature} onChange={(v) => updateEditingProvider('temperature', v)} style={{ width: '100%' }} />
             </div>
             <div className="form-field">
               <label>{locale === 'zh' ? '提示词角色' : 'Prompt role'}</label>
@@ -2339,7 +2382,6 @@ export default function AdminPage() {
             </div>
             </>}
             <ProviderPricingFields value={editingProvider} onChange={(patch) => setEditingProvider((prev) => ({ ...prev, ...patch }))}/>
-            <SecretField label="API Key" meta={editingProvider.secrets?.api_key} onChange={(v) => updateEditingProviderSecret('api_key', { value: v, clear: false })} onClear={() => updateEditingProviderSecret('api_key', { value: '', clear: true })} />
             {editingProvider.api_protocol !== 'decisions' && <><div className="form-field">
               <label>{t('thinkingMode')}</label>
               <Select

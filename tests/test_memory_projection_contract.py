@@ -76,7 +76,7 @@ def test_format_correction_uses_snapshot_and_records_each_attempt(sources, monke
     monkeypatch.setattr(projections, 'prepare_review', prepare)
     calls, costs, audits = scripted_model(monkeypatch, response(first), response(response_for(context)))
     result = memory.run_memory_review('仅此一次的输入证据', CFG, operation_id='correct')
-    assert result.status == 'completed' and result.summary == LEGACY
+    assert result.status == 'completed' and result.summary == THESIS
     assert len(calls) == len(costs) == len(audits) == 2
     prepare.assert_called_once_with('cfg')
     assert '上次响应格式校验失败' in calls[1][0].content

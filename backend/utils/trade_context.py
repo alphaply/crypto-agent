@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import json
 
 from backend.utils.execution_ledger import number
-from backend.utils.exit_orders import canonical_order_type, exit_group, order_reference, observed_order_status
+from backend.utils.exit_orders import ORDER_TYPES, canonical_order_type, exit_group, order_reference, observed_order_status
 from backend.utils.trade_operations import _same_symbol
 from backend.utils.trade_order_evidence import classify_order, UNRESOLVED, TERMINAL
 from backend.utils.trade_receipts import unresolved_orders
@@ -67,6 +67,8 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
     evidence = dict(account.get('evidence_state') or {})
     hedged = account.get('hedged')
     scope = dict(config_id=config_id, account_scope=account_scope, symbol=symbol, hedged=hedged)
+    if account.get('management'):
+        scope['management'] = account['management']
     cycles = [p for p in plans or [] if _same_symbol(p.get('symbol', symbol), symbol)
               and p.get('account_scope') == account_scope and p.get('execution_mode') == 'independent_exits']
     active = {p.get('side'): p for p in cycles if p.get('state') != 'DONE'}
@@ -108,15 +110,20 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
         plan = active.get(side, {})
         observation = plan.get('position_observation') or {}
         amount = number(p.get('amount'))
-        owned = is_mock or (observation.get('status') == 'verified' and observation.get('amount') == amount
+        management = p.get('management') or {}
+        owned = is_mock or management.get('state') == 'owned' or (observation.get('status') == 'verified' and observation.get('amount') == amount
                             and not plan.get('ownership_error') and not plan.get('position_error'))
         positions.append(dict(side=side, amount=None if position_failed else amount,
                               last_known_amount=amount if position_failed else None,
                               entry_price=p.get('entry_price', p.get('price')),
                               unrealized_pnl=p.get('unrealized_pnl'), ownership='task' if owned else 'unverified',
-                              adoption=plan.get('adoption'), source=source,
+                              adoption=plan.get('adoption'), management=management or plan.get('management'),
+                              management_state=management.get('state'), visible=management.get('visible', True),
+                              eligible=management.get('eligible'), can_claim=management.get('can_claim'), owner=management.get('owner'),
+                              source=p.get('source') or (plan.get('management') or {}).get('source', source),
+                              managed=owned, supported_actions=p.get('supported_actions', ['close'] if owned else []),
                               observed_at=(evidence.get('positions') or {}).get('observed_at', p.get('observed_at'))))
-        if not owned:
+        if not owned and not management:
             issue('ownership_unverified', side, plan=plan, missing_evidence='current_task_position_ownership')
 
     local_orders = []
@@ -164,7 +171,9 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
                     order_type=canonical_order_type(record), status=observed_order_status(record),
                     price=record.get('price'), trigger_price=record.get('trigger_price'),
                     quantity_mode=record.get('quantity_mode', 'fixed'), remaining=remaining,
-                    resolved_amount=record.get('resolved_amount'), ownership='task', source='local_execution_evidence',
+                    resolved_amount=record.get('resolved_amount'), ownership='task',
+                    source=record.get('source', 'agent'), managed=True,
+                    supported_actions=['cancel', 'edit'] if canonical_order_type(record) in ORDER_TYPES - {'market'} else [],
                     observed_at=record.get('fill_observed_at', plan.get('verified_at')),
                     verified=classification == 'live_verified'))
 
@@ -176,7 +185,8 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
                     order_type=canonical_order_type(r), status=observed_order_status(r), price=r.get('price'),
                     trigger_price=r.get('trigger_price'), quantity_mode=r.get('quantity_mode', 'fixed'),
                     remaining=None if r.get('quantity_mode') == 'all' else number(r.get('remaining', r.get('amount'))),
-                    resolved_amount=r.get('resolved_amount'), ownership='task', source=source,
+                    resolved_amount=r.get('resolved_amount'), ownership='task', source=source, managed=True,
+                    supported_actions=['cancel', 'edit'] if canonical_order_type(r) in ORDER_TYPES - {'market'} else [],
                     observed_at=r.get('observed_at'), verified=not r.get('pending', False)))
         for b in mock.get('unresolved_orders', []):
             issue(b.get('reason_code', 'order_unresolved'), b.get('side'),
@@ -192,6 +202,9 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
         ref = aliases.get(ref, ref)
         seen.add(ref)
         if ref in orders:
+            if raw.get('source'):
+                orders[ref]['source'] = raw['source']
+            orders[ref]['supported_actions'] = raw.get('supported_actions', orders[ref]['supported_actions'])
             orders[ref]['snapshot_observed_at'] = (evidence.get('orders') or {}).get('observed_at')
             orders[ref]['visible_in_snapshot'] = True
             snapshot_remaining = number(raw.get('remaining'))
@@ -209,7 +222,11 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
                 order_type=raw.get('order_type', raw.get('type')), status=raw.get('status'),
                 price=raw.get('price'), trigger_price=raw.get('trigger_price'),
                 quantity_mode=raw.get('quantity_mode', 'fixed'), remaining=number(raw.get('remaining')),
-                ownership='unverified', source=source, observed_at=(evidence.get('orders') or {}).get('observed_at'), verified=False)
+                ownership='task' if raw.get('managed') else 'unverified', source=raw.get('source') or source,
+                management=raw.get('management'), management_state=raw.get('management_state'),
+                visible=raw.get('visible', True), eligible=raw.get('eligible'), can_claim=raw.get('can_claim'), owner=raw.get('owner'),
+                managed=raw.get('managed', False), supported_actions=raw.get('supported_actions') or [],
+                observed_at=raw.get('observed_at') or (evidence.get('orders') or {}).get('observed_at'), verified=False)
     if not is_mock and 'real_open_orders' in account and not (evidence.get('orders') or {}).get('error') and not account.get('error'):
         for ref, order in orders.items():
             if ref not in seen and order.get('verified'):
@@ -218,9 +235,14 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
 
     # Referenced history supplies only missing facts, never old prose/permissions.
     for identity, resolved in (referenced_evidence or {}).items():
+        if not identity or str(identity).lower() in {'null', 'none'}:
+            continue
+        if str(identity).startswith('toolu_') and resolved.get('resolution') != 'matched':
+            continue
         if resolved.get('resolution') != 'matched':
-            issue('referenced_evidence_' + resolved.get('resolution', 'unavailable'), operation_id=identity,
-                  missing_evidence='original_operation_in_current_account')
+            if resolved.get('affects_current_action') is True:
+                issue('referenced_evidence_' + resolved.get('resolution', 'unavailable'), operation_id=identity,
+                      missing_evidence='original_operation_in_current_account')
             continue
         receipt = resolved.get('latest') or {}
         parts = [i.get('result', i) for i in receipt.get('results', [])] or [receipt]

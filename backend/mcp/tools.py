@@ -4,12 +4,12 @@ from __future__ import annotations
 from functools import partial
 from typing import Annotated, Literal
 
-import anyio
 from mcp.types import ToolAnnotations
 from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from pydantic import ConfigDict, Field, create_model, model_validator
 
 from . import service
+from .resilience import run
 from backend.agent.trading_contracts import EXECUTION_POLICY_DESCRIPTION, OrderType, PositiveNumber, TradeAction
 
 OperationId = Annotated[str, Field(pattern=r'^[a-zA-Z0-9_.:-]{8,160}$', description='Caller-supplied stable ID. Reuse only for the identical request; never generate a new ID to retry an unknown result.')]
@@ -67,7 +67,7 @@ def normalize_tool_input(tool_name, value):
     # execute_trade.arguments remains the explicit business-argument container.
     result = service.unwrap_arguments(value, wrappers=('args',))
     numeric = {'amount', 'remaining_amount', 'expected_amount', 'entry_price', 'price', 'trigger_price', 'stop_loss', 'take_profit',
-               'stop_limit_price', 'take_profit_limit_price', 'limit', 'offset'}
+               'stop_limit_price', 'take_profit_limit_price', 'limit', 'offset', 'quote_amount', 'margin_amount', 'after_id'}
     for key in numeric & result.keys():
         if isinstance(result[key], bool):
             raise ValueError(f'{key} must be a number, not a boolean')
@@ -107,11 +107,11 @@ def _register(server, function, *, scope='read'):
 
 def register_tools(server):
     async def query(resource, **kwargs):
-        return await anyio.to_thread.run_sync(partial(service.query, service.principal(), resource, **kwargs))
+        return await run('read', partial(service.query, service.principal(), resource, **kwargs), label=resource)
 
     async def execute(profile_id, symbol, tool_name, arguments, operation_id):
-        return await anyio.to_thread.run_sync(partial(service.execute, service.principal(), profile_id,
-                                                     symbol, tool_name, arguments, operation_id))
+        return await run('execute', partial(service.execute, service.principal(), profile_id,
+                                          symbol, tool_name, arguments, operation_id), label='execute_trade')
 
     async def list_profiles() -> list[dict]:
         """List authorized connection profiles and selected/all symbol scope. Never exposes exchange secrets."""
@@ -275,7 +275,7 @@ def register_tools(server):
 
     async def get_operation(profile_id: ProfileId, operation_id: OperationId) -> dict:
         """Read this caller's persisted operation result without submitting any trade again."""
-        return await anyio.to_thread.run_sync(partial(service.operation, service.principal(), profile_id, operation_id))
+        return await run('read', partial(service.operation, service.principal(), profile_id, operation_id), label='get_operation')
 
     functions = {function.__name__: function for function in (
         list_profiles, list_symbols, get_news, get_market, get_balance, get_positions, get_orders,
@@ -287,3 +287,5 @@ def register_tools(server):
     )}
     for item in TOOL_CATALOG:
         _register(server, functions[item['name']], scope=item['scope'])
+    from .canonical_tools import register as register_canonical
+    register_canonical(server)

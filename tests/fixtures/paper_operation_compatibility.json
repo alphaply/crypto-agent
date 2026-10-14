@@ -1,0 +1,64 @@
+{
+  "version": "legacy-paper-v2",
+  "operations": [
+    {
+      "name": "market_buy",
+      "operation_id": "legacy-buy-0001",
+      "request": {
+        "market_type": "spot",
+        "symbol": "BTC/USDT",
+        "quote_amount": null,
+        "margin_amount": null,
+        "close_all": false,
+        "leverage": null,
+        "exchange": null,
+        "stop_loss": null,
+        "take_profit": null,
+        "action": "buy",
+        "amount": "1.0"
+      },
+      "expected": {
+        "status": "completed",
+        "cash": 899.9,
+        "spot_amount": 1
+      },
+      "fingerprint": "eb2e3eb3eacbce8dd1c9cf70b5bdb5d0850969cd48eec70e7ca0923949ff1c73"
+    },
+    {
+      "name": "partial_sell",
+      "operation_id": "legacy-sell-0001",
+      "request": {
+        "market_type": "spot",
+        "symbol": "BTC/USDT",
+        "quote_amount": null,
+        "margin_amount": null,
+        "close_all": false,
+        "leverage": null,
+        "exchange": null,
+        "stop_loss": null,
+        "take_profit": null,
+        "action": "sell",
+        "amount": "0.4"
+      },
+      "expected": {
+        "status": "completed",
+        "cash": 939.86,
+        "spot_amount": 0.6
+      },
+      "fingerprint": "35bd74b66ca04c301416c463c61e293cd50520e3df8f0ac066e351b1f8f66b18"
+    },
+    {
+      "name": "cancel",
+      "operation_id": "legacy-cancel-0001",
+      "request": {
+        "action": "cancel_order",
+        "order_id": "legacy-limit-0001"
+      },
+      "expected": {
+        "status": "completed",
+        "order_status": "cancelled"
+      },
+      "fingerprint": "31a6cc950e34fe490cdfdedd6464f3473e458b5d7f27db13ae53751be55a64c7"
+    }
+  ]
+}

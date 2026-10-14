@@ -182,9 +182,15 @@ def _complete(provider, transaction, pending, *, scopes=None, profile_ids=None):
 
 
 async def handle_consent(provider, request):
+    from functools import partial
+    from .resilience import run
+    form = await request.form() if request.method == 'POST' else None
+    return await run('auth', partial(_handle_consent, provider, request, form), label='consent')
+
+
+def _handle_consent(provider, request, form):
     from backend.app.core.security import authenticate_password, check_login_allowed, record_login_failure, reset_login_attempts
     from .auth import validate_grant
-    form = await request.form() if request.method == 'POST' else None
     transaction = str(form.get('transaction', '')) if form is not None else request.query_params.get('transaction', '')
     pending = _prepare(transaction) if request.method == 'GET' else store.get('pending', store.digest(transaction))
     if not pending or pending['expires_at'] <= time.time():

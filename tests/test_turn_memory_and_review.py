@@ -55,9 +55,9 @@ def test_actual_memory_model_receives_latest_identity_in_both_writers(real_short
             now_cn=memory_service.TZ_CN.localize(datetime(2026, 10, 13, 10, 1)))
     assert len(sent) == 1
     assert sent[0].count('本轮策略条件只出现一次') == 1
-    assert sent[0].count('实际工具回执（原始结果与同身份最新证据') == 1
-    assert '"current_evidence": {"operation_id": "memory-close"' in sent[0]
-    assert '"resolution": "matched"' in sent[0] and '"status": "completed"' in sent[0]
+    assert '实际工具回执' not in sent[0]
+    assert 'memory-close' not in sent[0]
+    assert 'resolution' not in sent[0]
     with database.get_db_conn() as conn:
         assert conn.execute('SELECT decision_json FROM summaries WHERE id=?', (sid,)).fetchone()[0] == raw
 
@@ -108,14 +108,13 @@ def test_explicit_turn_review_updates_bounded_memory_with_execution_evidence(loc
     with patch.object(memory_service, 'organize_memory', return_value='new plan; entry rejected') as summarize:
         assert run_persisted_memory('cfg', {'symbol': 'ETH/USDT'}, 'reverse to long', messages)
     source = summarize.call_args.args[0]
-    assert 'Agent 收益与回撤' in source
-    assert '起点收益率/回撤: N/A' in source
-    assert '未剔除出入金、划转或共享账户其他策略影响' in source
-    assert 'old short plan' in source and 'reverse to long' in source
+    assert '收益与回撤' not in source
+    assert '起点收益率' not in source
+    assert 'old short plan' not in source and 'reverse to long' in source
     assert '最多600字' not in source
     assert '分为【当前假设】' not in source
     assert source.startswith('过去4h滚动窗口：')
-    assert 'Order rejected' in source
+    assert 'Order rejected' not in source
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'new plan; entry rejected'
 
 
@@ -150,19 +149,13 @@ def test_short_memory_includes_local_7d_closed_positions_and_stats(local_db):
         assert run_persisted_memory('cfg', {'mode': 'REAL', 'symbol': 'ETH/USDT'}, 'wait for pullbacks', [])
 
     source = summarize.call_args.args[0]
-    assert '【过去7天平仓记录（本地成交账本）】' in source
-    assert '开仓:' in source and '平仓:' in source
-    assert '2500.00' in source and '2450.00' in source
-    assert 'TP: 2440.00' in source and 'SL: 2520.00' in source
-    assert '盈利: +5.00 USDT' in source
-    assert '【7天战绩统计】' in source
-    assert '完整平仓周期: 1 笔' in source
-    assert '胜率: 100.0%' in source
-    assert '已确认累计盈亏（手续费前）: +5.00 USDT' in source
+    assert '过去7天平仓记录' not in source and '2500.00' not in source
+    assert 'wait for pullbacks' in source
     saved = database.get_short_memories('cfg', 1)[0]
-    assert 'Agent 收益与回撤' in saved['position_summary']
-    assert '完整平仓周期: 1 笔' in saved['position_summary']
-    assert decision_context.format_short_memory_for_llm('cfg') == 'updated memory'
+    assert saved['position_summary'] == ''
+    details = database.get_closed_positions_7d('cfg', 'ETH/USDT', mode='REAL')
+    assert details[0]['entry_price'] == 2500.0 and details[0]['realized_pnl'] == 5
+
 
 
 @pytest.mark.parametrize('writer', ['rolling'])
@@ -191,16 +184,12 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
         changed = memory_service.generate_rolling_short_memory_for_config('cfg', cfg, now_cn=now)
     assert changed
     source = summarize.call_args.args[0]
-    assert source.count('## Agent 收益与回撤') == 1
-    assert source.count('【过去7天平仓记录（本地成交账本）】') == 1
-    assert '起点收益率: -8.00%' in source and '当前回撤: 8.00%' in source
-    assert '快照最大回撤: 20.00%' in source
-    assert '样本: 3' in source
-    assert 'previous strategy and lessons' in source
-    assert '成交活动与完整周期盈亏不能相加' in source
+    assert '权益' not in source and '平仓记录' not in source and '战绩统计' not in source
+    assert 'new support' in source
     saved = database.get_short_memories('cfg', 1)[0]
-    assert '起点收益率: -8.00%' in saved['position_summary']
+    assert saved['position_summary'] == ''
     assert saved['market_summary'] == 'compressed strategy and performance'
+
 
 
 @pytest.mark.parametrize('bad_summary', ['', 'Previous short memory: prompt echo'])
@@ -228,4 +217,5 @@ def test_empty_window_failed_compression_keeps_previous_memory(local_db, monkeyp
                                'ETH/USDT', 'cfg', 'prior memory and risk', '', 1)
     now = agent_graph.TZ_CN.localize(__import__('datetime').datetime(2026, 9, 28, 10, 0))
     assert not memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=now)
-    assert decision_context.format_short_memory_for_llm('cfg') == 'prior memory and risk'
+    assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'prior memory and risk'
+    assert 'prior memory and risk' not in decision_context.format_short_memory_for_llm('cfg')

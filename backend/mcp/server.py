@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
 from functools import partial
 from urllib.parse import urlparse
 
@@ -28,7 +29,13 @@ def active_public_url():
 
 
 def tool_catalog():
-    return [dict(item) for item in TOOL_CATALOG]
+    from .paper_tools import PAPER_TOOL_CATALOG
+    from .paper_advanced_tools import PAPER_ADVANCED_CATALOG
+    from .canonical_tools import CORE_NAMES, PAPER_NAMES
+    legacy = {item['name']: item for item in [*TOOL_CATALOG, *PAPER_TOOL_CATALOG, *PAPER_ADVANCED_CATALOG]}
+    return [dict(legacy.get(name, {'name': name, 'scope': 'trade' if name == 'configure_paper_account' else 'read',
+                                  'description': 'Canonical scoped trading capability'}))
+            for name in (*CORE_NAMES, *PAPER_NAMES)]
 
 
 def build_server(public_url):
@@ -36,7 +43,7 @@ def build_server(public_url):
     origin = urlparse(public_url)
     server = FastMCP(
         'Crypto Agent', stateless_http=True, json_response=True, streamable_http_path='/mcp',
-        instructions='Shared market research and scoped trading. Start with list_profiles and list_symbols to discover authorized canonical symbols. Prefer flat buy_spot/create_spot_exit tools, and read get_spot_inventory before a spot exit. When the user requests management of a manually opened perpetual position, read get_positions and use adopt_perpetual_position with its exact base quantity before creating exits; adoption itself does not trade or protect the position. Read get_trading_tools before using execute_trade. Every write needs a unique operation_id; reuse the same ID only for the identical request. Unknown outcomes must be inspected, never blindly retried. Submitted orders are not fills.',
+        instructions='Start with get_trading_context for authorized profiles or paper rules and your bot identity. Search unfamiliar symbols with search_symbols; preserve returned symbol and exchange. Read only required get_account_state facets or get_trade_records. Use execute_trade_actions contract_version=3 for one or up to 20 typed ordered actions; execution follows current mode capabilities, permissions and management ownership. Visible manual resources can be managed within authorized scope without a preliminary adopt call; queries never claim. Submitted orders are not fills. Reuse operation_id only for identical intent, inspect uncertainty with get_operation, and never resume a skipped tail by replay. Paper uses real public production prices and simulates only balances/orders/execution; trusted user_id is the sender or your returned bot identity. Paper bank, account settings and ranking have separate tools; notification polling belongs to the bot HTTP integration. Legacy cached names remain authorized compatibility calls.',
         token_verifier=provider,
         auth=AuthSettings(issuer_url=AnyHttpUrl(public_url + '/oauth'),
                           resource_server_url=AnyHttpUrl(public_url + '/mcp'),
@@ -44,16 +51,29 @@ def build_server(public_url):
         transport_security=TransportSecuritySettings(allowed_hosts=[origin.netloc], allowed_origins=[public_url]),
     )
     register_tools(server)
+    from .paper_tools import register_paper_tools
+    register_paper_tools(server)
     return server, provider
 
 
 def install_mcp(app):
     """Call before SPA catchall routes. The host must enter mcp_lifespan once."""
     global _server, _public_url
+    # Route construction reads persisted OAuth settings before the ASGI
+    # lifespan runs. This is startup migration, never a per-request side effect.
+    from backend import database
+    from . import store
+    with database.get_db_conn() as conn:
+        store.initialize_schema(conn)
+        conn.commit()
     from .management import router
+    from .paper_competition import bootstrap
+    bootstrap()
     _public_url = settings()['public_url']
     _server, provider = build_server(_public_url)
     app.include_router(router)
+    from .paper_api import router as paper_router
+    app.include_router(paper_router)
     http_app = _server.streamable_http_app()
     # Exact ASGI delegation keeps /mcp without a redirect or a catchall mount.
     app.router.routes.append(Route('/mcp', endpoint=http_app))
@@ -94,4 +114,11 @@ async def mcp_lifespan():
         yield
     else:
         async with _server.session_manager.run():
-            yield
+            from .paper import maintenance
+            stop = asyncio.Event()
+            worker = asyncio.create_task(maintenance(stop), name='paper-maintenance')
+            try:
+                yield
+            finally:
+                stop.set()
+                await worker

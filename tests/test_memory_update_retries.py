@@ -54,8 +54,9 @@ def test_successful_memory_update_runs_once_and_keeps_rolling_evidence(job, monk
     assert updates.process_memory_update('cfg', 'run-1', job)
     assert state()['status'] == 'completed' and model.call_count == 1
     source = model.call_args.args[0]
-    assert 'prior memory' in source and source.count('new verified evidence') == 1
-    assert 'Confirmed execution evidence' in source
+    assert 'prior memory' not in source and source.count('new verified evidence') == 1
+    assert 'prior memory' in database.get_short_memories('cfg', 10)[1]['market_summary']
+    assert 'Confirmed execution evidence' not in source
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'new dynamic memory'
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import math
 import re
@@ -26,15 +27,19 @@ class JevError(ValueError):
         self.details = details or {}
 
 
-def validate_provider(provider: dict) -> None:
+def validate_connection(provider: dict) -> None:
     if provider.get('api_protocol') != 'decisions':
         raise JevError('News scoring requires a provider using the Decisions API protocol')
     if provider.get('decisions_api', 'bai') not in {'bai', 'typesafe'}:
         raise JevError('Choose the B.AI or official TypeSafe Decisions API')
-    if not re.fullmatch(r'jev-[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}', str(provider.get('model') or '')):
-        raise JevError('News scoring requires a Jev model identifier (for example jev-1.13.0 or jev-latest)')
     if not provider.get('api_key'):
         raise JevError('The selected Jev provider has no API key')
+
+
+def validate_provider(provider: dict) -> None:
+    validate_connection(provider)
+    if not re.fullmatch(r'jev-[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}', str(provider.get('model') or '')):
+        raise JevError('News scoring requires a Jev model identifier (for example jev-1.13.0 or jev-latest)')
 
 
 def api_base(provider: dict) -> str:
@@ -47,29 +52,17 @@ def api_base(provider: dict) -> str:
 
 
 def list_models(provider: dict) -> list[dict]:
-    validate_provider(provider)
+    from backend.utils.provider_catalog import CatalogError, fetch_models
+    validate_connection(provider)
     try:
-        response = httpx.get(api_base(provider) + '/models', headers={'Authorization': f"Bearer {provider['api_key']}", 'User-Agent': 'crypto-agent/0.2'}, timeout=15)
-        if response.status_code != 200:
-            raise JevError(f'Jev model discovery failed (HTTP {response.status_code})', code='http_error')
-        if len(response.content) > 1024 * 1024:
-            raise JevError('Jev model listing is too large')
-        payload = response.json()
-        values = payload.get('models', payload.get('data'))
-        if not isinstance(values, list):
-            raise JevError('Jev returned an invalid model listing')
-        result = []
-        for row in values:
-            if not isinstance(row, dict):
-                continue
-            model = row.get('name') or row.get('id')
-            if isinstance(model, str) and re.fullmatch(r'jev-[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}', model):
-                result.append({'id': model, 'name': model, 'description': str(row.get('description') or '')[:500]})
-        return result
-    except JevError:
-        raise
-    except Exception as exc:
-        raise JevError('Jev model discovery request failed', code='connection_error') from exc
+        result = asyncio.run(fetch_models({**provider, 'api_base': api_base(provider)}))
+        # This legacy response cannot express partial catalogs; do not imply completeness.
+        if not result['complete']:
+            issue = result['warning']
+            raise JevError(issue['message'], code=issue['code'])
+        return result['models']
+    except CatalogError as exc:
+        raise JevError(str(exc), code=exc.code) from None
 
 
 def build_request(item: dict, model: str, *, instructions: str = DEFAULT_SCORER_INSTRUCTIONS, criteria: list[str] | None = None) -> dict:

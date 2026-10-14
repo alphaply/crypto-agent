@@ -20,6 +20,9 @@ from backend.mcp.server import install_mcp, mcp_lifespan
 @pytest.fixture
 def gateway(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'mcp.db'))
+    with database.get_db_conn() as conn:
+        store.initialize_schema(conn)
+        conn.commit()
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'test-mcp-master-key')
     monkeypatch.setenv('ADMIN_PASSWORD', 'test-admin-password')
     monkeypatch.setenv('CHAT_PASSWORD', '')
@@ -47,7 +50,8 @@ def test_sdk_initialization_tool_list_and_scoped_call(gateway):
     assert init.status_code == 200
     assert init.json()['result']['serverInfo']['name'] == 'Crypto Agent'
     listing = rpc(gateway, key, 'tools/list').json()['result']['tools']
-    assert {'execute_trade', 'get_market', 'get_news'} <= {tool['name'] for tool in listing}
+    assert {'get_trading_context', 'get_market', 'get_news'} <= {tool['name'] for tool in listing}
+    assert 'execute_trade' not in {tool['name'] for tool in listing}
     response = rpc(gateway, key, 'tools/call', {'name': 'list_profiles', 'arguments': {}})
     assert 'Test' in response.text
     assert 'fake' not in response.text
@@ -279,8 +283,9 @@ def test_unknown_operation_never_replays_and_caller_cannot_read_foreign_receipt(
     assert first['status'] == 'unknown'
     assert service.execute(caller, *args) == first and len(calls) == 1
     assert service.operation(caller, 'test', 'unknown-operation')['state'] == 'unknown'
-    with pytest.raises(ValueError, match='not found'):
-        service.operation({**caller, 'id': 'key:b'}, 'test', 'unknown-operation')
+    foreign = service.operation({**caller, 'id': 'key:b'}, 'test', 'unknown-operation')
+    assert foreign['error_code'] == 'operation_not_found' and foreign['found'] is False
+    assert 'result' not in foreign
 
 
 def test_admin_and_mcp_authentication_are_separate_and_admin_responses_not_cached(gateway):

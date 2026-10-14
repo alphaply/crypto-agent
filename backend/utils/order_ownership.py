@@ -39,6 +39,18 @@ def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str,
     if not config_id or not str(order_id).strip():
         raise ValueError('A configuration and owned order ID are required to cancel a perpetual order')
     scope = account_scope(market_tool.exchange, config_id)
+    from backend.utils.visible_management import _active_management, physical_account_scope
+    active = _active_management.get()
+    if active and active['owner'] == config_id and active['physical_account'] == physical_account_scope(market_tool):
+        if active.get('symbol', '').split(':')[0] != symbol.split(':')[0]:
+            raise ValueError('Order target is outside the active management scope')
+        raw = str(order_id)
+        channel, separator, identity = raw.partition(':')
+        params = {'trigger': True} if separator and channel == 'algo' else {}
+        observed = market_tool.exchange.fetch_order(identity if separator else raw, symbol, params=params)
+        if str(observed.get('id')) != (identity if separator else raw) or observed.get('symbol') not in {None, symbol}:
+            raise ValueError('Current order identity could not be verified')
+        return {'source': 'current_management_claim', 'role': 'managed', 'account_scope': scope, 'trigger': bool(params)}
     aliases = symbol_aliases(market_tool, symbol)
     placeholders = ','.join('?' for _ in aliases)
     with database.get_db_conn() as conn:

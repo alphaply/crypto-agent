@@ -1,4 +1,5 @@
 import { Alert, Empty, Space, Table, Tag, Typography } from 'antd';
+import { ManagedResource } from './ManagementStatus';
 import { usePreferences } from '../app/usePreferences';
 import { formatExitNumber, exitOrderLabel, exitQuantityLabel } from '../lib/exitManagement';
 
@@ -37,6 +38,7 @@ export default function ExitManagementPanel({ management, hideEmpty = false }) {
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={zh ? '暂无独立退出单' : 'No independent exits'} /> }}
         columns={[
           { title: zh ? '订单' : 'Order', dataIndex: 'order_id', width: 170, ellipsis: true },
+          { title: zh ? '来源与管理' : 'Source and management', width: 240, render: (_, row) => <ManagedResource resource={row} /> },
           { title: zh ? '方向' : 'Side', dataIndex: 'pos_side', width: 90 },
           { title: zh ? '退出方式' : 'Exit type', width: 145, render: (_, row) => exitOrderLabel(row, locale) },
           { title: zh ? '委托价' : 'Limit price', dataIndex: 'price', width: 110, render: formatExitNumber },

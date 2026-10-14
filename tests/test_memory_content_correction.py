@@ -18,9 +18,9 @@ NARRATIVE = '旧 unknown 未核验，所以禁止加仓。'
 
 
 @pytest.mark.parametrize('text', [
-    '旧 unknown 仅供审计。等四小时收盘确认前不加仓。',
-    '回执不能作为成交证明；等四小时收盘确认前不加仓。',
-    '历史回执已核验。等四小时收盘前不加仓。',
+    'CPI公布前等待。等四小时收盘确认前不加仓。',
+    '支撑2458；等四小时收盘确认前不加仓。',
+    '突破2565后再评估。等四小时收盘前不加仓。',
 ])
 def test_unrelated_sentences_and_execution_lessons_do_not_block_review(sources, monkeypatch, text):
     context = projections.prepare_review('cfg')

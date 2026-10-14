@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
@@ -10,6 +11,8 @@ from .auth import admin_keys, admin_connections, create_api_key
 from backend.utils.spot_config_guard import serialized_spot_execution
 from .settings import MCPSettings, MCPProfile, SCOPES, profiles, save_profile, settings
 from .connection import ChatGPTClientRequest, check_connection, connection_details, register_chatgpt_client
+from . import paper
+from typing import Literal
 
 def prevent_caching(response: Response):
     response.headers['Cache-Control'] = 'no-store'
@@ -22,17 +25,21 @@ class KeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     scopes: list[str] = Field(default_factory=lambda: ['read'])
     profile_ids: list[str] = Field(default_factory=list)
+    key_type: Literal['live', 'paper'] = 'live'
+    paper_namespace: str = 'qqbot'
 
 
 @router.get('')
 def overview(response: Response):
     from .server import active_public_url, tool_catalog
+    from .resilience import diagnostics
     value = settings()
     url = value['public_url']
     response.headers['Cache-Control'] = 'no-store'
     return {'success': True, 'settings': value, 'profiles': profiles(), 'keys': admin_keys(), 'oauth_connections': admin_connections(),
             'tools': tool_catalog(), 'scopes': SCOPES, 'audit': store.audit_rows(50),
-            'connection': connection_details(url, active_public_url())}
+            'connection': connection_details(url, active_public_url()), 'runtime_diagnostics': diagnostics(),
+            'paper_settings': paper.settings()}
 
 
 @router.get('/connection-check')
@@ -76,10 +83,28 @@ def update_profile(profile_id: str, payload: MCPProfile):
 @serialized_spot_execution
 def delete_profile(profile_id: str):
     with store.connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         used = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=? LIMIT 1', (profile_id,)).fetchone()
-    if used:
-        raise HTTPException(409, 'This profile has execution history; disable it instead to retain order ownership and receipts')
-    store.pop('profile', profile_id)
+        if used:
+            raise HTTPException(409, 'This profile has execution history; disable it instead to retain order ownership and receipts')
+        row = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=?", (profile_id,)).fetchone()
+        previous = json.loads(row[0]) if row else None
+        if previous:
+            from .config_guard import active_lifecycle
+            if active_lifecycle(conn, previous):
+                raise HTTPException(409, 'This profile has active exposure or unresolved operations; disable decisions while retaining its management scope')
+        conn.execute("DELETE FROM mcp_records WHERE kind='profile' AND id=?", (profile_id,))
+        if (previous or {}).get('position_management_policy') == 'exclusive_scope':
+            from backend.config_store import load_runtime_snapshot
+            from backend.utils.position_management import synchronize_configuration
+            snapshot = load_runtime_snapshot(connection=conn)
+            if snapshot is None:
+                raise HTTPException(409, 'Unable to verify management ownership without its saved runtime account configuration')
+            try:
+                synchronize_configuration(conn, snapshot)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        conn.commit()
     return {'success': True}
 
 
@@ -87,7 +112,7 @@ def delete_profile(profile_id: str):
 def add_key(payload: KeyRequest, response: Response):
     response.headers['Cache-Control'] = 'no-store'
     try:
-        value = create_api_key(payload.name, payload.scopes, payload.profile_ids)
+        value = create_api_key(payload.name, payload.scopes, payload.profile_ids, payload.key_type, payload.paper_namespace)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {'success': True, 'key': value}
@@ -101,6 +126,59 @@ def revoke_key(key_id: str):
     value['revoked'] = True
     store.put('key', key_id, value)
     return {'success': True}
+
+
+@router.put('/paper/settings')
+def update_paper_settings(payload: paper.PaperSettings):
+    store.put('paper_settings', 'global', payload.model_dump())
+    return {'success': True, 'settings': payload.model_dump()}
+
+
+@router.get('/paper/accounts')
+def list_paper_accounts(namespace: str | None = None, user_id: str | None = None, limit: int = 100, offset: int = 0):
+    try:
+        return {'success': True, **paper.admin_accounts(namespace, user_id, limit, offset)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get('/paper/dashboard')
+def paper_dashboard(namespace: str | None = None, user_id: str | None = None, limit: int = 100):
+    from .paper_competition import admin_data
+    from .paper_orders import admin_orders
+    try:
+        if not 1 <= limit <= 200:
+            raise ValueError('limit must be 1–200')
+        if namespace:
+            paper.identity(namespace, 'namespace')
+        if user_id:
+            paper.identity(user_id)
+        accounts = paper.admin_accounts(namespace, user_id, limit)
+        data = admin_data(namespace, user_id, limit)
+        orders = admin_orders(namespace, user_id, 'all', limit)
+        return {'success': True, **data, **orders, 'accounts': accounts['items'], 'account_total': accounts['total'],
+                'summary': {'cash': sum(a['cash'] for a in accounts['items']), 'debt': sum(a['debt'] for a in accounts['items']),
+                            'net_equity': sum(a['net_equity'] for a in accounts['items']), 'open_orders': sum(o['state'] == 'open' for o in orders['orders']),
+                            'summary_scope': 'returned_accounts_and_orders', 'account_count': len(accounts['items'])}}
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post('/paper/accounts/{namespace}/{user_id}')
+def create_paper_account_admin(namespace: str, user_id: str):
+    caller = {'id': 'admin', 'key_type': 'paper', 'paper_namespace': namespace, 'scopes': ['read', 'trade']}
+    try:
+        return {'success': True, **paper.create_account(caller, user_id, 'admin-create-' + store.digest(namespace + ':' + user_id)[:24])}
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.patch('/paper/accounts/{namespace}/{user_id}')
+def update_paper_account(namespace: str, user_id: str, payload: paper.AccountUpdate):
+    try:
+        return {'success': True, 'account': paper.admin_update(namespace, user_id, payload)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get('/audit')

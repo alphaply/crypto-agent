@@ -101,10 +101,33 @@ def _rows(config_id, symbol=None):
     return [{**row, 'payload': json.loads(row['payload'])} for row in rows]
 
 
+def _managed_rows(mt, symbol=None):
+    """Current manager may observe accepted resources without changing their actor."""
+    from backend.utils.visible_management import management_status
+    own = _rows(mt.config_id, symbol)
+    projection = management_status(mt.config_id, symbol)
+    bases = {r['resource'] for r in projection['scopes'] if r['market_type']=='spot'}
+    for row in own:
+        row['_visible_management'] = row['symbol'].split('/')[0] in bases
+    accepted = {r['identity'] for r in projection['resources']
+                if r.get('kind') == 'spot_exit'}
+    if not accepted:
+        return own
+    with database.get_db_conn() as conn:
+        rows = [dict(r) for r in conn.execute('SELECT * FROM mcp_spot_exits')
+                if r['exit_id'] in accepted and (symbol is None or r['symbol'] == symbol)]
+    by_id = {row['exit_id']: row for row in own}
+    for row in rows:
+        row['payload'] = json.loads(row['payload'])
+        row['_visible_management'] = row['symbol'].split('/')[0] in bases
+        by_id[row['exit_id']] = row
+    return list(by_id.values())
+
+
 def _save(row):
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE mcp_spot_exits SET filled=?,state=?,payload=?,updated_at=? WHERE exit_id=?',
-                     (row['filled'], row['state'], json.dumps(row['payload']), time.time(), row['exit_id']))
+        conn.execute('UPDATE mcp_spot_exits SET amount=?,filled=?,state=?,payload=?,updated_at=? WHERE exit_id=?',
+                     (row['amount'], row['filled'], row['state'], json.dumps(row['payload']), time.time(), row['exit_id']))
         conn.commit()
 
 
@@ -122,8 +145,8 @@ def _tool(config_id, symbol):
     from backend.config import config
     from backend.utils.market_data import MarketTool
     cfg = config.get_config_by_id(config_id)
-    if not str(config_id).startswith('mcp:') or not cfg or cfg.get('market_type') != 'spot':
-        raise ValueError('Spot exits require an MCP spot profile')
+    if not cfg or cfg.get('market_type') != 'spot' and cfg.get('mode') != 'SPOT_DCA':
+        raise ValueError('Spot exits require a trusted spot task/profile')
     mt = MarketTool(config_id=config_id)
     market = mt.exchange.market(symbol)
     if not market.get('spot') or market.get('contract'):
@@ -156,6 +179,7 @@ def _order(exchange, order_id, symbol, side):
 def _refresh(exchange, row):
     """Resolve native group children, then verify actual ordinary order fills."""
     p = row['payload']
+    visible = row.get('_visible_management', False)
     if row['state'] == 'failed':
         return []
     symbol = row['symbol']
@@ -177,8 +201,11 @@ def _refresh(exchange, row):
         if native.get('algoClOrdId') != p['client_id'] or native.get('instId') != market['id'] or native.get('side') != 'sell':
             raise ValueError('Algo identity does not match this exit')
         native_amount = _number(native.get('sz'), 'native algo quantity')
-        if native_amount <= 0 or native_amount > row['amount'] + 1e-10:
+        if native_amount <= 0 or not visible and native_amount > row['amount'] + 1e-10:
             raise ValueError('Native algo quantity exceeds or invalidates its original reservation')
+        if visible:
+            p.setdefault('requested_amount', row['amount'])
+            row['amount'] = native_amount
         p['exchange_id'] = str(native['algoId'])
         p['order_ids'] = list(dict.fromkeys(str(value) for value in [*(native.get('ordIdList') or []), native.get('ordId')] if value))
         native_done = native.get('state') in {'canceled', 'order_failed', 'effective'}
@@ -202,6 +229,9 @@ def _refresh(exchange, row):
         p['order_ids'] = [p['exchange_id']]
         native_done = True
     orders = [_order(exchange, order_id, symbol, 'sell') for order_id in p.get('order_ids', [])]
+    if visible and orders:
+        p.setdefault('requested_amount', row['amount'])
+        row['amount'] = max(_number(order.get('amount'),'observed exit amount') for order in orders)
     if any(_number(order.get('amount'), 'exit quantity') > row['amount'] + 1e-10 for order in orders):
         raise ValueError('Exchange exit quantity exceeds its original reservation')
     filled = sum(_number(order.get('filled'), 'exit fills') for order in orders)
@@ -217,7 +247,7 @@ def _refresh(exchange, row):
     return orders
 
 
-def _fees_and_fills(exchange, symbol, orders, since):
+def _fees_and_fills(exchange, symbol, orders, since, *, strict=True):
     """Use complete matching trade evidence; fetch_order alone omits base fees."""
     trades = exchange.fetch_my_trades(symbol, since=since, limit=1000)
     if len(trades) >= 1000:
@@ -235,7 +265,9 @@ def _fees_and_fills(exchange, symbol, orders, since):
         seen.add(str(trade['id']))
         order_id = str(trade['order'])
         if order_id not in owned:
-            raise ValueError('Manual or another strategy\'s fills share this spot asset; selling denied')
+            if strict:
+                raise ValueError('Manual or another strategy\'s fills share this spot asset; selling denied')
+            continue  # Visible management keeps external origin separate from Agent fill attribution.
         if trade.get('side') != owned[order_id]['side']:
             raise ValueError('Spot fill direction conflicts with owned order')
         amounts[order_id] += _number(trade.get('amount'), 'trade quantity')
@@ -295,6 +327,12 @@ def _assert_no_foreign_ownership(conn, config_id, base, scope):
 
 
 def _inventory(mt, symbol):
+    from backend.utils.position_management import management_status
+    from backend.utils.visible_management import _active_management
+    cfg = getattr(mt, 'runtime_config', {}) or {}
+    if (cfg.get('position_management_policy') == 'visible_first_claim' or _active_management.get()
+            or any(c['market_type'] == 'spot' for c in management_status(mt.config_id, symbol)['scopes'])):
+        return _visible_inventory(mt, symbol)
     exchange = mt.exchange
     config_id = mt.config_id
     base = symbol.split('/')[0]
@@ -361,6 +399,7 @@ def _inventory(mt, symbol):
 def _receipt(row):
     result = {'exit_id': row['exit_id'], 'symbol': row['symbol'], 'exit_type': row['kind'], 'status': row['state'],
             'amount': row['amount'], 'filled': row['filled'], 'exchange_id': row['payload'].get('exchange_id'),
+            'requested_amount': row['payload'].get('requested_amount', (row['payload'].get('request') or {}).get('amount', row['amount'])),
             'order_ids': row['payload'].get('order_ids', []),
             'message': 'Exchange acknowledgement is not fill confirmation.'}
     if row['payload'].get('error'):
@@ -498,7 +537,7 @@ def _create(mt, market, args, operation_id):
         # Another worker may have reconciled a fill after the inventory read.
         # A completed exit must reduce owned quantity, not create fresh capacity.
         new_fills = max(0, float(current_filled) - stock['_exit_filled_quantity'])
-        if float(current) + amount > stock['owned_quantity'] - new_fills + 1e-10:
+        if float(current) + amount > stock.get('managed_quantity', stock['owned_quantity']) - new_fills + 1e-10:
             raise ValueError('Spot inventory was reserved by another operation')
         conn.execute('INSERT INTO mcp_spot_exits VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                      (client_id, config_id, symbol, row['account_scope'], operation_id, request_hash,
@@ -528,11 +567,16 @@ def _create(mt, market, args, operation_id):
         row['state'] = 'unknown'
         row['payload']['error'] = type(exc).__name__
     _save(row)
+    from backend.utils.visible_management import _active_management, link_resource
+    claim = _active_management.get()
+    if claim:
+        link_resource(claim, row['exit_id'], config_id, kind='spot_exit', symbol=symbol,
+                      operation_id=operation_id, state=row['state'], source='agent')
     return _receipt(row)
 
 
 def _cancel(mt, market, args):
-    row = next((row for row in _rows(mt.config_id, market['symbol']) if row['exit_id'] == args['exit_id']), None)
+    row = next((row for row in _managed_rows(mt, market['symbol']) if row['exit_id'] == args['exit_id']), None)
     if not row or row['account_scope'] != account_scope(mt.exchange, mt.config_id):
         raise ValueError('Spot exit does not belong to this MCP profile and account')
     _refresh(mt.exchange, row)
@@ -575,3 +619,13 @@ def reconcile(config_id):
         except Exception:
             row['state'] = 'unknown'
             _save(row)
+
+
+def _visible_inventory(mt, symbol, *, claim=None):
+    from backend.utils.spot_management import visible_inventory
+    return visible_inventory(mt, symbol, claim=claim)
+
+
+def execute_spot_action(config_id, symbol, action, operation_id):
+    from backend.utils.spot_management import execute_spot_action as execute_action
+    return execute_action(config_id, symbol, action, operation_id)

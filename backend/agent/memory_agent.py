@@ -31,8 +31,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_MODEL_CALLS = 3  # Shared transport/correction budget; normal review uses one call.
 
 MEMORY_REVIEW_POLICY = """你是短期动态记忆整理员，只维护当前任务的memory，不维护长期rule，不交易，不调用工具。
-将旧记忆、本轮及近期摘要、实际执行回执和历史证据合并成最新动态记忆。
-保留仍有效的市场假设、关键条件、确认的执行结果、待核验状态和下次需要观察的事项；删除重复和已明确失效的内容。
+将程序筛选的策略素材合并为纯策略记忆。
+只保留有效市场判断、关键价位和有效教训；保留四小时收盘及CPI等市场观察条件。summary与strategy_text都禁止操作ID、resolution、周期报错、当前仓位挂单、收益统计、恢复步骤或JSON。
 区分事实、推断和计划，注明窗口/截至时间。旧计划不能当成当前持仓或挂单，模型建议不能当成成交。
 区分毛盈亏、费用与资金变化，缺失结果写未知；不足样本不能推出下一笔胜率或反向必赚。
 新闻保留来源及时间，未经核实或过期内容不能作为新的触发依据。
@@ -43,7 +43,7 @@ MEMORY_REVIEW_POLICY = """你是短期动态记忆整理员，只维护当前任
 
 SUMMARY_OUTPUT_POLICY = '本次输出契约：仅输出 {"summary":"更新后的完整短期动态记忆"}。'
 
-DEFAULT_MEMORY_PROMPT = "请将旧记忆与本窗口证据整理成最新短期动态memory，保留有效条件、实际结果和未解决问题：\n{content}"
+DEFAULT_MEMORY_PROMPT = "请将旧记忆与本窗口证据整理成最新短期动态memory，只保留策略判断、关键价位和有效教训：\n{content}"
 
 
 @dataclass
@@ -177,6 +177,10 @@ def _final_memory(text: str) -> str:
     draft = _ReviewDraft.model_validate(value)
     if not draft.summary.strip():
         raise ValueError("Memory returned an empty summary")
+    from backend.agent.strategy_material import validate_strategy_text
+    if not validate_strategy_text(draft.summary):
+        from backend.agent.context_projections import ProjectionContentError
+        raise ProjectionContentError(['summary'])
     return draft.summary.strip()
 
 
@@ -188,6 +192,8 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
         return MemoryReviewResult(error="Memory requires config_id and a stable operation_id")
     if not str(source or "").strip():
         return MemoryReviewResult(error="Memory requires supplied historical evidence")
+    from backend.agent.strategy_material import strategy_material
+    source = strategy_material(source) or '暂无有效策略素材。'
     active_audit, response, usage, model_calls = None, None, {}, 0
     details = {"agent_name": "memory:" + config_id, "operation_id": operation_id,
                "rule_receipts": [], "mode": "memory_only"}
@@ -290,8 +296,8 @@ def run_memory_review(source: str, agent_config: dict, *, operation_id: str) -> 
                     details['phase'] = 'content_correction'
                     correction = ('上次响应混入执行状态或许可结论；字段：' + ', '.join(original.paths)
                                   + '。重新返回完整JSON：strategy_text 仅保留市场假设、价位、策略条件和教训；'
-                                  '把工具错误、回执、执行限制和解锁叙述放入 unlinked_execution_notes，'
-                                  '可信操作身份放 execution_refs。保留 summary 原文；不得伪造引用、补空策略或宣布已获交易许可。')
+                                  '不要复述工具错误、回执、执行限制和解锁叙述；'
+                                  'execution_refs 与 unlinked_execution_notes 输出空列表，程序保存关联。summary也只含纯策略；不得伪造引用、补空策略或宣布已获交易许可。')
                 else:
                     details['phase'] = 'format_correction'
                     correction = ('上次响应格式校验失败：' + original.code + '；字段：'

@@ -88,6 +88,7 @@ class ConfigStoreTests(unittest.TestCase):
                 "ENABLE_SCHEDULER": "true",
                 "TRADING_MODE": "STRATEGY",
                 "LANGCHAIN_PROJECT": "test-project",
+                "LANGSMITH_PROJECT": "",
                 "SYMBOL_CONFIGS": json.dumps(
                     [
                         {

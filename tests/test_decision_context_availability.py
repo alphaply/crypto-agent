@@ -136,7 +136,8 @@ def test_source_failure_isolated_and_corrupt_reference_does_not_hide_text(source
         conn.commit()
     view = load_decision_memory('cfg', CFG)
     assert THESIS in view.short_memory_text and THESIS in view.recent_summaries_text
-    assert view.execution_evidence['context']['resolution'] == 'unavailable'
+    assert 'context' not in view.execution_evidence
+    assert 'old-close' in view.execution_evidence
 
 
 def test_corrupt_row_keeps_other_published_sources_and_management_diagnostic(sources):

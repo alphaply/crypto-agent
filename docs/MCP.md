@@ -1,5 +1,61 @@
 # MCP 外部助手接入
 
+## 默认目录与 v3 顺序执行
+
+重新 `tools/list` 获取按当前 Key 类型、scope 和授权 profile 生成的目录。live 可写目录为 8 项，只读为 7 项；paper 可写为 11 项，只读为 8 项。多个 profile 使用同一套工具名称，上下文分别列出各 profile 能力。目录不缓存其他用户的权限；每次调用仍重新检查身份与范围。
+
+核心名称为 `get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`、`get_operation`。paper 额外有 `paper_bank`、`configure_paper_account`、`get_paper_leaderboard`。只有 cancel 的 live Key 也可看到执行入口，但只能执行撤单；paper 撤单需要 read + trade。
+
+先读 `get_trading_context` 获取 profile、模式、授权 symbol 和动作能力。`get_account_state(include=["positions"])` 仅返回仓位；需要余额、库存或挂单时显式选择相应 facet。`get_trade_records(record_type="orders"|"order"|"fills"|"history")` 区分订单、指定 ID、实际成交与历史。单订单使用 order_id，恢复请求使用原 operation_id。
+
+记录查询支持 limit/offset，默认投影订单、数量、费用、观察时间与管理事实；`detail=true` 返回原完整记录。live 订单列表沿用 open 范围，结束的订单可按 ID 单查；fills/history 使用交易所实际成交记录，保留原查询的 200 项观察窗口。到达窗口上限会返回 window_limit/window_exhausted，不能将该窗口视为全部账户历史。Paper history 返回该账户成交、借还款及账户调整事件，分页范围限于当前 namespace/user。
+
+所有新交易使用 `contract_version=3` 与 1–20 项有类型的 actions。例：已知订单撤销后设置替代退出（一次调用、按请求顺序执行）：
+
+```json
+{"profile_id":"swap","operation_id":"replace-stop-v3-0001","contract_version":3,"actions":[{"action":"cancel","symbol":"BTC/USDT:USDT","order_id":"algo:123","reason":"撤旧止损"},{"action":"close","symbol":"BTC/USDT:USDT","side":"LONG","order_type":"stop_market","amount":0.1,"trigger_price":58000,"reason":"替代止损"}]}
+```
+
+整批先检查结构、字段、版本、权限和已知模式能力，再逐项核验余额、预留、目标和仓位。合法前置撤单可释放下一项需要的资源。默认 failed/pending/unknown 后停止；`execution_policy="independent"` 仅继续依赖满足且自身可准入的项，`depends_on` 是不重复的此前索引，前项必须 completed。限价入场 submitted 不等于成交，也不等待将来成交；没有已成交仓位时不能预挂未来退出。
+
+REAL/STRATEGY 入场仍限价；现货 open/close 使用 LONG 买入/卖出；独立合约不接受 protect，使用 close 创建退出单。附带保护、现货原生 OCO 和 paper 原有保护使用其支持的 protect。`edit.remaining_amount` 表示基础币未成交数量，省略字段保留；all 不隐式变为 fixed。具体组合以当前上下文与 schema 为准。
+
+可见且获交易授权的人工仓位/订单在有效管理动作中自动核验并认领，不要求先 adopt。管理者先到先得且跨空仓、暂停和重启保留；范围外、管理竞争、缺失执行证据或不支持原生目标仍明确拒绝。查询和工具发现不认领。
+
+每个父请求保留稳定 operation_id 与子项映射。批次非原子，后项失败不回滚前项；相同 ID 重试只查询或核验已尝试项，绝不补发 not_executed 尾部。超时先 `get_operation`，需要完整证据时传 `detail=true`。默认回执保留逐项真实状态和恢复身份，`include=["account"]` 最多返回一次末尾账户摘要。
+
+下面旧工具名称与 v2/无版本示例为兼容客户端说明，不在默认模型目录公布。旧客户端可继续按原名称、参数和 operation_id 调用，原权限、指纹、数量和回放含义保留；新客户端使用本节目录。
+
+## 可用性预算与数据完整性
+
+MCP 查询、金融执行、OAuth 认证分别使用专用有限线程池，默认并发为 4 / 2 / 2，排队上限为 8 / 4 / 4；存储另外限制为 2 个并发，等待最多 0.25 秒。超额请求返回 busy；已排队请求最多等待 2 秒。网页同步接口继续使用 Web 自己的线程池。认证及授权页面的数据库和密码校验在认证池执行，SQLite 锁等待默认 0.25 秒；建表只在启动迁移执行。
+
+预算包含排队、市场初始化、交易所 HTTP 和返回处理。查询默认 20 秒、执行 40 秒、认证 3 秒；每次交易所 HTTP 最多取 8 秒与剩余预算中的较小值。耗尽预算后不会启动后续请求。同步网络请求不能被 HTTP 断开强行终止，正在运行的 worker 继续占用真实额度直至结束；不能以请求断开为理由重发交易。结果可能已送达交易所时保留原操作身份和 unknown/pending，查询原操作；确认收到的 ACK 不会被后续审计失败覆盖。最终回执有短数据库落盘宽限，不允许在宽限期再启动网络操作。
+
+市场目录缓存 5 分钟，同账户配置版本/交易所/市场仅刷新一次；每个请求有独立 CCXT 客户端并复制元数据，凭证变化使旧 key 失效。同进程同账号的客户端共享有权重的限速协调；多个 Web 进程仍受交易所账户级限速约束，应控制进程数量及实际 API 权重，不能通过加线程避开限速。缓存不包含可用来批准写入的私有仓位/订单证据。
+
+公开 ticker 缓存 2 秒，K 线缓存 15 秒；`get_market` 保留 `symbol/timeframe/ticker/candles`，新增 `status`、`missing_sources`、每来源 `observed_at` 和 `sources`。ticker 成功而 K 线失败时 `status=partial`、`candles=null`，观察时间仍是原获取时间。仓位/订单/连接配置成功仍返回列表。普通或条件订单通道失败时返回明确的缺项工具错误，不把部分列表当作全部订单；单订单只取得本地记录时标明 `local_record/pending`，不是实时成交证明。
+
+上述参数对应 `.env.template` 中 `MCP_*` 项。并发/队列额度在进程启动确定，修改后需按部署流程重启。2 核 2G 环境建议先以 read=2、execute=1、auth=2 验证，查询预算 20 秒、依赖 8 秒和排队 2 秒保持不变，再按实测调优。不要以增加代理或交易所超时替代故障定位。后台诊断显示当前 active/queued/capacity/queue_limit；`MCPResilience` 日志包含自动生成的 request_id、脱敏 scope_ref、阶段、结果和耗时，不记录调用参数、认证头或完整错误 URL。
+
+账户状态投影中的只读独占范围发现有独立子预算 `MCP_MANAGEMENT_DISCOVERY_BUDGET_SECONDS`，默认 5 秒，并受外层请求剩余预算约束。发现失败保留实际持仓和明确的对账缺项，不把账户说成空仓。
+
+金融范围同时受 SQLite 持久化 reservation 和共享数据卷 OS 文件锁保护。锁位于交易数据库父目录 `.management-locks`，Web 与 scheduler 必须共享该目录；Windows 使用非阻塞字节锁，Linux 使用非阻塞 flock。存活 worker 从准入至最终状态提交都持锁，后台不能因 ACK 已可读而提前释放；进程退出只释放 OS 锁，未知数据库记录仍须原操作证据恢复。运行中不要删除锁文件或清空该目录，也不要把锁目录迁到各容器独立的 `/tmp`。
+
+## MCP 分层排障
+
+按同一时段记录以下结果；模板和当前实测见 [MCP 故障记录](MCP_OUTAGE_2026-10-14.md)。先核验失败层，再执行相应修复。
+
+| 层 | 检查 | 结论依据 |
+| --- | --- | --- |
+| DNS / TCP / TLS | 域名解析、连接时间、TLS 完成时间、证书与 SNI | TLS 未完成时没有 HTTP，更不能归因于交易所工具 |
+| 公网路由 | 首页、`/health`、两条标准发现路径和两条兼容路径 | 首页成功而发现 404/HTML，优先核对代理路径及当前部署版本 |
+| 代理 / 容器 | 同时段 access/error、容器状态/资源、映射端口与容器内 health | 本机成功、公网失败偏向入口；本机也失败再排查应用 |
+| 认证 | 已授权 `get_trading_context`，issuer/resource 与公网地址一致 | 元数据可读不等于授权 MCP 调用成功 |
+| 交易所 | 分别读取余额、单标的订单、ticker/K 线 | 单个依赖失败不能直接称作 Web 或整个 MCP 宕机 |
+
+健康请求不带密钥。认证验证使用已有连接的只读工具，不把 Bearer 写进命令行、日志或故障报告。不得通过重放交易、改价、撤单或换 operation_id 测试连接。代理改动先保存原配置并运行 `nginx -t`；容器重建前记录原镜像 digest、端口、数据卷和密钥引用，不输出完整 `.env`。修复后重跑各层相同检查，记录时间、状态和失败层；缺服务器访问或认证验证时明确保留待验收项。
+
 服务使用官方 Python MCP SDK，在现有 FastAPI 服务的 `/mcp` 提供 Streamable HTTP。后台 → MCP 管理连接配置、API Key、OAuth 授权和调用审计。外部助手共享消息摘要，可查询行情、余额、持仓和委托，并按授权调用现有交易工具；不会创建内部定时 Agent 或启动模型摘要任务。
 
 ## 1. 配置服务
@@ -91,7 +147,7 @@ ChatGPT 的此类连接使用用户 OAuth，不接收自定义 API Key。当前�
 
 OAuth 状态保存在 `trading_data.db`，重启和不同工作进程需要访问同一数据库并使用同一 `CONFIG_MASTER_KEY`。多副本各自持有独立数据库会丢失请求上下文，不能靠延长有效期修复。排障可查看 MCP 审计中的 `oauth_authorize`、`oauth_consent`：`completed`/`denied` 表示审批结果已落库，`callback_reissued` 表示恢复回调，`expired`/`missing`/`csrf_failed` 可区分真实过期、状态缺失和 Cookie 失败。审计仅记录事务摘要与客户端 ID，不记录管理员密码、授权码、完整回调查询串或令牌。
 
-## 4. 权限与工具
+## 4. 权限与旧客户端兼容工具
 
 | 权限 | 能力 |
 | --- | --- |
@@ -146,7 +202,7 @@ OAuth 状态保存在 `trading_data.db`，重启和不同工作进程需要访�
 }
 ```
 
-手动合约仓必须先得到用户明确的管理委托，再调用 `adopt_perpetual_position`，不能因为平仓返回周期缺失就自动接管。先用 `get_positions` 核对已授权配置的账户、标的和持仓方向；`expected_amount` 使用基础币数量，若持仓响应给出合约张数，应依据该市场的 `contractSize` 换算。例如，用户已经明确委托管理 `ETH/USDT:USDT` 的 0.37 ETH 空仓，且实时查询仍匹配时：
+默认 v3 流程直接在授权范围内核验管理权并自动纳管，不要求先 adopt。旧显式接管入口仍供历史客户端使用，`expected_amount` 保持其原基础币数量含义。以下仅为旧客户端接管示例，不能作为新默认交易的前置步骤：
 
 ```json
 {
@@ -248,12 +304,12 @@ fixed 档不会自动重分配。`quantity_conflict` 不等于 unknown；Agent �
 - 标的范围字段为 `symbol_scope: "selected" | "all"`，省略按 `selected` 处理。指定模式必须提供非空 `symbols`；不限制模式可保存 `symbols: []`。支持现货及线性永续合约，合约目录会排除反向合约。每笔请求仍必须传入有效的 `symbol`；账户权限、现货/合约类型、杠杆、订单归属和幂等检查保持生效。
 - 现货每次调用最多涉及 10 个同计价币标的，`spot_allowance` 按该次调用的计价币计算；不限制模式可在不同调用中使用不同计价币，不会把不同币种的额度混算。从不限制改为指定标的时仍检查尚未结束的交易记录，不能排除仍需维护的标的。
 - MCP 合约杠杆上限默认 5 倍，可在连接配置修改。开仓、加仓和入场改单先读取交易所实际杠杆及已有仓位杠杆；不可确认或超过上限时拒绝。它不会替你修改交易所杠杆，也不改变内部 Agent 的杠杆策略。
-- 已确认由本 MCP 配置独占的仓位，即使当前杠杆超过上限也允许减仓和平仓。未经显式接管的手动仓、其他策略持仓及不能证明归属的持仓会被拒绝；接管也不会放宽后续开仓、加仓的杠杆限制。系统按当前周期的已关联订单成交量核验，显式接管的仓位另计其独立基线；历史单页达到核验上限或数据不完整时拒绝，需先核验账户状态。
-- 撤单按订单归属校验；批次在执行任何保护调整之前检查其中所有增加风险的动作。既有委托在 MCP 配置停用后仍由后台维护，停用不会自动撤销交易所订单。
+- 默认 `visible_first_claim` 自动管理授权可见且未被其他管理者占用的仓位与挂单，人工来源不要求模型先 adopt。已纳管仓位即使当前杠杆超过上限仍可合法减仓；新开仓、加仓和增加入场承诺量继续核验实际杠杆。真实证据缺项只限制依赖它的具体动作。旧显式 `strict_owned` 请求保留原归属/接管规则，旧请求 ID 与历史成交不会因管理者变化重算。
+- 批次在首项影响前校验所有项的结构、模式能力、目标范围及权限；余额、数量、杠杆和库存承诺量在轮到该项时动态核验。后项动态失败不提前阻止合法前置 cancel。既有委托在配置停用后仍由后台维护，停用不会自动撤销交易所订单。
 - 现货买入通过每次调用的组合共用额度周期核算，批次内所有标的共享 `spot_allowance`；同一请求重试不会新增额度。修改额度不会扩大已建立周期的上限。现货退出按已经核实的归属库存预留数量，不创建买入额度；未确认的提交或撤销仍占用预留，直到后台查证交易所终态。
 - 所有扁平写入工具和旧 `execute_trade` 共用持久操作账本。`operation_id` 为 8–160 位字母、数字、点、下划线、冒号或连字符，必须由调用者提供。同一调用者对同一配置重试相同 ID/内容返回原回执；更换参数或调用者会被拒绝。等价的扁平调用与旧工具调用也共用回执。不同交易意图使用新 ID，客户端不应在超时后自动生成新 ID 重试。
-- 超时或无法确认的结果保持 `unknown`，不会自动重放。`get_operation(profile_id, operation_id)` 读取本调用者原始执行回执；再通过 `get_orders`、`get_spot_inventory`、持仓和交易所记录核对当前状态。网关 `submitted` 表示交易所已受理，不能当作成交；退出回执内部 `open` 同样只是待执行。委托成交或取消需后续核验。
-- 配置已有交易历史后不能删除或改绑账户，可停用。未结束的持仓、挂单或待核验操作会阻止移除相关标的、切换退出模式或更换账户凭证；普通名称或同值明文保存不受影响。
+- 超时或无法确认的结果保持 `unknown`，不会自动重放。`get_operation` 核验原身份，按需传 `detail: true` 读取完整证据；`get_account_state` 与 `get_trade_records` 读取当前数量/订单/成交。网关 `submitted` 表示已受理，不能当作成交；退出回执内部 `open` 同样只是待执行。查询不重发、不撤改单、不续跑尾项。
+- 持久管理权随任务/profile 保留，暂停与历史 DONE 不释放 owner。删除、缩小授权范围或换账户前须明确核验释放，或由接收任务接受交接；活跃资源和未决提交不能静默退休。已明确退休的管理范围可保留历史再退出配置，旧显式 strict 的历史保护约束继续兼容；普通名称与同值明文保存不受影响。
 
 ## 6. 导出、诊断与验证
 
@@ -271,7 +327,50 @@ uv run pytest -q tests/test_mcp_gateway.py tests/test_mcp_tool_contracts.py test
 # 原操作回执恢复
 
 独立交易的 `get_operation(profile_id, operation_id)` 与同 ID 重放会刷新原操作证据。
-只读查询保留 principal/profile 隔离，不 create/edit/cancel，不自动接管或恢复周期归属。
+只读查询保留 principal/profile 隔离，不 create/edit/cancel。`get_operation` 核验原回执；`get_orders` 在已显式授权的独占范围内可记录本地纳管事实，不会取消或修改交易所订单。
 已成交 close 可同时带 `cleanup.status=pending`；请使用返回的原操作 ID 查询具体 blocker。
 旧批次 `not_executed` 尾部不会因查询、后台对账或重放而执行，后续交易需要明确的新请求。
 首次回执及后续修订分别保存。完整字段和升级边界见 [交易回执与恢复](TRADE_RECEIPTS_AND_RECOVERY.md)。
+
+## 人工订单的原工具接续管理
+
+默认 visible_first_claim 在可交易范围内的有效金融动作中完成有界取证及自动纳管，无需有限手填清单或预先 adopt。旧单项入口仍保留兼容输入。查询行显示原身份、来源、管理者、支持动作和观察缺项；普通与条件身份始终分别核验。未支持类型、未知方向和缺失通道返回具体缺项，不把外部来源当作全局拒绝理由。
+
+例如在 `ETH/USDT:USDT/LONG` 独占范围核验完成后，对人工未成交入场单改价：
+
+```json
+{"tool":"edit","arguments":{"profile_id":"swap","symbol":"ETH/USDT:USDT","order_id":"regular:123","price":2390,"reason":"关键支撑变化，更新入场价","operation_id":"manual-entry-edit-0001"}}
+```
+
+省略数量保持刚核验的原单剩余量；显式 `remaining_amount` 使用标的币数量，不是含已成交部分的总量。人工减仓不会自动重分配固定退出档位。固定减仓数量超过最新仓位时返回冲突；市价 `close_all` 使用提交前仓位，条件 `close_all` 保持交易所原生动态全平含义。
+
+已纳管回执的数量以标的币计，`amount_units=base`。未纳管的原生列表保留合约数量并注明 `amount_units=contracts`，同时提供 `contract_size` 和 `base_amount/base_filled_amount/base_remaining_amount`。动态 all 的未解析委托数量为空，不能把交易所占位 0 当成零仓位。
+
+人工撤单更新同一订单的终态。人工全平后由后台核验并清理旧周期挂单；全平后重新开仓进入新周期，旧 all 单列入旧单清理队列，不能算作新仓保护。发现和只读查询不执行清理写入。无法证明成交顺序的同毫秒边界保持待核验，当前已核验仓位仍可按减仓规则管理。
+
+超时后使用原操作 ID 读取证据，同 ID 回放不会再次提交。后台恢复原 Agent client ID 关联，交易所已受理但响应丢失的单不会作为第二笔人工订单登记。历史拒绝、批次未执行尾项及无关 unavailable 查询不要求 Agent 执行“解锁”；真实未知动作继续依原身份及依赖核验。独占授权不会增加 MCP scope，edit 仍需 trade，cancel 仍需 cancel，绑定聊天仍须原审批。
+
+支持范围、启停与人工操作示例见 [独占仓位管理](exclusive-position-management.md)。
+
+
+## 独占管理授权与配置生命周期
+
+本节说明旧显式 `exclusive_scope` 配置的兼容映射；默认 `visible_first_claim` 使用前文的动态可见范围，不要求下面的额外清单。已绑定真实资源的旧 owner 会迁移并持续保留。
+
+默认 `position_management_policy=visible_first_claim` 从已授权交易账户和标的产生管理资格，并在实际资源或有效交易意图上原子认领。all profile 不预占所有市场；只读查询不取得管理权。旧 strict/adopt 和有限 exclusive_scope 格式仅保留兼容解释，旧有效管理者优先保留，人工来源和缺少本地周期不单独成为拒绝原因。以下有限清单是旧显式策略的导入示例。
+
+```json
+{"position_management_policy":"exclusive_scope","management_scopes":[{"symbol":"ETH/USDT:USDT","side":"LONG"}]}
+```
+
+配置名、API Key principal 与管理者不同：同一 MCP profile 的授权调用共享 `mcp:<profile_id>` 管理者，任务使用 config_id。同一账户、品种及方向只能有一个管理者；Hedge 可分别管理方向，One-way 共用 BOTH。同凭证别名识别为同一范围；同一物理账户的多 Key 可在保存账户中明确确认相同 `physical_account_id`，身份同时包含规范化 venue，不能跨交易所误合并。不得通过别名、换 Key 或换调用 ID 绕过冲突。
+
+开启后，启动已有仓位、普通/条件挂单及后续外部加减仓和订单变化由后台及执行层核验、记录和持续纳管。纳管只是本地授权与事实关联，不会自动撤销人工订单，也不伪造成 Agent 的入场成交。经核验且类型受支持的外部订单可由现有 edit/cancel 工具管理；仍遵守 profile/principal 授权、read/trade/cancel scopes、数量单位、真实 close-only 能力与原操作幂等。
+
+停用 `enabled=false` 暂停决策，保留管理权与维护。已绑定资源的旧 scope 同样需要明确释放或接受交接，`running`/`unresolved` 不靠超时退休。仅从未绑定资源的旧配置纯预留保留旧显式退出规则。新策略已明确退休的范围可退出配置并保留原历史/actor/身份；旧 strict 的历史删除保护继续兼容。后台只读核验原未决提交，不重发或续跑尾项。
+
+任务接口的旧客户端省略或传 null 的管理字段会保留原策略；MCP profile旧客户端省略管理字段时也保留原策略；显式 strict 并清空 scopes 才表示退出。配置保存、MCP profile 保存及完整导入使用同一事务提交授权和范围，冲突或校验失败不会部分清空订单/原提交或释放旧 owner。多个进程同时申请同一范围时，只有不冲突的配置能提交。导出包含管理字段，不包含密钥的导出不替换已有密钥；不含完整交易历史的配置包不能替代数据库备份。
+
+## QQBot Paper 模拟交易
+
+独立 Paper Key、按外部用户 ID 的账户、现货/合约模拟交易、可调杠杆与银行负债已支持。接入步骤、工具字段和后台 API 见 [QQBot Paper MCP](QQBOT_PAPER_MCP.md)。

@@ -4,12 +4,16 @@ import { ApiOutlined, CopyOutlined, KeyOutlined, PlusOutlined, ReloadOutlined } 
 import { api } from '../lib/api';
 import { usePreferences } from '../app/usePreferences';
 import McpSymbolPicker from './McpSymbolPicker';
+import PositionManagementFields from './PositionManagementFields';
+import ManagementLifecyclePanel from './ManagementLifecyclePanel';
+import { managementError } from '../lib/positionManagement';
 import McpConnectionSetup from './McpConnectionSetup';
 import { mcpSuggestedOrigin } from '../lib/mcpConnection';
 import { mcpProfileDraft, mcpProfilePayload } from '../lib/mcpSymbols';
+import PaperTradingPanel from './PaperTradingPanel';
 
 const { Text, Paragraph } = Typography;
-const blankProfile = () => ({ profile_id: `connection-${Date.now()}`, name: '', exchange_profile_id: '', market_type: 'swap', symbol_scope: 'selected', symbols: [], enabled: true, max_leverage: 5, leverage: 1, exit_mode: 'attached_required', spot_allowance: 100 });
+const blankProfile = () => ({ profile_id: `connection-${Date.now()}`, name: '', exchange_profile_id: '', market_type: 'swap', symbol_scope: 'selected', symbols: [], enabled: true, max_leverage: 5, leverage: 1, exit_mode: 'attached_required', spot_allowance: 100, position_management_policy: 'visible_first_claim', management_scopes: [] });
 
 export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
   const { locale } = usePreferences();
@@ -51,6 +55,8 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
     catch { message.error(label('复制失败，请手动选择文本复制。', 'Copy failed. Select the text and copy manually.')); }
   };
   const updateProfile = (key, value) => setEditing((current) => ({ ...current, [key]: value }));
+  const managementSupported = editing?.market_type === 'swap' && editing?.exit_mode === 'independent_exits' && ['binance', 'okx'].includes(exchangeProfiles.find((profile) => profile.profile_id === editing?.exchange_profile_id)?.exchange?.toLowerCase());
+  const profileValidation = editing ? managementError(editing, { supported: managementSupported, symbols: editing.symbol_scope === 'all' ? null : editing.symbols, zh }) : '';
   const activeKeys = (data?.keys || []).filter((key) => !key.revoked);
   const connectionKey = activeKeys.find((key) => key.id === selectedKey);
   const connectionConfig = JSON.stringify({ mcpServers: { 'crypto-agent': { url: data?.connection?.url || '', ...(connectionKey ? { headers: { Authorization: `Bearer ${connectionKey.secret}` } } : {}) } } }, null, 2);
@@ -87,6 +93,7 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
       <div className="settings-stack">
         {(data.profiles || []).map((profile) => <Card key={profile.profile_id} size="small" title={<Space wrap><Text strong>{profile.name}</Text><Tag>{profile.market_type === 'spot' ? label('现货', 'Spot') : label('合约', 'Perpetual')}</Tag><Tag color={profile.enabled ? 'green' : 'default'}>{profile.enabled ? label('启用', 'Enabled') : label('暂停', 'Paused')}</Tag></Space>} extra={<Space><Button onClick={() => { setEditing(mcpProfileDraft(profile)); setNewProfile(false); }}>{label('编辑', 'Edit')}</Button><Popconfirm title={label('删除此连接配置？已有交易记录的配置只能停用。', 'Delete this profile? Profiles with trading history must be disabled instead.')} onConfirm={() => mutate(() => api.delete(`/mcp/profiles/${encodeURIComponent(profile.profile_id)}`))}><Button danger>{label('删除', 'Delete')}</Button></Popconfirm></Space>}>
           <Space direction="vertical"><Text>{profile.symbol_scope === 'all' ? label('不限制标的', 'All tradable symbols') : (profile.symbols || []).join(' · ')}</Text><Text type="secondary">{label('交易账户', 'Exchange account')}: {exchangeProfiles.find((item) => item.profile_id === profile.exchange_profile_id)?.name || profile.exchange_profile_id}</Text><Text type="secondary">{profile.market_type === 'swap' ? label(`MCP 杠杆上限 ${profile.max_leverage}× · 读取交易所实际杠杆后执行`, `MCP leverage cap ${profile.max_leverage}× · verified against exchange settings`) : label(`每次调用计价币额度 ${profile.spot_allowance} · 同次调用使用相同计价币`, `Allowance per call: ${profile.spot_allowance} in the call's quote currency · one quote currency per call`)}</Text></Space>
+          <ManagementLifecyclePanel configId={`mcp:${profile.profile_id}`} />
         </Card>)}
         {!data.profiles?.length && <Empty description={label('先创建交易账户，再建立 MCP 连接配置。', 'Create an exchange account, then add an MCP connection profile.')} />}
       </div>
@@ -101,9 +108,9 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
 
     <Card className="panel-card" title={<Space><KeyOutlined />API Keys</Space>} extra={<Button icon={<PlusOutlined />} onClick={() => setKeyDraft({ name: '', scopes: ['read'], profile_ids: [] })}>{label('创建 API Key', 'Create API key')}</Button>}>
       <div className="settings-stack">{(data.keys || []).map((key) => <div key={key.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border-soft)' }}>
-        <Space wrap><Text strong>{key.name}</Text>{key.scopes.map((scope) => <Tag key={scope}>{scope}</Tag>)}{key.revoked ? <Tag>{label('已撤销', 'Revoked')}</Tag> : <Popconfirm title={label('撤销此 API Key？', 'Revoke this API key?')} onConfirm={() => mutate(() => api.delete(`/mcp/keys/${key.id}`))}><Button size="small" danger>{label('撤销', 'Revoke')}</Button></Popconfirm>}</Space>
+        <Space wrap><Text strong>{key.name}</Text><Tag color={key.key_type === 'paper' ? 'blue' : 'default'}>{key.key_type === 'paper' ? 'Paper' : label('真实交易', 'Live')}</Tag>{key.scopes.map((scope) => <Tag key={scope}>{scope}</Tag>)}{key.revoked ? <Tag>{label('已撤销', 'Revoked')}</Tag> : <Popconfirm title={label('撤销此 API Key？', 'Revoke this API key?')} onConfirm={() => mutate(() => api.delete(`/mcp/keys/${key.id}`))}><Button size="small" danger>{label('撤销', 'Revoke')}</Button></Popconfirm>}</Space>
         {!key.revoked && <Input style={{ marginTop: 10 }} value={key.secret} readOnly addonAfter={<Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copy(key.secret)} />} />}
-        <Text type="secondary">{label('配置范围', 'Profiles')}: {key.profile_ids.join(' · ') || label('仅共享消息', 'Shared news only')}</Text>
+        <Text type="secondary">{label('配置范围', 'Profiles')}: {key.key_type === 'paper' ? label(`模拟账户 · ${key.paper_namespace}`, `Paper accounts · ${key.paper_namespace}`) : key.profile_ids.join(' · ') || label('仅共享消息', 'Shared news only')}</Text>
       </div>)}{!data.keys?.length && <Empty description={label('尚未创建 API Key', 'No API keys yet')} />}</div>
     </Card>
 
@@ -114,8 +121,12 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
       { title: label('结果', 'Status'), dataIndex: 'status', render: (value) => <Tag color={value === 'failed' ? 'red' : value === 'unknown' ? 'orange' : 'default'}>{value}</Tag> },
     ]} expandable={{ expandedRowRender: (record) => <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify({ operation_id: record.operation_id, principal: record.principal, result: (() => { try { return JSON.parse(record.result); } catch { return record.result; } })() }, null, 2)}</pre> }} /></Card>
 
-    <Modal open={Boolean(editing)} title={label(newProfile ? '新建连接配置' : '编辑连接配置', newProfile ? 'New connection profile' : 'Edit connection profile')} onCancel={() => setEditing(null)} confirmLoading={busy} okButtonProps={{ disabled: !editing?.exchange_profile_id || (editing?.symbol_scope !== 'all' && !editing?.symbols?.length) }} onOk={async () => { if (await mutate(() => api.put(`/mcp/profiles/${encodeURIComponent(editing.profile_id)}`, mcpProfilePayload(editing)))) setEditing(null); }} width={720}>
+    <PaperTradingPanel settings={data.paper_settings} zh={zh} onChanged={load} onCreateKey={() => setKeyDraft({ name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] })} />
+
+    <Modal open={Boolean(editing)} title={label(newProfile ? '新建连接配置' : '编辑连接配置', newProfile ? 'New connection profile' : 'Edit connection profile')} onCancel={() => setEditing(null)} confirmLoading={busy} okButtonProps={{ disabled: !editing?.exchange_profile_id || (editing?.symbol_scope !== 'all' && !editing?.symbols?.length) || Boolean(profileValidation) }} onOk={async () => { if (await mutate(() => api.put(`/mcp/profiles/${encodeURIComponent(editing.profile_id)}`, mcpProfilePayload(editing)))) setEditing(null); }} width={720}>
       {editing && <div className="settings-form-grid">
+        {error && <div style={{ gridColumn: '1 / -1' }}><Alert type="error" title={error} /></div>}
+
         <div className="form-field"><label>{label('名称', 'Name')}</label><Input value={editing.name} onChange={(event) => updateProfile('name', event.target.value)} /></div>
         <div className="form-field"><label>ID</label><Input disabled={!newProfile} value={editing.profile_id} onChange={(event) => updateProfile('profile_id', event.target.value)} /></div>
         <div className="form-field"><label>{label('市场', 'Market')}</label><Select value={editing.market_type} options={[{ value: 'swap', label: label('合约', 'Perpetual') }, { value: 'spot', label: label('现货', 'Spot') }]} onChange={(value) => setEditing({ ...editing, market_type: value, exchange_profile_id: '', symbols: [] })} /></div>
@@ -132,13 +143,15 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
           <div className="form-field"><label>{label('配置杠杆', 'Configured leverage')}</label><InputNumber min={1} max={editing.max_leverage} value={editing.leverage} onChange={(value) => updateProfile('leverage', value ?? 1)} /></div>
           <div className="form-field"><label>{label('退出模式', 'Exit mode')}</label><Select value={editing.exit_mode} options={[{ value: 'attached_required', label: label('必须附带 TP / SL', 'Required TP / SL') }, { value: 'attached_optional', label: label('可选 TP / SL', 'Optional TP / SL') }, { value: 'independent_exits', label: label('独立退出委托', 'Independent exit orders') }]} onChange={(value) => updateProfile('exit_mode', value)} /></div>
         </> : <div className="form-field"><label>{label('每次调用计价币额度', "Amount in the call's quote currency")}</label><InputNumber min={0.01} value={editing.spot_allowance} onChange={(value) => updateProfile('spot_allowance', value ?? 100)} /><Text type="secondary">{label('每次调用按所选标的计价币计额，同次调用必须使用同一计价币。', 'Each call uses the selected markets’ quote currency. All markets in one call must share that quote currency.')}</Text></div>}
+        <div style={{ gridColumn: '1 / -1' }}><PositionManagementFields value={editing} savedPolicy={data.profiles?.find((profile) => profile.profile_id === editing.profile_id)?.position_management_policy} onChange={(patch) => setEditing((current) => ({ ...current, ...patch }))} locale={locale} /></div>
       </div>}
     </Modal>
     <Modal open={Boolean(keyDraft)} title={label('创建 API Key', 'Create API key')} onCancel={() => setKeyDraft(null)} confirmLoading={busy} onOk={async () => { if (await mutate(() => api.post('/mcp/keys', keyDraft))) setKeyDraft(null); }}>
       {keyDraft && <div className="settings-stack">
         <Input placeholder={label('名称，例如 Workbuddy', 'Name, for example Workbuddy')} value={keyDraft.name} onChange={(event) => setKeyDraft({ ...keyDraft, name: event.target.value })} />
-        <Checkbox.Group value={keyDraft.scopes} options={[{ value: 'read', label: label('查询', 'Read'), disabled: true }, { value: 'trade', label: label('交易', 'Trade') }, { value: 'cancel', label: label('撤单', 'Cancel') }]} onChange={(scopes) => setKeyDraft({ ...keyDraft, scopes: [...new Set(['read', ...scopes])] })} />
-        <Select mode="multiple" placeholder={label('允许访问的配置', 'Allowed profiles')} value={keyDraft.profile_ids} options={(data.profiles || []).map((profile) => ({ value: profile.profile_id, label: profile.name }))} onChange={(profile_ids) => setKeyDraft({ ...keyDraft, profile_ids })} />
+        <Select aria-label={label('Key 类型', 'Key type')} value={keyDraft.key_type || 'live'} options={[{ value: 'live', label: label('真实交易 / 共享情报', 'Live trading / shared intelligence') }, { value: 'paper', label: label('Paper 模拟交易 · QQBot', 'Paper trading · QQBot') }]} onChange={(key_type) => setKeyDraft({ ...keyDraft, key_type, profile_ids: [], paper_namespace: keyDraft.paper_namespace || 'qqbot', scopes: ['read', ...(key_type === 'paper' ? ['trade'] : [])] })} />
+        <Checkbox.Group value={keyDraft.scopes} options={[{ value: 'read', label: label('查询', 'Read'), disabled: true }, { value: 'trade', label: label('交易', 'Trade') }, ...(keyDraft.key_type === 'paper' ? [] : [{ value: 'cancel', label: label('撤单', 'Cancel') }])]} onChange={(scopes) => setKeyDraft({ ...keyDraft, scopes: [...new Set(['read', ...scopes])] })} />
+        {keyDraft.key_type === 'paper' ? <><Input aria-label={label('Paper 命名空间', 'Paper namespace')} value={keyDraft.paper_namespace} onChange={(event) => setKeyDraft({ ...keyDraft, paper_namespace: event.target.value })} /><Text type="secondary">{label('同一命名空间的 Paper Keys 可访问相同用户账户。QQBot 应从可信消息事件取得用户 ID。', 'Paper keys in the same namespace share user accounts. QQBot must supply user IDs from trusted message events.')}</Text></> : <Select mode="multiple" placeholder={label('允许访问的配置', 'Allowed profiles')} value={keyDraft.profile_ids} options={(data.profiles || []).map((profile) => ({ value: profile.profile_id, label: profile.name }))} onChange={(profile_ids) => setKeyDraft({ ...keyDraft, profile_ids })} />}
       </div>}
     </Modal>
   </div>;

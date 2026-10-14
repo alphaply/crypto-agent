@@ -116,6 +116,15 @@ def generate_short_memory(payload: GenerateShortMemoryRequest, _: dict = Depends
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get('/short-memories/{memory_id}/details')
+def short_memory_details(memory_id: int, _: dict = Depends(get_current_user)):
+    from backend.app.services.memory_view_service import memory_audit_detail
+    try:
+        return {'success': True, **memory_audit_detail(memory_id)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @router.get('/short-memories/projections/status')
 def short_memory_projection_status(config_id: str, _: dict = Depends(get_current_user)):
     try:

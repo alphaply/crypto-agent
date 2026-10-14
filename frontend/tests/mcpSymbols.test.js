@@ -15,7 +15,7 @@ test('legacy profiles stay selected-only and editing never mutates the saved sel
 test('unrestricted is explicit and sends no stale selected symbols while preserving the edit draft', () => {
   const draft = mcpProfileDraft({ symbol_scope: 'all', symbols: ['BTC/USDT'] });
   assert.equal(draft.symbol_scope, 'all');
-  assert.deepEqual(mcpProfilePayload(draft), { symbol_scope: 'all', symbols: [] });
+  assert.deepEqual(mcpProfilePayload(draft), { symbol_scope: 'all', symbols: [], position_management_policy: 'visible_first_claim', management_scopes: [] });
   assert.deepEqual(draft.symbols, ['BTC/USDT']);
   draft.symbol_scope = 'selected';
   assert.deepEqual(mcpProfilePayload(draft).symbols, ['BTC/USDT']);

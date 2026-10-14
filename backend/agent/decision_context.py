@@ -11,15 +11,12 @@ logger = setup_logger(__name__)
 
 
 def format_short_memory_text(config_id: str, limit: int = 1) -> str:
-    memories = get_short_memories(config_id, limit=limit)
-    return "\n\n".join(
-        f"[updated={item.get('bucket_start')}] sources={item.get('source_count', 0)}\n"
-        f"{item.get('market_summary') or '-'}" for item in memories
-    ) or "(No short-term memory yet)"
+    return format_short_memory_for_llm(config_id, limit, include_metadata=True)
 
 
 def format_short_memory_for_llm(config_id: str, limit: int = 1, *, include_metadata: bool = False) -> str:
-    memories = get_short_memories(config_id, limit=limit)
+    from backend.agent.context_projections import memory_view_rows
+    memories = memory_view_rows(get_short_memories(config_id, limit=limit))
     entries = [
         (f"[覆盖 {item.get('window_start') or item.get('bucket_start')} → {item.get('window_end') or item.get('bucket_end')}；更新 {item.get('created_at')}]\n" if include_metadata else '')
         + str(item.get('market_summary') or '').strip()
@@ -29,11 +26,14 @@ def format_short_memory_for_llm(config_id: str, limit: int = 1, *, include_metad
 
 
 def format_recent_decisions(config_id: str) -> str:
-    """Read complete summaries for the latest three runs in chronological order."""
-    rows = get_recent_summary_logic(config_id, limit=3)
+    """Read versioned strategy only; migration never exposes raw restrictions."""
+    from backend.agent.context_projections import stored_sources
+    from backend.utils.trade_evidence import configured_account_scope
+    rows = stored_sources(config_id, configured_account_scope(config_id),
+                          'strategy_summary', status='ready', limit=3)
     return '\n'.join(
-        f"[{row.get('timestamp')}] {str(row['strategy_logic']).strip()}"
-        for row in reversed(rows) if str(row.get('strategy_logic') or '').strip()
+        f"[{row.get('timestamp')}] {row['projection']['strategy_text']}"
+        for row in reversed(rows) if row['projection']['strategy_text'].strip()
     ) or '(暂无近期决策摘要)'
 
 
@@ -56,8 +56,7 @@ def load_decision_memory(config_id: str, agent_config: dict | None = None) -> De
             return DecisionMemory(short, recent, execution_evidence=evidence)
         except Exception as exc:
             logger.warning('Strategy projections unavailable for %s: %s', config_id, exc)
-            return DecisionMemory('（已发布短期策略记忆读取失败）', '（已发布策略摘要读取失败）',
-                                  execution_evidence={'context': {'resolution': 'unavailable'}})
+            return DecisionMemory('（已发布短期策略记忆读取失败）', '（已发布策略摘要读取失败）')
     sources = (
         ('short_memory_text', lambda: format_short_memory_for_llm(config_id, include_metadata=True), '(短期记忆读取失败)'),
         ('recent_summaries_text', lambda: format_recent_decisions(config_id), '(近期摘要读取失败)'),

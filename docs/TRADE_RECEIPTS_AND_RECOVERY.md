@@ -1,7 +1,25 @@
-# 独立交易回执与恢复
+# 交易回执与恢复
 
-独立退出请求仍使用 `contract_version=2`。扩展回执使用 `receipt_version=1`，由
+默认统一请求使用 `contract_version=3`，旧独立退出请求仍接受 `contract_version=2`。扩展回执使用 `receipt_version=1`，旧独立投影由
 `backend/utils/trade_receipts.py` 的 `TradeReceipt` 和纯投影函数定义。
+
+## v3 父子身份及精简投影
+
+整批静态检查通过后、首次金融影响前持久化父意图和全部子项映射。子 ID 在可容纳时为 parent:index；最长外部 ID 使用含可信 owner 的有界哈希，并保存 index→child 映射。v3 具有独立请求版本，相同 ID 的不同意图拒绝，v1/v2 原哈希与原始首次回执保持。
+
+默认回执保留父/子 operation_id、index/action、订单/客户端及母子身份、status/order_status、成交量与 fixed/all 数量模式、错误码、依赖阻塞和恢复提示。完整原始回执和后续证据仍持久可查。`include=["account"]` 只在整批末尾附一份账户摘要；读取错误位于 account_summary，不改变已知交易结果。
+
+断线、进程中断或父响应丢失后，查询按原映射核验已尝试项，不发出 create/edit/cancel，也不自动纳管、补平、换 ID 或继续未尝试尾部。未知项保留 unknown/pending，可靠成交结果与旧单 cleanup 告警分别保存。父查询的 query.status 表示此次读取；status 表示原执行，成功读取不等于交易 completed。附带模式、STRATEGY 和现货也可使用 get_trade_operation。MCP get_operation 按可信 live/paper 域路由，详情可查询完整持久回执。
+
+内部任务授权由运行上下文提供。live MCP 混合批次先检查全部 trade/cancel 权限，cancel-only 无权在后项放 open；合法权限下动态余额/杠杆只逐项检查。paper 写入仍按 read+trade 的既有权限边界，cancel 属于 paper trade。绑定聊天逐项审批，一个拒绝终止其后金融动作，查询仍可用。
+
+任务配置已删除或不可用时，新 v3 金融意图返回 `configuration_unavailable` / `not_submitted`，不回退为模拟交易。原 v3 意图重放须匹配已保存参数、标的和可信引擎，仅核验原记录；交接恢复继续使用获准的接收方账户上下文。
+
+v3 父与子映射保存在 `unified_trade_batches / unified_trade_children`，附带实盘原生退出及保护的提交前意图保存在 `unified_native_intents`；现货原生改单同样保存提交前的目标总量和价格。重启及回滚演练须保留这些新增数据、原请求、原订单/客户端 ID 与未知回执。v3 不借用旧 v1/v2 父合并器重建尾部。
+
+显式交接只在原金融 worker 已停止或隔离后接受。接收方在自身可信账户上下文查询获准的原身份，仍保存原执行者历史；父批次先按接受的标的/方向限制子项读取，不返回其他私有操作或原全账户摘要。未知或缺失范围证据仍报告 unknown，不以交接重新提交。规范 side 始终是 LONG/SHORT，原生买卖方向另存 exchange_side。
+
+交接后删除原任务时，接受的恢复责任所引用的父子请求、回执及相关订单/成交审计继续保留原 actor 和 ID；删除响应给出 `retained_for_recovery` 计数。无关私有历史仍清理，保存证据不会扩张接收方查询权限。没有交接引用的普通删除保持原清理行为。
 
 | 操作 status | 含义 | 下一步 |
 | --- | --- | --- |
@@ -76,7 +94,7 @@ MCP 使用已有 `get_operation(profile_id, operation_id)`。外层 principal/pr
 原账户、任务、标的、方向及订单归属必须一致；逐单最终成交净额必须完整解释当前仓位。
 明确标记历史不完整、存在后继周期、归属冲突或订单仍有竞态时不恢复。
 已授权交易入口可修复同一个 episode_id，并原子保存审计；只读查询仅返回诊断。
-交易所显示有仓位本身不足以证明归属，人工仓位仍使用已有显式接管流程。
+旧直接兼容入口保持其显式接管语义。v3 在完整授权后自动建立可见资源管理关联，人工来源和历史成交归属保留，不制造虚假入场、成本或收益；只读查询不会认领。暂停、空仓和周期结束保留管理者，释放或交接须走明确资源核验流程。
 
 ## 横向验收矩阵
 
@@ -89,7 +107,8 @@ MCP 使用已有 `get_operation(profile_id, operation_id)`。外层 principal/pr
 | 条件 cancel_replace | 旧单 canceled 不代表 edit completed | 替代成功才完成；耗尽/拒绝/超时及重启无重复替代；real_v2 |
 | cancel ACK 缺成交、倒退或旧 open | pending；有界补查后保存 blocker | 母子总补查 ≤3 次 / 2 秒；后台遵守退避；主动查询可立即读取 |
 | batch / legacy aliases | 已执行项刷新，尾部 not_executed | 默认停止；显式 independent 继续无依赖项；batch、scoped_trade_rounds |
-| Agent / Chat 多工具轮次 | 独立模式规范工具逐项准入 | 不因前项拒绝全局停止；Chat 用户拒绝仍停止后续写入；scoped_trade_rounds |
+| Agent / Chat v3 批次 | 两工具目录，逐项动态准入 | 默认失败/未知即停止尾部；绑定 Chat 逐项审批，拒绝停止后续写入；unified_trading |
+| 旧 Agent / Chat 多工具轮次 | 兼容独立单工具逐项准入 | 原轮次规则不因前项拒绝全局停止；Chat 用户拒绝仍停止后续写入；scoped_trade_rounds |
 | MCP get_operation / 重放 | 外部 ID 关联内部 stable ID，回执同步修订 | principal/profile 隔离，read 零金融写入；mcp_trade_recovery、gateway |
 | mock / 旧 all / 其他交易模式 | 共用扩展结构，legacy 保守解析 | mock 账本、旧 all 实际量、现货预算、附带保护均跑全量回归 |
 | 缺失周期 | 只读诊断，授权路径恢复完整原周期 | 缺历史、数量矛盾、跨账户/任务或后继周期拒绝；receipt_recovery |

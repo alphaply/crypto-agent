@@ -41,6 +41,10 @@ class Exchange:
 def unrestricted(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'scope.db'))
     with database.get_db_conn() as conn:
+        from backend.database_schema import initialize_schema
+        initialize_schema(conn)
+        conn.commit()
+    with database.get_db_conn() as conn:
         initialize_schema(conn)
         _initialize(conn)
         conn.executemany("INSERT INTO exchange_profiles(profile_id,name,exchange,market_type,updated_at) VALUES(?,'test','binance',?,'2026-10-09')",
@@ -72,7 +76,11 @@ def test_explicit_scope_defaults_and_fresh_profiles(unrestricted):
     legacy = cfg.MCPProfile(profile_id='legacy', name='Legacy', exchange_profile_id='swap-account', symbols=['ETH/USDT'])
     assert legacy.symbol_scope == 'selected'
     assert cfg.get_runtime_profile('mcp:spot')['symbol'] is None
-    assert cfg.maintenance_profiles() == []
+    maintained = cfg.maintenance_profiles()
+    assert {row['config_id'] for row in maintained} == {'mcp:spot', 'mcp:swap'}
+    assert all(row['position_management_policy'] == 'visible_first_claim' for row in maintained)
+    from backend.utils.visible_management import management_status
+    assert all(management_status(row['config_id'])['scopes'] == [] for row in maintained)
     assert service.query(caller, 'balance', profile_id='spot')['total'] == {'USDT': 1000}
     assert any(tool['name'] == 'open_position_spot_dca' for tool in service.query(caller, 'tools', profile_id='spot'))
     assert all(row['symbol_scope'] == 'all' for row in service.list_profiles(caller))
@@ -201,7 +209,7 @@ def test_disabled_unrestricted_profiles_keep_all_owned_perpetual_symbols_for_mai
         conn.commit()
     profile = store.get('profile', 'swap')
     cfg.save_profile(cfg.MCPProfile.model_validate({**profile, 'enabled': False}))
-    runtime = cfg.maintenance_profiles()[0]
+    runtime = next(row for row in cfg.maintenance_profiles() if row['config_id'] == 'mcp:swap')
     assert runtime['config_id'] == 'mcp:swap'
     assert runtime['enabled'] is False
     assert runtime['mcp_owned_symbols'] == ['ETH/USDT:USDT', 'SOL/USDC:USDC']
@@ -295,7 +303,7 @@ def test_spot_maintenance_runs_all_quote_buckets_even_for_paused_profiles(unrest
                                 trade_mode='SPOT_DCA', config_id='mcp:spot', amount=1)
     profile = store.get('profile', 'spot')
     cfg.save_profile(cfg.MCPProfile.model_validate({**profile, 'enabled': False}))
-    runtime = cfg.maintenance_profiles()[0]
+    runtime = next(row for row in cfg.maintenance_profiles() if row['config_id'] == 'mcp:spot')
     seen = []
     monkeypatch.setattr(dashboard_service, 'calculate_dca_stats',
                         lambda config_id: seen.append(list(cfg.get_runtime_profile(config_id)['symbols'])))
@@ -305,6 +313,8 @@ def test_spot_maintenance_runs_all_quote_buckets_even_for_paused_profiles(unrest
     assert len(seen) == 4
     # The protection monitor dispatches paused MCP spot maintenance, outside of
     # the agent decision scheduler, and throttles repeat ticks.
+    swap = store.get('profile', 'swap')
+    cfg.save_profile(cfg.MCPProfile.model_validate({**swap, 'enabled': False}))
     monkeypatch.setattr(scheduler, '_mcp_spot_maintenance_at', {})
     monkeypatch.setattr(scheduler, '_protection_executor', object())
     monkeypatch.setattr(scheduler, '_drop_finished_futures', lambda *args: None)

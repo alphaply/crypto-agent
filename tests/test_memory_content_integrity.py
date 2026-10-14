@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend import database, database_agent_runs
+from backend.agent.strategy_material import strategy_material
 from backend.app.api.agent_runs import router as runs_router
 from backend.app.api.history import router as history_router
 from backend.app.api.public import router as public_router
@@ -52,8 +53,9 @@ def test_long_short_memory_survives_storage_public_read_and_admin_edit(memory_cl
         response = memory_client.get(path, params=params)
         assert response.status_code == 200
         row = response.json()['short_memories'][0]
-        assert row['market_summary'] == memory
-        assert row['position_summary'] == evidence
+        assert row['market_summary'] == '' and row['position_summary'] == ''
+        detail = memory_client.get(f"/api/history/short-memories/{row['id']}/details").json()['short_memory']
+        assert detail['market_summary'] == memory and detail['position_summary'] == evidence
 
     updated = long_text('EDITED')
     response = memory_client.put('/api/history/short-memories', json={
@@ -136,16 +138,19 @@ def test_legacy_decision_sources_restore_full_saved_analysis_without_changing_hi
     assert len(rows) == len(records)
     by_time = {row['timestamp']: row['strategy_logic'] for row in rows}
     restored = by_time[records[0][0]]
-    assert clipped_receipt in restored
-    assert '旧工具回执自身已被截断' in restored
-    assert '完整工具回执无法由分析正文恢复' in restored
-    assert original in restored and restored.endswith('RESTORED SOURCE END')
-    assert '【决策摘录】' not in restored
-    assert by_time[records[1][0]] == records[1][1]
-    assert original in by_time[records[2][0]]
-    assert by_time[records[3][0]] == current
-    assert by_time[records[4][0]] == old_journal
-    assert by_time[records[5][0]] == records[5][1]
+    if reader == 'window':
+        assert clipped_receipt not in restored and 'failed=1' not in restored
+        assert strategy_material(original) in restored
+        assert by_time[records[1][0]] == strategy_material(records[1][1])
+    else:
+        assert clipped_receipt in restored
+        assert '旧工具回执自身已被截断' in restored
+        assert original in restored and restored.endswith('RESTORED SOURCE END')
+        assert by_time[records[1][0]] == records[1][1]
+        assert original in by_time[records[2][0]]
+        assert by_time[records[3][0]] == current
+        assert by_time[records[4][0]] == old_journal
+        assert by_time[records[5][0]] == records[5][1]
     assert all('_source_content' not in row and 'content' not in row for row in rows)
     with database.get_db_conn() as conn:
         saved = conn.execute("SELECT timestamp,strategy_logic,content FROM summaries WHERE config_id='cfg' AND timestamp>='2026-10-05' ORDER BY timestamp").fetchall()
@@ -171,6 +176,8 @@ def test_configured_model_summary_is_used_without_expanding_raw_analysis(memory_
     elif reader == 'daily':
         rows = database.get_pending_daily_summary_data('cfg', '2026-10-05')
     else:
+        from memory_test_support import publish_strategy_views
+        publish_strategy_views(monkeypatch)
         market = Mock()
         market.get_market_analysis.side_effect = RuntimeError('offline test')
         monkeypatch.setattr(agent_graph, 'MarketTool', lambda **_: market)
@@ -184,7 +191,7 @@ def test_configured_model_summary_is_used_without_expanding_raw_analysis(memory_
         assert '【历史来源说明】' not in prompt
         return
     assert len(rows) == 1
-    assert rows[0]['strategy_logic'] == compressed
+    assert rows[0]['strategy_logic'] == (strategy_material(compressed) if reader == 'window' else compressed)
     assert '_source_content' not in rows[0] and 'content' not in rows[0]
 
 
@@ -231,8 +238,8 @@ def test_seven_day_memory_keeps_all_fills_cycles_and_observations(memory_db):
     assert data['position_cycles']['omitted_completed'] == 0
     assert {item['id'] for item in data['recent_fills']} == {item['id'] for item in fills}
     text = recent_activity_summary('cfg', 'ETH/USDT', now)
-    payload = json.loads(text.split('完整窗口成交、持仓周期与执行观察（与以上统计属于同一批证据，不重复计算盈亏）：\n')[1])
-    assert payload == {key: value for key, value in data.items() if key not in {'from_ms', 'through_ms'}}
+    assert 'position_cycles' not in text and 'recent_fills' not in text
+    assert '暂不可完整统计' in text
     assert recent_activity_summary('cfg', 'ETH/USDT', now + timedelta(seconds=1)) == text
 
 

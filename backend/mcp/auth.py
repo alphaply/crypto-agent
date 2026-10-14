@@ -11,6 +11,7 @@ from starlette.requests import Request
 from starlette.datastructures import FormData
 
 from . import store
+from .resilience import offloaded_auth
 from .settings import SCOPES, profiles, settings
 
 
@@ -24,14 +25,26 @@ def decrypt(value):
     return _decrypt_secret(value)
 
 
-def create_api_key(name, scopes, profile_ids):
-    validate_grant(scopes, profile_ids)
+def create_api_key(name, scopes, profile_ids, key_type='live', paper_namespace='qqbot'):
+    if key_type == 'paper':
+        from .paper import identity
+        identity(paper_namespace, 'paper_namespace')
+        if profile_ids or not scopes or 'read' not in scopes or not set(scopes) <= {'read', 'trade'}:
+            raise ValueError('Paper keys require read, optionally trade, and no live profiles')
+    elif key_type == 'live':
+        validate_grant(scopes, profile_ids)
+    else:
+        raise ValueError('Unknown MCP key type')
     raw = 'ca_mcp_' + secrets.token_urlsafe(32)
     key_id = secrets.token_hex(12)
     record = dict(id=key_id, name=name, scopes=scopes, profile_ids=profile_ids,
                   created_at=time.time(), revoked=False, secret=encrypt(raw), digest=store.digest(raw))
+    record.update(key_type=key_type, paper_namespace=paper_namespace if key_type == 'paper' else None)
     store.put('key', key_id, record)
     store.put('key_lookup', record['digest'], {'id': key_id})
+    if key_type == 'paper':
+        from .paper_competition import ensure_bot_namespace
+        ensure_bot_namespace(paper_namespace)
     return {**record, 'secret': raw}
 
 
@@ -96,13 +109,15 @@ class AuthorizationProvider:
         self.public_url = public_url.rstrip('/')
         self.resource = self.public_url + '/mcp'
 
-    async def get_client(self, client_id):
+    @offloaded_auth
+    def get_client(self, client_id):
         row = store.get('client', client_id)
         if row and row.get('client_secret'):
             row['client_secret'] = decrypt(row['client_secret'])
         return OAuthClientInformationFull.model_validate(row) if row else None
 
-    async def register_client(self, client_info):
+    @offloaded_auth
+    def register_client(self, client_info):
         for uri in client_info.redirect_uris:
             parsed = urlparse(str(uri))
             if parsed.fragment or parsed.username or (parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1', '::1'})):
@@ -114,7 +129,8 @@ class AuthorizationProvider:
             row['client_secret'] = encrypt(row['client_secret'])
         store.put('client', client_info.client_id, row)
 
-    async def authorize(self, client, params):
+    @offloaded_auth
+    def authorize(self, client, params):
         if not settings()['enabled']:
             raise AuthorizeError('access_denied', 'MCP is disabled')
         if params.resource and params.resource != self.resource:
@@ -131,7 +147,8 @@ class AuthorizationProvider:
         })
         return self.public_url + '/oauth/consent?transaction=' + transaction
 
-    async def load_authorization_code(self, client, authorization_code):
+    @offloaded_auth
+    def load_authorization_code(self, client, authorization_code):
         row = store.get('code', store.digest(authorization_code))
         return MCPCode.model_validate({**row, 'code': authorization_code}) if row and row['client_id'] == client.client_id else None
 
@@ -148,20 +165,23 @@ class AuthorizationProvider:
         store.put('refresh', store.digest(refresh), refresh_row)
         return OAuthToken(access_token=access, refresh_token=refresh, expires_in=3600, scope=' '.join(scopes), token_type='Bearer')
 
-    async def exchange_authorization_code(self, client, authorization_code):
+    @offloaded_auth
+    def exchange_authorization_code(self, client, authorization_code):
         row = store.pop('code', store.digest(authorization_code.code))
         if not row or row['client_id'] != client.client_id or row['expires_at'] < time.time():
             raise TokenError('invalid_grant', 'Authorization code consumed or expired')
         return self._issue(client.client_id, row['scopes'], row['profile_ids'], row['grant_id'])
 
-    async def load_refresh_token(self, client, refresh_token):
+    @offloaded_auth
+    def load_refresh_token(self, client, refresh_token):
         row = store.get('refresh', store.digest(refresh_token))
         if (not row or row['client_id'] != client.client_id or row.get('resource') != self.resource
                 or store.get('revoked_grant', row['grant_id'])):
             return None
         return MCPRefresh.model_validate({**row, 'token': refresh_token})
 
-    async def exchange_refresh_token(self, client, refresh_token, scopes):
+    @offloaded_auth
+    def exchange_refresh_token(self, client, refresh_token, scopes):
         row = store.pop('refresh', store.digest(refresh_token.token))
         if (not row or row['expires_at'] < time.time() or row['client_id'] != client.client_id or row.get('resource') != self.resource
                 or not set(scopes) <= set(row['scopes']) or store.get('revoked_grant', row['grant_id'])):
@@ -169,7 +189,8 @@ class AuthorizationProvider:
         store.pop('access', row['access_digest'])
         return self._issue(client.client_id, scopes, row['profile_ids'], row['grant_id'])
 
-    async def load_access_token(self, token):
+    @offloaded_auth
+    def load_access_token(self, token):
         if not settings()['enabled']:
             return None
         lookup = store.get('key_lookup', store.digest(token))
@@ -178,7 +199,8 @@ class AuthorizationProvider:
             if not row or row['revoked'] or row['digest'] != store.digest(token):
                 return None
             return AccessToken(token=token, client_id='key:' + row['id'], scopes=row['scopes'], resource=self.resource,
-                               subject='admin', claims={'profile_ids': row['profile_ids'], 'principal': 'key:' + row['id']})
+                               subject='admin', claims={'profile_ids': row['profile_ids'], 'principal': 'key:' + row['id'],
+                                                        'key_type': row.get('key_type', 'live'), 'paper_namespace': row.get('paper_namespace')})
         row = store.get('access', store.digest(token))
         if (not row or row['expires_at'] <= time.time() or row['resource'] != self.resource
                 or store.get('revoked_grant', row['claims']['grant_id'])):
@@ -188,7 +210,8 @@ class AuthorizationProvider:
     async def verify_token(self, token):
         return await self.load_access_token(token)
 
-    async def revoke_token(self, token):
+    @offloaded_auth
+    def revoke_token(self, token):
         grant = getattr(token, 'grant_id', None) or (getattr(token, 'claims', None) or {}).get('grant_id')
         if grant:
             store.put('revoked_grant', grant, {'revoked_at': time.time()})

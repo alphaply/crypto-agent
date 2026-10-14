@@ -59,7 +59,8 @@ def dispatch(payload=None, operation_id='adopt-1'):
 
 
 def test_adoption_tool_is_real_only_and_not_a_batch_action():
-    assert 'adopt_position_real' in {tool.name for tool in tool_registry.get_trade_tools_for_mode('REAL')}
+    assert 'adopt_position_real' not in {tool.name for tool in tool_registry.get_trade_tools_for_mode('REAL')}
+    assert 'adopt_position_real' in {tool.name for tool in tool_registry.get_trade_tools_for_mode('REAL', include_legacy=True)}
     for mode in ('SPOT_DCA', 'STRATEGY'):
         assert 'adopt_position_real' not in {tool.name for tool in tool_registry.get_trade_tools_for_mode(mode)}
     assert set(agent_tools.adopt_position_real.args_schema.model_fields) == {'pos_side', 'expected_amount', 'reason'}

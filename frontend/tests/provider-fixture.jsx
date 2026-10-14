@@ -8,8 +8,9 @@ import 'antd/dist/reset.css';
 import '../src/index.css';
 
 localStorage.setItem('crypto-agent-admin-active-tab', 'providers');
+const locale = new URLSearchParams(window.location.search).get('locale') || 'zh';
 createRoot(document.getElementById('root')).render(
-  <AccessibleConfigProvider><PreferencesContext.Provider value={{ isDark: false, locale: 'zh', t: (value) => value }}>
+  <AccessibleConfigProvider><PreferencesContext.Provider value={{ isDark: false, locale, t: (value) => value }}>
     <Select aria-label="Trading symbol" defaultValue="ETH/USDT" style={{ width: 220 }}
       options={['ETH/USDT', 'BTC/USDT'].map((value) => ({ value, label: value }))} />
     <AdminPage />

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -55,10 +56,14 @@ class MCPProfile(BaseModel):
     max_leverage: int = Field(5, ge=1, le=125)
     leverage: int = Field(1, ge=1, le=125)
     exit_mode: Literal['attached_required', 'attached_optional', 'independent_exits'] = 'attached_required'
+    position_management_policy: Literal['strict_owned', 'exclusive_scope', 'visible_first_claim'] = 'visible_first_claim'
+    management_scopes: list[dict[str, str]] = Field(default_factory=list, max_length=30)
     spot_allowance: float = Field(100, gt=0, allow_inf_nan=False)
 
     @model_validator(mode='after')
     def validate_policy(self):
+        from backend.utils.management_policy import normalize_management
+        normalize_management(self.model_dump())
         if self.leverage > self.max_leverage:
             raise ValueError('Configured leverage exceeds the MCP maximum')
         if self.symbol_scope == 'selected' and not self.symbols:
@@ -67,6 +72,12 @@ class MCPProfile(BaseModel):
             from backend.utils.spot_portfolio import normalize_spot_symbols
             normalize_spot_symbols(self.symbols)
         return self
+
+    @field_validator('management_scopes')
+    @classmethod
+    def valid_management_scopes(cls, scopes):
+        from backend.utils.management_policy import ManagementScope
+        return [ManagementScope.model_validate(scope).model_dump() for scope in scopes]
 
     @field_validator('symbols')
     @classmethod
@@ -95,6 +106,16 @@ def exchange_profile(profile_id):
 
 @serialized_spot_execution
 def save_profile(payload: MCPProfile):
+    previous = store.get('profile', payload.profile_id)
+    if previous:
+        updates = payload.model_dump()
+        fields = payload.model_fields_set
+        for field in ('position_management_policy', 'management_scopes', 'exit_mode'):
+            if field not in fields and previous.get(field) is not None:
+                if field == 'management_scopes' and 'position_management_policy' in fields and payload.position_management_policy == 'strict_owned':
+                    continue
+                updates[field] = previous[field]
+        payload = MCPProfile.model_validate(updates)
     if payload.leverage > payload.max_leverage:
         raise ValueError('Configured leverage exceeds the MCP maximum')
     account = exchange_profile(payload.exchange_profile_id)
@@ -103,24 +124,36 @@ def save_profile(payload: MCPProfile):
     if payload.market_type == 'spot' and payload.symbol_scope == 'selected':
         from backend.utils.spot_portfolio import normalize_spot_symbols
         normalize_spot_symbols(payload.symbols)
-    previous = store.get('profile', payload.profile_id)
     from .config_guard import assert_profile_transition
     with store.connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        current = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=?", (payload.profile_id,)).fetchone()
+        current = json.loads(current[0]) if current else None
+        if current != previous:
+            raise ValueError('MCP profile changed during save; refresh its configuration')
         assert_profile_transition(conn, previous, payload.model_dump())
-    if previous and any(previous.get(key) != getattr(payload, key) for key in ('exchange_profile_id', 'market_type')):
-        # Persistent order ownership cannot silently move to a different account.
-        with store.connection() as conn:
+        if previous and any(previous.get(key) != getattr(payload, key) for key in ('exchange_profile_id', 'market_type')):
             used = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=? LIMIT 1', (payload.profile_id,)).fetchone()
-        if used:
-            raise ValueError('This profile has execution history; create a new profile for another account')
-    store.put('profile', payload.profile_id, payload.model_dump())
+            if used:
+                raise ValueError('This profile has execution history; create a new profile for another account')
+        conn.execute('INSERT INTO mcp_records VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload',
+                     ('profile', payload.profile_id, json.dumps(payload.model_dump())))
+        from backend.config_store import load_runtime_snapshot
+        from backend.utils.position_management import synchronize_configuration
+        if (payload.position_management_policy == 'exclusive_scope'
+                or (previous or {}).get('position_management_policy') == 'exclusive_scope'):
+            # Read the candidate account and task config in the same transaction;
+            # do not lazily initialize another connection while holding its lock.
+            snapshot = load_runtime_snapshot(connection=conn) or {'agents': [], 'exchange_profiles': [account]}
+            synchronize_configuration(conn, snapshot)
+        conn.commit()
     return payload.model_dump()
 
 
 def maintenance_profiles():
     """Include paused profiles: previously submitted orders still need protection."""
     result = [get_runtime_profile('mcp:' + row['profile_id']) for row in profiles()]
-    return [row for row in result if row and row.get('symbol')]
+    return [row for row in result if row and (row.get('symbol') or row.get('enabled') and row.get('position_management_policy') == 'visible_first_claim')]
 
 
 def get_runtime_profile(config_id: str):
@@ -140,6 +173,7 @@ def get_runtime_profile(config_id: str):
             owned = owned_symbols(conn, profile)
         request = _request_symbols.get()
         symbols = list(request[1]) if request and request[0] == config_id else owned
+        symbols = list(dict.fromkeys([*symbols, *[s['symbol'] for s in profile.get('management_scopes') or []]]))
         if profile['market_type'] == 'spot' and symbols:
             # Background readers must not add raw costs of different quote assets.
             # Each gateway call is independently constrained to one quote asset.
@@ -153,6 +187,8 @@ def get_runtime_profile(config_id: str):
         'mode': 'SPOT_DCA' if profile['market_type'] == 'spot' else 'REAL',
         'enabled': profile['enabled'], 'mcp_profile': True, 'mcp_max_leverage': profile['max_leverage'],
         'leverage': profile['leverage'], 'exit_mode': profile['exit_mode'],
+        'position_management_policy': profile.get('position_management_policy', 'visible_first_claim'),
+        'management_scopes': profile.get('management_scopes') or [],
         'dca_amount': profile['spot_allowance'], 'dca_freq': '1d', 'dca_time': '00:00',
         'market_timeframes': ['1h', '4h', '1d'],
     }

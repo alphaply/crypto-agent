@@ -73,6 +73,8 @@ def test_memory_per_run_four_hours_retry_and_idempotence(isolated, monkeypatch):
             ('2026-10-08 08:00:00', 'ETH/USDT', 'other', 'other-config')])
         conn.commit()
     database.save_short_memory('2026-10-08 00:00:00', '2026-10-08 00:00:00', 'BTC/USDT', 'cfg', 'prior-memory', '', 1)
+    from memory_test_support import publish_strategy_views
+    publish_strategy_views(monkeypatch, 'cfg', 'BTC/USDT')
     enqueue_memory_update('cfg', 'run-1', 3)
     seen = []
     def review(source, *args, **kwargs):
@@ -100,6 +102,8 @@ def test_memory_per_run_four_hours_retry_and_idempotence(isolated, monkeypatch):
     assert memory['run_id'] == 'run-1' and memory['version'] == 2
     # Persistence retries retain the same version and do not create another snapshot.
     assert len(database.get_short_memories('cfg', 10)) == 2
+    # The mocked organizer does not publish the production structured review.
+    publish_strategy_views(monkeypatch, 'cfg', 'BTC/USDT')
     assert '覆盖 2026-10-08 06:00:00 → 2026-10-08 10:00:00' in decision_context.format_short_memory_for_llm('cfg', include_metadata=True)
 
 
@@ -126,7 +130,10 @@ def test_manual_memory_sources_keep_actual_receipts(isolated):
         conn.commit()
     rows = database.get_summary_logic_between('cfg', '2026-10-08 06:00:00', '2026-10-08 10:00:01')
     assert rows[0]['id'] == 1
-    assert 'exchange rejected order' in rows[0]['strategy_logic']
+    assert rows[0]['strategy_logic'] == 'proposed buy'
+    with database.get_db_conn() as conn:
+        record = conn.execute('SELECT report_json FROM summaries WHERE id=1').fetchone()
+    assert json.loads(record['report_json'])['execution_results'][0]['result'] == 'exchange rejected order'
 
 
 def test_background_services_are_isolated_from_memory_failure(monkeypatch):

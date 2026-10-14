@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from copy import deepcopy
+from copy import deepcopy, copy
 
 from pydantic import BaseModel
 
@@ -13,6 +13,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from . import store
 from .settings import profiles, get_runtime_profile, runtime_symbols, settings
 from .redaction import sanitize, safe_error
+from .resilience import current_budget, remaining, setting, stage, BudgetExceeded, bind_scope
 from backend.utils.spot_config_guard import serialized_spot_execution
 
 
@@ -21,7 +22,9 @@ def principal():
     if token is None:
         raise PermissionError('MCP authentication required')
     return {'id': (token.claims or {}).get('principal') or token.client_id,
-            'scopes': token.scopes, 'profile_ids': (token.claims or {}).get('profile_ids', [])}
+            'scopes': token.scopes, 'profile_ids': (token.claims or {}).get('profile_ids', []),
+            'key_type': (token.claims or {}).get('key_type', 'live'),
+            'paper_namespace': (token.claims or {}).get('paper_namespace')}
 
 
 def require(caller, scope='read', profile_id=None):
@@ -31,6 +34,8 @@ def require(caller, scope='read', profile_id=None):
         raise PermissionError(f'Missing MCP scope: {scope}')
     if profile_id is None:
         return None
+    if caller.get('key_type') == 'paper':
+        raise PermissionError('Paper keys cannot access live exchange profiles or execute real trades')
     if profile_id not in caller.get('profile_ids', []):
         raise PermissionError('This token is not authorized for the requested MCP profile')
     row = store.get('profile', profile_id)
@@ -84,7 +89,8 @@ def normalize_symbol(profile, symbol, exchange=None, *, allow_inactive=False):
 
 def market_tool(profile_id):
     from backend.utils.market_data import MarketTool
-    return MarketTool(config_id='mcp:' + profile_id)
+    with stage('initialization'):
+        return MarketTool(config_id='mcp:' + profile_id)
 
 
 def list_symbols(profile, exchange, *, keyword='', quote='', limit=50, offset=0):
@@ -124,14 +130,50 @@ def list_symbols(profile, exchange, *, keyword='', quote='', limit=50, offset=0)
             'has_more': offset + limit < len(ordered)}
 
 
-def _independent_orders_view(mt, symbol, limit):
+def _management_facts(mt, symbol, side=None, caller=None, profile_id=None):
+    """Pure projection: inspecting account resources never enrolls them."""
+    from backend.utils.position_management import resource_management_status
+    projected = copy(mt)
+    projected.config_id = getattr(mt, 'config_id', None) or ('mcp:' + profile_id if profile_id else None)
+    projected.runtime_config = {**(getattr(mt, 'runtime_config', None) or get_runtime_profile(projected.config_id) or {})}
+    if caller is not None:
+        projected.runtime_config['read_only'] = not bool(set(caller.get('scopes') or []) & {'trade', 'cancel'})
+    try:
+        return resource_management_status(projected, symbol, side)
+    except Exception as exc:
+        return {'visible': True, 'eligible': False, 'can_claim': False, 'state': 'needs_refresh',
+                'owner': None, 'reason': safe_error(exc, profile_id)}
+
+
+def _independent_orders_view(mt, symbol, limit, caller=None, profile_id=None):
     """Merge read-only exchange lists with owned lifecycle facts; never reconcile writes."""
     from backend.utils.independent_exits import IndependentExits
     from backend.utils.exit_orders import order_reference
+    from backend.utils.position_adoption import OKX_ALGO_ORDER_TYPES
     exchange_rows = {}
-    for channel, params in (('regular', {}), ('algo', {'trigger': True})):
-        for original in mt.exchange.fetch_open_orders(symbol, limit=limit, params=params):
+    channels = [('regular', {})]
+    channels += [('algo', {'trigger': True, 'ordType': kind}) for kind in OKX_ALGO_ORDER_TYPES] if getattr(mt.exchange, 'id', None) == 'okx' else [('algo', {'trigger': True})]
+    for channel, params in channels:
+        try:
+            remaining('orders_' + channel)
+            channel_rows = mt.exchange.fetch_open_orders(symbol, limit=limit, params=params)
+        except Exception:
+            raise ValueError(f'Order observation incomplete; missing_sources=[{channel}]; no complete empty-order conclusion is available') from None
+        for original in channel_rows:
             row = {key: value for key, value in original.items() if key != 'info'}
+            size = float(mt.exchange.market(symbol).get('contractSize') or 1)
+            if not math.isfinite(size) or size <= 0:
+                raise ValueError('Exchange contract quantity units are unavailable')
+            row.update(amount_units='contracts', contract_size=size)
+            for original_field, base_field in (('amount', 'base_amount'), ('filled', 'base_filled_amount'), ('remaining', 'base_remaining_amount')):
+                value = row.get(original_field)
+                row[base_field] = float(value) * size if value is not None and not isinstance(value, bool) and math.isfinite(float(value)) else None
+            native = original.get('info') or {}
+            position_side = str(original.get('pos_side') or original.get('positionSide') or native.get('posSide') or native.get('positionSide') or '').upper()
+            if position_side in {'LONG', 'SHORT'}:
+                row['pos_side'] = position_side
+            if str(native.get('closePosition', original.get('closePosition', False))).lower() == 'true' or str(native.get('closeFraction')) == '1':
+                row.update(quantity_mode='all', base_amount=None, base_remaining_amount=None)
             raw_id = row.get('id')
             if raw_id is None:
                 raise ValueError('Exchange order identity is unavailable')
@@ -143,7 +185,9 @@ def _independent_orders_view(mt, symbol, limit):
             exchange_rows[reference] = row
     # snapshot reads plan/position evidence only. reconcile_all/_reconcile can
     # resume persisted replacement writes and MUST NOT be called from a read tool.
-    snapshot = IndependentExits(mt).snapshot(symbol)
+    manager = IndependentExits(mt)
+    snapshot = manager.snapshot(symbol)
+    management = snapshot.get('management', {'policy': 'strict_owned', 'scopes': []})
     result = []
     unseen_sides = set()
     for kind, records in (('entry', snapshot.get('entries', [])), ('exit', snapshot.get('exits', []))):
@@ -157,7 +201,11 @@ def _independent_orders_view(mt, symbol, limit):
                 exchange_rows.pop(parent, None)
             row = {**(live or {}), **item, 'order_id': reference, 'kind': kind,
                    'ownership': 'owned', 'modifiable': bool(live),
-                   'source': 'exchange_and_local' if live else 'local_record'}
+                   'amount_units': 'base',
+                   'base_amount': item.get('amount'), 'base_filled_amount': item.get('filled_amount'),
+                   'base_remaining_amount': item.get('remaining_amount'),
+                   'source': item.get('source', 'agent'),
+                   'management': management}
             if live:
                 row['order_status'] = ('triggered' if item.get('order_status') == 'triggered'
                                        and live['order_status'] == 'open' else live['order_status'])
@@ -176,11 +224,24 @@ def _independent_orders_view(mt, symbol, limit):
                    quantity_conflicts=snapshot.get('quantity_conflicts', []),
                    uncovered=uncovered, execution_guaranteed=False,
                    snapshot_pending=bool(snapshot.get('pending') or unseen_sides))
-    return [*result, *exchange_rows.values()][:limit]
+    combined = [*result, *exchange_rows.values()][:limit]
+    for row in combined:
+        side = row.get('pos_side') or row.get('side')
+        facts = _management_facts(mt, symbol, side if side in {'LONG', 'SHORT'} else None, caller, profile_id)
+        row['management'] = facts
+        row['managed'] = facts.get('state') == 'owned'
+        # Native target capability is separate from this token's authority.
+        row['modifiable'] = row.get('order_status') != 'unknown' and facts.get('state') != 'conflict' and (
+            row.get('ownership') == 'owned' or facts.get('state') in {'owned', 'eligible_unclaimed'})
+        row['supported_actions'] = [action for action, scope in (('edit', 'trade'), ('cancel', 'cancel'))
+                                    if row['modifiable'] and (caller is None or scope in caller.get('scopes', []))]
+    return combined
 
 
 def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=120, keyword='', quote='', offset=0, order_id=None):
+    bind_scope(profile_id)
     try:
+        remaining('authorization')
         profile = require(caller, 'read', profile_id)
         if resource == 'news':
             from backend.app.services.news_service import get_latest_news
@@ -215,6 +276,8 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                     unrestricted = profile.get('symbol_scope', 'selected') == 'all'
                     selected = [symbol] if symbol else (None if unrestricted else [perpetual_symbol(exchange, value) for value in profile['symbols']])
                     rows = exchange.fetch_positions() if selected is None else exchange.fetch_positions(selected)
+                    from backend.utils.position_management import management_snapshot
+                    management = management_snapshot('mcp:' + profile_id, symbol)
                     result = []
                     for row in rows:
                         if unrestricted:
@@ -229,30 +292,47 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                             position['base_amount'] = contracts * size if math.isfinite(contracts) and math.isfinite(size) and contracts >= 0 and size > 0 else None
                         except (KeyError, TypeError, ValueError, OverflowError):
                             position['base_amount'] = None
+                        side = str(row.get('side') or '').upper()
+                        managed_scope = next((item for item in management['scopes']
+                                              if item['symbol'] == row.get('symbol') and item['side'] == side), None)
+                        facts = _management_facts(mt, row.get('symbol') or symbol, side, caller, profile_id)
+                        position.update(management=facts, managed=facts.get('state') == 'owned',
+                                        source=(managed_scope or {}).get('source', 'exchange'),
+                                        supported_actions=['close'] if facts.get('state') in {'owned', 'eligible_unclaimed'} and 'trade' in caller.get('scopes', []) else [])
                         result.append(position)
                 elif resource == 'orders':
                     if not symbol:
                         raise ValueError('symbol is required for orders')
                     order_limit = max(1, min(int(limit), 200))
                     if profile['market_type'] == 'swap' and profile.get('exit_mode') == 'independent_exits':
-                        result = _independent_orders_view(mt, symbol, order_limit)
+                        result = _independent_orders_view(mt, symbol, order_limit, caller, profile_id)
                     else:
                         result = [{k: v for k, v in row.items() if k != 'info'} for row in exchange.fetch_open_orders(symbol, limit=order_limit)]
+                        for order in result:
+                            facts = _management_facts(mt, symbol, caller=caller, profile_id=profile_id)
+                            order.update(management=facts, managed=facts.get('state') == 'owned',
+                                         source=order.get('source', 'exchange'),
+                                         supported_actions=['cancel'] if facts.get('state') in {'owned', 'eligible_unclaimed'} and 'cancel' in caller.get('scopes', []) else [])
                 elif resource == 'order':
                     if not symbol or not order_id:
                         raise ValueError('symbol and order_id are required for order query')
                     try:
-                        raw = exchange.fetch_order(str(order_id), symbol)
+                        from backend.utils.exit_orders import parse_order_reference
+                        channel, identity = parse_order_reference(str(order_id))
+                        raw = exchange.fetch_order(identity, symbol, params={'trigger': True}) if channel == 'algo' else exchange.fetch_order(identity if channel else str(order_id), symbol)
                         result = {k: v for k, v in raw.items() if k != 'info'}
+                        if channel:
+                            result.update(order_id=str(order_id), exchange_channel=channel)
                     except Exception as exc:
                         from backend import database
                         with database.get_db_conn() as conn:
                             local_row = conn.execute(
-                                'SELECT * FROM orders WHERE order_id=? AND config_id=? LIMIT 1',
-                                (str(order_id), 'mcp:' + profile_id)
+                                'SELECT * FROM orders WHERE order_id IN (?,?) AND config_id=? LIMIT 1',
+                                (str(order_id), identity if channel else str(order_id), 'mcp:' + profile_id)
                             ).fetchone()
                         if local_row:
-                            result = dict(local_row)
+                            result = {**dict(local_row), 'source': 'local_record', 'status': 'partial',
+                                      'pending': True, 'missing_sources': ['exchange_order']}
                         else:
                             raise exc
                 elif resource == 'trade_history':
@@ -264,16 +344,37 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                 elif resource == 'market':
                     if not symbol or timeframe not in {'15m', '1h', '4h', '1d', '1w'}:
                         raise ValueError('Provide a configured symbol and supported timeframe')
-                    result = {'symbol': symbol, 'timeframe': timeframe,
-                              'ticker': {k: v for k, v in exchange.fetch_ticker(symbol).items() if k != 'info'},
-                              'candles': exchange.fetch_ohlcv(symbol, timeframe, limit=max(1, min(int(limit), 500)))}
+                    from .exchange_runtime import observe
+                    cache_key = (getattr(mt, 'mcp_account_key', profile_id), symbol, timeframe, limit)
+                    result = {'symbol': symbol, 'timeframe': timeframe, 'ticker': None, 'candles': None,
+                              'status': 'complete', 'missing_sources': [], 'observed_at': {}, 'sources': {}}
+                    loaders = {
+                        'ticker': (lambda: {k: v for k, v in exchange.fetch_ticker(symbol).items() if k != 'info'}, setting('TICKER_CACHE_SECONDS', 2)),
+                        'candles': (lambda: exchange.fetch_ohlcv(symbol, timeframe, limit=max(1, min(int(limit), 500))), setting('CANDLES_CACHE_SECONDS', 15)),
+                    }
+                    for source, (loader, ttl) in loaders.items():
+                        try:
+                            remaining(source)
+                            value, observed_at, cached = observe(cache_key, source, loader, ttl)
+                            result[source] = value
+                            result['observed_at'][source] = observed_at
+                            result['sources'][source] = 'public_cache' if cached else 'exchange'
+                        except Exception as exc:
+                            result['missing_sources'].append(source)
+                            result.setdefault('errors', {})[source] = safe_error(exc, profile_id)
+                    if len(result['missing_sources']) == 2:
+                        raise ValueError('Market observation unavailable; missing_sources=[ticker,candles]')
+                    if result['missing_sources']:
+                        result['status'] = 'partial'
                 else:
                     raise ValueError('Unknown query resource')
-        store.audit(caller['id'], 'query_' + resource, 'completed', profile_id=profile_id)
+        if resource != 'market':
+            remaining('response')
+        store.audit_safely(caller['id'], 'query_' + resource, 'completed', profile_id=profile_id)
         return sanitize(result, profile_id)
     except Exception as exc:
         error = safe_error(exc, profile_id)
-        store.audit(caller['id'], 'query_' + resource, 'failed', profile_id=profile_id, result={'error': error})
+        store.audit_safely(caller['id'], 'query_' + resource, 'failed', profile_id=profile_id, result={'error': error})
         raise ValueError(error) from None
 
 
@@ -430,10 +531,24 @@ def _external_operation_receipt(value, stable_id, operation_id, profile_id, *, p
     if mapping is None:
         mapping = {stable_id: operation_id}
         if principal:
-            with store.connection() as conn:
-                rows = conn.execute('SELECT operation_id FROM mcp_operations WHERE profile_id=? AND principal=?',
-                                    (profile_id, principal)).fetchall()
-            mapping.update({'mcp:' + store.digest(principal + ':' + row['operation_id']): row['operation_id'] for row in rows})
+            try:
+                with store.connection(recovery=True) as conn:
+                    rows = conn.execute('SELECT operation_id FROM mcp_operations WHERE profile_id=? AND principal=?',
+                                        (profile_id, principal)).fetchall()
+                    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    children = conn.execute('SELECT c.child_operation_id,c.action_index,l.operation_id FROM unified_trade_children c '
+                                            'JOIN mcp_operation_links l ON l.internal_operation_id=c.parent_operation_id '
+                                            'WHERE c.config_id=? AND l.profile_id=? AND l.principal=?',
+                                            ('mcp:' + profile_id, profile_id, principal)).fetchall() if 'unified_trade_children' in tables else []
+                mapping.update({'mcp:' + store.digest(principal + ':' + row['operation_id']): row['operation_id'] for row in rows})
+                if children:
+                    from .canonical_tools import child_alias
+                    mapping.update({row['child_operation_id']: child_alias(profile_id, principal, row['operation_id'], row['action_index'])
+                                    for row in children})
+            except Exception:
+                # Optional historical ID mapping must not erase a confirmed ACK.
+                # The current original operation identity is already available.
+                pass
     if isinstance(value, list):
         return [_external_operation_receipt(item, stable_id, operation_id, profile_id, mapping=mapping) for item in value]
     if not isinstance(value, dict):
@@ -442,6 +557,8 @@ def _external_operation_receipt(value, stable_id, operation_id, profile_id, *, p
     def external(identity, *, target=False):
         if not identity:
             return identity
+        if identity in mapping:
+            return mapping[identity]
         for internal, public in mapping.items():
             if identity == internal or str(identity).startswith(internal + ':'):
                 return public if target else public + identity[len(internal):]
@@ -628,6 +745,7 @@ def _recover_adoption_receipt(caller, profile_id, operation_id, symbol=None):
 
 @serialized_spot_execution
 def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
+    bind_scope(profile_id)
     if not isinstance(operation_id, str) or not re.fullmatch(r'[a-zA-Z0-9_.:-]{8,160}', operation_id):
         raise ValueError('operation_id must contain 8–160 letters, numbers, dots, underscores, colons or hyphens')
     result = None
@@ -635,6 +753,7 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
     try:
         arguments = normalize_trade_arguments(arguments, profile_id=profile_id, symbol=symbol,
                                               tool_name=tool_name, operation_id=operation_id)
+        remaining('authorization')
         profile = require(caller, trade_scope(tool_name, arguments), profile_id)
         if tool_name == 'execute_trade_actions' and any(
             isinstance(action, dict) and action.get('action') == 'cancel'
@@ -673,13 +792,14 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         request = {'symbol': symbol, 'tool': tool_name, 'arguments': validated}
         if tool_name in {'open', 'close', 'edit', 'cancel'} or validated.get('contract_version') == 2:
             request['contract_version'] = 2
+        remaining('reservation')
         previous = store.reserve_operation(profile_id, operation_id, caller['id'], request)
         if previous is not None:
             if tool_name == 'adopt_position_real' and previous.get('status') in {'unknown', 'pending', 'started'}:
                 previous = _recover_adoption_receipt(caller, profile_id, operation_id, symbol) or previous
             else:
                 previous = _recover_trade_receipt(caller, profile_id, operation_id) or previous
-            store.audit(caller['id'], tool_name, 'replayed', profile_id=profile_id, operation_id=operation_id)
+            store.audit_safely(caller['id'], tool_name, 'replayed', profile_id=profile_id, operation_id=operation_id)
             return sanitize(previous, profile_id)
         reserved = True
         cfg_id = 'mcp:' + profile_id
@@ -696,6 +816,7 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
             # Pass it explicitly to the shared multi-symbol spot dispatcher;
             # user-provided identity fields remain forbidden above.
             dispatch_args = {**validated, 'symbol': symbol} if profile['market_type'] == 'spot' else validated
+            remaining('dispatch')
             if tool_name in {'create_spot_exit', 'cancel_spot_exit'}:
                 from .spot_orders import execute as execute_spot_exit
                 raw = execute_spot_exit(tool_name, validated, cfg_id, symbol, stable_id)
@@ -710,7 +831,12 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         result = {'operation_id': operation_id, 'status': tool_result_status(raw),
                   'result': _external_operation_receipt(payload, stable_id, operation_id, profile_id, principal=caller['id'])}
     except (ValueError, PermissionError) as exc:
-        result = {'operation_id': operation_id, 'status': 'failed', 'error': safe_error(exc, profile_id)}
+        budget = current_budget.get()
+        result = {'operation_id': operation_id, 'status': 'unknown' if budget and budget.write_started else 'failed',
+                  'error': safe_error(exc, profile_id)}
+        if isinstance(exc, BudgetExceeded):
+            result.update(error_code='budget_exhausted', phase=budget.stage if budget else 'unknown',
+                          submission='possibly_sent' if budget and budget.write_started else 'not_submitted')
         if 'operation_id already belongs' in str(exc):
             result['error_code'] = 'identity_conflict'
         elif 'unsupported_combination' in str(exc):
@@ -722,18 +848,31 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         if result is not None:
             result = sanitize(result, profile_id)
             if reserved:
-                store.complete_operation(profile_id, operation_id, result)
-            store.audit(caller['id'], tool_name, result['status'], profile_id=profile_id,
+                try:
+                    store.complete_operation(profile_id, operation_id, result)
+                except Exception:
+                    # Original reservation and internal durable operation remain
+                    # queryable. Storage/audit failure cannot change the ACK.
+                    result['persistence_pending'] = True
+            store.audit_safely(caller['id'], tool_name, result['status'], profile_id=profile_id,
                         operation_id=operation_id, request=sanitize({'symbol': symbol, 'arguments': arguments}, profile_id), result=result)
     return result
 
 
 def operation(caller, profile_id, operation_id):
+    bind_scope(profile_id)
     require(caller, 'read', profile_id)
     with store.connection() as conn:
         row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=? AND principal=?',
                            (profile_id, operation_id, caller['id'])).fetchone()
     if not row:
+        from .canonical_tools import query_child
+        child = query_child(caller, profile_id, operation_id)
+        if child is not None:
+            return sanitize(child, profile_id)
+        from backend.utils.position_management import lookup_management_recovery, query_management_recovery
+        if lookup_management_recovery('mcp:' + profile_id, operation_id):
+            return sanitize(query_management_recovery('mcp:' + profile_id, operation_id), profile_id)
         return sanitize({
             'operation_id': operation_id,
             'state': 'not_found',
@@ -742,7 +881,8 @@ def operation(caller, profile_id, operation_id):
             'error_code': 'operation_not_found',
             'message': 'Operation not found for this caller'
         }, profile_id)
-    recovered_trade = _recover_trade_receipt(caller, profile_id, operation_id)
+    from .canonical_tools import recover_unified
+    recovered_trade = recover_unified(caller, profile_id, operation_id) or _recover_trade_receipt(caller, profile_id, operation_id)
     if recovered_trade is not None:
         with store.connection() as conn:
             row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=? AND principal=?',

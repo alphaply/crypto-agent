@@ -3,6 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from backend.utils.polymarket import PolymarketSettings
 from backend.utils.run_schedule import RunScheduleRule, DcaSchedule
+from backend.utils.management_policy import ManagementScope
 from backend.app.schemas.news import NewsSettings, PricingSyncSettings
 
 
@@ -143,6 +144,8 @@ class ConfigAgentPayload(BaseModel):
     enabled: bool = True
     mode: str = "STRATEGY"
     exit_mode: Literal["attached_required", "attached_optional", "independent_exits"] | None = None
+    position_management_policy: Literal['strict_owned', 'exclusive_scope', 'visible_first_claim'] | None = None
+    management_scopes: list[ManagementScope] | None = Field(default=None, max_length=30)
     model: str = ""
     api_base: str | None = None
     temperature: float | None = None
@@ -213,6 +216,7 @@ class ExchangeProfilePayload(BaseModel):
     name: str
     exchange: str
     market_type: str | None = "swap"
+    physical_account_id: str | None = Field(default=None, max_length=200)
     secrets: ExchangeProfileSecretsPayload = Field(default_factory=ExchangeProfileSecretsPayload)
 
 

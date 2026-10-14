@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 import uuid
 import pytz
 from datetime import datetime, timedelta
@@ -32,7 +33,15 @@ logger = setup_logger("Database")
 @contextmanager
 def get_db_conn():
     """数据库连接上下文管理器，自动处理关闭和超时"""
-    conn = sqlite3.connect(DB_NAME, timeout=30)
+    timeout = 30
+    # Only MCP workers carry this context; Web/scheduler defaults are unchanged.
+    from backend.mcp.resilience import current_budget, setting
+    budget = current_budget.get()
+    if budget:
+        # Final durable result writes use a short recovery grace after the I/O
+        # deadline; no network operation can start in that grace.
+        timeout = min(setting('DB_WAIT_SECONDS', 0.25), max(0.001, budget.deadline - time.monotonic()))
+    conn = sqlite3.connect(DB_NAME, timeout=timeout)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -177,9 +186,11 @@ def close_mock_order(order_id, close_price=0.0, realized_pnl=0.0):
     return _mock_trading_store.close_order(order_id, close_price=close_price, realized_pnl=realized_pnl)
 
 
-def reduce_mock_positions(config_id: str, symbol: str, pos_side: str, amount: float, current_price: float, reason: str = ''):
+def reduce_mock_positions(config_id: str, symbol: str, pos_side: str, amount: float, current_price: float, reason: str = '', operation_id: str | None = None):
     """Reduce filled attached-mode positions atomically at the observed market price."""
-    return _mock_trading_store.reduce_positions(config_id, symbol, pos_side, amount, current_price, reason)
+    if operation_id is None:
+        return _mock_trading_store.reduce_positions(config_id, symbol, pos_side, amount, current_price, reason)
+    return _mock_trading_store.reduce_positions(config_id, symbol, pos_side, amount, current_price, reason, operation_id=operation_id)
 
 
 def save_order_log(
@@ -1158,7 +1169,7 @@ def soft_delete_config_runtime_data(config_id: str):
 
 
 def purge_config_all_data(config_id: str, *, connection: sqlite3.Connection | None = None):
-    """彻底删除指定 config_id 的历史与运行数据，避免历史页残留。"""
+    """清理任务历史与运行数据，保留已接受交接所需的原执行证据。"""
     return _config_cleanup_store.purge_all_data(config_id, connection=connection)
 
 

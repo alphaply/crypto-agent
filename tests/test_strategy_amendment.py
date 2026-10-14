@@ -69,10 +69,10 @@ def test_short_price_ordering(mock_order):
 
 def test_registered_tool_descriptions_carry_execution_contracts():
     for mode in ('REAL', 'STRATEGY', 'SPOT_DCA'):
-        for tool in get_trade_tools_for_mode(mode):
+        for tool in get_trade_tools_for_mode(mode, include_legacy=True):
             assert tool.description.strip()
             assert '返回' in tool.description or '结果' in tool.description
-    real_tools = {tool.name: tool for tool in get_trade_tools_for_mode('REAL')}
+    real_tools = {tool.name: tool for tool in get_trade_tools_for_mode('REAL', include_legacy=True)}
     for name in ('update_entry_order_real', 'update_position_protection_real'):
         text = real_tools[name].description
         assert 'LONG' in text and 'SHORT' in text

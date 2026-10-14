@@ -9,9 +9,21 @@ def escape_markdown_special_chars(text: str) -> str:
     return text.replace("~", r"\~")
 
 
-def format_positions_to_agent_friendly(positions: list) -> str:
+def _resource_facts(row):
+    from backend.utils.trade_context_format import _management, _text
+    parts = [_management(row)] if _management(row) else []
+    if row.get('source'):
+        parts.append('来源 ' + _text(row['source']))
+    if row.get('supported_actions'):
+        parts.append('能力 ' + '/'.join(row['supported_actions']) + '（执行前核验）')
+    if row.get('observed_at') is not None:
+        parts.append('观察时间 ' + _text(row['observed_at']))
+    return (' | ' + '；'.join(parts)) if parts else ''
+
+
+def format_positions_to_agent_friendly(positions: list, *, observation=None) -> str:
     if not positions:
-        return "No Positions"
+        return "Unknown positions (observation incomplete; flat exposure unconfirmed)" if (observation or {}).get('error') else "No Positions"
 
     lines = []
     for position in positions:
@@ -19,17 +31,17 @@ def format_positions_to_agent_friendly(positions: list) -> str:
         symbol = str(position.get("symbol", "")).split(":")[0]
         amount = float(position.get("amount", 0) or 0)
         if position.get('market_type') == 'spot':
-            lines.append(f"[SPOT] {symbol} | Account holdings: {amount} | Free: {position.get('available_amount', 0)} | Cost basis/PnL: N/A (account balance, not task attribution)")
+            lines.append(f"[SPOT] {symbol} | Account holdings: {amount} | Free: {position.get('available_amount', 'N/A')} | Cost basis/PnL: N/A (account balance, not task attribution)" + _resource_facts(position))
             continue
         entry = float(position.get("entry_price", 0) or 0)
         pnl = float(position.get("unrealized_pnl", 0) or 0)
         pnl_sign = "+" if pnl >= 0 else ""
-        lines.append(f"[{side}] {symbol} | Amt: {amount} | Entry: {entry} | PnL: {pnl_sign}{pnl:.3f}")
+        lines.append(f"[{side}] {symbol} | Amt: {amount} | Entry: {entry} | PnL: {pnl_sign}{pnl:.3f}" + _resource_facts(position))
 
     return "\n".join(lines)
 
 
-def format_orders_to_agent_friendly(orders, protection_plans=None, symbol=""):
+def format_orders_to_agent_friendly(orders, protection_plans=None, symbol="", *, observation=None):
     orders = [order for order in (orders or []) if order]
     lines = []
     for order in orders:
@@ -65,13 +77,17 @@ def format_orders_to_agent_friendly(orders, protection_plans=None, symbol=""):
             if side == "BUY":
                 action = "CLOSE SHORT"
 
-        lines.append(f"ID:'{order_id}' - [{action}] Amount: {amount} @ Price: {price}{extras}")
+        lines.append(f"ID:'{order_id}' - [{action}] Amount: {amount} @ Price: {price}{extras}" + _resource_facts(order))
 
     if protection_plans is not None:
         from backend.utils.order_context import merge_order_protection
 
-        return merge_order_protection(orders, lines, protection_plans, symbol)
-    return "\n".join(lines) or "(No Active Orders)"
+        text = merge_order_protection(orders, lines, protection_plans, symbol)
+    else:
+        text = "\n".join(lines)
+    if (observation or {}).get('error'):
+        return (text + '\n' if text else '') + 'Order observations incomplete; no-orders status unconfirmed.'
+    return text or "(No Active Orders)"
 
 
 def _is_spot_market_data(data: dict) -> bool:

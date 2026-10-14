@@ -75,6 +75,8 @@ def assert_spot_config_change_allowed(previous: dict | None, updated: dict | Non
         raise SpotConfigConflict('现货主标的有手工持仓成本，不能通过排序更换主标的；请先核对并清理手工成本')
     if not (removed or account_changed or mode_changed):
         return
+    from backend.utils.visible_management import retired_management_resources
+    retired = retired_management_resources(config_id)
     with database.get_db_conn() as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         affected = set()
@@ -109,6 +111,9 @@ def assert_spot_config_change_allowed(previous: dict | None, updated: dict | Non
                 WHERE config_id=? AND status IN ('running','unknown','pending')''', (config_id,)))
     if any(float(previous.get(key) or 0) != 0 for key in ('initial_qty', 'initial_cost', 'manual_avg_cost')):
         affected.add(previous.get('symbol'))
+    # Confirmed release / accepted transfer already reconciled the physical
+    # stock. Historical buy attribution stays auditable after task retirement.
+    affected = {symbol for symbol in affected if str(symbol).split('/')[0] not in retired}
     if affected and (account_changed or mode_changed):
         raise SpotConfigConflict('现货任务仍有持仓、委托或待核验记录，不能切换交易账户或模式；请新建任务')
     blocked = affected & removed

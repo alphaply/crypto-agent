@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import time
 
 import pandas as pd
 
@@ -11,6 +12,120 @@ from backend.utils.market_data import MarketTool
 from backend.app.services.common import logger
 from backend.app.services.dashboard_service import calculate_dca_stats
 from backend.utils.spot_portfolio import get_config_symbols
+
+
+def _local_management_projection(config_id: str, symbol: str, cfg: dict, account_scope: str | None = None) -> tuple[dict, dict]:
+    """Read persisted enrollment evidence; never discover, restore or trade."""
+    from backend.utils.management_policy import canonical_symbol
+    from backend.utils.exit_orders import order_reference
+    from backend.utils.position_management import management_snapshot
+    from backend.database import get_db_conn
+    canonical = canonical_symbol(symbol)
+    policy = cfg.get('position_management_policy', 'visible_first_claim')
+    projection = {'policy': policy, 'scopes': []}
+    records = {}
+    try:
+        projection = management_snapshot(config_id, canonical)
+        projection['policy'] = policy
+        from backend.utils.position_management import management_status
+        current = management_status(config_id, canonical)
+        if policy == 'visible_first_claim' or current.get('scopes'):
+            for claim in current.get('scopes', []):
+                previous = next((s for s in projection['scopes'] if claim['side'] == 'BOTH' or s['side'] == claim['side']), {})
+                claim.update({key: value for key, value in previous.items() if key not in claim})
+            projection.update(current, policy='visible_first_claim')
+        with get_db_conn() as conn:
+            if account_scope and projection.get('policy') != 'visible_first_claim':
+                valid_sides = {row[0] for row in conn.execute('SELECT side FROM position_management_scopes WHERE owner=? AND symbol=? AND account_scope=?',
+                                                            (config_id, canonical, account_scope))}
+                projection['scopes'] = [scope for scope in projection['scopes'] if scope['side'] in valid_sides]
+            rows = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=?', (config_id,)).fetchall()
+        for row in rows:
+            plan = json.loads(row['payload'])
+            if (canonical_symbol(plan['symbol']) != canonical or plan.get('state') == 'DONE'
+                    or account_scope and plan.get('account_scope') != account_scope):
+                continue
+            for record in plan.get('entries', []) + plan.get('exits', []):
+                if record.get('id'):
+                    records[order_reference(record)] = (plan, record)
+                if record.get('execution_order_id'):
+                    records['regular:' + str(record['execution_order_id'])] = (plan, record)
+    except Exception as exc:
+        projection.update(error=str(exc), complete=False)
+    existing = {(scope['symbol'], scope['side']) for scope in projection['scopes']}
+    if policy == 'exclusive_scope':
+        for scope in cfg.get('management_scopes', []):
+            if canonical_symbol(scope['symbol']) == canonical and (canonical, scope['side']) not in existing:
+                projection['scopes'].append({'symbol': canonical, 'side': scope['side'], 'owner': config_id,
+                    'sync_status': 'pending', 'source': None, 'observed_at': None})
+    projection.setdefault('complete', all(scope.get('sync_status') == 'verified' for scope in projection['scopes']))
+    projection['owner'] = config_id
+    return projection, records
+
+
+def _management_order_metadata(row: dict, records: dict, projection: dict) -> dict:
+    """Capabilities describe supported tools, not permission or execution approval."""
+    from backend.utils.exit_orders import ORDER_TYPES, canonical_order_type
+    identity = row.get('qualified_order_id') or row.get('order_id')
+    entry = records.get(identity)
+    if entry is None and identity and ':' not in identity:
+        matches = [value for key, value in records.items() if key.partition(':')[2] == str(identity)]
+        entry = matches[0] if len(matches) == 1 else None
+    side = str(row.get('pos_side') or row.get('side') or '').upper()
+    if side in {'BOTH', 'NET'}:
+        side = 'LONG' if str(row.get('side')).lower() == 'sell' else 'SHORT'
+    facts = (projection.get('resource_states') or {}).get(side, {})
+    if entry is None and facts:
+        kind = canonical_order_type(row)
+        terminal = row.get('status') in {'closed', 'canceled', 'cancelled', 'expired', 'rejected'}
+        supported = kind in ORDER_TYPES and kind != 'market' and not terminal
+        return {**row, 'source': row.get('source') or 'exchange_snapshot',
+                'management': facts, 'management_state': facts.get('state'), 'visible': facts.get('visible'),
+                'eligible': facts.get('eligible'), 'can_claim': facts.get('can_claim'), 'owner': facts.get('owner'),
+                'managed': facts.get('state') == 'owned',
+                'supported_actions': (['cancel', 'edit'] if supported else ['cancel'] if identity and not terminal else []),
+                'management_observed_at': None}
+    if entry is None:
+        return {**row, 'source': row.get('source'), 'managed': False, 'supported_actions': [],
+                'management_observed_at': None}
+    plan, record = entry
+    management = plan.get('management') or {}
+    supported = canonical_order_type(record) in ORDER_TYPES
+    terminal = record.get('status') in {'closed', 'canceled', 'cancelled', 'expired', 'rejected'}
+    actions = ['cancel', 'edit'] if supported and not terminal and canonical_order_type(record) != 'market' else []
+    return {**row, 'source': record.get('source', 'agent'), 'managed': facts.get('state') == 'owned' if facts else True,
+            'management': facts or management, 'management_state': facts.get('state'),
+            'visible': facts.get('visible'), 'eligible': facts.get('eligible'), 'can_claim': facts.get('can_claim'),
+            'owner': facts.get('owner') if facts else management.get('owner') or projection.get('owner'), 'supported_actions': actions,
+            'management_observed_at': management.get('observed_at'),
+            'observed_at': row.get('observed_at') or record.get('fill_observed_at') or management.get('observed_at'),
+            'sync_status': management.get('sync_status'),
+            'change_source': record.get('last_change_source'),
+            'pending': bool(record.get('fill_pending') or record.get('replacement') or record.get('amendment', {}).get('state') == 'pending')}
+
+
+def _management_position_metadata(positions: list[dict], projection: dict) -> list[dict]:
+    from backend.utils.trade_operations import _same_symbol
+    result = []
+    for position in positions:
+        scope = next((scope for scope in projection.get('scopes', [])
+                      if scope['side'] in {str(position.get('side', '')).upper(), 'BOTH', 'BASE'}
+                      and (not position.get('symbol') or _same_symbol(scope['symbol'], position['symbol']))), None)
+        facts = (projection.get('resource_states') or {}).get(str(position.get('side', '')).upper(), {})
+        if facts:
+            result.append({**position, 'management': facts, 'visible': facts.get('visible'),
+                           'management_state': facts.get('state'), 'eligible': facts.get('eligible'),
+                           'can_claim': facts.get('can_claim'), 'owner': facts.get('owner'),
+                           'managed': facts.get('state') == 'owned',
+                           'source': position.get('source') or (scope or {}).get('source') or 'exchange_snapshot',
+                           'observed_at': position.get('observed_at') or (scope or {}).get('observed_at'), 'supported_actions': ['close']})
+        elif scope is None:
+            result.append(position)
+        else:
+            result.append({**position, 'source': scope.get('source'), 'managed': scope.get('sync_status') == 'verified',
+                           'owner': scope.get('owner'), 'observed_at': scope.get('observed_at'),
+                           'supported_actions': ['close'], 'sync_status': scope.get('sync_status')})
+    return result
 
 
 def get_token_stats_payload():
@@ -485,6 +600,8 @@ def get_position_stats_payload(config_id: str):
 
     unrealized_total = sum(float(item.get("unrealized_pnl", 0) or 0) for item in positions)
     margin_balance = balance if mode == "REAL" else balance + unrealized_total
+    balance_complete = not any('fetch_balance_failed' in str(error) for error in fetch_errors)
+    position_complete = not any('fetch_positions_failed' in str(error) for error in fetch_errors)
     from backend.utils.exit_policy import effective_exit_mode
     exit_management = {'mode': effective_exit_mode(cfg), 'exits': [], 'uncovered': {'LONG': 0, 'SHORT': 0}, 'pending': False}
     if exit_management['mode'] == 'independent_exits':
@@ -499,16 +616,33 @@ def get_position_stats_payload(config_id: str):
         except Exception as exc:
             exit_management.update(pending=True, error=str(exc), uncovered={'LONG': None, 'SHORT': None})
 
+    management = {'policy': 'strict_owned', 'scopes': []}
+    if mode == 'REAL':
+        from backend.utils.execution_ledger import account_scope
+        from backend.utils.position_management import resource_management_status
+        management, managed_records = _local_management_projection(config_id, symbol, cfg, account_scope(mt.exchange, config_id))
+        try:
+            management['resource_states'] = {side: resource_management_status(mt, symbol, side) for side in ('LONG', 'SHORT')}
+        except Exception as exc:
+            management.update(complete=False, error=str(exc))
+        positions = _management_position_metadata(positions, management)
+        for collection in ('entries', 'exits'):
+            exit_management[collection] = [_management_order_metadata(row, managed_records, management)
+                                           for row in exit_management.get(collection, [])]
+
     return {
         "mode": mode,
         "positions": positions,
-        "balance": round(balance, 2),
-        "margin_balance": round(margin_balance, 2),
-        "unrealized_pnl": round(unrealized_total, 4),
+        "balance": round(balance, 2) if balance_complete else None,
+        "margin_balance": round(margin_balance, 2) if balance_complete else None,
+        "unrealized_pnl": round(unrealized_total, 4) if position_complete else None,
+        "position_complete": position_complete,
+        "balance_complete": balance_complete,
         "recent_trades": recent_trades,
         "summary": trade_summary,
         "errors": fetch_errors,
         "exit_management": exit_management,
+        "management": management,
     }
 
 
@@ -714,21 +848,24 @@ def _normalize_real_open_order(order: dict, current_side: str, positions: list[d
     info = order.get("info", {}) or {}
     side = str(order.get("side", "")).upper()
     raw_type = str(order.get("type") or info.get("type") or "").upper()
-    pos_side = str(info.get("positionSide") or order.get("pos_side") or "BOTH").upper()
+    pos_side = str(info.get("positionSide") or info.get("posSide") or order.get("pos_side") or "BOTH").upper()
+    close_all = str(info.get('closePosition', '')).lower() == 'true' or str(info.get('closeFraction', '')) == '1'
+    native_reduce = any(str(value).lower() == 'true' for value in (order.get('reduceOnly'), info.get('reduceOnly')))
+    if pos_side in {'BOTH', 'NET'} and (close_all or native_reduce):
+        pos_side = 'LONG' if side == 'SELL' else 'SHORT'
     price = _safe_float(order.get("price"), 0)
-    stop_price = _safe_float(order.get("stopPrice") or info.get("stopPrice") or info.get("triggerPrice"), 0)
+    stop_price = _safe_float(order.get("triggerPrice") or order.get("stopPrice") or info.get("stopPrice") or info.get("triggerPrice"), 0)
     if price <= 0 and stop_price > 0:
         price = stop_price
     amount = _safe_float(order.get("amount") or info.get("origQty") or info.get("qty"), 0)
-    if amount <= 0 and str(info.get("closePosition", "")).lower() == "true":
+    if amount <= 0 and close_all:
         for position in positions:
             if str(position.get("side", "")).upper() == pos_side:
                 amount = _safe_float(position.get("amount") or position.get("qty") or position.get("contracts"), 0)
                 break
 
-    reduce_only = bool(
-        order.get("reduceOnly") or order.get("reduce_only") or info.get("reduceOnly") or info.get("closePosition")
-    )
+    reduce_only = any(str(value).lower() == 'true' for value in (
+        order.get('reduceOnly'), order.get('reduce_only'), info.get('reduceOnly'), info.get('closePosition')))
     if reduce_only:
         order_type = "close_long" if side == "SELL" else "close_short"
     elif current_side == "LONG" and side == "SELL":
@@ -754,32 +891,56 @@ def _normalize_real_open_order(order: dict, current_side: str, positions: list[d
         "raw_type": raw_type,
         "status": str(order.get("status") or info.get("status") or "OPEN").upper(),
         "reason": reason or "",
+        "quantity_mode": 'all' if close_all else 'fixed',
     }
 
 
-def _fetch_real_open_orders(mt: MarketTool, symbol: str, current_side: str, positions: list[dict], config_id: str) -> list[dict]:
-    regular_orders = mt.exchange.fetch_open_orders(symbol)
-    trigger_orders = []
-    try:
-        trigger_orders = mt.exchange.fetch_open_orders(symbol, params={"trigger": True})
-    except Exception as exc:
-        logger.warning(f"Kline trigger orders fetch failed: {exc}")
-
-    seen = set()
-    raw_pending_orders = []
-    for order in [*regular_orders, *trigger_orders]:
-        order_id = str(order.get("id") or "")
-        dedupe_key = order_id or f"{order.get('type')}:{order.get('side')}:{order.get('price')}:{order.get('amount')}"
-        if dedupe_key in seen:
+def _fetch_real_open_orders(mt: MarketTool, symbol: str, current_side: str, positions: list[dict], config_id: str,
+                            *, errors: list | None = None, qualify_ids: bool = False) -> list[dict]:
+    from backend.utils.position_adoption import OKX_ALGO_ORDER_TYPES
+    channels = [('regular', {})]
+    channels += ([('algo', {'trigger': True, 'ordType': kind}) for kind in OKX_ALGO_ORDER_TYPES]
+                 if getattr(mt.exchange, 'id', None) == 'okx' else [('algo', {'trigger': True})])
+    seen, raw_pending_orders = set(), []
+    for channel, params in channels:
+        try:
+            rows = mt.exchange.fetch_open_orders(symbol, params=params)
+            if not isinstance(rows, list):
+                raise ValueError('Order channel is unavailable')
+        except Exception as exc:
+            failure = f"orders:{channel}:{params.get('ordType', 'default')}:{type(exc).__name__}"
+            logger.warning(f'Kline order channel unavailable: {failure}')
+            if errors is not None:
+                errors.append(failure)
             continue
-        seen.add(dedupe_key)
-        raw_pending_orders.append(order)
-
-    reason_by_order_id = _load_order_reasons(config_id, [str(order.get("id") or "") for order in raw_pending_orders])
-    return [
-        _normalize_real_open_order(order, current_side, positions, reason_by_order_id.get(str(order.get("id") or ""), ""))
-        for order in raw_pending_orders
-    ]
+        observed_at = time.time()
+        for order in rows:
+            order_id = str(order.get('id') or '')
+            identity = f"{channel}:{order_id}" if order_id else f"{channel}:{order.get('type')}:{order.get('side')}:{order.get('price')}:{order.get('amount')}"
+            if identity in seen:
+                continue
+            seen.add(identity)
+            raw_pending_orders.append((order, channel, observed_at))
+    reason_by_order_id = _load_order_reasons(config_id, [str(order.get('id') or '') for order, _, _ in raw_pending_orders])
+    result = []
+    for order, channel, observed_at in raw_pending_orders:
+        row = _normalize_real_open_order(order, current_side, positions, reason_by_order_id.get(str(order.get('id') or ''), ''))
+        market = mt.exchange.market(symbol) if hasattr(mt.exchange, 'market') else {}
+        size = float(market.get('contractSize') or 1) if market.get('contract') else 1
+        row['contracts'] = order.get('amount')
+        row['filled'] = float(order['filled']) * size if order.get('filled') is not None else None
+        row['remaining'] = float(order['remaining']) * size if order.get('remaining') is not None else None
+        if row['quantity_mode'] == 'all':
+            row['coverage_estimate'] = row['amount']
+            row['amount'] = None
+        else:
+            row['amount'] *= size
+        row.update(exchange_channel=channel, qualified_order_id=f"{channel}:{row['order_id']}", observed_at=observed_at)
+        if qualify_ids:
+            row['exchange_order_id'] = row['order_id']
+            row['order_id'] = row['qualified_order_id']
+        result.append(row)
+    return result
 
 
 def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None = None):
@@ -832,6 +993,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
 
     positions = []
     position = None
+    position_complete = True
+    order_errors = []
     risk_lines = []
     if mode == "REAL":
         active_plans = {}
@@ -858,7 +1021,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
                     payload = {
                         "side": pos_side,
                         "entry_price": float(current.get("entryPrice", 0)),
-                        "amount": float(current.get("contracts", 0)),
+                        "contracts": float(current.get("contracts", 0)),
+                        "amount": float(current.get("contracts", 0)) * float(current.get('contractSize') or 1),
                         "mark_price": float(current.get("markPrice", 0) or 0),
                         "unrealized_pnl": round(float(current.get("unrealizedPnl", 0) or 0), 4),
                         "take_profit": plan.get("take_profit"),
@@ -873,6 +1037,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
             if positions:
                 position = positions[0]
         except Exception as exc:
+            position_complete = False
             logger.warning(f"Kline positions fetch failed: {exc}")
     elif mode == "STRATEGY":
         conn = sqlite3.connect(DB_NAME)
@@ -939,7 +1104,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
     try:
         if mode == "REAL":
             current_side = (position or {}).get("side", "").upper()
-            pending_orders = _fetch_real_open_orders(mt, symbol, current_side, positions, config_id)
+            pending_orders = _fetch_real_open_orders(mt, symbol, current_side, positions, config_id, errors=order_errors,
+                                                    qualify_ids=cfg.get('position_management_policy') == 'exclusive_scope')
         elif mode == "STRATEGY":
             conn = sqlite3.connect(DB_NAME)
             conn.row_factory = sqlite3.Row
@@ -993,6 +1159,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
                     }
                 )
     except Exception as exc:
+        order_errors.append(f"orders:{type(exc).__name__}")
         logger.warning(f"Kline pending orders fetch failed: {exc}")
 
     from backend.utils.exit_policy import effective_exit_mode
@@ -1013,8 +1180,25 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
         except Exception as exc:
             logger.warning(f'Independent exit chart refresh failed: {exc}')
 
+    management = {'policy': 'strict_owned', 'scopes': []}
+    if mode == 'REAL':
+        from backend.utils.execution_ledger import account_scope
+        management, managed_records = _local_management_projection(config_id, symbol, cfg, account_scope(mt.exchange, config_id))
+        from backend.utils.position_management import resource_management_status
+        try:
+            management['resource_states'] = {side: resource_management_status(mt, symbol, side) for side in ('LONG', 'SHORT')}
+        except Exception as exc:
+            management.update(complete=False, error=str(exc))
+        positions = _management_position_metadata(positions, management)
+        position = positions[0] if positions else None
+        pending_orders = [_management_order_metadata(row, managed_records, management) for row in pending_orders]
+
     return {
         'symbol': symbol,
+        "management": management,
+        "position_complete": position_complete,
+        "orders_complete": not order_errors,
+        "errors": order_errors,
         "candles": candles,
         "volume": volumes,
         "emas": emas,

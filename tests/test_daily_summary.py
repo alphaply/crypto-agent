@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pytest import MonkeyPatch
+
 import backend.database as database
+from memory_test_support import publish_strategy_views
 from backend.utils.prompt_utils import resolve_prompt_file_content
 from backend.app.services import dashboard_service
 
@@ -294,7 +297,9 @@ class DailySummaryTests(unittest.TestCase):
 
         self.assertTrue(generated)
         summarizer.assert_called_once()
-        memory_text = decision_context.format_short_memory_text("cfg-a")
+        with MonkeyPatch.context() as monkeypatch:
+            publish_strategy_views(monkeypatch, "cfg-a", "BTC/USDT")
+            memory_text = decision_context.format_short_memory_text("cfg-a")
         self.assertIn("rolling memory", memory_text)
 
     def test_short_memory_llm_format_omits_display_metadata(self):
@@ -302,7 +307,9 @@ class DailySummaryTests(unittest.TestCase):
 
         database.save_short_memory("2026-05-06 00:00:00", "2026-05-06 04:00:00", "BTC/USDT", "cfg-a", "clean memory", "", 2)
 
-        memory_text = decision_context.format_short_memory_for_llm("cfg-a")
+        with MonkeyPatch.context() as monkeypatch:
+            publish_strategy_views(monkeypatch, "cfg-a", "BTC/USDT")
+            memory_text = decision_context.format_short_memory_for_llm("cfg-a")
 
         self.assertEqual(memory_text, "clean memory")
         self.assertNotIn("[updated=", memory_text)
@@ -319,7 +326,8 @@ class DailySummaryTests(unittest.TestCase):
             )
             conn.commit()
 
-        with patch.object(memory_service, "organize_memory", return_value="clean rolling") as summarizer:
+        with MonkeyPatch.context() as monkeypatch, patch.object(memory_service, "organize_memory", return_value="clean rolling") as summarizer:
+            publish_strategy_views(monkeypatch, "cfg-a", "BTC/USDT")
             generated = memory_service.generate_rolling_short_memory_for_config(
                 "cfg-a",
                 agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},

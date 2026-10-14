@@ -553,7 +553,8 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
     prompt_template = clean_decision_template(resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger))
     next_run_time = calculate_next_run_time(agent_config, now_cn)
 
-    positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []))
+    positions_text = format_positions_to_agent_friendly(account_data.get('real_positions', []),
+        observation=(account_data.get('evidence_state') or {}).get('positions'))
     leverage = global_config.get_leverage(config_id)
 
     if is_real_exec:
@@ -582,7 +583,8 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
                 protection_plans = [{'symbol': symbol, 'side': 'UNKNOWN',
                                      'read_error': '保护计划读取失败，不能假设已有保护'}]
         orders_friendly_text = format_orders_to_agent_friendly(
-            display_orders, None if effective_exit_mode(agent_config) == 'independent_exits' else protection_plans, symbol)
+            display_orders, None if effective_exit_mode(agent_config) == 'independent_exits' else protection_plans, symbol,
+            observation={'error': 'incomplete' if account_data.get('orders_complete') is False else None})
     else:
         raw_mock_orders = account_data.get('mock_open_orders', [])
         
@@ -1201,7 +1203,10 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                             has_dca_order = True
                             break
                     if isinstance(msg, AIMessage) and msg.tool_calls:
-                        if any(tc['name'] == 'open_position_spot_dca' for tc in msg.tool_calls):
+                        if any(tc['name'] == 'open_position_spot_dca' or
+                               tc['name'] == 'execute_trade_actions' and any(
+                                   action.get('action') == 'open' for action in tc.get('args', {}).get('actions', []))
+                               for tc in msg.tool_calls):
                             has_dca_order = True
                             break
                 

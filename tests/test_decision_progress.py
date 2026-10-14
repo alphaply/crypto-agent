@@ -17,7 +17,7 @@ from backend.database_schema import initialize_schema
 @pytest.mark.parametrize('exit_mode', ['attached_required', 'attached_optional', 'independent_exits'])
 def test_bound_contract_matches_exit_mode_without_shared_mutation(trade_mode, exit_mode):
     tools = {tool.name: convert_to_openai_tool(tool)['function'] for tool in
-             get_trade_tools_for_mode(trade_mode, {'exit_mode': exit_mode})}
+             get_trade_tools_for_mode(trade_mode, {'exit_mode': exit_mode}, include_legacy=True)}
     independent = exit_mode == 'independent_exits'
     batch_action = tools['execute_trade_actions']['parameters']['properties']['actions']['items']['oneOf'][0]
     opening = tools['open']['parameters'] if independent else tools[f'open_position_{trade_mode.lower()}']['parameters']['properties']['orders']['items']
@@ -35,7 +35,7 @@ def test_bound_contract_matches_exit_mode_without_shared_mutation(trade_mode, ex
         assert 'remaining_amount' in amendments and 'amount' not in amendments
         assert 'order' not in batch_opening['properties']
     # The shared runtime validators must remain available to reject forged calls.
-    original = next(t for t in get_trade_tools_for_mode(trade_mode) if t.name.startswith('open_position_'))
+    original = next(t for t in get_trade_tools_for_mode(trade_mode, include_legacy=True) if t.name.startswith('open_position_'))
     assert 'stop_loss' in convert_to_openai_tool(original)['function']['parameters']['properties']['orders']['items']['properties']
 
 

@@ -12,7 +12,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.services import news_service, pricing_service
 from backend.database_agent_runs import get_agent_run
 from backend.database_schema import initialize_schema
-from backend.utils import jev, llm_utils
+from backend.utils import jev, llm_utils, provider_catalog
 
 
 @pytest.fixture
@@ -121,16 +121,18 @@ def test_adapter_roundtrip_keeps_encrypted_credentials(processing):
 def test_model_discovery_uses_saved_adapter_and_safe_errors(processing, monkeypatch):
     _, client = processing
     calls = []
-    def get(url, **kwargs):
-        calls.append((url, kwargs))
+    def get(request):
+        calls.append(str(request.url))
         return httpx.Response(200, json={'models': [{'name': 'jev-latest', 'description': 'Official alias'}, {'name': 'chat-model'}]})
-    monkeypatch.setattr(jev.httpx, 'get', get)
+    monkeypatch.setattr(provider_catalog, '_client', lambda: httpx.AsyncClient(transport=httpx.MockTransport(get)))
     response = client.get('/api/news/scorer-models', params={'provider_id': 'jev'})
     assert response.status_code == 200 and response.json()['models'] == [{'id': 'jev-latest', 'name': 'jev-latest', 'description': 'Official alias'}]
-    assert calls[0][0] == 'https://api.typesafe.ai/v1/models'
-    monkeypatch.setattr(jev.httpx, 'get', lambda *a, **k: (_ for _ in ()).throw(ValueError('test-secret')))
+    assert calls[0] == 'https://api.typesafe.ai/v1/models'
+    monkeypatch.setattr(provider_catalog, '_client', lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(ValueError('test-secret')))))
     response = client.get('/api/news/scorer-models', params={'provider_id': 'jev'})
     assert response.status_code == 502 and 'test-secret' not in response.text
+    client.app.dependency_overrides.clear()
+    assert client.get('/api/news/scorer-models', params={'provider_id': 'jev'}).status_code == 401
 
 
 def test_progress_items_partial_failure_and_history_are_durable(processing, monkeypatch):

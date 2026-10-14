@@ -19,6 +19,28 @@ from backend.app.services.stats_service import (
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 
+@router.get('/performance/{config_id}')
+def performance(config_id: str, hours: int = 168, _: dict = Depends(get_current_user)):
+    from backend.app.services.performance_service import get_performance_payload
+    try:
+        return {'success': True, **get_performance_payload(config_id, hours)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get('/performance/{config_id}/details')
+def performance_details(config_id: str, hours: int = 168, _: dict = Depends(get_current_user)):
+    from backend.app.services.performance_service import get_performance_payload
+    try:
+        return {'success': True, **get_performance_payload(config_id, hours, details=True)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/tokens")
 def token_stats(_: dict = Depends(get_current_user)):
     return {"success": True, **get_token_stats_payload()}

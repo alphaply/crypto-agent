@@ -39,15 +39,19 @@ class CatalogExchange:
 def contracts(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'tool-contracts.sqlite'))
     with database.get_db_conn() as conn:
+        from backend.database_schema import initialize_schema
+        initialize_schema(conn)
+        conn.commit()
+    with database.get_db_conn() as conn:
         initialize_schema(conn)
     monkeypatch.setattr(cfg, 'exchange_profile', lambda name: {
         'profile_id': name, 'exchange': 'binance', 'market_type': 'spot' if name == 'spot-account' else 'swap',
         'api_key': 'offline-test-key', 'secret': 'offline-test-secret',
     })
     cfg.save_profile(cfg.MCPProfile(profile_id='spot', name='Spot', market_type='spot', exchange_profile_id='spot-account',
-                                   symbols=['BTC/USDT', 'ETH/USDT']))
+                                   symbols=['BTC/USDT', 'ETH/USDT'], position_management_policy='strict_owned'))
     cfg.save_profile(cfg.MCPProfile(profile_id='swap', name='Swap', market_type='swap', exchange_profile_id='swap-account',
-                                   symbols=['BTC/USDT', 'ETH/USDT:USDT']))
+                                   symbols=['BTC/USDT', 'ETH/USDT:USDT'], position_management_policy='strict_owned'))
     store.put('settings', 'global', {'enabled': True, 'public_url': 'http://localhost:7860'})
     caller = {'id': 'key:test', 'scopes': ['read', 'trade', 'cancel'], 'profile_ids': ['spot', 'swap']}
     exchange = CatalogExchange()
@@ -297,8 +301,11 @@ def test_all_symbols_never_include_inverse_expiring_or_inactive_markets(contract
 def test_sdk_schema_is_flat_strict_and_discovery_matches_registered_tools(contracts):
     _, _, _, server = contracts
     listing = asyncio.run(server.list_tools())
-    assert {item.name for item in listing} == {item['name'] for item in TOOL_CATALOG}
-    schemas = {item.name: item.inputSchema for item in listing}
+    from backend.mcp.canonical_tools import CORE_NAMES
+    assert {item.name for item in listing} == set(CORE_NAMES)
+    # Cached legacy calls retain their original strict flat contracts even
+    # though the default model directory only advertises the canonical facade.
+    schemas = {item['name']: server._tool_manager.get_tool(item['name']).parameters for item in TOOL_CATALOG}
     required = {'profile_id', 'symbol', 'amount', 'entry_price', 'reason', 'operation_id'}
     assert set(schemas['buy_spot']['required']) == required
     assert 'arguments' not in schemas['buy_spot']['properties'] and schemas['buy_spot']['additionalProperties'] is False

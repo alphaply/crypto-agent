@@ -143,3 +143,157 @@ CANONICAL_MODELS = {'open': OpenInput, 'close': CloseInput, 'edit': EditInput, '
 
 def contract_version(tool_name: str, arguments: dict) -> int:
     return 2 if tool_name in CANONICAL_MODELS else int(arguments.get('contract_version', 1))
+
+
+# Version 3 is deliberately separate: adding defaults to the v2 models changes
+# persisted request hashes and makes old replay unsafe.
+class UnifiedActionBase(BatchDependencies):
+    symbol: str | None = Field(None, min_length=1, max_length=100)
+    market_type: Literal['spot', 'swap'] | None = None
+    exchange: Literal['binance', 'okx', 'bitget', 'bybit'] | None = None
+    reason: Reason
+
+    @field_validator('symbol', mode='after')
+    @classmethod
+    def literal_symbol(cls, value):
+        if value and any(marker in value for marker in ('${', '{{', '$ref', '\n')):
+            raise ValueError('symbol must be a literal authorized market, not a result reference')
+        return value
+
+
+class UnifiedOpenAction(UnifiedActionBase):
+    action: Literal['open']
+    side: Side
+    order_type: Literal['market', 'limit'] = 'limit'
+    amount: PositiveNumber | None = None
+    quote_amount: PositiveNumber | None = None
+    margin_amount: PositiveNumber | None = None
+    price: PositiveNumber | None = None
+    leverage: PositiveNumber | None = None
+    stop_loss: PositiveNumber | None = None
+    take_profit: PositiveNumber | None = None
+    valid_duration_hours: Annotated[int, Field(strict=True, gt=0, le=168)] | None = None
+
+    @model_validator(mode='after')
+    def validate_entry(self):
+        if sum(value is not None for value in (self.amount, self.quote_amount, self.margin_amount)) != 1:
+            raise ValueError('open requires exactly one sizing input: amount, quote_amount or margin_amount')
+        if (self.price is not None) != (self.order_type == 'limit'):
+            raise ValueError('limit requires price; market does not accept price')
+        for field, value in (('stop_loss', self.stop_loss), ('take_profit', self.take_profit)):
+            if value is not None and self.price is not None:
+                below = (field == 'stop_loss') == (self.side == 'LONG')
+                if (below and value >= self.price) or (not below and value <= self.price):
+                    raise ValueError(f'{field} is on the wrong side of the entry price')
+        return self
+
+
+class UnifiedCloseAction(UnifiedActionBase):
+    action: Literal['close']
+    side: Side
+    order_type: Literal['market', 'limit', 'take_profit_market', 'take_profit_limit',
+                        'stop_market', 'stop_limit', 'stop_loss', 'take_profit', 'oco']
+    amount: PositiveNumber | None = None
+    close_all: StrictBool | None = None
+    price: PositiveNumber | None = None
+    trigger_price: PositiveNumber | None = None
+    stop_loss: PositiveNumber | None = None
+    take_profit: PositiveNumber | None = None
+    stop_limit_price: PositiveNumber | None = None
+    take_profit_limit_price: PositiveNumber | None = None
+
+    @model_validator(mode='after')
+    def validate_exit(self):
+        if self.close_all is False or (self.amount is not None) == (self.close_all is True):
+            raise ValueError('close requires exactly one: amount > 0 or close_all=true')
+        kind = self.order_type
+        allowed = ({'price'} if kind == 'limit' else
+                   {'trigger_price'} if kind in {'stop_market', 'take_profit_market'} else
+                   {'price', 'trigger_price'} if kind in {'stop_limit', 'take_profit_limit'} else
+                   {'trigger_price', 'stop_loss', 'stop_limit_price'} if kind == 'stop_loss' else
+                   {'trigger_price', 'take_profit', 'take_profit_limit_price'} if kind == 'take_profit' else
+                   {'stop_loss', 'take_profit', 'stop_limit_price', 'take_profit_limit_price'} if kind == 'oco' else set())
+        for field in ('price', 'trigger_price', 'stop_loss', 'take_profit', 'stop_limit_price', 'take_profit_limit_price'):
+            if getattr(self, field) is not None and field not in allowed:
+                raise ValueError(f'{kind} does not accept {field}')
+        required = {'limit': ('price',), 'stop_market': ('trigger_price',), 'take_profit_market': ('trigger_price',),
+                    'stop_limit': ('price', 'trigger_price'), 'take_profit_limit': ('price', 'trigger_price'),
+                    'oco': ('stop_loss', 'take_profit')}.get(kind, ())
+        for field in required:
+            if getattr(self, field) is None:
+                raise ValueError(f'{kind} requires {field}')
+        if kind in {'stop_loss', 'take_profit'}:
+            if (self.trigger_price is None) == (getattr(self, kind) is None):
+                raise ValueError(f'{kind} requires exactly one trigger_price or {kind}')
+        if self.stop_loss and self.take_profit and self.stop_loss >= self.take_profit:
+            raise ValueError('stop_loss must be below take_profit for spot OCO')
+        return self
+
+
+class UnifiedEditAction(UnifiedActionBase):
+    action: Literal['edit']
+    order_id: str = Field(min_length=1, max_length=200)
+    remaining_amount: PositiveNumber | None = Field(None, description='目标未成交基础币数量；依据最新实际成交计算总量，all 单不可设置')
+    price: PositiveNumber | None = None
+    trigger_price: PositiveNumber | None = None
+    stop_loss: PositiveNumber | None = None
+    take_profit: PositiveNumber | None = None
+
+    @model_validator(mode='after')
+    def require_change(self):
+        if all(value is None for value in (self.remaining_amount, self.price, self.trigger_price, self.stop_loss, self.take_profit)):
+            raise ValueError('edit requires an explicit supported price, quantity or protection change')
+        return self
+
+
+class UnifiedCancelAction(UnifiedActionBase):
+    action: Literal['cancel']
+    order_id: str = Field(min_length=1, max_length=200)
+
+
+class UnifiedProtectAction(UnifiedActionBase):
+    action: Literal['protect']
+    side: Side
+    order_id: str | None = Field(None, min_length=1, max_length=200)
+    amount: PositiveNumber | None = None
+    close_all: StrictBool | None = None
+    stop_loss: PositiveNumber | None = None
+    take_profit: PositiveNumber | None = None
+    stop_limit_price: PositiveNumber | None = None
+    take_profit_limit_price: PositiveNumber | None = None
+
+    @model_validator(mode='after')
+    def validate_protection(self):
+        if self.stop_loss is None and self.take_profit is None:
+            raise ValueError('protect requires stop_loss and/or take_profit')
+        if self.close_all is False or (self.amount is not None and self.close_all is True):
+            raise ValueError('protect amount and close_all=true are mutually exclusive')
+        return self
+
+
+UnifiedTradeAction = Annotated[
+    UnifiedOpenAction | UnifiedCloseAction | UnifiedEditAction | UnifiedCancelAction | UnifiedProtectAction,
+    Field(discriminator='action'),
+]
+
+
+class UnifiedTradeActionsSchema(CanonicalTradeActionsSchema):
+    """Fresh contract; v1/v2 serializers above retain their exact old meaning."""
+    contract_version: Literal[3] = Field(description='显式整数3；使用当前可信模式的平铺动作，不覆盖账户或引擎')
+    actions: list[UnifiedTradeAction] = Field(min_length=1, max_length=20)
+    include: list[Literal['account']] = Field(default_factory=list, max_length=1)
+
+    @model_validator(mode='before')
+    @classmethod
+    def strict_version(cls, value):
+        if isinstance(value, dict) and (type(value.get('contract_version')) is not int or value.get('contract_version') != 3):
+            raise ValueError('contract_version must explicitly be integer 3')
+        return value
+
+    @model_serializer(mode='wrap')
+    def omit_implicit(self, handler):
+        result = handler(self)
+        for field in ('execution_policy', 'include'):
+            if field not in self.model_fields_set:
+                result.pop(field, None)
+        return result

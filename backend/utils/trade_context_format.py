@@ -35,6 +35,17 @@ def _ownership(value):
     return {'task': '本任务', 'unverified': '归属未核验', 'external': '外部仓位/订单'}.get(value, f'归属：{_text(value)}')
 
 
+def _management(row):
+    facts = row.get('management') or {}
+    state = row.get('management_state') or facts.get('state')
+    names = {'owned': '已纳管', 'eligible_unclaimed': '可自动认领', 'conflict': '其他管理者占用',
+             'read_only': '只读可见', 'needs_refresh': '管理证据待核验'}
+    if not state:
+        return ''
+    owner = row.get('owner') or facts.get('owner')
+    return names.get(state, _text(state)) + (f'；管理者 {_text(owner)}' if owner else '')
+
+
 def _observations(rows, sources=None):
     groups = {}
     for row in rows:
@@ -46,7 +57,8 @@ def _observations(rows, sources=None):
             groups.setdefault(name, []).append(source.get('observed_at'))
     labels = {'exchange_snapshot': '交易所快照', 'mock_snapshot': '模拟快照',
               'local_execution_evidence': '本地核验', 'unknown': '来源未知',
-              'positions': '持仓快照', 'orders': '普通单快照', 'trigger_orders': '条件单快照'}
+              'positions': '持仓快照', 'orders': '普通单快照', 'trigger_orders': '条件单快照',
+              'agent': 'Agent', 'external': '外部', 'baseline': '接管基线'}
     parts = []
     for source, values in sorted(groups.items()):
         times, unknown = [], False
@@ -80,6 +92,7 @@ def render_positions(state):
         pnl = _decimal(position.get('unrealized_pnl'))
         pnl_text = f'约 {pnl:+.2f} {currency}' if pnl is not None else '未知'
         owner = _ownership(position.get('ownership')) + ('（已接管）' if position.get('adoption') else '')
+        owner = _management(position) or owner
         lines.append(f"{_side(position.get('side'))} {amount}｜均价 {_number(position.get('entry_price'))}｜浮盈{pnl_text}｜{owner}")
     if not lines:
         lines.append('未知（持仓读取不完整）' if state.evidence_state.get('positions') == 'unavailable' else '无')
@@ -116,6 +129,12 @@ def _order_row(order):
                 'filled': '已成交', 'closed': '已结束', 'canceled': '已撤销', 'cancelled': '已撤销'}
     status = statuses.get(str(order.get('status')).lower(), _text(order.get('status')))
     notes = []
+    if _management(order):
+        notes.append(_management(order))
+    if order.get('source') == 'external':
+        notes.append('外部来源，已纳管' if order.get('managed') else '外部来源，待核验')
+    if order.get('supported_actions'):
+        notes.append('支持 ' + '/'.join(order['supported_actions']) + '（执行前核验）')
     if order.get('ownership') != 'task':
         notes.append(_ownership(order.get('ownership')))
     if not order.get('verified'):

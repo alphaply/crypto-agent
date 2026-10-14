@@ -196,8 +196,8 @@ def test_format_recent_position_history_for_memory_integration(local_db):
     with patch.object(database, '_config_mode_for_stats', return_value="REAL"):
         text = format_recent_position_history_for_memory("cfg_int", {"mode": "REAL", "symbol": "BTC/USDT"})
 
-    assert "【过去7天平仓记录（本地成交账本）】" in text
-    assert "BTC/USDT:USDT LONG (多)" in text
-    assert "TP: 81000.00" in text
-    assert "盈利: +100.00 USDT" in text
-    assert "胜率: 100.0%" in text
+    assert text == ''  # Performance history is audit evidence, outside strategy memory.
+    with patch.object(database, '_config_mode_for_stats', return_value='REAL'):
+        history = database.get_closed_positions_7d('cfg_int')
+    assert history[0]['symbol'] == 'BTC/USDT:USDT'
+    assert history[0]['realized_pnl'] == 100

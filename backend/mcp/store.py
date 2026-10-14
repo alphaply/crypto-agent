@@ -4,15 +4,57 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import threading
 from contextlib import contextmanager
 
 from backend import database
 
+_storage_lock = threading.Lock()
+_storage_gate = None
+_storage_capacity = None
+_storage_active = 0
+_storage_queued = 0
+
+
+def storage_diagnostics():
+    with _storage_lock:
+        return {'active': _storage_active, 'queued': _storage_queued, 'capacity': _storage_capacity}
+
 
 @contextmanager
-def connection():
-    with database.get_db_conn() as conn:
-        conn.executescript("""
+def storage_slot(recovery=False):
+    from .resilience import current_budget, remaining, setting
+    global _storage_gate, _storage_capacity, _storage_active, _storage_queued
+    if current_budget.get() is None:
+        yield
+        return
+    with _storage_lock:
+        if _storage_gate is None:
+            _storage_capacity = int(setting('STORAGE_CONCURRENCY', 2, 1, 32))
+            _storage_gate = threading.BoundedSemaphore(_storage_capacity)
+        _storage_queued += 1
+    acquired = False
+    try:
+        wait = min(setting('DB_WAIT_SECONDS', .25), 1 if recovery else remaining('storage_queue'))
+        acquired = _storage_gate.acquire(timeout=wait)
+        if not acquired:
+            raise ValueError('MCP storage busy: queue timeout')
+    finally:
+        with _storage_lock:
+            _storage_queued -= 1
+            if acquired:
+                _storage_active += 1
+    try:
+        yield
+    finally:
+        with _storage_lock:
+            _storage_active -= 1
+        _storage_gate.release()
+
+
+def initialize_schema(conn):
+    """Startup migration; execute statements without committing caller state."""
+    schema = """
             CREATE TABLE IF NOT EXISTS mcp_records (
                 kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL,
                 PRIMARY KEY(kind,id));
@@ -37,8 +79,25 @@ def connection():
                 profile_id TEXT NOT NULL, operation_id TEXT NOT NULL, revision INTEGER NOT NULL,
                 observed_at REAL NOT NULL, result TEXT NOT NULL,
                 PRIMARY KEY(profile_id,operation_id,revision));
-        """)
-        yield conn
+        """
+    for statement in schema.split(';'):
+        if statement.strip():
+            conn.execute(statement)
+    from .paper_schema import initialize_schema as initialize_paper_schema
+    initialize_paper_schema(conn)
+
+
+@contextmanager
+def connection(*, recovery=False):
+    from .resilience import remaining, setting, stage
+    with storage_slot(recovery), database.get_db_conn() as conn:
+        timeout_ms = max(1, int(min(setting('DB_WAIT_SECONDS', 0.25), 1 if recovery else remaining('storage')) * 1000))
+        conn.execute(f'PRAGMA busy_timeout={timeout_ms}')
+        if recovery:
+            yield conn
+        else:
+            with stage('storage'):
+                yield conn
 
 
 def digest(value: str) -> str:
@@ -62,6 +121,9 @@ def pop(kind: str, key: str):
     with connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT payload FROM mcp_records WHERE kind=? AND id=?", (kind, key)).fetchone()
+        if kind == 'profile':
+            from backend.utils.position_management import assert_configuration_claims
+            assert_configuration_claims(conn, 'mcp:' + key)
         conn.execute("DELETE FROM mcp_records WHERE kind=? AND id=?", (kind, key))
         conn.commit()
     return json.loads(row[0]) if row else None
@@ -110,7 +172,7 @@ def reserve_operation(profile_id, operation_id, principal, request):
 
 
 def complete_operation(profile_id, operation_id, result):
-    with connection() as conn:
+    with connection(recovery=True) as conn:
         conn.execute('BEGIN IMMEDIATE')
         encoded = json.dumps(result, ensure_ascii=False, default=str)
         old = conn.execute('SELECT revision,result FROM mcp_operation_revisions WHERE profile_id=? AND operation_id=? '
@@ -128,3 +190,12 @@ def complete_operation(profile_id, operation_id, result):
         conn.execute("UPDATE mcp_operations SET state=?,result=?,updated_at=? WHERE profile_id=? AND operation_id=?",
                      (str(result.get('status') or 'completed'), json.dumps(result, ensure_ascii=False, default=str), time.time(), profile_id, operation_id))
         conn.commit()
+
+
+def audit_safely(*args, **kwargs):
+    """Telemetry failure must never overwrite a financial result."""
+    try:
+        audit(*args, **kwargs)
+    except Exception as exc:
+        import logging
+        logging.getLogger('MCPResilience').warning('mcp_audit_failed layer=storage type=%s', type(exc).__name__)

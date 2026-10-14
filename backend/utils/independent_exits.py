@@ -16,6 +16,7 @@ from backend.utils.trade_receipts import bind_attempt, current_attempt, project_
 from backend.utils.trade_order_evidence import classify_saved_order, rejection_evidence
 
 from backend.utils.position_protection import PositionProtection, TERMINAL, _lock
+from backend.utils.position_management import managed_action, ensure_managed, enabled as management_enabled
 from backend.utils.exit_orders import (
     LIMIT_TYPES, canonical_order_type, exit_group, is_conditional,
     normalize_close, observed_order_status, order_reference, parse_order_reference,
@@ -110,6 +111,7 @@ class IndependentExits(PositionProtection):
                                "stop_loss" if exit_group(record) == 'stop_loss' else
                                "take_profit" if exit_group(record) == 'take_profit' else 'agent_exit',
                                episode_id=plan["episode_id"], side=plan["side"],
+                               source=record.get('source', 'agent'),
                                trigger_price=record.get("trigger_price"),
                                planned_exit=record.get("price"))
 
@@ -326,7 +328,16 @@ class IndependentExits(PositionProtection):
                 "protection_state": plan["state"], "error": plan.get("error"),
                 "pending": pending}
         status = observed_order_status(record)
+        supported = []
+        if record.get('status') not in TERMINAL:
+            supported = ['cancel']
+            if canonical_order_type(record) != 'market' and not (record.get('execution_order_id') and canonical_order_type(record) not in LIMIT_TYPES):
+                supported.insert(0, 'edit')
         result.update(order_id=order_reference(record), order_status=status,
+                      source=record.get('source', 'agent'), managed=True,
+                      supported_actions=supported,
+                      observed_at=record.get('fill_observed_at'),
+                      last_change_source=record.get('last_change_source'),
                       parent_order_id=order_reference(record, current=False) if record.get('execution_order_id') else None,
                       exchange_order_id=record.get('execution_order_id') or record.get('id'),
                       exchange_channel='regular' if record.get('execution_order_id') else
@@ -361,6 +372,8 @@ class IndependentExits(PositionProtection):
         return result
 
     def _active_plan(self, symbol, side, *, create=False):
+        if management_enabled(self, symbol, side):
+            ensure_managed(self, symbol, side)
         plan = self._load(symbol, side)
         if plan and plan["state"] != "DONE":
             if plan.get("execution_mode") != "independent_exits":
@@ -388,10 +401,12 @@ class IndependentExits(PositionProtection):
         return plan
 
     def _admit(self, plan, action, target=None, arguments=None):
+        if action == 'open' and (plan.get('management', {}).get('pending_orders') or plan.get('management', {}).get('boundary_pending')):
+            raise ValueError('Previous position orders are still being verified and cleaned up')
         from backend.utils.independent_admission import assess_admission, action_intent
         if action != 'cancel':
             self.collect_readonly(plan)
-            if plan.get('adoption'):
+            if plan.get('adoption') or plan.get('management'):
                 from backend.mcp.guard import assert_position_owner
                 try:
                     assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True, side=plan['side'])
@@ -430,6 +445,7 @@ class IndependentExits(PositionProtection):
         except Exception as exc:
             plan['maintenance_error'] = str(exc)
 
+    @managed_action
     def open(self, symbol, op, operation_id=None, contract_version=1):
         from backend.mcp.guard import assert_entry_allowed
         entry_side = {'BUY_LIMIT': 'LONG', 'SELL_LIMIT': 'SHORT'}.get(getattr(op, 'action', None))
@@ -555,6 +571,7 @@ class IndependentExits(PositionProtection):
         self._submit(plan, record, 'limit' if kind in LIMIT_TYPES else 'market',
                       "sell" if plan["side"] == "LONG" else "buy", params)
 
+    @managed_action
     def close(self, symbol, pos_side, amount=None, exit_type="market", price=None,
               trigger_price=None, reason="", operation_id=None, contract_version=1, close_all=False):
         intent = normalize_close(exit_type, amount, close_all, contract_version)
@@ -581,6 +598,8 @@ class IndependentExits(PositionProtection):
                 if plan is None:
                     return self._missing_cycle_result(symbol, pos_side, current)
             pos = self._position(plan)
+            if not pos and plan.get('management'):
+                return {'status': 'skipped', 'reason': 'no_position', 'symbol': symbol, 'pos_side': pos_side}
             if not pos:
                 raise ValueError("Exit orders require an already filled position")
             if price is not None:
@@ -623,6 +642,7 @@ class IndependentExits(PositionProtection):
 
     def _find_order(self, symbol, order_id):
         symbol = self._market(symbol)["symbol"]
+        ensure_managed(self, symbol)
         channel, raw_id = parse_order_reference(order_id)
         matches = []
         for side in ("LONG", "SHORT"):
@@ -732,6 +752,7 @@ class IndependentExits(PositionProtection):
                            if record.get('cancel_confirmed_at') else
                            'Cancellation not confirmed; reconcile the existing order before continuing')
 
+    @managed_action
     def cancel(self, symbol, order_id, operation_id=None):
         with _lock(self.account_scope):
             try:
@@ -768,7 +789,9 @@ class IndependentExits(PositionProtection):
                 try:
                     res = self.ex.cancel_order(order_id, symbol, params={'trigger': True} if is_trigger else {})
                 except Exception:
-                    res = self.ex.cancel_order(order_id, symbol)
+                    # A timeout may already have cancelled the original target.
+                    # Never blindly switch channels and submit another write.
+                    raise
                 return {'status': 'completed', 'action': 'cancel', 'order_id': str(order_id),
                         'unmanaged': True, 'response': res}
         return None
@@ -835,6 +858,7 @@ class IndependentExits(PositionProtection):
         self._submit_exit(plan, replacement, pos)
         return replacement
 
+    @managed_action
     def amend_exit(self, symbol, order_id, amount=None, price=None, trigger_price=None,
                    reason="", operation_id=None):
         with _lock(self.account_scope):
@@ -865,6 +889,7 @@ class IndependentExits(PositionProtection):
             self._maintain_after(plan)
             return self._result(plan, result)
 
+    @managed_action
     def amend_entry(self, symbol, order_id, price=None, amount=None, reason="", pos_side=None, operation_id=None,
                     entry_price=None):
         # Native edit intent is persisted by the shared entry amendment implementation.
@@ -882,6 +907,7 @@ class IndependentExits(PositionProtection):
             return super().amend_entry(symbol, order_id, entry_price if entry_price is not None else price,
                                       amount, reason, pos_side, operation_id=operation_id)
 
+    @managed_action
     def edit(self, symbol, order_id, remaining_amount=None, price=None, trigger_price=None,
              reason='', operation_id=None):
         """Edit a managed order; the quantity target is its unfilled base amount."""
@@ -1071,7 +1097,7 @@ class IndependentExits(PositionProtection):
             errors = self._collect_order_evidence(plan, respect_backoff=respect_backoff)
             if errors:
                 raise RuntimeError('; '.join(errors))
-            if plan.get('adoption') or any(r.get('quantity_mode') == 'all' and is_conditional(r)
+            if plan.get('adoption') or plan.get('management') or any(r.get('quantity_mode') == 'all' and is_conditional(r)
                                           and r.get('status') not in TERMINAL for r in plan.get('exits', [])):
                 from backend.mcp.guard import assert_position_owner
                 assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True, side=plan['side'])
@@ -1181,7 +1207,9 @@ class IndependentExits(PositionProtection):
 
     def snapshot(self, symbol):
         symbol = self._market(symbol)["symbol"]
+        from backend.utils.position_management import management_snapshot
         result = {"mode": "independent_exits", "exits": [], "entries": [], "adopted_positions": [], 'unresolved_orders': [],
+                  'management': management_snapshot(self.config_id, symbol),
                   "uncovered": {"LONG": 0.0, "SHORT": 0.0}, "pending": False,
                   'quantity_conflict': False, 'quantity_conflicts': [], 'exit_groups': {}}
         contract_size = float(self._market(symbol).get("contractSize") or 1)
@@ -1210,6 +1238,8 @@ class IndependentExits(PositionProtection):
                 if record.get("status") in TERMINAL:
                     continue
                 item = self._result(plan, record)
+                if plan.get('management', {}).get('boundary_pending'):
+                    item['pending'] = True
                 item.update(pos_side=side, kind='exit', execution_guaranteed=False)
                 coverage = (quantity if item['quantity_mode'] == 'all' and item['order_status'] == 'waiting_trigger'
                             else min(item['actual_remaining'] or 0, quantity))

@@ -97,7 +97,7 @@ def test_background_first_publication_after_real_legacy_error(sources, monkeypat
     assert '旧 unknown' not in after.short_memory_text + after.recent_summaries_text
     if no_original:
         assert job()['status'] == 'completed'
-        assert database.get_short_memories('cfg', 1)[0]['market_summary'] == LEGACY
+        assert database.get_short_memories('cfg', 1)[0]['market_summary'] == THESIS
     else:
         assert database.get_short_memories('cfg', 1)[0]['market_summary'] == LEGACY
     with database.get_db_conn() as conn:

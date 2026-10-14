@@ -140,10 +140,11 @@ def gateway(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, 'exchange_profile', lambda _: dict(account))
     cfg.save_profile(cfg.MCPProfile(profile_id='manual', name='Manual position',
                                    exchange_profile_id='swap-account', market_type='swap',
-                                   symbols=[SYMBOL], exit_mode='independent_exits'))
+                                   symbols=[SYMBOL], exit_mode='independent_exits', position_management_policy='strict_owned'))
     store.put('settings', 'global', {'enabled': True, 'public_url': 'http://localhost:7860'})
     web = {**account, 'config_id': 'web-task', 'mode': 'REAL',
-           'exit_mode': 'independent_exits', 'symbol': SYMBOL, 'exchange_profile_id': 'swap-account'}
+           'exit_mode': 'independent_exits', 'symbol': SYMBOL, 'exchange_profile_id': 'swap-account',
+           'position_management_policy': 'strict_owned'}
     monkeypatch.setattr(config, 'get_config_by_id',
                         lambda cid: web if cid == 'web-task' else cfg.get_runtime_profile(cid))
     exchange = AdoptionExchange()

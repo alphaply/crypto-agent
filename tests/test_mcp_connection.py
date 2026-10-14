@@ -23,6 +23,10 @@ CALLBACK = 'https://chatgpt.com/connector/oauth/test-callback'
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'oauth.db'))
+    with database.get_db_conn() as conn:
+        from backend.database_schema import initialize_schema
+        initialize_schema(conn)
+        conn.commit()
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'connection-test-master')
     monkeypatch.setattr(security, 'authenticate_password', lambda password: password == 'test-password')
     store.put('settings', 'global', {'enabled': True, 'public_url': ORIGIN})

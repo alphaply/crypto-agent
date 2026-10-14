@@ -3,6 +3,9 @@ from fastapi.responses import Response
 import time
 import jwt
 from pydantic import BaseModel, Field
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from backend.app.core.security import JWT_SECRET, JWT_ALGORITHM
 from backend.app.services.database_export import database_file_response
@@ -25,11 +28,48 @@ from backend.app.services.config_service import (
     update_config_symbols_payload,
 )
 from backend.app.services.market_catalog_service import MarketCatalogUnavailable, list_market_symbols_payload
+from backend.app.schemas.provider_models import ProviderDiscoveryRequest, ProviderDiscoveryResponse
+from backend.app.services.provider_model_service import discover_provider_models
+from backend.utils.provider_catalog import CatalogError
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 from backend.utils.exit_policy import ExitModeConflict
 from backend.utils.spot_config_guard import SpotConfigConflict
+
+
+class DiscoveryRoute(APIRoute):
+    """Keep Pydantic's input echo out of this credential-bearing endpoint only."""
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def safe_handler(request: Request):
+            try:
+                response = await handler(request)
+            except RequestValidationError:
+                response = JSONResponse(status_code=422, content={"detail": {
+                    "code": "invalid_request", "message": "Invalid model discovery request.", "retryable": False,
+                }})
+            except HTTPException as exc:
+                response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        return safe_handler
+
+
+discovery_router = APIRouter(route_class=DiscoveryRoute)
+
+
+@discovery_router.post("/provider-models/discover", response_model=ProviderDiscoveryResponse)
+async def discover_models(payload: ProviderDiscoveryRequest, _: dict = Depends(get_current_user)):
+    try:
+        return await discover_provider_models(payload)
+    except CatalogError as exc:
+        raise HTTPException(exc.status, exc.detail) from None
+
+
+router.include_router(discovery_router)
 
 
 def validate_prompt_name(name: str) -> None:
@@ -255,6 +295,8 @@ def delete_config(config_id: str, _: dict = Depends(get_current_user)):
         payload = delete_config_payload(config_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except SpotConfigConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"success": True, **payload}

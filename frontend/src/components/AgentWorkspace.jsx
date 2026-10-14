@@ -30,12 +30,13 @@ import DecisionMessages from './DecisionMessages';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
-import PositionCycleHistory from '../components/PositionCycleHistory';
+import PerformancePanel from '../components/PerformancePanel';
+import ManagementStatus, { ManagedResource } from './ManagementStatus';
 import ExitManagementPanel from '../components/ExitManagementPanel';
 import { EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
 import { chartTimeframeOptions, isChartTimeframe, activityRecordKey } from '../lib/dashboard';
-import { exitModeLabel, resolveExitMode } from '../lib/exitManagement';
+import { exitModeLabel, resolveExitMode, exitQuantityLabel } from '../lib/exitManagement';
 import { usePreferences } from '../app/usePreferences';
 import '../pages/DashboardPage.css';
 
@@ -348,10 +349,15 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   const isMobile = !screens.md;
   const agent = workspace?.agent;
   const position = workspace?.position || {};
+  const positionUnavailable = Boolean(position.error || position.position_complete === false || position.sync_status === 'partial'
+    || position.errors?.some((error) => String(error).includes('fetch_positions_failed')));
   const kline = workspace?.kline || {};
   const shortMemories = workspace?.short_memories?.short_memories || [];
   const recentOrders = workspace?.orders?.orders || [];
   const pendingOrders = kline?.pending_orders || [];
+  const ordersEmptyText = kline?.orders_complete === false
+    ? (locale === 'zh' ? '挂单读取不完整，不能确认无挂单。' : 'Order data is incomplete; no-orders status is unconfirmed.')
+    : t('noOpenOrders');
   const spotMode = isSpotMode(agent?.mode || position?.mode);
   const spotStats = position?.dca_stats || {};
   const chartSymbols = agent?.symbols?.length ? agent.symbols : [agent?.symbol].filter(Boolean);
@@ -545,6 +551,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
             )}
           </div>}
         </div>
+        {!spotMode && <ManagementStatus management={position.management} />}
         {spotMode ? (
           <div className="spot-account-summary">
             <FactGrid items={buildSpotFacts(t, spotStats, pendingOrders)} />
@@ -568,7 +575,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
             ) : null}
           </div>
         ) : activePositions.length === 0 ? (
-          <Text type="secondary">{t('noActivePositions')}</Text>
+          <Text type={positionUnavailable ? 'warning' : 'secondary'}>{positionUnavailable ? (locale === 'zh' ? '仓位读取不完整，不能确认空仓。' : 'Position data is incomplete; flat exposure is not confirmed.') : t('noActivePositions')}</Text>
         ) : hasDualPosition ? (
           <div className="dual-position-grid">
             {activePositions.map((pos, idx) => (
@@ -587,11 +594,12 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
                   </Space>
                 </div>
                 <FactGrid items={buildSinglePositionFacts(pos)} />
+                <ManagedResource resource={pos} />
               </div>
             ))}
           </div>
         ) : (
-          <FactGrid items={buildSinglePositionFacts(activePositions[0])} />
+          <Space direction="vertical" style={{ width: '100%' }}><FactGrid items={buildSinglePositionFacts(activePositions[0])} /><ManagedResource resource={activePositions[0]} /></Space>
         )}
         {!spotMode ? <ExitManagementPanel management={position.exit_management} hideEmpty={compact && activePositions.length === 0} /> : null}
       </Space>
@@ -728,10 +736,11 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   const ordersPanel = (
     <div className="workspace-grid">
       <Card className="panel-card" title={`${t('pendingOrders')} · ${displayedChartSymbol || ''}${compact ? ` (${pendingOrders.length})` : ''}`}>
-        {compact && !pendingOrders.length ? <Text type="secondary">{t('noOpenOrders')}</Text> : isMobile ? (
+        {kline?.orders_complete === false && <Alert type="warning" showIcon title={locale === 'zh' ? '部分订单通道不可用，以下只展示已读取的挂单。' : 'Some order channels are unavailable. Only retrieved orders are shown.'} style={{ marginBottom: 12 }} />}
+        {compact && !pendingOrders.length ? <Text type="secondary">{ordersEmptyText}</Text> : isMobile ? (
           <MobileRecordList
             items={pendingOrders}
-            emptyText={t('noOpenOrders')}
+            emptyText={ordersEmptyText}
             renderItem={(row) => (
               <Card
                 key={row.order_id || `${row.side}-${row.price}-${row.amount}`}
@@ -740,11 +749,13 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
                 title={row.side || '-'}
                 extra={<Tag>{row.type || '-'}</Tag>}
               >
+                <ManagedResource resource={row} />
                 <FactGrid
                   items={[
                     { label: t('price'), value: <CopyNumber value={row.price} /> },
                     ...(row.trigger_price > 0 ? [{ label: t('triggerPrice'), value: <CopyNumber value={row.trigger_price} /> }] : []),
-                    { label: t('amount'), value: <CopyNumber value={row.amount} /> },
+                    { label: t('amount'), value: row.quantity_mode === 'all' ? exitQuantityLabel(row, 'amount', locale) : <CopyNumber value={row.amount} /> },
+                    ...('remaining' in row ? [{ label: locale === 'zh' ? '剩余数量' : 'Remaining', value: exitQuantityLabel(row, 'remaining', locale) }] : []),
                     ...(row.take_profit ? [{ label: 'TP', value: <CopyNumber value={row.take_profit} /> }] : []),
                     ...(row.stop_loss ? [{ label: 'SL', value: <CopyNumber value={row.stop_loss} /> }] : []),
                     { label: t('status'), value: row.status || 'OPEN' },
@@ -769,9 +780,10 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
               ]} />,
               rowExpandable: (row) => Boolean(row.reason || row.order_id),
             } : undefined}
-            locale={{ emptyText: <Empty description={t('noOpenOrders')} /> }}
+            locale={{ emptyText: <Empty description={ordersEmptyText} /> }}
             columns={[
               { title: t('side'), dataIndex: 'side' },
+              { title: locale === 'zh' ? '来源与管理' : 'Source and management', width: 240, render: (_, row) => <ManagedResource resource={row} /> },
               {
                 title: t('type'),
                 dataIndex: 'type',
@@ -788,7 +800,8 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
                 dataIndex: 'trigger_price',
                 render: (value) => (value > 0 ? <CopyNumber value={value} /> : '-'),
               }] : []),
-              { title: t('amount'), dataIndex: 'amount', render: (value) => <CopyNumber value={value} /> },
+              { title: t('amount'), dataIndex: 'amount', render: (value, row) => row.quantity_mode === 'all' ? exitQuantityLabel(row, 'amount', locale) : <CopyNumber value={value} /> },
+              ...(pendingOrders.some((row) => 'remaining' in row) ? [{ title: locale === 'zh' ? '剩余数量' : 'Remaining', render: (_, row) => exitQuantityLabel(row, 'remaining', locale) }] : []),
               ...(!compact || pendingOrders.some((row) => row.take_profit) ? [{ title: 'TP', dataIndex: 'take_profit', render: (value) => (value ? <CopyNumber value={value} /> : '-') }] : []),
               ...(!compact || pendingOrders.some((row) => row.stop_loss) ? [{ title: 'SL', dataIndex: 'stop_loss', render: (value) => (value ? <CopyNumber value={value} /> : '-') }] : []),
               { title: t('status'), dataIndex: 'status', render: (value) => value || 'OPEN' },
@@ -826,7 +839,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
           {
             key: 'history', label: locale === 'zh' ? '交易记录' : 'Trade history',
             children: <div className="agent-view-stack">
-              {authenticated && !spotMode ? <PositionCycleHistory key={agent.config_id} configId={agent.config_id} /> : null}
+              {authenticated && !spotMode ? <PerformancePanel key={agent.config_id} configId={agent.config_id} /> : null}
               {recentOrdersPanel}
             </div>,
           },
@@ -840,7 +853,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
       {chartPanel}
       {decisionPanel}{summaryPanel}
       {positionPanel}
-      {authenticated && !spotMode ? <PositionCycleHistory key={agent.config_id} configId={agent.config_id} /> : null}
+      {authenticated && !spotMode ? <PerformancePanel key={agent.config_id} configId={agent.config_id} /> : null}
       {memoryPanel}{ordersPanel}{recentOrdersPanel}
     </Space>
   );

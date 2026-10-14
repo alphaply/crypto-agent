@@ -20,20 +20,39 @@ def owned_symbols(conn, profile):
 def active_lifecycle(conn, profile, symbols=None, *, excluded_symbols=None):
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     config_id = 'mcp:' + profile['profile_id']
-    if 'mcp_operations' in tables and conn.execute(
-        "SELECT 1 FROM mcp_operations WHERE profile_id=? AND state IN ('started','unknown','pending') LIMIT 1",
-        (profile['profile_id'],),
-    ).fetchone():
-        return True
-    if 'trade_action_runs' in tables and conn.execute(
-        "SELECT 1 FROM trade_action_runs WHERE config_id=? AND status IN ('running','unknown','pending') LIMIT 1", (config_id,),
-    ).fetchone():
-        return True
+    from backend.utils.visible_management import retired_management_resources
+    retired = retired_management_resources(config_id, profile.get('market_type', 'swap'))
+    transferred_operations = {r[0] for r in conn.execute('SELECT operation_id FROM management_recovery_grants WHERE source_owner=?',
+                                                         (config_id,))} if 'management_recovery_grants' in tables else set()
     def affected(symbol):
         canonical = str(symbol).split(':')[0]
+        resource = canonical.split('/')[0] if profile.get('market_type') == 'spot' else str(symbol)
+        if resource in retired:
+            return False
         if excluded_symbols is not None and canonical in {value.split(':')[0] for value in excluded_symbols}:
             return False
         return symbols is None or canonical in {value.split(':')[0] for value in symbols}
+    if 'mcp_operations' in tables:
+        for row in conn.execute("SELECT operation_id,state FROM mcp_operations WHERE profile_id=? AND state IN ('started','unknown','pending')", (profile['profile_id'],)):
+            links = list(conn.execute('SELECT symbol,internal_operation_id FROM mcp_operation_links WHERE profile_id=? AND operation_id=?',
+                                      (profile['profile_id'], row['operation_id']))) if 'mcp_operation_links' in tables else []
+            if (row['state'] == 'started' or not links or
+                    any(affected(link['symbol']) or link['internal_operation_id'] not in transferred_operations for link in links)):
+                return True
+    if 'trade_action_runs' in tables:
+        for row in conn.execute("SELECT operation_id,symbol,status FROM trade_action_runs WHERE config_id=? AND status IN ('running','unknown','pending')", (config_id,)):
+            if row['status'] == 'running' or affected(row['symbol']) or row['operation_id'] not in transferred_operations:
+                return True
+    if 'position_management_actions' in tables:
+        for row in conn.execute("SELECT symbol FROM position_management_actions WHERE owner=? "
+                                "AND state IN ('running','unresolved','pending','unknown')", (config_id,)):
+            if affected(row['symbol']):
+                return True
+    if 'position_management_scopes' in tables:
+        from backend.utils.position_management import _scope_active
+        for row in conn.execute('SELECT * FROM position_management_scopes WHERE owner=?', (config_id,)):
+            if affected(row['symbol']) and _scope_active(conn, dict(row)):
+                return True
     if 'real_protection_plans' in tables:
         for row in conn.execute('SELECT symbol,payload FROM real_protection_plans WHERE config_id=?', (config_id,)):
             if affected(row['symbol']) and json.loads(row['payload']).get('state') != 'DONE':
@@ -75,6 +94,8 @@ def active_lifecycle(conn, profile, symbols=None, *, excluded_symbols=None):
 def assert_profile_transition(conn, previous, updated):
     if not previous:
         return
+    from backend.utils.position_management import assert_configuration_claims
+    assert_configuration_claims(conn, 'mcp:' + previous['profile_id'], updated)
     previous_all = previous.get('symbol_scope', 'selected') == 'all'
     updated_all = updated.get('symbol_scope', 'selected') == 'all'
     before_symbols = {value.split(':')[0] for value in previous.get('symbols') or []}

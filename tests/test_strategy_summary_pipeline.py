@@ -220,7 +220,9 @@ def test_custom_prompt_without_placeholder_still_receives_complete_source(local_
 
 def test_decision_summary_memory_order_and_dashboard_evidence(local_db, monkeypatch):
     from types import SimpleNamespace
+    from backend.agent import context_projections as projections
     from backend.agent.memory_updates import process_memory_update
+    from backend.agent.strategy_material import strategy_material
     from backend.app.services import dashboard_service
 
     events = []
@@ -235,17 +237,38 @@ def test_decision_summary_memory_order_and_dashboard_evidence(local_db, monkeypa
             return AIMessage(content='Keep waiting; the existing order is unverified.')
     monkeypatch.setattr(agent_graph, 'build_chat_model', lambda **_: Model())
     cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL', 'model': 'decision-model'}
+    monkeypatch.setattr(agent_graph.global_config, 'get_config_by_id', lambda cid: cfg if cid == 'cfg' else None)
+    monkeypatch.setattr(agent_graph.global_config, 'get_exchange_credentials',
+                        lambda **_: ('binance', 'summary-fixture-key', '', 'swap'))
     agent_graph.finalize_node(state_with(messages), {'configurable': {
         'config_id': 'cfg', 'agent_config': cfg, 'run_id': 'ordered-run',
     }})
     assert events == ['strategy_summary']
+    prior_strategy = 'Prior strategy: support at 2385; reassess after CPI.'
+    new_strategy = 'Wait for the four-hour close or CPI reaction; reassess above 2565.'
+
     def memory_model(source, *args, **kwargs):
         events.append('memory_review')
-        assert 'Keep waiting; the existing order is unverified.' in source
-        assert 'verify existing order' in source
-        assert 'prior memory' in source
-        return 'New memory: reconcile the existing order before further actions.'
-    database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg', 'prior memory', '', 1)
+        assert 'Keep waiting;' in source
+        assert 'Prior strategy: support at 2385;' in source
+        assert 'reassess after CPI.' in source
+        for diagnostic in ('unverified', 'verify existing order', 'unknown',
+                           'Verified historical evidence', 'execution_results'):
+            assert diagnostic not in source
+        context = projections.prepare_review('cfg')
+        metadata = projections.validate_review(
+            {'summary': new_strategy, 'memory': {'strategy_text': new_strategy},
+             'projections': []}, context)
+        memory_service._projection_metadata.set(metadata)
+        return new_strategy
+
+    database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg', prior_strategy, '', 1)
+    context = projections.prepare_review('cfg')
+    published = {'summary': prior_strategy, 'memory': {'strategy_text': prior_strategy},
+                 'projections': [{**{key: item[key] for key in ('source_kind', 'source_id', 'source_hash')},
+                                  'strategy_text': strategy_material(item['text'])}
+                                 for item in context['sources']]}
+    projections.persist_projections('cfg', projections.validate_review(published, context))
     monkeypatch.setattr(memory_service, 'organize_memory', memory_model)
     monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: 'Verified historical evidence')
     assert process_memory_update('cfg', 'ordered-run', cfg)
@@ -259,6 +282,9 @@ def test_decision_summary_memory_order_and_dashboard_evidence(local_db, monkeypa
     assert agent['strategy_logic'] == 'Keep waiting; the existing order is unverified.'
     assert [entry['role'] for entry in agent['decision']['messages']] == ['assistant', 'tool', 'assistant']
     assert agent['decision']['execution_results'][0]['status'] == 'unknown'
+    assert json.loads(agent['decision']['execution_results'][0]['result']) == {
+        'status': 'unknown', 'detail': 'verify existing order'}
     assert agent['memory_update']['status'] == 'completed'
     assert 'report' not in agent and 'report_json' not in agent
     assert database.get_short_memories('cfg', 1)[0]['run_id'] == 'ordered-run'
+    assert memory_service.format_short_memory_for_llm('cfg') == new_strategy

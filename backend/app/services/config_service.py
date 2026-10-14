@@ -232,9 +232,15 @@ def save_config_payload(
     normalized_agents_payload = []
     for agent_payload in agents_payload or []:
         config_id = str(agent_payload.get("config_id") or "agent")
-        agent_payload = normalize_agent_market_settings(agent_payload)
+        agent_payload = dict(agent_payload)
         previous = global_config.get_config_by_id(config_id)
         if previous:
+            for field in ('position_management_policy', 'management_scopes'):
+                if agent_payload.get(field) is None and previous.get(field) is not None:
+                    if field == 'management_scopes' and agent_payload.get('position_management_policy') == 'strict_owned':
+                        agent_payload[field] = []
+                        continue
+                    agent_payload[field] = previous[field]
             # Omitted fields preserve the policy of existing clients/configurations.
             for field in ('run_interval', 'market_profile', 'market_timeframes'):
                 if agent_payload.get(field) is None and previous.get(field) is not None:
@@ -251,6 +257,7 @@ def save_config_payload(
                     agent_payload['market_profile'] = 'hourly'
             if agent_payload.get("exit_mode") is None:
                 agent_payload["exit_mode"] = "attached_required"
+        agent_payload = normalize_agent_market_settings(agent_payload)
         effective_exit_mode(agent_payload)
         _validate_market_timeframes(
             agent_payload.get("market_timeframes"),
@@ -361,7 +368,19 @@ def full_import_payload(data: dict, write_env: bool = False) -> dict:
     data['agents'], data['exchange_profiles'] = _upgrade_legacy_spot_profiles(
         data.get('agents') or [], data.get('exchange_profiles') or [],
     )
-    data['agents'] = [normalize_agent_market_settings(agent) for agent in data['agents']]
+    restored_agents = []
+    for raw in data['agents']:
+        raw = dict(raw)
+        previous = global_config.get_config_by_id(raw.get('config_id'))
+        if previous:
+            for field in ('position_management_policy', 'management_scopes', 'exit_mode'):
+                if raw.get(field) is None and previous.get(field) is not None:
+                    if field == 'management_scopes' and raw.get('position_management_policy') == 'strict_owned':
+                        raw[field] = []
+                        continue
+                    raw[field] = previous[field]
+        restored_agents.append(normalize_agent_market_settings(raw))
+    data['agents'] = restored_agents
     _validate_removed_spot_configs(data['agents'])
     _validate_market_timeframes((data.get('app_settings') or {}).get('market_timeframes'), field_name='market_timeframes')
     for agent in data.get('agents') or []:
@@ -449,10 +468,15 @@ def delete_config_payload(config_id: str):
     cleanup_result = {}
 
     def cleanup_deleted_task(conn):
+        from backend.config_store import load_runtime_snapshot
+        from backend.utils.position_management import synchronize_configuration
+        # Check still-present execution evidence before cleanup could erase it.
+        synchronize_configuration(conn, load_runtime_snapshot(connection=conn) or {})
         cleanup_result.update(purge_config_all_data(config_id, connection=conn))
 
-    # Explicit deletion discards local task ownership/history. It does not change
-    # the trading account, liquidate holdings, or cancel exchange orders. Keep the
+    # Explicit deletion removes disposable local task history. Original facts
+    # referenced by accepted handoffs remain for the receiver's recovery. It does
+    # not liquidate holdings or cancel exchange orders. Keep the
     # switch/removal guard on ordinary saves/imports, and commit the config plus
     # cleanup together so a failed save cannot leave an active task without data.
     save_runtime_snapshot(
