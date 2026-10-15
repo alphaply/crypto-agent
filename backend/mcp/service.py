@@ -799,10 +799,8 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         remaining('reservation')
         previous = store.reserve_operation(profile_id, operation_id, caller['id'], request)
         if previous is not None:
-            if tool_name == 'adopt_position_real' and previous.get('status') in {'unknown', 'pending', 'started'}:
-                previous = _recover_adoption_receipt(caller, profile_id, operation_id, symbol) or previous
-            else:
-                previous = _recover_trade_receipt(caller, profile_id, operation_id) or previous
+            # A financial replay returns saved evidence. Background recovery
+            # and the authorized operation view own subsequent exchange reads.
             store.audit_safely(caller['id'], tool_name, 'replayed', profile_id=profile_id, operation_id=operation_id)
             return sanitize(previous, profile_id)
         reserved = True

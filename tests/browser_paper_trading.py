@@ -48,6 +48,8 @@ def exercise(browser, width, locale):
     page.route('**/api/**', handle)
     page.goto(f'http://127.0.0.1:18973/tests/paper-fixture.html?locale={locale}')
     title = 'QQBot 模拟交易 · Paper' if zh else 'QQBot paper trading'
+    expect(page.get_by_text(title, exact=True)).to_have_count(0)
+    page.get_by_role('tab', name='QQBot · Paper', exact=True).click()
     panel = page.locator('.ant-card').filter(has=page.get_by_text(title, exact=True))
     expect(panel.get_by_text('123456', exact=True).first).to_be_visible()
     panel.get_by_role('button', name='创建 Paper Key' if zh else 'Create paper key', exact=True).click()
@@ -71,6 +73,10 @@ def exercise(browser, width, locale):
     expect(field.get_by_role('spinbutton')).to_have_value('2000')
     expect(panel.get_by_role('button', name='保存模拟交易设置' if zh else 'Save paper settings', exact=True)).to_be_enabled()
     assert cfg['initial_balance'] == 2000
+    page.get_by_role('tab', name='MCP', exact=True).click()
+    expect(panel).not_to_be_visible()
+    page.get_by_role('tab', name='QQBot · Paper', exact=True).click()
+    expect(field.get_by_role('spinbutton')).to_have_value('2000')
     output = Path('docs/screenshots')
     output.mkdir(parents=True, exist_ok=True)
     data_panel = panel.locator('.ant-card').filter(has=page.get_by_text('模拟盘数据 · 持仓 / 委托 / 排行 / 事件' if zh else 'Paper data · positions / orders / ranking / events', exact=True))

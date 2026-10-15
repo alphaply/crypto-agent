@@ -29,47 +29,61 @@ def save_short_memory(*args, **kwargs):
 
 
 def format_recent_position_history_for_memory(config_id: str, agent_config: dict) -> str:
-    """Historical ledgers are on-demand evidence, never consolidation input."""
-    return ''
+    """Restore only the old seven-day closed-position/fill evidence."""
+    from backend import database
+    symbol = agent_config.get('symbol', '')
+    mode = str(agent_config.get('mode') or 'STRATEGY').upper()
+    if mode not in {'REAL', 'STRATEGY'}:
+        return ''
+    lines = [f"证据读取时间：{datetime.now(TZ_CN).strftime('%Y-%m-%d %H:%M:%S %Z')}"]
+    try:
+        rows = database.get_closed_positions_7d(config_id, symbol=symbol, days=7, mode=mode)
+        lines.append(database.format_closed_positions_summary(rows, days=7))
+    except Exception:
+        logger.exception('Seven-day closed positions unavailable for %s', config_id)
+        lines.append('7天平仓记录读取失败，不能据此断言没有交易或收益为零。')
+    if mode == 'REAL':
+        from backend.utils.execution_ledger import recent_activity_summary
+        try:
+            lines.append(recent_activity_summary(config_id, symbol))
+        except Exception:
+            logger.exception('Seven-day fills unavailable for %s', config_id)
+            lines.append('最近7天成交活动暂不可用，不能据此断言历史完整。')
+    return '\n'.join(lines)
 
 
 def format_memory_evidence(evidence: str) -> str:
-    # Compatibility entry point: performance and ledgers have explicit detail APIs.
-    return ''
+    return ('\n\n最近7天操作记录（成交/平仓，不是实时持仓；缺失事实不补零）：\n' + evidence) if evidence else ''
 
 
-def organize_memory(source: str, agent_config: dict, *, operation_id: str) -> str:
+def build_memory_input(rows, previous: str, evidence: str, beginning: str, end: str) -> str:
+    entries = [f"[{row['timestamp']}] {row['strategy_logic']}" for row in rows if row['strategy_logic']]
+    return (f'过去4h滚动窗口：{beginning} → {end}\n上一轮短期记忆：\n{previous}'
+            + '\n本轮及前4h策略压缩摘要：\n' + '\n'.join(entries) + format_memory_evidence(evidence))
+
+
+def organize_memory(source: str, agent_config: dict, *, operation_id: str, source_metadata=None) -> str:
     """Consolidate short-term memory; automatic rule maintenance is suspended."""
     from backend.agent.memory_agent import run_memory_review
-    from backend.agent.context_projections import persist_projections
+    from backend.agent.context_projections import capture_sources
 
-    from backend.agent.strategy_material import strategy_material
-    source = strategy_material(source) or '暂无有效策略素材。'
     _projection_metadata.set(None)
     stored = get_review_result(operation_id)
-    from backend.agent.context_projections import VERSION
-    from backend.agent.strategy_material import validate_strategy_text
-    compatible = stored and (stored['status'] == 'partial' or
-        (not stored.get('projection_metadata') and validate_strategy_text(stored.get('summary', ''))) or
-        (stored.get('projection_metadata') or {}).get('projection_version') == VERSION)
-    if stored and not compatible:
-        operation_id += f':strategy-v{VERSION}'
-        stored = get_review_result(operation_id)
     if stored:
         verify_memory_lease()
         if stored['config_id'] != agent_config['config_id']:
             raise MemoryReviewError('Memory operation belongs to another task')
         metadata = stored.get('projection_metadata') or {}
-        persist_projections(agent_config['config_id'], metadata)
         _projection_metadata.set(metadata)
         return stored['summary'] if stored['status'] == 'completed' else ''
+    captured = source_metadata if source_metadata is not None else capture_sources(agent_config['config_id'])
     result = run_memory_review(source, agent_config, operation_id=operation_id)
+    result.projection_metadata = captured
     if result.status in {'completed', 'partial'}:
         save_review_result(agent_config['config_id'], operation_id, result)
     if result.status == 'completed':
         verify_memory_lease()
         metadata = result.projection_metadata
-        persist_projections(agent_config['config_id'], metadata)
         _projection_metadata.set(metadata)
         return result.summary
     logger.warning('Memory review %s: %s', result.status, result.error)
@@ -82,17 +96,7 @@ def is_invalid_memory(summary: str, source_input: str) -> bool:
     text = str(summary or "").strip()
     if not text:
         return True
-    markers = (
-        "Window:",
-        "Symbol:",
-        "Previous rolling memory:",
-        "Previous short memory:",
-        "Recent strategy summaries:",
-        "Recent market/agent reasoning:",
-    )
-    if any(marker in text for marker in markers):
-        return True
-    return text.endswith("...") and source_input.startswith(text[:-3])
+    return False
 
 
 @serialized_memory_review
@@ -114,7 +118,8 @@ def generate_rolling_short_memory_for_config(
     # Stored decision timestamps have second precision. Include the current
     # second while excluding records beyond the requested review window.
     end_time = (now_cn + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
-    rows = get_summary_logic_between(config_id, since_time, end_time)
+    from backend.agent.context_projections import memory_summary_rows
+    rows = memory_summary_rows(config_id, get_summary_logic_between(config_id, since_time, end_time))
     if limit is not None:
         if limit < 1:
             raise ValueError('Rolling memory row limit must be positive')
@@ -122,23 +127,14 @@ def generate_rolling_short_memory_for_config(
     if not rows:
         return False
 
+    from backend.agent.context_projections import capture_sources
+    captured = capture_sources(config_id, summary_rows=rows)
     previous = format_short_memory_for_llm(config_id, limit=1)
-    source_text = "\n".join(
-        f"[{row.get('timestamp')}] {row.get('strategy_logic')}"
-        for row in rows
-        if row.get("strategy_logic")
-    )
-    memory_input = (
-        f"Window: last {hours}h\n"
-        f"Symbol: {target_config.get('symbol')}\n\n"
-        f"Previous rolling memory:\n{previous}\n\n"
-        f"Recent strategy summaries:\n{source_text}"
-    )
     pos_history_text = format_recent_position_history_for_memory(config_id, target_config)
-    memory_input += format_memory_evidence(pos_history_text)
+    memory_input = build_memory_input(rows, previous, pos_history_text, since_time, now_cn.strftime('%Y-%m-%d %H:%M:%S'))
     memory_summary = organize_memory(
         memory_input, {**target_config, 'config_id': config_id},
-        operation_id=f'rolling:{config_id}:{rows[-1].get("timestamp")}')
+        operation_id=f'rolling:{config_id}:{rows[-1].get("timestamp")}', source_metadata=captured)
     if is_invalid_memory(memory_summary, memory_input):
         logger.warning(f"Skip saving invalid rolling short memory for {config_id}.")
         return False

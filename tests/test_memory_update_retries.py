@@ -20,7 +20,10 @@ def job(tmp_path, monkeypatch):
     database.save_short_memory('2026-10-09 08:00:00', '2026-10-09 09:00:00', 'ETH/USDT', 'cfg', 'prior memory', '', 1)
     updates.enqueue_memory_update('cfg', 'run-1', summary_id)
     monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *args: 'Confirmed execution evidence')
-    return {'config_id': 'cfg', 'symbol': 'ETH/USDT'}
+    from backend.config import config
+    cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'STRATEGY'}
+    monkeypatch.setattr(config, 'get_config_by_id', lambda cid: cfg if cid == 'cfg' else None)
+    return cfg
 
 
 def state():
@@ -56,7 +59,7 @@ def test_successful_memory_update_runs_once_and_keeps_rolling_evidence(job, monk
     source = model.call_args.args[0]
     assert 'prior memory' not in source and source.count('new verified evidence') == 1
     assert 'prior memory' in database.get_short_memories('cfg', 10)[1]['market_summary']
-    assert 'Confirmed execution evidence' not in source
+    assert 'Confirmed execution evidence' in source
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'new dynamic memory'
 
 

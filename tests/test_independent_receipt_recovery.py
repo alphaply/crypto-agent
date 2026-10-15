@@ -210,7 +210,7 @@ def test_cancel_waits_for_own_terminal_fill_and_edit_for_successor(real_short):
     stop = call('close', dict(side='SHORT', order_type='stop_market', amount=1, trigger_price=110, reason='protect'), 'stop-cancel')
     exchange.missing_cancel_fill = True
     canceled = call('cancel', dict(order_id=stop['order_id'], reason='cancel'), 'cancel-op')
-    assert canceled['status'] == 'pending'
+    assert canceled['status'] == 'completed'  # Exchange cancellation ACK, independent of fill accounting.
     assert recover('cancel-op')['status'] == 'pending'
     exchange.orders[native_order_id(stop)]['filled'] = 0
     assert recover('cancel-op')['status'] == 'completed'

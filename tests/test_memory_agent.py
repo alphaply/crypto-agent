@@ -17,7 +17,7 @@ FINISH_AUDIT = memory._finish_audit
 
 
 def final(summary="样本不足；保留待确认条件。", conclusion="证据不足", reason="T1/T2窗口费用缺失。"):
-    return AIMessage(content=json.dumps({"summary": summary, "rule_review": conclusion, "reason": reason}, ensure_ascii=False),
+    return AIMessage(content=summary,
                      usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20})
 
 
@@ -83,7 +83,7 @@ def test_memory_only_one_call_no_rules_and_cost(environment, monkeypatch):
     assert result.summary == "样本不足；保留待确认条件。"
     assert len(fake.calls) == 1 and fake.tools == [] and result.rule_receipts == []
     supplied = fake.calls[0][-1].content
-    assert strategy_material(SOURCE) in supplied
+    assert SOURCE in supplied
     assert locked["rule_id"] not in supplied and disabled["rule_id"] not in supplied
     assert "当前完整规则" not in supplied
     assert environment == [{"symbol": "BTC/USDT", "config_id": "cfg", "model": "mock-model", "prompt_tokens": 12, "completion_tokens": 8}]
@@ -132,8 +132,8 @@ def test_long_memory_preserves_evidence_and_ignores_legacy_rule_reason(environme
     result = memory.run_memory_review(source, {**CONFIG, "summarizer": {"short_memory_prompt": "自定义整理格式"}}, operation_id="long")
     assert result.status == "completed"
     assert result.summary == summary
-    assert strategy_material(source) in fake.calls[0][-1].content and "自定义整理格式" in fake.calls[0][-1].content
-    assert "长期规则自动维护已暂停" in fake.calls[0][0].content
+    assert source in fake.calls[0][-1].content and "自定义整理格式" in fake.calls[0][-1].content
+    assert "不维护长期规则" in fake.calls[0][0].content
     assert "300–500字" in fake.calls[0][0].content and "不逐轮追加日志" in fake.calls[0][0].content
 
 
@@ -177,7 +177,7 @@ def test_top_level_memory_prompt_matches_editor_precedence(
     )
     assert result.status == "completed"
     supplied = fake.calls[0][-1].content
-    assert expected in supplied and strategy_material(SOURCE) in supplied
+    assert expected in supplied and SOURCE in supplied
     if top_prompt:
         assert "NESTED_INLINE" not in supplied
 
@@ -203,7 +203,7 @@ def test_memory_prompt_file_precedence_matches_strategy_summary(
     )
     assert result.status == "completed"
     supplied = fake.calls[0][-1].content
-    assert expected in supplied and strategy_material(SOURCE) in supplied
+    assert expected in supplied and SOURCE in supplied
     for marker in {"TOP_FILE", "NESTED_FILE", "NESTED_INLINE"} - {expected}:
         assert marker not in supplied
 
@@ -228,7 +228,7 @@ def test_actual_audit_includes_input_raw_output_and_no_rule_tools(environment, m
     assert result.summary == summary and reason not in result.summary
     assert latest["details"]["rule_receipts"] == result.rule_receipts
     assert latest["tools"] == []
-    assert strategy_material(source) in latest["messages"][1]["content"]
+    assert source in latest["messages"][1]["content"]
 
 
 def test_audit_unavailable_does_not_block_review(environment, monkeypatch):
@@ -271,8 +271,8 @@ def test_system_prompt_role_compatibility(environment, monkeypatch, summarizer, 
     assert result.status == "completed"
     assert isinstance(fake.calls[0][0], expected)
     if expected is HumanMessage:
-        assert len(fake.calls[0]) == 1 and strategy_material(SOURCE) in fake.calls[0][0].content
-        assert "长期规则自动维护已暂停" in fake.calls[0][0].content
+        assert len(fake.calls[0]) == 1 and SOURCE in fake.calls[0][0].content
+        assert "不维护长期规则" in fake.calls[0][0].content
     assert "system_prompt_role" not in fake.settings
 
 

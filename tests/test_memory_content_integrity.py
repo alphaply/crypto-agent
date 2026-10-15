@@ -135,13 +135,13 @@ def test_legacy_decision_sources_restore_full_saved_analysis_without_changing_hi
         rows = database.get_summary_logic_between('cfg', '2026-10-05 00:00:00', '2026-10-06 00:00:00')
     else:
         rows = database.get_pending_daily_summary_data('cfg', '2026-10-05')
-    assert len(rows) == len(records)
+    assert len(rows) == len(records) - (1 if reader == 'window' else 0)
     by_time = {row['timestamp']: row['strategy_logic'] for row in rows}
     restored = by_time[records[0][0]]
     if reader == 'window':
-        assert clipped_receipt not in restored and 'failed=1' not in restored
-        assert strategy_material(original) in restored
-        assert by_time[records[1][0]] == strategy_material(records[1][1])
+        assert restored == old_journal
+        assert by_time[records[1][0]] == records[1][1]
+        assert records[2][0] not in by_time  # No raw-analysis fallback in consolidation.
     else:
         assert clipped_receipt in restored
         assert '旧工具回执自身已被截断' in restored
@@ -191,7 +191,7 @@ def test_configured_model_summary_is_used_without_expanding_raw_analysis(memory_
         assert '【历史来源说明】' not in prompt
         return
     assert len(rows) == 1
-    assert rows[0]['strategy_logic'] == (strategy_material(compressed) if reader == 'window' else compressed)
+    assert rows[0]['strategy_logic'] == compressed
     assert '_source_content' not in rows[0] and 'content' not in rows[0]
 
 

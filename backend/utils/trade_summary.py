@@ -8,18 +8,18 @@ from backend.utils.trade_operations import _decode_receipt, tool_result_status
 SINGLE_RECEIPT_BYTES = 4096
 BATCH_RECEIPT_BYTES = 32768
 _IDENTITIES = {'operation_id', 'parent_operation_id', 'execution_operation_id', 'index', 'action',
-               'order_id', 'order_ids', 'previous_order_id', 'parent_order_id', 'execution_order_id', 'exchange_order_id',
+               'order_id', 'order_ids', 'accepted_order_ids', 'previous_order_id', 'parent_order_id', 'execution_order_id', 'exchange_order_id',
                'client_id', 'client_order_id', 'exit_id', 'oco_group', 'symbol', 'side', 'exchange_side', 'user_id', 'profile_id',
                'resource_id', 'cycle_id', 'episode_id'}
 _FACTS = {'contract_version', 'receipt_version', 'status', 'order_status', 'order_type', 'exchange_channel',
-          'market_type', 'exchange', 'quantity_mode', 'requested_amount', 'resolved_amount', 'filled_amount',
+          'market_type', 'exchange', 'quantity_mode', 'amount', 'requested_amount', 'resolved_amount', 'filled_amount',
           'remaining_amount', 'closed_amount', 'execution_amount', 'price', 'trigger_price', 'average_price',
           'fee', 'realized_pnl', 'edit_method', 'phase', 'submission_state', 'submitted', 'error_code',
           'reason_code', 'blocked_by_index', 'blocked_by_indices', 'depends_on', 'execution_policy',
           'partial_execution', 'rejected_by_user', 'reservation_change', 'reserved_cash', 'reserved_spot',
           'verified_at', 'observed_at', 'last_known_fill_at', 'last_known_filled_amount', 'pending',
           'stop_loss', 'take_profit', 'protection_state', 'persistence_pending', 'state', 'found',
-          'cash_after', 'debt_after', 'borrowed', 'repaid', 'debt', 'cash', 'margin', 'leverage',
+          'cash_after', 'debt_after', 'borrowed', 'repaid', 'bank_action', 'debt', 'cash', 'margin', 'leverage',
           'enabled', 'created', 'name', 'leaderboard_visible', 'notifications_enabled', 'markets',
           'replacement_status', 'previous_order_status', 'quantity_unit', 'filled_cost', 'avg_fill_price', 'filled_at',
           'adopted', 'protection_created',
@@ -239,3 +239,89 @@ def compact_trade_receipt(payload):
     if isinstance(projected.get('result'), dict):
         projected['result'] = _fit(projected['result'], SINGLE_RECEIPT_BYTES - 1024)
     return _fit(projected, SINGLE_RECEIPT_BYTES)
+
+
+def render_trade_receipt(payload) -> str:
+    """Model text only. Internal consumers retain the structured receipt."""
+    from backend.utils.trade_operations import _decode_receipt, tool_result_status
+    value = _decode_receipt(payload)
+    if not isinstance(value, dict):
+        return str(value)
+    # MCP and compatibility tools wrap their structured result once more.
+    while 'results' not in value and 'result' in value and not value.get('action'):
+        nested = _decode_receipt(value['result'])
+        if not isinstance(nested, dict):
+            break
+        value = nested
+    rows = value.get('results') if isinstance(value.get('results'), list) else [value]
+    lines = []
+    for index, row in enumerate(rows):
+        receipt = _decode_receipt(row.get('result', row))
+        if not isinstance(receipt, dict):
+            receipt = {'message': str(receipt)}
+        receipt = {**row, **receipt}
+        paper_order = _paper_order(receipt.get('order'))
+        if paper_order:
+            receipt = {**receipt, **paper_order}
+        action = row.get('action') or receipt.get('action') or receipt.get('bank_action') or '操作'
+        status = row.get('status') or tool_result_status(receipt)
+        identity = receipt.get('order_id') or receipt.get('exchange_order_id') or receipt.get('id')
+        target = str(identity) if identity else str(receipt.get('symbol') or '')
+        order_ids = list(receipt.get('order_ids') or [])
+        for field in ('orders', 'protection_orders'):
+            for order in receipt.get(field) or []:
+                if isinstance(order, dict):
+                    order_id = order.get('order_id') or order.get('id')
+                    if order_id:
+                        order_ids.append(str(order_id))
+        if order_ids:
+            target = ' '.join(filter(None, [target, '订单 ' + ' / '.join(dict.fromkeys(map(str, order_ids)))]))
+        facts = []
+        if receipt.get('amount') is None and receipt.get('requested_amount') is not None:
+            receipt['amount'] = receipt['requested_amount']
+        for key, label in [('side', ''), ('amount', '数量'), ('price', '价格'), ('trigger_price', '触发价'),
+                           ('stop_loss', '止损'), ('take_profit', '止盈')]:
+            if receipt.get(key) is not None:
+                facts.append(label + str(receipt[key]))
+        if receipt.get('quantity_mode') == 'all':
+            facts.append('全部仓位')
+        if receipt.get('filled_amount') is not None:
+            facts.append('已成交数量' + str(receipt['filled_amount']))
+        if receipt.get('bank_action'):
+            facts = [fact for fact in facts if not fact.startswith('已成交数量')]
+        error = receipt.get('error') or receipt.get('message') or receipt.get('reason_code') or value.get('error')
+        reason = _small_text(error) if error else ''
+        if reason and 'Ownership evidence indexing incomplete' in reason:
+            reason = '持仓归属证据同步未完成，未提交'
+        if status == 'submitted':
+            outcome = '提交成功'
+        elif status == 'completed':
+            outcome = ('订单已成交，无需撤单' if action == 'cancel' and receipt.get('order_status') in {'filled', 'closed'}
+                       else '撤单成功' if action == 'cancel' else '成功')
+        elif status in {'unknown', 'pending', 'running'}:
+            outcome = '请求失败。原因：' + (reason or '未取得确定接口响应') + '；提交结果未知，请勿重复提交'
+        elif status == 'not_executed':
+            outcome = '未执行。原因：' + (reason or '前序操作失败或结果未确认')
+        elif status == 'skipped':
+            outcome = '未执行。原因：' + (reason or '无需执行')
+        else:
+            outcome = '失败。原因：' + (reason or '接口未返回成功结果')
+        # Cancel-replace is two effects: never hide the completed cancellation.
+        if action == 'edit' and receipt.get('edit_method') == 'cancel_replace':
+            previous = receipt.get('previous_order_id')
+            if previous:
+                target = f'旧单 {previous}' + (f' → 新单 {identity}' if identity and str(identity) != str(previous) else '')
+            if receipt.get('previous_order_status') in {'canceled', 'cancelled'}:
+                outcome = '撤旧成功；替代下单' + outcome
+        if receipt.get('accepted_order_ids') and status in {'failed', 'unknown', 'pending'}:
+            outcome += '；已受理保护单：' + ' / '.join(str(item) for item in receipt['accepted_order_ids'])
+        line = f"{index + 1}. {action}：{' '.join([target, *facts]).strip()}，{outcome}。"
+        if len(line.encode('utf-8')) > SINGLE_RECEIPT_BYTES:
+            raise ValueError('Receipt exceeds model text budget; full evidence retained')
+        lines.append(line)
+    if isinstance(value.get('account_summary'), dict):
+        lines.append('账户摘要：' + json.dumps(_project(value)['account_summary'], ensure_ascii=False))
+    result = '\n'.join(lines)
+    if len(result.encode('utf-8')) > BATCH_RECEIPT_BYTES:
+        raise ValueError('Batch exceeds model text budget; full evidence retained')
+    return result

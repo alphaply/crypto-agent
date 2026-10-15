@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 import re
 from string import Formatter
 
-from backend.database import get_recent_summary_logic, get_short_memories
 from backend.utils.logger import setup_logger
 from backend.utils.prompt_utils import render_prompt
 
@@ -15,8 +14,12 @@ def format_short_memory_text(config_id: str, limit: int = 1) -> str:
 
 
 def format_short_memory_for_llm(config_id: str, limit: int = 1, *, include_metadata: bool = False) -> str:
-    from backend.agent.context_projections import memory_view_rows
-    memories = memory_view_rows(get_short_memories(config_id, limit=limit))
+    from backend.agent.context_projections import stored_sources
+    from backend.utils.trade_evidence import configured_account_scope
+    sources = stored_sources(config_id, configured_account_scope(config_id),
+                             'short_memory', status='ready', limit=max(1, int(limit or 1)))
+    memories = [{**source['row'], 'market_summary': source['projection']['strategy_text']}
+                for source in sources]
     entries = [
         (f"[覆盖 {item.get('window_start') or item.get('bucket_start')} → {item.get('window_end') or item.get('bucket_end')}；更新 {item.get('created_at')}]\n" if include_metadata else '')
         + str(item.get('market_summary') or '').strip()

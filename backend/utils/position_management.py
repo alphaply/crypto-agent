@@ -19,7 +19,6 @@ from backend.utils.management_policy import canonical_symbol, exclusive, normali
 _in_action = ContextVar('exclusive_management_action', default=None)
 _in_discovery = ContextVar('exclusive_management_discovery', default=False)
 _discovery_guard = threading.Lock()
-_discovery_locks = {}
 _discovery_success = {}
 
 
@@ -342,8 +341,9 @@ def ensure_managed(service, symbol, side=None):
         return
     key = (service.account_scope, canonical_symbol(symbol))
     observation_key = (*key, service.config_id, side)
+    from backend.utils.position_protection import _lock
+    lock = _lock(service.account_scope)
     with _discovery_guard:
-        lock = _discovery_locks.setdefault(key, threading.Lock())
         generation = _discovery_success.get(observation_key, 0)
     from backend.mcp.resilience import remaining
     waited = not lock.acquire(blocking=False)
@@ -714,6 +714,12 @@ def cleanup_previous_orders(service, symbol):
 
 
 def recover_reservations(service, symbol):
+    from backend.utils.position_protection import _lock
+    with _lock(service.account_scope):
+        return _recover_reservations(service, symbol)
+
+
+def _recover_reservations(service, symbol):
     """Observe original identities, never replay writes or release by lease age."""
     if _in_action.get():
         return 0
@@ -831,6 +837,7 @@ def recover_reservations(service, symbol):
 def action_reservation(service, symbol, side, operation_id):
     from backend.database import get_db_conn
     from backend.utils.management_lock import scope_file_lock
+    from backend.utils.position_protection import _lock
     active = _in_action.get()
     if active:
         if active['account_scope'] != service.account_scope or active['symbol'] != symbol or active['side'] not in {side, 'BOTH'}:
@@ -844,7 +851,7 @@ def action_reservation(service, symbol, side, operation_id):
     if not isinstance(mode, dict) or type(mode.get('hedged')) is not bool:
         raise ValueError('Position mode is unavailable for financial coordination')
     scope_side = side if mode['hedged'] else 'BOTH'
-    with scope_file_lock(service.account_scope, symbol, scope_side):
+    with _lock(service.account_scope), scope_file_lock(service.account_scope, symbol, scope_side):
         with get_db_conn() as conn:
             conn.execute('BEGIN IMMEDIATE')
             old = conn.execute("SELECT * FROM position_management_actions WHERE account_scope=? AND symbol=? "
@@ -926,7 +933,14 @@ def managed_action(function):
             if completion is not None:
                 completion['unknown'] = tool_result_status(result) == 'unknown'
             return result
-    return wrapped
+    @wraps(function)
+    def coordinated(service, symbol, *args, **kwargs):
+        from backend.utils.position_protection import _lock
+        # Discovery, admission and the financial callback share one snapshot
+        # boundary. Always acquire this before a cross-process scope lock.
+        with _lock(service.account_scope):
+            return wrapped(service, symbol, *args, **kwargs)
+    return coordinated
 
 
 # Public management APIs deliberately share one implementation for the UI,
@@ -989,6 +1003,12 @@ def _ensure_visible_management(market_tool, symbol, side=None, *, operation_id=N
 
 
 def ensure_visible_management(market_tool, symbol, side=None, *, operation_id=None, discover=False):
+    from backend.utils.position_protection import _lock
+    with _lock(_legacy_scope_for_tool(market_tool)):
+        return _ensure_visible_coordinated(market_tool, symbol, side, operation_id=operation_id, discover=discover)
+
+
+def _ensure_visible_coordinated(market_tool, symbol, side=None, *, operation_id=None, discover=False):
     previous = getattr(market_tool, 'runtime_config', {}) or {}
     if discover and previous.get('enabled') is False:
         market_tool.runtime_config = {**previous, '_management_maintenance': True}
@@ -1023,6 +1043,14 @@ def discover_management_symbols(market_tool, config):
 
 @contextmanager
 def management_action(market_tool, symbol, side, operation_id, *, automatic=True, order_id=None):
+    from backend.utils.position_protection import _lock
+    with _lock(_legacy_scope_for_tool(market_tool)):
+        with _management_action(market_tool, symbol, side, operation_id, automatic=automatic, order_id=order_id) as claim:
+            yield claim
+
+
+@contextmanager
+def _management_action(market_tool, symbol, side, operation_id, *, automatic=True, order_id=None):
     from backend.utils.visible_management import financial_reservation, _active_management
     cfg = getattr(market_tool, 'runtime_config', {}) or {}
     if str(cfg.get('mode', '')).upper() == 'STRATEGY':

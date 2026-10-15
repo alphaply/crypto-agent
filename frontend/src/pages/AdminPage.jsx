@@ -53,10 +53,10 @@ const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 const { useBreakpoint } = Grid;
 const ADMIN_TAB_STORAGE_KEY = 'crypto-agent-admin-active-tab';
-const ADMIN_TAB_KEYS = ['tasks', 'intelligence', 'providers', 'exchanges', 'mcp', 'memory', 'runtime', 'agent-runs', 'prompts', 'database', 'importexport'];
+const ADMIN_TAB_KEYS = ['tasks', 'intelligence', 'providers', 'exchanges', 'mcp', 'paper', 'memory', 'runtime', 'agent-runs', 'prompts', 'database', 'importexport'];
 
 const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩为100–200字、最多4条短句的中文策略摘要。合并重复分析，保留趋势判断、关键价位、风险点、持仓/挂单意图、实际执行结果和下一步条件。不要为字数目标截断条件或结果。只输出摘要文本。\n\n内容：\n{content}';
-const DEFAULT_SHORT_MEMORY_PROMPT = '请将旧记忆与新证据合并为最新状态，目标300–500字、最多6条短项。替换过时内容，合并重复项，保留有效条件、实际结果与待核验问题，不逐轮追加日志，不为字数目标截断必要条件。以下是提供的证据：\n{content}';
+const DEFAULT_SHORT_MEMORY_PROMPT = '请将上一轮记忆、最近4小时含本轮的策略压缩摘要及旧版7天操作记录整理为一份纯文本摘要，不输出JSON、不另取新闻。目标300–500字，保留近期操作、策略思路、关键价位和教训，合并重复项，不硬截断。素材：\n{content}';
 
 const DEFAULT_PROMPT_FILE_CONTENT = `Role: Crypto trading strategy analyst
 Time: {current_time}
@@ -1720,6 +1720,7 @@ export default function AdminPage() {
             ),
           },
           { key: 'mcp', label: 'MCP', children: <McpSettingsPanel profiles={persistedProfiles} /> },
+          { key: 'paper', label: 'QQBot · Paper', children: <McpSettingsPanel profiles={persistedProfiles} section="paper" /> },
           {
             key: 'memory',
             label: t('memoryCenter'),

@@ -34,6 +34,8 @@ def local_db(tmp_path, monkeypatch):
         conn.execute("INSERT INTO summaries(timestamp,config_id,strategy_logic) VALUES('2026-10-06 09:00:00','cfg','new evidence')")
         conn.commit()
     monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [CONFIG])
+    monkeypatch.setattr(agent_graph.global_config, 'get_config_by_id', lambda cid: CONFIG if cid == 'cfg' else None)
+    monkeypatch.setattr(agent_graph.global_config, 'get_exchange_credentials', lambda **_: ('binance', 'offline-key', '', ''))
     monkeypatch.setattr(memory_service, 'datetime', ReviewClock)
     monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: EVIDENCE)
     # Every paid boundary is mocked, including paths expected never to reach it.

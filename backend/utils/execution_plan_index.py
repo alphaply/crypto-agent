@@ -255,7 +255,7 @@ def _advance_index(ledger):
                 for owner in owners:
                     result = rebuild_execution_position_history(owner[0], ledger.scope, ledger.symbol)
                     if result.get('complete') is False:
-                        return {'complete': False, 'phase': 'history', 'processed': processed, 'error': result.get('error')}
+                        return {'complete': False, 'ownership_ready': True, 'phase': 'history', 'processed': processed, 'error': result.get('error')}
                     with get_db_conn() as conn:
                         conn.execute('DELETE FROM execution_plan_index_affected WHERE index_id=? AND owner=?', (index_id, owner[0]))
                         conn.commit()
@@ -287,5 +287,6 @@ def _advance_index(ledger):
         conn.execute('UPDATE execution_plan_index_runs SET phase=?,cursor=?,event_cursor=?,legacy_cursor=?,error=? WHERE index_id=?',
                      (run['phase'], run['cursor'], run['event_cursor'], run['legacy_cursor'], run['error'], index_id))
         conn.commit()
-    return {'complete': run['phase'] == 'complete', 'phase': run['phase'], 'processed': processed,
+    return {'complete': run['phase'] == 'complete', 'ownership_ready': run['phase'] in {'history', 'complete'},
+            'phase': run['phase'], 'processed': processed,
             'error': None if run['phase'] == 'complete' else 'Ownership index scan continues in the next bounded page'}

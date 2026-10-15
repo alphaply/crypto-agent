@@ -24,7 +24,6 @@ def run_persisted_memory(config_id, cfg, strategy, messages):
 @pytest.mark.parametrize('writer', ['per_run', 'rolling'])
 def test_actual_memory_model_receives_latest_identity_in_both_writers(real_short, monkeypatch, writer):
     from backend.agent import memory_agent, context_projections
-    from test_context_projections import response_for
     from unittest.mock import Mock
     from datetime import datetime
     _, exchange = real_short
@@ -43,7 +42,7 @@ def test_actual_memory_model_receives_latest_identity_in_both_writers(real_short
     sent = []
     def invoke(messages):
         sent.append(messages[-1].content)
-        return AIMessage(content=json.dumps(response_for(context_projections.prepare_review('cfg'))))
+        return AIMessage(content='整理后的策略与操作摘要')
     monkeypatch.setattr(memory_agent, 'build_chat_model', lambda **_: Mock(invoke=invoke))
     monkeypatch.setattr(memory_agent, 'invoke_with_retry', lambda op, **_: op())
     monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *a: '本地业绩证据')
@@ -149,10 +148,10 @@ def test_short_memory_includes_local_7d_closed_positions_and_stats(local_db):
         assert run_persisted_memory('cfg', {'mode': 'REAL', 'symbol': 'ETH/USDT'}, 'wait for pullbacks', [])
 
     source = summarize.call_args.args[0]
-    assert '过去7天平仓记录' not in source and '2500.00' not in source
+    assert '过去7天平仓记录' in source and '2500.00' in source
     assert 'wait for pullbacks' in source
     saved = database.get_short_memories('cfg', 1)[0]
-    assert saved['position_summary'] == ''
+    assert saved['position_summary']
     details = database.get_closed_positions_7d('cfg', 'ETH/USDT', mode='REAL')
     assert details[0]['entry_price'] == 2500.0 and details[0]['realized_pnl'] == 5
 
@@ -184,15 +183,15 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
         changed = memory_service.generate_rolling_short_memory_for_config('cfg', cfg, now_cn=now)
     assert changed
     source = summarize.call_args.args[0]
-    assert '权益' not in source and '平仓记录' not in source and '战绩统计' not in source
+    assert '起点收益率' not in source and '过去7天平仓记录' in source
     assert 'new support' in source
     saved = database.get_short_memories('cfg', 1)[0]
-    assert saved['position_summary'] == ''
+    assert saved['position_summary']
     assert saved['market_summary'] == 'compressed strategy and performance'
 
 
 
-@pytest.mark.parametrize('bad_summary', ['', 'Previous short memory: prompt echo'])
+@pytest.mark.parametrize('bad_summary', [''])
 def test_memory_compression_failure_does_not_replace_previous_review(local_db, monkeypatch, bad_summary):
     evidence = (
         '截至快照: 2026-09-28 09:00 | 权益: 92.00 USDT | 样本: 3\n'

@@ -1,4 +1,4 @@
-"""Administrative projection status/retry without invoking a model or trading tool."""
+"""Published text and memory-job status; retired projections are audit-only."""
 import json
 
 from backend import database
@@ -15,9 +15,10 @@ def _config(config_id: str) -> dict:
 
 
 def projection_status(config_id: str) -> dict:
+    from backend.utils.trade_operations import _same_symbol
     cfg = _config(config_id)
     result = dict(config_id=config_id, enabled=projections.enabled(cfg), published={}, pending=0,
-                  failed=0, not_generated=0, errors=[], read_errors=[])
+                  failed=0, not_generated=0, errors=[], read_errors=[], historical_errors=[])
     if not result['enabled']:
         return result
     scope = trade_evidence.configured_account_scope(config_id)
@@ -34,36 +35,66 @@ def projection_status(config_id: str) -> dict:
                         raise ValueError('Invalid execution references')
                 except (ValueError, TypeError):
                     result['read_errors'].append(f"{kind}:{source['source_id']}:execution_refs")
-                if p['status'] in {'pending', 'failed'}:
-                    result[p['status']] += 1
                 if p['error']:
-                    result['errors'].append(dict(source_kind=kind, source_id=source['source_id'],
+                    result['historical_errors'].append(dict(source_kind=kind, source_id=source['source_id'],
                                                  as_of=source['timestamp'], status=p['status'],
                                                  attempts=p['attempts'], error=p['error']))
-            known = {(s['source_id'], s['source_hash']) for s in sources}
-            result['not_generated'] += sum((s['source_id'], s['source_hash']) not in known
-                                          for s in projections.current_sources(config_id, kind))
         except Exception:
             projections.logger.exception('Unable to read projection status for %s/%s', config_id, kind)
             result['read_errors'].append(kind)
+    try:
+        with database.get_db_conn() as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            jobs = conn.execute('SELECT j.*,s.timestamp,s.symbol FROM memory_update_jobs j JOIN summaries s '
+                                'ON s.id=j.summary_id AND s.config_id=j.config_id WHERE j.config_id=? '
+                                "AND j.status IN ('pending','failed','partial') ORDER BY j.summary_id DESC",
+                                (config_id,)).fetchall() if 'memory_update_jobs' in tables else []
+        for job in jobs:
+            try:
+                witness = json.loads(job['review_source'] or '{}')
+                if not isinstance(witness, dict):
+                    raise ValueError('Invalid memory source witness')
+            except (ValueError, TypeError):
+                result['read_errors'].append(f"memory_update:{job['summary_id']}:review_source")
+                continue
+            if (not _same_symbol(job['symbol'], cfg.get('symbol'))
+                    or (witness and witness.get('account_scope') != scope)):
+                continue
+            result['pending' if job['status'] == 'pending' else 'failed'] += 1
+            if job['error']:
+                result['errors'].append(dict(source_kind='memory_update', source_id=str(job['summary_id']),
+                                             as_of=job['timestamp'], status=job['status'],
+                                             attempts=job['attempts'], error=job['error']))
+    except Exception:
+        projections.logger.exception('Unable to read memory jobs for %s', config_id)
+        result['read_errors'].append('memory_update_jobs')
     return result
 
 
 def retry_failed_projections(config_id: str) -> dict:
+    """Compatibility endpoint: retry failed memory jobs, never retired projections."""
     cfg = _config(config_id)
-    if not projections.enabled(cfg):
-        raise ValueError('Strategy projections only apply to independent exits')
+    from backend.agent.memory_updates import _initialize
+    from backend.agent.memory_contract_recovery import job_source
+    from backend.summary_memory_source import valid_compressed_summary
     scope = trade_evidence.configured_account_scope(config_id)
-    requeued = 0
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        rows = conn.execute("SELECT * FROM decision_context_projections WHERE config_id=? AND account_scope=? "
-                            "AND projection_version=? AND status='failed'", (config_id, scope, projections.VERSION)).fetchall()
-        for row in rows:
-            p = dict(row)
-            if projections._original(conn, config_id, p):
-                requeued += conn.execute("UPDATE decision_context_projections SET status='pending',attempts=0,next_attempt=0,error='' "
-                                         'WHERE ' + projections.KEY_WHERE + " AND status='failed'",
-                                         projections.key(config_id, scope, p)).rowcount
+        _initialize(conn)
+        jobs = conn.execute('SELECT j.*,s.strategy_logic FROM memory_update_jobs j JOIN summaries s '
+                            'ON s.id=j.summary_id AND s.config_id=j.config_id '
+                            "WHERE j.config_id=? AND j.status='failed'", (config_id,)).fetchall()
+        requeued = 0
+        for job in jobs:
+            try:
+                captured = json.loads(job['review_source'] or '{}')
+                source = job_source(conn, config_id, job['summary_id'], scope, cfg.get('symbol', ''))
+                if (not source or (captured and captured != source)
+                        or not valid_compressed_summary(job['strategy_logic'])):
+                    continue
+            except (ValueError, TypeError):
+                continue
+            requeued += conn.execute("UPDATE memory_update_jobs SET status='pending',attempts=0,next_attempt=0,error='' "
+                                     "WHERE config_id=? AND run_id=? AND status='failed'",
+                                     (config_id, job['run_id'])).rowcount
         conn.commit()
     return {**projection_status(config_id), 'requeued': requeued}

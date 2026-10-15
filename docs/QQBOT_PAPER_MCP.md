@@ -32,7 +32,7 @@ Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货�
 
 金融入口当次返回权威受理或成交事实，不追加模型核验调用，不等待未来触发或成交。`submitted` 只表示受理，不能汇报为已平仓；有实际成交证据才报告成交。后台自动核验原订单并更新状态。断线不代表回滚，不得换 ID 盲重发。相同 ID 及意图只恢复原事实，未尝试尾项不续跑；剩余意图须为新的明确请求和稳定父 ID。
 
-默认回执单项至多 4096、整批至多 32768 UTF-8 字节，保留索引、身份、状态和已知数量；`include=["account"]` 最多一次账户摘要。完整证据由授权 HTTP/UI 展开。
+模型可见回执为逐项简洁文本，保留动作、目标、必要数量价格和结果；内部及 MCP `structuredContent` 保留结构化身份与状态。单项至多 4096、整批至多 32768 UTF-8 字节；`include=["account"]` 最多一次账户摘要。完整证据由授权 HTTP/UI 展开。
 
 ## 历史过滤与完整资金
 
@@ -68,3 +68,5 @@ Paper Bearer 回执：`GET /api/paper/operations/{user_id}/{operation_id}/audit?
 `PAPER_MAX_PAYLOAD_BYTES`（默认 262144）、`PAPER_SCAN_BATCH_SIZE`（64）、`PAPER_HISTORY_SCAN_LIMIT`（256）为有限校准值，非法值报错。先查大小再解析；不能完整核验资金时拒绝金融请求，原行仍可分块审计。后台保存扫描游标，重启继续；已结束回执不持续进入活跃订单解析集合。原资源来源核验有固定扫描 horizon，后来的新成交不会追认旧资源。
 
 配置导入导出保留 Paper Key、namespace 和有效 BN 设置；运行账本随数据库卷持久化，不在配置导出中。人格和集成 skill 见 [人格 prompt](qqbot/人格prompt.txt)、[QQBot Paper skill](qqbot/qqbot-paper-trading/SKILL.md)。
+
+管理入口：管理员在独立 **QQBot · Paper** tab 配置模拟账户和创建 Paper Key；MCP tab 不再内嵌 Paper 面板。权限、namespace 和保存接口不变。

@@ -12,6 +12,9 @@ from test_mcp_paper import ledger
 
 def call(server, name, args):
     blocks = asyncio.run(server.call_tool(name, args))
+    if hasattr(blocks, 'structuredContent'):
+        assert blocks.content[0].type == 'text' and not blocks.content[0].text.startswith('{')
+        return blocks.structuredContent
     return json.loads(blocks[0].text)
 
 

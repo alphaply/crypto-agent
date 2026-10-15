@@ -47,7 +47,15 @@ def _independent_call(config_id, symbol, action, **kwargs):
             kwargs['current_price'] = float(MarketTool(config_id=config_id).exchange.fetch_ticker(symbol)['last'])
         kwargs['operation_id'] = current_operation_id.get()
         method = getattr(service, action)
-        result = method(symbol, **kwargs) if real else method(**kwargs)
+        from backend.utils.position_protection import ConcurrentProtectionUpdate
+        for refresh in range(2):
+            try:
+                result = method(symbol, **kwargs) if real else method(**kwargs)
+                break
+            except ConcurrentProtectionUpdate:
+                if refresh or attempt is None or attempt.phase != 'preflight' or attempt.submission_state != 'not_submitted':
+                    raise
+                attempt.plan, attempt.record, attempt.admission = None, None, None
         return json.dumps(result, ensure_ascii=False, default=str)
     except ValueError as exc:
         from backend.utils.independent_exits import IndependentPositionError

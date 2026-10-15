@@ -151,18 +151,21 @@ def _attached_close(action, config_id, symbol, operation_id, mt, service):
     try:
         result = mt.exchange.create_order(symbol, native_kind, 'sell' if action.side == 'LONG' else 'buy', quantity, price, params)
     except Exception as exc:
-        import ccxt
-        rejected = isinstance(exc, (ccxt.InvalidOrder, ccxt.InsufficientFunds, ccxt.AuthenticationError, ccxt.PermissionDenied, ccxt.NotSupported))
+        from backend.utils.trade_order_evidence import rejection_evidence
+        rejected = rejection_evidence(exc) is not None
         result = {'status': 'failed' if rejected else 'unknown', 'error': str(exc), 'error_code': type(exc).__name__,
                   'client_id': client_id, 'phase': 'submit', 'submission_state': 'rejected' if rejected else 'unknown',
                   'recovery': {'state': 'background', 'target_operation_id': operation_id}}
     result = {**result, 'client_id': client_id}
     if str(result.get('status')).lower() in {'closed', 'filled'} and result.get('filled') is None:
-        result.update(status='pending', order_status='filled', error_code='fill_unverified')
-    with database.get_db_conn() as conn:
-        conn.execute('UPDATE unified_native_intents SET result=? WHERE config_id=? AND operation_id=?',
-                     (json.dumps(result), config_id, operation_id))
-        conn.commit()
+        result.update(status='submitted', order_status='filled', error_code='fill_unverified')
+    try:
+        with database.get_db_conn() as conn:
+            conn.execute('UPDATE unified_native_intents SET result=? WHERE config_id=? AND operation_id=?',
+                         (json.dumps(result), config_id, operation_id))
+            conn.commit()
+    except Exception:
+        result['persistence_pending'] = True
     return result
 
 
@@ -476,16 +479,26 @@ def _attached_real(action, config_id, symbol, cfg, operation_id, mt):
                            amount=action.amount, entry_price=action.price, reason=action.reason,
                            stop_loss=action.stop_loss, take_profit=action.take_profit)
         try:
-            result = service.open(symbol, op, operation_id=operation_id)
+            from backend.utils.position_protection import ConcurrentProtectionUpdate
+            from backend.utils.trade_receipts import current_attempt
+            for refresh in range(2):
+                try:
+                    result = service.open(symbol, op, operation_id=operation_id)
+                    break
+                except ConcurrentProtectionUpdate:
+                    attempt = current_attempt.get()
+                    if refresh or attempt is None or attempt.submission_state != 'not_submitted':
+                        raise
         except Exception as exc:
             plan = service._load(market['symbol'], action.side) or {}
             record = next((entry for entry in plan.get('entries', []) if entry.get('operation_id') == operation_id), None)
             if not record:
                 raise
             rejected = record.get('status') == 'rejected'
+            accepted = record.get('submission_state') == 'submitted' and record.get('id')
             return {'contract_version': 3, 'receipt_version': 1, 'operation_id': operation_id,
-                    'status': 'failed' if rejected else 'unknown', 'phase': 'submit',
-                    'submission_state': 'rejected' if rejected else 'unknown',
+                    'status': 'submitted' if accepted else 'failed' if rejected else 'unknown', 'phase': 'submit',
+                    'submission_state': 'submitted' if accepted else 'not_submitted' if rejected else 'unknown',
                     'client_id': record['client_id'], 'order_id': 'regular:' + str(record['id']) if record.get('id') else None,
                     'error': str(exc), 'error_code': type(exc).__name__, 'side': action.side,
                     'protection_state': plan.get('state'), 'stop_loss': plan.get('stop_loss'), 'take_profit': plan.get('take_profit'),
@@ -515,10 +528,13 @@ def _attached_real(action, config_id, symbol, cfg, operation_id, mt):
                                               and item['acknowledgement']['filled'] == 0 for item in live_legs) else None}
                    if financial_ack_only.get() and live_legs else {}),
                 **({'error': plan['error']} if plan.get('error') else {})}
-        with database.get_db_conn() as conn:
-            conn.execute('UPDATE unified_native_intents SET result=? WHERE config_id=? AND operation_id=?',
-                         (json.dumps(result), config_id, operation_id))
-            conn.commit()
+        try:
+            with database.get_db_conn() as conn:
+                conn.execute('UPDATE unified_native_intents SET result=? WHERE config_id=? AND operation_id=?',
+                             (json.dumps(result), config_id, operation_id))
+                conn.commit()
+        except Exception:
+            result['persistence_pending'] = True
         return result
     if action.action == 'close':
         result = _attached_close(action, config_id, symbol, operation_id, mt, service)
@@ -540,7 +556,7 @@ def _attached_real(action, config_id, symbol, cfg, operation_id, mt):
         result = service.amend_entry(symbol, identity, price=action.price, reason=action.reason,
                                      remaining_amount=action.remaining_amount, operation_id=operation_id)
         receipt = _native_receipt(result, action, operation_id, symbol, contract_size=size)
-        receipt['status'] = {'confirmed': 'completed', 'unchanged': 'completed', 'pending': 'pending', 'rejected': 'failed'}.get(result.get('amendment_state'), receipt['status'])
+        receipt['status'] = {'confirmed': 'completed', 'unchanged': 'completed', 'rejected': 'failed'}.get(result.get('amendment_state'), receipt['status'])
         receipt['edit_method'] = 'native'
         return receipt
     from backend.utils.exit_orders import parse_order_reference
@@ -554,12 +570,16 @@ def _attached_real(action, config_id, symbol, cfg, operation_id, mt):
                 if str(record.get('id')) != identity or channel and channel != kind:
                     continue
                 record['cancel_operation_id'] = operation_id
+                from backend.utils.trade_receipts import current_attempt, bind_attempt
+                attempt = bind_attempt(plan, record, 'preflight')
+                if attempt:
+                    attempt.action, attempt.submission_state = 'cancel', 'not_submitted'
                 service._save(plan)
                 service._cancel(record, plan, trigger=kind == 'algo')
                 result = _native_receipt(record, action, operation_id, symbol, contract_size=size)
                 result['order_id'] = action.order_id
                 result['side'] = side
-                result['status'] = 'pending' if record.get('fill_pending') or record.get('status') not in TERMINAL else 'completed'
+                result['status'] = 'completed' if record.get('cancel_confirmed_at') else 'pending' if record.get('fill_pending') or record.get('status') not in TERMINAL else 'completed'
                 return result
     raise ValueError('Cannot verify the current managed cancellation target')
 
@@ -569,6 +589,10 @@ def dispatch_live_action(action, config_id, symbol, config, operation_id):
     from backend.utils.exit_policy import effective_exit_mode
     from backend.utils.position_management import management_action
     from backend.config import config as runtime
+    from backend.utils.trade_receipts import current_attempt
+    attempt = current_attempt.get()
+    if attempt:
+        attempt.action, attempt.phase, attempt.submission_state = action.action, 'preflight', 'not_submitted'
     current = runtime.get_config_by_id(config_id)
     if not current:
         return {'contract_version': 3, 'receipt_version': 1, 'operation_id': operation_id, 'status': 'failed',
@@ -583,11 +607,14 @@ def dispatch_live_action(action, config_id, symbol, config, operation_id):
     spot = mode == 'SPOT_DCA' or config.get('market_type') == 'spot'
     context = management_action(mt, symbol, getattr(action, 'side', None), operation_id,
                                 automatic=True, order_id=getattr(action, 'order_id', None)) if mode != 'STRATEGY' else nullcontext(None)
+    result = None
     try:
         if mode != 'STRATEGY' and action.action == 'open':
             from backend.mcp.guard import assert_entry_allowed
             assert_entry_allowed(mt, symbol, side=action.side, only_capability=True)
         with context as claim:
+            if attempt:
+                attempt.phase, attempt.submission_state = 'untracked', 'unknown'
             if spot:
                 from backend.mcp.spot_orders import execute_spot_action
                 result = execute_spot_action(config_id, symbol, action.model_dump(exclude_none=True), operation_id)
@@ -602,6 +629,8 @@ def dispatch_live_action(action, config_id, symbol, config, operation_id):
                 claim['outcome_status'] = tool_result_status(result)
             return result
     except ValueError as exc:
+        if isinstance(result, dict):
+            return {**result, 'persistence_pending': True}
         attempted = mode == 'REAL' and not spot and effective_exit_mode(config) != 'independent_exits' and _attached_write_started(config_id, operation_id)
         return {'contract_version': 3, 'receipt_version': 1, 'operation_id': operation_id,
                 'status': 'unknown' if attempted else 'failed', 'phase': 'verify' if attempted else 'preflight',
@@ -609,6 +638,10 @@ def dispatch_live_action(action, config_id, symbol, config, operation_id):
                 'submitted': None if attempted else False,
                 'error_code': getattr(exc, 'code', 'admission_rejected'), 'error': str(exc),
                 **({'recovery': {'state': 'background', 'target_operation_id': operation_id}} if attempted else {})}
+    except Exception:
+        if isinstance(result, dict):
+            return {**result, 'persistence_pending': True}
+        raise
 
 
 def _attached_write_started(config_id, operation_id):

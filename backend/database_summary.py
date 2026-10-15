@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 
-from backend.summary_memory_source import restore_memory_source
+from backend.summary_memory_source import restore_memory_source, valid_compressed_summary
 
 
 class SummaryStore:
@@ -99,11 +99,15 @@ class SummaryStore:
                            (json.dumps(reasoning_diagnostics, ensure_ascii=False) if reasoning_diagnostics is not None else None, summary_id))
             cursor.execute('UPDATE summaries SET report_json=?,run_id=?,decision_json=? WHERE id=?',
                            (report_json, run_id, decision_json, summary_id))
-            if run_id and enqueue_memory:
-                from backend.agent.memory_updates import _initialize
-                _initialize(conn)
-                cursor.execute('INSERT OR IGNORE INTO memory_update_jobs(config_id,run_id,summary_id) VALUES (?,?,?)',
-                               (config_id or agent_name, run_id, summary_id))
+            from backend.config import config
+            if valid_compressed_summary(strategy_logic) and config.get_config_by_id(config_id or agent_name):
+                from backend.agent.context_projections import publish_text, _source, source_refs
+                saved = dict(cursor.execute('SELECT * FROM summaries WHERE id=?', (summary_id,)).fetchone())
+                cid = config_id or agent_name
+                publish_text(conn, cid, 'strategy_summary', saved, source_refs(cid, _source('strategy_summary', saved)))
+            if run_id and enqueue_memory and valid_compressed_summary(strategy_logic):
+                from backend.agent.memory_updates import _enqueue
+                _enqueue(conn, config_id or agent_name, run_id, summary_id)
             conn.commit()
             return summary_id
 

@@ -89,7 +89,9 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
     amount = record.get('execution_amount', record.get('submission_amount')) if record.get('quantity_mode') == 'all' else record.get('amount')
     remaining = max(float(amount) * factor - filled, 0) if amount is not None and filled is not None else None
     amendment = record.get('amendment') or {}
-    submission = submission_state or record.get('submission_state') or ('submitted' if record.get('id') else 'unknown')
+    current_amendment = action == 'edit' and amendment.get('operation_id') == operation_id
+    submission = (submission_state or (amendment.get('submission_state') if current_amendment else None)
+                  or record.get('submission_state') or ('submitted' if record.get('id') else 'unknown'))
     if native == 'rejected' or (action == 'edit' and (record.get('replacement_error') or amendment.get('state') == 'rejected')):
         status = 'failed'
     elif submission == 'not_submitted':
@@ -110,6 +112,17 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
         status = 'completed' if verified else 'pending'
     else:
         status = 'submitted'
+    from backend.utils.trade_operations import financial_ack_only
+    if financial_ack_only.get() and submission == 'submitted':
+        if action == 'cancel' and record.get('cancel_confirmed_at'):
+            status = 'completed'
+        elif action in {'open', 'close'} and record.get('acknowledged_at') and status in {'pending', 'unknown'}:
+            status = 'submitted'
+        elif current_amendment and amendment.get('acknowledged_at') and amendment.get('state') in {'pending', 'confirmed'}:
+            status = 'completed' if amendment['state'] == 'confirmed' else 'submitted'
+        elif (action == 'edit' and record.get('replaces') and record.get('operation_id') == operation_id
+              and record.get('acknowledged_at') and status in {'pending', 'unknown'}):
+            status = 'submitted'
     if result.get('status') in {'skipped', 'not_executed'}:
         status = result['status']
     blockers = unresolved_orders(plan)
@@ -168,6 +181,15 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
                       exchange_channel='regular' if record.get('execution_order_id') else record.get('exchange_channel'),
                       parent_order_id=order_reference(record, current=False) if record.get('execution_order_id') else None,
                       requested_amount=record.get('requested_amount'), resolved_amount=record.get('resolved_amount'))
+        if record.get('replaces') or record.get('replacement') or record.get('unattempted_replacement'):
+            previous = next((item for item in plan.get('exits', [])
+                             if str(item.get('id')) == str(record.get('replaces'))), None)
+            result.update(edit_method='cancel_replace',
+                          previous_order_id=record.get('replaces_reference') or record.get('replaces') or order_reference(record),
+                          previous_order_status=(previous or record).get('status'))
+        if error and submission == 'submitted' and status in {'submitted', 'completed'}:
+            result['persistence_pending'] = True
+            result['warnings'] = [{'reason_code': 'local_state_update_failed', 'error': error}]
     result.pop('error', None)
     attempt = current_attempt.get()
     result['admission'] = (attempt.admission if attempt and attempt.admission else

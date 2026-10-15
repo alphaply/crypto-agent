@@ -107,7 +107,13 @@ def _register(server, function, *, scope='read'):
         async def compact_financial_return(**kwargs):
             result = await original(**kwargs)
             from backend.agent.unified_trading import compact_trade_receipt
-            return compact_trade_receipt(result)
+            if function.__name__ == 'configure_paper_account':
+                return compact_trade_receipt(result)
+            from backend.utils.trade_summary import render_trade_receipt
+            from mcp.types import CallToolResult, TextContent
+            structured = compact_trade_receipt(result)
+            return CallToolResult(content=[TextContent(type='text', text=render_trade_receipt(result))],
+                                  structuredContent=structured)
         # Metadata continues to validate the original exact input signature.
         # Only the final model response is projected, after durable raw storage.
         registered.fn = compact_financial_return

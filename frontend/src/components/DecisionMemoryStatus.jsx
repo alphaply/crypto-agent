@@ -62,8 +62,8 @@ export default function DecisionMemoryStatus({ configId, refreshKey, locale = 'z
         <Typography.Text>{zh ? '短期策略截至：' : 'Strategy as of: '}{asOf('short_memory')}</Typography.Text>
         <Typography.Text>{zh ? '近期已发布摘要截至：' : 'Published summaries as of: '}{asOf('strategy_summary')}</Typography.Text>
         <Typography.Text>{zh
-          ? `待整理 ${status.pending} · 失败 ${status.failed} · 尚未生成 ${status.not_generated}`
-          : `Queued ${status.pending} · Failed ${status.failed} · Not generated ${status.not_generated}`}</Typography.Text>
+          ? `待整理 ${status.pending} · 失败 ${status.failed}`
+          : `Queued ${status.pending} · Failed ${status.failed}`}</Typography.Text>
       </> : <Typography.Text>{zh ? '正在读取状态…' : 'Loading status…'}</Typography.Text>}
       <Typography.Text type="secondary">{zh
         ? '整理和重试期间继续使用有效的已发布内容。下方保留完整历史原文。'
@@ -72,6 +72,9 @@ export default function DecisionMemoryStatus({ configId, refreshKey, locale = 'z
       {status?.read_errors?.length ? <Typography.Text role="alert">{zh ? '部分来源读取失败：' : 'Some sources could not be read: '}{status.read_errors.join(', ')}</Typography.Text> : null}
       {status?.errors?.length ? <details><summary>{zh ? '查看整理错误' : 'Consolidation errors'}</summary>
         {status.errors.map((item) => <div key={`${item.source_kind}:${item.source_id}`}>{item.as_of} · {item.error}</div>)}
+      </details> : null}
+      {status?.historical_errors?.length ? <details><summary>{zh ? '历史格式转换记录（已停用）' : 'Retired conversion history'}</summary>
+        {status.historical_errors.map((item) => <div key={`${item.source_kind}:${item.source_id}`}>{item.as_of} · {item.error}</div>)}
       </details> : null}
       <Space wrap>
         <Button size="small" disabled={busy} onClick={() => setRevision((value) => value + 1)}>{zh ? '刷新状态' : 'Refresh status'}</Button>

@@ -28,10 +28,11 @@ def test_retired_query_pairs_are_removed_without_mutating_saved_messages():
     assert [call['name'] for call in projected[1].tool_calls] == ['close']
     assert 'get_operation' not in json.dumps(projected[1].model_dump())
     assert len(projected) == 3
-    receipt = json.loads(projected[2].content)
-    assert receipt['status'] == 'submitted' and receipt['filled_amount'] == 0
-    assert receipt['order_status'] == 'waiting_trigger' and receipt_bytes(receipt) <= 4096
+    receipt = projected[2].content
+    assert '提交成功' in receipt and '已成交数量0' in receipt
+    assert 'get_operation' not in receipt
     assert messages == before
+
 
 
 def test_current_exact_operation_projection_is_local_and_uses_trusted_task(monkeypatch):
@@ -44,7 +45,7 @@ def test_current_exact_operation_projection_is_local_and_uses_trusted_task(monke
     message = ToolMessage(tool_call_id='old-operation',content=json.dumps(original))
     projected = project_trade_messages([message],'trusted-task')
     assert calls == [('trusted-task','old-operation')]
-    assert json.loads(projected[0].content)['status'] == 'completed'
+    assert '成功' in projected[0].content and '已成交数量0.03' in projected[0].content
     assert json.loads(message.content)['status'] == 'unknown'
 
 

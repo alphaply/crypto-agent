@@ -347,7 +347,7 @@ class ExecutionLedger:
                     payload = {k: value if value is not None else old.get(k) for k, value in payload.items()}
                 owner = conn.execute('SELECT config_id FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
                                      (self.scope, self.symbol, order_id)).fetchone()
-                if not self.index_state.get('complete'):
+                if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
                     # Raw fills remain durable, but a partially published
                     # historical ownership migration cannot assign new facts.
                     owner = None
@@ -369,9 +369,9 @@ class ExecutionLedger:
                 rebuild_execution_position_history(owner_config_id, self.scope, self.symbol)
 
     def sync(self, now_ms=None, start_ms=None, min_interval=30, max_calls=100):
-        if not self.index_state.get('complete'):
+        if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
             self.index_saved_plans()
-            if not self.index_state.get('complete'):
+            if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
                 return {**self.status(), 'complete': False, 'ownership_index': self.index_state,
                         'error': 'Ownership evidence indexing incomplete; exchange synchronization deferred'}
         actual_now = int(time.time() * 1000)

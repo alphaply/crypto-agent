@@ -224,6 +224,7 @@ class IndependentExits(PositionProtection):
             if order.get('price') == amendment['price'] and order.get('amount') == amendment['amount']:
                 record.update(price=amendment['price'], amount=amendment['amount'])
                 amendment['state'] = 'confirmed'
+                amendment['submission_state'] = 'submitted'
             elif record['status'] in TERMINAL:
                 amendment['state'] = 'terminal_unconfirmed'
         return order
@@ -715,6 +716,11 @@ class IndependentExits(PositionProtection):
                 info = response.get('info') or {}
                 actual = info.get('actualOrderId') or (info.get('ordId') if conditional and self.ex.id == 'okx' else None)
                 if conditional and actual and str(actual) not in {'0', '-1'}:
+                    from backend.utils.trade_operations import financial_ack_only
+                    if financial_ack_only.get():
+                        record.update(execution_order_id=str(actual), parent_algo_id=record['id'], triggered=True, verification_pending=True)
+                        self._save(plan)
+                        raise RuntimeError('Conditional cancellation raced triggering; background verification pending')
                     record.update(execution_order_id=str(actual), parent_algo_id=record['id'], triggered=True)
                     self._save(plan)
                     budget = verify_budget or {'deadline': time.monotonic() + 2, 'calls': 0}
@@ -833,6 +839,13 @@ class IndependentExits(PositionProtection):
         record['last_operation_id'] = request.get('operation_id')
         self._save(plan)
         self._cancel(record, plan, allow_child=False)
+        if record.get('fill_pending'):
+            # An accepted cancel need not contain a cumulative-fill figure.
+            # Replacement sizing must not reuse the pre-cancel quantity.
+            record['unattempted_replacement'] = record.pop('replacement', None)
+            record['replacement_error'] = 'Cancellation succeeded; replacement not submitted because cumulative fill is unverified'
+            self._save(plan)
+            return record
         if record.get('execution_order_id'):
             record.pop('replacement', None)
             record['replacement_error'] = 'order_already_triggered: edit the current execution order explicitly'
@@ -1016,7 +1029,8 @@ class IndependentExits(PositionProtection):
             total = float(self.ex.amount_to_precision(plan['symbol'], float(record.get('filled', 0)) + remaining))
             record['amendment'] = dict(state='pending', price=new_price, amount=total,
                                        remaining=remaining, filled_at_verification=float(record.get('filled', 0)),
-                                       operation_id=operation_id, reason=reason, requested_at=time.time())
+                                       operation_id=operation_id, reason=reason, requested_at=time.time(),
+                                       submission_state='unknown')
             self._save(plan)
             target = record.get('execution_order_id') or record['id']
             side = ('sell' if plan['side'] == 'LONG' else 'buy') if record.get('exit_type') else ('buy' if plan['side'] == 'LONG' else 'sell')
@@ -1033,6 +1047,7 @@ class IndependentExits(PositionProtection):
                     raise
                 record['amendment']['state'] = 'rejected'
                 record['amendment']['submission_evidence'] = proof
+                record['amendment']['submission_state'] = 'not_submitted'
                 record['execution_error'] = str(exc)
                 if attempt:
                     attempt.submission_state = 'not_submitted'
@@ -1042,11 +1057,15 @@ class IndependentExits(PositionProtection):
                 plan['error'] = f'Amendment outcome unresolved: {exc}'
                 self._save(plan)
                 raise
-            if attempt:
-                attempt.submission_state = 'submitted'
+            acknowledged = isinstance(acknowledgement, dict) and str(acknowledgement.get('id')) == str(target)
+            if acknowledged:
+                record['amendment'].update(submission_state='submitted', acknowledged_at=time.time(),
+                                           acknowledgement=acknowledgement)
+                if attempt:
+                    attempt.submission_state = 'submitted'
             from backend.utils.trade_operations import financial_ack_only
             if financial_ack_only.get():
-                if isinstance(acknowledgement, dict) and str(acknowledgement.get('id')) == str(target):
+                if acknowledged:
                     self._record_fill(record, acknowledgement, float(record.get('filled', 0)))
                     if acknowledgement.get('status'):
                         record['status'] = acknowledgement['status']
@@ -1055,6 +1074,9 @@ class IndependentExits(PositionProtection):
                         record.update(amount=total, price=new_price)
                         record['amendment']['state'] = 'confirmed'
                 record['verification_pending'] = True
+                if not acknowledged:
+                    self._save(plan)
+                    raise RuntimeError('Amendment acknowledgement incomplete; background verification pending')
             else:
                 self._query(record, plan['symbol'])
             self._save(plan)

@@ -3,19 +3,19 @@
 默认统一请求使用 `contract_version=3`，旧独立退出请求仍接受 `contract_version=2`。扩展回执使用 `receipt_version=1`，旧独立投影由
 `backend/utils/trade_receipts.py` 的 `TradeReceipt` 和纯投影函数定义。
 
-## v3 父子身份及精简投影
+## v3 父子身份及模型文本
 
 整批静态检查通过后、首次金融影响前持久化父意图和全部子项映射。子 ID 在可容纳时为 parent:index；最长外部 ID 使用含可信 owner 的有界哈希，并保存 index→child 映射。v3 具有独立请求版本，相同 ID 的不同意图拒绝，v1/v2 原哈希与原始首次回执保持。
 
-默认回执保留父/子 operation_id、index/action、订单/客户端及母子身份、status/order_status、成交量与 fixed/all 数量模式、错误码、失败阶段和具体依赖阻塞。单项不超过4096 UTF-8字节，最多20项整批不超过32768字节；不截断身份或JSON，不复制 previous_assessment 和重复规则。完整原始回执和后续证据通过授权 HTTP/UI 按需、有界读取。`include=["account"]` 只在整批末尾附一份账户摘要；读取错误位于 account_summary，不改变已知交易结果。
+模型可见回执每项一行，包含动作、目标订单或标的、必要数量价格、成功/失败及原因、未执行尾项。重复父子 operation_id、client ID、版本、准入树和恢复计数不常规展开；改单的实际新旧订单身份保留。单项不超过4096 UTF-8字节，最多20项整批不超过32768字节，不截断订单身份。内部状态判断和审计继续使用结构化回执，MCP `structuredContent` 保留机器消费结构。完整原始回执和后续证据通过授权 HTTP/UI 按需、有界读取。`include=["account"]` 只在整批末尾附一份账户摘要；读取失败不改变已知交易结果。
 
-所有模式和旧金融入口先完成必要准入并保存意图，获得权威 ACK 后直接按证据返回，不为了返回再次读取订单/仓位或等待未来成交。只证明受理时是 submitted，已经证明动作完成时才是 completed；缺少成交数量时返回 null，不假定为零。后续新意图依赖当前订单、数量或仓位时，在该新金融调用内完成必要前置核验。
+所有模式和旧金融入口先完成必要准入并保存意图，直接按交易所接口响应返回，不在本项提交后再次读取订单/仓位、轮询或 sleep，超时也不补查。只证明受理时是 submitted，已经证明动作完成时才是 completed；缺少成交数量时内部保持 null，文本不补零。后续新意图依赖当前订单、数量或仓位时，在该新金融调用内完成必要前置检查。
 
-断线、进程中断或父响应丢失后，系统后台按原映射核验已尝试项，不发出 create/edit/cancel，不补平、换 ID、提交未尝试替代或继续批次尾部。未知项保留 unknown/pending，可靠成交结果与旧单 cleanup 告警分别保存。Agent 默认只绑定 execute_trade_actions；get_trade_operation、get_operation 及旧查询适配器已移除，没有替代查询工具或隐藏查询动作。后台观察自动更新当前上下文、界面和记忆证据。用户审计只通过授权 HTTP/UI；账户作用域哈希不能充当 config_id。
+断线、进程中断或父响应丢失后，系统后台按原映射核验已尝试项，不发出 create/edit/cancel，不补平、换 ID、提交未尝试替代或继续批次尾部。未知项内部保留 unknown/pending，文本说明请求失败、提交结果未知、请勿重复提交；可靠成交结果与旧单 cleanup 告警分别保存。Agent 默认只绑定 execute_trade_actions；get_trade_operation、get_operation 及旧查询适配器已移除，没有替代查询工具或隐藏查询动作。后台观察更新当前上下文、界面和成交记录；记忆更新仍仅使用约定的三类素材。用户审计只通过授权 HTTP/UI；账户作用域哈希不能充当 config_id。
 
 内部任务授权由运行上下文提供。live MCP 混合批次先检查全部 trade/cancel 权限，cancel-only 无权在后项放 open；合法权限下动态余额/杠杆只逐项检查。paper 写入仍按 read+trade 的既有权限边界，cancel 属于 paper trade。绑定聊天逐项审批，一个拒绝终止其后金融动作。
 
-任务配置已删除或不可用时，新 v3 金融意图返回 `configuration_unavailable` / `not_submitted`，不回退为模拟交易。原 v3 意图重放须匹配已保存参数、标的和可信引擎，仅核验原记录；交接恢复继续使用获准的接收方账户上下文。
+任务配置已删除或不可用时，新 v3 金融意图返回 `configuration_unavailable` / `not_submitted`，不回退为模拟交易。原 v3 意图重放须匹配已保存参数、标的和可信引擎，读取已保存的原结果与本地最新证据，不借重放触发提交后交易所核验；后台交接恢复继续使用获准的接收方账户上下文。
 
 v3 父与子映射保存在 `unified_trade_batches / unified_trade_children`，附带实盘原生退出及保护的提交前意图保存在 `unified_native_intents`；现货原生改单同样保存提交前的目标总量和价格。重启及回滚演练须保留这些新增数据、原请求、原订单/客户端 ID 与未知回执。v3 不借用旧 v1/v2 父合并器重建尾部。
 
@@ -99,12 +99,12 @@ MCP 外层 principal/profile/operation ID 映射到内部 stable ID；不同调�
 | 流程 / 故障 | 回执与恢复入口 | 限制 / 离线覆盖 |
 | --- | --- | --- |
 | 市价全平、部分平仓后清理失败 | completed + cleanup.pending；后台核验 | 平仓只提交一次；残仓不自动补平；integration、receipt_recovery |
-| open/加仓提交超时、落库失败 | unknown 保留 client ID；已知成交保留 completed | 不换 ID 重发；仓位未同步阻止后续写；integration、independent_exits |
+| open/加仓提交超时、ACK 后落库失败 | 超时 unknown 保留 client ID；已有 ACK 保留 submitted/completed | 不换 ID 重发；不能将本地保存失败改写成交易所拒绝 |
 | fixed/all 条件 TP/SL | 等待触发 submitted；母子身份与实际量分开 | 六种类型、LONG/SHORT、Hedge/One-way、数量与通道；real_v2、binance_v2 |
 | 普通 LIMIT edit 拒绝/超时 | 明确拒绝 failed；超时 unknown；按原单查证 | 原单保留、最多一次 edit；receipt_recovery |
 | 条件 cancel_replace | 旧单 canceled 不代表 edit completed | 替代成功才完成；耗尽/拒绝/超时及重启无重复替代；real_v2 |
-| cancel ACK 缺成交、倒退或旧 open | pending；保留 blocker 后及时返回 | 后台按原身份核验，遵守总额度和退避，不重发撤单 |
-| batch / legacy aliases | 已执行项刷新，尾部 not_executed | 默认停止；显式 independent 继续无依赖项；batch、scoped_trade_rounds |
+| cancel ACK 缺成交、倒退或旧 open | 匹配目标的撤销成功 ACK 保留撤单成功；未明成交量仍缺失 | 后台核验成交事实，不重发撤单；缺少撤销完成证据仍 pending/unknown |
+| batch / legacy aliases | 已执行结果保留，尾部 not_executed | 默认停止；explicit independent 仅保留明确失败时的原继续策略，unknown/pending 停止全批 |
 | Agent / Chat v3 批次 | 一个执行工具，逐项动态准入 | 默认失败/未知即停止尾部；绑定 Chat 逐项审批，拒绝停止后续写入；unified_trading |
 | 旧 Agent / Chat 多工具轮次 | 兼容独立单工具逐项准入 | 原轮次规则不因前项拒绝全局停止；Chat 用户拒绝仍停止后续写入；scoped_trade_rounds |
 | MCP 后台核验 / 同 ID 重放 | 外部 ID 关联内部 stable ID，回执同步修订 | principal/profile 隔离，读取零金融写入；mcp_trade_recovery、gateway |
@@ -113,11 +113,11 @@ MCP 外层 principal/profile/operation ID 映射到内部 stable ID；不同调�
 
 真实未知、旧 all 未核实、读接口持续失败和成交矛盾仍阻止依赖它们的写入。
 后台核验使用有限额度和退避；用户可通过授权 HTTP/UI 查看现有审计，不触发交易写入。
-测试文件完整路径及桌面/移动证据见本次变更的 `verification.md`。
+本次变更的开发交付与待验收范围见 [implementation.md](../openspec/changes/simplify-memory-and-ordered-execution/implementation.md)。
 
 ## 证据边界
 
-本次回归使用 fake exchange 和临时数据库，未使用真实交易或模型联网测试。
+该类回归应使用 fake exchange 和临时数据库，不用真实下单验证。用户接管测试和验证后，最终代码不再追加验收；历史回归结果不能代表最终版本全部通过。
 没有取得截图原单的线上拒绝代码和完整提交证据；离线修复不表示线上已部署或原仓位已核验。
 
 ## 按动作准入，无需先查询解锁
@@ -254,3 +254,19 @@ needs_refresh 表示尚未评估，既不代表全面允许，也不代表禁止
 不包含重试时间、投影时间或无关后继周期。重复维护不增加终结历史修订或更新其时间；
 `completed + cleanup.pending` 仍随关联证据推进。水位和回执同事务保存，重启后继续使用。
 这些操作只写本地证据；实际交易准入、维护撤单和同 ID 幂等仍由执行层负责。
+
+## 工具内取消核验，后台保留（2026-10-15）
+
+金融工具按解析顺序执行，直接使用交易所接口响应，不为本项结果补查订单/仓位、轮询或 sleep，也不重发超时请求；原定 1 秒/最多 3 次核验不实施。下一项必要的权限、目标、持仓数量及归属检查仍保留。后台继续按原操作身份核验已提交请求，不补发未执行尾项。
+
+模型展示使用逐项文本；内部回执和 MCP structuredContent 保留结构化事实。受理成功表示提交成功，并非成交。默认失败停止后续项；显式 independent 保留明确失败时原依赖策略，但提交结果未知立即停止本批。
+
+```text
+1. cancel：regular:123，撤单成功。
+2. open：ETH/USDT 数量0.08 价格2335，请求失败。原因：网络超时；提交结果未知，请勿重复提交。
+3. open：未执行。原因：前序操作失败或结果未确认。
+```
+
+`Ownership evidence indexing incomplete` 是本地归属证据未完成，不能写成交易所拒绝或保护单已挂上。必要索引尚未完成时返回“失败，原因：持仓归属证据同步未完成，未提交”；不在工具内等待三轮。索引已完成订单归属发布、仅剩历史周期统计重建时，该统计积压不再阻塞当前成交同步；真实归属冲突、目标或数量缺项仍拒绝。历史迁移和后台核验不因此取消。
+
+管理发现与执行/后台收据更新共享账户内可重入锁；数据库版本比较仍保留，冲突不能靠覆盖旧对象或重发已受理请求解决。

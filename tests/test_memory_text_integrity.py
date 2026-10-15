@@ -88,8 +88,8 @@ def test_every_memory_writer_preserves_long_input_and_output(local_db, monkeypat
 
     assert changed
     source = organizer.call_args.args[0]
-    assert strategy_material(strategy) in source
-    assert evidence not in source
+    assert strategy in source
+    assert evidence in source
     if writer == 'run':
         assert __import__('json').dumps(execution, ensure_ascii=False) not in source
     saved = database.get_short_memories('cfg', 1)[0]
@@ -120,7 +120,7 @@ def test_rolling_review_reads_every_record_within_selected_window(local_db, monk
 
     assert memory_service.generate_rolling_short_memory_for_config('cfg', CONFIG, now_cn=NOW, hours=12)
     source = organizer.call_args.args[0]
-    assert all(strategy_material(record[2]) in source for record in records)
+    assert all(record[2] in source for record in records)
     assert 'too-old' not in source and 'future-evidence' not in source and 'another-config-evidence' not in source
     assert database.get_short_memories('cfg', 1)[0]['source_count'] == len(records)
 

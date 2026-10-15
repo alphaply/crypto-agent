@@ -77,8 +77,9 @@ def get_trade_tools_for_mode(mode: str | None, config: dict | None = None, *, in
             'description': '一次按顺序执行1–20项交易动作。contract_version=3；单笔用一项数组。'
                            '动作与参数按当前模式提供，数量是基础币；edit.remaining_amount为目标未成交量。'
                            '默认失败/待核验/未知停止；depends_on要求显式independent且此前项completed。'
-                           '权威受理后及时返回，不等待限价成交，不回滚已执行项；系统后台核验原身份，不能换ID重发。'
-                           '合法动作内部核验并自动纳管授权目标，无需先adopt。include=["account"]末尾可选一次账户摘要。',
+                           '逐项简洁返回成功、失败原因或未执行；受理成功不等于成交。提交后不查询或等待核验。'
+                           '未知结果停止整批（含independent），系统后台核验原身份，不能换ID重发。'
+                           '保留提交前必要检查并自动纳管授权目标，无需先adopt。include=["account"]末尾可选一次账户摘要。',
         })]
     tools = list(_TOOLS_BY_MODE.get(trade_mode, _TOOLS_BY_MODE["STRATEGY"]))
     if config is None or trade_mode == 'SPOT_DCA':

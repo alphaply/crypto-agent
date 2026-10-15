@@ -134,18 +134,18 @@ class SummaryMemoryStore:
                 WHERE config_id = ?
                   AND timestamp >= ?
                   AND timestamp < ?
-                  AND (COALESCE(strategy_logic, '') != '' OR COALESCE(content, '') != '')
-                ORDER BY id ASC
+                  AND COALESCE(strategy_logic, '') != ''
+                ORDER BY timestamp,id ASC
                 ''',
                 (config_id, start_time, end_time),
             ).fetchall()
             result = []
             for row in rows:
-                item = restore_memory_source(row)
-                from backend.utils.decision_record import append_execution_receipts
-                item['strategy_logic'] = append_execution_receipts(item['strategy_logic'], item)
-                item.pop('report_json', None)
-                item.pop('decision_json', None)
+                item = dict(row)
+                from backend.summary_memory_source import valid_compressed_summary
+                if not valid_compressed_summary(item['strategy_logic']):
+                    continue
+                item.pop('_source_content', None)
                 result.append(item)
             return result
 
@@ -156,6 +156,12 @@ class SummaryMemoryStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             conn.execute('BEGIN IMMEDIATE')
+            columns = {row[1] for row in cursor.execute('PRAGMA table_info(short_memories)')}
+            if run_id and 'run_id' in columns:
+                saved = cursor.execute('SELECT market_summary,run_id FROM short_memories WHERE config_id=? AND bucket_start=?',
+                                       (config_id, bucket_start)).fetchone()
+                if saved and saved['run_id'] == run_id and saved['market_summary'] == market_summary:
+                    return  # A prior save succeeded before the job completion ACK.
             if source_guard:
                 from backend.agent.memory_contract_recovery import job_source
                 from backend.utils.trade_evidence import configured_account_scope
@@ -267,6 +273,11 @@ class SummaryMemoryStore:
     def update_short_memory(self, config_id, bucket_start, market_summary, position_summary):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
+            conn.execute('BEGIN IMMEDIATE')
+            from backend.agent.context_projections import publish_text, source_refs, _source
+            previous = cursor.execute('SELECT * FROM short_memories WHERE config_id=? AND bucket_start=?',
+                                      (config_id, bucket_start)).fetchone()
+            refs = source_refs(config_id, _source('short_memory', dict(previous))) if previous else []
             cursor.execute(
                 '''
                 UPDATE short_memories
@@ -275,8 +286,13 @@ class SummaryMemoryStore:
                 ''',
                 (market_summary, position_summary, config_id, bucket_start),
             )
+            updated = cursor.rowcount
+            if updated:
+                row = dict(cursor.execute('SELECT * FROM short_memories WHERE config_id=? AND bucket_start=?',
+                                          (config_id, bucket_start)).fetchone())
+                publish_text(conn, config_id, 'short_memory', row, refs)
             conn.commit()
-            return cursor.rowcount
+            return updated
 
     def clear_short_memory_snapshot(self, config_id: str, bucket_start: str) -> int:
         with self._conn_factory() as conn:

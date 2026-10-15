@@ -6,7 +6,7 @@ import re
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from backend.utils.trade_summary import compact_trade_receipt
+from backend.utils.trade_summary import compact_trade_receipt, render_trade_receipt
 
 
 RETIRED_QUERY_TOOLS = frozenset({'get_trade_operation', 'get_operation', 'get_paper_operation'})
@@ -62,7 +62,7 @@ def project_trade_messages(messages: list, config_id: str | None = None) -> list
                     value = current_receipt_projection(config_id, value.get('operation_id') or message.tool_call_id, value)
                 else:
                     value = compact_trade_receipt(value)
-                content = json.dumps(value, ensure_ascii=False)
+                content = render_trade_receipt(value)
                 projected.append(message.model_copy(update={'content': content}))
             else:
                 content = _generated_content(message.content)

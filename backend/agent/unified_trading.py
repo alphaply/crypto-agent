@@ -318,6 +318,10 @@ def run_ordered_actions(parsed, parent_id, owner_id, dispatch: Callable, *, appr
     for index, action in enumerate(parsed.actions):
         child_id = stable_child_operation_id(owner_id, parent_id, index)
         row = {'index': index, 'action': action.action, 'operation_id': child_id, 'symbol': action.symbol}
+        row.update({key: value for key, value in action.model_dump(exclude_none=True).items()
+                    if key in {'side', 'amount', 'price', 'trigger_price', 'order_id', 'stop_loss', 'take_profit'}})
+        if getattr(action, 'close_all', False):
+            row['quantity_mode'] = 'all'
         if blocked is not None:
             results.append({**row, 'status': 'not_executed', 'blocked_by_index': blocked})
             continue
@@ -336,7 +340,7 @@ def run_ordered_actions(parsed, parent_id, owner_id, dispatch: Callable, *, appr
         result.setdefault('operation_id', child_id)
         status = tool_result_status(result)
         results.append({**row, 'status': status, 'result': result})
-        if parsed.execution_policy == 'stop_on_error' and status in {'failed', 'unknown', 'pending', 'not_executed'}:
+        if status in {'unknown', 'pending'} or (parsed.execution_policy == 'stop_on_error' and status in {'failed', 'not_executed'}):
             blocked = index
     status = next((candidate for candidate in ('unknown', 'pending', 'failed') if any(row['status'] == candidate for row in results)),
                   'failed' if any(row['status'] == 'not_executed' for row in results) else

@@ -570,14 +570,21 @@ def lookup_management_recovery(config_id, recovery_id):
 def reconcile_visible_actions(config_id):
     from backend.utils.trade_operations import refresh_operation_receipt, tool_result_status
     from backend.utils.management_lock import ManagementLockBusy
+    from backend.utils.position_protection import _lock
     with database.get_db_conn() as conn:
-        rows = [dict(r) for r in conn.execute("SELECT a.*,c.physical_account,c.resource,c.side FROM visible_management_actions a "
-                                            "JOIN visible_management_claims c ON c.claim_id=a.claim_id WHERE c.owner=? "
+        rows = [dict(r) for r in conn.execute("SELECT a.*,c.physical_account,c.resource,c.side,c.payload AS claim_payload,"
+                                            "s.legacy_scope AS execution_scope FROM visible_management_actions a "
+                                            "JOIN visible_management_claims c ON c.claim_id=a.claim_id "
+                                            "LEFT JOIN management_execution_scopes s ON s.physical_account=c.physical_account "
+                                            "AND s.market_type=c.market_type WHERE c.owner=? "
                                             "AND a.state IN ('running','pending','unknown')", (config_id,))]
     changed = 0
     for row in rows:
         try:
-            with scope_file_lock(row['physical_account'], row['resource'], row['side']):
+            scope = row['execution_scope'] or json.loads(row['claim_payload'])['legacy_scope']
+            # The original-order recovery below takes the same account lock.
+            # Acquire it before the process lock, as financial actions do.
+            with _lock(scope), scope_file_lock(row['physical_account'], row['resource'], row['side']):
                 metadata = json.loads(row['payload'])
                 if row['owner'] != config_id:
                     grant = next((r for r in management_recovery_targets(config_id) if r['operation_id'] == row['operation_id']), None)

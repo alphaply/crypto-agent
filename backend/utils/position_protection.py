@@ -238,6 +238,9 @@ class PositionProtection:
 
     def _confirm_visible(self, record, symbol, trigger=False, required_status=None):
         """Allow brief exchange read-after-write lag without resubmitting the order."""
+        from backend.utils.trade_operations import financial_ack_only
+        if financial_ack_only.get():
+            return None  # Foreground calls use the exchange response; background verifies.
         for delay in (0, 0.15, 0.35, 0.75):
             if delay:
                 time.sleep(delay)
@@ -274,6 +277,10 @@ class PositionProtection:
 
     def open(self, symbol, op, operation_id=None):
         """Open with protection intent persisted before submitting the entry order."""
+        from backend.utils.trade_receipts import current_attempt, bind_attempt
+        attempt = current_attempt.get()
+        if attempt:
+            attempt.action, attempt.phase, attempt.submission_state = 'open', 'preflight', 'not_submitted'
         from backend.mcp.guard import assert_entry_allowed
         assert_entry_allowed(self.mt, symbol)
         if operation_id is None:
@@ -325,28 +332,44 @@ class PositionProtection:
             entry = dict(client_id="cae" + uuid.uuid4().hex[:28], status="submitting", id=None,
                          created_at=time.time(), price=price, amount=amount, operation_id=operation_id)
             plan["entries"].append(entry)
+            bind_attempt(plan, entry, 'preflight')
             self._save(plan)
             params = {**self._params(side, hedged), "clientOrderId": entry["client_id"], "timeInForce": "GTC"}
             try:
+                if attempt:
+                    attempt.phase, attempt.submission_state = 'submit', 'unknown'
+                entry['submission_state'] = 'unknown'
                 order = self.ex.create_order(symbol, "limit", "buy" if side == "LONG" else "sell", amount, price, params)
                 if not order or not order.get("id"):
                     raise RuntimeError("Entry submission outcome unknown")
                 entry.update(id=str(order["id"]), status=order.get("status", "open"),
-                             submission_state='submitted', acknowledgement=order)
+                             submission_state='submitted', acknowledgement=order, acknowledged_at=time.time())
+                if attempt:
+                    attempt.phase, attempt.submission_state = 'verify', 'submitted'
                 if order.get('filled') is not None:
                     entry.update(filled=float(order['filled']), fill_verified=True, fill_observed_at=time.time())
                 else:
                     entry['fill_verified'] = False
                 self._save(plan)
             except ccxt.ExchangeError as exc:
-                entry["status"] = "rejected"
-                plan["error"] = f"Entry rejected: {exc}"
+                from backend.utils.trade_order_evidence import rejection_evidence
+                proof = rejection_evidence(exc)
+                if proof and entry.get('submission_state') != 'submitted':
+                    entry.update(status='rejected', submission_state='not_submitted', submission_evidence=proof)
+                    if attempt:
+                        attempt.submission_state = 'not_submitted'
+                entry['execution_error'] = str(exc)
+                plan["error"] = f"Entry response failed: {exc}"
                 self._save(plan)
                 if protection_changed:
                     raise RuntimeError(f'整仓保护已更新（SL={sl}, TP={tp}），加仓委托被拒绝: {exc}') from exc
                 raise
             except Exception as exc:
-                plan["error"] = f"Entry submission unresolved: {exc}"
+                plan["error"] = f"Entry state persistence failed: {exc}" if entry.get('submission_state') == 'submitted' else f"Entry submission unresolved: {exc}"
+                if entry.get('submission_state') == 'submitted':
+                    # ACK facts are returned even when the cached plan lost CAS.
+                    return {**order, 'persistence_pending': True, 'protection_state': plan['state'],
+                            'protection_error': plan['error'], 'stop_loss': sl, 'take_profit': tp}
                 self._save(plan)
                 if protection_changed:
                     raise RuntimeError(f'整仓保护已更新（SL={sl}, TP={tp}），加仓结果待核验，不可重复提交: {exc}') from exc
@@ -360,13 +383,18 @@ class PositionProtection:
                     self._reconcile(plan)
             except Exception as exc:
                 plan["error"] = str(exc)
-                self._save(plan)
+                return {**order, 'persistence_pending': True, 'protection_state': plan['state'],
+                        'protection_error': plan['error'], 'stop_loss': sl, 'take_profit': tp}
             return {**order, "protection_state": plan["state"], "protection_error": plan.get("error"),
                     "stop_loss": sl, "take_profit": tp}
 
     def amend_entry(self, symbol, order_id, price=None, amount=None, reason='', pos_side=None, operation_id=None,
                     remaining_amount=None):
         """Amend a managed perpetual limit entry. Amount means TOTAL base quantity."""
+        from backend.utils.trade_receipts import current_attempt, bind_attempt
+        attempt = current_attempt.get()
+        if attempt:
+            attempt.action, attempt.phase, attempt.submission_state = 'edit', 'preflight', 'not_submitted'
         from backend.mcp.guard import assert_entry_allowed
         assert_entry_allowed(self.mt, symbol)
         if operation_id is None:
@@ -420,14 +448,23 @@ class PositionProtection:
             if new_price == entry['price'] and new_amount == entry['amount']:
                 return {'id': str(order_id), 'amendment_state': 'unchanged', 'protection_state': plan['state']}
             entry['amendment'] = dict(state='pending', price=new_price, amount=new_amount,
-                                      reason=reason, requested_at=time.time(), operation_id=operation_id)
+                                      reason=reason, requested_at=time.time(), operation_id=operation_id,
+                                      submission_state='unknown')
             entry['last_amended_at'] = entry['amendment']['requested_at']
+            bind_attempt(plan, entry, 'preflight')
             self._save(plan)  # Persist intent before the exchange write, including timeouts.
             try:
+                if attempt:
+                    attempt.phase, attempt.submission_state = 'amend', 'unknown'
                 acknowledgement = self.ex.edit_order(str(order_id), symbol, 'limit',
                                    'buy' if plan['side'] == 'LONG' else 'sell', new_amount, new_price)
-            except ccxt.ExchangeError:
-                entry['amendment']['state'] = 'rejected'
+            except ccxt.ExchangeError as exc:
+                from backend.utils.trade_order_evidence import rejection_evidence
+                proof = rejection_evidence(exc)
+                if proof:
+                    entry['amendment'].update(state='rejected', submission_evidence=proof, submission_state='not_submitted')
+                    if attempt:
+                        attempt.submission_state = 'not_submitted'
                 self._save(plan)
                 raise
             except Exception as exc:
@@ -437,6 +474,10 @@ class PositionProtection:
             from backend.utils.trade_operations import financial_ack_only
             if financial_ack_only.get():
                 if isinstance(acknowledgement, dict) and str(acknowledgement.get('id')) == str(order_id):
+                    entry['amendment'].update(acknowledged_at=time.time(), acknowledgement=acknowledgement,
+                                              submission_state='submitted')
+                    if attempt:
+                        attempt.submission_state = 'submitted'
                     if acknowledgement.get('status'):
                         entry['status'] = acknowledgement['status']
                     if acknowledgement.get('filled') is not None:
@@ -454,6 +495,8 @@ class PositionProtection:
             if not financial_ack_only.get():
                 self._reconcile(plan)
             return {'id': str(order_id), 'amendment_state': entry['amendment']['state'],
+                    'status': 'completed' if entry['amendment']['state'] == 'confirmed' else
+                              'submitted' if entry['amendment'].get('acknowledged_at') else 'pending',
                     'order_status': entry.get('status'),
                     'price': entry['price'], 'total_base_amount': entry['amount'] * contract_size,
                     'filled_contracts': entry.get('filled', 0), 'protection_state': plan['state'],
@@ -515,6 +558,8 @@ class PositionProtection:
         return True
 
     def _cancel(self, record, plan, trigger=False):
+        from backend.utils.trade_receipts import bind_attempt
+        attempt = bind_attempt(plan, record, 'preflight')
         if record.get("status") in TERMINAL:
             return
         if record.get("status") == "prepared":
@@ -530,11 +575,17 @@ class PositionProtection:
             record['cancel_requested_at'] = time.time()
             self._save(plan)
             try:
+                if attempt:
+                    attempt.phase, attempt.submission_state = 'cancel', 'unknown'
                 result = self.ex.cancel_order(record["id"], plan["symbol"], params={"trigger": True} if trigger else {})
             except ccxt.NetworkError:
                 pass  # A lost ACK is ambiguous; query without sending another cancel.
-            except Exception:
+            except Exception as exc:
                 record.pop('cancel_requested_at', None)
+                from backend.utils.trade_order_evidence import rejection_evidence
+                if attempt and rejection_evidence(exc):
+                    attempt.submission_state = 'not_submitted'
+                record['execution_error'] = str(exc)
                 self._save(plan)
                 raise
             else:
@@ -549,6 +600,8 @@ class PositionProtection:
                         and str(info.get('code')) == '200' and status is None):
                     status = 'canceled'
                 if same_order and status in TERMINAL:
+                    if attempt:
+                        attempt.submission_state = 'submitted'
                     record['status'] = status
                     record['cancel_confirmed_at'] = time.time()
                     if not self._record_cancel_fill(record, result):
@@ -697,6 +750,8 @@ class PositionProtection:
         self._cancel_conflicting_exchange_triggers(plan, kind)
 
     def _ensure_leg(self, plan, pos, kind):
+        from backend.utils.trade_operations import current_operation_id, financial_ack_only
+        from backend.utils.trade_receipts import bind_attempt
         symbol = plan["symbol"]
         amount = float(pos["contracts"])
         hedged = bool(pos.get("hedged"))
@@ -707,8 +762,12 @@ class PositionProtection:
                     and x["coverage"] == coverage and x.get("status") not in TERMINAL), None)
         if leg is None:
             leg = dict(kind=kind, revision=plan["revision"], coverage=coverage, trigger_price=trigger_price, id=None,
-                       client_id="cap" + uuid.uuid4().hex[:28], status="prepared", created_at=time.time())
+                       client_id="cap" + uuid.uuid4().hex[:28], status="prepared", created_at=time.time(),
+                       operation_id=current_operation_id.get(), exchange_channel='algo')
             plan["legs"].append(leg)
+            attempt = bind_attempt(plan, leg, 'preflight')
+            if attempt:
+                attempt.submission_state = 'not_submitted'
             self._save(plan)
         if leg["status"] == "open":
             return leg
@@ -734,10 +793,26 @@ class PositionProtection:
                 params["closeFraction"] = "1"
                 amount = None
         leg["status"] = "submitting"
+        attempt = bind_attempt(plan, leg, 'preflight')
+        if attempt:
+            attempt.submission_state = 'not_submitted'
         self._save(plan)
         try:
+            leg['submission_state'] = 'unknown'
+            if attempt:
+                attempt.phase, attempt.submission_state = 'submit', 'unknown'
             order = self.ex.create_order(symbol, "market", "sell" if plan["side"] == "LONG" else "buy", amount, None, params)
         except ccxt.ExchangeError as exc:
+            if financial_ack_only.get():
+                from backend.utils.trade_order_evidence import rejection_evidence
+                proof = rejection_evidence(exc)
+                if proof:
+                    leg.update(status='rejected', submission_state='not_submitted', submission_evidence=proof)
+                    if attempt:
+                        attempt.submission_state = 'not_submitted'
+                leg['execution_error'] = str(exc)
+                self._save(plan)
+                raise
             if ("-4130" in str(exc) or "closePosition in the direction is existing" in str(exc)) and self.ex.id in {"binance", "binanceusdm"}:
                 leg['status'] = 'rejected'  # Explicit rejection; no ambiguous submission to recover.
                 self._save(plan)
@@ -757,7 +832,10 @@ class PositionProtection:
                 raise
         if not order or not order.get("id"):
             raise RuntimeError("Protection submission outcome unknown")
-        leg.update(id=str(order["id"]), status=order.get("status") or "open")
+        leg.update(id=str(order["id"]), status=order.get("status") or "open", acknowledged_at=time.time(),
+                   submission_state='submitted')
+        if attempt:
+            attempt.phase, attempt.submission_state = 'verify', 'submitted'
         leg['acknowledgement'] = order
         self._save(plan)
         from backend.utils.trade_operations import financial_ack_only
@@ -818,6 +896,9 @@ class PositionProtection:
                 try:
                     sl = self._ensure_leg(plan, pos, "sl")
                 except ccxt.ExchangeError:
+                    from backend.utils.trade_operations import financial_ack_only
+                    if financial_ack_only.get():
+                        raise
                     if not any(x["kind"] == "sl" and x.get("status") == "open" for x in plan["legs"]):
                         self._finish(plan, 'protection_failure')
                     raise
@@ -840,6 +921,11 @@ class PositionProtection:
         except Exception as exc:
             plan["error"] = str(exc)
             self._save(plan)
+            from backend.utils.trade_operations import financial_ack_only
+            if financial_ack_only.get():
+                # Foreground protection failure returns its interface outcome;
+                # only maintenance may resolve it with additional observations.
+                raise
             # If the exchange cannot confirm any SL, resolve an ambiguous submit
             # once by client ID, then reduce known exposure rather than leave it naked.
             try:

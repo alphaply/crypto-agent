@@ -391,27 +391,50 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
         if scoped and is_independent_real(config_id) and request.get('contract_version') != 3:
             # All network reads are outside the reservation transaction. A replay
             # can refresh evidence but must never reach the financial callback.
-            return refresh_operation_receipt(config_id, symbol, operation_id, existing['result'])
+            return refresh_operation_receipt(config_id, symbol, operation_id, existing['result'], read_exchange=False)
         return json.loads(existing['result']) if existing['result'] else {
             'status': 'unknown', 'operation_id': operation_id,
             'error': '上次操作未确认，需核验实际订单；不会重复提交'}
     token = current_operation_id.set(operation_id)
     ack_token = financial_ack_only.set(True)
+    from backend.utils.trade_receipts import TradeAttempt, current_attempt, project_receipt
+    attempt = TradeAttempt(operation_id, request.get('action', request.get('tool', 'operation')),
+                           phase='untracked', submission_state='unknown')
+    attempt_token = current_attempt.set(attempt)
     try:
         result = callback()
     except Exception as exc:
-        # Once execution starts, exceptions may occur after the exchange accepted a write.
-        result = {"status": "unknown", "operation_id": operation_id, "error": str(exc)}
+        if attempt.phase != 'untracked':
+            result = project_receipt(attempt.plan, attempt.record, operation_id=operation_id,
+                                     action=attempt.action, phase=attempt.phase,
+                                     submission_state=attempt.submission_state, error=str(exc))
+            if attempt.action == 'protect' and attempt.plan:
+                result['accepted_order_ids'] = ['algo:' + str(leg['id']) for leg in attempt.plan.get('legs', [])
+                                                if leg.get('operation_id') == operation_id and leg.get('id')
+                                                and leg.get('submission_state') == 'submitted']
+        else:
+            # Uninstrumented compatibility callbacks cannot prove non-submission.
+            result = {"status": "unknown", "operation_id": operation_id, "error": str(exc)}
     finally:
+        current_attempt.reset(attempt_token)
         financial_ack_only.reset(ack_token)
         current_operation_id.reset(token)
     status = tool_result_status(result)
-    with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        from backend.utils.trade_evidence import append_receipt
-        append_receipt(conn, config_id, operation_id, result)
-        conn.execute("UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?", (status, json.dumps(result, ensure_ascii=False, default=str), time.time(), config_id, operation_id))
-        conn.commit()
+    try:
+        with database.get_db_conn() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            from backend.utils.trade_evidence import append_receipt
+            append_receipt(conn, config_id, operation_id, result)
+            conn.execute("UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?", (status, json.dumps(result, ensure_ascii=False, default=str), time.time(), config_id, operation_id))
+            conn.commit()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('Unable to persist receipt for %s/%s', config_id, operation_id)
+        # The reserved intent still prevents a replay. Preserve the callback's
+        # known exchange result even if local receipt persistence failed.
+        decoded = _decode_receipt(result)
+        if isinstance(decoded, dict):
+            result = {**decoded, 'persistence_pending': True}
     return result
 
 

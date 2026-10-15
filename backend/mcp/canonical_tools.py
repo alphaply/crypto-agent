@@ -254,7 +254,7 @@ def execute_live(caller, profile_id, symbol, request, operation_id):
     intent = {'symbol': primary, 'tool': 'execute_trade_actions', 'arguments': normalized, 'contract_version': 3}
     previous = store.reserve_operation(profile_id, operation_id, caller['id'], intent)
     if previous is not None:
-        return service.operation(caller, profile_id, operation_id).get('result') or previous
+        return previous
     stable_id = 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
     try:
         with runtime_symbols(cfg_id, symbols):
@@ -348,7 +348,7 @@ def register(server):
                                     profile_id: str | None = None, user_id: str | None = None, symbol: str | None = None,
                                     execution_policy: Literal['stop_on_error', 'independent'] | None = None,
                                     include: list[Literal['account']] | None = None) -> dict:
-        """Execute 1–20 typed v3 actions in order and return factual acknowledgement. A submitted entry is not a fill. The system verifies original identities in the background; skipped tails never resume. v2 remains a compatibility input."""
+        """Execute 1–20 typed v3 actions in order. Return concise per-action success, failure reason or not-executed text, with structured evidence retained. A successful submission is not a fill. Necessary preflight checks remain; no post-submission polling or verification reads inside this call. Unknown submissions stop all remaining actions, including independent batches. The background verifies original identities without replaying writes or tails. v2 remains a compatibility input."""
         caller = service.principal()
         is_paper = _scope(caller, profile_id, user_id)
         request = {'contract_version': contract_version, 'actions': actions}

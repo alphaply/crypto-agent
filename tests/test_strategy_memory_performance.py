@@ -15,7 +15,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.services.memory_view_service import strategy_memory_rows, memory_audit_detail
 from backend.utils.decision_record import execution_identity
 from backend.utils.performance_context import performance_data, profit_metric
-from test_context_projections import CFG, THESIS, sources, simulation, response_for
+from test_context_projections import CFG, THESIS, sources, simulation
 
 
 ETH_MEMORY = '''市场判断：等待4h收盘确认或CPI后反应再决策。
@@ -60,34 +60,10 @@ def test_english_order_diagnostics_preserve_market_conditions(noise):
     assert not validate_strategy_text(noise)
 
 
-@pytest.mark.parametrize('noise', ['operation_id=null', 'resolution=unavailable',
-                                 '周期恢复失败', '当前持仓0.02', '权益589.00', '{"fill_count":0}',
-                                 'the existing order is unverified.',
-                                 'reconcile the existing order before further actions.'])
-def test_summary_and_projection_both_reject_diagnostic_leakage(sources, noise):
-    context = projections.prepare_review('cfg')
-    for target in ('summary', 'strategy_text'):
-        value = response_for(context)
-        if target == 'summary':
-            value['summary'] += noise
-        else:
-            value['memory']['strategy_text'] += noise
-        with pytest.raises(projections.ProjectionContentError):
-            projections.validate_review(value, context)
-
-
-def test_refs_are_preserved_by_program_even_when_model_omits_them(sources):
-    context = projections.prepare_review('cfg')
-    value = response_for(context)
-    value['memory']['execution_refs'] = []
-    for item in value['projections']:
-        item['execution_refs'] = []
-    metadata = projections.validate_review(value, context)
-    assert metadata['memory']['execution_refs'] == ['old-close']
-    narrative_input = projections.review_input(context)
-    assert 'old-close' not in narrative_input
-    assert 'unknown' not in narrative_input
-    assert 'current_execution_evidence' not in narrative_input
+def test_refs_are_preserved_by_program_without_model_output(sources):
+    metadata = projections.capture_sources('cfg')
+    assert metadata['execution_refs'] == ['old-close']
+    assert metadata['output_format'] == 'plain_text'
 
 
 def test_null_and_tool_call_identity_never_invents_a_recovery_target():
@@ -100,16 +76,13 @@ def test_null_and_tool_call_identity_never_invents_a_recovery_target():
 
 def test_projection_version_upgrade_preserves_raw_history_without_fallback(sources):
     raw = database.get_short_memories('cfg', 1)[0]
-    context = projections.prepare_review('cfg')
-    metadata = projections.validate_review(response_for(context), context)
-    projections.persist_projections('cfg', metadata)
+    from test_context_projections import publish
+    publish()
     assert strategy_memory_rows([raw])[0]['market_summary'] == THESIS
     with database.get_db_conn() as conn:
         conn.execute('UPDATE decision_context_projections SET projection_version=1')
         conn.commit()
     assert strategy_memory_rows([raw])[0]['market_summary'] == ''
-    pending = projections.ensure_sources('cfg')
-    assert all(item['projection']['status'] == 'pending' for item in pending)
     assert database.get_short_memories('cfg', 1)[0] == raw
     assert memory_audit_detail(raw['id'])['short_memory']['market_summary'] == raw['market_summary']
 

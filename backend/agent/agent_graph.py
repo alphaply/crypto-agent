@@ -239,7 +239,7 @@ def calculate_next_run_time(agent_config, now_cn):
 # 1. Summarizer Pipeline
 # ==========================================
 
-STRATEGY_SUMMARY_FAILURE_PREFIX = "【策略压缩失败；以下为未压缩原始记录】\n"
+from backend.summary_memory_source import STRATEGY_SUMMARY_FAILURE_PREFIX
 
 
 def summarize_content(content: str, agent_config: dict, summary_type: str = "strategy") -> str:

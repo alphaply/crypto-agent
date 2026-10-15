@@ -3,6 +3,12 @@
 LEGACY_EXCERPT = '【决策摘录】'
 LEGACY_CLIP = '…（原文截取，非完整总结）'
 DECISION_TEXT = '【决策原文】'
+STRATEGY_SUMMARY_FAILURE_PREFIX = '【策略压缩失败；以下为未压缩原始记录】\n'
+
+
+def valid_compressed_summary(text) -> bool:
+    return bool(isinstance(text, str) and text.strip()
+                and not text.startswith(STRATEGY_SUMMARY_FAILURE_PREFIX))
 
 
 def restore_memory_source(row) -> dict:

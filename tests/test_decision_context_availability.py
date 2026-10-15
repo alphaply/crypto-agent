@@ -14,7 +14,7 @@ from backend.agent.memory_workflow import memory_review_lease
 from backend.app.api.history import router
 from backend.app.core.deps import get_current_user
 from backend.app.services.decision_memory_service import projection_status
-from test_context_projections import CFG, LEGACY, THESIS, model, response_for, sources, simulation
+from test_context_projections import CFG, LEGACY, THESIS, model, sources, simulation, publish
 
 
 def add_summary(timestamp, text=LEGACY):
@@ -23,13 +23,6 @@ def add_summary(timestamp, text=LEGACY):
                                 ('cfg', 'ETH/USDT', timestamp, text)).lastrowid
         conn.commit()
         return identity
-
-
-def publish():
-    context = projections.prepare_review('cfg')
-    metadata = projections.validate_review(response_for(context), context)
-    projections.persist_projections('cfg', metadata)
-    return metadata
 
 
 @pytest.mark.parametrize('status', ['pending', 'failed'])
@@ -41,11 +34,9 @@ def test_new_unpublished_window_preserves_memory_and_three_summaries(sources, mo
     database.save_short_memory('2026-10-13', '2026-10-13 04:00:00', 'ETH/USDT', 'cfg', '新原文待整理', '', 4)
     for day in (11, 12, 13):
         add_summary(f'2026-10-{day} 04:00:00', '新摘要待整理')
-    projections.ensure_sources('cfg')
     with database.get_db_conn() as conn:
         conn.execute('UPDATE decision_context_projections SET status=? WHERE status=\'pending\'', (status,))
         conn.commit()
-    monkeypatch.setattr(projections, 'ensure_sources', Mock(side_effect=AssertionError('Read must not write/queue')))
     after = load_decision_memory('cfg', CFG)
     assert after.short_memory_text == before.short_memory_text
     assert after.recent_summaries_text == before.recent_summaries_text
@@ -54,41 +45,12 @@ def test_new_unpublished_window_preserves_memory_and_three_summaries(sources, mo
     assert '整理中' not in after.short_memory_text + after.recent_summaries_text
 
 
-def test_late_publication_outside_current_window_and_source_order(sources):
-    old = projections.prepare_review('cfg')
-    metadata = projections.validate_review(response_for(old, thesis='旧有效策略'), old)
-    for day in (11, 12, 13, 14):
-        add_summary(f'2026-10-{day} 00:00:00')
-    newer = publish()
-    projections.persist_projections('cfg', metadata)
-    view = load_decision_memory('cfg', CFG)
-    assert '旧有效策略' not in view.recent_summaries_text
-    assert THESIS in view.recent_summaries_text
-    with database.get_db_conn() as conn:
-        assert conn.execute("SELECT status FROM decision_context_projections WHERE source_kind='strategy_summary' AND source_id=?",
-                            (str(sources),)).fetchone()['status'] == 'ready'
-    assert newer['projections']
-
-
-def test_edited_or_deleted_source_cannot_publish_stale_result(sources):
-    ctx = projections.prepare_review('cfg')
-    metadata = projections.validate_review(response_for(ctx), ctx)
-    original = database.get_short_memories('cfg', 1)[0]
-    database.update_short_memory('cfg', original['bucket_start'], '人工修订', '')
-    with database.get_db_conn() as conn:
-        conn.execute('DELETE FROM summaries WHERE id=?', (sources,))
-        conn.commit()
-    projections.persist_projections('cfg', metadata)
-    view = load_decision_memory('cfg', CFG)
-    assert THESIS not in view.short_memory_text + view.recent_summaries_text
-
-
 @pytest.mark.parametrize('same_bucket', [False, True])
 def test_memory_and_projection_commit_or_rollback_together(sources, monkeypatch, same_bucket):
     metadata = publish()
     before = database.get_short_memories('cfg', 10)
     view = load_decision_memory('cfg', CFG)
-    metadata = {**metadata, 'summary': '新完整原文', 'memory': {**metadata['memory'], 'strategy_text': '新发布策略'}}
+    metadata = {**metadata, 'summary': '新完整原文'}
     real_publish = projections.publish_new_memory
     def interrupt(*args):
         real_publish(*args)
@@ -109,7 +71,7 @@ def test_memory_and_projection_commit_or_rollback_together(sources, monkeypatch,
     with database.get_db_conn() as conn:
         projections.initialize_schema(conn)
         conn.commit()
-    assert '新发布策略' in load_decision_memory('cfg', CFG).short_memory_text
+    assert '新完整原文' in load_decision_memory('cfg', CFG).short_memory_text
 
 
 def test_evidence_failure_preserves_text_and_original_identity(sources, monkeypatch):
@@ -181,39 +143,13 @@ def test_symbol_change_rejects_inflight_memory_publication(sources, monkeypatch)
     assert database.get_short_memories('cfg', 10) == before
 
 
-def test_upgrade_retries_failed_once_and_preserves_ready(sources):
-    publish()
-    with database.get_db_conn() as conn:
-        conn.execute('ALTER TABLE decision_context_projections DROP COLUMN publication_revision')
-        conn.execute("UPDATE decision_context_projections SET status='failed',attempts=3 WHERE source_kind='strategy_summary'")
-        projections.initialize_schema(conn)
-        rows = conn.execute('SELECT source_kind,status,attempts FROM decision_context_projections').fetchall()
-        assert {(r['source_kind'], r['status'], r['attempts']) for r in rows} == {
-            ('short_memory', 'ready', 0), ('strategy_summary', 'pending', 0)}
-        conn.execute("UPDATE decision_context_projections SET status='failed',attempts=3 WHERE source_kind='strategy_summary'")
-        projections.initialize_schema(conn)
-        conn.commit()
-    assert projection_status('cfg')['failed'] == 1
-
-
-def test_upgrade_marker_rolls_back_if_requeue_fails(sources):
+def test_upgrade_never_requeues_retired_projection_jobs(sources):
     publish()
     with database.get_db_conn() as conn:
         conn.execute('ALTER TABLE decision_context_projections DROP COLUMN publication_revision')
         conn.execute("UPDATE decision_context_projections SET status='failed',attempts=3")
-        conn.commit()
-        class InterruptedConnection:
-            def execute(self, sql, *args):
-                if sql.startswith('UPDATE decision_context_projections'):
-                    raise RuntimeError('interrupted migration')
-                return conn.execute(sql, *args)
-        with pytest.raises(RuntimeError, match='interrupted migration'):
-            projections.initialize_schema(InterruptedConnection())
-        assert 'publication_revision' not in {row[1] for row in conn.execute('PRAGMA table_info(decision_context_projections)')}
-        assert conn.execute('SELECT status FROM decision_context_projections LIMIT 1').fetchone()[0] == 'failed'
         projections.initialize_schema(conn)
-        conn.commit()
-    assert projection_status('cfg')['pending'] == 2
+        assert all(row[0] == 'failed' and row[1] == 3 for row in conn.execute('SELECT status,attempts FROM decision_context_projections'))
 
 
 def test_failed_atomic_save_reuses_durable_model_result(sources, monkeypatch):
@@ -250,7 +186,7 @@ def test_status_and_retry_are_authenticated_and_do_not_call_model(sources, monke
     assert status['failed'] == 1 and status['published']['short_memory'][0]['as_of'] == '2026-10-10 04:00:00'
     assert status['errors'][0]['error'] == 'model offline'
     retried = client.post(url + 'retry', json={'config_id': 'cfg'}).json()
-    assert retried['requeued'] == 1 and retried['pending'] == 1 and retried['failed'] == 0
+    assert retried['requeued'] == 0 and retried['pending'] == 0 and retried['failed'] == 1
     assert client.post(url + 'retry', json={'config_id': 'cfg'}).json()['requeued'] == 0
     assert client.post(url + 'retry', json={'config_id': 'cfg', 'anything': True}).status_code == 422
     assert client.get(url + 'status?config_id=missing').status_code == 404
