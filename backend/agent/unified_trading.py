@@ -4,6 +4,7 @@ Only trusted callers choose the execution engine. The schema contains trading
 intent, never arbitrary handler names, credentials, or account overrides.
 """
 from __future__ import annotations
+from backend.storage import lock_scope
 
 from contextvars import ContextVar
 from copy import deepcopy
@@ -257,24 +258,19 @@ def stable_child_operation_id(owner_id: str, parent_id: str, index: int) -> str:
 
 
 def _initialize_batches(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS unified_trade_batches (
-        config_id TEXT NOT NULL,parent_operation_id TEXT NOT NULL,worker_pid INTEGER NOT NULL,
-        state TEXT NOT NULL,updated_at REAL NOT NULL,PRIMARY KEY(config_id,parent_operation_id))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS unified_trade_children (
-        config_id TEXT NOT NULL,parent_operation_id TEXT NOT NULL,action_index INTEGER NOT NULL,
-        child_operation_id TEXT NOT NULL,symbol TEXT NOT NULL,
-        PRIMARY KEY(config_id,parent_operation_id,action_index),UNIQUE(config_id,child_operation_id))''')
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def _prepare_children(config_id, parent_id, parsed, default_symbol):
     from backend import database
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'trade-operation', config_id, parent_id)
         _initialize_batches(conn)
-        conn.execute('INSERT INTO unified_trade_batches VALUES(?,?,?,?,?)',
+        conn.execute('INSERT INTO unified_trade_batches(config_id,parent_operation_id,worker_pid,state,updated_at) VALUES(%s,%s,%s,%s,%s)',
                      (config_id, parent_id, os.getpid(), 'running', time.time()))
         for index, action in enumerate(parsed.actions):
-            conn.execute('INSERT INTO unified_trade_children VALUES(?,?,?,?,?)',
+            conn.execute('INSERT INTO unified_trade_children(config_id,parent_operation_id,action_index,child_operation_id,symbol) VALUES(%s,%s,%s,%s,%s)',
                          (config_id, parent_id, index, stable_child_operation_id(config_id, parent_id, index), action.symbol or default_symbol))
         conn.commit()
 
@@ -295,8 +291,8 @@ def _replay_without_configuration(payload, config_id, symbol, parent_id, engine)
     """A retired task can query its original intent, but cannot infer a new engine."""
     from backend import database
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        saved = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
+        saved = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=%s AND operation_id=%s',
                              (config_id, parent_id)).fetchone() if 'trade_operation_requests' in tables else None
     if not saved:
         return _configuration_unavailable(payload, parent_id)
@@ -426,7 +422,7 @@ def execute_v3_actions(payload, *, config_id: str, symbol: str, operation_id: st
                     receipt['account_summary'] = {'status': 'failed', 'error': str(exc), 'observed_at': None}
             from backend import database
             with database.get_db_conn() as conn:
-                conn.execute('UPDATE unified_trade_batches SET state=?,updated_at=? WHERE config_id=? AND parent_operation_id=?',
+                conn.execute('UPDATE unified_trade_batches SET state=%s,updated_at=%s WHERE config_id=%s AND parent_operation_id=%s',
                              ('finished', time.time(), config_id, parent_id))
                 conn.commit()
             return receipt
@@ -446,18 +442,18 @@ def execute_v3_actions(payload, *, config_id: str, symbol: str, operation_id: st
 
 
 def query_unified_operation(config_id: str, symbol: str, operation_id: str, *, read_exchange=True,
-                            market_tool=None, recovery_scope=None):
+                            market_tool=None, recovery_scope=None, refresh_children=True):
     from backend import database
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         if 'trade_operation_requests' not in tables:
             return None
-        request = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
+        request = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=%s AND operation_id=%s',
                                (config_id, operation_id)).fetchone()
         intent = json.loads(request[0]) if request else {}
         if intent.get('contract_version') != 3:
             return None
-        parent = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+        parent = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',
                               (config_id, operation_id)).fetchone()
         if not parent:
             return {'status': 'failed', 'error_code': 'operation_not_found', 'operation_id': operation_id}
@@ -474,9 +470,9 @@ def query_unified_operation(config_id: str, symbol: str, operation_id: str, *, r
         if not recovery_scope and not _same_symbol(parent['symbol'], symbol):
             return {'status': 'failed', 'error_code': 'operation_not_found', 'operation_id': operation_id}
         previous = _decode_receipt(parent['result'])
-        mappings = conn.execute('SELECT * FROM unified_trade_children WHERE config_id=? AND parent_operation_id=? ORDER BY action_index',
+        mappings = conn.execute('SELECT * FROM unified_trade_children WHERE config_id=%s AND parent_operation_id=%s ORDER BY action_index',
                                 (config_id, operation_id)).fetchall() if 'unified_trade_children' in tables else []
-        child_rows = {row['operation_id']: dict(row) for row in conn.execute('SELECT * FROM trade_action_runs WHERE config_id=?', (config_id,))}
+        child_rows = {row['operation_id']: dict(row) for row in conn.execute('SELECT * FROM trade_action_runs WHERE config_id=%s', (config_id,))}
     if not mappings:
         return previous or {'status': 'pending', 'operation_id': operation_id, 'contract_version': 3, 'receipt_version': 1}
     active = (config_id, operation_id) in _active_batches
@@ -511,8 +507,10 @@ def query_unified_operation(config_id: str, symbol: str, operation_id: str, *, r
             rows.append(row)
             continue
         if child:
-            result = _refresh_child(config_id, mapping['symbol'], child_id,
-                                    _decode_receipt(child['result']), read_exchange, market_tool=market_tool)
+            result = _decode_receipt(child['result'])
+            if refresh_children:
+                result = _refresh_child(config_id, mapping['symbol'], child_id,
+                                        result, read_exchange, market_tool=market_tool)
             if isinstance(result, dict):
                 row = {**row, 'status': tool_result_status(result), 'result': result}
             else:
@@ -531,7 +529,7 @@ def query_unified_operation(config_id: str, symbol: str, operation_id: str, *, r
     if recovery_scope and not rows:
         output.update(status='unknown', error_code='accepted_scope_evidence_unavailable')
     query_errors = [{'index': row['index'], 'errors': row['result']['query'].get('errors', [])}
-                    for row in rows if isinstance(row.get('result'), dict) and row['result'].get('query', {}).get('status') == 'failed']
+                    for row in rows if isinstance(row.get('result'), dict) and row['result'].get('query', {}).get('status') in {'partial', 'failed'}]
     output['query'] = {'status': 'partial' if query_errors and len(query_errors) < len(rows) else 'failed' if query_errors else 'completed',
                        'queried_at': time.time(), 'source': 'operation_evidence',
                        **({'errors': query_errors} if query_errors else {})}
@@ -550,15 +548,15 @@ def _original_action_side(config_id, symbol, operation_id, args, receipt):
         return side
     from backend import database
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         if 'trade_operation_evidence' in tables:
-            evidence = conn.execute("SELECT json_extract(c.payload,'$.side') FROM trade_cycle_evidence c "
+            evidence = conn.execute("SELECT (c.payload::jsonb->>'side') FROM trade_cycle_evidence c "
                                    'JOIN trade_operation_evidence e USING(config_id,account_scope,symbol,episode_id) '
-                                   'WHERE e.config_id=? AND e.operation_id=? LIMIT 1',
+                                   'WHERE e.config_id=%s AND e.operation_id=%s LIMIT 1',
                                     (config_id, operation_id)).fetchone()
             if evidence:
                 return evidence[0]
-        plans = conn.execute("SELECT payload FROM real_protection_plans WHERE config_id=? OR json_extract(payload,'$.original_owner')=?",
+        plans = conn.execute("SELECT payload FROM real_protection_plans WHERE config_id=%s OR (payload::jsonb->>'original_owner')=%s",
                              (config_id, config_id)).fetchall() if 'real_protection_plans' in tables else []
     for saved in plans:
         plan = json.loads(saved[0])
@@ -576,9 +574,9 @@ def _save_projection(config_id, operation_id, receipt):
     from backend import database
     from backend.utils.trade_evidence import append_receipt
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'trade-operation', config_id, operation_id)
         append_receipt(conn, config_id, operation_id, receipt)
-        conn.execute('UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?',
+        conn.execute('UPDATE trade_action_runs SET status=%s,result=%s,updated_at=%s WHERE config_id=%s AND operation_id=%s',
                      (tool_result_status(receipt), json.dumps(receipt, ensure_ascii=False), time.time(), config_id, operation_id))
         conn.commit()
 
@@ -586,8 +584,8 @@ def _save_projection(config_id, operation_id, receipt):
 def _refresh_child(config_id, symbol, operation_id, previous, read_exchange, *, market_tool=None):
     from backend import database
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        simulated = conn.execute('SELECT result FROM mock_trade_operations WHERE config_id=? AND symbol=? AND operation_id=?',
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
+        simulated = conn.execute('SELECT result FROM mock_trade_operations WHERE config_id=%s AND symbol=%s AND operation_id=%s',
                                  (config_id, symbol, operation_id)).fetchone() if 'mock_trade_operations' in tables else None
     saved_simulation = json.loads(simulated[0]) if simulated else None
     simulated = simulated if isinstance(saved_simulation, dict) and saved_simulation.get('status') else None
@@ -596,7 +594,7 @@ def _refresh_child(config_id, symbol, operation_id, previous, read_exchange, *, 
         result = {**result, 'operation_id': operation_id, 'contract_version': 3, 'receipt_version': 1}
         if result.get('execution_operation_id') and not simulated:
             with database.get_db_conn() as conn:
-                native = conn.execute('SELECT result FROM trade_action_runs WHERE config_id=? AND symbol=? AND operation_id=?',
+                native = conn.execute('SELECT result FROM trade_action_runs WHERE config_id=%s AND symbol=%s AND operation_id=%s',
                                       (config_id, symbol, result['execution_operation_id'])).fetchone()
             observed = _decode_receipt(native[0]) if native and native[0] else None
             if isinstance(observed, dict) and len(observed.get('results', [])) == 1:
@@ -609,7 +607,7 @@ def _refresh_child(config_id, symbol, operation_id, previous, read_exchange, *, 
             if identity:
                 identity = str(identity).removeprefix('regular:').removeprefix('algo:')
                 with database.get_db_conn() as conn:
-                    order = conn.execute('SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND order_id=?',
+                    order = conn.execute('SELECT * FROM mock_orders WHERE config_id=%s AND symbol=%s AND order_id=%s',
                                          (config_id, symbol, identity)).fetchone()
                     if order:
                         order_state = 'filled' if order['is_filled'] else str(order['status']).lower()
@@ -618,7 +616,8 @@ def _refresh_child(config_id, symbol, operation_id, previous, read_exchange, *, 
                         if result.get('action') == 'open' or result.get('status') in {'open', 'submitted'}:
                             result['status'] = 'submitted' if order_state == 'open' else 'completed'
     cleanup_pending = isinstance(result, dict) and isinstance(result.get('cleanup'), dict) and result['cleanup'].get('status') in {'pending', 'unknown'}
-    if not simulated and (not isinstance(result, dict) or result.get('status') in {'unknown', 'pending', 'running', 'submitted'} or cleanup_pending):
+    query_pending = isinstance(result, dict) and isinstance(result.get('query'), dict) and result['query'].get('status') in {'partial', 'failed'}
+    if not simulated and (not isinstance(result, dict) or result.get('status') in {'unknown', 'pending', 'running', 'submitted'} or cleanup_pending or query_pending):
         if not read_exchange:
             from backend.utils.trade_operations import has_scoped_evidence, refresh_operation_receipt
             with database.get_db_conn() as conn:

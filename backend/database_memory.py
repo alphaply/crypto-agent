@@ -1,3 +1,4 @@
+from backend import storage
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import timedelta
@@ -23,7 +24,7 @@ class SummaryMemoryStore:
                 cursor.execute(
                     '''
                     INSERT INTO daily_summaries (date, symbol, config_id, summary, source_count, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT(date, config_id) DO UPDATE SET
                         summary = excluded.summary,
                         source_count = excluded.source_count,
@@ -32,6 +33,8 @@ class SummaryMemoryStore:
                     (date_str, symbol, config_id, summary, source_count, created_at),
                 )
                 conn.commit()
+            except storage.Error:
+                raise
             except Exception as exc:
                 self._logger.error(f"❌ DB Error (save_daily_summary): {exc}")
 
@@ -41,8 +44,8 @@ class SummaryMemoryStore:
             cursor.execute(
                 '''
                 UPDATE daily_summaries
-                SET summary = ?
-                WHERE date = ? AND config_id = ?
+                SET summary = %s
+                WHERE date = %s AND config_id = %s
                 ''',
                 (summary, date_str, config_id),
             )
@@ -52,7 +55,7 @@ class SummaryMemoryStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "DELETE FROM daily_summaries WHERE date = ? AND config_id = ?",
+                "DELETE FROM daily_summaries WHERE date = %s AND config_id = %s",
                 (date_str, config_id),
             )
             deleted = cursor.rowcount
@@ -69,13 +72,13 @@ class SummaryMemoryStore:
                 '''
                 SELECT date, symbol, config_id, summary, source_count, created_at
                 FROM daily_summaries
-                WHERE config_id = ? AND date >= ? AND date <= ?
+                WHERE config_id = %s AND date >= %s AND date <= %s
                 ORDER BY date DESC
-                LIMIT ?
+                LIMIT %s
                 ''',
                 (config_id, cutoff, today, days),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            return [storage.record(row) for row in cursor.fetchall()]
 
     def list_daily_summaries(self, symbol=None, config_id=None, days=None, limit=200):
         with self._conn_factory() as conn:
@@ -83,14 +86,14 @@ class SummaryMemoryStore:
             clauses = []
             params = []
             if symbol and symbol != "ALL":
-                clauses.append("symbol = ?")
+                clauses.append("symbol = %s")
                 params.append(symbol)
             if config_id and config_id != "ALL":
-                clauses.append("config_id = ?")
+                clauses.append("config_id = %s")
                 params.append(config_id)
             if days:
                 cutoff = (self._now_factory() - timedelta(days=int(days))).strftime("%Y-%m-%d")
-                clauses.append("date >= ?")
+                clauses.append("date >= %s")
                 params.append(cutoff)
 
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -101,11 +104,11 @@ class SummaryMemoryStore:
                 FROM daily_summaries
                 {where}
                 ORDER BY date DESC, config_id ASC
-                LIMIT ?
+                LIMIT %s
                 ''',
                 tuple(params),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [storage.record(row) for row in rows]
 
     def get_pending_daily_summary_data(self, config_id, date_str):
         with self._conn_factory() as conn:
@@ -114,7 +117,7 @@ class SummaryMemoryStore:
                 '''
                 SELECT strategy_logic, timestamp, content AS _source_content
                 FROM summaries
-                WHERE config_id = ? AND date(timestamp) = ?
+                WHERE config_id = %s AND substring(timestamp from 1 for 10) = %s
                 ORDER BY id ASC
                 ''',
                 (config_id, date_str),
@@ -124,16 +127,16 @@ class SummaryMemoryStore:
     def get_summary_logic_between(self, config_id, start_time, end_time):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            columns = {row[1] for row in cursor.execute('PRAGMA table_info(summaries)')}
+            columns = {row[1] for row in storage.table_columns(conn, 'summaries')}
             report_field = 'report_json' if 'report_json' in columns else 'NULL AS report_json'
             decision_field = 'decision_json' if 'decision_json' in columns else 'NULL AS decision_json'
             rows = cursor.execute(
                 f'''
                 SELECT id, config_id, symbol, strategy_logic, timestamp, content AS _source_content, {report_field}, {decision_field}
                 FROM summaries
-                WHERE config_id = ?
-                  AND timestamp >= ?
-                  AND timestamp < ?
+                WHERE config_id = %s
+                  AND timestamp >= %s
+                  AND timestamp < %s
                   AND COALESCE(strategy_logic, '') != ''
                 ORDER BY timestamp,id ASC
                 ''',
@@ -141,7 +144,7 @@ class SummaryMemoryStore:
             ).fetchall()
             result = []
             for row in rows:
-                item = dict(row)
+                item = storage.record(row)
                 from backend.summary_memory_source import valid_compressed_summary
                 if not valid_compressed_summary(item['strategy_logic']):
                     continue
@@ -155,10 +158,10 @@ class SummaryMemoryStore:
         created_at = self._timestamp()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            conn.execute('BEGIN IMMEDIATE')
-            columns = {row[1] for row in cursor.execute('PRAGMA table_info(short_memories)')}
+            storage.lock_scope(conn, 'memory', config_id)
+            columns = {row[1] for row in storage.table_columns(conn, 'short_memories')}
             if run_id and 'run_id' in columns:
-                saved = cursor.execute('SELECT market_summary,run_id FROM short_memories WHERE config_id=? AND bucket_start=?',
+                saved = cursor.execute('SELECT market_summary,run_id FROM short_memories WHERE config_id=%s AND bucket_start=%s',
                                        (config_id, bucket_start)).fetchone()
                 if saved and saved['run_id'] == run_id and saved['market_summary'] == market_summary:
                     return  # A prior save succeeded before the job completion ACK.
@@ -171,23 +174,18 @@ class SummaryMemoryStore:
             if decision_projection:
                 from backend.agent.context_projections import verify_publication_sources
                 verify_publication_sources(conn, config_id, decision_projection)
-            columns = {row[1] for row in cursor.execute('PRAGMA table_info(short_memories)')}
-            for name, definition in (('window_start', 'TEXT'), ('window_end', 'TEXT'),
-                                     ('source_summary_ids', "TEXT NOT NULL DEFAULT '[]'"),
-                                     ('run_id', 'TEXT'), ('version', 'INTEGER')):
-                if name not in columns:
-                    cursor.execute(f'ALTER TABLE short_memories ADD COLUMN {name} {definition}')
-            existing = cursor.execute('SELECT COALESCE(version,id) AS version FROM short_memories WHERE config_id=? AND bucket_start=?',
+            columns = {row[1] for row in storage.table_columns(conn, 'short_memories')}
+            existing = cursor.execute('SELECT COALESCE(version,id) AS version FROM short_memories WHERE config_id=%s AND bucket_start=%s',
                                       (config_id, bucket_start)).fetchone()
             version = existing['version'] if existing else cursor.execute(
-                'SELECT COALESCE(MAX(COALESCE(version,id)),0)+1 FROM short_memories WHERE config_id=?', (config_id,)).fetchone()[0]
+                'SELECT COALESCE(MAX(COALESCE(version,id)),0)+1 FROM short_memories WHERE config_id=%s', (config_id,)).fetchone()[0]
             cursor.execute(
                 '''
                 INSERT INTO short_memories (
                     bucket_start, bucket_end, symbol, config_id, market_summary,
                     position_summary, source_count, created_at, window_start, window_end,
                     source_summary_ids, run_id, version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(config_id, bucket_start) DO UPDATE SET
                     bucket_end = excluded.bucket_end,
                     symbol = excluded.symbol,
@@ -205,14 +203,14 @@ class SummaryMemoryStore:
             )
             if decision_projection:
                 from backend.agent.context_projections import publish_new_memory
-                row = cursor.execute('SELECT * FROM short_memories WHERE config_id=? AND bucket_start=?',
+                row = cursor.execute('SELECT * FROM short_memories WHERE config_id=%s AND bucket_start=%s',
                                      (config_id, bucket_start)).fetchone()
-                publish_new_memory(conn, config_id, dict(row), decision_projection)
+                publish_new_memory(conn, config_id, storage.record(row), decision_projection)
             conn.commit()
 
     @staticmethod
     def _memory_payload(row):
-        payload = dict(row)
+        payload = storage.record(row)
         payload['window_start'] = payload.get('window_start') or payload['bucket_start']
         payload['window_end'] = payload.get('window_end') or payload['bucket_end']
         payload['version'] = payload.get('version') or payload.get('id')
@@ -229,9 +227,9 @@ class SummaryMemoryStore:
                 '''
                 SELECT *
                 FROM short_memories
-                WHERE config_id = ?
-                ORDER BY bucket_end DESC, id DESC
-                LIMIT ?
+                WHERE config_id = %s
+                ORDER BY bucket_end DESC NULLS LAST, id DESC
+                LIMIT %s
                 ''',
                 (config_id, int(limit or 2)),
             ).fetchall()
@@ -247,12 +245,12 @@ class SummaryMemoryStore:
             '''
             params = []
             if symbol:
-                sql += " AND symbol = ?"
+                sql += " AND symbol = %s"
                 params.append(symbol)
             if config_id and config_id != "ALL":
-                sql += " AND config_id = ?"
+                sql += " AND config_id = %s"
                 params.append(config_id)
-            sql += " ORDER BY bucket_end DESC, id DESC LIMIT ?"
+            sql += " ORDER BY bucket_end DESC NULLS LAST, id DESC LIMIT %s"
             params.append(int(limit or 200))
             rows = cursor.execute(sql, tuple(params)).fetchall()
             return [self._memory_payload(row) for row in rows]
@@ -264,7 +262,7 @@ class SummaryMemoryStore:
                 '''
                 SELECT *
                 FROM short_memories
-                WHERE config_id = ? AND bucket_start = ?
+                WHERE config_id = %s AND bucket_start = %s
                 ''',
                 (config_id, bucket_start),
             ).fetchone()
@@ -273,22 +271,22 @@ class SummaryMemoryStore:
     def update_short_memory(self, config_id, bucket_start, market_summary, position_summary):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            conn.execute('BEGIN IMMEDIATE')
+            storage.lock_scope(conn, 'memory', config_id)
             from backend.agent.context_projections import publish_text, source_refs, _source
-            previous = cursor.execute('SELECT * FROM short_memories WHERE config_id=? AND bucket_start=?',
+            previous = cursor.execute('SELECT * FROM short_memories WHERE config_id=%s AND bucket_start=%s',
                                       (config_id, bucket_start)).fetchone()
-            refs = source_refs(config_id, _source('short_memory', dict(previous))) if previous else []
+            refs = source_refs(config_id, _source('short_memory', storage.record(previous))) if previous else []
             cursor.execute(
                 '''
                 UPDATE short_memories
-                SET market_summary = ?, position_summary = COALESCE(?, position_summary)
-                WHERE config_id = ? AND bucket_start = ?
+                SET market_summary = %s, position_summary = COALESCE(%s, position_summary)
+                WHERE config_id = %s AND bucket_start = %s
                 ''',
                 (market_summary, position_summary, config_id, bucket_start),
             )
             updated = cursor.rowcount
             if updated:
-                row = dict(cursor.execute('SELECT * FROM short_memories WHERE config_id=? AND bucket_start=?',
+                row = storage.record(cursor.execute('SELECT * FROM short_memories WHERE config_id=%s AND bucket_start=%s',
                                           (config_id, bucket_start)).fetchone())
                 publish_text(conn, config_id, 'short_memory', row, refs)
             conn.commit()
@@ -297,7 +295,7 @@ class SummaryMemoryStore:
     def clear_short_memory_snapshot(self, config_id: str, bucket_start: str) -> int:
         with self._conn_factory() as conn:
             cursor = conn.execute(
-                "UPDATE short_memories SET position_summary='' WHERE config_id=? AND bucket_start=?",
+                "UPDATE short_memories SET position_summary='' WHERE config_id=%s AND bucket_start=%s",
                 (config_id, bucket_start),
             )
             conn.commit()
@@ -324,20 +322,20 @@ class SummaryMemoryStore:
         if bucket_pairs:
             pair_clauses = []
             for pair_config_id, pair_bucket_start in bucket_pairs:
-                pair_clauses.append("(config_id = ? AND bucket_start = ?)")
+                pair_clauses.append("(config_id = %s AND bucket_start = %s)")
                 params.extend([pair_config_id, pair_bucket_start])
             where.append("(" + " OR ".join(pair_clauses) + ")")
         if symbol:
-            where.append("symbol = ?")
+            where.append("symbol = %s")
             params.append(symbol)
         if config_id and config_id != "ALL":
-            where.append("config_id = ?")
+            where.append("config_id = %s")
             params.append(config_id)
         if bucket_start_from:
-            where.append("bucket_start >= ?")
+            where.append("bucket_start >= %s")
             params.append(bucket_start_from)
         if bucket_start_to:
-            where.append("bucket_start <= ?")
+            where.append("bucket_start <= %s")
             params.append(bucket_start_to)
         if not where:
             raise ValueError("At least one short memory delete filter is required")

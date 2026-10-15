@@ -111,7 +111,7 @@ def get_market_catalog(exchange: str, market_type: str = "spot") -> tuple[list[d
             catalog = sorted(records.values(), key=lambda item: (preferred_quotes.get(item["quote"], 9), item["symbol"]))
             if not catalog:
                 raise ValueError("Empty active instrument catalogue")
-            size = resident_size(catalog, positive_setting('RUNTIME_QUOTE_BYTES', 8 * 1024 * 1024))
+            size = resident_size(catalog, None)
             lease = reserve_bytes('quotes', size * 2)
         except Exception as exc:
             # Upstream exceptions may contain URLs or other transport internals.

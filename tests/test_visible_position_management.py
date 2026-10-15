@@ -53,9 +53,9 @@ def tool(owner='owner', venue=None, **updates):
 
 
 @pytest.fixture(autouse=True)
-def isolated(tmp_path, monkeypatch):
+def isolated(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'visible.sqlite'))
-    database.init_db()
+    pass  # financial_pg installs the complete native migration schema.
 
 
 def test_default_and_legacy_policy_mapping():
@@ -172,7 +172,7 @@ def test_legacy_migration_only_retires_never_bound_reservations(bound):
         if bound:
             plan = {'account_scope': legacy, 'symbol': SYMBOL, 'side': 'LONG', 'state': 'DONE',
                     'ever_filled': True, 'entries': [{'order_id': 'historical-owned-order', 'status': 'closed'}]}
-            conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                          ('owner', SYMBOL, 'LONG', json.dumps(plan)))
         management.migrate_existing_claims(conn, snapshot)
         claim = management._decode(conn.execute('SELECT * FROM visible_management_claims').fetchone())
@@ -191,7 +191,7 @@ def test_transfer_keeps_original_identity_and_recovery_is_narrow(monkeypatch):
     source, target = tool(), tool('receiver')
     claim = management.claim_management(source, SYMBOL, 'LONG')
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO visible_management_actions VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO visible_management_actions(claim_id,owner,version,operation_id,state,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                      (claim['claim_id'], 'owner', claim['version'], 'original-child', 'unknown', json.dumps({'symbol': SYMBOL})))
         conn.commit()
     monkeypatch.setattr('backend.utils.market_data.MarketTool', lambda config_id: source if config_id == 'owner' else target)
@@ -242,9 +242,9 @@ def test_mcp_retirement_only_accepts_mapped_original_unknown_operations(monkeypa
     claim = management.claim_management(source, SYMBOL, 'LONG')
     with database.get_db_conn() as conn:
         store.initialize_schema(conn)
-        conn.execute('INSERT INTO mcp_operations VALUES(?,?,?,?,?,?,?,?)', ('source','original','hash','private-principal','unknown','{}',0,0))
-        conn.execute('INSERT INTO mcp_operation_links VALUES(?,?,?,?,?)', ('source','original','private-principal','original-internal',SYMBOL))
-        conn.execute('INSERT INTO trade_operation_requests VALUES(?,?,?)',
+        conn.execute('INSERT INTO mcp_operations(profile_id,operation_id,fingerprint,principal,state,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)', ('source','original','hash','private-principal','unknown','{}',0,0))
+        conn.execute('INSERT INTO mcp_operation_links(profile_id,operation_id,principal,internal_operation_id,symbol) VALUES(%s,%s,%s,%s,%s)', ('source','original','private-principal','original-internal',SYMBOL))
+        conn.execute('INSERT INTO trade_operation_requests(config_id,operation_id,request_json) VALUES(%s,%s,%s)',
                      ('mcp:source','original-internal',json.dumps({'contract_version':3,'action':'close','arguments':{'side':'LONG'}})))
         conn.commit()
         assert active_lifecycle(conn, {'profile_id':'source','market_type':'swap'})
@@ -253,8 +253,8 @@ def test_mcp_retirement_only_accepts_mapped_original_unknown_operations(monkeypa
     assert any(g['operation_id']=='original-internal' for g in moved['recovery_targets'])
     with database.get_db_conn() as conn:
         assert not active_lifecycle(conn, {'profile_id':'source','market_type':'swap'})
-        conn.execute('INSERT INTO mcp_operations VALUES(?,?,?,?,?,?,?,?)', ('source','other-private','hash','private-principal','unknown','{}',0,0))
-        conn.execute('INSERT INTO mcp_operation_links VALUES(?,?,?,?,?)', ('source','other-private','private-principal','unaccepted-internal',SYMBOL))
+        conn.execute('INSERT INTO mcp_operations(profile_id,operation_id,fingerprint,principal,state,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)', ('source','other-private','hash','private-principal','unknown','{}',0,0))
+        conn.execute('INSERT INTO mcp_operation_links(profile_id,operation_id,principal,internal_operation_id,symbol) VALUES(%s,%s,%s,%s,%s)', ('source','other-private','private-principal','unaccepted-internal',SYMBOL))
         conn.commit()
         assert active_lifecycle(conn, {'profile_id':'source','market_type':'swap'})
 

@@ -11,10 +11,10 @@ from backend.utils.trade_operations import current_operation_id, run_once, tool_
 
 
 @pytest.fixture
-def local_db(tmp_path, monkeypatch):
+def local_db(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'batch.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: {'mode': 'REAL', 'exit_mode': 'independent_exits'})
 
 
@@ -125,13 +125,13 @@ def test_unknown_receipt_refreshes_from_native_reconciliation_without_replay(loc
         {'id': 'exchange-order', 'operation_id': 'call:0', 'status': 'open', 'amount': 1, 'filled': 0}
     ]}
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(plan)))
         conn.commit()
     assert run_once('cfg', 'ETH/USDT', 'call', request, callback)['status'] == 'unknown'
     plan['error'] = None
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE real_protection_plans SET payload=?', (json.dumps(plan),))
+        conn.execute('UPDATE real_protection_plans SET payload=%s', (json.dumps(plan),))
         conn.commit()
     result = run_once('cfg', 'ETH/USDT', 'call', request, callback)
     assert result['status'] == 'submitted' and result['reconciled'] is True
@@ -155,7 +155,7 @@ def test_independent_receipt_waits_for_persisted_pending_evidence_even_without_e
     else:
         plan[pending_kind] = 1
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(plan)))
         conn.commit()
     assert reconcile_pending_trade_operations('cfg') == 0
@@ -164,7 +164,7 @@ def test_independent_receipt_waits_for_persisted_pending_evidence_even_without_e
     plan.pop(pending_kind, None)
     plan['entries'][0].pop('fill_pending', None)
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE real_protection_plans SET payload=?', (json.dumps(plan),))
+        conn.execute('UPDATE real_protection_plans SET payload=%s', (json.dumps(plan),))
         conn.commit()
     assert reconcile_pending_trade_operations('cfg') == 1
     assert run_once('cfg', 'ETH/USDT', 'call', request, callback)['status'] == 'completed'
@@ -179,13 +179,13 @@ def test_reconciliation_requires_exact_prefix_scope_and_confirmed_amendment(loca
          'amendment': {'state': 'pending', 'operation_id': 'amend'}}
     ]}
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(plan)))
         conn.commit()
     assert reconcile_pending_trade_operations('cfg') == 0
     plan['entries'][0]['amendment']['state'] = 'confirmed'
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE real_protection_plans SET payload=?', (json.dumps(plan),))
+        conn.execute('UPDATE real_protection_plans SET payload=%s', (json.dumps(plan),))
         conn.commit()
     assert reconcile_pending_trade_operations('other') == 0
     assert reconcile_pending_trade_operations('cfg') == 1
@@ -199,7 +199,7 @@ def test_committed_mock_operation_recovers_lost_outer_receipt(local_db):
     callback = Mock(side_effect=TimeoutError('Result persistence lost'))
     run_once('cfg', 'ETH/USDT', 'call', {}, callback)
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result) VALUES(%s,%s,%s,%s)',
                      ('cfg', 'ETH/USDT', 'call:0:0', json.dumps({'id': 'mock-order', 'status': 'filled'})))
         conn.commit()
     result = run_once('cfg', 'ETH/USDT', 'call', {}, callback)
@@ -213,7 +213,7 @@ def _native_evidence(operation_id, order_id='native-order', status='closed'):
 
 def _save_native_evidence(records):
     with database.get_db_conn() as conn:
-        conn.execute('INSERT OR REPLACE INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s) ON CONFLICT(config_id,symbol,side) DO UPDATE SET payload=excluded.payload',
                      ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps({'state': 'DONE', 'side': 'LONG', 'entries': records})))
         conn.commit()
 
@@ -290,3 +290,9 @@ def test_request_receipts_are_included_in_task_cleanup(local_db):
     cleanup.purge_all_data('cfg')
     with database.get_db_conn() as conn:
         assert conn.execute('SELECT COUNT(*) FROM trade_operation_requests').fetchone()[0] == 0
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

@@ -1,5 +1,6 @@
+import pytest
 import os
-import sqlite3
+from backend import storage
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,43 +18,7 @@ from backend.config import config as global_config
 
 
 def setup_mock_db(db_path: Path):
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS mock_orders (
-            order_id TEXT PRIMARY KEY,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            side TEXT,
-            type TEXT,
-            price REAL,
-            amount REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            expire_at REAL,
-            status TEXT DEFAULT 'OPEN',
-            close_price REAL,
-            realized_pnl REAL,
-            close_time TEXT,
-            is_filled INTEGER DEFAULT 0
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS real_protection_plans (
-            config_id TEXT,
-            symbol TEXT,
-            side TEXT,
-            payload TEXT,
-            PRIMARY KEY (config_id, symbol, side)
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
+    """The isolated PostgreSQL fixture installs the full production schema."""
 
 
 class TestPositionProtectionService(unittest.TestCase):
@@ -62,7 +27,7 @@ class TestPositionProtectionService(unittest.TestCase):
         from backend.app.services.stats_service import _fetch_real_position_data
         with database.get_db_conn() as conn:
             for symbol, tp in [('ETH/USDT:USDT', 2473.8), ('BTC/USDT:USDT', 60000)]:
-                conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+                conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                              ('cfg', symbol, 'SHORT', json.dumps({'symbol': symbol, 'side': 'SHORT',
                               'state': 'ACTIVE', 'take_profit': tp, 'stop_loss': 2497.5, 'revision': 3})))
             conn.commit()
@@ -110,7 +75,7 @@ class TestPositionProtectionService(unittest.TestCase):
 
     def test_update_protection_strategy_mode(self):
         # Insert a mock open position
-        conn = sqlite3.connect(self.db_path)
+        conn = storage.connect()
         conn.execute(
             """
             INSERT INTO mock_orders (order_id, symbol, config_id, side, price, amount, stop_loss, take_profit, status, is_filled)
@@ -133,7 +98,7 @@ class TestPositionProtectionService(unittest.TestCase):
             self.assertEqual(res["take_profit"], 2650.0)
 
             # Verify DB was updated
-            conn = sqlite3.connect(self.db_path)
+            conn = storage.connect()
             row = conn.execute("SELECT stop_loss, take_profit FROM mock_orders WHERE order_id='m1'").fetchone()
             conn.close()
             self.assertEqual(row[0], 2480.0)
@@ -150,7 +115,7 @@ class TestPositionProtectionService(unittest.TestCase):
             self.assertIsNone(res["stop_loss"])
             self.assertIsNone(res["take_profit"])
 
-            conn = sqlite3.connect(self.db_path)
+            conn = storage.connect()
             row = conn.execute("SELECT stop_loss, take_profit FROM mock_orders WHERE order_id='m1'").fetchone()
             conn.close()
             self.assertIsNone(row[0])
@@ -245,3 +210,12 @@ class TestPositionProtectionApi(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_admin_password(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "protection-api-test-password")
+    monkeypatch.delenv("CHAT_PASSWORD", raising=False)
+
+
+pytestmark = pytest.mark.usefixtures("pg")

@@ -1,3 +1,4 @@
+from backend import storage
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 
@@ -15,29 +16,7 @@ class DcaSnapshotStore:
 
     @staticmethod
     def _ensure_symbol_key(conn) -> None:
-        """Upgrade the old daily task key without discarding existing snapshots."""
-        if not conn.in_transaction:
-            conn.execute('BEGIN IMMEDIATE')
-        unique_keys = []
-        for index in conn.execute('PRAGMA index_list(dca_daily_snapshots)').fetchall():
-            if index[2]:
-                index_name = str(index[1]).replace('"', '""')
-                unique_keys.append([row[2] for row in conn.execute(f'PRAGMA index_info("{index_name}")')])
-        if ['snapshot_date', 'config_id'] not in unique_keys:
-            return
-        conn.execute('''CREATE TABLE dca_daily_snapshots_by_symbol (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_date TEXT, config_id TEXT,
-            symbol TEXT, total_invested REAL, total_qty REAL, avg_cost REAL, buy_count INTEGER,
-            first_buy TEXT, last_buy TEXT, actual_balance REAL, updated_at TEXT,
-            UNIQUE(snapshot_date, config_id, symbol)
-        )''')
-        conn.execute('''INSERT INTO dca_daily_snapshots_by_symbol
-            (id, snapshot_date, config_id, symbol, total_invested, total_qty, avg_cost,
-             buy_count, first_buy, last_buy, actual_balance, updated_at)
-            SELECT id, snapshot_date, config_id, symbol, total_invested, total_qty, avg_cost,
-             buy_count, first_buy, last_buy, actual_balance, updated_at FROM dca_daily_snapshots''')
-        conn.execute('DROP TABLE dca_daily_snapshots')
-        conn.execute('ALTER TABLE dca_daily_snapshots_by_symbol RENAME TO dca_daily_snapshots')
+        """Structure is installed by the explicit PostgreSQL migration."""
 
     def save_snapshot(self, config_id, symbol, stats) -> None:
         snapshot_date = self._date_factory()
@@ -50,7 +29,7 @@ class DcaSnapshotStore:
                 INSERT INTO dca_daily_snapshots (
                     snapshot_date, config_id, symbol, total_invested, total_qty, avg_cost,
                     buy_count, first_buy, last_buy, actual_balance, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(snapshot_date, config_id, symbol) DO UPDATE SET
                     total_invested = excluded.total_invested,
                     total_qty = excluded.total_qty,
@@ -80,7 +59,7 @@ class DcaSnapshotStore:
     def get_snapshot_history(self, config_id, days=30, symbol=None):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            symbol_clause = ' AND symbol = ?' if symbol else ''
+            symbol_clause = ' AND symbol = %s' if symbol else ''
             params = (str(config_id), str(symbol), int(days)) if symbol else (str(config_id), int(days))
             rows = cursor.execute(
                 f'''
@@ -91,11 +70,11 @@ class DcaSnapshotStore:
                        CASE WHEN COUNT(*) = 1 THEN MAX(actual_balance) END AS actual_balance,
                        MAX(updated_at) AS updated_at, COUNT(*) AS symbol_count
                 FROM dca_daily_snapshots
-                WHERE config_id = ?{symbol_clause}
+                WHERE config_id = %s{symbol_clause}
                 GROUP BY snapshot_date
                 ORDER BY snapshot_date ASC
-                LIMIT ?
+                LIMIT %s
                 ''',
                 params,
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [storage.record(row) for row in rows]

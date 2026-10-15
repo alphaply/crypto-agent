@@ -95,23 +95,8 @@ def test_market_symbol_catalogue_is_cached_and_filtered(monkeypatch):
     assert len(calls) == 1
 
 
-def test_chat_session_schema_persists_temporary_runtime(tmp_path):
-    db_path = tmp_path / "chat.db"
-    conn = sqlite3.connect(db_path)
-    initialize_schema(conn)
-    conn.commit()
-    conn.close()
-
-    @contextmanager
-    def connect():
-        db_conn = sqlite3.connect(db_path)
-        db_conn.row_factory = sqlite3.Row
-        try:
-            yield db_conn
-        finally:
-            db_conn.close()
-
-    store = ChatSessionStore(connect, lambda: "2026-07-10 10:00:00")
+def test_chat_session_schema_persists_temporary_runtime(pg):
+    store = ChatSessionStore(pg, lambda: "2026-07-10 10:00:00")
     store.create_session(
         "session-a",
         "",

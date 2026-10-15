@@ -17,7 +17,7 @@ PUBLIC_MARKET = paper.market
 
 
 @pytest.fixture
-def ledger(tmp_path, monkeypatch):
+def ledger(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'paper.db'))
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'paper-tests-only-master-key')
     with database.get_db_conn() as conn:

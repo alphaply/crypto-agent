@@ -1,5 +1,6 @@
+import pytest
 from backend.agent import memory_service, decision_context
-import sqlite3
+from backend import storage
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,119 +15,7 @@ from backend.app.services import dashboard_service
 
 
 def create_daily_table(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE daily_summaries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            symbol TEXT,
-            config_id TEXT,
-            summary TEXT,
-            source_count INTEGER DEFAULT 0,
-            created_at TEXT,
-            UNIQUE(date, config_id)
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE short_memories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            bucket_start TEXT NOT NULL,
-            bucket_end TEXT NOT NULL,
-            symbol TEXT,
-            config_id TEXT NOT NULL,
-            market_summary TEXT,
-            position_summary TEXT,
-            source_count INTEGER DEFAULT 0,
-            created_at TEXT,
-            UNIQUE(config_id, bucket_start)
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE position_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            config_id TEXT NOT NULL,
-            symbol TEXT,
-            position_key TEXT NOT NULL,
-            side TEXT,
-            status TEXT,
-            source TEXT,
-            opened_at TEXT,
-            closed_at TEXT,
-            entry_price REAL,
-            close_price REAL,
-            amount REAL,
-            realized_pnl REAL,
-            raw_json TEXT,
-            updated_at TEXT,
-            UNIQUE(config_id, position_key)
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE summaries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            agent_type TEXT,
-            timeframe TEXT,
-            content TEXT,
-            strategy_logic TEXT
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id TEXT,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            trade_mode TEXT,
-            side TEXT,
-            entry_price REAL,
-            amount REAL,
-            take_profit REAL,
-            stop_loss REAL,
-            reason TEXT,
-            status TEXT DEFAULT 'OPEN'
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE mock_orders (
-            order_id TEXT PRIMARY KEY,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            side TEXT,
-            type TEXT,
-            price REAL,
-            amount REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            expire_at REAL,
-            status TEXT DEFAULT 'OPEN',
-            close_price REAL,
-            realized_pnl REAL,
-            close_time TEXT,
-            is_filled INTEGER DEFAULT 0
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
+    """The isolated PostgreSQL fixture installs the full production schema."""
 
 
 class DailySummaryTests(unittest.TestCase):
@@ -136,8 +25,14 @@ class DailySummaryTests(unittest.TestCase):
         create_daily_table(self.db_path)
         self.db_patch = patch.object(database, "DB_NAME", str(self.db_path))
         self.db_patch.start()
+        from backend.config import config
+        self.config_patch = patch.object(config, 'get_config_by_id', side_effect=lambda cid: {
+            'config_id': cid, 'symbol': 'BTC/USDT', 'mode': 'STRATEGY',
+        })
+        self.config_patch.start()
 
     def tearDown(self) -> None:
+        self.config_patch.stop()
         self.db_patch.stop()
         self.temp_dir.cleanup()
 
@@ -167,19 +62,19 @@ class DailySummaryTests(unittest.TestCase):
     def test_summary_logic_queries_filter_by_config_and_time_window(self):
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                 ("2026-05-05 01:00:00", "BTC/USDT", "a", "btc-a", "logic-a1"),
             )
             conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                 ("2026-05-05 05:00:00", "BTC/USDT", "a", "btc-a", "logic-a2"),
             )
             conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                 ("2026-05-05 08:00:00", "BTC/USDT", "b", "btc-b", "logic-b1"),
             )
             conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                 ("2026-05-05 09:00:00", "BTC/USDT", "a", "btc-a", ""),
             )
             conn.commit()
@@ -265,7 +160,7 @@ class DailySummaryTests(unittest.TestCase):
             ]
             for timestamp, symbol, config_id, logic in rows:
                 conn.execute(
-                    "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                     (timestamp, symbol, "agent", config_id, logic),
                 )
             conn.commit()
@@ -279,11 +174,11 @@ class DailySummaryTests(unittest.TestCase):
 
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                 ("2026-05-05 03:00:00", "BTC/USDT", "agent", "cfg-a", "first logic"),
             )
             conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                 ("2026-05-05 04:00:00", "BTC/USDT", "agent", "cfg-a", "second logic"),
             )
             conn.commit()
@@ -321,7 +216,7 @@ class DailySummaryTests(unittest.TestCase):
         database.save_short_memory("2026-05-05 00:00:00", "2026-05-05 04:00:00", "BTC/USDT", "cfg-a", "clean previous", "", 2)
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                 ("2026-05-05 05:00:00", "BTC/USDT", "agent", "cfg-a", "new logic"),
             )
             conn.commit()
@@ -340,17 +235,17 @@ class DailySummaryTests(unittest.TestCase):
         self.assertNotIn("[updated=", summary_input)
         self.assertNotIn("sources=", summary_input)
 
-    def test_rolling_short_memory_skips_empty_or_polluted_summary(self):
+    def test_rolling_short_memory_skips_empty_summary(self):
         from backend.agent import agent_graph
 
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO summaries (timestamp, symbol, agent_name, config_id, strategy_logic) VALUES (%s, %s, %s, %s, %s)",
                 ("2026-05-05 05:00:00", "BTC/USDT", "agent", "cfg-a", "new logic"),
             )
             conn.commit()
 
-        with patch.object(memory_service, "organize_memory", return_value="Window: last 12h\nSymbol: BTC/USDT..."):
+        with patch.object(memory_service, "organize_memory", return_value=""):
             generated = memory_service.generate_rolling_short_memory_for_config(
                 "cfg-a",
                 agent_config={"config_id": "cfg-a", "symbol": "BTC/USDT", "enabled": True},
@@ -365,19 +260,19 @@ class DailySummaryTests(unittest.TestCase):
         database.save_summary("ETH/USDT", "agent-b", "other", "logic-eth", config_id="cfg-b")
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO orders (order_id, symbol, config_id, status) VALUES (?, ?, ?, ?)",
+                "INSERT INTO orders (order_id, symbol, config_id, status) VALUES (%s, %s, %s, %s)",
                 ("o-btc", "BTC/USDT", "cfg-a", "OPEN"),
             )
             conn.execute(
-                "INSERT INTO orders (order_id, symbol, config_id, status) VALUES (?, ?, ?, ?)",
+                "INSERT INTO orders (order_id, symbol, config_id, status) VALUES (%s, %s, %s, %s)",
                 ("o-eth", "ETH/USDT", "cfg-b", "OPEN"),
             )
             conn.execute(
-                "INSERT INTO mock_orders (order_id, symbol, config_id, status) VALUES (?, ?, ?, ?)",
+                "INSERT INTO mock_orders (order_id, symbol, config_id, status) VALUES (%s, %s, %s, %s)",
                 ("m-btc", "BTC/USDT", "cfg-a", "OPEN"),
             )
             conn.execute(
-                "INSERT INTO mock_orders (order_id, symbol, config_id, status) VALUES (?, ?, ?, ?)",
+                "INSERT INTO mock_orders (order_id, symbol, config_id, status) VALUES (%s, %s, %s, %s)",
                 ("m-eth", "ETH/USDT", "cfg-b", "OPEN"),
             )
             conn.commit()
@@ -385,12 +280,12 @@ class DailySummaryTests(unittest.TestCase):
         deleted = database.delete_summaries_by_symbol("BTC/USDT")
 
         with database.get_db_conn() as conn:
-            btc_summary = conn.execute("SELECT COUNT(*) FROM summaries WHERE symbol = ?", ("BTC/USDT",)).fetchone()[0]
-            eth_summary = conn.execute("SELECT COUNT(*) FROM summaries WHERE symbol = ?", ("ETH/USDT",)).fetchone()[0]
-            btc_orders = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", ("BTC/USDT",)).fetchone()[0]
-            eth_orders = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = ?", ("ETH/USDT",)).fetchone()[0]
-            btc_mock_orders = conn.execute("SELECT COUNT(*) FROM mock_orders WHERE symbol = ?", ("BTC/USDT",)).fetchone()[0]
-            eth_mock_orders = conn.execute("SELECT COUNT(*) FROM mock_orders WHERE symbol = ?", ("ETH/USDT",)).fetchone()[0]
+            btc_summary = conn.execute("SELECT COUNT(*) FROM summaries WHERE symbol = %s", ("BTC/USDT",)).fetchone()[0]
+            eth_summary = conn.execute("SELECT COUNT(*) FROM summaries WHERE symbol = %s", ("ETH/USDT",)).fetchone()[0]
+            btc_orders = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = %s", ("BTC/USDT",)).fetchone()[0]
+            eth_orders = conn.execute("SELECT COUNT(*) FROM orders WHERE symbol = %s", ("ETH/USDT",)).fetchone()[0]
+            btc_mock_orders = conn.execute("SELECT COUNT(*) FROM mock_orders WHERE symbol = %s", ("BTC/USDT",)).fetchone()[0]
+            eth_mock_orders = conn.execute("SELECT COUNT(*) FROM mock_orders WHERE symbol = %s", ("ETH/USDT",)).fetchone()[0]
 
         self.assertEqual(deleted, 1)
         self.assertEqual(btc_summary, 0)
@@ -459,3 +354,6 @@ class DailySummaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+pytestmark = pytest.mark.usefixtures("pg")

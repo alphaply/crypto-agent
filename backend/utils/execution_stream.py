@@ -7,7 +7,7 @@ import hashlib
 from backend.utils.execution_ledger import ExecutionLedger, account_scope
 from backend.utils.logger import setup_logger
 from backend.utils.runtime_capacity import (get_capacity_manager, CapacityBusy,
-    reserve_bytes, positive_setting, current_capacity, capacity_limits_enabled)
+    reserve_bytes, positive_setting, current_capacity)
 
 logger = setup_logger('ExecutionStream')
 _workers = {}
@@ -21,8 +21,6 @@ async def consume(client, ledger, stop):
         while not stop.is_set():
             try:
                 trades = await asyncio.wait_for(client.watch_my_trades(ledger.symbol), timeout=1)
-                if capacity_limits_enabled() and len(trades or []) > positive_setting('RUNTIME_STREAM_ITEMS', 1000):
-                    raise CapacityBusy('stream', 'trade_batch_items')
                 ledger.ingest(trades or [])
                 backoff = 1
             except asyncio.TimeoutError:
@@ -60,7 +58,7 @@ def ensure_stream(mt):
         except CapacityBusy:
             return False
         try:
-            retained = reserve_bytes('stream', positive_setting('RUNTIME_STREAM_BYTES', 8 * 1024 * 1024))
+            retained = reserve_bytes('stream', 8 * 1024 * 1024)
         except BaseException:
             lease.release()
             return False
@@ -75,8 +73,6 @@ def ensure_stream(mt):
                 options = {'apiKey': ex.apiKey, 'secret': ex.secret, 'password': getattr(ex, 'password', None),
                            'enableRateLimit': True, 'newUpdates': True, 'options': dict(ex.options),
                            'timeout': ex.timeout}
-                if capacity_limits_enabled():
-                    options['options'].update(tradesLimit=positive_setting('RUNTIME_STREAM_ITEMS', 1000))
                 client = getattr(pro, name)(options)
                 ledger = ExecutionLedger(ex, mt.config_id, mt.symbol)
                 await consume(client, ledger, stop)

@@ -1,4 +1,4 @@
-"""Process-lifetime financial locks on the shared SQLite data volume."""
+"""Process-lifetime financial locks on the shared application data volume."""
 from contextlib import contextmanager
 import hashlib
 import os
@@ -11,8 +11,7 @@ class ManagementLockBusy(ValueError):
 
 @contextmanager
 def scope_file_lock(account_scope, symbol, side):
-    from backend import database
-    directory = Path(database.DB_NAME).resolve().parent / '.management-locks'
+    directory = Path(os.environ.get('DATA_DIR', 'data')).resolve() / '.management-locks'
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     identity = hashlib.sha256(f'{account_scope}\0{symbol}\0{side}'.encode()).hexdigest()
     descriptor = os.open(str(directory / (identity + '.lock')), os.O_CREAT | os.O_RDWR, 0o600)

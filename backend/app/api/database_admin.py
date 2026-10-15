@@ -1,4 +1,5 @@
 import sqlite3
+from backend.storage import OperationalError
 import tempfile
 from pathlib import Path
 
@@ -66,7 +67,7 @@ def cleanup(payload: CleanupRequest):
 def compact():
     try:
         return service.compact_database()
-    except sqlite3.OperationalError as exc:
+    except OperationalError as exc:
         raise HTTPException(409, '数据库繁忙，请稍后回收空间') from exc
 
 

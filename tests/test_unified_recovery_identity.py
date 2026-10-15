@@ -13,10 +13,10 @@ from backend.database_schema import initialize_schema
 
 
 @pytest.fixture
-def ledger(tmp_path, monkeypatch):
+def ledger(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'identity.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # financial_pg installs the complete native migration schema.
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: {'mode': 'REAL', 'exit_mode': 'attached_optional'})
 
 
@@ -28,7 +28,7 @@ def test_native_close_recovery_rejects_wrong_saved_identity_or_market(ledger, mo
     action = {'action': 'close', 'side': 'LONG', 'order_type': 'market', 'amount': .2, 'reason': 'reduce'}
     with database.get_db_conn() as conn:
         unified_dispatch._native_table(conn)
-        conn.execute('INSERT INTO unified_native_intents VALUES(?,?,?,?,?,?,?)', (
+        conn.execute('INSERT INTO unified_native_intents(config_id,operation_id,symbol,account_scope,client_id,request_json,result) VALUES(%s,%s,%s,%s,%s,%s,%s)', (
             'cfg', 'close:0', 'ETH/USDT', 'account', 'original-client',
             json.dumps({'action': action, 'contract_size': 1}), json.dumps({'id': 'original'})))
         conn.commit()
@@ -68,9 +68,9 @@ def test_attached_recovery_does_not_persist_mismatched_observation(ledger, monke
                'entries': [{'id': 'original', 'client_id': 'client', 'operation_id': 'open:0', 'status': 'open'}]}
     with database.get_db_conn() as conn:
         initialize_trade_operations_schema(conn.cursor())
-        conn.execute('INSERT INTO trade_operation_requests VALUES(?,?,?)', (
+        conn.execute('INSERT INTO trade_operation_requests(config_id,operation_id,request_json) VALUES(%s,%s,%s)', (
             'cfg', 'open:0', json.dumps({'contract_version': 3, 'action': 'open', 'arguments': {'side': 'LONG'}})))
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(payload)))
         conn.commit()
     def query(record, symbol, trigger):

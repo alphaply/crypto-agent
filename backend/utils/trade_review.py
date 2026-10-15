@@ -48,13 +48,13 @@ def daily_exchange_evidence(config: dict, date_str: str) -> str:
 def daily_execution_evidence(config_id: str, date_str: str) -> str:
     sections = {}
     with get_db_conn() as conn:
-        existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        existing_tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         for table, date_column in (("orders", "timestamp"), ("trade_history", "timestamp"),
                                    ("position_history", "closed_at"), ("mock_orders", "close_time")):
             if table not in existing_tables:
                 continue
             rows = conn.execute(
-                f"SELECT * FROM {table} WHERE config_id = ? AND date({date_column}) = ? ORDER BY {date_column}",
+                f"SELECT * FROM {table} WHERE config_id = %s AND date({date_column}) = %s ORDER BY {date_column}",
                 (config_id, date_str),
             ).fetchall()
             # Raw exchange payloads can be very large and are not needed for a review.
@@ -69,17 +69,17 @@ def daily_execution_evidence(config_id: str, date_str: str) -> str:
         if 'trade_history' in existing_tables:
             stats = conn.execute(
                 "SELECT COUNT(*) AS fill_count, SUM(realized_pnl) AS realized_pnl_before_fees "
-                "FROM trade_history WHERE config_id=? AND date(timestamp)=?", (config_id, date_str)
+                "FROM trade_history WHERE config_id=%s AND date(timestamp)=%s", (config_id, date_str)
             ).fetchone()
             if stats['fill_count']:
                 sections['real_fill_totals'] = dict(stats)
                 sections['fees_by_currency'] = [dict(row) for row in conn.execute(
-                    "SELECT fee_currency, SUM(fee) AS fee FROM trade_history WHERE config_id=? AND date(timestamp)=? GROUP BY fee_currency",
+                    "SELECT fee_currency, SUM(fee) AS fee FROM trade_history WHERE config_id=%s AND date(timestamp)=%s GROUP BY fee_currency",
                     (config_id, date_str)).fetchall()]
         if 'real_protection_events' in existing_tables:
             sections['protection_changes'] = [
                 {'timestamp': row['timestamp'], 'plan': json.loads(row['payload'])}
-                for row in conn.execute('SELECT timestamp,payload FROM real_protection_events WHERE config_id=? AND date(timestamp)=? ORDER BY id',
+                for row in conn.execute('SELECT timestamp,payload FROM real_protection_events WHERE config_id=%s AND date(timestamp)=%s ORDER BY id',
                                         (config_id, date_str)).fetchall()
             ]
     if not any(sections.values()):

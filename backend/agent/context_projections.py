@@ -1,5 +1,6 @@
 """Published memory and summary text, with program-owned source provenance."""
 from __future__ import annotations
+from backend.storage import table_columns, record as storage_record
 
 import hashlib
 import json
@@ -22,26 +23,8 @@ def enabled(cfg: dict | None) -> bool:
 
 
 def initialize_schema(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS decision_context_projections (
-        config_id TEXT NOT NULL, account_scope TEXT NOT NULL, symbol TEXT NOT NULL,
-        source_kind TEXT NOT NULL, source_id TEXT NOT NULL, source_hash TEXT NOT NULL,
-        projection_version INTEGER NOT NULL, strategy_text TEXT NOT NULL DEFAULT '',
-        execution_refs TEXT NOT NULL DEFAULT '[]', unlinked_execution_notes TEXT NOT NULL DEFAULT '[]',
-        status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-        next_attempt REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
-        PRIMARY KEY(config_id,account_scope,source_kind,source_id,source_hash,projection_version))''')
-    columns = {row[1] for row in conn.execute('PRAGMA table_info(decision_context_projections)')}
-    if 'publication_revision' not in columns:
-        conn.execute('SAVEPOINT projection_upgrade')
-        try:
-            conn.execute('ALTER TABLE decision_context_projections ADD COLUMN publication_revision INTEGER NOT NULL DEFAULT 1')
-            conn.execute('RELEASE projection_upgrade')
-        except Exception:
-            conn.execute('ROLLBACK TO projection_upgrade')
-            conn.execute('RELEASE projection_upgrade')
-            raise
-    from backend.agent.memory_contract_recovery import initialize_contract_state
-    initialize_contract_state(conn, 'decision_context_projections')
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def _hash(value) -> str:
@@ -49,6 +32,7 @@ def _hash(value) -> str:
 
 
 def _source(kind: str, row: dict) -> dict:
+    row = storage_record(row)
     text = row.get('market_summary') if kind == 'short_memory' else row.get('strategy_logic')
     ids = row.get('source_summary_ids') or []
     ids = json.loads(ids) if isinstance(ids, str) else ids
@@ -60,8 +44,8 @@ def _source(kind: str, row: dict) -> dict:
 def _summary_scope_matches(conn, config_id: str, row: dict, scope: str) -> bool:
     source = _source('strategy_summary', row)
     scopes = {p['account_scope'] for p in conn.execute(
-        'SELECT account_scope FROM decision_context_projections WHERE config_id=? '
-        "AND source_kind='strategy_summary' AND source_id=? AND source_hash=?",
+        'SELECT account_scope FROM decision_context_projections WHERE config_id=%s '
+        "AND source_kind='strategy_summary' AND source_id=%s AND source_hash=%s",
         (config_id, source['source_id'], source['source_hash']))}
     return not scopes or scope in scopes
 
@@ -74,16 +58,16 @@ def current_sources(config_id: str, kind: str | None = None) -> list[dict]:
     if symbol:
         symbol = str(symbol).upper()
         canonical = symbol if ':' in symbol else symbol + ':' + symbol.split('/')[-1]
-        predicate = " AND UPPER(CASE WHEN instr(symbol,':')>0 THEN symbol ELSE symbol || ':' || substr(symbol,instr(symbol,'/')+1) END)=?"
+        predicate = " AND UPPER(CASE WHEN strpos(symbol,':')>0 THEN symbol ELSE symbol || ':' || substr(symbol,strpos(symbol,'/')+1) END)=%s"
         args.append(canonical)
     with database.get_db_conn() as conn:
-        memories = conn.execute('SELECT * FROM short_memories WHERE config_id=?' + predicate +
-                                ' ORDER BY bucket_end DESC,id DESC LIMIT 1', args).fetchall() if kind != 'strategy_summary' else []
+        memories = conn.execute('SELECT * FROM short_memories WHERE config_id=%s' + predicate +
+                                ' ORDER BY bucket_end DESC NULLS LAST,id DESC LIMIT 1', args).fetchall() if kind != 'strategy_summary' else []
         summaries = []
         if kind != 'short_memory':
             scope = trade_evidence.configured_account_scope(config_id)
-            for row in conn.execute('SELECT * FROM summaries WHERE config_id=?' + predicate +
-                                    ' ORDER BY timestamp DESC,id DESC', args):
+            for row in conn.execute('SELECT * FROM summaries WHERE config_id=%s' + predicate +
+                                    ' ORDER BY timestamp DESC NULLS LAST,id DESC', args):
                 if (valid_compressed_summary(row['strategy_logic'])
                         and _summary_scope_matches(conn, config_id, dict(row), scope)):
                     summaries.append(row)
@@ -118,7 +102,7 @@ def source_refs(config_id: str, source: dict) -> list[str]:
         ids = json.loads(ids) if isinstance(ids, str) else ids
         with database.get_db_conn() as conn:
             rows = [dict(r) for identity in ids for r in conn.execute(
-                'SELECT * FROM summaries WHERE config_id=? AND id=?', (config_id, identity)).fetchall()]
+                'SELECT * FROM summaries WHERE config_id=%s AND id=%s', (config_id, identity)).fetchall()]
     refs = set()
     for row in rows:
         from backend.utils.trade_operations import _decode_receipt
@@ -138,8 +122,8 @@ def source_refs(config_id: str, source: dict) -> list[str]:
                             if isinstance(r, dict) and r.get('operation_id'))
     # Older memory can retain references beyond its latest four-hour window.
     with database.get_db_conn() as conn:
-        for row in conn.execute('SELECT execution_refs FROM decision_context_projections WHERE config_id=? '
-                                'AND account_scope=? AND source_kind=? AND source_id=? AND source_hash=? AND projection_version=?',
+        for row in conn.execute('SELECT execution_refs FROM decision_context_projections WHERE config_id=%s '
+                                'AND account_scope=%s AND source_kind=%s AND source_id=%s AND source_hash=%s AND projection_version=%s',
                                 key(config_id, trade_evidence.configured_account_scope(config_id), source)):
             try:
                 saved_refs = json.loads(row['execution_refs'])
@@ -157,14 +141,14 @@ def key(config_id, scope, source):
     return (config_id, scope, source['source_kind'], source['source_id'], source['source_hash'], VERSION)
 
 
-KEY_WHERE = 'config_id=? AND account_scope=? AND source_kind=? AND source_id=? AND source_hash=? AND projection_version=?'
+KEY_WHERE = 'config_id=%s AND account_scope=%s AND source_kind=%s AND source_id=%s AND source_hash=%s AND projection_version=%s'
 
 
 def _original(conn, config_id: str, projection: dict) -> dict | None:
     from backend.config import config
     from backend.utils.trade_operations import _same_symbol
     table = SOURCE_TABLES[projection['source_kind']]
-    row = conn.execute(f'SELECT * FROM {table} WHERE config_id=? AND id=?',
+    row = conn.execute(f'SELECT * FROM {table} WHERE config_id=%s AND id=%s',
                        (config_id, projection['source_id'])).fetchone()
     symbol = (config.get_config_by_id(config_id) or {}).get('symbol')
     if not row or not symbol or not _same_symbol(row['symbol'], symbol):
@@ -183,16 +167,16 @@ def stored_sources(config_id: str, scope: str, kind: str, *, status: str | None 
         conn.execute('BEGIN')
         ordering = 's.timestamp'
         if kind == 'short_memory':
-            columns = {row[1] for row in conn.execute('PRAGMA table_info(short_memories)')}
+            columns = {column['name'] for column in table_columns(conn, 'short_memories')}
             ordering = "COALESCE(NULLIF(s.window_end,''),s.bucket_end)" if 'window_end' in columns else 's.bucket_end'
         rows = conn.execute('SELECT p.* FROM decision_context_projections p '
                             f'JOIN {SOURCE_TABLES[kind]} s ON CAST(s.id AS TEXT)=p.source_id AND s.config_id=p.config_id '
-                            'WHERE p.config_id=? AND p.account_scope=? AND p.source_kind=? AND p.projection_version=?'
-                            + (' AND p.status=?' if status else '') + f' ORDER BY {ordering} DESC,s.id DESC',
+                            'WHERE p.config_id=%s AND p.account_scope=%s AND p.source_kind=%s AND p.projection_version=%s'
+                            + (' AND p.status=%s' if status else '') + f' ORDER BY {ordering} DESC NULLS LAST,s.id DESC',
                             (config_id, scope, kind, VERSION, *((status,) if status else ())))
         for row in rows:
             try:
-                projection = dict(row)
+                projection = storage_record(row)
                 source = _original(conn, config_id, projection)
                 if source:
                     if not isinstance(projection['strategy_text'], str):
@@ -236,8 +220,8 @@ def verify_publication_sources(conn, config_id: str, metadata: dict) -> None:
     _publication_scope(config_id, metadata)
     if 'latest_memory_id' in metadata:
         from backend.utils.trade_operations import _same_symbol
-        latest = next((row for row in conn.execute('SELECT id,symbol FROM short_memories WHERE config_id=? '
-                                                   'ORDER BY bucket_end DESC,id DESC', (config_id,))
+        latest = next((row for row in conn.execute('SELECT id,symbol FROM short_memories WHERE config_id=%s '
+                                                   'ORDER BY bucket_end DESC NULLS LAST,id DESC', (config_id,))
                        if _same_symbol(row['symbol'], metadata.get('symbol'))), None)
         if (str(latest['id']) if latest else None) != metadata['latest_memory_id']:
             raise ValueError('Newer memory was published during consolidation')
@@ -265,7 +249,7 @@ def publish_text(conn, config_id: str, kind: str, row: dict, refs: list[str]):
     initialize_schema(conn)
     conn.execute("INSERT INTO decision_context_projections "
                  "(config_id,account_scope,source_kind,source_id,source_hash,projection_version,symbol,updated_at,"
-                 "strategy_text,execution_refs,status) VALUES(?,?,?,?,?,?,?,?,?,?,'ready') "
+                 "strategy_text,execution_refs,status) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ready') "
                  "ON CONFLICT(config_id,account_scope,source_kind,source_id,source_hash,projection_version) DO UPDATE SET "
                  "strategy_text=excluded.strategy_text,execution_refs=excluded.execution_refs,"
                  "status='ready',error='',updated_at=excluded.updated_at",

@@ -6,23 +6,23 @@ import json
 
 def owned_symbols(conn, profile):
     """Persisted task evidence, independent of its current symbol policy."""
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     result = set()
     for table in ('orders', 'spot_budget_reservations', 'mcp_spot_exits', 'real_protection_plans', 'execution_order_links', 'trade_action_runs'):
         if table in tables:
             result.update(str(row[0]) for row in conn.execute(
-                f'SELECT DISTINCT symbol FROM {table} WHERE config_id=? AND symbol IS NOT NULL',
+                f'SELECT DISTINCT symbol FROM {table} WHERE config_id=%s AND symbol IS NOT NULL',
                 ('mcp:' + profile['profile_id'],),
             ) if row[0])
     return sorted(result)
 
 
 def active_lifecycle(conn, profile, symbols=None, *, excluded_symbols=None):
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     config_id = 'mcp:' + profile['profile_id']
     from backend.utils.visible_management import retired_management_resources
     retired = retired_management_resources(config_id, profile.get('market_type', 'swap'))
-    transferred_operations = {r[0] for r in conn.execute('SELECT operation_id FROM management_recovery_grants WHERE source_owner=?',
+    transferred_operations = {r[0] for r in conn.execute('SELECT operation_id FROM management_recovery_grants WHERE source_owner=%s',
                                                          (config_id,))} if 'management_recovery_grants' in tables else set()
     def affected(symbol):
         canonical = str(symbol).split(':')[0]
@@ -33,56 +33,56 @@ def active_lifecycle(conn, profile, symbols=None, *, excluded_symbols=None):
             return False
         return symbols is None or canonical in {value.split(':')[0] for value in symbols}
     if 'mcp_operations' in tables:
-        for row in conn.execute("SELECT operation_id,state FROM mcp_operations WHERE profile_id=? AND state IN ('started','unknown','pending')", (profile['profile_id'],)):
-            links = list(conn.execute('SELECT symbol,internal_operation_id FROM mcp_operation_links WHERE profile_id=? AND operation_id=?',
+        for row in conn.execute("SELECT operation_id,state FROM mcp_operations WHERE profile_id=%s AND state IN ('started','unknown','pending')", (profile['profile_id'],)):
+            links = list(conn.execute('SELECT symbol,internal_operation_id FROM mcp_operation_links WHERE profile_id=%s AND operation_id=%s',
                                       (profile['profile_id'], row['operation_id']))) if 'mcp_operation_links' in tables else []
             if (row['state'] == 'started' or not links or
                     any(affected(link['symbol']) or link['internal_operation_id'] not in transferred_operations for link in links)):
                 return True
     if 'trade_action_runs' in tables:
-        for row in conn.execute("SELECT operation_id,symbol,status FROM trade_action_runs WHERE config_id=? AND status IN ('running','unknown','pending')", (config_id,)):
+        for row in conn.execute("SELECT operation_id,symbol,status FROM trade_action_runs WHERE config_id=%s AND status IN ('running','unknown','pending')", (config_id,)):
             if row['status'] == 'running' or affected(row['symbol']) or row['operation_id'] not in transferred_operations:
                 return True
     if 'position_management_actions' in tables:
-        for row in conn.execute("SELECT symbol FROM position_management_actions WHERE owner=? "
+        for row in conn.execute("SELECT symbol FROM position_management_actions WHERE owner=%s "
                                 "AND state IN ('running','unresolved','pending','unknown')", (config_id,)):
             if affected(row['symbol']):
                 return True
     if 'position_management_scopes' in tables:
         from backend.utils.position_management import _scope_active
-        for row in conn.execute('SELECT * FROM position_management_scopes WHERE owner=?', (config_id,)):
+        for row in conn.execute('SELECT * FROM position_management_scopes WHERE owner=%s', (config_id,)):
             if affected(row['symbol']) and _scope_active(conn, dict(row)):
                 return True
     if 'real_protection_plans' in tables:
-        for row in conn.execute('SELECT symbol,payload FROM real_protection_plans WHERE config_id=?', (config_id,)):
+        for row in conn.execute('SELECT symbol,payload FROM real_protection_plans WHERE config_id=%s', (config_id,)):
             if affected(row['symbol']) and json.loads(row['payload']).get('state') != 'DONE':
                 return True
     if profile['market_type'] == 'spot':
         if 'mcp_spot_exits' in tables:
-            for row in conn.execute("SELECT symbol FROM mcp_spot_exits WHERE config_id=? AND state NOT IN ('filled','cancelled','failed')", (config_id,)):
+            for row in conn.execute("SELECT symbol FROM mcp_spot_exits WHERE config_id=%s AND state NOT IN ('filled','cancelled','failed')", (config_id,)):
                 if affected(row['symbol']):
                     return True
         if 'orders' in tables:
-            for row in conn.execute("SELECT order_id,symbol,status,filled_amount,filled_cost FROM orders WHERE config_id=? AND trade_mode='SPOT_DCA' AND UPPER(side) IN ('BUY','BUY_LIMIT')", (config_id,)):
+            for row in conn.execute("SELECT order_id,symbol,status,filled_amount,filled_cost FROM orders WHERE config_id=%s AND trade_mode='SPOT_DCA' AND UPPER(side) IN ('BUY','BUY_LIMIT')", (config_id,)):
                 if not affected(row['symbol']):
                     continue
                 verified_empty = None
                 if 'spot_order_fills' in tables:
                     verified_empty = conn.execute('''SELECT 1 FROM spot_order_fills
-                        WHERE config_id=? AND symbol=? AND order_id=?
+                        WHERE config_id=%s AND symbol=%s AND order_id=%s
                         AND UPPER(status) IN ('CANCELLED','CANCELED','EXPIRED','REJECTED')
                         AND COALESCE(filled_qty,0)=0 AND COALESCE(filled_cost,0)=0''',
                         (config_id, row['symbol'], row['order_id'])).fetchone()
                 if not verified_empty:
                     return True
         if 'spot_budget_reservations' in tables:
-            for row in conn.execute("SELECT symbol,order_id FROM spot_budget_reservations WHERE config_id=? AND status<>'released'", (config_id,)):
+            for row in conn.execute("SELECT symbol,order_id FROM spot_budget_reservations WHERE config_id=%s AND status<>'released'", (config_id,)):
                 if not affected(row['symbol']):
                     continue
                 verified_empty = None
                 if 'spot_order_fills' in tables:
                     verified_empty = conn.execute('''SELECT 1 FROM spot_order_fills
-                        WHERE config_id=? AND symbol=? AND order_id=?
+                        WHERE config_id=%s AND symbol=%s AND order_id=%s
                         AND UPPER(status) IN ('CANCELLED','CANCELED','EXPIRED','REJECTED')
                         AND COALESCE(filled_qty,0)=0 AND COALESCE(filled_cost,0)=0''',
                         (config_id, row['symbol'], row['order_id'])).fetchone()
@@ -113,7 +113,7 @@ def account_change_hook():
     previous = {row['profile_id']: row for row in load_effective_runtime_snapshot().get('exchange_profiles', [])}
 
     def validate(conn):
-        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mcp_records'").fetchone():
+        if not conn.execute("SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname=current_schema() AND tablename='mcp_records'").fetchone():
             return
         updated = {row['profile_id']: row for row in (load_runtime_snapshot(connection=conn) or {}).get('exchange_profiles', [])}
         for row in conn.execute("SELECT payload FROM mcp_records WHERE kind='profile'"):

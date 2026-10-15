@@ -1,4 +1,5 @@
 """Serialize expensive reviews across scheduler/manual requests and app workers."""
+from backend.storage import record as storage_record
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -20,28 +21,24 @@ def verify_memory_lease() -> None:
     if lease is None:
         return
     with database.get_db_conn() as conn:
-        valid = conn.execute('SELECT 1 FROM memory_review_leases WHERE config_id=? AND owner=? AND expires_at>?',
+        valid = conn.execute('SELECT 1 FROM memory_review_leases WHERE config_id=%s AND owner=%s AND expires_at>%s',
                              (*lease, time.time())).fetchone()
     if not valid:
         raise RuntimeError('记忆整理租约已失效，停止修改与保存')
 
 
 def _initialize_results(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS memory_review_results (
-        operation_id TEXT PRIMARY KEY, config_id TEXT NOT NULL, status TEXT NOT NULL,
-        summary TEXT NOT NULL, rule_receipts TEXT NOT NULL, error TEXT NOT NULL,
-        created_at REAL NOT NULL)''')
-    if 'projection_metadata' not in {r[1] for r in conn.execute('PRAGMA table_info(memory_review_results)')}:
-        conn.execute("ALTER TABLE memory_review_results ADD COLUMN projection_metadata TEXT NOT NULL DEFAULT '{}'")
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def get_review_result(operation_id: str) -> dict | None:
     with database.get_db_conn() as conn:
         _initialize_results(conn)
-        row = conn.execute('SELECT * FROM memory_review_results WHERE operation_id=?', (operation_id,)).fetchone()
+        row = conn.execute('SELECT * FROM memory_review_results WHERE operation_id=%s', (operation_id,)).fetchone()
         if not row:
             return None
-        result = dict(row)
+        result = storage_record(row)
         result['rule_receipts'] = json.loads(result['rule_receipts'])
         result['projection_metadata'] = json.loads(result['projection_metadata'])
         return result
@@ -52,9 +49,7 @@ def save_review_result(config_id: str, operation_id: str, result) -> None:
     verify_memory_lease()
     with database.get_db_conn() as conn:
         _initialize_results(conn)
-        conn.execute('''INSERT OR IGNORE INTO memory_review_results
-            (operation_id,config_id,status,summary,rule_receipts,error,created_at,projection_metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (operation_id, config_id, result.status,
+        conn.execute('INSERT INTO memory_review_results\n            (operation_id,config_id,status,summary,rule_receipts,error,created_at,projection_metadata)\n            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING', (operation_id, config_id, result.status,
             result.summary, json.dumps(result.rule_receipts, ensure_ascii=False), result.error, time.time(),
             json.dumps(getattr(result, 'projection_metadata', {}), ensure_ascii=False)))
         conn.commit()
@@ -65,18 +60,15 @@ def memory_review_lease(config_id: str):
     owner = str(uuid4())
     now = time.time()
     with database.get_db_conn() as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS memory_review_leases (
-            config_id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at REAL NOT NULL)''')
-        changed = conn.execute('''INSERT INTO memory_review_leases VALUES (?, ?, ?)
-            ON CONFLICT(config_id) DO UPDATE SET owner=excluded.owner, expires_at=excluded.expires_at
-            WHERE memory_review_leases.expires_at < ?''', (config_id, owner, now + 3600, now)).rowcount
+        # Table installed by the explicit PostgreSQL migration.
+        changed = conn.execute('INSERT INTO memory_review_leases(config_id,owner,expires_at) VALUES (%s, %s, %s)\n            ON CONFLICT(config_id) DO UPDATE SET owner=excluded.owner, expires_at=excluded.expires_at\n            WHERE memory_review_leases.expires_at < %s', (config_id, owner, now + 3600, now)).rowcount
         conn.commit()
     stop = Event()
     def renew():
         while not stop.wait(30):
             try:
                 with database.get_db_conn() as conn:
-                    conn.execute('UPDATE memory_review_leases SET expires_at=? WHERE config_id=? AND owner=?',
+                    conn.execute('UPDATE memory_review_leases SET expires_at=%s WHERE config_id=%s AND owner=%s',
                                  (time.time() + 3600, config_id, owner))
                     conn.commit()
             except Exception as exc:
@@ -98,7 +90,7 @@ def memory_review_lease(config_id: str):
             _review_projection.reset(projection_token)
         if changed:
             with database.get_db_conn() as conn:
-                conn.execute('DELETE FROM memory_review_leases WHERE config_id=? AND owner=?', (config_id, owner))
+                conn.execute('DELETE FROM memory_review_leases WHERE config_id=%s AND owner=%s', (config_id, owner))
                 conn.commit()
 
 

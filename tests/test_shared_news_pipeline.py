@@ -26,7 +26,7 @@ def news_env(tmp_path, monkeypatch):
     monkeypatch.setenv('LANGCHAIN_TRACING_V2', 'false')
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'news.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     snapshot = {'news': {'scorer_provider_id': 'jev', 'summarizer_provider_id': 'summary'}, 'llm_providers': [
         {'provider_id': 'jev', 'model': 'jev-1.13.0', 'api_protocol': 'decisions', 'api_base': 'https://api.b.ai/v1', 'api_key': 'test-secret', 'input_price_per_m': 0.042, 'output_price_per_m': 0},
         {'provider_id': 'summary', 'model': 'test-summary', 'api_key': 'test-secret', 'input_price_per_m': 1, 'output_price_per_m': 2},
@@ -229,3 +229,6 @@ def test_custom_sources_validate_and_keep_full_defaults():
         NewsSettings(sources=[NewsSource(id='a', name='A', kind='binance')] * 2)
     with pytest.raises(ValueError):
         NewsSource(id='bad', name='Bad', url='https://user:secret@example.com/feed')
+
+
+pytestmark = pytest.mark.usefixtures("pg")

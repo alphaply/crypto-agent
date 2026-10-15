@@ -11,7 +11,7 @@ from backend.agent.memory_service import format_recent_position_history_for_memo
 def local_db(tmp_path):
     with patch.object(database, 'DB_NAME', str(tmp_path / 'test_7d.db')):
         with database.get_db_conn() as conn:
-            initialize_schema(conn)
+            pass  # Full schema is created by pg.
         yield
 
 
@@ -28,7 +28,7 @@ def test_get_closed_positions_7d_strategy_mode(local_db):
             """
             INSERT INTO mock_orders (order_id, timestamp, symbol, config_id, side, price, amount,
                                      stop_loss, take_profit, status, close_price, realized_pnl, close_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             ("m1", open_time, "BTC/USDT", "strat_cfg", "BUY", 80000.0, 0.1, 79000.0, 82000.0, "CLOSED", 82000.0, 200.0, in_window)
         )
@@ -37,7 +37,7 @@ def test_get_closed_positions_7d_strategy_mode(local_db):
             """
             INSERT INTO mock_orders (order_id, timestamp, symbol, config_id, side, price, amount,
                                      stop_loss, take_profit, status, close_price, realized_pnl, close_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             ("m2", out_of_window, "BTC/USDT", "strat_cfg", "SELL", 81000.0, 0.1, 82000.0, 79000.0, "CLOSED", 80000.0, 100.0, out_of_window)
         )
@@ -46,7 +46,7 @@ def test_get_closed_positions_7d_strategy_mode(local_db):
             """
             INSERT INTO mock_orders (order_id, timestamp, symbol, config_id, side, price, amount,
                                      stop_loss, take_profit, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             ("m3", in_window, "BTC/USDT", "strat_cfg", "BUY", 81500.0, 0.1, 80500.0, 83000.0, "OPEN")
         )
@@ -83,7 +83,7 @@ def test_get_closed_positions_7d_real_mode_uses_execution_position_history(local
             """
             INSERT INTO position_history (config_id, symbol, position_key, side, status,
                                           closed_at, close_price, amount, realized_pnl, raw_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             ("real_cfg", "ETH/USDT:USDT", "key1", "SHORT", "CLOSED", close_time, 2300.0, 0.5, 50.0, "{}", close_time)
         )
@@ -93,7 +93,7 @@ def test_get_closed_positions_7d_real_mode_uses_execution_position_history(local
                 position_id, account_scope, config_id, symbol, side, opened_at_ms, closed_at_ms,
                 entry_price, close_price, amount, take_profit, stop_loss, realized_pnl,
                 fees_json, exit_reason, updated_at_ms, payload
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 "ep1", "scope1", "real_cfg", "ETH/USDT:USDT", "SHORT",
@@ -183,7 +183,7 @@ def test_format_recent_position_history_for_memory_integration(local_db):
                    position_id,account_scope,config_id,symbol,side,opened_at_ms,closed_at_ms,
                    entry_price,close_price,amount,take_profit,stop_loss,realized_pnl,
                    fees_json,exit_reason,updated_at_ms,payload
-               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
                 "ep-int", "scope-int", "cfg_int", "BTC/USDT:USDT", "LONG",
                 int(opened.timestamp() * 1000), int(now.timestamp() * 1000),
@@ -196,8 +196,12 @@ def test_format_recent_position_history_for_memory_integration(local_db):
     with patch.object(database, '_config_mode_for_stats', return_value="REAL"):
         text = format_recent_position_history_for_memory("cfg_int", {"mode": "REAL", "symbol": "BTC/USDT"})
 
-    assert text == ''  # Performance history is audit evidence, outside strategy memory.
+    assert 'ep-int' in text and '+100.00 USDT' in text
+    assert 'BTC/USDT:USDT LONG' in text
     with patch.object(database, '_config_mode_for_stats', return_value='REAL'):
         history = database.get_closed_positions_7d('cfg_int')
     assert history[0]['symbol'] == 'BTC/USDT:USDT'
     assert history[0]['realized_pnl'] == 100
+
+
+pytestmark = pytest.mark.usefixtures("pg")

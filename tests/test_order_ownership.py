@@ -28,10 +28,10 @@ class Exchange:
 
 
 @pytest.fixture
-def tool(tmp_path,monkeypatch):
+def tool(tmp_path,monkeypatch,financial_pg):
     monkeypatch.setattr(database,'DB_NAME',str(tmp_path/'ownership.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # financial_pg installs the complete native migration schema.
     value=MarketTool.__new__(MarketTool)
     value.exchange=Exchange()
     value.config_id='cfg'
@@ -57,7 +57,7 @@ def test_unknown_foreign_wrong_symbol_and_mock_ids_never_reach_exchange(tool):
 def test_execution_link_conflict_overrides_legacy_claim(tool):
     legacy('same-id')
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                      (account_scope(tool.exchange,'cfg'),'BTC/USDT:USDT','same-id','other','entry','{}'))
         conn.commit()
     with pytest.raises(ValueError,match='another configuration'):
@@ -68,10 +68,10 @@ def test_execution_link_conflict_overrides_legacy_claim(tool):
 def test_scoped_ledger_plan_and_legacy_orders_are_supported(tool):
     scope=account_scope(tool.exchange,'cfg')
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                      (scope,'BTC/USDT:USDT','linked','cfg','entry','{}'))
         plan={'account_scope':scope,'entries':[{'id':'planned'}],'state':'WAITING'}
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('cfg','BTC/USDT:USDT','LONG',json.dumps(plan)))
         conn.commit()
     legacy('legacy')
@@ -85,7 +85,7 @@ def test_old_account_plan_cannot_authorize_current_account_cancel(tool):
     legacy('old-account')
     with database.get_db_conn() as conn:
         plan={'account_scope':'different-account','entries':[{'id':'old-account'}],'state':'WAITING'}
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('cfg','BTC/USDT:USDT','LONG',json.dumps(plan)))
         conn.commit()
     with pytest.raises(ValueError,match='previous exchange credentials'):
@@ -136,7 +136,7 @@ def test_generic_exchange_spot_alias_resolves_perpetual_plan(tool):
     tool.exchange.market=market
     with database.get_db_conn() as conn:
         plan={'account_scope':scope,'legs':[{'id':'sl-only-plan','kind':'sl'}],'state':'ACTIVE'}
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('cfg','BTC/USDT:USDT','LONG',json.dumps(plan)))
         conn.commit()
     result=assert_owned_perpetual_order(tool,'BTC/USDT','sl-only-plan')

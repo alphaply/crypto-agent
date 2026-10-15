@@ -1,4 +1,5 @@
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import json
 import time
@@ -83,17 +84,17 @@ def update_profile(profile_id: str, payload: MCPProfile):
 @serialized_spot_execution
 def delete_profile(profile_id: str):
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        used = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=? LIMIT 1', (profile_id,)).fetchone()
+        lock_scope(conn, 'runtime-config')
+        used = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=%s LIMIT 1', (profile_id,)).fetchone()
         if used:
             raise HTTPException(409, 'This profile has execution history; disable it instead to retain order ownership and receipts')
-        row = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=?", (profile_id,)).fetchone()
+        row = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=%s", (profile_id,)).fetchone()
         previous = json.loads(row[0]) if row else None
         if previous:
             from .config_guard import active_lifecycle
             if active_lifecycle(conn, previous):
                 raise HTTPException(409, 'This profile has active exposure or unresolved operations; disable decisions while retaining its management scope')
-        conn.execute("DELETE FROM mcp_records WHERE kind='profile' AND id=?", (profile_id,))
+        conn.execute("DELETE FROM mcp_records WHERE kind='profile' AND id=%s", (profile_id,))
         if (previous or {}).get('position_management_policy') == 'exclusive_scope':
             from backend.config_store import load_runtime_snapshot
             from backend.utils.position_management import synchronize_configuration

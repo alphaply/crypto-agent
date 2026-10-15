@@ -30,7 +30,7 @@ def test_clear_is_scoped_idempotent_and_preserves_published_memory_and_evidence(
     before = load_decision_memory('cfg', CFG)
     with database.get_db_conn() as conn:
         tables = ['short_memories', 'summaries', 'trade_action_runs', 'decision_context_projections']
-        saved = {table: [dict(row) for row in conn.execute(f'SELECT * FROM {table}')] for table in tables}
+        saved = {table: [dict(row) for row in conn.execute(f'SELECT * FROM {table} ORDER BY storage_id')] for table in tables}
     api = client()
     for _ in range(2):
         response = api.request('DELETE', '/api/history/short-memories/execution-snapshot', json=key)
@@ -40,7 +40,7 @@ def test_clear_is_scoped_idempotent_and_preserves_published_memory_and_evidence(
             if row['config_id'] == 'cfg':
                 row['position_summary'] = ''
         for table in tables:
-            assert [dict(row) for row in conn.execute(f'SELECT * FROM {table}')] == saved[table]
+            assert [dict(row) for row in conn.execute(f'SELECT * FROM {table} ORDER BY storage_id')] == saved[table]
     assert load_decision_memory('cfg', CFG) == before
     response = api.request('DELETE', '/api/history/short-memories/execution-snapshot',
                            json={**key, 'bucket_start': 'missing'})

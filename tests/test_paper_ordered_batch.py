@@ -130,7 +130,8 @@ def test_paper_quote_network_does_not_hold_write_transaction(ledger, monkeypatch
     real = paper.market
     def quote(*args, **kwargs):
         with store.connection() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            from backend.storage import lock_scope
+            lock_scope(conn, 'paper-account', caller['paper_namespace'], '123456')
             conn.rollback()
         return real(*args, **kwargs)
     monkeypatch.setattr(paper, 'market', quote)
@@ -186,7 +187,7 @@ def test_legacy_paper_fingerprints_and_partial_cancel_receipts(ledger):
             assert result['account']['spot'][0]['amount'] == item['expected']['spot_amount']
         assert len(quotes) == before and result['status'] == item['expected']['status']
         with store.connection() as conn:
-            saved = conn.execute('SELECT fingerprint FROM paper_operations WHERE operation_id=?', (item['operation_id'],)).fetchone()
+            saved = conn.execute('SELECT fingerprint FROM paper_operations WHERE operation_id=%s', (item['operation_id'],)).fetchone()
         assert saved['fingerprint'] == item['fingerprint']
 
 
@@ -256,7 +257,7 @@ def test_paper_query_refreshes_attempted_limit_fill_but_never_tail(ledger):
     result = batch(caller, [opening(order_type='limit', price=90)])
     assert result['results'][0]['status'] == 'submitted'
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('BEGIN')
         account = paper._get(conn, 'qqbot', '123456')
         paper_orders.match(conn, account, 'swap', 'BTC/USDT:USDT', {**ticker, 'ask': 85, 'bid': 85, 'price': 85,
                                         'symbol': 'BTC/USDT:USDT', 'market_type': 'swap', 'observed_at': time.time()}, paper.settings())
@@ -390,7 +391,7 @@ def _seed_foreign(caller, market):
         item.update(side='LONG', margin=100, leverage=1)
     account['spot' if market == 'spot' else 'positions'][key] = item
     with store.connection() as conn:
-        conn.execute('UPDATE paper_accounts SET payload=? WHERE namespace=? AND user_id=?',
+        conn.execute('UPDATE paper_accounts SET payload=%s WHERE namespace=%s AND user_id=%s',
                      (json.dumps(account), caller['paper_namespace'], '123456'))
         conn.commit()
     return item
@@ -445,7 +446,7 @@ def test_binance_default_entry_does_not_merge_foreign_same_symbol(ledger, monkey
 @pytest.mark.parametrize('previously_committed', [False, True])
 def test_sdk_intent_storage_error_keeps_original_id_and_does_not_claim_prior_failure(ledger, monkeypatch, previously_committed):
     import asyncio
-    import sqlite3
+    from backend import storage
     from mcp.server.fastmcp import FastMCP
     from backend.mcp import service
     from backend.mcp.tools import register_tools
@@ -462,12 +463,13 @@ def test_sdk_intent_storage_error_keeps_original_id_and_does_not_claim_prior_fai
     register_tools(server)
     register_paper_tools(server)
     def unreadable(*args, **kwargs):
-        raise sqlite3.OperationalError('Original parent ledger is unavailable')
+        raise storage.OperationalError('Original parent ledger is unavailable')
     with monkeypatch.context() as patch:
         patch.setattr(paper_batch, '_load', unreadable)
         blocks = asyncio.run(server.call_tool('execute_trade_actions', {
             'user_id': '123456', 'operation_id': parent, 'contract_version': 3, 'actions': requested}))
-    result = json.loads(blocks[0].text)
+    assert not blocks.isError, blocks
+    result = blocks.structuredContent or json.loads(blocks.content[0].text)
     assert result['operation_id'] == parent and result['status'] == 'unknown'
     assert result['error_code'] == 'intent_storage_unavailable'
     assert result['phase'] == 'persist_intent' and result['submission_state'] == 'not_submitted'
@@ -483,8 +485,8 @@ def test_sdk_intent_storage_error_keeps_original_id_and_does_not_claim_prior_fai
         assert paper_batch.operation(caller, '123456', parent) is None
 
 
-def test_sqlite_failure_during_intent_insert_rolls_back_without_dispatch(ledger, monkeypatch):
-    import sqlite3
+def test_postgres_failure_during_intent_insert_rolls_back_without_dispatch(ledger, monkeypatch):
+    from backend import storage
     from contextlib import contextmanager
     caller, _, quotes = ledger
     create(caller)
@@ -494,7 +496,7 @@ def test_sqlite_failure_during_intent_insert_rolls_back_without_dispatch(ledger,
             self.conn = conn
         def execute(self, statement, *args):
             if statement.startswith('INSERT INTO paper_batches'):
-                raise sqlite3.OperationalError('Intent insert failed')
+                raise storage.OperationalError('Intent insert failed')
             return self.conn.execute(statement, *args)
         def __getattr__(self, name):
             return getattr(self.conn, name)

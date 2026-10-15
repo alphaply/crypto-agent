@@ -28,11 +28,11 @@ def test_original_v3_background_updates_without_model_or_financial_callback(ledg
     readonly = Mock(return_value=latest)
     monkeypatch.setattr('backend.agent.unified_trading.query_unified_operation', readonly)
     outcome = reconcile(limit=1)
-    readonly.assert_called_once_with('cfg', 'ETH/USDT', 'original-parent', read_exchange=True)
+    readonly.assert_called_once_with('cfg', 'ETH/USDT', 'original-parent', read_exchange=False, refresh_children=False)
     assert outcome['processed'] == 1
     with database.get_db_conn() as conn:
-        stored = conn.execute('SELECT result,request_hash FROM trade_action_runs WHERE operation_id=?', ('original-parent',)).fetchone()
-        versions = conn.execute('SELECT payload FROM trade_receipt_revisions WHERE operation_id=? ORDER BY revision', ('original-parent',)).fetchall()
+        stored = conn.execute('SELECT result,request_hash FROM trade_action_runs WHERE operation_id=%s', ('original-parent',)).fetchone()
+        versions = conn.execute('SELECT payload FROM trade_receipt_revisions WHERE operation_id=%s ORDER BY revision', ('original-parent',)).fetchall()
     assert json.loads(stored['result']) == latest
     assert json.loads(versions[0]['payload']) == original
     assert latest['results'][1]['status'] == 'not_executed'
@@ -54,18 +54,18 @@ def test_background_failure_keeps_original_and_backs_off(ledger, monkeypatch):
     assert row['attempts'] == 1 and row['result'] == 'read_failed'
 
 
-def test_large_original_is_skipped_before_parse_without_changing_state(ledger, monkeypatch):
+def test_large_original_is_observed_despite_legacy_byte_setting(ledger, monkeypatch):
     monkeypatch.setattr('backend.utils.background_receipts.reconcile_mcp', lambda **_: {'processed': 0})
     run_once('cfg', 'ETH/USDT', 'large-original', {'contract_version': 3},
         lambda: {'status': 'unknown', 'operation_id': 'large-original', 'raw': 'x' * 10000})
     monkeypatch.setenv('RUNTIME_FINANCIAL_PAYLOAD_BYTES', '1024')
-    fetch = Mock(side_effect=AssertionError('Oversized original must not be loaded'))
+    fetch = Mock(return_value={'status': 'completed', 'operation_id': 'large-original'})
     monkeypatch.setattr('backend.agent.unified_trading.query_unified_operation', fetch)
     result = reconcile(limit=2)
-    assert result['skipped'][0]['operation_id'] == 'large-original'
-    fetch.assert_not_called()
+    assert result['skipped'] == [] and result['processed'] == 1
+    fetch.assert_called_once()
     with database.get_db_conn() as conn:
-        assert conn.execute('SELECT status FROM trade_action_runs').fetchone()[0] == 'unknown'
+        assert conn.execute('SELECT status FROM trade_action_runs').fetchone()[0] == 'completed'
 
 
 def test_background_reserves_one_complete_record_before_read_and_keeps_batch_bounded(ledger, monkeypatch):
@@ -76,12 +76,12 @@ def test_background_reserves_one_complete_record_before_read_and_keeps_batch_bou
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: {'mode':'REAL'})
     for index in range(10):
         run_once('cfg','ETH/USDT',str(index),{'contract_version':3},lambda:{'status':'unknown'})
-    fetch = Mock(side_effect=AssertionError('Complete payload commitments cannot fit together'))
+    fetch = Mock(return_value={'status': 'completed'})
     monkeypatch.setattr('backend.agent.unified_trading.query_unified_operation',fetch)
     result = reconcile(limit=10)
-    assert len(result['skipped']) == 10
-    fetch.assert_not_called()
-    assert manager.snapshot()['bytes'] == 0 and manager.snapshot()['peaks']['bytes'] <= 4096
+    assert result['skipped'] == [] and result['processed'] == 10
+    assert fetch.call_count == 10
+    assert manager.snapshot()['bytes'] == 0 and manager.snapshot()['peaks']['bytes'] > 4096
 
 
 def test_mcp_background_keeps_principal_external_id_and_failure_backoff(ledger, monkeypatch):
@@ -99,3 +99,23 @@ def test_mcp_background_keeps_principal_external_id_and_failure_backoff(ledger, 
     caller, profile, op = fetch.call_args.args
     assert caller['id']=='alice' and caller['scopes']==['read']
     assert (profile,op)==('profile','external')
+
+
+def test_slow_first_receipt_does_not_exhaust_later_receipts(ledger, monkeypatch):
+    import time
+    from backend.mcp.resilience import current_budget
+    monkeypatch.setenv('RUNTIME_RECOVERY_SECONDS', '.001')
+    monkeypatch.setattr('backend.utils.background_receipts.reconcile_mcp', lambda **_: {})
+    monkeypatch.setattr(config, 'get_config_by_id', lambda _: {'mode': 'REAL'})
+    for identity in ('first-slow', 'second-ready'):
+        run_once('cfg', 'ETH/USDT', identity, {'contract_version': 3}, lambda: {'status': 'unknown'})
+    observed = []
+    def read_original(config_id, symbol, operation_id, **kwargs):
+        time.sleep(.01)
+        assert current_budget.get().remaining('exchange_page') == 30
+        observed.append(operation_id)
+        return {'status': 'completed', 'operation_id': operation_id}
+    monkeypatch.setattr('backend.agent.unified_trading.query_unified_operation', read_original)
+    result = reconcile(limit=2)
+    assert result['processed'] == 2 and result['skipped'] == []
+    assert observed == ['first-slow', 'second-ready']

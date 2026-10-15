@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from backend.utils.logger import setup_logger
 from backend.utils.runtime_capacity import (CapacityBusy, submit_capacity, reserve_bytes,
-                                            positive_setting, capacity_limits_enabled)
+                                            positive_setting)
 
 
 logger = setup_logger("NewsContext")
@@ -116,12 +116,9 @@ def _parse_iso(value: Any) -> datetime | None:
 def _read_url(url: str, timeout: float = 4.0, headers: dict | None = None) -> bytes:
     user_agent = os.getenv("NEWS_USER_AGENT", "crypto-agent/1.0 contact@example.com")
     request = urllib.request.Request(url, headers={"User-Agent": user_agent, "Accept": "*/*", **(headers or {})})
-    limits_enabled = capacity_limits_enabled()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = response.read(8 * 1024 * 1024 + 1) if limits_enabled else response.read()
-            if limits_enabled and len(data) > 8 * 1024 * 1024:
-                raise ValueError('News response is too large')
+            data = response.read()
             return data
     except HTTPError as exc:
         if exc.code not in {301, 302, 307, 308} or not exc.headers.get("Location"):
@@ -129,9 +126,7 @@ def _read_url(url: str, timeout: float = 4.0, headers: dict | None = None) -> by
         redirected = urllib.parse.urljoin(url, exc.headers["Location"])
         retry = urllib.request.Request(redirected, headers={"User-Agent": user_agent, "Accept": "*/*", **(headers or {})})
         with urllib.request.urlopen(retry, timeout=timeout) as response:
-            data = response.read(8 * 1024 * 1024 + 1) if limits_enabled else response.read()
-            if limits_enabled and len(data) > 8 * 1024 * 1024:
-                raise ValueError('News response is too large')
+            data = response.read()
             return data
 
 
@@ -139,8 +134,6 @@ def _read_url(url: str, timeout: float = 4.0, headers: dict | None = None) -> by
 def _source_lock(source_key: str):
     with _cache_lock:
         if source_key not in _source_locks:
-            if capacity_limits_enabled() and len(_source_locks) >= positive_setting('RUNTIME_NEWS_CACHE_ENTRIES', 64):
-                raise CapacityBusy('news', 'source_coordinators')
             _source_locks[source_key] = [threading.Lock(), 0]
         entry = _source_locks[source_key]
         entry[1] += 1
@@ -165,24 +158,9 @@ class _CachedValue(dict):
 
 def _cache_put(cache, key, value):
     from backend.utils.public_catalogue import resident_size
-    cap = positive_setting('RUNTIME_NEWS_CACHE_BYTES', 16 * 1024 * 1024)
-    limits_enabled = capacity_limits_enabled()
-    try:
-        size = resident_size(value, cap if limits_enabled else None) * 2
-        maps = (_memory_cache, _failure_cache, _digest_cache)
-        cache.pop(key, None)
-        while limits_enabled and len(cache) >= positive_setting('RUNTIME_NEWS_CACHE_ENTRIES', 64):
-            cache.pop(next(iter(cache)))
-        while limits_enabled and sum(item.lease.amount for mapping in maps for item in mapping.values() if isinstance(item, _CachedValue)) + size > cap:
-            oldest = next((mapping for mapping in maps if mapping), None)
-            if oldest is None:
-                return
-            oldest.pop(next(iter(oldest)))
-        cache[key] = _CachedValue(value, reserve_bytes('news', size))
-    except CapacityBusy:
-        # Durable cache and current facts remain available without retaining
-        # another process copy when the global byte commitment is exhausted.
-        return
+    size = resident_size(value) * 2
+    cache.pop(key, None)
+    cache[key] = _CachedValue(value, reserve_bytes('news', size))
 
 
 def _load_persistent_cache(source_key: str) -> dict[str, Any] | None:
@@ -233,7 +211,7 @@ def _fetch_cached(
                 _cache_put(_memory_cache, source_key, {"fetched_at": persisted_at, "payload": payload})
             return {"items": payload, "status": "ok", "stale": False, "fetched_at": _iso(persisted_at)}
         try:
-            with reserve_bytes('news', positive_setting('RUNTIME_NEWS_WORK_BYTES', 32 * 1024 * 1024)):
+            with reserve_bytes('news', 32 * 1024 * 1024):
                 payload = fetcher()
             fetched_at = now
             with _cache_lock:

@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from backend.utils.capacity_profile import load_profile
 
-parser = argparse.ArgumentParser(description='Validate declared dual-container commitments before starting them.')
+parser = argparse.ArgumentParser(description='Validate declared app/database container commitments before starting them.')
 parser.add_argument('--profile', required=True)
 parser.add_argument('--host-total', type=int, required=True)
 parser.add_argument('--host-available', type=int, required=True)

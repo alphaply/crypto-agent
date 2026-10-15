@@ -20,7 +20,7 @@ def ledger(original_ledger):
 
 def raw_account(caller):
     with store.connection() as conn:
-        return json.loads(conn.execute('SELECT payload FROM paper_accounts WHERE namespace=? AND user_id=?',
+        return json.loads(conn.execute('SELECT payload FROM paper_accounts WHERE namespace=%s AND user_id=%s',
                                        (caller['paper_namespace'], '123456')).fetchone()[0])
 
 
@@ -34,7 +34,7 @@ def seed_legacy(caller, *, exchange='okx', symbol='BTC/USDT', reserve=200):
              'order_type': 'limit', 'price': 50, 'amount': 1, 'reserved_cash': reserve,
              'reserved_spot': 0, 'created_at': 1, 'cycle_id': 'original-legacy-cycle'}
     with store.connection() as conn:
-        conn.execute('UPDATE paper_accounts SET payload=? WHERE namespace=? AND user_id=?',
+        conn.execute('UPDATE paper_accounts SET payload=%s WHERE namespace=%s AND user_id=%s',
                      (json.dumps(account), caller['paper_namespace'], '123456'))
         paper_orders.save(conn, order)
         conn.commit()
@@ -124,7 +124,7 @@ def test_new_binance_same_swap_side_keeps_old_margin_and_only_exits_new_cycle(le
            'amount': .03, 'entry_price': 100, 'mark_price': 100, 'margin': 50, 'leverage': 2, 'marked_at': 1}
     account['positions']['legacy-short'] = copy.deepcopy(old)
     with store.connection() as conn:
-        conn.execute('UPDATE paper_accounts SET payload=?', (json.dumps(account),))
+        conn.execute('UPDATE paper_accounts SET payload=%s', (json.dumps(account),))
         conn.commit()
     paper.trade(caller, '123456', 'swap', 'ETH', 'open_short', .03, 'new-independent-short', leverage=2)
     paper.trade(caller, '123456', 'swap', 'ETH', 'close_short', .01, 'exit-only-new-short')
@@ -136,18 +136,19 @@ def test_new_binance_same_swap_side_keeps_old_margin_and_only_exits_new_cycle(le
     assert paper.get_account(caller, '123456')['filter']['retained_margin'] == 50
 
 
-def test_oversized_account_is_checked_before_financial_decode_or_mutation(ledger, monkeypatch):
+def test_large_account_remains_usable_without_byte_gate(ledger, monkeypatch):
     caller, _, _ = ledger
     create(caller)
     before = raw_account(caller)
     before['legacy_diagnostic'] = 'x' * 10000
     with store.connection() as conn:
-        conn.execute('UPDATE paper_accounts SET payload=?', (json.dumps(before),))
+        conn.execute('UPDATE paper_accounts SET payload=%s', (json.dumps(before),))
         conn.commit()
     monkeypatch.setenv('PAPER_MAX_PAYLOAD_BYTES', '2048')
-    with pytest.raises(paper_storage.PaperPayloadLimit):
-        paper.bank(caller, '123456', 'borrow', 100, 'oversized-no-new-effects')
-    assert raw_account(caller) == before
+    paper.bank(caller, '123456', 'borrow', 100, 'large-account-original')
+    after = raw_account(caller)
+    assert after['legacy_diagnostic'] == before['legacy_diagnostic']
+    assert after['debt'] == before['debt'] + 100
 
 
 @pytest.mark.parametrize('kind,symbol,action', [('spot', 'BTC', 'buy'), ('swap', 'ETH', 'open_long')])
@@ -241,7 +242,7 @@ def test_raw_audit_large_chinese_pages_reconstruct_without_json_decode(ledger, m
     value['legacy_note'] = '历史中文🙂甲乙丙丁' * 1000
     encoded = json.dumps(value, ensure_ascii=False)
     with store.connection() as conn:
-        conn.execute('UPDATE paper_accounts SET payload=?', (encoded,))
+        conn.execute('UPDATE paper_accounts SET payload=%s', (encoded,))
         conn.commit()
     monkeypatch.setenv('PAPER_MAX_PAYLOAD_BYTES', '1024')
     pages, offset, version = [], 0, None
@@ -281,7 +282,7 @@ def test_background_single_receipt_updates_without_model_query_or_original_chang
     create(caller)
     original = paper_orders.place(caller, '123456', 'spot', 'BTC', 'buy', 'limit', 'background-original-order', amount=1, price=90)
     with store.connection() as conn:
-        baseline = conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=?', ('background-original-order',)).fetchone()
+        baseline = conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=%s', ('background-original-order',)).fetchone()
         baseline = tuple(baseline)
     ticker.update(price=85, bid=85, ask=85)
     paper.reconcile()
@@ -290,9 +291,9 @@ def test_background_single_receipt_updates_without_model_query_or_original_chang
         paper_storage.recover_receipts()
     assert len(calls) == count
     with store.connection() as conn:
-        after = tuple(conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=?', ('background-original-order',)).fetchone())
+        after = tuple(conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=%s', ('background-original-order',)).fetchone())
         latest = paper_storage.audit_chunk(conn, 'qqbot', '123456', 'background-original-order', view='latest', length=65536)
-        revisions = conn.execute('SELECT COUNT(*) FROM paper_receipt_revisions WHERE operation_id=?', ('background-original-order',)).fetchone()[0]
+        revisions = conn.execute('SELECT COUNT(*) FROM paper_receipt_revisions WHERE operation_id=%s', ('background-original-order',)).fetchone()[0]
     result = json.loads(base64.b64decode(latest['content']))
     assert after == baseline and original['order']['state'] == 'open'
     assert result['status'] == 'completed' and result['order']['state'] == 'filled'
@@ -367,7 +368,7 @@ def test_maintenance_cursor_reaches_large_accounts_without_repricing_excluded_re
         account['spot'][symbol] = paper_policy.stamp({'symbol': symbol, 'exchange': 'binance', 'cycle_id': 'bn-cycle-' + str(index),
                                                     'amount': 1, 'entry_price': 100, 'mark_price': 100, 'marked_at': 1})
     with store.connection() as conn:
-        conn.execute('UPDATE paper_accounts SET payload=? WHERE namespace=? AND user_id=?',
+        conn.execute('UPDATE paper_accounts SET payload=%s WHERE namespace=%s AND user_id=%s',
                      (json.dumps(account), 'qqbot', '123456'))
         conn.commit()
     monkeypatch.setenv('PAPER_SCAN_BATCH_SIZE', '2')
@@ -422,11 +423,11 @@ def test_legacy_source_uses_original_cycle_evidence_instead_of_backfilled_field(
     # Recreate the historical original receipt schema, including a durable
     # cycle; the current row's Binance field may be the old upgrade's backfill.
     with store.connection() as conn:
-        receipt = json.loads(conn.execute('SELECT result FROM paper_operations WHERE operation_id=?', ('original-cycle-evidence',)).fetchone()[0])
+        receipt = json.loads(conn.execute('SELECT result FROM paper_operations WHERE operation_id=%s', ('original-cycle-evidence',)).fetchone()[0])
         receipt['fill']['exchange'] = source
         receipt['account']['spot'][0]['exchange'] = 'binance' if conflicting else source
-        conn.execute('UPDATE paper_operations SET result=? WHERE operation_id=?', (json.dumps(receipt), 'original-cycle-evidence'))
-        conn.execute('UPDATE paper_accounts SET payload=?', (json.dumps(account),))
+        conn.execute('UPDATE paper_operations SET result=%s WHERE operation_id=%s', (json.dumps(receipt), 'original-cycle-evidence'))
+        conn.execute('UPDATE paper_accounts SET payload=%s', (json.dumps(account),))
         conn.commit()
     view = paper.get_account(caller, '123456')
     assert bool(view['spot']) == (classification == 'binance')
@@ -438,45 +439,30 @@ def test_legacy_source_uses_original_cycle_evidence_instead_of_backfilled_field(
     assert evidence['complete'] and evidence['evidence'][0]['operation_id'] == 'original-cycle-evidence'
 
 
-def test_oversized_blob_is_rejected_before_any_payload_read_and_raw_audit_stays_bounded(ledger, monkeypatch):
+def test_large_invalid_json_reports_parse_error_and_raw_audit_stays_paginated(ledger, monkeypatch):
     caller, _, _ = ledger
     create(caller)
     with store.connection() as conn:
-        conn.execute('UPDATE paper_accounts SET payload=zeroblob(?)', (8 * 1024 * 1024,))
+        conn.execute("UPDATE paper_accounts SET payload=repeat('x', %s)", (8 * 1024 * 1024,))
         conn.commit()
     reads = []
-    class TrackingBlob:
-        def __init__(self, blob):
-            self.blob = blob
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            self.blob.close()
-        def __len__(self):
-            return len(self.blob)
-        def seek(self, offset):
-            self.blob.seek(offset)
-        def read(self, size=-1):
-            reads.append(size)
-            return self.blob.read(size)
-    class Connection:
-        def __init__(self, connection):
-            self.connection = connection
-        def __getattr__(self, name):
-            return getattr(self.connection, name)
-        def blobopen(self, *args, **kwargs):
-            return TrackingBlob(self.connection.blobopen(*args, **kwargs))
+    from backend.utils import sqlite_blob
+    original_slice = sqlite_blob.blob_slice
+    def tracked_slice(*args, **kwargs):
+        reads.append(kwargs['length'])
+        return original_slice(*args, **kwargs)
+    monkeypatch.setattr(sqlite_blob, 'blob_slice', tracked_slice)
     with store.connection() as conn:
-        wrapped = Connection(conn)
-        with pytest.raises(paper_storage.PaperPayloadLimit):
-            paper_storage.one(wrapped, 'paper_accounts', 'payload', 'namespace=? AND user_id=?', ('qqbot', '123456'))
-        assert reads == []
+        wrapped = conn
+        with pytest.raises(json.JSONDecodeError):
+            paper_storage.one(wrapped, 'paper_accounts', 'payload', 'namespace=%s AND user_id=%s', ('qqbot', '123456'))
+        assert reads == [8 * 1024 * 1024]
         page = paper_storage.raw_audit_chunk(wrapped, 'qqbot', '123456', 'account', length=31)
-        assert reads == [31] and page['total_bytes'] == 8 * 1024 * 1024
+        assert reads == [8 * 1024 * 1024, 31] and page['total_bytes'] == 8 * 1024 * 1024
         assert page['has_more'] and page['next_offset'] == 31
 
 
-def test_background_round_shares_deadline_and_progresses_across_small_work_budgets(ledger, monkeypatch):
+def test_background_round_pages_without_shared_deadline(ledger, monkeypatch):
     import asyncio
     caller, _, quotes = ledger
     create(caller)
@@ -487,7 +473,7 @@ def test_background_round_shares_deadline_and_progresses_across_small_work_budge
                                                     'amount': 1, 'entry_price': 100, 'mark_price': 100, 'marked_at': 1})
     original_legacy = copy.deepcopy(account['spot']['BTC/USDT'])
     with store.connection() as conn:
-        conn.execute('UPDATE paper_accounts SET payload=?', (json.dumps(account),))
+        conn.execute('UPDATE paper_accounts SET payload=%s', (json.dumps(account),))
         conn.commit()
     monkeypatch.setenv('PAPER_SCAN_BATCH_SIZE', '2')
     deadlines = []
@@ -500,11 +486,11 @@ def test_background_round_shares_deadline_and_progresses_across_small_work_budge
         facts = asyncio.run(paper.maintenance_round(asyncio.Event()))
         assert facts['processed_instruments'] == expected and facts['scanned_accounts'] <= 2
         assert all(value == deadlines[start] for value in deadlines[start:])
-        assert deadlines[start] > time.monotonic()
+        assert deadlines[start] is None
     assert {symbol for symbol, _ in quotes} == {f'BN{index}/USDT' for index in range(5)}
     assert raw_account(caller)['spot']['BTC/USDT'] == original_legacy
     with store.connection() as conn:
-        raw = paper_storage.one(conn, 'paper_orders', 'payload', 'order_id=?', (old_order['order_id'],))
+        raw = paper_storage.one(conn, 'paper_orders', 'payload', 'order_id=%s', (old_order['order_id'],))
     assert raw['state'] == 'open' and raw['reserved_cash'] == old_order['reserved_cash']
 
 
@@ -532,8 +518,8 @@ def test_legacy_foreign_retry_and_lost_parent_recover_only_original_atomic_evide
     payload = {'status': 'started', 'operation_id': parent_id, 'contract_version': 3, 'paper': True,
                'request': parent_request, 'results': items}
     with store.connection() as conn:
-        conn.execute('INSERT INTO paper_operations VALUES(?,?,?,?,?,?)', ('qqbot', '123456', child_id, original_hash, caller['id'], original_text))
-        conn.execute('INSERT INTO paper_batches VALUES(?,?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO paper_operations(namespace,user_id,operation_id,fingerprint,principal,result) VALUES(%s,%s,%s,%s,%s,%s)', ('qqbot', '123456', child_id, original_hash, caller['id'], original_text))
+        conn.execute('INSERT INTO paper_batches(namespace,user_id,operation_id,fingerprint,payload,worker_pid,worker_token,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                      ('qqbot', '123456', parent_id, store.digest(paper_batch._encode(parent_request)), paper_batch._encode(payload), os.getpid(), 'dead-token', 1))
         conn.commit()
     assert paper.trade(caller, '123456', 'spot', 'BTC', 'buy', 1, child_id, exchange_name='okx') == original
@@ -542,7 +528,7 @@ def test_legacy_foreign_retry_and_lost_parent_recover_only_original_atomic_evide
     assert [item['index'] for item in result['results']] == [0, 1, 2]
     assert raw_account(caller) == before and quotes == []
     with store.connection() as conn:
-        assert tuple(conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=?', (child_id,)).fetchone()) == (original_hash, original_text)
+        assert tuple(conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=%s', (child_id,)).fetchone()) == (original_hash, original_text)
 
 
 def test_conditional_child_and_parent_update_on_background_round_and_same_id_retry(ledger):
@@ -557,7 +543,7 @@ def test_conditional_child_and_parent_update_on_background_round_and_same_id_ret
     child = parent['results'][0]['operation_id']
     assert parent['status'] == 'submitted' and parent['results'][0]['order_status'] == 'waiting_trigger'
     with store.connection() as conn:
-        baseline = tuple(conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=?', (child,)).fetchone())
+        baseline = tuple(conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=%s', (child,)).fetchone())
     ticker.update(price=120, bid=120, ask=120)
     # First ordinary maintenance round matches the accepted original order;
     # the next advances its receipts. No model query or executor retry occurs.
@@ -568,7 +554,7 @@ def test_conditional_child_and_parent_update_on_background_round_and_same_id_ret
         latest = paper_storage.audit_chunk(conn, 'qqbot', '123456', child, view='latest', length=65536)
         import base64
         result = json.loads(base64.b64decode(latest['content']))
-        assert tuple(conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=?', (child,)).fetchone()) == baseline
+        assert tuple(conn.execute('SELECT fingerprint,result FROM paper_operations WHERE operation_id=%s', (child,)).fetchone()) == baseline
     assert result['status'] == 'completed' and result['order_status'] == 'filled' and result['filled_amount'] == 1
     replay = paper_orders.place(caller, '123456', 'swap', 'ETH/USDT:USDT', 'close_long', 'take_profit', child,
                                  close_all=True, trigger_price=110.0, exchange_name='binance')
@@ -638,7 +624,7 @@ def test_cancelled_accepted_order_has_terminal_latest_without_invented_fill(ledg
     paper_storage.recover_receipts()
     with store.connection() as conn:
         latest = paper_storage.audit_chunk(conn, 'qqbot', '123456', original['operation_id'], view='latest', length=65536)
-        watched = conn.execute('SELECT active FROM paper_receipt_watch WHERE operation_id=?', (original['operation_id'],)).fetchone()[0]
+        watched = conn.execute('SELECT active FROM paper_receipt_watch WHERE operation_id=%s', (original['operation_id'],)).fetchone()[0]
     value = json.loads(base64.b64decode(latest['content']))
     assert value['status'] == 'completed' and value['order_status'] == 'cancelled'
     assert not value.get('fill') and not value.get('filled_amount')

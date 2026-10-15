@@ -18,9 +18,13 @@ from backend.utils.trading_policy import SUMMARY_FACT_POLICY
 
 @pytest.fixture
 def local_db(tmp_path, monkeypatch):
+    registered = {"config_id": "cfg", "symbol": "ETH/USDT", "mode": "STRATEGY"}
+    monkeypatch.setattr(agent_graph.global_config, "get_exchange_credentials",
+                        lambda **_: ("binance", "summary-fixture-key", "", "swap"))
+    monkeypatch.setattr(agent_graph.global_config, "get_config_by_id", lambda cid: registered if cid == "cfg" else None)
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'strategy-summary.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
         from backend.agent.memory_updates import _initialize
         _initialize(conn)
     for field in ('model', 'api_key', 'api_base'):
@@ -35,7 +39,7 @@ def state_with(messages):
 
 def saved_summary():
     with database.get_db_conn() as conn:
-        rows = conn.execute('SELECT * FROM summaries WHERE config_id = ?', ('cfg',)).fetchall()
+        rows = conn.execute('SELECT * FROM summaries WHERE config_id = %s', ('cfg',)).fetchall()
     assert len(rows) == 1
     return dict(rows[0])
 
@@ -64,6 +68,8 @@ def test_finalize_uses_configured_deepseek_and_saves_its_complete_summary(local_
             'strategy_prompt': 'NESTED_SHOULD_NOT_WIN: {content}',
         },
     }
+    monkeypatch.setattr(agent_graph.global_config, "get_config_by_id",
+                        lambda cid: {**cfg, "config_id": "cfg", "symbol": "ETH/USDT"} if cid == "cfg" else None)
     original_config = deepcopy(cfg)
     llm = Mock(invoke=Mock(return_value=AIMessage(content=result, response_metadata={'finish_reason': 'stop'})))
     build = Mock(return_value=llm)
@@ -252,23 +258,20 @@ def test_decision_summary_memory_order_and_dashboard_evidence(local_db, monkeypa
         assert 'Keep waiting;' in source
         assert 'Prior strategy: support at 2385;' in source
         assert 'reassess after CPI.' in source
-        for diagnostic in ('unverified', 'verify existing order', 'unknown',
-                           'Verified historical evidence', 'execution_results'):
+        assert 'Keep waiting; the existing order is unverified.' in source
+        assert 'Verified historical evidence' in source
+        for diagnostic in ('verify existing order', 'execution_results'):
             assert diagnostic not in source
-        context = projections.prepare_review('cfg')
-        metadata = projections.validate_review(
-            {'summary': new_strategy, 'memory': {'strategy_text': new_strategy},
-             'projections': []}, context)
+        metadata = {**projections.capture_sources('cfg'), 'summary': new_strategy}
         memory_service._projection_metadata.set(metadata)
         return new_strategy
 
     database.save_short_memory('2026-01-01', '2026-01-01', 'ETH/USDT', 'cfg', prior_strategy, '', 1)
-    context = projections.prepare_review('cfg')
-    published = {'summary': prior_strategy, 'memory': {'strategy_text': prior_strategy},
-                 'projections': [{**{key: item[key] for key in ('source_kind', 'source_id', 'source_hash')},
-                                  'strategy_text': strategy_material(item['text'])}
-                                 for item in context['sources']]}
-    projections.persist_projections('cfg', projections.validate_review(published, context))
+    for source in projections.current_sources('cfg'):
+        refs = projections.source_refs('cfg', source)
+        with database.get_db_conn() as conn:
+            projections.publish_text(conn, 'cfg', source['source_kind'], source['row'], refs)
+            conn.commit()
     monkeypatch.setattr(memory_service, 'organize_memory', memory_model)
     monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: 'Verified historical evidence')
     assert process_memory_update('cfg', 'ordered-run', cfg)
@@ -297,3 +300,6 @@ def test_decision_summary_memory_order_and_dashboard_evidence(local_db, monkeypa
     assert 'report' not in agent and 'report_json' not in agent
     assert database.get_short_memories('cfg', 1)[0]['run_id'] == 'ordered-run'
     assert memory_service.format_short_memory_for_llm('cfg') == new_strategy
+
+
+pytestmark = pytest.mark.usefixtures("pg")

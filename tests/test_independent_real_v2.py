@@ -145,10 +145,10 @@ class Exchange:
 
 
 @pytest.fixture
-def service(tmp_path, monkeypatch):
+def service(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'v2-real.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     exchange = Exchange()
     service = IndependentExits(SimpleNamespace(exchange=exchange, config_id='cfg'))
     opened = service.open(SYMBOL, entry(), operation_id='entry', contract_version=2)
@@ -490,3 +490,9 @@ def test_conditional_replacement_conflict_does_not_resize_or_block_cycle(service
     # The agent can now choose a new explicit quantity; no synthetic resize occurs.
     next_stop = close(svc, 'stop_market', .4, trigger_price=91)
     assert next_stop['amount'] == .4
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

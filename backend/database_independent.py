@@ -1,5 +1,6 @@
 """Transactional aggregate-cost simulated positions and independent exit orders."""
 from __future__ import annotations
+from backend import storage
 
 import json
 import time
@@ -16,86 +17,11 @@ ACTIVE_EXIT_STATES = ('OPEN', 'WAITING_TRIGGER')
 
 
 def _migrate_exit_schema(cursor):
-    """Rebuild the legacy NOT NULL quantity table atomically, retaining indexes."""
-    columns = {row[1]: row for row in cursor.execute('PRAGMA table_info(mock_exit_orders)')}
-    additions = {
-        'contract_version': 'INTEGER NOT NULL DEFAULT 1',
-        'order_type': 'TEXT', 'quantity_mode': "TEXT NOT NULL DEFAULT 'fixed'",
-        'filled_amount': 'REAL NOT NULL DEFAULT 0',
-        'unexecuted_amount': 'REAL NOT NULL DEFAULT 0', 'resolved_amount': 'REAL',
-        'trigger_basis': "TEXT NOT NULL DEFAULT 'CONTRACT_PRICE'",
-        'triggered_at': 'REAL', 'exchange_channel': 'TEXT', 'exchange_order_id': 'TEXT',
-        'parent_algo_id': 'TEXT', 'execution_order_id': 'TEXT',
-        'replaces_order_id': 'TEXT', 'replacement_order_id': 'TEXT',
-    }
-    cursor.execute('SAVEPOINT independent_exit_schema')
-    try:
-        if columns['amount'][3] or columns['remaining'][3]:
-            schema = cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='mock_exit_orders'").fetchone()[0]
-            indexes = [row[0] for row in cursor.execute(
-                "SELECT sql FROM sqlite_master WHERE tbl_name='mock_exit_orders' AND type IN ('index','trigger') AND sql IS NOT NULL")]
-            # These two existing columns are the only constraints being relaxed.
-            import re
-            schema = re.sub(r'\b(amount|remaining)\s+REAL\s+NOT\s+NULL', r'\1 REAL', schema, flags=re.I)
-            schema = schema.replace('mock_exit_orders', 'mock_exit_orders_v2', 1)
-            cursor.execute(schema)
-            names = ','.join('"' + name.replace('"', '""') + '"' for name in columns)
-            cursor.execute(f'INSERT INTO mock_exit_orders_v2 ({names}) SELECT {names} FROM mock_exit_orders')
-            cursor.execute('DROP TABLE mock_exit_orders')
-            cursor.execute('ALTER TABLE mock_exit_orders_v2 RENAME TO mock_exit_orders')
-            for statement in indexes:
-                cursor.execute(statement)
-        for name, definition in additions.items():
-            if name not in columns:
-                cursor.execute(f'ALTER TABLE mock_exit_orders ADD COLUMN {name} {definition}')
-        if 'filled_amount' not in columns:
-            cursor.execute('UPDATE mock_exit_orders SET filled_amount=MAX(COALESCE(amount,0)-COALESCE(remaining,0),0)')
-        cursor.execute("UPDATE mock_exit_orders SET order_type=CASE WHEN contract_version=1 AND exit_type='take_profit_limit' "
-                       "THEN 'limit' ELSE exit_type END WHERE order_type IS NULL")
-        cursor.execute("UPDATE mock_exit_orders SET exchange_channel=CASE WHEN order_type IN ('market','limit') "
-                       "THEN 'regular' ELSE 'algo' END WHERE exchange_channel IS NULL")
-        cursor.execute('UPDATE mock_exit_orders SET exchange_order_id=order_id WHERE exchange_order_id IS NULL')
-        cursor.execute('RELEASE independent_exit_schema')
-    except Exception:
-        cursor.execute('ROLLBACK TO independent_exit_schema')
-        cursor.execute('RELEASE independent_exit_schema')
-        raise
+    """Structure is installed by the explicit PostgreSQL migration."""
 
 
 def initialize_independent_schema(cursor):
-    cursor.execute('''CREATE TABLE IF NOT EXISTS mock_positions (
-        config_id TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
-        episode_id TEXT NOT NULL, quantity REAL NOT NULL DEFAULT 0,
-        entry_price REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0,
-        opened_amount REAL NOT NULL DEFAULT 0,
-        opened_at TEXT, updated_at TEXT, status TEXT NOT NULL DEFAULT 'WAITING',
-        PRIMARY KEY(config_id,symbol,side))''')
-    if 'opened_amount' not in {row[1] for row in cursor.execute('PRAGMA table_info(mock_positions)')}:
-        cursor.execute('ALTER TABLE mock_positions ADD COLUMN opened_amount REAL NOT NULL DEFAULT 0')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS mock_exit_orders (
-        order_id TEXT PRIMARY KEY, config_id TEXT NOT NULL, symbol TEXT NOT NULL,
-        pos_side TEXT NOT NULL, episode_id TEXT NOT NULL, exit_type TEXT NOT NULL,
-        price REAL, trigger_price REAL, amount REAL, remaining REAL,
-        status TEXT NOT NULL, reason TEXT, timestamp TEXT NOT NULL,
-        created_at REAL NOT NULL, realized_pnl REAL NOT NULL DEFAULT 0)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS mock_trade_operations (
-        config_id TEXT NOT NULL, symbol TEXT NOT NULL, operation_id TEXT NOT NULL,
-        result TEXT NOT NULL, PRIMARY KEY(config_id,symbol,operation_id))''')
-    operation_columns = {row[1] for row in cursor.execute('PRAGMA table_info(mock_trade_operations)')}
-    if 'request_json' not in operation_columns:
-        cursor.execute('ALTER TABLE mock_trade_operations ADD COLUMN request_json TEXT')
-    _migrate_exit_schema(cursor)
-    columns = {row[1] for row in cursor.execute('PRAGMA table_info(mock_orders)')}
-    for name in ('execution_mode', 'episode_id'):
-        if name not in columns:
-            cursor.execute(f'ALTER TABLE mock_orders ADD COLUMN {name} TEXT')
-    if 'activated_at' not in columns:
-        cursor.execute('ALTER TABLE mock_orders ADD COLUMN activated_at REAL')
-    if 'contract_version' not in columns:
-        cursor.execute('ALTER TABLE mock_orders ADD COLUMN contract_version INTEGER NOT NULL DEFAULT 1')
-    if 'filled_amount' not in columns:
-        cursor.execute('ALTER TABLE mock_orders ADD COLUMN filled_amount REAL NOT NULL DEFAULT 0')
-        cursor.execute('UPDATE mock_orders SET filled_amount=amount WHERE is_filled=1')
+    """Structure is installed by the explicit PostgreSQL migration."""
 
 
 class MockIndependentTrading:
@@ -107,52 +33,52 @@ class MockIndependentTrading:
         return _current_timestamp()
 
     def _position(self, conn, side):
-        row = conn.execute('SELECT * FROM mock_positions WHERE config_id=? AND symbol=? AND side=?',
+        row = conn.execute('SELECT * FROM mock_positions WHERE config_id=%s AND symbol=%s AND side=%s',
                            (self.config_id, self.symbol, side)).fetchone()
-        return dict(row) if row else None
+        return storage.record(row) if row else None
 
     def _replay(self, conn, operation_id, request=None):
         if not operation_id:
             return None
-        row = conn.execute('SELECT result,request_json FROM mock_trade_operations WHERE config_id=? AND symbol=? AND operation_id=?',
+        row = conn.execute('SELECT result,request_json FROM mock_trade_operations WHERE config_id=%s AND symbol=%s AND operation_id=%s',
                            (self.config_id, self.symbol, operation_id)).fetchone()
         encoded = json.dumps(request, sort_keys=True, separators=(',', ':'), allow_nan=False) if request is not None else None
         if row:
             if row['request_json'] is not None and row['request_json'] != encoded:
                 raise ValueError('identity_conflict: operation ID belongs to a different request')
             return json.loads(row['result'])
-        conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(?,?,?,?,?)',
+        conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(%s,%s,%s,%s,%s)',
                      (self.config_id, self.symbol, operation_id, '{}', encoded))
         return None
 
     def _finish(self, conn, result, operation_id=None):
         if operation_id:
-            conn.execute('UPDATE mock_trade_operations SET result=? WHERE config_id=? AND symbol=? AND operation_id=?',
+            conn.execute('UPDATE mock_trade_operations SET result=%s WHERE config_id=%s AND symbol=%s AND operation_id=%s',
                          (json.dumps(result), self.config_id, self.symbol, operation_id))
         conn.commit()
         return result
 
     def _available(self, conn):
-        account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=?', (self.config_id,)).fetchone()
+        account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=%s', (self.config_id,)).fetchone()
         balance = float(account['balance']) if account else 10000.0
-        pending = conn.execute("SELECT COALESCE(SUM(price*CASE WHEN execution_mode='independent_exits' THEN MAX(amount-filled_amount,0) ELSE amount END),0) FROM mock_orders WHERE config_id=? AND status='OPEN' "
-                               "AND (COALESCE(is_filled,0)=1 OR expire_at IS NULL OR expire_at>?)",
+        pending = conn.execute("SELECT COALESCE(SUM(price*CASE WHEN execution_mode='independent_exits' THEN GREATEST(amount-filled_amount,0) ELSE amount END),0) FROM mock_orders WHERE config_id=%s AND status='OPEN' "
+                               "AND (COALESCE(is_filled,0)=1 OR expire_at IS NULL OR expire_at>%s)",
                                (self.config_id, time.time())).fetchone()[0]
-        held = conn.execute('SELECT COALESCE(SUM(quantity*entry_price),0) FROM mock_positions WHERE config_id=?',
+        held = conn.execute('SELECT COALESCE(SUM(quantity*entry_price),0) FROM mock_positions WHERE config_id=%s',
                             (self.config_id,)).fetchone()[0]
         return max(balance - float(pending) - float(held), 0.0)
 
     def _log(self, conn, order_id, side, amount, price, event, reason='', pnl=0, parent=None, status='OPEN'):
         conn.execute('''INSERT INTO orders(order_id,timestamp,symbol,agent_name,config_id,trade_mode,
             side,entry_price,amount,reason,status,event_type,parent_order_id,realized_pnl)
-            VALUES(?,?,?,?,?,'STRATEGY',?,?,?,?,?,?,?,?)''',
+            VALUES(%s,%s,%s,%s,%s,'STRATEGY',%s,%s,%s,%s,%s,%s,%s,%s)''',
             (order_id, self._now(), self.symbol, self.config_id, self.config_id,
              side, price, amount, reason, status, event, parent, pnl))
 
     def _history(self, conn, position, close_price=None):
         conn.execute('''INSERT INTO position_history(config_id,symbol,position_key,side,status,source,
             opened_at,closed_at,entry_price,close_price,amount,realized_pnl,raw_json,updated_at)
-            VALUES(?,?,?,?,?,'mock_aggregate',?,?,?,?,?,?,?,?)
+            VALUES(%s,%s,%s,%s,%s,'mock_aggregate',%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT(config_id,position_key) DO UPDATE SET status=excluded.status,
             closed_at=excluded.closed_at,entry_price=excluded.entry_price,close_price=COALESCE(excluded.close_price,position_history.close_price),
             amount=excluded.amount,realized_pnl=excluded.realized_pnl,raw_json=excluded.raw_json,updated_at=excluded.updated_at''',
@@ -173,23 +99,23 @@ class MockIndependentTrading:
         request = dict(action='open', contract_version=contract_version, side=side, amount=amount,
                        price=price, reason=op.reason, valid_duration_hours=getattr(op, 'valid_duration_hours', 24))
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            storage.lock_scope(conn, 'mock-account', self.config_id)
             replay = self._replay(conn, operation_id, request)
             if replay is not None:
                 return replay
-            if conn.execute("SELECT 1 FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' "
+            if conn.execute("SELECT 1 FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='OPEN' "
                             "AND COALESCE(execution_mode,'')!='independent_exits' LIMIT 1",
                             (self.config_id, self.symbol)).fetchone():
                 raise ValueError('An attached-mode simulated cycle remains active')
             if amount * price > self._available(conn) + 1e-9:
                 raise ValueError('Order value exceeds available simulated funds')
-            conn.execute('INSERT OR IGNORE INTO mock_accounts(config_id,symbol,balance,failures) VALUES(?,?,10000,0)',
+            conn.execute('INSERT INTO mock_accounts(config_id,symbol,balance,failures) VALUES(%s,%s,10000,0) ON CONFLICT(config_id) DO NOTHING',
                          (self.config_id, self.symbol))
             position = self._position(conn, side)
             if not position or position['status'] == 'DONE':
                 episode = uuid.uuid4().hex
                 conn.execute('''INSERT INTO mock_positions(config_id,symbol,side,episode_id,opened_at,updated_at)
-                    VALUES(?,?,?,?,?,?) ON CONFLICT(config_id,symbol,side) DO UPDATE SET
+                    VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(config_id,symbol,side) DO UPDATE SET
                     episode_id=excluded.episode_id,quantity=0,entry_price=0,realized_pnl=0,opened_amount=0,
                     opened_at=excluded.opened_at,updated_at=excluded.updated_at,status='WAITING' ''',
                     (self.config_id, self.symbol, side, episode, self._now(), self._now()))
@@ -199,18 +125,18 @@ class MockIndependentTrading:
             expiry = time.time() + int(getattr(op, 'valid_duration_hours', 24)) * 3600
             conn.execute('''INSERT INTO mock_orders(order_id,timestamp,symbol,agent_name,config_id,side,
                 price,amount,expire_at,status,is_filled,execution_mode,episode_id,activated_at,contract_version)
-                VALUES(?,?,?,?,?,?,?,?,?,'OPEN',0,'independent_exits',?,?,?)''',
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',0,'independent_exits',%s,%s,%s)''',
                 (oid, self._now(), self.symbol, self.config_id, self.config_id,
                  'BUY' if side == 'LONG' else 'SELL', price, amount, expiry, episode,time.time(),contract_version))
             self._log(conn, oid, 'BUY' if side == 'LONG' else 'SELL', amount, price, 'ORDER_CREATED', op.reason)
-            row = dict(conn.execute('SELECT * FROM mock_orders WHERE order_id=?', (oid,)).fetchone())
+            row = storage.record(conn.execute('SELECT * FROM mock_orders WHERE order_id=%s', (oid,)).fetchone())
             return self._finish(conn, self._entry_result(row), operation_id)
 
     def _exit_row(self, conn, order_id):
         channel, raw = parse_order_reference(order_id)
-        rows = conn.execute('SELECT * FROM mock_exit_orders WHERE (order_id=? OR execution_order_id=?) AND config_id=? AND symbol=?',
+        rows = conn.execute('SELECT * FROM mock_exit_orders WHERE (order_id=%s OR execution_order_id=%s) AND config_id=%s AND symbol=%s',
                             (raw, raw, self.config_id, self.symbol)).fetchall()
-        rows = [dict(row) for row in rows if channel is None or
+        rows = [storage.record(row) for row in rows if channel is None or
                 (row['execution_order_id'] == raw and channel == 'regular') or
                 (row['order_id'] == raw and row['exchange_channel'] == channel)]
         if len(rows) > 1:
@@ -229,7 +155,7 @@ class MockIndependentTrading:
     def _entry_result(self, row):
         filled = float(row.get('filled_amount') or 0)
         state = 'filled' if row['status'] == 'FILLED' else 'canceled' if row['status'] == 'CANCELLED' else 'partially_filled' if filled else 'open'
-        result = dict(row, id=row['order_id'], order_id=self._reference(row),
+        result = storage.record(row, id=row['order_id'], order_id=self._reference(row),
                       kind='entry', order_type='limit', exchange_channel='regular',
                       quantity_mode='fixed', filled_amount=filled, filled=filled,
                       remaining=max(row['amount']-filled, 0), remaining_amount=max(row['amount']-filled, 0),
@@ -252,7 +178,7 @@ class MockIndependentTrading:
             state = 'canceled'
         elif state == 'open' and row.get('filled_amount', 0):
             state = 'partially_filled'
-        result = dict(row, id=row['order_id'], order_id=self._reference(row), kind='exit',
+        result = storage.record(row, id=row['order_id'], order_id=self._reference(row), kind='exit',
                       order_type=order_type, order_status=state, pending=False,
                       requested_amount=row['amount'], remaining_amount=actual_remaining,
                       actual_remaining=actual_remaining, filled=row['filled_amount'],
@@ -273,7 +199,7 @@ class MockIndependentTrading:
         request = dict(action='close', contract_version=contract_version, side=pos_side, amount=amount,
                        exit_type=exit_type, close_all=close_all, price=price, trigger_price=trigger_price, reason=reason)
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            storage.lock_scope(conn, 'mock-account', self.config_id)
             replay = self._replay(conn, operation_id, request)
             if replay is not None:
                 return replay
@@ -290,7 +216,7 @@ class MockIndependentTrading:
             conn.execute('''INSERT INTO mock_exit_orders(order_id,config_id,symbol,pos_side,episode_id,exit_type,
                 price,trigger_price,amount,remaining,status,reason,timestamp,created_at,
                 contract_version,order_type,quantity_mode,exchange_channel,exchange_order_id,resolved_amount)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
                 (oid,self.config_id,self.symbol,pos_side,position['episode_id'],exit_type,price,trigger_price,
                  quantity,quantity,'WAITING_TRIGGER' if conditional and contract_version==2 else 'OPEN',
                  reason,self._now(),time.time(),contract_version,order_type,normalized['quantity_mode'],
@@ -306,11 +232,11 @@ class MockIndependentTrading:
         if position['quantity'] > 1e-12:
             return
         conn.execute("UPDATE mock_exit_orders SET status='CANCELLED',unexecuted_amount=COALESCE(remaining,0) "
-                     "WHERE config_id=? AND symbol=? AND episode_id=? AND status IN ('OPEN','WAITING_TRIGGER')",
+                     "WHERE config_id=%s AND symbol=%s AND episode_id=%s AND status IN ('OPEN','WAITING_TRIGGER')",
                      (self.config_id, self.symbol, position['episode_id']))
-        entries = conn.execute("SELECT order_id FROM mock_orders WHERE config_id=? AND symbol=? AND episode_id=? AND status='OPEN'",
+        entries = conn.execute("SELECT order_id FROM mock_orders WHERE config_id=%s AND symbol=%s AND episode_id=%s AND status='OPEN'",
                                (self.config_id, self.symbol, position['episode_id'])).fetchall()
-        conn.execute("UPDATE mock_orders SET status='CANCELLED',close_time=? WHERE config_id=? AND symbol=? AND episode_id=? AND status='OPEN'",
+        conn.execute("UPDATE mock_orders SET status='CANCELLED',close_time=%s WHERE config_id=%s AND symbol=%s AND episode_id=%s AND status='OPEN'",
                      (self._now(), self.config_id, self.symbol, position['episode_id']))
         for entry in entries:
             self._log(conn, entry['order_id'], 'CANCEL', 0, 0, 'CANCELLED', 'Position cycle ended', status='CANCELLED')
@@ -327,7 +253,7 @@ class MockIndependentTrading:
             return False
         position = self._position(conn, live['pos_side'])
         if not position or position['episode_id'] != live['episode_id'] or position['quantity'] <= 0:
-            conn.execute("UPDATE mock_exit_orders SET status='CANCELLED',unexecuted_amount=COALESCE(remaining,0) WHERE order_id=?", (live['order_id'],))
+            conn.execute("UPDATE mock_exit_orders SET status='CANCELLED',unexecuted_amount=COALESCE(remaining,0) WHERE order_id=%s", (live['order_id'],))
             return False
         target = live['resolved_amount'] if live['order_type']=='market' and live['quantity_mode']=='all' else position['quantity'] if live['quantity_mode']=='all' else live['remaining']
         quantity = min(target, position['quantity'])
@@ -337,18 +263,18 @@ class MockIndependentTrading:
         state = 'DONE' if remaining <= 1e-12 else 'ACTIVE'
         if state == 'DONE':
             remaining = 0
-        conn.execute('UPDATE mock_positions SET quantity=?,realized_pnl=realized_pnl+?,status=?,updated_at=? '
-                     'WHERE config_id=? AND symbol=? AND side=?',
+        conn.execute('UPDATE mock_positions SET quantity=%s,realized_pnl=realized_pnl+%s,status=%s,updated_at=%s '
+                     'WHERE config_id=%s AND symbol=%s AND side=%s',
                      (remaining,pnl,state,self._now(),self.config_id,self.symbol,position['side']))
-        conn.execute("UPDATE mock_exit_orders SET status=?,remaining=?,filled_amount=filled_amount+?,"
-                     "unexecuted_amount=?,resolved_amount=COALESCE(resolved_amount,?),realized_pnl=realized_pnl+? WHERE order_id=?",
+        conn.execute("UPDATE mock_exit_orders SET status=%s,remaining=%s,filled_amount=filled_amount+%s,"
+                     "unexecuted_amount=%s,resolved_amount=COALESCE(resolved_amount,%s),realized_pnl=realized_pnl+%s WHERE order_id=%s",
                      ('CANCELLED' if unexecuted>1e-12 else 'CLOSED',None if live['quantity_mode']=='all' else unexecuted,
                       quantity,unexecuted,quantity,pnl,live['order_id']))
-        conn.execute('UPDATE mock_accounts SET balance=balance+? WHERE config_id=?', (pnl,self.config_id))
+        conn.execute('UPDATE mock_accounts SET balance=balance+%s WHERE config_id=%s', (pnl,self.config_id))
         # Preserve existing insolvency reset behavior without a separate connection.
-        conn.execute('UPDATE mock_accounts SET balance=10000,failures=failures+1 WHERE config_id=? AND balance<1000', (self.config_id,))
-        account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=?', (self.config_id,)).fetchone()
-        conn.execute('INSERT INTO mock_balance_history(config_id,symbol,timestamp,balance,unrealized_pnl,total_equity) VALUES(?,?,?,?,0,?)',
+        conn.execute('UPDATE mock_accounts SET balance=10000,failures=failures+1 WHERE config_id=%s AND balance<1000', (self.config_id,))
+        account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=%s', (self.config_id,)).fetchone()
+        conn.execute('INSERT INTO mock_balance_history(config_id,symbol,timestamp,balance,unrealized_pnl,total_equity) VALUES(%s,%s,%s,%s,0,%s)',
                      (self.config_id,self.symbol,self._now(),account['balance'],account['balance']))
         self._log(conn, 'fill:' + uuid.uuid4().hex, 'CLOSE_' + position['side'], quantity,fill_price,
                   'MANUAL_CLOSE' if live['order_type']=='market' else 'SL_HIT' if exit_group(live)=='stop_loss' else 'TP_HIT',
@@ -376,9 +302,9 @@ class MockIndependentTrading:
         channel, raw = parse_order_reference(order_id)
         if channel not in (None, 'regular'):
             return None
-        row = conn.execute("SELECT * FROM mock_orders WHERE order_id=? AND config_id=? AND symbol=? "
+        row = conn.execute("SELECT * FROM mock_orders WHERE order_id=%s AND config_id=%s AND symbol=%s "
                            "AND execution_mode='independent_exits'", (raw,self.config_id,self.symbol)).fetchone()
-        return dict(row) if row else None
+        return storage.record(row) if row else None
 
     def describe_order(self, order_id):
         from backend import database
@@ -414,7 +340,7 @@ class MockIndependentTrading:
                        order_id=order_id, amount=remaining_amount, price=price, trigger_price=trigger_price,
                        reason=reason, pos_side=pos_side)
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            storage.lock_scope(conn, 'mock-account', self.config_id)
             replay=self._replay(conn,operation_id,request)
             if replay is not None:
                 return replay
@@ -440,7 +366,7 @@ class MockIndependentTrading:
                 new_price=entry['price'] if price is None else positive_number(price,'price')
                 if new_price*remaining > self._available(conn)+entry['price']*(entry['amount']-filled)+1e-9:
                     raise ValueError('Amended entry exceeds available simulated funds')
-                conn.execute('UPDATE mock_orders SET price=?,amount=?,activated_at=? WHERE order_id=?',
+                conn.execute('UPDATE mock_orders SET price=%s,amount=%s,activated_at=%s WHERE order_id=%s',
                              (new_price,filled+remaining,time.time(),entry['order_id']))
                 self._log(conn,'edit:'+uuid.uuid4().hex,entry['side'],remaining,new_price,'ORDER_AMENDED',reason,parent=entry['order_id'])
                 result=self._entry_result(self._entry_row(conn,entry['order_id']))
@@ -478,19 +404,20 @@ class MockIndependentTrading:
                 raise ValueError('Amended exit quantity exceeds position')
             old_reference=self._reference(row)
             if conditional:
-                new=dict(row, order_id='SX-'+uuid.uuid4().hex[:16], price=new_price, trigger_price=new_trigger,
+                new=storage.record(row, order_id='SX-'+uuid.uuid4().hex[:16], price=new_price, trigger_price=new_trigger,
                          amount=remaining, remaining=remaining, reason=reason, created_at=time.time(),
                          timestamp=self._now(), filled_amount=0, unexecuted_amount=0, realized_pnl=0,
                          replaces_order_id=row['order_id'], replacement_order_id=None, resolved_amount=None)
+                new.pop('storage_id', None)
                 new['exchange_order_id']=new['order_id']
-                conn.execute("UPDATE mock_exit_orders SET status='CANCELLED',unexecuted_amount=COALESCE(remaining,0),replacement_order_id=? WHERE order_id=?",
+                conn.execute("UPDATE mock_exit_orders SET status='CANCELLED',unexecuted_amount=COALESCE(remaining,0),replacement_order_id=%s WHERE order_id=%s",
                              (new['order_id'],row['order_id']))
                 columns=','.join(new)
-                conn.execute(f"INSERT INTO mock_exit_orders({columns}) VALUES({','.join('?' for _ in new)})",tuple(new.values()))
+                conn.execute(f"INSERT INTO mock_exit_orders({columns}) VALUES({','.join('%s' for _ in new)})",tuple(new.values()))
                 row=new
             else:
                 total=row['filled_amount']+remaining
-                conn.execute('UPDATE mock_exit_orders SET price=?,amount=?,remaining=?,reason=?,created_at=?,timestamp=? WHERE order_id=?',
+                conn.execute('UPDATE mock_exit_orders SET price=%s,amount=%s,remaining=%s,reason=%s,created_at=%s,timestamp=%s WHERE order_id=%s',
                              (new_price,total,remaining,reason,time.time(),self._now(),row['order_id']))
                 row=self._exit_row(conn,row['order_id'])
             self._log(conn,'edit:'+uuid.uuid4().hex,'CLOSE_'+row['pos_side'],remaining,new_price or new_trigger,
@@ -507,7 +434,7 @@ class MockIndependentTrading:
     def cancel(self, order_id, operation_id=None):
         from backend import database
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            storage.lock_scope(conn, 'mock-account', self.config_id)
             replay=self._replay(conn,operation_id,dict(action='cancel',order_id=order_id))
             if replay is not None:
                 return replay
@@ -521,15 +448,15 @@ class MockIndependentTrading:
                 if parse_order_reference(order_id)[0] is None and self._entry_row(conn,order_id):
                     raise ValueError('ambiguous_order_id: use a channel-qualified order_id')
                 if row['status'] in ACTIVE_EXIT_STATES:
-                    conn.execute("UPDATE mock_exit_orders SET status='CANCELLED',unexecuted_amount=COALESCE(remaining,0) WHERE order_id=?",(row['order_id'],))
+                    conn.execute("UPDATE mock_exit_orders SET status='CANCELLED',unexecuted_amount=COALESCE(remaining,0) WHERE order_id=%s",(row['order_id'],))
                 else:
-                    return self._finish(conn,self._result(dict(row)),operation_id)
+                    return self._finish(conn,self._result(storage.record(row)),operation_id)
                 result=self._result(self._exit_row(conn,row['order_id']))
             else:
                 row=self._entry_row(conn,order_id)
                 if not row or row['is_filled']:
                     raise ValueError('No owned pending order to cancel')
-                conn.execute("UPDATE mock_orders SET status='CANCELLED',close_time=? WHERE order_id=? AND status='OPEN'",
+                conn.execute("UPDATE mock_orders SET status='CANCELLED',close_time=%s WHERE order_id=%s AND status='OPEN'",
                              (self._now(),row['order_id']))
                 result=self._entry_result(self._entry_row(conn,row['order_id']))
             self._log(conn,row['order_id'],'CANCEL',0,0,'CANCELLED','Explicit cancel',status='CANCELLED')
@@ -540,23 +467,23 @@ class MockIndependentTrading:
         result=dict(mode='independent_exits',positions=[],entries=[],exits=[],unresolved_orders=[],uncovered={'LONG':0.0,'SHORT':0.0},
                     pending=False,quantity_conflict=False,quantity_conflicts=[],exit_groups={})
         with database.get_db_conn() as conn:
-            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mock_positions'").fetchone():
+            if not 'mock_positions' in storage.table_names(conn):
                 return result
-            for row in conn.execute('SELECT * FROM mock_positions WHERE config_id=? AND symbol=? AND quantity>0',
+            for row in conn.execute('SELECT * FROM mock_positions WHERE config_id=%s AND symbol=%s AND quantity>0',
                                     (self.config_id,self.symbol)):
-                item=dict(row)
+                item=storage.record(row)
                 item.update(order_id='POS-'+row['episode_id'],side='BUY' if row['side']=='LONG' else 'SELL',
                             pos_side=row['side'],price=row['entry_price'],amount=row['quantity'],is_filled=1,
                             stop_loss=None,take_profit=None,execution_mode='independent_exits')
                 result['positions'].append(item)
                 result['uncovered'][row['side']]=row['quantity']
             quantities=dict(result['uncovered'])
-            result['entries']=[self._entry_result(dict(row)) for row in conn.execute("SELECT * FROM mock_orders WHERE config_id=? AND symbol=? "
-                "AND execution_mode='independent_exits' AND status='OPEN' AND is_filled=0 AND (expire_at IS NULL OR expire_at>?)",
+            result['entries']=[self._entry_result(storage.record(row)) for row in conn.execute("SELECT * FROM mock_orders WHERE config_id=%s AND symbol=%s "
+                "AND execution_mode='independent_exits' AND status='OPEN' AND is_filled=0 AND (expire_at IS NULL OR expire_at>%s)",
                 (self.config_id,self.symbol,time.time()))]
-            for raw_row in conn.execute("SELECT * FROM mock_exit_orders WHERE config_id=? AND symbol=? AND status IN ('OPEN','WAITING_TRIGGER')",
+            for raw_row in conn.execute("SELECT * FROM mock_exit_orders WHERE config_id=%s AND symbol=%s AND status IN ('OPEN','WAITING_TRIGGER')",
                                     (self.config_id,self.symbol)):
-                row=dict(raw_row)
+                row=storage.record(raw_row)
                 item=self._result(row)
                 available=quantities[row['pos_side']]
                 item['coverage_estimate']=available if row['quantity_mode']=='all' else min(row['remaining'],available)
@@ -592,13 +519,13 @@ class MockIndependentTrading:
             raise ValueError('Candle low exceeds high')
         result=dict(filled=0,closed=0)
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            storage.lock_scope(conn, 'mock-account', self.config_id)
             # Existing exits have priority over additions on an ambiguous OHLC bar.
             # In particular a downward crossing must honor an existing SL before
             # filling a lower buy limit and retroactively changing its cost basis.
             result['closed'] = self._monitor_exits(conn,high,low,candle_ts_ms)
-            entries=conn.execute("SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND execution_mode='independent_exits' "
-                                 "AND status='OPEN' AND is_filled=0 AND (expire_at IS NULL OR expire_at>?) ORDER BY timestamp,order_id",
+            entries=conn.execute("SELECT * FROM mock_orders WHERE config_id=%s AND symbol=%s AND execution_mode='independent_exits' "
+                                 "AND status='OPEN' AND is_filled=0 AND (expire_at IS NULL OR expire_at>%s) ORDER BY timestamp,order_id",
                                  (self.config_id,self.symbol,time.time())).fetchall()
             for row in entries:
                 created=(row['activated_at'] or database.TZ_CN.localize(datetime.strptime(row['timestamp'],'%Y-%m-%d %H:%M:%S')).timestamp())*1000
@@ -609,13 +536,13 @@ class MockIndependentTrading:
                 side='LONG' if row['side']=='BUY' else 'SHORT'
                 position=self._position(conn,side)
                 if not position or position['episode_id']!=row['episode_id'] or position['status']=='DONE':
-                    conn.execute("UPDATE mock_orders SET status='CANCELLED' WHERE order_id=?",(row['order_id'],))
+                    conn.execute("UPDATE mock_orders SET status='CANCELLED' WHERE order_id=%s",(row['order_id'],))
                     continue
                 executed=max(row['amount']-row['filled_amount'],0)
                 quantity=position['quantity']+executed
                 mean=(position['entry_price']*position['quantity']+row['price']*executed)/quantity
-                conn.execute("UPDATE mock_orders SET status='FILLED',is_filled=1,filled_amount=amount WHERE order_id=?",(row['order_id'],))
-                conn.execute("UPDATE mock_positions SET quantity=?,entry_price=?,opened_amount=opened_amount+?,status='ACTIVE',updated_at=? WHERE config_id=? AND symbol=? AND side=?",
+                conn.execute("UPDATE mock_orders SET status='FILLED',is_filled=1,filled_amount=amount WHERE order_id=%s",(row['order_id'],))
+                conn.execute("UPDATE mock_positions SET quantity=%s,entry_price=%s,opened_amount=opened_amount+%s,status='ACTIVE',updated_at=%s WHERE config_id=%s AND symbol=%s AND side=%s",
                              (quantity,mean,executed,self._now(),self.config_id,self.symbol,side))
                 self._log(conn,'fill:'+uuid.uuid4().hex,'ENTRY_'+row['side'],executed,row['price'],
                           'ENTRY_FILLED','Independent entry filled',parent=row['order_id'],status='FILLED')
@@ -626,7 +553,7 @@ class MockIndependentTrading:
         return result
 
     def _monitor_exits(self,conn,high,low,candle_ts_ms):
-        exits=[dict(row) for row in conn.execute("SELECT * FROM mock_exit_orders WHERE config_id=? AND symbol=? AND status IN ('OPEN','WAITING_TRIGGER')",
+        exits=[storage.record(row) for row in conn.execute("SELECT * FROM mock_exit_orders WHERE config_id=%s AND symbol=%s AND status IN ('OPEN','WAITING_TRIGGER')",
                                                 (self.config_id,self.symbol))]
         # OHLC cannot prove intrabar ordering. Check stop losses first; for each
         # direction check the nearest reachable trigger before farther levels.
@@ -645,7 +572,7 @@ class MockIndependentTrading:
                 if not touched:
                     continue
                 child='SE-'+uuid.uuid4().hex[:16]
-                conn.execute("UPDATE mock_exit_orders SET status='OPEN',triggered_at=?,parent_algo_id=order_id,execution_order_id=? WHERE order_id=? AND status IN ('OPEN','WAITING_TRIGGER')",
+                conn.execute("UPDATE mock_exit_orders SET status='OPEN',triggered_at=%s,parent_algo_id=order_id,execution_order_id=%s WHERE order_id=%s AND status IN ('OPEN','WAITING_TRIGGER')",
                              (candle_ts_ms,child,row['order_id']))
                 row=self._exit_row(conn,row['order_id'])
                 # A bar cannot locate the high/low relative to its trigger. Limit

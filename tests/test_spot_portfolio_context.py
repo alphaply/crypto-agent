@@ -26,12 +26,8 @@ def test_spot_defaults_ignore_global_intraday_but_keep_explicit_overrides(monkey
 
 
 @pytest.fixture
-def portfolio(monkeypatch, tmp_path):
+def portfolio(pg, monkeypatch):
     from backend import database
-    from backend.database_schema import initialize_schema
-    monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'portfolio.sqlite'))
-    with database.get_db_conn() as conn:
-        initialize_schema(conn)
     cfg = {'config_id': 'portfolio', 'symbol': 'BTC/USDT', 'symbols': ['BTC/USDT', 'ETH/USDT'],
            'mode': 'SPOT_DCA', 'model': 'test', 'dca_amount': 100, 'dca_budget': 1000}
     market = Mock()

@@ -1,3 +1,4 @@
+from backend import storage
 """Published text and memory-job status; retired projections are audit-only."""
 import json
 
@@ -39,14 +40,16 @@ def projection_status(config_id: str) -> dict:
                     result['historical_errors'].append(dict(source_kind=kind, source_id=source['source_id'],
                                                  as_of=source['timestamp'], status=p['status'],
                                                  attempts=p['attempts'], error=p['error']))
+        except storage.Error:
+            raise
         except Exception:
             projections.logger.exception('Unable to read projection status for %s/%s', config_id, kind)
             result['read_errors'].append(kind)
     try:
         with database.get_db_conn() as conn:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = storage.table_names(conn)
             jobs = conn.execute('SELECT j.*,s.timestamp,s.symbol FROM memory_update_jobs j JOIN summaries s '
-                                'ON s.id=j.summary_id AND s.config_id=j.config_id WHERE j.config_id=? '
+                                'ON s.id=j.summary_id AND s.config_id=j.config_id WHERE j.config_id=%s '
                                 "AND j.status IN ('pending','failed','partial') ORDER BY j.summary_id DESC",
                                 (config_id,)).fetchall() if 'memory_update_jobs' in tables else []
         for job in jobs:
@@ -65,6 +68,8 @@ def projection_status(config_id: str) -> dict:
                 result['errors'].append(dict(source_kind='memory_update', source_id=str(job['summary_id']),
                                              as_of=job['timestamp'], status=job['status'],
                                              attempts=job['attempts'], error=job['error']))
+    except storage.Error:
+        raise
     except Exception:
         projections.logger.exception('Unable to read memory jobs for %s', config_id)
         result['read_errors'].append('memory_update_jobs')
@@ -82,7 +87,7 @@ def retry_failed_projections(config_id: str) -> dict:
         _initialize(conn)
         jobs = conn.execute('SELECT j.*,s.strategy_logic FROM memory_update_jobs j JOIN summaries s '
                             'ON s.id=j.summary_id AND s.config_id=j.config_id '
-                            "WHERE j.config_id=? AND j.status='failed'", (config_id,)).fetchall()
+                            "WHERE j.config_id=%s AND j.status='failed'", (config_id,)).fetchall()
         requeued = 0
         for job in jobs:
             try:
@@ -94,7 +99,7 @@ def retry_failed_projections(config_id: str) -> dict:
             except (ValueError, TypeError):
                 continue
             requeued += conn.execute("UPDATE memory_update_jobs SET status='pending',attempts=0,next_attempt=0,error='' "
-                                     "WHERE config_id=? AND run_id=? AND status='failed'",
+                                     "WHERE config_id=%s AND run_id=%s AND status='failed'",
                                      (config_id, job['run_id'])).rowcount
         conn.commit()
     return {**projection_status(config_id), 'requeued': requeued}

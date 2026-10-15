@@ -94,8 +94,8 @@ def recover_legacy_rejections(config_id: str, plan: dict) -> None:
     from backend.database import get_db_conn
     previous = {}
     with get_db_conn() as conn:
-        rows = conn.execute('SELECT id,payload FROM real_protection_events WHERE config_id=? AND symbol=? '
-                            'AND json_extract(payload,\'$.episode_id\')=? ORDER BY id',
+        rows = conn.execute('SELECT id,payload FROM real_protection_events WHERE config_id=%s AND symbol=%s '
+                            'AND (payload::jsonb->>\'episode_id\')=%s ORDER BY id',
                             (config_id, plan['symbol'], plan['episode_id']))
         for row in rows:
             event = json.loads(row['payload'])

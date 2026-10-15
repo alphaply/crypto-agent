@@ -14,8 +14,8 @@ def _page(conn, table, identity, parameters, *, view, offset, length, version, v
         version = str(row['revision'])
     if not str(version).isdigit():
         raise ValueError('Invalid evidence version')
-    row = conn.execute(f'SELECT rowid,revision,observed_at '
-                       f'FROM {table} WHERE {identity} AND revision=?',
+    row = conn.execute(f'SELECT storage_id AS rowid,revision,observed_at '
+                       f'FROM {table} WHERE {identity} AND revision=%s',
                        (*parameters, int(version))).fetchone()
     if row is None:
         raise FileNotFoundError('Requested immutable evidence version not found')
@@ -29,7 +29,7 @@ def task_audit(config_id: str, operation_id: str, *, view: Literal['original','l
                offset: int=0, length: int=2048, version: str | None=None):
     from backend.database import get_db_conn
     with get_db_conn() as conn:
-        return _page(conn,'trade_receipt_revisions','config_id=? AND operation_id=?',(config_id,operation_id),
+        return _page(conn,'trade_receipt_revisions','config_id=%s AND operation_id=%s',(config_id,operation_id),
                      view=view,offset=offset,length=length,version=version)
 
 
@@ -39,9 +39,9 @@ def live_audit(caller, profile_id, operation_id, *, view='original',offset=0,len
     with store.connection(recovery=True) as conn:
         # Authorization uses the external identity's original principal, never
         # an account hash or a caller-supplied internal task / child identity.
-        found = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=? AND operation_id=? AND principal=?',
+        found = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=%s AND operation_id=%s AND principal=%s',
                              (profile_id,operation_id,caller['id'])).fetchone()
         if not found:
             raise FileNotFoundError('Original execution evidence not found in the authorized scope')
-        return _page(conn,'mcp_operation_revisions','profile_id=? AND operation_id=?',(profile_id,operation_id),
+        return _page(conn,'mcp_operation_revisions','profile_id=%s AND operation_id=%s',(profile_id,operation_id),
                      view=view,offset=offset,length=length,version=version,value_column='result')

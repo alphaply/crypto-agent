@@ -5,6 +5,7 @@ it never advances its checkpoint after a partial/failed query. Same-millisecond
 overflow is reported incomplete instead of silently dropping fills.
 """
 from __future__ import annotations
+from backend.storage import lock_scope, Error as StorageError
 
 import hashlib
 import json
@@ -23,12 +24,12 @@ def account_scope(exchange, config_id: str) -> str:
     key = str(getattr(exchange, 'apiKey', '') or config_id)
     legacy = hashlib.sha256(f'{exchange.id}:{key}'.encode()).hexdigest()
     with get_db_conn() as conn:
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         if 'management_execution_scopes' in tables:
             kind = getattr(exchange, 'options', {}).get('defaultType') or ('spot' if getattr(exchange, 'spot', False) else 'swap')
             canonical = conn.execute('SELECT s.legacy_scope FROM management_account_aliases a '
                                      'JOIN management_execution_scopes s ON s.physical_account=a.physical_account '
-                                     'WHERE a.legacy_scope=? AND s.market_type=?', (legacy, kind)).fetchone()
+                                     'WHERE a.legacy_scope=%s AND s.market_type=%s', (legacy, kind)).fetchone()
             if canonical:
                 return canonical[0]
     return legacy
@@ -65,18 +66,19 @@ def register_order(
     if not order_id:
         return
     with get_db_conn() as conn:
-        existing = conn.execute('SELECT config_id,payload FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+        lock_scope(conn, 'execution-source', scope, symbol)
+        existing = conn.execute('SELECT config_id,payload FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                                 (scope, symbol, str(order_id))).fetchone()
         if existing and existing['config_id'] != config_id:
-            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
             granted = False
             if 'visible_management_claims' in tables:
                 granted = conn.execute("SELECT 1 FROM visible_management_claims c JOIN management_resource_links r ON r.claim_id=c.claim_id "
-                                       "WHERE c.owner=? AND c.state='owned' AND r.identity=? AND r.original_owner=? LIMIT 1",
+                                       "WHERE c.owner=%s AND c.state='owned' AND r.identity=%s AND r.original_owner=%s LIMIT 1",
                                        (config_id, str(order_id), existing['config_id'])).fetchone()
                 if not granted:
-                    granted = conn.execute("SELECT 1 FROM real_protection_plans WHERE config_id=? AND symbol=? "
-                                           "AND json_extract(payload,'$.original_owner')=? LIMIT 1",
+                    granted = conn.execute("SELECT 1 FROM real_protection_plans WHERE config_id=%s AND symbol=%s "
+                                           "AND (payload::jsonb->>'original_owner')=%s LIMIT 1",
                                            (config_id, symbol, existing['config_id'])).fetchone()
             if not granted:
                 raise ValueError('Order ownership conflict')
@@ -84,11 +86,10 @@ def register_order(
             return
         if existing:
             metadata = {**json.loads(existing['payload']), **{k: v for k, v in metadata.items() if v is not None}}
-        conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?) ON CONFLICT(account_scope,symbol,order_id) '
-                     'DO UPDATE SET role=excluded.role,payload=excluded.payload',
+        conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,order_id) DO UPDATE SET role=excluded.role,payload=excluded.payload',
                      (scope, symbol, str(order_id), config_id, role, json.dumps(metadata, default=str)))
         # Events may arrive before the order acknowledgement; reconcile ownership later.
-        conn.execute('UPDATE execution_fills SET config_id=? WHERE account_scope=? AND symbol=? AND order_id=?',
+        conn.execute('UPDATE execution_fills SET config_id=%s WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                      (config_id, scope, symbol, str(order_id)))
         conn.commit()
     if refresh:
@@ -147,17 +148,17 @@ class ExecutionLedger:
 
         affected = set()
         with get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            lock_scope(conn, 'execution-source', self.scope, self.symbol)
             if hasattr(regular_ids, 'connection'):
                 regular_ids.connection = conn
             for owner, raw_id in conditional_ids:
-                link = conn.execute('SELECT rowid,config_id,role FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+                link = conn.execute('SELECT storage_id AS rowid,config_id,role FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                                     (self.scope, self.symbol, raw_id)).fetchone()
                 if not link or link['config_id'] != owner:
                     continue
                 from backend.utils.sqlite_blob import bounded_text
                 from backend.utils.runtime_capacity import positive_setting, CapacityBusy
-                maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES', 4 * 1024 * 1024)
+                maximum = 4 * 1024 * 1024
                 try:
                     with bounded_text(conn, 'execution_order_links', 'payload', link['rowid'], limit=maximum) as raw:
                         metadata = json.loads(raw)
@@ -171,7 +172,7 @@ class ExecutionLedger:
                     regular_ids.add((owner, raw_id))
                     continue
                 canonical = 'algo:' + raw_id
-                parent = conn.execute('SELECT rowid,config_id FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+                parent = conn.execute('SELECT storage_id AS rowid,config_id FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                                       (self.scope, self.symbol, canonical)).fetchone()
                 if parent and parent['config_id'] != owner:
                     raise ValueError('Order ownership conflict')
@@ -181,14 +182,13 @@ class ExecutionLedger:
                         parent_metadata = json.loads(raw)
                 parent_metadata.update(exchange_channel='algo', legacy_alias_retired=raw_id,
                                        legacy_alias_role=link['role'], legacy_alias_metadata=metadata)
-                conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?) ON CONFLICT(account_scope,symbol,order_id) '
-                             'DO UPDATE SET payload=excluded.payload',
+                conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,order_id) DO UPDATE SET payload=excluded.payload',
                              (self.scope, self.symbol, canonical, owner, link['role'], json.dumps(parent_metadata)))
-                conn.execute('DELETE FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=? AND config_id=?',
+                conn.execute('DELETE FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s AND config_id=%s',
                              (self.scope, self.symbol, raw_id, owner))
                 # Keep trade IDs, timestamps, order IDs and raw fill payloads. Only
                 # the unproven attribution is removed, including previous ingests.
-                conn.execute('UPDATE execution_fills SET config_id=NULL WHERE account_scope=? AND symbol=? AND order_id=? AND config_id=?',
+                conn.execute('UPDATE execution_fills SET config_id=NULL WHERE account_scope=%s AND symbol=%s AND order_id=%s AND config_id=%s',
                              (self.scope, self.symbol, raw_id, owner))
                 affected.add(owner)
             conn.commit()
@@ -316,19 +316,19 @@ class ExecutionLedger:
 
     def status(self):
         with get_db_conn() as conn:
-            row = conn.execute('SELECT payload FROM execution_sync WHERE account_scope=? AND symbol=?',
+            row = conn.execute('SELECT payload FROM execution_sync WHERE account_scope=%s AND symbol=%s',
                                (self.scope, self.symbol)).fetchone()
         return json.loads(row['payload']) if row else {}
 
     def _status(self, value):
         with get_db_conn() as conn:
-            conn.execute('INSERT INTO execution_sync VALUES(?,?,?) ON CONFLICT(account_scope,symbol) '
-                         'DO UPDATE SET payload=excluded.payload', (self.scope, self.symbol, json.dumps(value)))
+            conn.execute('INSERT INTO execution_sync(account_scope,symbol,payload) VALUES(%s,%s,%s) ON CONFLICT(account_scope,symbol) DO UPDATE SET payload=excluded.payload', (self.scope, self.symbol, json.dumps(value)))
             conn.commit()
 
     def ingest(self, trades, refresh=True):
         owners = set()
         with get_db_conn() as conn:
+            lock_scope(conn, 'execution-source', self.scope, self.symbol)
             for trade in trades:
                 if trade.get('id') is None or trade.get('timestamp') is None:
                     raise ValueError('Fill missing stable ID or timestamp')
@@ -340,12 +340,12 @@ class ExecutionLedger:
                 payload['base_amount'] = amount * size if amount is not None else None
                 payload['position_side'] = info.get('positionSide', info.get('posSide', info.get('ps')))
                 payload['realized_pnl'] = number(trade.get('realizedPnl', info.get('realizedPnl', info.get('fillPnl', info.get('rp')))))
-                previous = conn.execute('SELECT payload FROM execution_fills WHERE account_scope=? AND symbol=? AND trade_id=?',
+                previous = conn.execute('SELECT payload FROM execution_fills WHERE account_scope=%s AND symbol=%s AND trade_id=%s',
                                         (self.scope, self.symbol, str(trade['id']))).fetchone()
                 if previous:
                     old = json.loads(previous['payload'])
                     payload = {k: value if value is not None else old.get(k) for k, value in payload.items()}
-                owner = conn.execute('SELECT config_id FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+                owner = conn.execute('SELECT config_id FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                                      (self.scope, self.symbol, order_id)).fetchone()
                 if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
                     # Raw fills remain durable, but a partially published
@@ -353,9 +353,7 @@ class ExecutionLedger:
                     owner = None
                 if owner:
                     owners.add(owner['config_id'])
-                conn.execute('INSERT INTO execution_fills VALUES(?,?,?,?,?,?,?) '
-                             'ON CONFLICT(account_scope,symbol,trade_id) DO UPDATE SET '
-                             'config_id=COALESCE(excluded.config_id,execution_fills.config_id),payload=excluded.payload',
+                conn.execute('INSERT INTO execution_fills(account_scope,symbol,trade_id,order_id,config_id,timestamp_ms,payload) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,trade_id) DO UPDATE SET config_id=COALESCE(excluded.config_id,execution_fills.config_id),payload=excluded.payload',
                              (self.scope, self.symbol, str(trade['id']), order_id, owner['config_id'] if owner else None,
                               int(trade['timestamp']), json.dumps(payload, default=str)))
             conn.commit()
@@ -363,12 +361,12 @@ class ExecutionLedger:
             # An external close changes an owned cycle even without an order link.
             with get_db_conn() as conn:
                 owners.update(r[0] for r in conn.execute(
-                    'SELECT DISTINCT config_id FROM execution_order_links WHERE account_scope=? AND symbol=?',
+                    'SELECT DISTINCT config_id FROM execution_order_links WHERE account_scope=%s AND symbol=%s',
                     (self.scope, self.symbol)))
             for owner_config_id in owners:
                 rebuild_execution_position_history(owner_config_id, self.scope, self.symbol)
 
-    def sync(self, now_ms=None, start_ms=None, min_interval=30, max_calls=100):
+    def sync(self, now_ms=None, start_ms=None, min_interval=30):
         if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
             self.index_saved_plans()
             if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
@@ -476,8 +474,6 @@ class ExecutionLedger:
 
             try:
                 while jobs:
-                    if calls >= max_calls:
-                        raise RuntimeError('Reconciliation page budget reached; checkpoint retained')
                     left, right = jobs[0]
                     calls += 1
                     rows = self.exchange.fetch_my_trades(self.symbol, since=left, limit=limit,
@@ -506,7 +502,7 @@ class ExecutionLedger:
             self._status(state)
             return state
 
-    def sync_income(self, start_ms, end_ms, max_pages=50):
+    def sync_income(self, start_ms, end_ms):
         """Account/symbol cash flows for reconciliation, never attributed by symbol alone."""
         if self.exchange.id not in {'binance', 'binanceusdm'}:
             with self.lock:
@@ -519,22 +515,29 @@ class ExecutionLedger:
             result = {'from_ms': start_ms, 'through_ms': end_ms, 'complete': False}
             try:
                 market_id = self.exchange.market(self.symbol)['id']
-                for page in range(1, max_pages + 1):
+                page = 1
+                seen_pages = set()
+                while True:
                     rows = self.exchange.fapiPrivateGetIncome({'symbol': market_id, 'startTime': start_ms,
                                                               'endTime': end_ms, 'limit': 1000, 'page': page})
+                    if rows:
+                        signature = hashlib.sha256(json.dumps(sorted(
+                            (row['incomeType'], str(row['tranId']), int(row['time']))
+                            for row in rows)).encode()).hexdigest()
+                        if signature in seen_pages:
+                            raise ValueError('Income pagination did not advance; complete evidence unavailable')
+                        seen_pages.add(signature)
                     with get_db_conn() as conn:
                         for row in rows:
                             if not start_ms <= int(row['time']) <= end_ms:
                                 raise ValueError('Income response outside requested range')
-                            conn.execute('INSERT INTO execution_income VALUES(?,?,?,?,?,?) '
-                                         'ON CONFLICT(account_scope,income_type,transaction_id) DO UPDATE SET payload=excluded.payload',
+                            conn.execute('INSERT INTO execution_income(account_scope,symbol,income_type,transaction_id,timestamp_ms,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(account_scope,income_type,transaction_id) DO UPDATE SET payload=excluded.payload',
                                          (self.scope, self.symbol, row['incomeType'], str(row['tranId']), int(row['time']), json.dumps(row)))
                         conn.commit()
                     if len(rows) < 1000:
                         result['complete'] = True
                         break
-                if not result['complete']:
-                    result['error'] = 'Income pagination budget reached'
+                    page += 1
             except Exception as exc:
                 result['error'] = str(exc)
             state = self.status()
@@ -551,39 +554,35 @@ def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None
     end_ms = int(now.timestamp() * 1000)
     start_ms = max(0, end_ms - int(hours * 3600 * 1000))
     with get_db_conn() as conn:
-        conditions = 'f.config_id=? AND f.timestamp_ms>=? AND f.timestamp_ms<?'
+        conditions = 'f.config_id=%s AND f.timestamp_ms>=%s AND f.timestamp_ms<%s'
         args = [config_id, start_ms, end_ms]
         if scope:
-            conditions += ' AND f.account_scope=?'
+            conditions += ' AND f.account_scope=%s'
             args.append(scope)
         if symbol:
-            conditions += ' AND f.symbol=?'
+            conditions += ' AND f.symbol=%s'
             args.append(symbol)
         rows = conn.execute('SELECT f.*,l.role,l.payload AS link_metadata FROM execution_fills f '
                             'LEFT JOIN execution_order_links l ON f.account_scope=l.account_scope '
                             'AND f.symbol=l.symbol AND f.order_id=l.order_id WHERE ' + conditions +
                             ' ORDER BY f.timestamp_ms DESC', args).fetchall()
         plans = [json.loads(r['payload']) for r in conn.execute(
-            'SELECT payload FROM real_protection_plans WHERE config_id=?', (config_id,)).fetchall()]
+            'SELECT payload FROM real_protection_plans WHERE config_id=%s', (config_id,)).fetchall()]
         scopes = {r['account_scope'] for r in rows} | {p.get('account_scope') for p in plans}
         if scope:
             scopes = {scope}
         sync = []
-        index_complete = conn.execute("SELECT 1 FROM execution_plan_index_runs WHERE config_id=? AND phase!='complete' "
-                                      'AND (? IS NULL OR account_scope=?) AND (? IS NULL OR symbol=?) LIMIT 1',
+        index_complete = conn.execute("SELECT 1 FROM execution_plan_index_runs WHERE config_id=%s AND phase!='complete' AND (%s::text IS NULL OR account_scope=%s) AND (%s::text IS NULL OR symbol=%s) LIMIT 1",
                                       (config_id, scope, scope, symbol, symbol)).fetchone() is None
         unknown_count = 0
         income_rows = []
         for key in scopes - {None}:
-            for row in conn.execute('SELECT symbol,payload FROM execution_sync WHERE account_scope=?', (key,)):
+            for row in conn.execute('SELECT symbol,payload FROM execution_sync WHERE account_scope=%s', (key,)):
                 if symbol and row['symbol'] != symbol:
                     continue
                 sync.append({'symbol': row['symbol'], **json.loads(row['payload'])})
-            unknown_count += conn.execute('SELECT COUNT(*) FROM execution_fills WHERE account_scope=? '
-                                         'AND config_id IS NULL AND timestamp_ms>=? AND timestamp_ms<? '
-                                         'AND (? IS NULL OR symbol=?)', (key, start_ms, end_ms, symbol, symbol)).fetchone()[0]
-            income_rows.extend(conn.execute('SELECT payload FROM execution_income WHERE account_scope=? '
-                                            'AND timestamp_ms>=? AND timestamp_ms<? AND (? IS NULL OR symbol=?)',
+            unknown_count += conn.execute('SELECT COUNT(*) FROM execution_fills WHERE account_scope=%s AND config_id IS NULL AND timestamp_ms>=%s AND timestamp_ms<%s AND (%s::text IS NULL OR symbol=%s)', (key, start_ms, end_ms, symbol, symbol)).fetchone()[0]
+            income_rows.extend(conn.execute('SELECT payload FROM execution_income WHERE account_scope=%s AND timestamp_ms>=%s AND timestamp_ms<%s AND (%s::text IS NULL OR symbol=%s)',
                                             (key, start_ms, end_ms, symbol, symbol)).fetchall())
     facts = []
     fees = {}
@@ -664,13 +663,13 @@ def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol
     """Reconstruct ordered facts with a bounded work set; incomplete never means zero."""
     from backend.utils.execution_cycles import reconstruct_cycles
     from backend.utils.runtime_capacity import positive_setting,reserve_bytes
-    maximum=positive_setting('RUNTIME_MAX_RECORD_BYTES',4*1024*1024)
+    maximum=4*1024*1024
     with reserve_bytes('parse',maximum*4):
         if read_conn is not None:
             return reconstruct_cycles(config_id,start_ms,end_ms,scope,symbol,
                                       cycle_sink=cycle_sink,read_conn=read_conn)
         with get_db_conn() as conn:
-            conn.execute('BEGIN')
+            conn.execute('BEGIN ISOLATION LEVEL REPEATABLE READ')
             return reconstruct_cycles(config_id,start_ms,end_ms,scope,symbol,
                                       cycle_sink=cycle_sink,read_conn=conn)
 
@@ -678,65 +677,79 @@ def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol
 def rebuild_execution_position_history(config_id: str, scope: str, symbol: str):
     """Stage complete cycles on disk; publish only a full, unchanged source snapshot."""
     with get_db_conn() as conn:
-        # SQLite TEMP tables live on disk; keep the page cache finite. A source
-        # read snapshot permits concurrent financial writers in WAL mode.
-        conn.execute('PRAGMA temp_store=FILE')
-        conn.execute('PRAGMA temp.cache_size=-1024')
+        conn.execute('INSERT INTO execution_source_revisions(account_scope,symbol,revision) VALUES(%s,%s,0) '
+                     'ON CONFLICT(account_scope,symbol) DO NOTHING', (scope,symbol))
+        conn.execute('DROP TABLE IF EXISTS pg_temp.execution_history_stage')
         conn.execute('CREATE TEMP TABLE execution_history_stage AS '
-                     'SELECT * FROM main.execution_position_history WHERE 0')
+                     'SELECT * FROM execution_position_history WHERE false')
         conn.commit()
-        version=conn.execute('PRAGMA data_version').fetchone()[0]
-        conn.execute('BEGIN')
-        newest=conn.execute('SELECT MAX(timestamp_ms) FROM execution_fills '
-                            'WHERE account_scope=? AND symbol=?',(scope,symbol)).fetchone()[0]
-        end_ms=int(newest or 0)+1
-        updated_at_ms=int(time.time()*1000)
-        def stage(cycle):
-            realized_pnl = None if cycle['missing_pnl'] else cycle['realized_pnl_before_fees']
-            exit_reason = ','.join(cycle['exit_reasons'])
-            conn.execute(
-                '''INSERT INTO execution_history_stage(
-                       position_id,account_scope,config_id,symbol,side,opened_at_ms,closed_at_ms,
-                       entry_price,close_price,amount,take_profit,stop_loss,realized_pnl,
-                       fees_json,exit_reason,updated_at_ms,payload
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                (
-                    cycle['episode_id'],
-                    scope,
-                    config_id,
-                    symbol,
-                    cycle['side'],
-                    cycle['opened_at_ms'],
-                    cycle['closed_at_ms'],
-                    cycle['entry_vwap'],
-                    cycle['exit_vwap'],
-                    cycle['entered_base'],
-                    cycle.get('take_profit'),
-                    cycle.get('stop_loss'),
-                    realized_pnl,
-                    json.dumps(cycle['fees_by_currency'], ensure_ascii=False),
-                    exit_reason,
-                    updated_at_ms,
-                    json.dumps(cycle, ensure_ascii=False, default=str),
-                ),
-            )
-        rebuilt=_reconstruct_position_cycles(config_id,0,end_ms,scope,symbol,
-                                              cycle_sink=stage,read_conn=conn)
-        conn.commit()
-        if not rebuilt['scan_complete']:
-            return {**rebuilt,'published':False,'retained_previous':True}
-        # Acquire the write lock only for the final compare-and-publish. If any
-        # other connection changed the source snapshot, keep the old full view.
-        conn.execute('BEGIN IMMEDIATE')
-        if conn.execute('PRAGMA data_version').fetchone()[0]!=version:
-            conn.rollback()
-            return {**rebuilt,'scan_complete':False,'published':False,
-                    'retained_previous':True,'reason_code':'cycle_source_changed'}
-        conn.execute('DELETE FROM execution_position_history '
-                     'WHERE account_scope=? AND config_id=? AND symbol=?',(scope,config_id,symbol))
-        conn.execute('INSERT INTO main.execution_position_history SELECT * FROM temp.execution_history_stage')
-        conn.commit()
-        return {**rebuilt,'published':True,'retained_previous':False}
+        try:
+            conn.execute('BEGIN ISOLATION LEVEL REPEATABLE READ')
+            version=conn.execute('SELECT revision FROM execution_source_revisions WHERE account_scope=%s AND symbol=%s',
+                                 (scope,symbol)).fetchone()[0]
+            newest=conn.execute('SELECT MAX(timestamp_ms) FROM execution_fills '
+                                'WHERE account_scope=%s AND symbol=%s',(scope,symbol)).fetchone()[0]
+            end_ms=int(newest or 0)+1
+            updated_at_ms=int(time.time()*1000)
+            def stage(cycle):
+                realized_pnl = None if cycle['missing_pnl'] else cycle['realized_pnl_before_fees']
+                exit_reason = ','.join(cycle['exit_reasons'])
+                conn.execute(
+                    '''INSERT INTO execution_history_stage(
+                           position_id,account_scope,config_id,symbol,side,opened_at_ms,closed_at_ms,
+                           entry_price,close_price,amount,take_profit,stop_loss,realized_pnl,
+                           fees_json,exit_reason,updated_at_ms,payload
+                       ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                    (
+                        cycle['episode_id'],
+                        scope,
+                        config_id,
+                        symbol,
+                        cycle['side'],
+                        cycle['opened_at_ms'],
+                        cycle['closed_at_ms'],
+                        cycle['entry_vwap'],
+                        cycle['exit_vwap'],
+                        cycle['entered_base'],
+                        cycle.get('take_profit'),
+                        cycle.get('stop_loss'),
+                        realized_pnl,
+                        json.dumps(cycle['fees_by_currency'], ensure_ascii=False),
+                        exit_reason,
+                        updated_at_ms,
+                        json.dumps(cycle, ensure_ascii=False, default=str),
+                    ),
+                )
+            rebuilt=_reconstruct_position_cycles(config_id,0,end_ms,scope,symbol,
+                                                  cycle_sink=stage,read_conn=conn)
+            conn.commit()
+            if not rebuilt['scan_complete']:
+                return {**rebuilt,'published':False,'retained_previous':True}
+            # The source revision row serializes publication with all source writers.
+            # Changes in unrelated account/symbol scopes do not invalidate this view.
+            lock_scope(conn, 'execution-source', scope, symbol)
+            if conn.execute('SELECT revision FROM execution_source_revisions WHERE account_scope=%s AND symbol=%s FOR UPDATE', (scope,symbol)).fetchone()[0]!=version:
+                conn.rollback()
+                return {**rebuilt,'scan_complete':False,'published':False,
+                        'retained_previous':True,'reason_code':'cycle_source_changed'}
+            conn.execute('DELETE FROM execution_position_history '
+                         'WHERE account_scope=%s AND config_id=%s AND symbol=%s',(scope,config_id,symbol))
+            fields = 'position_id,account_scope,config_id,symbol,side,opened_at_ms,closed_at_ms,entry_price,close_price,amount,take_profit,stop_loss,realized_pnl,fees_json,exit_reason,updated_at_ms,payload'
+            conn.execute(f'INSERT INTO execution_position_history({fields}) SELECT {fields} FROM execution_history_stage')
+            conn.execute('DROP TABLE execution_history_stage')
+            conn.commit()
+            return {**rebuilt,'published':True,'retained_previous':False}
+        finally:
+            # Pooled sessions must not retain an abandoned staging table.
+            try:
+                if not conn.closed:
+                    conn.rollback()
+                    conn.execute('DROP TABLE IF EXISTS pg_temp.execution_history_stage')
+                    conn.commit()
+            except StorageError:
+                # A broken session cannot retain temp tables after it closes.
+                conn.close()
+
 
 
 def position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):

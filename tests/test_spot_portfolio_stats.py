@@ -1,4 +1,4 @@
-import sqlite3
+from backend import storage
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -16,17 +16,17 @@ def portfolio(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(path))
     @contextmanager
     def connect():
-        conn = sqlite3.connect(path)
-        conn.row_factory = sqlite3.Row
+        conn = storage.connect()
+
         try:
             yield conn
         finally:
             conn.close()
     with connect() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
         for order, symbol, qty, cost in [('btc', 'BTC/USDT', 1, 100), ('eth', 'ETH/USDT', 2, 50)]:
-            conn.execute("INSERT INTO orders (order_id,config_id,symbol,trade_mode,status,side) VALUES (?,?,?,'SPOT_DCA','FILLED','buy')", (order, 'spot', symbol))
-            conn.execute("INSERT INTO trade_history (trade_id,order_id,config_id,symbol,side,amount,cost,timestamp) VALUES (?,?,?,?, 'buy',?,?,?)", (order, order, 'spot', symbol, qty, cost, '2026-10-01 00:00:00'))
+            conn.execute("INSERT INTO orders (order_id,config_id,symbol,trade_mode,status,side) VALUES (%s,%s,%s,'SPOT_DCA','FILLED','buy')", (order, 'spot', symbol))
+            conn.execute("INSERT INTO trade_history (trade_id,order_id,config_id,symbol,side,amount,cost,timestamp) VALUES (%s,%s,%s,%s, 'buy',%s,%s,%s)", (order, order, 'spot', symbol, qty, cost, '2026-10-01 00:00:00'))
         conn.execute("INSERT INTO orders (order_id,config_id,symbol,trade_mode,status,side) VALUES ('pending-eth','spot','ETH/USDT','SPOT_DCA','PARTIAL','buy')")
         conn.commit()
     cfg = {'config_id': 'spot', 'symbol': 'BTC/USDT', 'symbols': ['BTC/USDT', 'ETH/USDT'], 'mode': 'SPOT_DCA', 'dca_amount': 100}
@@ -100,7 +100,6 @@ def test_cancel_events_do_not_duplicate_invested_cost_and_foreign_trades_are_exc
 
 
 def test_kline_secondary_symbol_never_displays_other_symbol_pending_orders(portfolio, monkeypatch):
-    monkeypatch.setattr(stats_service, 'DB_NAME', str(portfolio.path))
     portfolio.exchange.fetch_ohlcv = lambda symbol, *a, **k: [[1000, 30, 31, 29, 30, 100]]
     monkeypatch.setattr(stats_service, 'MarketTool', lambda **_: SimpleNamespace(exchange=portfolio.exchange))
     btc = stats_service.get_kline_payload('spot', symbol='BTC/USDT')
@@ -168,3 +167,6 @@ def test_initial_single_symbol_balance_adds_subsequent_owned_buys(portfolio):
     assert result['manual_qty'] == 1
     assert result['manual_avg_cost'] == 50000
     assert result['avg_cost'] == round(56000 / 1.1, 4)
+
+
+pytestmark = pytest.mark.usefixtures("pg")

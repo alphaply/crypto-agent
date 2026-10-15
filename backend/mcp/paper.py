@@ -1,5 +1,6 @@
 """User-scoped paper ledger. No exchange credentials or private trading APIs."""
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import asyncio
 import json
@@ -100,7 +101,7 @@ def money(value) -> float:
 
 def _get(conn, namespace, user_id):
     from .paper_storage import one
-    account = one(conn, 'paper_accounts', 'payload', 'namespace=? AND user_id=?', (namespace, user_id), identity='paper account')
+    account = one(conn, 'paper_accounts', 'payload', 'namespace=%s AND user_id=%s', (namespace, user_id), identity='paper account')
     if account is None:
         raise ValueError('Paper account does not exist; call create_paper_account first')
     return upgrade_account(conn, account)
@@ -110,24 +111,22 @@ def _save(conn, account):
     from .paper_storage import max_payload, PaperPayloadLimit
     account['updated_at'] = time.time()
     encoded = json.dumps({k: v for k, v in account.items() if not k.startswith('_')}, allow_nan=False)
-    if len(encoded.encode('utf-8')) > max_payload():
-        raise PaperPayloadLimit('paper_payload_limit: complete account exceeds the financial write budget')
-    conn.execute('INSERT INTO paper_accounts VALUES(?,?,?) ON CONFLICT(namespace,user_id) DO UPDATE SET payload=excluded.payload',
+    conn.execute('INSERT INTO paper_accounts(namespace,user_id,payload) VALUES(%s,%s,%s) ON CONFLICT(namespace,user_id) DO UPDATE SET payload=excluded.payload',
                  (account['namespace'], account['user_id'], encoded))
 
 
 def upgrade_account(conn, account):
     if 'initial_capital' not in account:
         from .paper_storage import one, payload_page, history_limit
-        row = conn.execute('SELECT operation_id FROM paper_operations WHERE namespace=? AND user_id=? ORDER BY rowid LIMIT 1',
+        row = conn.execute('SELECT operation_id FROM paper_operations WHERE namespace=%s AND user_id=%s ORDER BY storage_id LIMIT 1',
                            (account['namespace'], account['user_id'])).fetchone()
-        original = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+        original = one(conn, 'paper_operations', 'result', 'namespace=%s AND user_id=%s AND operation_id=%s',
                        (account['namespace'], account['user_id'], row[0]), identity='initial capital evidence') if row else None
         account['initial_capital'] = (original or {}).get('account', {}).get('cash')
         # Historical admin adjustments are funding, not trading performance.
         capital = Money(str(account['initial_capital'])) if account['initial_capital'] is not None else None
         old_cash, old_debt = account['initial_capital'], 0
-        events, progress = payload_page(conn, 'paper_events', 'namespace=? AND user_id=?',
+        events, progress = payload_page(conn, 'paper_events', 'namespace=%s AND user_id=%s',
                                         (account['namespace'], account['user_id']), count=history_limit())
         for event in events:
             data = event['payload']
@@ -137,7 +136,7 @@ def upgrade_account(conn, account):
             # New events contain cash/debt after each mutation for future audits.
             old_cash, old_debt = data.get('cash_after', data.get('cash', old_cash)), data.get('debt_after', data.get('debt', old_debt))
             if event['operation_id']:
-                receipt = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+                receipt = one(conn, 'paper_operations', 'result', 'namespace=%s AND user_id=%s AND operation_id=%s',
                               (account['namespace'], account['user_id'], event['operation_id']), identity='capital receipt')
                 if receipt:
                     recorded = receipt.get('account', {})
@@ -159,7 +158,7 @@ def upgrade_account(conn, account):
 
 
 def _event(conn, account, kind, details, operation_id=None):
-    conn.execute('INSERT INTO paper_events(namespace,user_id,timestamp,kind,operation_id,payload) VALUES(?,?,?,?,?,?)',
+    conn.execute('INSERT INTO paper_events(namespace,user_id,timestamp,kind,operation_id,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                  (account['namespace'], account['user_id'], time.time(), kind, operation_id,
                   json.dumps({**details, 'cash_after': account['cash'], 'debt_after': account['debt']}, allow_nan=False)))
 
@@ -168,17 +167,17 @@ def _receipt(conn, namespace, user_id, operation_id, request):
     if not re.fullmatch(r'[a-zA-Z0-9_.:-]{8,160}', operation_id):
         raise ValueError('operation_id must be a stable 8–160 character identifier')
     fingerprint = store.digest(json.dumps(request, sort_keys=True, separators=(',', ':'), allow_nan=False))
-    row = conn.execute('SELECT fingerprint FROM paper_operations WHERE namespace=? AND user_id=? AND operation_id=?',
+    row = conn.execute('SELECT fingerprint FROM paper_operations WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                        (namespace, user_id, operation_id)).fetchone()
     if row and row['fingerprint'] != fingerprint:
         raise ValueError('operation_id was already used for a different paper request')
     if row is None:
-        parent = conn.execute('SELECT 1 FROM paper_batches WHERE namespace=? AND user_id=? AND operation_id=?',
+        parent = conn.execute('SELECT 1 FROM paper_batches WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                               (namespace, user_id, operation_id)).fetchone()
         if parent:
             raise ValueError('operation_id already belongs to a paper batch parent')
         reserved = conn.execute('SELECT parent_operation_id,action_index FROM paper_batch_children '
-                                'WHERE namespace=? AND user_id=? AND child_operation_id=?',
+                                'WHERE namespace=%s AND user_id=%s AND child_operation_id=%s',
                                 (namespace, user_id, operation_id)).fetchone()
         if reserved:
             from .paper_batch import _step
@@ -186,17 +185,19 @@ def _receipt(conn, namespace, user_id, operation_id, request):
             if current is None or current[:4] != (namespace, user_id, reserved['parent_operation_id'], reserved['action_index']):
                 raise ValueError('operation_id belongs to a reserved paper batch child')
     from .paper_storage import one
-    previous = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+    previous = one(conn, 'paper_operations', 'result', 'namespace=%s AND user_id=%s AND operation_id=%s',
                    (namespace, user_id, operation_id), identity='original paper receipt') if row else None
     return fingerprint, previous
 
 
 def _write(caller, user_id, operation_id, request, change):
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     namespace = require(caller, 'trade')
     require(caller, 'read')
     identity(user_id)
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'paper-account', namespace, user_id)
         fingerprint, previous = _receipt(conn, namespace, user_id, operation_id, request)
         if previous is not None:
             return previous
@@ -214,9 +215,7 @@ def _write(caller, user_id, operation_id, request, change):
             result.update(order_status='waiting_trigger', filled_amount=0)
         from .paper_storage import max_payload, PaperPayloadLimit
         encoded = json.dumps(result, allow_nan=False)
-        if len(encoded.encode('utf-8')) > max_payload():
-            raise PaperPayloadLimit('paper_payload_limit: complete receipt exceeds the financial write budget')
-        conn.execute('INSERT INTO paper_operations VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO paper_operations(namespace,user_id,operation_id,fingerprint,principal,result) VALUES(%s,%s,%s,%s,%s,%s)',
                      (namespace, user_id, operation_id, fingerprint, caller['id'], encoded))
         from .paper_storage import receipt_revision
         receipt_revision(conn, namespace, user_id, operation_id, encoded)
@@ -229,6 +228,8 @@ def _write(caller, user_id, operation_id, request, change):
 
 
 def create_account(caller, user_id: str, operation_id: str, name: str = '') -> dict:
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     namespace = require(caller, 'trade')
     require(caller, 'read')
     identity(user_id)
@@ -237,12 +238,12 @@ def create_account(caller, user_id: str, operation_id: str, name: str = '') -> d
     request = {'action': 'create', 'name': name}
     cfg = settings()
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'paper-account', namespace, user_id)
         fingerprint, previous = _receipt(conn, namespace, user_id, operation_id, request)
         if previous is not None:
             return previous
         from .paper_storage import one
-        existing = one(conn, 'paper_accounts', 'payload', 'namespace=? AND user_id=?', (namespace, user_id), identity='paper account')
+        existing = one(conn, 'paper_accounts', 'payload', 'namespace=%s AND user_id=%s', (namespace, user_id), identity='paper account')
         account = existing if existing is not None else {
             'namespace': namespace, 'user_id': user_id, 'name': name or user_id,
             'cash': money(cfg['initial_balance']), 'debt': 0, 'loan_limit': money(cfg['loan_limit']), 'leverage': 1,
@@ -255,7 +256,7 @@ def create_account(caller, user_id: str, operation_id: str, name: str = '') -> d
         upgrade_account(conn, account)
         _save(conn, account)
         result = {'status': 'completed', 'paper': True, 'created': existing is None, 'operation_id': operation_id, 'account': snapshot(account, project=False)}
-        conn.execute('INSERT INTO paper_operations VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO paper_operations(namespace,user_id,operation_id,fingerprint,principal,result) VALUES(%s,%s,%s,%s,%s,%s)',
                      (namespace, user_id, operation_id, fingerprint, caller['id'], json.dumps(result, allow_nan=False)))
         _event(conn, account, 'create', {'created': existing is None}, operation_id)
         conn.commit()
@@ -348,24 +349,21 @@ def history_page(caller, user_id, limit=50, offset=0, *, cursor=None, record_typ
         raise ValueError('Invalid history page')
     from .paper_storage import decode, history_limit, max_payload, blob_size, read_blob
     from .paper_policy import event_visible
-    clauses, params = ['namespace=?', 'user_id=?'], [namespace, user_id]
+    clauses, params = ['namespace=%s', 'user_id=%s'], [namespace, user_id]
     if cursor is not None:
         if type(cursor) is not int or cursor < 0:
             raise ValueError('Invalid history cursor')
-        clauses.append('id<?')
+        clauses.append('id<%s')
         params.append(cursor)
     count = min(limit, history_limit())
     with store.connection() as conn:
-        if not conn.execute('SELECT 1 FROM paper_accounts WHERE namespace=? AND user_id=?', (namespace, user_id)).fetchone():
+        if not conn.execute('SELECT 1 FROM paper_accounts WHERE namespace=%s AND user_id=%s', (namespace, user_id)).fetchone():
             raise ValueError('Paper account does not exist')
         metadata = conn.execute('SELECT id FROM paper_events WHERE ' +
-                                ' AND '.join(clauses) + ' ORDER BY id DESC LIMIT ? OFFSET ?', (*params, count + 1, offset)).fetchall()
+                                ' AND '.join(clauses) + ' ORDER BY id DESC LIMIT %s OFFSET %s', (*params, count + 1, offset)).fetchall()
         items, omitted = [], 0
         for row in metadata[:count]:
-            if blob_size(conn, 'paper_events', 'payload', row['id']) > max_payload():
-                omitted += 1
-                continue
-            event = dict(conn.execute('SELECT id,namespace,user_id,timestamp,kind,operation_id FROM paper_events WHERE id=?', (row['id'],)).fetchone())
+            event = dict(conn.execute('SELECT id,namespace,user_id,timestamp,kind,operation_id FROM paper_events WHERE id=%s', (row['id'],)).fetchone())
             event['payload'] = decode(read_blob(conn, 'paper_events', 'payload', row['id']), identity='paper history event')
             if not event_visible(event, conn=conn, account={'namespace': namespace, 'user_id': user_id}):
                 omitted += 1
@@ -389,7 +387,7 @@ def operation(caller, user_id, operation_id):
     identity(user_id)
     with store.connection() as conn:
         from .paper_storage import one
-        result = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+        result = one(conn, 'paper_operations', 'result', 'namespace=%s AND user_id=%s AND operation_id=%s',
                      (namespace, user_id, operation_id), identity='original paper audit')
     if result is None:
         raise ValueError('Paper operation not found')
@@ -591,15 +589,15 @@ def admin_accounts(namespace=None, user_id=None, limit=100, offset=0, *, cursor=
     clauses, params = [], []
     for column, value in [('namespace', namespace), ('user_id', user_id)]:
         if value:
-            clauses.append(column + '=?')
+            clauses.append(column + '=%s')
             params.append(identity(value, column))
     where = ' AND '.join(clauses) if clauses else '1=1'
     with store.connection() as conn:
         from .paper_storage import payload_page, PaperPayloadLimit
         count = conn.execute('SELECT COUNT(*) FROM paper_accounts WHERE ' + where, params).fetchone()[0]
         if cursor is None and offset:
-            prior = conn.execute('SELECT rowid FROM paper_accounts WHERE ' + where + ' ORDER BY namespace,user_id LIMIT 1 OFFSET ?', [*params, offset - 1]).fetchone()
-            cursor = prior[0] if prior else conn.execute('SELECT COALESCE(MAX(rowid),0) FROM paper_accounts').fetchone()[0]
+            prior = conn.execute('SELECT storage_id AS rowid FROM paper_accounts WHERE ' + where + ' ORDER BY namespace,user_id LIMIT 1 OFFSET %s', [*params, offset - 1]).fetchone()
+            cursor = prior[0] if prior else conn.execute('SELECT COALESCE(MAX(storage_id),0) FROM paper_accounts').fetchone()[0]
         records, progress = payload_page(conn, 'paper_accounts', where, params, cursor=cursor or 0, count=limit, order_by=('namespace', 'user_id'))
         items = []
         for row in records:
@@ -613,6 +611,8 @@ def admin_accounts(namespace=None, user_id=None, limit=100, offset=0, *, cursor=
 
 
 def admin_update(namespace, user_id, payload: AccountUpdate):
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     identity(namespace, 'namespace')
     identity(user_id)
     updates = payload.model_dump(exclude_none=True)
@@ -622,7 +622,7 @@ def admin_update(namespace, user_id, payload: AccountUpdate):
     if updates.get('leverage', 1) > settings()['max_leverage']:
         raise ValueError('Leverage exceeds the paper maximum')
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'paper-account', namespace, user_id)
         account = _get(conn, namespace, user_id)
         funding = Money(str(updates.get('cash', account['cash']))) - Money(str(account['cash']))
         funding -= Money(str(updates.get('debt', account['debt']))) - Money(str(account['debt']))
@@ -650,15 +650,10 @@ def maintenance_plan(*, max_items=None, max_accounts=None):
     with store.connection() as conn:
         saved = conn.execute("SELECT cursor,payload FROM paper_scan_progress WHERE worker='maintenance'").fetchone()
         cursor, offset = (saved['cursor'], json.loads(saved['payload']).get('offset', 0)) if saved else (0, 0)
-        metadata = conn.execute('SELECT rowid,namespace,user_id FROM paper_accounts WHERE rowid>=? ORDER BY rowid LIMIT ?',
+        metadata = conn.execute('SELECT storage_id AS rowid,namespace,user_id FROM paper_accounts WHERE storage_id>=%s ORDER BY storage_id LIMIT %s',
                                 (cursor or 1, account_limit + 1)).fetchall()
         plan, scanned, skipped = [], 0, []
         for row in metadata[:account_limit]:
-            if blob_size(conn, 'paper_accounts', 'payload', row['rowid']) > max_payload():
-                skipped.append(row['rowid'])
-                cursor, offset = row['rowid'] + 1, 0
-                scanned += 1
-                continue
             try:
                 account = upgrade_account(conn, decode(read_blob(conn, 'paper_accounts', 'payload', row['rowid'])))
                 targets = {('spot' if kind == 'spot' else 'swap', item.get('symbol', key), 'binance')
@@ -680,10 +675,10 @@ def maintenance_plan(*, max_items=None, max_accounts=None):
             scanned += 1
             if len(plan) >= item_limit:
                 break
-        last = conn.execute('SELECT COALESCE(MAX(rowid),0) FROM paper_accounts').fetchone()[0]
+        last = conn.execute('SELECT COALESCE(MAX(storage_id),0) FROM paper_accounts').fetchone()[0]
         complete = cursor > last or not metadata
         next_cursor = None if complete else {'account_rowid': cursor, 'instrument_offset': offset}
-        conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor,payload=excluded.payload',
+        conn.execute('INSERT INTO paper_scan_progress(worker,cursor,payload) VALUES(%s,%s,%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor,payload=excluded.payload',
                      ('maintenance', 0 if complete else cursor, json.dumps({'offset': 0 if complete else offset})))
         conn.commit()
     return {'items': plan, 'scan_complete': complete, 'next_cursor': next_cursor, 'skipped_records': skipped,
@@ -698,6 +693,8 @@ def instruments():
 
 
 def reconcile_instrument(market_type, symbol, exchange_name=None, *, namespace=None, user_id=None, cursor=0):
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if not settings()['enabled']:
         return
     from .paper_orders import get_quote, match
@@ -705,12 +702,14 @@ def reconcile_instrument(market_type, symbol, exchange_name=None, *, namespace=N
     quote = get_quote(symbol, market_type, venue(exchange_name))
     cfg = settings()
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        # Lock each selected paper account before reloading its state.
         from .paper_storage import payload_page
-        where, params = ('namespace=? AND user_id=?', (namespace, user_id)) if namespace is not None else ('1=1', ())
+        where, params = ('namespace=%s AND user_id=%s', (namespace, user_id)) if namespace is not None else ('1=1', ())
         accounts, progress = payload_page(conn, 'paper_accounts', where, params, cursor=cursor)
+        for record in sorted(accounts, key=lambda item: (item['namespace'], item['user_id'])):
+            lock_scope(conn, 'paper-account', record['namespace'], record['user_id'])
         for record in accounts:
-            account = upgrade_account(conn, record['payload'])
+            account = _get(conn, record['namespace'], record['user_id'])
             _mark(account, {(market_type, symbol): quote}, conn, cfg)
             match(conn, account, market_type, symbol, quote, cfg)
             _save(conn, account)
@@ -722,14 +721,10 @@ def reconcile():
     """Synchronous maintenance entry point for isolated validation and operations."""
     from .paper_storage import batch_size, limit
     from .resilience import Budget, current_budget
-    deadline = time.monotonic() + limit('PAPER_MAINTENANCE_SECONDS', 30)
-    parent = current_budget.get()
-    if parent is not None:
-        deadline = min(deadline, parent.deadline)
-    token = current_budget.set(Budget(deadline, uuid.uuid4().hex, 'execute'))
+    token = current_budget.set(Budget(None, uuid.uuid4().hex, 'execute'))
     scanned, processed = 0, 0
     try:
-        while time.monotonic() < deadline and scanned < batch_size() and processed < batch_size():
+        while scanned < batch_size() and processed < batch_size():
             plan = maintenance_plan(max_items=1, max_accounts=batch_size() - scanned)
             scanned += plan.get('scanned_accounts', 0)
             if not plan['items']:
@@ -750,13 +745,12 @@ async def maintenance_round(stop: asyncio.Event):
     """Every planned item advances durable progress; no unattempted page tail."""
     from .paper_storage import recover_receipts, batch_size, limit
     from .paper_batch import recover_pending
-    deadline = time.monotonic() + limit('PAPER_MAINTENANCE_SECONDS', 30)
-    await run('recovery', recover_receipts, label='paper_receipt_updates', deadline=deadline)
-    await run('recovery', recover_pending, label='paper_recovery', deadline=deadline)
+    await run('recovery', recover_receipts, label='paper_receipt_updates')
+    await run('recovery', recover_pending, label='paper_recovery')
     scanned, processed = 0, 0
-    while not stop.is_set() and time.monotonic() < deadline and scanned < batch_size() and processed < batch_size():
+    while not stop.is_set() and scanned < batch_size() and processed < batch_size():
         plan = await run('read', partial(maintenance_plan, max_items=1, max_accounts=batch_size() - scanned),
-                         label='paper_instruments', deadline=deadline)
+                         label='paper_instruments')
         scanned += plan.get('scanned_accounts', 0)
         if not plan['items']:
             break
@@ -764,7 +758,7 @@ async def maintenance_round(stop: asyncio.Event):
         try:
             await run('execute', partial(reconcile_instrument, item['market_type'], item['symbol'], item['exchange'],
                                          namespace=item['namespace'], user_id=item['user_id']),
-                      label='paper_maintenance', deadline=deadline)
+                      label='paper_maintenance')
         except Exception as exc:
             logger.warning('paper_mark_failed market=%s symbol=%s type=%s', item['market_type'], item['symbol'], type(exc).__name__)
         processed += 1

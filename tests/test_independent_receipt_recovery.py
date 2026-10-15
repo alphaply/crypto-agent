@@ -24,7 +24,7 @@ def test_identity_reader_has_no_page_limit_and_preserves_batch_tail(real_short):
     current = recover('old-batch')
     with database.get_db_conn() as conn:
         for index in range(25):
-            conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+            conn.execute('INSERT INTO trade_action_runs (config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                          ('cfg', f'unrelated-{index}', 'ETH/USDT', 'hash', 'completed',
                           json.dumps({'status': 'completed', 'filled_amount': .30}), 0, 9999999999))
         conn.commit()
@@ -127,7 +127,7 @@ def test_lost_ack_query_is_read_only_and_same_id_never_replays(real_short, monke
     assert replay['status'] == 'completed'
     assert len(exchange.calls) == writes
     with database.get_db_conn() as conn:
-        initial = conn.execute('SELECT payload FROM trade_receipt_revisions WHERE operation_id=? AND revision=0', ('lost-close',)).fetchone()[0]
+        initial = conn.execute('SELECT payload FROM trade_receipt_revisions WHERE operation_id=%s AND revision=0', ('lost-close',)).fetchone()[0]
         assert json.loads(json.loads(initial))['status'] == 'unknown'
         assert not conn.execute("SELECT 1 FROM trade_action_runs WHERE operation_id='query-1'").fetchone()
 
@@ -278,7 +278,7 @@ def test_missing_cycle_rejects_incomplete_or_conflicting_evidence(real_short, ca
             stored = conn.execute('SELECT payload FROM trade_cycle_evidence').fetchone()[0]
             plan = json.loads(stored)
             plan['history_complete'] = False
-            conn.execute('UPDATE trade_cycle_evidence SET payload=?', (json.dumps(plan),))
+            conn.execute('UPDATE trade_cycle_evidence SET payload=%s', (json.dumps(plan),))
         if case == 'ownership':
             conn.execute('DELETE FROM execution_order_links')
         conn.commit()
@@ -387,7 +387,7 @@ def test_missing_cycle_never_restores_conflicting_or_unreadable_history(real_sho
         current = {**current, 'episode_id': 'later-cycle', 'state': 'DONE'}
     elif case == 'competing_owner':
         with database.get_db_conn() as conn:
-            conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO real_protection_plans (config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                          ('other-task', current['symbol'], 'SHORT', json.dumps(current)))
             conn.commit()
     else:
@@ -422,7 +422,7 @@ def test_persistent_unknown_blocks_dependent_writes_after_read_query(real_short)
 def test_recovered_all_keeps_plan_null_and_actual_fill_separate(tmp_path, monkeypatch, triggered):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'recovery.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     callback = Mock(side_effect=TimeoutError('lost ack'))
     request = {'tool': 'close', 'side': 'LONG', 'order_type': 'stop_market', 'close_all': True}
     run_once('cfg', 'ETH/USDT', 'op', request, callback)
@@ -433,7 +433,7 @@ def test_recovered_all_keeps_plan_null_and_actual_fill_separate(tmp_path, monkey
         record.update(execution_order_id='43', execution_amount=3, resolved_amount=.3)
     plan = {'state': 'ACTIVE', 'side': 'LONG', 'execution_mode': 'independent_exits', 'contract_size': .1, 'exits': [record]}
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(plan)))
+        conn.execute('INSERT INTO real_protection_plans (config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)', ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(plan)))
         conn.commit()
     receipt = run_once('cfg', 'ETH/USDT', 'op', request, callback)
     evidence = receipt['reconciliation_evidence'][0]
@@ -449,7 +449,7 @@ def test_recovered_all_keeps_plan_null_and_actual_fill_separate(tmp_path, monkey
 def test_failed_replacement_does_not_recover_as_successful_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'replacement.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     callback = Mock(side_effect=TimeoutError('lost outer receipt'))
     request = {'tool': 'edit', 'order_id': 'algo:42', 'remaining_amount': .5}
     run_once('cfg', 'ETH/USDT', 'edit-op', request, callback)
@@ -458,9 +458,15 @@ def test_failed_replacement_does_not_recover_as_successful_cancel(tmp_path, monk
                        'order_type': 'stop_limit', 'contract_version': 2, 'amount': .7, 'filled': 0,
                        'replacement_error': 'Replacement quantity exceeds current position'}]}
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(plan)))
+        conn.execute('INSERT INTO real_protection_plans (config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)', ('cfg', 'ETH/USDT:USDT', 'LONG', json.dumps(plan)))
         conn.commit()
     receipt = run_once('cfg', 'ETH/USDT', 'edit-op', request, callback)
     assert receipt['status'] == 'failed' and callback.call_count == 1
     assert receipt['reconciliation_evidence'][0]['order_status'] == 'canceled'
     assert 'exceeds current position' in receipt['reconciliation_evidence'][0]['error']
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

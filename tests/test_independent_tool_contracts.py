@@ -41,10 +41,10 @@ def test_batch_policy_hash_compatibility_and_metadata_boundaries():
 
 
 @pytest.fixture
-def independent(tmp_path, monkeypatch):
+def independent(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'independent-contracts.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: {'mode': 'STRATEGY', 'exit_mode': 'independent_exits'})
     return 'cfg', 'ETH/USDT'
 
@@ -179,3 +179,9 @@ def test_one_way_mixed_entry_batch_is_rejected_before_first_write(independent, m
     dispatch.return_value = json.dumps({'status': 'submitted', 'order_status': 'open'})
     receipt = json.loads(trade_batch.execute_trade_actions.func(actions=actions, contract_version=2, config_id=independent[0], symbol=independent[1]))
     assert receipt['status'] == 'submitted' and dispatch.call_count == 2
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

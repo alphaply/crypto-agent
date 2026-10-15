@@ -32,16 +32,32 @@ def _run_scheduler_once() -> None:
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    init_db()
+async def lifespan(app: FastAPI):
+    from backend.mcp.server import install_mcp
+    from backend.storage import close_pool
+    from backend.storage.checkpoints import close_checkpoints
     from backend.utils.resource_diagnostics import start_resource_collector, stop_resource_collector
-    start_resource_collector('web')
-    if os.getenv("RUN_SCHEDULER_IN_WEB", "true").lower() == "true":
-        _run_scheduler_once()
     try:
+        init_db()
+        # A fresh lifespan reloads persisted OAuth settings and owns a fresh SDK
+        # session manager. Remove only routes installed by the previous lifespan.
+        old_routes = getattr(app.state, 'mcp_routes', ())
+        app.router.routes[:] = [route for route in app.router.routes if route not in old_routes]
+        previous = list(app.router.routes)
+        install_mcp(app)
+        added = app.router.routes[len(previous):]
+        app.router.routes[:] = [*added, *previous]
+        app.state.mcp_routes = added
+        app.openapi_schema = None
+        start_resource_collector('web')
+        from backend.utils.deployment_mode import maintenance_enabled
+        if os.getenv("RUN_SCHEDULER_IN_WEB", "true").lower() == "true" and not maintenance_enabled():
+            _run_scheduler_once()
         async with mcp_lifespan():
             yield
     finally:
         from backend.utils.binance_announcements import stop_worker
         stop_worker()
         stop_resource_collector()
+        close_checkpoints()
+        close_pool()

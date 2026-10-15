@@ -2,7 +2,7 @@
 
 Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易代理项目。它提供多策略 Agent 调度、行情分析、K 线可视化、交易记录、成本统计、聊天控制台和 Web 化运行配置。
 
-项目适合用于本地研究、策略复盘和自托管部署。默认不会把交易所、模型 API Key 等敏感配置写进代码，运行后的策略、模型、交易所密钥、提示词和价格配置主要在 WebUI 中维护，并保存到 SQLite 数据库。
+项目适合用于本地研究、策略复盘和自托管部署。默认不会把交易所、模型 API Key 等敏感配置写进代码，运行后的策略、模型、交易所密钥、提示词和价格配置主要在 WebUI 中维护，并保存到 PostgreSQL 数据库。
 
 ## 功能概览
 
@@ -20,13 +20,14 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 - 新建合约任务默认每 60 分钟运行，1h 分析预设使用 `1h / 4h / 1d`，每周期计算 600 根历史并展示 `24 / 12 / 7` 根已收盘 K 线。既有间隔、时段和显式行情配置保留。
 - K 线、均线、持仓、订单和盈亏展示
 - Dashboard 展示跨任务数据、收益和共享消息；独立 Agents 页默认按顺序展示决策模型原文与工具调用、策略摘要、短期记忆更新；行情账户与交易记录分栏查看。收尾只生成纯文本策略摘要，不再生成固定报告或发起报告格式修复。单任务隐藏任务列表，多任务支持搜索切换；运行状态和调度时间集中展示。聊天采用“新建任务 → 聊天”，支持从交易所目录搜索、筛选及分页选择现货/合约标的，默认分析，可关联交易配置。
+- 决策与聊天的 JSON 工具回执以字段卡片、操作列表和状态标签展示，原始 JSON 可展开查看；执行状态与核验状态分别保留。后台批次汇总复用子操作回执，部分核验失败按原身份退避重试；归属索引不再因计划中的纯观察信息更新而反复重扫（[回执说明](docs/TRADE_RECEIPTS_AND_RECOVERY.md)）。
 - 聊天每次成功压缩上下文后自动总结会话标题，支持 reasoning 模型；标题生成失败保留原名。后台可直接删除现货任务及本地关联记录，交易所持仓和挂单需自行处理（[操作说明](docs/WORKBENCH.md#聊天标题与任务删除)）。
 - 模型按渠道独立计价，支持 models.dev 每 6 小时同步、人工覆盖、缓存费用和长期用量记录；未定价不显示为免费。
 - 添加或编辑模型时，填写供应商地址、协议和 Key 后自动读取可用模型，支持按 ID / 名称搜索和手动别名；无需先保存，兼容 OpenAI、DeepSeek、Anthropic 与 Jev，列表读取不发起推理或修改价格（[操作与接口说明](docs/WORKBENCH.md#添加模型与供应商目录)）。
 - 交易 Agent 只绑定 `execute_trade_actions`，一次调用顺序执行 1–20 项动作；主 Agent、小模型和绑定任务聊天一致，只读聊天与记忆/摘要零工具。操作查询工具已移除，权威受理结果当次返回，后续状态由后台自动更新。兼容金融工具不进入默认目录，历史详情通过授权 HTTP/UI 查阅。
 - `/mcp` Streamable HTTP 服务为 WorkBuddy / ChatGPT 提供聚合查询及统一顺序交易：live 默认 7 个工具（只读 6），paper 默认 10 个（只读 7），保留现货与原生 TP/SL/OCO、权限和持久回执；标的可指定或明确设置为不限制（[工具与接入说明](docs/MCP.md)）。
 - 全局消息支持独立抓取与摘要间隔，抓取最短 1 分钟：宏观与加密来源、Polymarket、律动官方 JSON API、币安官方公告连接。评分可关闭、使用 Jev 或普通 LLM 批量评分；普通模型生成滚动摘要，输入未变化时复用快照。消息触发可为各任务指定独立模型、来源/关键词/类别、冷却与每日次数。后台提供本地处理明细及可选 LangSmith 追踪，各 Agent、Chat、Dashboard 与 MCP 共享摘要（[消息流水线与配置](docs/NEWS_PIPELINE.md)）。
-- SQLite 本地状态存储
+- PostgreSQL 17 持久存储与版本化迁移
 - Docker 部署，Web 服务和调度器分容器运行
 
 ## 项目结构
@@ -37,18 +38,18 @@ backend/app/core/         调度器、运行时和安全相关逻辑
 backend/agent/            Agent 图、工具和提示词模板
 backend/utils/            行情、指标、日志和 LLM 工具
 backend/config.py         运行配置入口
-backend/database.py       SQLite 数据访问层
+backend/database.py       PostgreSQL 数据访问层
 frontend/                 React + Vite 前端
 docs/                     部署和产品文档
 ```
 
-运行状态文件主要包括 `.env`、`trading_data.db`、日志和本地价格配置。不要提交真实密钥和运行数据库。
+数据库运行在 PostgreSQL；`.env`、共享 `DATA_DIR` 中的自定义 Prompt 和日志单独持久保存。不要提交真实密钥和运行数据。
 
 ## 普通安装
 
 ### 环境要求
 
-- Python 3.11+（SQLite 增量读取大账本所需；Docker 已使用 3.11）
+- Python 3.11+（Docker 使用 3.11）
 - Node.js 20+
 - uv
 - npm
@@ -84,8 +85,18 @@ SCHEDULER_MAX_WORKERS=2
 TIMEZONE=Asia/Shanghai
 ```
 
-`ADMIN_PASSWORD` 用于登录控制台，`JWT_SECRET` 用于会话签名，`CONFIG_MASTER_KEY` 用于加密 SQLite 中保存的密钥。已有数据库继续使用时，不要更换 `CONFIG_MASTER_KEY`。
+`ADMIN_PASSWORD` 用于登录控制台，`JWT_SECRET` 用于会话签名，`CONFIG_MASTER_KEY` 用于加密 PostgreSQL 中保存的密钥。已有数据库继续使用时，不要更换 `CONFIG_MASTER_KEY`。
 每日记忆和旧固定 4 小时批次已停用，旧数据保留归档。每轮摘要与记忆待处理记录原子落库，短期记忆按任务串行更新，失败保留旧版本并只重试记忆步骤。实盘保护计划继续由原有独立维护循环核对，不等待下一轮 LLM 分析。操作说明见 [工作台配置](docs/WORKBENCH.md)、[MCP 接入](docs/MCP.md) 和 [交易流程](docs/TRADING_WORKFLOW.md)。
+
+### 准备本地数据库
+
+启动本地 PostgreSQL 17（可使用 Docker），在 `.env` 设置指向该数据库的 `DATABASE_URL`。本地 Python 使用 `127.0.0.1`，Compose 内使用服务名 `db`。不要沿用旧 `TRADING_DB_PATH` / `CHAT_CHECKPOINT_DB`。
+
+```bash
+uv run python -m backend.storage.migrate
+```
+
+测试数据库启动、隔离与清理见 [PostgreSQL 开发说明](docs/POSTGRES_DEVELOPMENT.md)。只运行 Web 时设 `RUN_SCHEDULER_IN_WEB=false`；首次导入设 `DEPLOYMENT_MAINTENANCE=true`，完成核对后再关闭。
 
 ### 启动开发环境
 
@@ -117,107 +128,30 @@ npm run build --prefix frontend
 
 构建完成后，FastAPI 会用于生产静态文件服务。
 
-## Docker 安装
+## Docker 安装与更新
 
-### 准备配置
+使用仓库的 `compose.yaml`：`db` 保存 PostgreSQL 数据，`web` 提供页面，`scheduler` 执行后台任务。数据库不暴露宿主机端口，两个应用容器使用同一镜像和共享应用卷。
 
-```bash
-mkdir crypto-agent
-cd crypto-agent
-curl -O https://raw.githubusercontent.com/alphaply/crypto-agent/beta/.env.template
-cp .env.template .env
-```
+首次从 SQLite 切换请按 [部署指南](docs/DEPLOYMENT_GUIDE.md) 操作：导出配置包、停旧服务、建立空 PostgreSQL、暂停执行时导入配置，再重启核对并启用调度。旧交易、聊天和记忆不搬迁；旧 SQLite 原样保留。
 
-编辑 `.env`：
-
-```env
-ADMIN_PASSWORD=your-strong-password
-JWT_SECRET=your-long-random-jwt-secret
-CONFIG_MASTER_KEY=your-long-stable-config-master-key
-PORT=7860
-SCHEDULER_MAX_WORKERS=2
-TIMEZONE=Asia/Shanghai
-```
-
-### 启动服务
+已经完成首次切换后，开发机 `docker push` 只是上传镜像。服务器进入保存 `compose.yaml`、`.env`、`scripts/` 的目录执行：
 
 ```bash
-# 先按目标主机通过的 capacity profile 设置六个变量，并校验双容器合计及主机余量。
-# 本地 profile 的结果仅适用于隔离环境；变量未设置时不得启动。
-: "${WEB_MEMORY_BYTES:?capacity profile required}" "${WEB_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${WEB_CPUS:?capacity profile required}"
-: "${SCHEDULER_MEMORY_BYTES:?capacity profile required}" "${SCHEDULER_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${SCHEDULER_CPUS:?capacity profile required}"
-docker pull alphaply712/crypto-agent:latest
-docker run -d --name crypto-agent --restart unless-stopped \
-  --memory "$WEB_MEMORY_BYTES" --memory-swap "$WEB_MEMORY_SWAP_TOTAL_BYTES" --cpus "$WEB_CPUS" \
-  --env-file .env -e RUN_SCHEDULER_IN_WEB=false \
-  -p 31421:7860 -v crypto_agent_data:/app/data \
-  alphaply712/crypto-agent:latest
-docker run -d --name crypto-agent-scheduler --restart unless-stopped --no-healthcheck \
-  --memory "$SCHEDULER_MEMORY_BYTES" --memory-swap "$SCHEDULER_MEMORY_SWAP_TOTAL_BYTES" --cpus "$SCHEDULER_CPUS" \
-  --env-file .env -e RUN_SCHEDULER_IN_WEB=false \
-  -v crypto_agent_data:/app/data \
-  alphaply712/crypto-agent:latest uv run --no-sync python -m backend.app.core.scheduler
+bash scripts/update-postgresql.sh
 ```
 
-默认访问地址：
+脚本依次拉镜像、停应用、备份、迁移、检查 Web、启动 scheduler；失败停在当前阶段，不会删除卷或自动恢复旧库。备份包含密钥，需私密保存。详细手动步骤及回退边界见 [部署指南](docs/DEPLOYMENT_GUIDE.md)。
 
-```text
-http://localhost:31421/
-```
-
-健康检查：
+从源码构建：
 
 ```bash
-curl http://localhost:31421/health
+npm run build --prefix frontend
+docker build -f Dockerfile.prebuilt -t alphaply712/crypto-agent:latest .
+# 或完整构建前端与后端：
+docker build -t alphaply712/crypto-agent:latest .
 ```
 
-以上命令启动两个容器，共用数据卷和密钥，且只有一个调度器：
-
-- `crypto-agent`：Web API 和前端静态资源
-- `crypto-agent-scheduler`：后台调度器
-
-运行数据保存在 `crypto_agent_data` volume 的 `/app/data` 中。升级或重启时保留该 volume，并保持 `CONFIG_MASTER_KEY` 不变，否则已保存的加密密钥无法解密。
-
-### 常用 Docker 命令
-
-```bash
-docker logs -f crypto-agent
-docker logs -f crypto-agent-scheduler
-docker restart crypto-agent crypto-agent-scheduler
-```
-
-升级需拉取镜像、备份数据并重新创建容器，详见 [部署指南](docs/DEPLOYMENT_GUIDE.md)。不要删除 `crypto_agent_data` 数据卷。仓库不提供 Compose 文件；已有自维护 Compose 可继续使用相同镜像、数据卷和环境变量。
-
-### 从源码构建镜像
-
-当前发布镜像为 `alphaply712/crypto-agent:latest`。构建并验证后推送同一标签：
-
-- **极速构建（推荐，本地已有前端编译产物）**：
-  ```bash
-  npm run build --prefix frontend
-  docker build -f Dockerfile.prebuilt -t alphaply712/crypto-agent:latest .
-  ```
-- **全量多阶段构建（自动在容器内编译前端）**：
-  ```bash
-  docker build -t alphaply712/crypto-agent:latest .
-  # 若网络受限拉取 Docker Hub 慢或 EOF，可传入镜像源加速：
-  # docker build --build-arg NODE_IMAGE=dockerpull.cn/library/node:22-bookworm-slim -t alphaply712/crypto-agent:latest .
-  ```
-
-```bash
-docker push alphaply712/crypto-agent:latest
-```
-
-宝塔容器或已有 Compose 服务须使用完整镜像名 `alphaply712/crypto-agent:latest`，拉取新镜像后重新创建容器才会生效。更新时保留原有端口、环境变量、数据卷和 `CONFIG_MASTER_KEY`；只执行 `docker push` 不会更新运行中的容器。
-
-```bash
-docker run --rm --memory 1g --memory-swap 1152m --cpus 1 -p 31421:7860 \
-  -e ADMIN_PASSWORD=local-password \
-  -e JWT_SECRET=local-jwt-secret \
-  -e CONFIG_MASTER_KEY=local-config-master-key \
-  -e RUN_SCHEDULER_IN_WEB=false \
-  alphaply712/crypto-agent:latest
-```
+发布需另行执行仓库规定的归档/发布流程；构建成功不代表生产已经更新。
 
 ## WebUI 配置
 
@@ -234,7 +168,7 @@ docker run --rm --memory 1g --memory-swap 1152m --cpus 1 -p 31421:7860 \
 - 任务退出管理方式；记忆中心的长期交易规则、人工锁定和修改记录
 - Agent 运行记录：实际请求消息、工具定义、输出、执行状态和 token 用量
 
-密钥会通过 `CONFIG_MASTER_KEY` 加密后保存在 SQLite 中。
+密钥会通过 `CONFIG_MASTER_KEY` 加密后保存在 PostgreSQL 中。
 
 新建任务默认要求止盈和止损；旧 REAL 任务未配置 `exit_mode` 时保持可选，旧 STRATEGY 保持必填。选择「独立退出单」后，模型可多次 open 分批建仓、成交后在本轮或后续轮次 close 设置退出，Hedge 账户支持多空分别管理。close 支持市价、限价及条件市价/限价 TP/SL，可指定固定数量档和最后全部退出；edit 统一修改未成交量，cancel 撤销挂单。固定档不自动缩量或补量；条件市价 all 在触发时全平交易所账户该品种该方向（包括之后同向新增仓位），市价 all 只使用提交前核验快照。看板区分触发价、委托价、全部、实际成交和覆盖估计。有持仓、挂单或待核验操作时不能切换退出方式。调用示例及限制见 [MCP v2](docs/MCP.md#独立退出规范工具-v2)。
 
@@ -267,7 +201,7 @@ uv run backend/utils/test_agent_connection.py
 
 可选附带保护模式下，同方向加仓未填写 TP/SL 时继承现有保护；填写时先更新整仓保护再加仓。独立退出模式下，加仓不会扩大固定退出档，动态 all 在触发时按剩余方向仓位执行；覆盖和 quantity_conflict 单独显示，覆盖不保证成交。Agents 页支持查看退出单和覆盖数量、调整附带保护，以及查看最近 7 天持仓周期。后台「数据库管理」支持只读副本分析、历史清理预览、自动备份、周期重建与空间回收。
 
-数据库默认使用 `data/trading_data.db`；根目录同名文件仅在目标不存在时迁移。详见 [同步库核查与维护说明](docs/DB_AUDIT_2026-09-08.md)。
+数据库必须显式配置 `DATABASE_URL`，启动前执行 `uv run python -m backend.storage.migrate`；不再自动打开或搬迁 SQLite 文件。旧库核查见历史文档 [同步库核查与维护说明](docs/DB_AUDIT_2026-09-08.md)。
 
 持仓周期表分别展示手续费前盈亏、开平仓手续费和净盈亏（不含资金费）；费用缺失或跨币种时净盈亏保持未知。成交活动按成交时间单独统计，同步覆盖与未闭合周期可展开查看。模型空响应、断连或无法恢复的输出截断会保存失败记录，调度任务标记失败。正文截断但全部工具参数 JSON 完整时，保留截断提示并继续工具校验和执行。
 
@@ -300,7 +234,7 @@ uv run backend/utils/test_agent_connection.py
 
 - 聊天支持会话搜索、问题建议、只读临时聊天、移动端回车换行、请求阶段/耗时/输出字符时间线；推理区仅展示上游实际返回的内容。发送期间阻止切换会话，避免响应写入错误会话。
 - Prompt 支持文件搜索、专注编辑、顶部保存、Ctrl/⌘+S、未保存提示和当前浏览器标签页的草稿恢复；切换文件前确认丢弃修改。
-- 数据库导出使用 SQLite 一致性快照和浏览器直接下载，不再在服务端及浏览器各复制完整文件到内存。下载凭据仅在 120 秒内对下载接口有效；快照准备时间仍取决于数据库大小、磁盘和写入负载。
+- 数据库导出使用 PostgreSQL `pg_dump` 自定义格式（`.dump`）和浏览器直接下载，不再在服务端及浏览器各复制完整文件到内存。下载凭据仅在 120 秒内对下载接口有效；快照准备时间仍取决于数据库大小、磁盘和写入负载。
 - 数据库管理支持保留最近 7/30/90 天的快捷选择，可选择已移除任务的遗留 ID；清理先预览、再备份，保留成交及保护证据。
 - 指标采用 SMA 初始化的 Wilder 平滑；剔除异常 OHLCV、提示时间缺口及陈旧数据，成交量倍数使用之前 20 根已收盘 K 线作基准。修正不等同于胜率保证，需要独立样本和后续实盘评估。
 
@@ -323,3 +257,5 @@ Paper MCP 现已支持真实公开行情标注与标的搜索、bot 自有账户
 资源准入、限额与隔离验收见 [运行容量](docs/RUNTIME_CAPACITY.md)、[容量验证与回退](docs/CAPACITY_VERIFICATION.md) 和 [资源诊断](docs/RESOURCE_DIAGNOSTICS.md)。本地报告不代表生产已部署。
 
 QQBot 模拟交易配置在管理页独立的 **QQBot · Paper** tab；原设置、账户和 Paper Key 创建功能保持可用。金融工具按请求顺序提交，依据交易所接口响应简洁返回，不在工具内补查或轮询；后台核验及必要前置检查保留。参见 [回执说明](docs/TRADE_RECEIPTS_AND_RECOVERY.md)。
+
+工具调用链路不再以本地内存/缓存门槛、归属索引时间片或累计执行预算阻止同步；并发、单次超时、重试和资金预算保留。见 [运行说明](docs/RUNTIME_CAPACITY.md) 与 [部署指南](docs/DEPLOYMENT_GUIDE.md)。

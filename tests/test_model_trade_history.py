@@ -82,11 +82,11 @@ def test_exact_local_projection_marks_unavailable_without_rewriting_historical_f
     if state == 'oversize':
         saved['diagnostic'] = 'x' * 5000
     with database.get_db_conn() as conn:
-        conn.execute('CREATE TABLE trade_action_runs(config_id TEXT,operation_id TEXT,result TEXT,updated_at REAL)')
-        conn.execute('CREATE TABLE trade_operation_evidence(config_id TEXT,operation_id TEXT,account_scope TEXT)')
+        None  # Production schema is installed by pg.
+        None  # Production schema is installed by pg.
         if state != 'missing':
-            conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?)', ('trusted-task', 'old-close', json.dumps(saved), 30))
-            conn.execute('INSERT INTO trade_operation_evidence VALUES(?,?,?)',
+            conn.execute("INSERT INTO trade_action_runs(config_id,operation_id,result,updated_at,symbol,request_hash,status,created_at) VALUES(%s,%s,%s,%s,'ETH/USDT','hash','submitted',0)", ('trusted-task', 'old-close', json.dumps(saved), 30))
+            conn.execute("INSERT INTO trade_operation_evidence(config_id,operation_id,account_scope,symbol,episode_id,order_key,version,payload) VALUES(%s,%s,%s,'ETH/USDT','episode','order',1,'{}')",
                          ('trusted-task', 'old-close', 'other-account' if state == 'scope_mismatch' else 'trusted-account'))
         conn.commit()
     baseline = deepcopy(original)
@@ -102,3 +102,6 @@ def test_exact_local_projection_marks_unavailable_without_rewriting_historical_f
         assert result['evidence_source'] == 'historical_cached'
         assert result['status'] == 'completed' and result['filled_amount'] == .03
         assert result['order_id'] == 'algo:123' and result['observed_at'] == 10
+
+
+pytestmark = pytest.mark.usefixtures("pg")

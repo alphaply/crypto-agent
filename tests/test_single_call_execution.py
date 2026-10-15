@@ -121,7 +121,7 @@ def test_summary_never_replaces_durable_raw_or_request_hash(ledger):
     raw = run_once('offline-task','ETH/USDT:USDT','offline-close-v2-0001',request,lambda: deepcopy(original))
     compact_trade_receipt(raw)
     with database.get_db_conn() as conn:
-        row = conn.execute('SELECT result,request_hash FROM trade_action_runs WHERE config_id=?',('offline-task',)).fetchone()
+        row = conn.execute('SELECT result,request_hash FROM trade_action_runs WHERE config_id=%s',('offline-task',)).fetchone()
         assert json.loads(row['result']) == original
         assert row['request_hash'] == hashlib.sha256(json.dumps(request,sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
 

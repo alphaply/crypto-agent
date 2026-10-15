@@ -20,7 +20,7 @@ def runtime_db(tmp_path, monkeypatch):
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'workbench-test-only-master')
     monkeypatch.setattr(database, '_initialize_runtime_config', lambda: None)
     monkeypatch.setattr(database, '_reload_runtime_config', lambda: None)
-    database.init_db()
+    pass  # pg fixture initializes the native schema
     return path
 
 
@@ -36,7 +36,8 @@ def test_channel_settings_round_trip_preserves_existing_cadence(runtime_db):
     visible['llm_providers'].sort(key=lambda p:p['provider_id'])
     assert not hidden['llm_providers'][0]['secrets']['api_key'].get('value')
     assert visible['llm_providers'][0]['secrets']['api_key']['value'] == 'private-test-key'
-    assert b'private-test-key' not in runtime_db.read_bytes()
+    with database.get_db_conn() as conn:
+        assert 'private-test-key' not in repr(conn.execute('SELECT * FROM llm_providers').fetchall())
     assert visible['agents'][0]['run_interval'] == 17
     assert visible['agents'][0]['run_schedule'][0]['interval'] == 20
     assert visible['agents'][0]['market_timeframes'] == ['15m','4h']
@@ -98,3 +99,8 @@ def test_import_validation_rejects_jev_as_an_agent_fallback(runtime_db):
         ], [{'provider_id': 'jev', 'model': 'jev-v1', 'api_protocol': 'decisions'}], [],
             validate_snapshot=Config.validate_snapshot)
     assert config_store.load_runtime_snapshot()['agents'][0]['config_id'] == 'keep'
+
+
+@pytest.fixture(autouse=True)
+def isolated_postgres(pg):
+    yield

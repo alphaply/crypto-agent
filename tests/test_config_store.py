@@ -1,6 +1,8 @@
 import json
 import os
-import sqlite3
+from copy import deepcopy
+from backend import storage
+import pytest
 from contextlib import closing
 import tempfile
 import unittest
@@ -10,75 +12,11 @@ from unittest.mock import patch
 import backend.config_store as config_store
 
 
-def create_runtime_tables(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE app_settings (
-            key TEXT PRIMARY KEY,
-            value_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE agent_configs (
-            config_id TEXT PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            mode TEXT NOT NULL,
-            data_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE secret_store (
-            scope TEXT NOT NULL,
-            scope_id TEXT NOT NULL,
-            secret_key TEXT NOT NULL,
-            encrypted_value TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY(scope, scope_id, secret_key)
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE llm_providers (
-            provider_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            model TEXT NOT NULL,
-            api_base TEXT,
-            temperature REAL,
-            role TEXT NOT NULL DEFAULT 'agent',
-            extra_body TEXT NOT NULL DEFAULT '{}',
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE exchange_profiles (
-            profile_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            exchange TEXT NOT NULL,
-            market_type TEXT,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
+@pytest.mark.usefixtures("pg")
 class ConfigStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "runtime.db"
-        create_runtime_tables(self.db_path)
         self.env = patch.dict(
             os.environ,
             {
@@ -109,12 +47,9 @@ class ConfigStoreTests(unittest.TestCase):
             },
             clear=False,
         )
-        self.db_patch = patch.object(config_store, "DB_NAME", self.db_path)
         self.env.start()
-        self.db_patch.start()
 
     def tearDown(self) -> None:
-        self.db_patch.stop()
         self.env.stop()
         self.temp_dir.cleanup()
 
@@ -136,7 +71,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["market_timeframes"], ["15m", "1h", "4h", "1d", "1w"])
         self.assertEqual(snapshot["langchain_project"], "test-project")
 
-        conn = sqlite3.connect(self.db_path)
+        conn = storage.connect()
         row = conn.execute(
             "SELECT encrypted_value FROM secret_store WHERE scope = 'global' AND secret_key = 'global_binance_api_key'"
         ).fetchone()
@@ -145,8 +80,8 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertNotEqual(row[0], "binance-key")
 
-        conn = sqlite3.connect(self.db_path)
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_configs)").fetchall()}
+        conn = storage.connect()
+        columns = {row[1] for row in storage.table_columns(conn, "agent_configs")}
         conn.close()
         self.assertIn("sort_order", columns)
 
@@ -282,7 +217,7 @@ class ConfigStoreTests(unittest.TestCase):
         }])
         runtime = config_store.load_runtime_snapshot()
         self.assertEqual(runtime['agents'][0]['fallback_models'][0]['api_key'], 'sensitive-fallback-value')
-        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+        with closing(storage.connect()) as conn, conn:
             stored = conn.execute('SELECT data_json FROM agent_configs').fetchone()[0]
         self.assertNotIn('sensitive-fallback-value', stored)
         self.assertNotIn('sensitive-fallback-value', json.dumps(config_store.load_management_snapshot()))
@@ -413,15 +348,15 @@ class ConfigStoreTests(unittest.TestCase):
         config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [
             {"config_id": "legacy", "mode": "REAL", "symbol": "BTC/USDT", "exchange_profile_id": "shared"},
         ], [], [{"profile_id": "shared", "name": "Shared", "exchange": "binance", "market_type": "swap"}])
-        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+        with closing(storage.connect()) as conn, conn:
             row = conn.execute("SELECT data_json FROM agent_configs WHERE config_id='legacy'").fetchone()
             payload = json.loads(row[0])
             payload['mode'] = 'SPOT_DCA'
-            conn.execute("UPDATE agent_configs SET mode='SPOT_DCA',data_json=? WHERE config_id='legacy'", (json.dumps(payload),))
+            conn.execute("UPDATE agent_configs SET mode='SPOT_DCA',data_json=%s WHERE config_id='legacy'", (json.dumps(payload),))
         snapshot = config_store.load_runtime_snapshot()
         self.assertEqual(snapshot['agents'][0]['market_type'], 'spot')
         self.assertNotEqual(snapshot['agents'][0]['exchange_profile_id'], 'shared')
-        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+        with closing(storage.connect()) as conn, conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM exchange_profiles').fetchone()[0], 1)
 
     def test_legacy_spot_single_symbol_keeps_initial_holdings_and_explicit_timeframes(self):
@@ -482,14 +417,14 @@ class ConfigStoreTests(unittest.TestCase):
             ["eth-dca", "btc-real", "btc-strategy"],
         )
 
-        conn = sqlite3.connect(self.db_path)
+        conn = storage.connect()
         rows = conn.execute("SELECT config_id, sort_order FROM agent_configs ORDER BY sort_order ASC").fetchall()
         conn.close()
         self.assertEqual(rows, [("eth-dca", 0), ("btc-real", 1), ("btc-strategy", 2)])
 
     def test_load_runtime_snapshot_defaults_to_symbol_and_mode_order_without_sort_order(self):
         timestamp = "2026-05-05 00:00:00"
-        conn = sqlite3.connect(self.db_path)
+        conn = storage.connect()
         rows = [
             ("eth-dca", "ETH/USDT", 1, "SPOT_DCA", {"config_id": "eth-dca", "symbol": "ETH/USDT", "mode": "SPOT_DCA", "model": "gpt-4o-mini"}),
             ("btc-strategy", "BTC/USDT", 1, "STRATEGY", {"config_id": "btc-strategy", "symbol": "BTC/USDT", "mode": "STRATEGY", "model": "gpt-4o-mini"}),
@@ -499,7 +434,7 @@ class ConfigStoreTests(unittest.TestCase):
             conn.execute(
                 """
                 INSERT INTO agent_configs (config_id, symbol, enabled, mode, data_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (config_id, symbol, enabled, mode, json.dumps(payload), timestamp),
             )
@@ -515,11 +450,11 @@ class ConfigStoreTests(unittest.TestCase):
 
     def test_load_runtime_snapshot_degrades_on_invalid_secret_key(self):
         timestamp = "2026-05-05 00:00:00"
-        conn = sqlite3.connect(self.db_path)
+        conn = storage.connect()
         conn.execute(
             """
             INSERT INTO secret_store (scope, scope_id, secret_key, encrypted_value, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
             """,
             ("global", "", "global_binance_api_key", "not-a-valid-fernet-token", timestamp),
         )
@@ -530,6 +465,38 @@ class ConfigStoreTests(unittest.TestCase):
 
         self.assertIsNone(snapshot)
         self.assertIn("CONFIG_MASTER_KEY", config_store.LAST_RUNTIME_CONFIG_ERROR or "")
+
+    def test_effective_snapshot_rejects_wrong_master_key_without_environment_fallback(self):
+        from backend.config import Config
+
+        config_store.ensure_runtime_config_initialized()
+        runtime = Config()
+        before = deepcopy(runtime.__dict__)
+        old_environment_tasks = json.dumps([{
+            "config_id": "retired-environment-task", "symbol": "ETH/USDT", "mode": "REAL",
+        }])
+        with patch.dict(os.environ, {
+            "CONFIG_MASTER_KEY": "wrong-master-key", "SYMBOL_CONFIGS": old_environment_tasks,
+        }), patch.object(config_store, "_env_snapshot") as environment:
+            # Preserve the existing low-level diagnostic contract.
+            self.assertIsNone(config_store.load_runtime_snapshot())
+            self.assertIn("CONFIG_MASTER_KEY", config_store.LAST_RUNTIME_CONFIG_ERROR or "")
+            for clear_shared_error in (False, True):
+                with self.subTest(clear_shared_error=clear_shared_error):
+                    def diagnostic(*args):
+                        if clear_shared_error:
+                            # A concurrent successful reader may reset this global.
+                            config_store.LAST_RUNTIME_CONFIG_ERROR = None
+
+                    with patch.object(config_store.logger, "error", side_effect=diagnostic):
+                        with self.assertRaisesRegex(RuntimeError, "CONFIG_MASTER_KEY") as caught:
+                            config_store.load_effective_runtime_snapshot()
+                        with self.assertRaisesRegex(RuntimeError, "CONFIG_MASTER_KEY"):
+                            runtime.reload_config()
+                    for secret in ("test-master-key", "wrong-master-key", "binance-key", "agent-api-key"):
+                        self.assertNotIn(secret, str(caught.exception))
+                    self.assertEqual(runtime.__dict__, before)
+            environment.assert_not_called()
 
     def test_env_snapshot_accepts_langsmith_aliases(self):
         with patch.dict(

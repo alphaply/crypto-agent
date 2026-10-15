@@ -30,8 +30,8 @@ def local_db(tmp_path, monkeypatch):
     db_path = tmp_path / 'workflow.sqlite'
     monkeypatch.setattr(database, 'DB_NAME', str(db_path))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
-        conn.execute("INSERT INTO summaries(timestamp,config_id,strategy_logic) VALUES('2026-10-06 09:00:00','cfg','new evidence')")
+        pass  # Full schema is created by pg.
+        conn.execute("INSERT INTO summaries(timestamp,symbol,config_id,strategy_logic) VALUES('2026-10-06 09:00:00','BTC/USDT','cfg','new evidence')")
         conn.commit()
     monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [CONFIG])
     monkeypatch.setattr(agent_graph.global_config, 'get_config_by_id', lambda cid: CONFIG if cid == 'cfg' else None)
@@ -136,3 +136,6 @@ def test_lease_releases_after_exception_and_serialized_helpers_do_not_enter(loca
             raise RuntimeError('Stopped review')
     with memory_workflow.memory_review_lease('cfg') as acquired:
         assert acquired
+
+
+pytestmark = pytest.mark.usefixtures("pg")

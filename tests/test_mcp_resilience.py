@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import sqlite3
+from backend import storage
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from backend import database
+from backend import database, storage
 from backend.mcp import auth, service, store
 from backend.mcp import resilience as runtime
 from backend.mcp import exchange_runtime as exchange_runtime
@@ -27,11 +27,11 @@ def _capacity_mode(monkeypatch, *, enabled):
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
+def db(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'mcp.db'))
     with database.get_db_conn() as conn:
         from backend.database_schema import initialize_schema
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         store.initialize_schema(conn)
         conn.commit()
     return database.DB_NAME
@@ -298,19 +298,26 @@ def test_migration_preserves_records_is_idempotent_and_reads_do_not_ddl(db, monk
     statements = []
     original = database.get_db_conn
     from contextlib import contextmanager
+    class TracedConnection:
+        def __init__(self, conn):
+            self.conn = conn
+        def execute(self, statement, *args, **kwargs):
+            statements.append(str(statement))
+            return self.conn.execute(statement, *args, **kwargs)
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
     @contextmanager
-    def traced():
-        with original() as conn:
-            conn.set_trace_callback(statements.append)
-            yield conn
+    def traced(**kwargs):
+        with original(**kwargs) as conn:
+            yield TracedConnection(conn)
     monkeypatch.setattr(database, 'get_db_conn', traced)
     assert store.get('settings', 'test') == {'enabled': True}
     assert not any('CREATE' in statement.upper() for statement in statements)
     with database.get_db_conn() as conn:
         conn.execute('BEGIN')
-        conn.execute("INSERT INTO mcp_records VALUES('test','rollback','{}')")
+        conn.execute("INSERT INTO mcp_records (kind,id,payload) VALUES('test','rollback','{}')")
         store.initialize_schema(conn)
-        assert conn.in_transaction
+        assert conn.info.transaction_status != 0
         conn.rollback()
     assert store.get('test', 'rollback') is None
     assert store.get('settings', 'test')['enabled']
@@ -319,15 +326,14 @@ def test_migration_preserves_records_is_idempotent_and_reads_do_not_ddl(db, monk
 def test_auth_lock_wait_is_bounded_and_does_not_block_event_loop(db, monkeypatch):
     monkeypatch.setenv('MCP_DB_WAIT_SECONDS', '.03')
     provider = auth.AuthorizationProvider('http://localhost:7860')
-    conn = sqlite3.connect(db)
-    conn.execute('PRAGMA journal_mode=DELETE')
-    conn.execute('BEGIN EXCLUSIVE')
+    conn = storage.connect()
+    conn.execute('LOCK TABLE mcp_records IN ACCESS EXCLUSIVE MODE')
     async def exercise():
         task = asyncio.create_task(provider.get_client('not-existing'))
         start = time.monotonic()
         await asyncio.sleep(.005)
         assert time.monotonic() - start < .05
-        with pytest.raises(sqlite3.OperationalError, match='locked'):
+        with pytest.raises(storage.OperationalError, match='timeout'):
             await task
         assert time.monotonic() - start < .3
     try:
@@ -430,7 +436,7 @@ def test_expired_budget_after_confirmed_ack_preserves_ack_and_audit_failure(db, 
         budget.deadline = time.monotonic() - 1
         return {'receipt_version': 1, 'status': 'submitted', 'order_id': 'regular:42'}
     monkeypatch.setattr(registry, 'run_trade_tool', ack)
-    monkeypatch.setattr(store, 'audit', lambda *args, **kwargs: (_ for _ in ()).throw(sqlite3.OperationalError('locked')))
+    monkeypatch.setattr(store, 'audit', lambda *args, **kwargs: (_ for _ in ()).throw(storage.OperationalError('locked')))
     result = asyncio.run(runtime.run('execute', partial(service.execute, caller, *args)))
     assert result['status'] == 'submitted' and result['result']['order_id'] == 'regular:42'
     assert service.operation(caller, 'test', args[-1])['state'] == 'submitted'
@@ -454,14 +460,14 @@ def test_budget_exhausted_before_dispatch_is_explicitly_not_submitted(db, monkey
     assert not calls
 
 
-def test_empty_startup_installs_mcp_tables_before_reading_settings(tmp_path, monkeypatch):
+def test_startup_uses_previously_migrated_mcp_tables_before_reading_settings(tmp_path, monkeypatch):
     from backend.mcp.server import install_mcp
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'fresh.db'))
     app = FastAPI()
     install_mcp(app)
     assert store.get('settings', 'global') is None
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     assert {'mcp_operations', 'mcp_operation_requests', 'mcp_operation_revisions', 'mcp_records'} <= tables
 
 
@@ -501,3 +507,9 @@ def test_storage_has_independent_finite_capacity_and_reclaims_after_failure(db, 
             slot.__exit__(None, None, None)
             runtime.current_budget.reset(token)
     assert store.storage_diagnostics()['active'] == 0
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

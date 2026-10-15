@@ -1,5 +1,6 @@
 """Versioned, task-scoped trading guidance shared by humans and agents."""
 from __future__ import annotations
+from backend import storage
 
 from datetime import datetime
 from uuid import uuid4
@@ -18,27 +19,12 @@ class RuleLockedError(ValueError):
 
 
 def initialize_trading_rules_schema(cursor):
-    cursor.execute("""CREATE TABLE IF NOT EXISTS trading_rules (
-        rule_id TEXT PRIMARY KEY, config_id TEXT NOT NULL, content TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1, locked INTEGER NOT NULL DEFAULT 0,
-        revision INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
-        updated_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    )""")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trading_rules_config ON trading_rules(config_id, created_at)")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS trading_rule_revisions (
-        rule_id TEXT NOT NULL, config_id TEXT NOT NULL, revision INTEGER NOT NULL,
-        content TEXT NOT NULL, enabled INTEGER NOT NULL, locked INTEGER NOT NULL,
-        actor TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
-        PRIMARY KEY(rule_id, revision)
-    )""")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS trading_rule_operations (
-        config_id TEXT NOT NULL, operation_id TEXT NOT NULL, request_hash TEXT NOT NULL,
-        result TEXT NOT NULL, PRIMARY KEY(config_id, operation_id)
-    )""")
+    """Structure is installed by the explicit PostgreSQL migration."""
 
 
 def _rule(row):
-    result = dict(row)
+    result = storage.record(row)
+    result.pop('storage_id', None)
     result['enabled'] = bool(result['enabled'])
     result['locked'] = bool(result['locked'])
     return result
@@ -49,7 +35,7 @@ def list_trading_rules(config_id: str, *, enabled_only: bool = False) -> list[di
 
     with get_db_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM trading_rules WHERE config_id = ?" +
+            "SELECT * FROM trading_rules WHERE config_id = %s" +
             (" AND enabled = 1" if enabled_only else "") + " ORDER BY created_at, rule_id",
             (config_id,),
         ).fetchall()
@@ -60,10 +46,10 @@ def trading_rule_history(config_id: str, rule_id: str) -> list[dict]:
     from backend.database import get_db_conn
 
     with get_db_conn() as conn:
-        if not conn.execute('SELECT 1 FROM trading_rules WHERE config_id = ? AND rule_id = ?', (config_id, rule_id)).fetchone():
+        if not conn.execute('SELECT 1 FROM trading_rules WHERE config_id = %s AND rule_id = %s', (config_id, rule_id)).fetchone():
             raise FileNotFoundError('Trading rule not found')
         rows = conn.execute(
-            'SELECT * FROM trading_rule_revisions WHERE config_id = ? AND rule_id = ? ORDER BY revision DESC',
+            'SELECT * FROM trading_rule_revisions WHERE config_id = %s AND rule_id = %s ORDER BY revision DESC',
             (config_id, rule_id),
         ).fetchall()
     return [_rule(row) for row in rows]
@@ -81,10 +67,10 @@ def change_trading_rules(config_id: str, changes: list[dict], *, actor: str, ope
     results = []
     fingerprint = hashlib.sha256(json.dumps([actor, changes], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        storage.lock_scope(conn, 'trading-rules', config_id)
         try:
             if operation_id:
-                receipt = conn.execute('SELECT request_hash,result FROM trading_rule_operations WHERE config_id = ? AND operation_id = ?',
+                receipt = conn.execute('SELECT request_hash,result FROM trading_rule_operations WHERE config_id = %s AND operation_id = %s',
                                        (config_id, operation_id)).fetchone()
                 if receipt:
                     if receipt['request_hash'] != fingerprint:
@@ -101,7 +87,7 @@ def change_trading_rules(config_id: str, changes: list[dict], *, actor: str, ope
                                locked=actor == 'human', revision=0, created_by=actor, created_at=now)
                 else:
                     rule_id = change.get('rule_id')
-                    stored = conn.execute('SELECT * FROM trading_rules WHERE rule_id = ? AND config_id = ?',
+                    stored = conn.execute('SELECT * FROM trading_rules WHERE rule_id = %s AND config_id = %s',
                                           (rule_id, config_id)).fetchone()
                     if stored is None:
                         raise FileNotFoundError('Trading rule not found')
@@ -123,25 +109,27 @@ def change_trading_rules(config_id: str, changes: list[dict], *, actor: str, ope
                 row.update(revision=row['revision'] + 1, updated_by=actor, updated_at=now)
                 conn.execute('''INSERT INTO trading_rules
                     (rule_id,config_id,content,enabled,locked,revision,created_by,updated_by,created_at,updated_at)
-                    VALUES (:rule_id,:config_id,:content,:enabled,:locked,:revision,:created_by,:updated_by,:created_at,:updated_at)
+                    VALUES (%(rule_id)s,%(config_id)s,%(content)s,%(enabled)s,%(locked)s,%(revision)s,%(created_by)s,%(updated_by)s,%(created_at)s,%(updated_at)s)
                     ON CONFLICT(rule_id) DO UPDATE SET content=excluded.content, enabled=excluded.enabled,
                     locked=excluded.locked, revision=excluded.revision, updated_by=excluded.updated_by,
-                    updated_at=excluded.updated_at''', row)
+                    updated_at=excluded.updated_at''', {**row, 'enabled': int(row['enabled']), 'locked': int(row['locked'])})
                 reason = str(change.get('reason') or '').strip()
                 if len(reason) > 1000:
                     raise ValueError('Change reason must contain at most 1000 characters')
                 conn.execute('''INSERT INTO trading_rule_revisions
                     (rule_id,config_id,revision,content,enabled,locked,actor,reason,created_at)
-                    VALUES (?,?,?,?,?,?,?,?,?)''',
-                    (rule_id, config_id, row['revision'], row['content'], row['enabled'], row['locked'], actor, reason, now))
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                    (rule_id, config_id, row['revision'], row['content'], int(row['enabled']), int(row['locked']), actor, reason, now))
                 results.append(row)
-            active = conn.execute('SELECT COUNT(*) FROM trading_rules WHERE config_id = ? AND enabled = 1', (config_id,)).fetchone()[0]
+            active = conn.execute('SELECT COUNT(*) FROM trading_rules WHERE config_id = %s AND enabled = 1', (config_id,)).fetchone()[0]
             if active > 30:
                 raise ValueError('A task can have at most 30 enabled trading rules')
             if operation_id:
-                conn.execute('INSERT INTO trading_rule_operations VALUES(?,?,?,?)',
+                conn.execute('INSERT INTO trading_rule_operations(config_id,operation_id,request_hash,result) VALUES(%s,%s,%s,%s)',
                              (config_id, operation_id, fingerprint, json.dumps(results, ensure_ascii=False)))
             conn.commit()
+        except storage.Error:
+            raise
         except Exception:
             conn.rollback()
             raise

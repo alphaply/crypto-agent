@@ -1,12 +1,10 @@
-"""Bounded model receipts; durable original evidence is never replaced."""
+"""Factual model receipts; durable original evidence is never replaced."""
 from copy import deepcopy
 import json
 
 from backend.utils.trade_operations import _decode_receipt, tool_result_status
 
 
-SINGLE_RECEIPT_BYTES = 4096
-BATCH_RECEIPT_BYTES = 32768
 _IDENTITIES = {'operation_id', 'parent_operation_id', 'execution_operation_id', 'index', 'action',
                'order_id', 'order_ids', 'accepted_order_ids', 'previous_order_id', 'parent_order_id', 'execution_order_id', 'exchange_order_id',
                'client_id', 'client_order_id', 'exit_id', 'oco_group', 'symbol', 'side', 'exchange_side', 'user_id', 'profile_id',
@@ -174,45 +172,12 @@ def _project(value):
     return projected
 
 
-def _fit(value, budget):
-    result = deepcopy(value)
-    if receipt_bytes(result) <= budget:
-        return result
-    if isinstance(result.get('result'), dict):
-        excess = receipt_bytes(result) - budget
-        result['result'] = _fit(result['result'], max(384, receipt_bytes(result['result']) - excess - 128))
-        if receipt_bytes(result) <= budget:
-            return result
-    # Omit verbose diagnostic payloads, keeping exact identities and all action
-    # outcomes. They remain readable through the authorized immutable audit.
-    for key in ('admission', 'position', 'query', 'continuation', 'management', 'message', 'error', 'protection_error', 'account_summary'):
-        if key in result:
-            result.pop(key)
-            if receipt_bytes(result) <= budget:
-                return result
-    cleanup = result.get('cleanup')
-    if isinstance(cleanup, dict) and len(cleanup.get('orders', [])) > 1:
-        cleanup['orders'] = cleanup['orders'][:1]
-    if receipt_bytes(result) <= budget:
-        return result
-    # Typed input IDs are bounded before financial effects. If an exchange
-    # supplies larger unexpected metadata, keep the complete exact identifiers
-    # and status; never slice an ID or serialized JSON to make it look valid.
-    essential = {key: item for key, item in result.items() if key in _IDENTITIES | _FACTS | {
-        'result', 'results', 'orders', 'protection_orders', 'cleanup', 'verification', 'details_omitted', 'audit_reference'}}
-    if receipt_bytes(essential) > budget:
-        raise ValueError('Receipt identities exceed the admitted response budget; original evidence is durably retained')
-    return essential
-
-
 def compact_trade_receipt(payload):
-    """Return a bounded factual projection without changing the raw object."""
+    """Return a factual projection without a response-size rejection gate."""
     projected = _project(payload)
     children = projected.get('results')
     if isinstance(children, list):
-        # Reserve parent/summary space, then a uniform envelope for every index.
-        child_budget = max(512, (BATCH_RECEIPT_BYTES - 4096) // max(len(children), 1))
-        for index, child in enumerate(children):
+        for child in children:
             child.pop('audit_reference',None)
             child.pop('details_omitted',None)
             if not child.get('verification', {}).get('blocker_operation_ids'):
@@ -233,12 +198,7 @@ def compact_trade_receipt(payload):
                     child['result'].pop('verification', None)
                 child['result'].pop('details_omitted', None)
                 child.pop('audit_reference', None)
-                child['result'] = _fit(child['result'], max(384, child_budget - 160))
-            children[index] = _fit(child, child_budget)
-        return _fit(projected, BATCH_RECEIPT_BYTES)
-    if isinstance(projected.get('result'), dict):
-        projected['result'] = _fit(projected['result'], SINGLE_RECEIPT_BYTES - 1024)
-    return _fit(projected, SINGLE_RECEIPT_BYTES)
+    return projected
 
 
 def render_trade_receipt(payload) -> str:
@@ -316,12 +276,8 @@ def render_trade_receipt(payload) -> str:
         if receipt.get('accepted_order_ids') and status in {'failed', 'unknown', 'pending'}:
             outcome += '；已受理保护单：' + ' / '.join(str(item) for item in receipt['accepted_order_ids'])
         line = f"{index + 1}. {action}：{' '.join([target, *facts]).strip()}，{outcome}。"
-        if len(line.encode('utf-8')) > SINGLE_RECEIPT_BYTES:
-            raise ValueError('Receipt exceeds model text budget; full evidence retained')
         lines.append(line)
     if isinstance(value.get('account_summary'), dict):
         lines.append('账户摘要：' + json.dumps(_project(value)['account_summary'], ensure_ascii=False))
     result = '\n'.join(lines)
-    if len(result.encode('utf-8')) > BATCH_RECEIPT_BYTES:
-        raise ValueError('Batch exceeds model text budget; full evidence retained')
     return result

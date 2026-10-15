@@ -5,7 +5,7 @@ import json
 def trading_compatibility_report(conn, *, supported_contract_version=3):
     if supported_contract_version not in {2, 3}:
         raise ValueError('Supported target versions are 2 and 3')
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     blockers = []
 
     def rows(table):

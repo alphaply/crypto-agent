@@ -13,8 +13,7 @@ from .resilience import current_budget, remaining, setting, stage, BudgetExceede
 from backend.utils.public_catalogue import load_public_catalogue, install_bounded_http
 from backend.utils.public_catalogue import (resident_size, catalogue_diagnostics,
                                            release_catalogue_client, retire_catalogues)
-from backend.utils.runtime_capacity import (CapacityBusy, positive_setting, reserve_bytes,
-                                            capacity_limits_enabled)
+from backend.utils.runtime_capacity import CapacityBusy, positive_setting, reserve_bytes
 
 _lock = threading.Lock()
 _accounts = OrderedDict()
@@ -43,16 +42,6 @@ def _account(key):
     with _lock:
         item = _accounts.get(key)
         if item is None:
-            if capacity_limits_enabled():
-                cap = positive_setting('RUNTIME_COORDINATOR_ENTRIES', 128)
-                for old_key, old in list(_accounts.items()):
-                    if len(_accounts) < cap:
-                        break
-                    if not old.references and not old.users and not old.network.locked() and not old.pacing.locked():
-                        _accounts.pop(old_key)
-                        old.lease.release()
-                if len(_accounts) >= cap:
-                    raise CapacityBusy('exchange', 'coordinator_entries')
             item = _accounts[key] = Account()
         # Pin under the same lock as lookup, so retirement cannot detach an
         # account between lookup and finalizer installation.
@@ -108,11 +97,11 @@ def close_runtime_client(exchange):
 
 def _acquire(lock, label):
     if not lock.acquire(timeout=remaining(label)):
-        raise BudgetExceeded(f'MCP budget exhausted at {label}')
+        raise BudgetExceeded(f'MCP lock wait timeout at {label}')
 
 
 def install_transport(exchange, key):
-    """Enforce remaining deadlines at every CCXT HTTP call (including paging)."""
+    """Apply independent request/lock timeouts to each CCXT HTTP call."""
     if getattr(exchange, '_runtime_transport_key', None) == key:
         return
     prior = getattr(exchange, '_runtime_account_finalizer', None)
@@ -148,7 +137,7 @@ def install_transport(exchange, key):
                 acquired = True
                 wait = max(0, account.next_at - time.monotonic())
                 if wait >= remaining('account_rate_limit'):
-                    raise BudgetExceeded('MCP budget exhausted at account_rate_limit')
+                    raise BudgetExceeded('MCP account rate-limit wait timeout')
                 if wait:
                     time.sleep(wait)
                 remaining('account_rate_limit')
@@ -211,7 +200,6 @@ def observe(key, source, loader, ttl):
     if not isinstance(ttl, (int, float)) or not 0 < ttl < float('inf'):
         raise ValueError('Quote TTL must be a finite positive number')
     identity = (key, source)
-    limits_enabled = capacity_limits_enabled()
     retire_runtime_caches()
     with _lock:
         old = _quotes.get(identity)
@@ -220,16 +208,6 @@ def observe(key, source, loader, ttl):
             return copy.deepcopy(old['value']), old['observed_at'], True
         refresh = _quote_refreshes.get(identity)
         if refresh is None:
-            if limits_enabled:
-                cap = positive_setting('RUNTIME_QUOTE_ENTRIES', 256)
-                for old_key, old in list(_quote_refreshes.items()):
-                    if len(_quote_refreshes) < cap:
-                        break
-                    if not old['users'] and not old['lock'].locked():
-                        _quote_refreshes.pop(old_key)
-                        old['lease'].release()
-                if len(_quote_refreshes) >= cap:
-                    raise CapacityBusy('quotes', 'quote_entries')
             refresh = _quote_refreshes[identity] = dict(lock=threading.Lock(), users=0,
                                                        used_at=time.monotonic(), lease=reserve_bytes('coordinator', 4096))
         refresh['users'] += 1
@@ -243,14 +221,12 @@ def observe(key, source, loader, ttl):
             if old and time.monotonic() < old['expires_at']:
                 old['used_at'] = time.monotonic()
                 return copy.deepcopy(old['value']), old['observed_at'], True
-        cap = positive_setting('RUNTIME_QUOTE_BYTES', 8 * 1024 * 1024)
-        peak = positive_setting('RUNTIME_QUOTE_REFRESH_BYTES', cap * 2)
+        cap = 8 * 1024 * 1024
+        peak = cap * 2
         with stage(source), reserve_bytes('parse', peak):
             value = loader()
             remaining(source + '_response')
-            size = resident_size(value, cap if limits_enabled else None)
-            if limits_enabled and (size * 2 > cap or size * 2 > peak):
-                raise CapacityBusy('quotes', 'quote_bytes')
+            size = resident_size(value, None)
             lease = reserve_bytes('quotes', size * 2)
             try:
                 cached = copy.deepcopy(value)
@@ -262,14 +238,8 @@ def observe(key, source, loader, ttl):
             old = _quotes.pop(identity, None)
             if old:
                 old['lease'].release()
-            while limits_enabled and _quotes and sum(item['lease'].amount for item in _quotes.values()) + lease.amount > cap:
-                _, item = _quotes.popitem(last=False)
-                item['lease'].release()
             _quotes[identity] = dict(value=cached, observed_at=observed_at,
                                      expires_at=time.monotonic() + ttl, used_at=time.monotonic(), lease=lease)
-            while limits_enabled and len(_quotes) > positive_setting('RUNTIME_QUOTE_ENTRIES', 256):
-                _, item = _quotes.popitem(last=False)
-                item['lease'].release()
         return value, observed_at, False
     finally:
         if acquired:

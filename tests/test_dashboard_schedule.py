@@ -56,7 +56,7 @@ def test_dca_midnight_catchup_does_not_claim_a_slot_before_next_target():
     assert schedule_preview(cfg, at('2026-09-19T23:59:20'))['next_run'] == '09-20 08:30'
 
 
-def test_weekly_dispatch_deduplication_uses_iso_year(monkeypatch):
+def test_weekly_dispatch_deduplication_uses_iso_year(monkeypatch, pg):
     from backend.app.core import scheduler
     cfg = {'dca_freq': 'weekly', 'dca_weekday': 3, 'dca_time': '10:00'}
     scheduler._insert_scheduler_run('dca-iso', 'agent', '2026-12-31 10:00:00', status='FINISHED')

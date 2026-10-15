@@ -8,12 +8,12 @@ from backend.agent.tool_registry import get_trade_tools_for_mode, run_trade_tool
 
 
 @pytest.fixture
-def mock_order(tmp_path, monkeypatch):
+def mock_order(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'test.db'))
-    database.init_db()
+    pass  # PostgreSQL migrations are installed by financial_pg.
     database.get_mock_account('cfg', 'ETH/USDT')
     with database.get_db_conn() as conn:
-        conn.execute("INSERT INTO mock_orders(order_id,config_id,symbol,side,price,amount,stop_loss,take_profit,status,is_filled,expire_at) VALUES('o','cfg','ETH/USDT','BUY',100,1,90,120,'OPEN',0,?)", (time.time() + 3600,))
+        conn.execute("INSERT INTO mock_orders(order_id,config_id,symbol,side,price,amount,stop_loss,take_profit,status,is_filled,expire_at) VALUES('o','cfg','ETH/USDT','BUY',100,1,90,120,'OPEN',0,%s)", (time.time() + 3600,))
         conn.commit()
 
 
@@ -52,7 +52,7 @@ def test_invalid_amend_leaves_order_unchanged(mock_order, kwargs):
 @pytest.mark.parametrize('field,value', [('is_filled', 1), ('expire_at', 1), ('amount', 1000)])
 def test_filled_expired_or_unaffordable_cannot_amend(mock_order, field, value):
     with database.get_db_conn() as conn:
-        conn.execute(f'UPDATE mock_orders SET {field}=?', (value,))
+        conn.execute(f'UPDATE mock_orders SET {field}=%s', (value,))
         conn.commit()
     before = read_order()
     assert '❌' in amend(entry_price=101)
@@ -78,7 +78,7 @@ def test_registered_tool_descriptions_carry_execution_contracts():
         assert 'LONG' in text and 'SHORT' in text
         assert '不是原子事务' in text
         assert '不能取消保护绕过校验' in text
-    assert 'pending不可重复提交' in real_tools['update_entry_order_real'].description
+    assert 'pending由系统后台核验，不可重复提交或撤单重开' in real_tools['update_entry_order_real'].description
     assert '总标的币数量' in real_tools['update_entry_order_real'].description
     assert '整个仓位' in real_tools['update_position_protection_real'].description
 
@@ -89,3 +89,9 @@ def test_dispatch_validates_direction_and_nonfinite_prices(mock_order, monkeypat
     for args in ({'pos_side': 'BUY', 'entry_price': 100}, {'pos_side': 'LONG', 'entry_price': float('inf')}):
         with pytest.raises(ValueError):
             run_trade_tool('update_entry_order_strategy', {'order_id': 'o', 'reason': 'test', **args}, 'cfg', 'ETH/USDT')
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

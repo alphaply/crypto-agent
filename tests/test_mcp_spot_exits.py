@@ -137,10 +137,10 @@ class FakeSpotExchange:
 
 
 @pytest.fixture
-def spot(tmp_path, monkeypatch):
+def spot(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'exits.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     database.save_order_log('buy-1', 'BTC/USDT', 'MCP', 'buy', 100, 0, 0, 'owned buy',
                             trade_mode='SPOT_DCA', config_id='mcp:test', amount=10, status='FILLED')
     exchange = FakeSpotExchange()
@@ -496,3 +496,9 @@ def test_spot_exit_evidence_is_in_profile_lifecycle_and_owned_symbols(spot):
 def test_ambiguous_or_unexpected_financial_arguments_are_rejected(args):
     with pytest.raises(ValueError):
         exits.validate_arguments('create_spot_exit', args)
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

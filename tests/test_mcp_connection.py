@@ -21,11 +21,11 @@ CALLBACK = 'https://chatgpt.com/connector/oauth/test-callback'
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'oauth.db'))
     with database.get_db_conn() as conn:
         from backend.database_schema import initialize_schema
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         conn.commit()
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'connection-test-master')
     monkeypatch.setattr(security, 'authenticate_password', lambda password: password == 'test-password')
@@ -37,6 +37,8 @@ def client(tmp_path, monkeypatch):
             yield
 
     app = FastAPI(lifespan=lifespan)
+    from backend.mcp.discovery import DiscoveryHeadersMiddleware
+    app.add_middleware(DiscoveryHeadersMiddleware)
     install_mcp(app)
     with TestClient(app, base_url=ORIGIN) as test_client:
         yield test_client
@@ -164,3 +166,9 @@ def test_connection_diagnostics_explain_public_discovery_failure(monkeypatch, fa
         assert any('转发后端' in row['message'] for row in result['checks'])
     if failure == 'stale_cache':
         assert any('CDN' in row['message'] and row['status'] == 'error' for row in result['checks'])
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

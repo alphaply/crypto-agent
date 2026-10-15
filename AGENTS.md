@@ -1,5 +1,12 @@
 # Repository Guidelines
 
+## Requirement Scope and Confirmation
+- 只实现用户明确要求的行为。
+- 不得自行增加业务需求、替代数据源、跨交易所查询、自动降级或默认值填充。
+- 未明确的业务行为先提出问题，不得直接写入 specs、design 或 tasks 当作已确认需求。
+- 必要的内部实现细节可以自行决定，但会改变查询范围、结果含义或错误处理方式的选择必须先确认。
+- 建议与已确认需求分开列出。
+
 ## Project Structure & Module Organization
 Core trading logic lives under `backend/`.
 

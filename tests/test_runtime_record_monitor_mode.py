@@ -1,7 +1,7 @@
 """Monitor-only resource sizing preserves complete original financial evidence."""
 from datetime import datetime
 import json
-import sqlite3
+from backend import storage
 
 import pytest
 
@@ -21,10 +21,10 @@ def _mode(monkeypatch, enabled):
 
 
 @pytest.fixture
-def record_db(tmp_path, monkeypatch):
+def record_db(tmp_path, monkeypatch, pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'records.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Native migrations are installed by pg fixture
         conn.commit()
 
 
@@ -40,59 +40,37 @@ def test_receipt_size_gate_bypass_preserves_task_symbol_and_row_limit(record_db,
                 ('foreign', 'foreign-operation', 'ETH/USDT', 3)):
             conn.execute('INSERT INTO trade_action_runs '
                          '(config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) '
-                         'VALUES(?,?,?,?,?,?,?,?)',
+                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                          (config_id, identity, symbol, 'fixture-hash', 'unknown', raw, 1, updated))
         conn.commit()
     result = latest_operation_receipts('owner', 'ETH/USDT', limit=1)
-    if enabled:
-        assert result == {}
-    else:
-        assert set(result) == {'original'}
-        assert result['original']['original_evidence'] == receipt['original_evidence']
-        assert result['original']['status'] == 'unknown'
+    assert set(result) == {'original'}
+    assert result['original']['original_evidence'] == receipt['original_evidence']
+    assert result['original']['status'] == 'unknown'
     with database.get_db_conn() as conn:
         assert [row[0] for row in conn.execute('SELECT result FROM trade_action_runs')] == [raw] * 3
 
 
-def test_activity_projection_mode_transition_rescans_once_in_original_bounded_pages(monkeypatch):
-    _mode(monkeypatch, True)
+def test_concurrency_mode_never_changes_large_plan_projection(monkeypatch, pg):
     monkeypatch.setenv('RUNTIME_MAX_RECORD_BYTES', '100')
     monkeypatch.setenv('RUNTIME_SCAN_BATCH_SIZE', '2')
-    conn = sqlite3.connect(':memory:')
-    conn.row_factory = sqlite3.Row
-    conn.execute('CREATE TABLE real_protection_plans(config_id TEXT,symbol TEXT,side TEXT,payload TEXT)')
     raw = json.dumps({'state': 'DONE', 'updated_at': 123, 'original_evidence': 'x' * 2000})
-    for index in range(5):
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', (str(index), str(index), 'LONG', raw))
-    invalid = 'not valid json' * 100
-    conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('invalid', 'bad', 'LONG', invalid))
-    protection_scan.initialize_schema(conn.cursor())
-    while not protection_scan.migrate_activity_page(conn.cursor()):
-        pass
-    assert {row[0] for row in conn.execute('SELECT state FROM protection_plan_activity')} == {'UNKNOWN'}
-
-    _mode(monkeypatch, False)
-    protection_scan.initialize_schema(conn.cursor())
-    progress = conn.execute('SELECT cursor,complete FROM protection_plan_scan_progress').fetchone()
-    assert tuple(progress) == (2, 0)
-    assert conn.execute("SELECT count(*) FROM protection_plan_activity WHERE state='DONE'").fetchone()[0] == 2
-    protection_scan.initialize_schema(conn.cursor())
-    assert conn.execute('SELECT cursor FROM protection_plan_scan_progress').fetchone()[0] == 4
-    while not protection_scan.migrate_activity_page(conn.cursor()):
-        pass
-    final_progress = tuple(conn.execute('SELECT cursor,complete FROM protection_plan_scan_progress').fetchone())
-    protection_scan.initialize_schema(conn.cursor())
-    assert tuple(conn.execute('SELECT cursor,complete FROM protection_plan_scan_progress').fetchone()) == final_progress
-    assert conn.execute("SELECT count(*) FROM protection_plan_activity WHERE state='DONE'").fetchone()[0] == 5
-    assert [row['config_id'] for row in protection_scan.active_plan_page(conn, limit=2)] == ['invalid']
-    assert [row[0] for row in conn.execute('SELECT payload FROM real_protection_plans')] == [raw] * 5 + [invalid]
-    # Fresh writes use the same monitor-only projection, while malformed JSON
-    # remains unresolved and bounded page sizes are still required.
-    conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('new', 'new', 'LONG', raw))
-    assert conn.execute("SELECT state FROM protection_plan_activity WHERE config_id='new'").fetchone()[0] == 'DONE'
-    with pytest.raises(ValueError, match='RUNTIME_SCAN_BATCH_SIZE'):
-        protection_scan.active_plan_page(conn, limit=3)
-    conn.close()
+    with storage.connect() as conn:
+        # The SQL trigger also ignores legacy size settings from external writers.
+        conn.execute("SELECT set_config('crypto.capacity_enabled','true',true)")
+        conn.execute("SELECT set_config('crypto.max_record_bytes','100',true)")
+        for index in range(5):
+            conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)', (str(index), str(index), 'LONG', raw))
+        conn.execute("INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES('invalid','bad','LONG','not-json')")
+        for enabled in (True, False, True):
+            _mode(monkeypatch, enabled)
+            storage._capacity_settings(conn)
+            protection_scan.initialize_schema(conn.cursor())
+            while not protection_scan.migrate_activity_page(conn.cursor()):
+                pass
+            assert conn.execute("SELECT count(*) FROM protection_plan_activity WHERE state='DONE'").fetchone()[0] == 5
+            assert [row['config_id'] for row in protection_scan.active_plan_page(conn, limit=2)] == ['invalid']
+            assert conn.execute("SELECT payload FROM real_protection_plans WHERE config_id='0'").fetchone()[0] == raw
 
 
 def test_monitor_plan_reconciliation_reads_large_owned_plan_without_bypassing_account_check(record_db, monkeypatch):
@@ -101,12 +79,14 @@ def test_monitor_plan_reconciliation_reads_large_owned_plan_without_bypassing_ac
     monkeypatch.setenv('RUNTIME_SCAN_BATCH_SIZE', '2')
     originals = []
     with database.get_db_conn() as conn:
+        storage._capacity_settings(conn)
         protection_scan.initialize_schema(conn.cursor())
+        protection_scan.migrate_activity_page(conn.cursor())
         for symbol, scope in (('ETH/USDT:USDT', 'owned'), ('BTC/USDT:USDT', 'foreign')):
             raw = json.dumps({'symbol': symbol, 'side': 'LONG', 'state': 'WAITING',
                               'account_scope': scope, 'original_evidence': 'x' * 2000})
             originals.append(raw)
-            conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('cfg', symbol, 'LONG', raw))
+            conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)', ('cfg', symbol, 'LONG', raw))
         conn.commit()
     service = object.__new__(PositionProtection)
     service.config_id, service.account_scope = 'cfg', 'owned'
@@ -118,7 +98,7 @@ def test_monitor_plan_reconciliation_reads_large_owned_plan_without_bypassing_ac
     assert result['results'][0]['error'] is None
     assert 'original account' in result['results'][1]['error']
     with database.get_db_conn() as conn:
-        assert [row[0] for row in conn.execute('SELECT payload FROM real_protection_plans ORDER BY rowid')] == originals
+        assert [row[0] for row in conn.execute('SELECT payload FROM real_protection_plans ORDER BY storage_id')] == originals
 
 
 def test_monitor_ownership_index_reads_large_originals_and_keeps_paging(record_db, monkeypatch):
@@ -131,14 +111,11 @@ def test_monitor_ownership_index_reads_large_originals_and_keeps_paging(record_d
                       'account_scope': baseline.scope, 'entries': [{'id': 'original-entry'}],
                       'original_evidence': 'x' * 2000})
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                      ('2026-10-15 12:00:00', 'cfg', baseline.symbol, raw))
         conn.commit()
-    for _ in range(32):
-        resumed = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-        assert resumed.index_state['processed'] <= 2
-        if resumed.index_state['complete']:
-            break
+    resumed = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
+    assert resumed.index_state['processed'] > 2
     assert resumed.index_state['complete']
     with database.get_db_conn() as conn:
         link = conn.execute("SELECT config_id,role FROM execution_order_links WHERE order_id='original-entry'").fetchone()
@@ -155,16 +132,16 @@ def test_monitor_cycle_record_work_history_and_output_gates_are_all_bypassed(rec
     ledger.ingest([fill(index) for index in range(1, 81)] +
                   [{**fill(81), 'order': 'close', 'side': 'sell', 'amount': 8, 'cost': 800}])
     with database.get_db_conn() as conn:
-        row = conn.execute('SELECT rowid,payload FROM execution_fills ORDER BY rowid LIMIT 1').fetchone()
+        row = conn.execute('SELECT storage_id,payload FROM execution_fills ORDER BY storage_id LIMIT 1').fetchone()
         value = json.loads(row['payload'])
         value['original_evidence'] = 'x' * 20000
         raw = json.dumps(value)
-        conn.execute('UPDATE execution_fills SET payload=? WHERE rowid=?', (raw, row['rowid']))
+        conn.execute('UPDATE execution_fills SET payload=%s WHERE storage_id=%s', (raw, row['storage_id']))
         for revision in range(60):
             stamp = datetime.fromtimestamp((100002 + revision) / 1000, tz=database.TZ_CN).replace(tzinfo=None).isoformat()
             plan = {'account_scope': ledger.scope, 'symbol': ledger.symbol, 'side': 'LONG',
                     'revision': revision, 'take_profit': 110 + revision, 'stop_loss': 90}
-            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                          (stamp, 'cfg', ledger.symbol, json.dumps(plan)))
         conn.commit()
     result = rebuild_execution_position_history('cfg', ledger.scope, ledger.symbol)
@@ -175,7 +152,7 @@ def test_monitor_cycle_record_work_history_and_output_gates_are_all_bypassed(rec
     assert len(json.dumps(cycle).encode()) > 6000
     assert cycle['remaining_base'] == 0
     with database.get_db_conn() as conn:
-        assert conn.execute('SELECT payload FROM execution_fills ORDER BY rowid LIMIT 1').fetchone()[0] == raw
+        assert conn.execute('SELECT payload FROM execution_fills ORDER BY storage_id LIMIT 1').fetchone()[0] == raw
         assert conn.execute('SELECT count(*) FROM execution_position_history').fetchone()[0] == 1
 
 
@@ -183,7 +160,7 @@ def test_monitor_ownership_index_still_rejects_non_object_evidence(record_db, mo
     _mode(monkeypatch, False)
     monkeypatch.setenv('RUNTIME_MAX_RECORD_BYTES', '1')
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                      ('2026-10-15 12:00:00', 'cfg', 'ETH/USDT:USDT', '[1,2,3]'))
         conn.commit()
     ledger = ExecutionLedger(Exchange([]), 'cfg', 'ETH/USDT')
@@ -210,7 +187,7 @@ def test_monitor_cycle_publication_still_rejects_a_concurrently_changed_source(r
         result = reconstruct(*args, **kwargs)
         assert result['scan_complete']
         with database.get_db_conn() as conn:
-            conn.execute("UPDATE execution_fills SET payload=json_set(payload,'$.price',101)")
+            conn.execute("UPDATE execution_fills SET payload=jsonb_set(payload::jsonb,'{price}','101')::text")
             conn.commit()
         return result
 

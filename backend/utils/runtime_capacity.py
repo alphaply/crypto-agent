@@ -26,7 +26,7 @@ current_capacity = contextvars.ContextVar('runtime_capacity_lease', default=None
 
 
 def capacity_limits_enabled() -> bool:
-    """Opt-in observation mode leaves lifecycle accounting active."""
+    """Concurrency admission policy; memory is always observation-only."""
     raw = os.getenv('RUNTIME_CAPACITY_ENABLED', 'true').strip().lower()
     if raw not in {'true', 'false', '1', '0'}:
         raise ValueError('RUNTIME_CAPACITY_ENABLED must be true or false')
@@ -164,12 +164,12 @@ class CapacityManager:
                    reserved=positive_setting('RUNTIME_CAPACITY_RESERVED_WORKERS', 2, minimum=0),
                    queue_limit=positive_setting('RUNTIME_CAPACITY_QUEUE_LIMIT', 16, minimum=0),
                    wait_seconds=positive_setting('RUNTIME_CAPACITY_QUEUE_SECONDS', 2.0, minimum=0),
-                   role_limits=limits, byte_limit=positive_setting('RUNTIME_CAPACITY_BYTES', 512 * 1024 * 1024),
+                   role_limits=limits,
                    limits_enabled=capacity_limits_enabled())
 
     def _can_start(self, role, critical):
         return not self.limits_enabled or (sum(self.active.values()) < self.total and self.active[role] < self.role_limits[role]
-                and (critical or not self.pressure and self.ordinary < self.total - self.reserved))
+                and (critical or self.ordinary < self.total - self.reserved))
 
     def enqueue(self, role, *, critical=False):
         if role not in self.role_limits:
@@ -224,7 +224,7 @@ class CapacityManager:
                     left = deadline - time.monotonic()
                     if left <= 0:
                         self.rejected[role] += 1
-                        raise CapacityBusy(role, 'pressure' if self.pressure and not critical else 'queue_timeout')
+                        raise CapacityBusy(role, 'queue_timeout')
                     self.condition.wait(left)
         finally:
             ticket.cancel()
@@ -232,13 +232,8 @@ class CapacityManager:
     def reserve_bytes(self, kind, amount, *, timeout=0):
         if kind not in BYTE_KINDS or type(amount) is not int or amount < 0:
             raise ValueError('Invalid byte commitment kind or amount')
-        deadline = time.monotonic() + max(0, timeout)
+        # Byte commitments are observations, never admission gates.
         with self.condition:
-            while self.limits_enabled and sum(self.bytes.values()) + amount > self.byte_limit:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise CapacityBusy(kind, 'byte_budget')
-                self.condition.wait(left)
             self.bytes[kind] += amount
             self.peak_bytes = max(self.peak_bytes, sum(self.bytes.values()))
             return ByteLease(self, kind, amount)
@@ -253,7 +248,7 @@ class CapacityManager:
         with self.condition:
             return {'settings': {'total_workers': self.total, 'reserved_workers': self.reserved,
                                  'queue_limit': self.queue_limit, 'queue_seconds': self.wait_seconds,
-                                 'byte_limit': self.byte_limit, 'role_limits': dict(self.role_limits),
+                                 'byte_limit': None, 'memory_limits_enabled': False, 'role_limits': dict(self.role_limits),
                                  'limits_enabled': self.limits_enabled,
                                  'mode': 'enforced' if self.limits_enabled else 'observe_only'},
                     'active': sum(self.active.values()), 'running': sum(self.running.values()),

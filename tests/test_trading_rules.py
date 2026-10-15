@@ -13,11 +13,7 @@ from backend.utils.trade_operations import current_operation_id
 
 
 @pytest.fixture
-def local_rules(tmp_path, monkeypatch):
-    monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'rules.sqlite'))
-    with database.get_db_conn() as conn:
-        rules.initialize_trading_rules_schema(conn.cursor())
-        conn.commit()
+def local_rules(pg, monkeypatch):
     monkeypatch.setattr(service.config, 'get_config_by_id', lambda cid: {'config_id': cid} if cid in {'cfg', 'other'} else None)
 
 

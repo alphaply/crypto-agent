@@ -90,8 +90,6 @@ def bounded(function=None, *, critical=False):
 
 def decode(value, *, identity='ledger'):
     size = len(value.encode('utf-8')) if isinstance(value, str) else len(value)
-    if size > max_payload():
-        raise PaperPayloadLimit(f'paper_payload_limit: {identity} exceeds the complete ledger read budget; no financial mutation started')
     stack = _payload_lifetime.get()
     if isinstance(value, _ReservedBlob):
         return json.loads(value)
@@ -103,25 +101,24 @@ def decode(value, *, identity='ledger'):
 
 
 def blob_size(conn, table, column, rowid):
-    with conn.blobopen(table, column, int(rowid), readonly=True) as blob:
-        return len(blob)
+    from backend.utils.sqlite_blob import blob_size as byte_size
+    return byte_size(conn, table, column, rowid)
 
 
 def read_blob(conn, table, column, rowid, *, identity='ledger'):
-    with conn.blobopen(table, column, int(rowid), readonly=True) as blob:
-        if len(blob) > max_payload():
-            raise PaperPayloadLimit(f'paper_payload_limit: {identity} exceeds the complete ledger read budget; raw record retained')
-        stack = _payload_lifetime.get()
-        if stack is not None:
-            stack.enter_context(_reserve(len(blob)))
-            return _ReservedBlob(blob.read())
-        with _reserve(len(blob)):
-            return blob.read()
+    from backend.utils.sqlite_blob import blob_slice
+    size = blob_size(conn, table, column, rowid)
+    stack = _payload_lifetime.get()
+    if stack is not None:
+        stack.enter_context(_reserve(size))
+        return _ReservedBlob(blob_slice(conn, table, column, rowid, length=size, expected_size=size))
+    with _reserve(size):
+        return blob_slice(conn, table, column, rowid, length=size, expected_size=size)
 
 
 def one(conn, table, column, where, params, *, identity='ledger'):
     """Callers supply fixed SQL fragments; inspect size before selecting the blob."""
-    row = conn.execute(f'SELECT rowid FROM {table} WHERE {where}', params).fetchone()
+    row = conn.execute(f'SELECT storage_id AS rowid FROM {table} WHERE {where}', params).fetchone()
     if row is None:
         return None
     return decode(read_blob(conn, table, column, row[0], identity=identity), identity=identity)
@@ -129,33 +126,31 @@ def one(conn, table, column, where, params, *, identity='ledger'):
 
 def payload_page(conn, table, where, params, *, cursor=0, count=None, column='payload', order_by=None, ceiling=None):
     count = min(count or batch_size(), history_limit())
-    condition, arguments, order = 'rowid>?', (*params, cursor), 'rowid'
+    condition, arguments, order = 'storage_id>%s', (*params, cursor), 'storage_id'
     if order_by == ('namespace', 'user_id'):
         order = 'namespace,user_id'
         condition, arguments = '1=1', tuple(params)
         if cursor:
-            previous = conn.execute(f'SELECT namespace,user_id FROM {table} WHERE rowid=?', (cursor,)).fetchone()
+            previous = conn.execute(f'SELECT namespace,user_id FROM {table} WHERE storage_id=%s', (cursor,)).fetchone()
             if previous is None:
                 raise ValueError('Paper page cursor no longer exists')
-            condition, arguments = '(namespace,user_id)>(?,?)', (*params, previous[0], previous[1])
+            condition, arguments = '(namespace,user_id)>(%s,%s)', (*params, previous[0], previous[1])
     elif order_by is not None:
         raise ValueError('Unsupported paper page ordering')
     if ceiling is not None:
-        condition += ' AND rowid<=?'
+        condition += ' AND storage_id<=%s'
         arguments = (*arguments, ceiling)
-    records = conn.execute(f'SELECT rowid AS scan_id '
-                           f'FROM {table} WHERE {where} AND {condition} ORDER BY {order} LIMIT ?',
+    records = conn.execute(f'SELECT storage_id AS scan_id '
+                           f'FROM {table} WHERE {where} AND {condition} ORDER BY {order} LIMIT %s',
                            (*arguments, count + 1)).fetchall()
     more = len(records) > count
     selected, skipped = [], []
     for record in records[:count]:
         row_id = record['scan_id']
-        if blob_size(conn, table, column, row_id) > max_payload():
-            skipped.append({'scan_id': row_id, 'reason_code': 'paper_payload_limit'})
-            continue
         payload = read_blob(conn, table, column, row_id, identity=f'{table}:{row_id}')
-        fields = [row['name'] for row in conn.execute(f'PRAGMA table_info({table})') if row['name'] != column]
-        row = conn.execute(f'SELECT {",".join(fields)},rowid AS scan_id FROM {table} WHERE rowid=?', (row_id,)).fetchone()
+        from backend.storage import table_columns
+        fields = [row['name'] for row in table_columns(conn, table) if row['name'] not in {column, 'storage_id'}]
+        row = conn.execute(f'SELECT {",".join(fields)},storage_id AS scan_id FROM {table} WHERE storage_id=%s', (row_id,)).fetchone()
         selected.append({**dict(row), column: decode(payload, identity=f'{table}:{row_id}')})
     next_cursor = records[min(len(records), count) - 1]['scan_id'] if records else cursor
     return selected, {'next_cursor': next_cursor, 'has_more': more, 'scan_complete': not more,
@@ -165,20 +160,20 @@ def payload_page(conn, table, where, params, *, cursor=0, count=None, column='pa
 def receipt_revision(conn, namespace, user_id, operation_id, payload=None):
     """Preserve immutable observations; never replace the original receipt row."""
     import time
-    prior = conn.execute('SELECT rowid,revision FROM paper_receipt_revisions WHERE namespace=? AND user_id=? AND operation_id=? ORDER BY revision DESC LIMIT 1',
+    from backend.storage import lock_scope
+    lock_scope(conn, 'paper-receipt', namespace, user_id, operation_id)
+    prior = conn.execute('SELECT storage_id AS rowid,revision FROM paper_receipt_revisions WHERE namespace=%s AND user_id=%s AND operation_id=%s ORDER BY revision DESC LIMIT 1',
                          (namespace, user_id, operation_id)).fetchone()
     if payload is None:
-        row = conn.execute('SELECT rowid FROM paper_batches WHERE namespace=? AND user_id=? AND operation_id=?',
+        row = conn.execute('SELECT storage_id AS rowid FROM paper_batches WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                                (namespace, user_id, operation_id)).fetchone()
         if row is None:
             return
         payload = read_blob(conn, 'paper_batches', 'payload', row[0])
     encoded = payload.decode('utf-8') if isinstance(payload, bytes) else json.dumps(payload, sort_keys=True, separators=(',', ':'), allow_nan=False) if not isinstance(payload, str) else payload
-    if len(encoded.encode('utf-8')) > max_payload():
-        raise PaperPayloadLimit('paper_payload_limit: complete receipt revision exceeds the read budget')
     if prior is not None and read_blob(conn, 'paper_receipt_revisions', 'payload', prior['rowid']).decode('utf-8') == encoded:
         return
-    conn.execute('INSERT INTO paper_receipt_revisions VALUES(?,?,?,?,?,?)',
+    conn.execute('INSERT INTO paper_receipt_revisions(namespace,user_id,operation_id,revision,observed_at,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                  (namespace, user_id, operation_id, prior['revision'] + 1 if prior else 0, time.time(), encoded))
 
 
@@ -192,7 +187,7 @@ def observe_receipt(conn, namespace, user_id, operation_id, original):
         for order in candidates:
             if not isinstance(order, dict) or not order.get('order_id'):
                 continue
-            found = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?',
+            found = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s',
                         (namespace, user_id, order['order_id']), identity='original receipt order')
             current.append(found or order)
             active |= ((found or order).get('state') == 'open' and order.get('exchange') == 'binance')
@@ -217,11 +212,11 @@ def observe_receipt(conn, namespace, user_id, operation_id, original):
         elif latest.get(field) and all(order.get('state') in {'cancelled', 'rejected'} for order in latest[field]):
             rejected = any(order['state'] == 'rejected' for order in latest[field])
             latest.update(status='failed' if rejected else 'completed', order_status='rejected' if rejected else 'cancelled')
-    if not conn.execute('SELECT 1 FROM paper_receipt_revisions WHERE namespace=? AND user_id=? AND operation_id=? LIMIT 1',
+    if not conn.execute('SELECT 1 FROM paper_receipt_revisions WHERE namespace=%s AND user_id=%s AND operation_id=%s LIMIT 1',
                         (namespace, user_id, operation_id)).fetchone():
         receipt_revision(conn, namespace, user_id, operation_id, original)
     receipt_revision(conn, namespace, user_id, operation_id, latest)
-    conn.execute('INSERT INTO paper_receipt_watch VALUES(?,?,?,?) ON CONFLICT(namespace,user_id,operation_id) DO UPDATE SET active=excluded.active',
+    conn.execute('INSERT INTO paper_receipt_watch(namespace,user_id,operation_id,active) VALUES(%s,%s,%s,%s) ON CONFLICT(namespace,user_id,operation_id) DO UPDATE SET active=excluded.active',
                  (namespace, user_id, operation_id, int(active)))
     return latest
 
@@ -239,18 +234,18 @@ def recover_receipts():
         for row in new:
             result = row['result']
             if any(result.get(name) for name in ('order', 'orders', 'protection_orders')):
-                conn.execute('INSERT INTO paper_receipt_watch VALUES(?,?,?,1) ON CONFLICT(namespace,user_id,operation_id) DO NOTHING',
+                conn.execute('INSERT INTO paper_receipt_watch(namespace,user_id,operation_id,active) VALUES(%s,%s,%s,1) ON CONFLICT(namespace,user_id,operation_id) DO NOTHING',
                              (row['namespace'], row['user_id'], row['operation_id']))
-        conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
-                     ('receipt-index', progress['next_cursor'], '{}'))
+        conn.execute('INSERT INTO paper_scan_progress(worker,cursor,payload) VALUES(%s,%s,%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
+                     ('receipt-index', progress['next_cursor'] if progress['has_more'] else 0, '{}'))
         saved = conn.execute("SELECT cursor FROM paper_scan_progress WHERE worker='receipt-watch'").fetchone()
         cursor = saved[0] if saved else 0
-        refs = conn.execute('SELECT rowid,namespace,user_id,operation_id FROM paper_receipt_watch WHERE active=1 AND rowid>? ORDER BY rowid LIMIT ?',
+        refs = conn.execute('SELECT storage_id AS rowid,namespace,user_id,operation_id FROM paper_receipt_watch WHERE active=1 AND storage_id>%s ORDER BY storage_id LIMIT %s',
                             (cursor, count + 1)).fetchall()
         refreshed, skipped, last = 0, list(progress['skipped_records']), cursor
         for ref in refs[:count]:
             try:
-                original = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+                original = one(conn, 'paper_operations', 'result', 'namespace=%s AND user_id=%s AND operation_id=%s',
                                (ref['namespace'], ref['user_id'], ref['operation_id']), identity='watched original paper receipt')
                 if original is not None:
                     observe_receipt(conn, ref['namespace'], ref['user_id'], ref['operation_id'], original)
@@ -262,7 +257,7 @@ def recover_receipts():
             except CapacityBusy:
                 break
         more = len(refs) > count or last != (refs[-1]['rowid'] if refs else cursor)
-        conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
+        conn.execute('INSERT INTO paper_scan_progress(worker,cursor,payload) VALUES(%s,%s,%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
                      ('receipt-watch', last if more else 0, '{}'))
         conn.commit()
     return {'refreshed': refreshed, 'skipped_records': skipped, 'scan_complete': not more and not progress['has_more']}
@@ -276,14 +271,14 @@ def _chunk(conn, table, column, where, parameters, *, token, offset, length, enc
 def _read_chunk(conn, table, column, where, parameters, *, token, offset, length, encoding='base64-utf8'):
     if encoding not in {'base64-utf8', 'text'} or encoding == 'text' and length > 2048:
         raise ValueError('encoding must be base64-utf8, or text with length 1–2048 characters')
-    row = conn.execute(f'SELECT rowid FROM {table} WHERE {where}', parameters).fetchone()
+    row = conn.execute(f'SELECT storage_id AS rowid FROM {table} WHERE {where}', parameters).fetchone()
     if row is None:
         raise ValueError('Paper record not found in this account')
     import codecs
-    with conn.blobopen(table, column, row[0], readonly=True) as blob:
-        size = len(blob)
-        blob.seek(min(offset, size))
-        data = blob.read(min(size - min(offset, size), length * 4 + 3 if encoding == 'text' else length))
+    from backend.utils.sqlite_blob import blob_slice
+    size = blob_size(conn, table, column, row[0])
+    data = blob_slice(conn, table, column, row[0], offset=min(offset, size),
+                      length=min(size - min(offset, size), length * 4 + 3 if encoding == 'text' else length), expected_size=size)
     if encoding == 'text':
         try:
             value = codecs.getincrementaldecoder('utf-8')().decode(data, final=offset + len(data) >= size)[:length]
@@ -306,21 +301,21 @@ def raw_audit_chunk(conn, namespace, user_id, kind, record_id=None, *, offset=0,
     mapping = {'account': ('paper_accounts', 'user_id'), 'order': ('paper_orders', 'order_id'), 'event': ('paper_events', 'id')}
     if kind not in mapping:
         raise ValueError('Unsupported original ledger record')
-    if not conn.in_transaction:
-        conn.execute('BEGIN')
+    if conn.info.transaction_status == 0:
+        conn.execute('BEGIN ISOLATION LEVEL REPEATABLE READ')
     table, identifier = mapping[kind]
     record_id = str(user_id if kind == 'account' else record_id)
-    where, params = f'namespace=? AND user_id=? AND {identifier}=?', (namespace, user_id, record_id)
-    row = conn.execute(f'SELECT rowid FROM {table} WHERE {where}', params).fetchone()
+    where, params = f'namespace=%s AND user_id=%s AND {identifier}=%s', (namespace, user_id, record_id)
+    row = conn.execute(f'SELECT storage_id AS rowid FROM {table} WHERE {where}', params).fetchone()
     if row is None:
         raise ValueError('Paper record not found in this account')
-    revision = conn.execute('SELECT revision FROM paper_raw_versions WHERE namespace=? AND user_id=? AND kind=? AND record_id=?',
+    revision = conn.execute('SELECT revision FROM paper_raw_versions WHERE namespace=%s AND user_id=%s AND kind=%s AND record_id=%s',
                             (namespace, user_id, kind, record_id)).fetchone()
     token = f'{kind}:{row[0]}:{revision[0] if revision else 0}'
     if version is not None and version != token:
         raise ValueError('audit_version_changed: restart this original ledger read')
     time_column = 'updated_at' if kind == 'order' else 'timestamp' if kind == 'event' else None
-    observed = conn.execute(f'SELECT {time_column} FROM {table} WHERE rowid=?', (row[0],)).fetchone()[0] if time_column else None
+    observed = conn.execute(f'SELECT {time_column} FROM {table} WHERE storage_id=%s', (row[0],)).fetchone()[0] if time_column else None
     return {**_chunk(conn, table, 'payload', where, params, token=token, offset=offset, length=length, encoding=encoding),
             'record_type': kind, 'record_id': record_id, 'view': 'original_ledger', 'observed_at': observed,
             'evidence_time_status': 'recorded' if observed is not None else 'unavailable'}
@@ -331,48 +326,48 @@ def audit_chunk(conn, namespace, user_id, operation_id, *, offset=0, length=1638
         raise ValueError('Invalid bounded audit page')
     if view not in {'original', 'latest'}:
         raise ValueError('view must be original or latest')
-    if not conn.in_transaction:
-        conn.execute('BEGIN')
+    if conn.info.transaction_status == 0:
+        conn.execute('BEGIN ISOLATION LEVEL REPEATABLE READ')
     if version is not None and version.startswith('receipt:'):
         revision = version.removeprefix('receipt:')
         if not revision.isdigit():
             raise ValueError('Invalid receipt revision')
-        observed = conn.execute('SELECT observed_at FROM paper_receipt_revisions WHERE namespace=? AND user_id=? AND operation_id=? AND revision=?',
+        observed = conn.execute('SELECT observed_at FROM paper_receipt_revisions WHERE namespace=%s AND user_id=%s AND operation_id=%s AND revision=%s',
                                 (namespace, user_id, operation_id, int(revision))).fetchone()
         return {**_chunk(conn, 'paper_receipt_revisions', 'payload',
-                        'namespace=? AND user_id=? AND operation_id=? AND revision=?',
+                        'namespace=%s AND user_id=%s AND operation_id=%s AND revision=%s',
                         (namespace, user_id, operation_id, int(revision)), token=version, offset=offset, length=length, encoding=encoding),
                 'operation_id': operation_id, 'view': view, 'observed_at': observed[0] if observed else None,
                 'evidence_time_status': 'recorded' if observed else 'unavailable'}
     # Child originals are immutable; parent observations have their own
     # immutable revision rows so later recovery cannot mix pages or erase ACKs.
-    if version is None and (view == 'latest' or not conn.execute('SELECT 1 FROM paper_operations WHERE namespace=? AND user_id=? AND operation_id=?',
+    if version is None and (view == 'latest' or not conn.execute('SELECT 1 FROM paper_operations WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                                                                (namespace, user_id, operation_id)).fetchone()):
         order = 'DESC' if view == 'latest' else 'ASC'
-        revision = conn.execute(f'SELECT revision FROM paper_receipt_revisions WHERE namespace=? AND user_id=? AND operation_id=? ORDER BY revision {order} LIMIT 1',
+        revision = conn.execute(f'SELECT revision FROM paper_receipt_revisions WHERE namespace=%s AND user_id=%s AND operation_id=%s ORDER BY revision {order} LIMIT 1',
                                 (namespace, user_id, operation_id)).fetchone()
         if revision:
             return audit_chunk(conn, namespace, user_id, operation_id, offset=offset, length=length,
                                version='receipt:' + str(revision[0]), view=view, encoding=encoding)
     for table, column in (('paper_operations', 'result'), ('paper_batches', 'payload')):
-        row = conn.execute(f'SELECT rowid,fingerprint '
-                           f'FROM {table} WHERE namespace=? AND user_id=? AND operation_id=?',
+        row = conn.execute(f'SELECT storage_id AS rowid,fingerprint '
+                           f'FROM {table} WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                            (namespace, user_id, operation_id)).fetchone()
         if row is None:
             continue
         # Original child receipts are immutable. A changing parent snapshot must
         # restart explicitly rather than mixing evidence versions across pages.
         updated = '' if table == 'paper_operations' else str(conn.execute(
-            'SELECT updated_at FROM paper_batches WHERE rowid=?', (row['rowid'],)).fetchone()[0])
+            'SELECT updated_at FROM paper_batches WHERE storage_id=%s', (row['rowid'],)).fetchone()[0])
         current_version = f'{table}:{row["rowid"]}:{row["fingerprint"]}:{updated}'
         if version is not None and version != current_version:
             raise ValueError('audit_version_changed: restart the original record detail read')
         observed = float(updated) if updated else None
         if table == 'paper_operations':
-            evidence = conn.execute('SELECT observed_at FROM paper_receipt_revisions WHERE namespace=? AND user_id=? AND operation_id=? ORDER BY revision LIMIT 1',
+            evidence = conn.execute('SELECT observed_at FROM paper_receipt_revisions WHERE namespace=%s AND user_id=%s AND operation_id=%s ORDER BY revision LIMIT 1',
                                     (namespace, user_id, operation_id)).fetchone()
             observed = evidence[0] if evidence else None
-        return {**_chunk(conn, table, column, 'rowid=?', (row['rowid'],), token=current_version, offset=offset, length=length, encoding=encoding),
+        return {**_chunk(conn, table, column, 'storage_id=%s', (row['rowid'],), token=current_version, offset=offset, length=length, encoding=encoding),
                 'operation_id': operation_id, 'view': view, 'observed_at': observed,
                 'evidence_time_status': 'recorded' if observed is not None else 'unavailable'}
     raise ValueError('Paper operation not found in this account')

@@ -18,10 +18,10 @@ from backend.utils.run_schedule import DcaSchedule, latest_dca_slot, preview_dca
 
 
 @pytest.fixture
-def isolated(tmp_path, monkeypatch):
+def isolated(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'hourly.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *_: 'verified fills')
 
 
@@ -65,7 +65,7 @@ def test_legacy_report_recovers_original_without_rewriting_history():
 
 def test_memory_per_run_four_hours_retry_and_idempotence(isolated, monkeypatch):
     with database.get_db_conn() as conn:
-        conn.executemany('INSERT INTO summaries(timestamp,symbol,config_id,strategy_logic) VALUES (?,?,?,?)', [
+        conn.cursor().executemany('INSERT INTO summaries(timestamp,symbol,config_id,strategy_logic) VALUES (%s,%s,%s,%s)', [
             ('2026-10-08 05:59:59', 'BTC/USDT', 'cfg', 'outside-window'),
             ('2026-10-08 06:00:00', 'BTC/USDT', 'cfg', 'boundary-evidence'),
             ('2026-10-08 10:00:00', 'BTC/USDT', 'cfg', 'current-evidence'),
@@ -227,3 +227,9 @@ def test_hourly_market_profile_preserves_warmup(tf, freq, visible):
     assert result['data_quality']['bars'] == 600
     assert len(result['recent_times']) == visible
     assert result['data_quality']['display_bars'] == visible
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

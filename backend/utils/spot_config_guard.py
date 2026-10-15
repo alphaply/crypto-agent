@@ -78,14 +78,14 @@ def assert_spot_config_change_allowed(previous: dict | None, updated: dict | Non
     from backend.utils.visible_management import retired_management_resources
     retired = retired_management_resources(config_id)
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         affected = set()
         if 'orders' in tables:
             fill_join = ('LEFT JOIN spot_order_fills f ON f.config_id=o.config_id AND f.symbol=o.symbol '
                          'AND f.order_id=o.order_id') if 'spot_order_fills' in tables else ''
             fill_columns = 'f.status AS verified_status,f.filled_qty AS verified_qty,f.filled_cost AS verified_cost' if fill_join else 'NULL AS verified_status,NULL AS verified_qty,NULL AS verified_cost'
             rows = conn.execute(f'''SELECT o.symbol,o.status,o.filled_amount,o.filled_cost,{fill_columns}
-                FROM orders o {fill_join} WHERE o.config_id=? AND o.trade_mode='SPOT_DCA'
+                FROM orders o {fill_join} WHERE o.config_id=%s AND o.trade_mode='SPOT_DCA'
                 AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
                 AND UPPER(o.side) IN ('BUY','BUY_LIMIT')''', (config_id,)).fetchall()
             for row in rows:
@@ -97,10 +97,10 @@ def assert_spot_config_change_allowed(previous: dict | None, updated: dict | Non
                     affected.add(row['symbol'])
         if 'spot_budget_reservations' in tables:
             rows = conn.execute('''SELECT symbol,order_id,status FROM spot_budget_reservations
-                WHERE config_id=? AND status<>'released' ''', (config_id,)).fetchall()
+                WHERE config_id=%s AND status<>'released' ''', (config_id,)).fetchall()
             for row in rows:
                 empty = conn.execute('''SELECT 1 FROM spot_order_fills
-                    WHERE config_id=? AND symbol=? AND order_id=?
+                    WHERE config_id=%s AND symbol=%s AND order_id=%s
                       AND UPPER(status) IN ('CANCELLED','CANCELED','EXPIRED','REJECTED')
                       AND COALESCE(filled_qty,0)=0 AND COALESCE(filled_cost,0)=0''',
                     (config_id, row['symbol'], row['order_id'])).fetchone() if 'spot_order_fills' in tables else None
@@ -108,7 +108,7 @@ def assert_spot_config_change_allowed(previous: dict | None, updated: dict | Non
                     affected.add(row['symbol'])
         if 'trade_action_runs' in tables:
             affected.update(row[0] for row in conn.execute('''SELECT symbol FROM trade_action_runs
-                WHERE config_id=? AND status IN ('running','unknown','pending')''', (config_id,)))
+                WHERE config_id=%s AND status IN ('running','unknown','pending')''', (config_id,)))
     if any(float(previous.get(key) or 0) != 0 for key in ('initial_qty', 'initial_cost', 'manual_avg_cost')):
         affected.add(previous.get('symbol'))
     # Confirmed release / accepted transfer already reconciled the physical

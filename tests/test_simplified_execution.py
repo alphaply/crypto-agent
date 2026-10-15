@@ -68,7 +68,7 @@ def test_discovery_shares_execution_lock(managed, monkeypatch):
     assert entered.is_set() and not errors
 
 
-def test_historical_rebuild_does_not_block_verified_ownership(index_db, monkeypatch):
+def test_historical_rebuild_does_not_block_verified_ownership(pg, index_db, monkeypatch):
     from backend.utils.execution_ledger import ExecutionLedger
     ledger = ExecutionLedger(Exchange(), 'cfg', 'ETH/USDT')
     ledger.index_state = {'complete': False, 'ownership_ready': True, 'phase': 'history'}

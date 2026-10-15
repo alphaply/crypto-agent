@@ -1,8 +1,9 @@
+from backend import storage
 """Exclusive authorization remains attached across config edits and imports."""
 from copy import deepcopy
 import hashlib
 import json
-import sqlite3
+from backend.storage import table_names
 from pathlib import Path
 import multiprocessing
 import os
@@ -38,14 +39,14 @@ ACCOUNT = {'profile_id': 'account', 'name': 'Offline', 'exchange': 'binance', 'm
 
 
 @pytest.fixture
-def lifecycle(tmp_path, monkeypatch):
+def lifecycle(tmp_path, monkeypatch, financial_pg):
     path = tmp_path / 'config-lifecycle.sqlite'
     monkeypatch.setattr(database, 'DB_NAME', str(path))
     monkeypatch.setattr(config_store, 'DB_NAME', path)
     monkeypatch.setattr(config_store, 'load_dotenv', lambda *a, **k: None)
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'config-lifecycle-test')
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         store.initialize_schema(conn)
         conn.commit()
     config_store.save_runtime_snapshot({'enable_scheduler': False}, [], exchange_profiles_payload=[ACCOUNT])
@@ -66,14 +67,15 @@ def save_tasks(agents):
 
 def pending(owner='owner', side='LONG', state='unresolved'):
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO position_management_actions VALUES(?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO position_management_actions (account_scope,symbol,side,owner,operation_id,state,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s)',
                      (SCOPE, SYMBOL, side, owner, 'original-submission', state, 0))
         conn.commit()
 
 
 def contents(path):
-    with sqlite3.connect(path) as conn:
-        return list(conn.iterdump())
+    with database.get_db_conn() as conn:
+        return {name: sorted((tuple(row) for row in conn.execute('SELECT * FROM ' + name)), key=repr)
+                for name in sorted(table_names(conn))}
 
 
 @pytest.mark.parametrize('state', ['running', 'unresolved'])
@@ -123,7 +125,7 @@ def test_active_inventory_without_action_stays_visible_until_retirement_guard(li
     client, runtime, db_path = lifecycle
     save_tasks([task()])
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('owner', SYMBOL, 'LONG', json.dumps({'account_scope': SCOPE, 'symbol': SYMBOL,
                                                           'side': 'LONG', 'state': 'ACTIVE'})))
         conn.commit()
@@ -191,9 +193,8 @@ def test_failed_crossowner_save_does_not_release_inactive_previous_claim(lifecyc
     assert contents(path) == before
 
 
-def test_configuration_headers_support_old_database_without_trade_tables():
-    conn = sqlite3.connect(':memory:')
-    conn.row_factory = sqlite3.Row
+def test_configuration_headers_support_empty_postgresql_baseline():
+    conn = storage.connect()
     snapshot = {'agents': [task()], 'exchange_profiles': [ACCOUNT]}
     synchronize_configuration(conn, snapshot)
     synchronize_configuration(conn, {**snapshot, 'agents': [task(enabled=False)]})
@@ -212,7 +213,7 @@ def test_alias_credentials_and_hedge_proof_use_same_exchange_scope(lifecycle):
         with pytest.raises(ValueError, match='overlapping'):
             synchronize_configuration(conn, snapshot)
         synchronize_configuration(conn, {**snapshot, 'agents': [task()]})
-        conn.execute("UPDATE position_management_scopes SET payload=?", (json.dumps({'hedged': True}),))
+        conn.execute('UPDATE position_management_scopes SET payload=%s', (json.dumps({'hedged': True}),))
         synchronize_configuration(conn, snapshot)
         assert conn.execute('SELECT COUNT(*) FROM position_management_scopes').fetchone()[0] == 2
 
@@ -318,3 +319,9 @@ def test_two_process_mcp_configuration_claims_commit_only_one_owner(lifecycle):
         rows = conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()
         assert len(rows) == 1
         assert conn.execute('SELECT owner FROM position_management_scopes').fetchone()[0] == 'mcp:' + rows[0][0]
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

@@ -1,4 +1,5 @@
 """Diagnose missing ownership; restore only a completely evidenced original cycle."""
+from backend.storage import lock_scope
 import json
 import time
 
@@ -13,10 +14,10 @@ def diagnose_cycle(service, symbol, side, current=None):
                  'restorable': False, 'symbol': symbol, 'side': side}
     with get_db_conn() as conn:
         all_current = conn.execute('SELECT config_id,payload FROM real_protection_plans').fetchall()
-        history = conn.execute('SELECT payload FROM trade_cycle_evidence WHERE config_id=?', (service.config_id,)).fetchall()
-        links = conn.execute('SELECT order_id,config_id FROM execution_order_links WHERE account_scope=? AND symbol=?',
+        history = conn.execute('SELECT payload FROM trade_cycle_evidence WHERE config_id=%s', (service.config_id,)).fetchall()
+        links = conn.execute('SELECT order_id,config_id FROM execution_order_links WHERE account_scope=%s AND symbol=%s',
                              (service.account_scope, symbol)).fetchall()
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()").fetchall()}
         active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
         mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
     has_active_registry = bool(active_agents or mcp_profiles)
@@ -103,8 +104,8 @@ def restore_cycle(service, symbol, side, current=None):
     candidate.pop('cleanup_fill_unseen', None)
     candidate.pop('read_errors', None)
     with get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        live = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side=?',
+        lock_scope(conn, 'protection-account', service.account_scope, symbol)
+        live = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s AND symbol=%s AND side=%s',
                             (service.config_id, symbol, side)).fetchone()
         live_plan = json.loads(live['payload']) if live else None
         if (bool(live_plan) != bool(current) or (live_plan and (
@@ -112,20 +113,19 @@ def restore_cycle(service, symbol, side, current=None):
                 or live_plan.get('record_version', 0) != current.get('record_version', 0)
                 or live_plan.get('account_scope') != service.account_scope))):
             raise RuntimeError('Position cycle changed before restoration')
-        for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol=?', (symbol,)):
+        for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol=%s', (symbol,)):
             other = json.loads(row['payload'])
             if (other.get('account_scope') == service.account_scope and row['config_id'] != service.config_id
                     and other.get('state') not in ('DONE', 'WAITING') and other.get('side') == side):
-                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()").fetchall()}
                 active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
                 mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
                 if not (active_agents or mcp_profiles) or row['config_id'] in (active_agents | mcp_profiles):
                     raise RuntimeError('Position ownership changed before restoration')
         reserve_scope(conn, candidate)
         save_plan(conn, service.config_id, candidate, expected_version=expected)
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?) ON CONFLICT(config_id,symbol,side) '
-                     'DO UPDATE SET payload=excluded.payload', (service.config_id, symbol, side, json.dumps(candidate)))
-        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s) ON CONFLICT(config_id,symbol,side) DO UPDATE SET payload=excluded.payload', (service.config_id, symbol, side, json.dumps(candidate)))
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                      (_current_timestamp(), service.config_id, symbol, json.dumps(candidate)))
         conn.commit()
     return candidate, diagnosis

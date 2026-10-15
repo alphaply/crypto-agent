@@ -9,10 +9,10 @@ from backend.utils.spot_execution import _initialize
 
 
 @pytest.fixture
-def spot_config(tmp_path, monkeypatch):
+def spot_config(tmp_path, monkeypatch, financial_pg):
     path = tmp_path / 'guard.db'
     with sqlite3.connect(path) as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         _initialize(conn)
     monkeypatch.setattr(database, 'DB_NAME', str(path))
     return {'config_id': 'spot', 'mode': 'SPOT_DCA', 'symbol': 'BTC/USDT',
@@ -65,3 +65,9 @@ def test_expanding_legacy_task_cannot_silently_clear_initial_costs(spot_config):
     cleared = {**previous, 'initial_qty': 0, 'initial_cost': 0}
     assert_spot_config_change_allowed(previous, cleared)
     assert_spot_config_change_allowed(cleared, expanded)
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

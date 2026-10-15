@@ -57,10 +57,12 @@ def test_actual_twenty_step_receipt_has_one_optional_summary_and_full_audit(ledg
     register_tools(server)
     register_paper_tools(server)
     monkeypatch.setattr(service, 'principal', lambda: caller)
-    blocks = asyncio.run(server.call_tool('execute_trade_actions', {'user_id': '123456', 'operation_id': 'measure-20-steps',
+    response = asyncio.run(server.call_tool('execute_trade_actions', {'user_id': '123456', 'operation_id': 'measure-20-steps',
                            'contract_version': 3, 'actions': actions, 'include': ['account']}))
-    result = json.loads(blocks[0].text)
-    assert len(blocks[0].text.encode('utf-8')) <= 32768
+    assert not response.isError
+    result = response.structuredContent
+    assert size(result) <= 32768
+    assert len(response.content[0].text.encode('utf-8')) <= 32768
     assert len(result['results']) == 20 and result['status'] == 'completed'
     assert 'account_summary' in result
     assert all('account' not in step and 'account_summary' not in step for step in result['results'])

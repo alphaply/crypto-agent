@@ -15,7 +15,7 @@ from backend.utils.llm_utils import require_complete_response
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'trace.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     monkeypatch.setattr(memory_agent.global_config, 'langchain_background_tracing', False)
     monkeypatch.setattr(memory_agent, 'invoke_with_retry', lambda invoke, **_: invoke())
 
@@ -51,7 +51,7 @@ def test_trace_validation_retains_full_response_and_local_correlation(isolated, 
                 {'config_id': 'cfg', 'summarizer': {'model': 'offline', **settings}}, operation_id='op-1')
             assert result.status == ('failed' if finish == 'length' else 'completed')
             if finish == 'stop':
-                assert result.summary == json.loads(response.content)['summary']
+                assert result.summary == response.content
     assert len(spans) == 1
     span = spans[0]
     assert span.name == purpose
@@ -98,7 +98,7 @@ def test_memory_service_propagates_provider_reason_without_overwriting_memory(mo
     monkeypatch.setattr(memory_service, 'save_review_result', unexpected_write)
     monkeypatch.setattr(memory_service, 'save_short_memory', unexpected_write)
     with pytest.raises(RuntimeError, match='finish_reason=length'):
-        memory_service.organize_memory('evidence', {'config_id': 'cfg'}, operation_id='op-1')
+        memory_service.organize_memory('evidence', {'config_id': 'cfg'}, operation_id='op-1', source_metadata={})
 
 
 def test_trace_failure_does_not_replay_model_or_hide_validation(isolated, monkeypatch):
@@ -130,3 +130,6 @@ def test_real_retry_wrapper_preserves_validation_reason(isolated, monkeypatch):
         result = memory_agent.run_memory_review('evidence', {'config_id': 'cfg', 'summarizer': {'model': 'offline'}}, operation_id='real-retry')
     assert 'finish_reason=length' in result.error and result.status == 'failed'
     assert calls == [1]
+
+
+pytestmark = pytest.mark.usefixtures("pg")

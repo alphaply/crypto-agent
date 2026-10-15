@@ -1,5 +1,6 @@
 from copy import deepcopy
-import sqlite3
+from backend import storage
+from psycopg import sql
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -10,15 +11,11 @@ from backend.app.api import config as routes
 from backend.app.core.deps import get_current_user
 from backend.app.services import config_service, market_catalog_service
 from backend.config import Config
-from backend.database_schema import initialize_schema
 
 
 @pytest.fixture
-def isolated_config_api(tmp_path, monkeypatch):
-    db_path = tmp_path / "config.sqlite"
-    with sqlite3.connect(db_path) as conn:
-        initialize_schema(conn)
-    monkeypatch.setattr(config_store, "DB_NAME", db_path)
+def isolated_config_api(tmp_path, monkeypatch, pg):
+    db_path = None  # Connection/schema are selected by the isolated PostgreSQL fixture.
     monkeypatch.setattr(config_store, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setenv("CONFIG_MASTER_KEY", "atomicity-test-key")
     config_store.save_runtime_snapshot({"enable_scheduler": False, "langchain_project": "preserved"}, [])
@@ -32,8 +29,13 @@ def isolated_config_api(tmp_path, monkeypatch):
 
 
 def database_contents(path):
-    with sqlite3.connect(path) as conn:
-        return list(conn.iterdump())
+    # Sequence allocation is deliberately nontransactional in PostgreSQL;
+    # compare persisted application rows, including encrypted values and revision metadata.
+    with storage.get_connection() as conn:
+        return {
+            table: sorted([tuple(row) for row in conn.execute(sql.SQL('SELECT * FROM {}').format(sql.Identifier(table)))], key=repr)
+            for table in sorted(storage.table_names(conn))
+        }
 
 
 def test_new_task_defaults_are_hourly_without_changing_existing_or_explicit_settings(isolated_config_api, monkeypatch):

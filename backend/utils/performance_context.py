@@ -1,4 +1,5 @@
 """Compact historical performance and explicit on-demand accounting evidence."""
+from backend.storage import record as storage_record
 
 import math
 
@@ -76,7 +77,7 @@ def performance_data(config_id: str, symbol: str, mode: str, *, hours: int = 168
     try:
         with database.get_db_conn() as conn:
             rows = conn.execute(f'SELECT timestamp,total_equity FROM {table} '
-                                'WHERE config_id=? AND symbol=? AND timestamp>=? AND timestamp<=? ORDER BY timestamp,id',
+                                'WHERE config_id=%s AND symbol=%s AND timestamp>=%s AND timestamp<=%s ORDER BY timestamp,id',
                                 (config_id, symbol, start, end)).fetchall()
         metric = equity_metrics(rows)
     except Exception:
@@ -94,9 +95,9 @@ def performance_data(config_id: str, symbol: str, mode: str, *, hours: int = 168
             # Mock_orders are the canonical local close/partial-exit records.
             # Read nullable PnL directly: legacy helper coerces NULL to zero.
             with database.get_db_conn() as conn:
-                closed = [dict(row) for row in conn.execute(
-                    "SELECT * FROM mock_orders WHERE config_id=? AND (symbol=? OR symbol=?) "
-                    "AND status='CLOSED' AND close_time>=? AND close_time<=? ORDER BY close_time,order_id",
+                closed = [storage_record(row) for row in conn.execute(
+                    "SELECT * FROM mock_orders WHERE config_id=%s AND (symbol=%s OR symbol=%s) "
+                    "AND status='CLOSED' AND close_time>=%s AND close_time<=%s ORDER BY close_time,order_id",
                     (config_id, symbol, symbol.split(':')[0], start, end))]
             values = [row.get('realized_pnl') for row in closed]
             profit = dict(available=all(isinstance(v, (int, float)) and math.isfinite(v) for v in values),
@@ -124,8 +125,8 @@ def performance_data(config_id: str, symbol: str, mode: str, *, hours: int = 168
                 import json
                 with database.get_db_conn() as conn:
                     records = conn.execute(
-                        'SELECT * FROM execution_position_history WHERE config_id=? AND account_scope=? '
-                        'AND (symbol=? OR symbol=?) AND closed_at_ms>=? AND closed_at_ms<? ORDER BY closed_at_ms DESC',
+                        'SELECT * FROM execution_position_history WHERE config_id=%s AND account_scope=%s '
+                        'AND (symbol=%s OR symbol=%s) AND closed_at_ms>=%s AND closed_at_ms<%s ORDER BY closed_at_ms DESC',
                         (config_id, configured_account_scope(config_id), symbol, canonical,
                          int(beginning.timestamp() * 1000), int(now.timestamp() * 1000))).fetchall()
                 for row in records:
@@ -133,7 +134,7 @@ def performance_data(config_id: str, symbol: str, mode: str, *, hours: int = 168
                     fees = json.loads(row['fees_json'] or '{}')
                     gross = row['realized_pnl']
                     complete = gross is not None and bool(fees) and not cycle.get('missing_fees', True) and set(fees) <= {currency}
-                    closed.append({**dict(row), 'cycle': cycle, 'fees': fees,
+                    closed.append({**storage_record(row), 'cycle': cycle, 'fees': fees,
                                    'net_realized_pnl': gross - fees.get(currency, 0) if complete else None,
                                    'opened_at': datetime.fromtimestamp(row['opened_at_ms'] / 1000, TZ_CN).strftime('%Y-%m-%d %H:%M:%S'),
                                    'closed_at': datetime.fromtimestamp(row['closed_at_ms'] / 1000, TZ_CN).strftime('%Y-%m-%d %H:%M:%S')})

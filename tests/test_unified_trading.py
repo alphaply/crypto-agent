@@ -35,10 +35,10 @@ def opening(**extra):
 
 
 @pytest.fixture
-def ledger(tmp_path, monkeypatch):
+def ledger(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'unified.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # financial_pg installs the complete native migration schema.
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: dict(CFG))
     monkeypatch.setattr(agent_tools, 'MarketTool', lambda **_: SimpleNamespace(exchange=SimpleNamespace(fetch_ticker=lambda _: {'last': 100})))
 
@@ -153,7 +153,7 @@ def test_whole_batch_static_failure_has_zero_dispatch_and_claim(ledger):
     assert result['status'] == 'failed' and result['phase'] == 'preflight'
     dispatch.assert_not_called()
     with database.get_db_conn() as conn:
-        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='unified_trade_children'").fetchone()
+        assert not conn.execute('SELECT 1 FROM unified_trade_children LIMIT 1').fetchone()
 
 
 @pytest.mark.parametrize('status', ['failed', 'pending', 'unknown'])
@@ -228,7 +228,7 @@ def test_crashed_v3_direct_replay_bypasses_legacy_parent_merger(ledger):
             raise SystemExit('stopped')
         with database.get_db_conn() as conn:
             initialize_independent_schema(conn.cursor())
-            conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(?,?,?,?,?)',
+            conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(%s,%s,%s,%s,%s)',
                          ('cfg', symbol, child, json.dumps({'status': 'completed'}), '{}'))
             conn.commit()
         return {'receipt_version': 1, 'status': 'completed'}
@@ -245,7 +245,7 @@ def test_child_financial_commit_survives_lost_outer_receipt(ledger):
     def dispatch(action, index, child, symbol):
         with database.get_db_conn() as conn:
             initialize_independent_schema(conn.cursor())
-            conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(?,?,?,?,?)',
+            conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(%s,%s,%s,%s,%s)',
                          ('cfg', symbol, child, json.dumps({'status': 'completed', 'filled_amount': .2}), '{}'))
             conn.commit()
         raise TimeoutError('outer response lost')

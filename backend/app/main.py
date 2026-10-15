@@ -1,5 +1,10 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Bootstrap secrets must be available before authentication modules are imported.
+# Runtime configuration and all database connections are loaded by lifespan.
+load_dotenv(override=False)
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -11,13 +16,12 @@ from backend.app.api import auth, chat, config, dashboard, history, public, setu
 from backend.app.api import management
 from backend.app.api import resources
 from backend.app.api import trade_audit
-from backend.mcp import audit_api
-from backend.app.api import trade_audit
-from backend.mcp.server import install_mcp
+from backend.mcp.discovery import DiscoveryHeadersMiddleware
 from backend.app.core.runtime import lifespan
 
 
 app = FastAPI(title="Crypto Agent API", version="2.0.0", lifespan=lifespan)
+app.add_middleware(DiscoveryHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -42,9 +46,6 @@ app.include_router(pricing.router)
 app.include_router(management.router)
 app.include_router(resources.router)
 app.include_router(trade_audit.router)
-app.include_router(audit_api.router)
-app.include_router(trade_audit.router)
-install_mcp(app)
 
 
 DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -62,9 +63,10 @@ def health():
     db_path = ""
     scheduler_enabled = False
     try:
-        from backend.database import DB_NAME, get_db_conn
+        from backend.database import get_db_conn
+        from backend.storage import database_label
 
-        db_path = str(DB_NAME)
+        db_path = database_label()
         with get_db_conn() as conn:
             conn.execute("SELECT 1").fetchone()
         db_ok = True
@@ -84,7 +86,7 @@ def health():
     return {
         "success": success,
         "status": "ok" if success else "degraded",
-        "database": {"ok": db_ok, "path": db_path},
+        "database": {"ok": db_ok, "backend": "postgresql", "path": db_path},
         "config": {"ok": config_ok, "error": config_error},
         "scheduler": {"enabled": scheduler_enabled, "run_in_web": os.getenv("RUN_SCHEDULER_IN_WEB", "true").lower() == "true"},
     }

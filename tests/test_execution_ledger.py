@@ -31,10 +31,10 @@ class Exchange:
 
 
 @pytest.fixture
-def local_db(tmp_path):
+def local_db(tmp_path, financial_pg):
     with patch.object(database, 'DB_NAME', str(tmp_path / 'ledger.db')):
         with database.get_db_conn() as conn:
-            initialize_schema(conn)
+            pass  # financial_pg installs the complete native migration schema.
         yield
 
 
@@ -72,7 +72,7 @@ def test_account_key_isolated_missing_pnl_not_zero_and_late_ownership(local_db):
     b.sync(now_ms=200000, start_ms=100000)
     register_order(a.scope, a.symbol, 'entry', 'cfg', 'entry')
     with database.get_db_conn() as conn:
-        rows = conn.execute('SELECT config_id,payload FROM execution_fills ORDER BY config_id').fetchall()
+        rows = conn.execute('SELECT config_id,payload FROM execution_fills ORDER BY config_id NULLS FIRST').fetchall()
     assert len(rows) == 2
     assert [r['config_id'] for r in rows] == [None, 'cfg']
     assert json.loads(rows[1]['payload'])['realized_pnl'] is None
@@ -97,7 +97,7 @@ def test_independent_algo_namespace_does_not_claim_regular_fill_on_restart(local
             'exits': [{'id': '42', 'contract_version': 2, 'order_type': 'stop_limit', 'execution_order_id': '43'},
                       {'id': '44', 'exit_type': 'take_profit_limit'}]}
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('cfg', ledger.symbol, 'LONG', json.dumps(plan)))
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)', ('cfg', ledger.symbol, 'LONG', json.dumps(plan)))
         conn.commit()
     indexed_ledger(ex, 'cfg', 'ETH/USDT')
     with database.get_db_conn() as conn:
@@ -111,10 +111,10 @@ def test_independent_algo_namespace_does_not_claim_regular_fill_on_restart(local
 def _save_ledger_plan(ledger, plan, owner='cfg', event=False):
     with database.get_db_conn() as conn:
         if event:
-            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                          ('2026-01-01 00:00:00',owner,ledger.symbol,json.dumps(plan)))
         else:
-            conn.execute('INSERT OR REPLACE INTO real_protection_plans VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s) ON CONFLICT(config_id,symbol,side) DO UPDATE SET payload=excluded.payload',
                          (owner,ledger.symbol,plan.get('side','LONG'),json.dumps(plan)))
         conn.commit()
 
@@ -129,7 +129,7 @@ def test_upgrade_retires_bare_algo_link_and_unproven_fill_owner_without_losing_f
     with database.get_db_conn() as conn:
         before=dict(conn.execute('SELECT * FROM execution_fills').fetchone())
         # The old order log is also ambiguous and must not recreate the bare ID.
-        conn.execute("INSERT INTO orders(order_id,config_id,symbol,trade_mode,side,event_type) VALUES('42','cfg',?,'REAL','CLOSE_LONG','CLOSE_ORDER_CREATED')",(ledger.symbol,))
+        conn.execute("INSERT INTO orders(order_id,config_id,symbol,trade_mode,side,event_type) VALUES('42','cfg',%s,'REAL','CLOSE_LONG','CLOSE_ORDER_CREATED')",(ledger.symbol,))
         conn.commit()
     plan=dict(account_scope=ledger.scope,side='LONG',episode_id='legacy-episode',execution_mode='independent_exits',
               exits=[dict(id='42',exit_type='stop_market',amount=1,filled=0,status='open',trigger_price=90)])
@@ -172,7 +172,7 @@ def test_upgrade_preserves_proven_regular_identity_colliding_with_algo(local_db,
         _save_ledger_plan(ledger,event,event=True)
     else:
         with database.get_db_conn() as conn:
-            conn.execute("INSERT INTO orders(order_id,config_id,symbol,trade_mode,side,event_type) VALUES('42','cfg',?,'REAL','BUY','ORDER_CREATED')",(ledger.symbol,))
+            conn.execute("INSERT INTO orders(order_id,config_id,symbol,trade_mode,side,event_type) VALUES('42','cfg',%s,'REAL','BUY','ORDER_CREATED')",(ledger.symbol,))
             conn.commit()
     _save_ledger_plan(ledger,plan)
     indexed_ledger(ex,'cfg','ETH/USDT')
@@ -259,12 +259,11 @@ def test_future_range_cannot_be_marked_complete(local_db):
     assert result['through_ms'] == 200000
 
 
-def test_long_outage_retains_verified_chunks_for_next_attempt(local_db):
+def test_long_outage_completes_all_pages_in_one_attempt(local_db):
     ledger = indexed_ledger(Exchange([]), 'cfg', 'ETH/USDT')
     day = 86400000
-    result = ledger.sync(now_ms=day * 3, start_ms=0, max_calls=1)
-    assert not result['complete'] and result['through_ms'] == day - 1
-    result = ledger.sync(now_ms=day * 3, min_interval=0)
+    result = ledger.sync(now_ms=day * 3, start_ms=0)
+    assert result['calls'] > 1
     assert result['complete'] and result['covered_intervals'] == [[0, day * 3]]
 
 

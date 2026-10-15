@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import atexit
 import json
 import os
 import queue
-import sqlite3
 import threading
 import time
 import uuid
@@ -20,7 +18,6 @@ from langchain_core.messages import (
     message_chunk_to_message,
 )
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -48,7 +45,6 @@ from backend.utils.llm_utils import (
 )
 from backend.utils.logger import setup_logger
 from backend.utils.market_data import MarketTool
-from backend.storage_paths import data_file
 from backend.utils.formatters import (
     format_market_data_to_text,
     format_orders_to_agent_friendly,
@@ -59,7 +55,6 @@ from backend.utils.news_context import fetch_news_risk_context
 load_dotenv()
 logger = setup_logger("ChatGraph")
 
-CHAT_CHECKPOINT_DB = str(data_file("CHAT_CHECKPOINT_DB", "chat_checkpoints.sqlite"))
 TEMPORARY_CHAT_TIMEFRAMES = ("15m", "1h", "4h", "1d", "1w")
 CHAT_CONTEXT_RECENT_MESSAGES = int(os.getenv("CHAT_CONTEXT_RECENT_MESSAGES", "10"))
 CHAT_CONTEXT_COMPACTION_BATCH = int(os.getenv("CHAT_CONTEXT_COMPACTION_BATCH", "6"))
@@ -1014,11 +1009,22 @@ workflow.add_edge("start", "model")
 workflow.add_conditional_edges("model", should_continue, {"tools": "tools", "end": END})
 workflow.add_edge("tools", "model")
 
-_checkpointer_cm = SqliteSaver.from_conn_string(CHAT_CHECKPOINT_DB)
-checkpointer = _checkpointer_cm.__enter__()
-atexit.register(lambda: _checkpointer_cm.__exit__(None, None, None))
+class _LazyChatApp:
+    """Compile on first use after application startup, never at module import."""
+    def __init__(self):
+        self._app = None
+        self._lock = threading.Lock()
 
-chat_app = workflow.compile(checkpointer=checkpointer, name="CryptoChat")
+    def __getattr__(self, name):
+        with self._lock:
+            from backend.storage.checkpoints import get_checkpointer
+            saver = get_checkpointer()
+            if self._app is None or self._app.checkpointer is not saver:
+                self._app = workflow.compile(checkpointer=saver, name="CryptoChat")
+        return getattr(self._app, name)
+
+
+chat_app = _LazyChatApp()
 
 
 def _chunk_to_text(chunk: BaseMessageChunk | Any) -> str:
@@ -1319,6 +1325,9 @@ def _chat_stream_items(request_payload, config):
     for _ in chat_app.stream(request_payload, config=config, stream_mode="updates"):
         continue
     _refresh_compacted_chat_title(config)
+    # Model nodes publish incremental events through the queue in config.
+    # The worker still expects an iterable when there are no extra updates.
+    return ()
 
 
 def _resume_stream_items(command, config):
@@ -1394,16 +1403,11 @@ def get_chat_interrupt(session_id: str, config_id: str = None, runtime: Dict[str
 def delete_chat_threads(session_ids):
     ids = [sid for sid in session_ids if sid]
     if not ids: return 0
-    checkpointer.conn.commit()
-    conn = sqlite3.connect(CHAT_CHECKPOINT_DB)
-    c = conn.cursor()
-    tables = c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    from backend.storage import get_connection, sql
     deleted = 0
-    placeholders = ",".join(["?"] * len(ids))
-    for (table_name,) in tables:
-        if "thread_id" not in {col[1] for col in c.execute(f"PRAGMA table_info({table_name})").fetchall()}: continue
-        c.execute(f"DELETE FROM {table_name} WHERE thread_id IN ({placeholders})", tuple(ids))
-        deleted += c.rowcount
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        for table in ('checkpoints', 'checkpoint_blobs', 'checkpoint_writes'):
+            deleted += conn.execute(sql.SQL('DELETE FROM checkpoints.{} WHERE thread_id = ANY(%s)').format(
+                sql.Identifier(table)), (ids,)).rowcount
+        conn.commit()
     return deleted

@@ -1,5 +1,6 @@
 """Read-only recovery of an original trade operation; never replay its callback."""
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import json
 import time
@@ -21,9 +22,9 @@ def operation_evidence(config_id: str, symbol: str, operation_ids, *, account_sc
         return {i: {**v, 'resolution': 'unavailable'} for i, v in output.items()}
     try:
         with get_db_conn() as conn:
-            rows = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=?', (config_id,)).fetchall()
+            rows = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=%s', (config_id,)).fetchall()
             evidence = conn.execute('SELECT operation_id,account_scope,symbol,version FROM trade_operation_evidence '
-                                    'WHERE config_id=?', (config_id,)).fetchall()
+                                    'WHERE config_id=%s', (config_id,)).fetchall()
         refreshed = {}
         for identity in ids:
             # A refreshed parent can contain newer evidence than the child's
@@ -102,19 +103,19 @@ def current_receipt_projection(config_id, operation_id, original):
 
     if not config_id or not operation_id:
         return historical()
-    cap = positive_setting('RUNTIME_FINANCIAL_PAYLOAD_BYTES', 1048576)
+    cap = 1048576
     try:
         with get_db_conn() as conn:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
             if 'trade_action_runs' not in tables:
                 return historical()
-            row = conn.execute('SELECT rowid,updated_at FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+            row = conn.execute('SELECT storage_id AS rowid,updated_at FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',
                                (config_id, operation_id)).fetchone()
             if row is None:
                 return historical()
             if 'trade_operation_evidence' in tables:
                 scopes = [r[0] for r in conn.execute('SELECT DISTINCT account_scope FROM trade_operation_evidence '
-                    'WHERE config_id=? AND operation_id=? LIMIT 2', (config_id, operation_id))]
+                    'WHERE config_id=%s AND operation_id=%s LIMIT 2', (config_id, operation_id))]
                 if scopes and any(scope != configured_account_scope(config_id) for scope in scopes):
                     return historical()
             with bounded_text(conn, 'trade_action_runs', 'result', row['rowid'], limit=cap) as payload:
@@ -132,15 +133,14 @@ def latest_operation_receipts(config_id: str, symbol: str = '', limit: int = 20)
     if not config_id:
         return {}
     with get_db_conn() as conn:
-        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
+        if not conn.execute("SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname=current_schema() AND tablename='trade_action_runs'").fetchone():
             return {}
-        from backend.utils.runtime_capacity import positive_setting, capacity_limits_enabled
-        cap = positive_setting('RUNTIME_FINANCIAL_PAYLOAD_BYTES', 1048576)
-        limits_enabled = capacity_limits_enabled()
-        projection = 'CASE WHEN length(CAST(result AS BLOB))<=? THEN result END' if limits_enabled else 'result'
-        parameters = (cap,) if limits_enabled else ()
+        from backend.utils.runtime_capacity import positive_setting
+        cap = 1048576
+        projection = 'result'
+        parameters = ()
         rows = conn.execute(f'SELECT operation_id,symbol,{projection} AS result,updated_at '
-                            'FROM trade_action_runs WHERE config_id=? AND result IS NOT NULL ORDER BY updated_at DESC LIMIT ?',
+                            'FROM trade_action_runs WHERE config_id=%s AND result IS NOT NULL ORDER BY updated_at DESC LIMIT %s',
                             (*parameters, config_id, min(max(1, limit), 100))).fetchall()
     result = {}
     for row in rows:
@@ -204,16 +204,16 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
     from backend.utils.trade_evidence import append_receipt, load_cycles, save_plan, evidence_fingerprint
     from backend.utils.position_protection import _lock, ConcurrentProtectionUpdate
     with database.get_db_conn() as conn:
-        row = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+        row = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',
                            (config_id, operation_id)).fetchone()
-        saved = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
+        saved = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=%s AND operation_id=%s',
                              (config_id, operation_id)).fetchone()
     if not row or not _same_symbol(row['symbol'], symbol):
         return {'status': 'failed', 'error_code': 'operation_not_found', 'error': 'Original operation is not in this task and symbol'}
     previous = _decode_receipt(row['result'])
     request = json.loads(saved['request_json']) if saved else {}
     with database.get_db_conn() as conn:
-        identities = conn.execute('SELECT DISTINCT operation_id FROM trade_operation_evidence WHERE config_id=?', (config_id,)).fetchall()
+        identities = conn.execute('SELECT DISTINCT operation_id FROM trade_operation_evidence WHERE config_id=%s', (config_id,)).fetchall()
     if not any(_operation_matches(item['operation_id'], operation_id) for item in identities):
         return previous or {'status': 'unknown', 'operation_id': operation_id, 'error': 'Original execution evidence unavailable'}
     if service is None:
@@ -236,8 +236,8 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
     if not plans:
         # No evidence in this account must not borrow a former account's result.
         with database.get_db_conn() as conn:
-            other = conn.execute('SELECT 1 FROM trade_operation_evidence WHERE config_id=? AND operation_id=? '
-                                 'AND account_scope!=?', (config_id, operation_id, service.account_scope)).fetchone()
+            other = conn.execute('SELECT 1 FROM trade_operation_evidence WHERE config_id=%s AND operation_id=%s '
+                                 'AND account_scope!=%s', (config_id, operation_id, service.account_scope)).fetchone()
         if other:
             return {'status': 'unknown', 'operation_id': operation_id, 'error_code': 'account_scope_mismatch',
                     'error': 'Original operation belongs to different exchange credentials'}
@@ -248,8 +248,8 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
         fingerprint = evidence_fingerprint(plans, operation_id)
         if not read_exchange:
             with database.get_db_conn() as conn:
-                watermark = conn.execute('SELECT fingerprint FROM trade_receipt_watermarks WHERE config_id=? '
-                                         'AND account_scope=? AND operation_id=?',
+                watermark = conn.execute('SELECT fingerprint FROM trade_receipt_watermarks WHERE config_id=%s '
+                                         'AND account_scope=%s AND operation_id=%s',
                                          (config_id, service.account_scope, operation_id)).fetchone()
             if watermark and watermark['fingerprint'] == fingerprint:
                 return previous
@@ -275,15 +275,15 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
                 # here, since ownership, replacement and maintenance are writes.
                 plan['record_version'] = expected + 1
                 with database.get_db_conn() as conn:
-                    conn.execute('BEGIN IMMEDIATE')
+                    lock_scope(conn, 'trade-operation', config_id, operation_id)
                     save_plan(conn, config_id, plan, expected_version=expected)
-                    current = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side=?',
+                    current = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s AND symbol=%s AND side=%s',
                                            (config_id, plan['symbol'], plan['side'])).fetchone()
                     current_plan = json.loads(current['payload']) if current else {}
                     if current_plan.get('episode_id') == plan['episode_id']:
                         if current_plan.get('record_version', 0) != expected:
                             raise ConcurrentProtectionUpdate('Position cycle changed during read; reload observations')
-                        conn.execute('UPDATE real_protection_plans SET payload=? WHERE config_id=? AND symbol=? AND side=?',
+                        conn.execute('UPDATE real_protection_plans SET payload=%s WHERE config_id=%s AND symbol=%s AND side=%s',
                                      (json.dumps(plan), config_id, plan['symbol'], plan['side']))
                     conn.commit()
             availability = plan
@@ -377,22 +377,21 @@ def _recover_operation_once(config_id: str, symbol: str, operation_id: str, *, s
         from backend.utils.trade_operations import _merge_reconciled_result
         result = _merge_reconciled_result(row, list(projections.values()), request)
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'trade-operation', config_id, operation_id)
         for plan in plans:
-            latest = conn.execute('SELECT version FROM trade_cycle_evidence WHERE config_id=? AND account_scope=? '
-                                  'AND symbol=? AND episode_id=?', (config_id, service.account_scope, plan['symbol'], plan['episode_id'])).fetchone()
+            latest = conn.execute('SELECT version FROM trade_cycle_evidence WHERE config_id=%s AND account_scope=%s '
+                                  'AND symbol=%s AND episode_id=%s', (config_id, service.account_scope, plan['symbol'], plan['episode_id'])).fetchone()
             if latest and latest['version'] != plan.get('record_version', 0):
                 raise ConcurrentProtectionUpdate('Evidence advanced before receipt commit; reload observations')
         # Preserve even pre-migration receipts before writing a new projection.
-        has_original = conn.execute('SELECT 1 FROM trade_receipt_revisions WHERE config_id=? AND operation_id=?',
+        has_original = conn.execute('SELECT 1 FROM trade_receipt_revisions WHERE config_id=%s AND operation_id=%s',
                                     (config_id, operation_id)).fetchone()
         if not has_original and row['result']:
             append_receipt(conn, config_id, operation_id, json.loads(row['result']))
         revision = append_receipt(conn, config_id, operation_id, result)
-        conn.execute('UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?',
+        conn.execute('UPDATE trade_action_runs SET status=%s,result=%s,updated_at=%s WHERE config_id=%s AND operation_id=%s',
                      (tool_result_status(result), json.dumps(result), time.time(), config_id, operation_id))
-        conn.execute('INSERT INTO trade_receipt_watermarks VALUES(?,?,?,?) ON CONFLICT(config_id,account_scope,operation_id) '
-                     'DO UPDATE SET fingerprint=excluded.fingerprint',
+        conn.execute('INSERT INTO trade_receipt_watermarks(config_id,account_scope,operation_id,fingerprint) VALUES(%s,%s,%s,%s) ON CONFLICT(config_id,account_scope,operation_id) DO UPDATE SET fingerprint=excluded.fingerprint',
                      (config_id, service.account_scope, operation_id, evidence_fingerprint(plans, operation_id)))
         conn.commit()
     return result

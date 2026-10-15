@@ -19,8 +19,8 @@ from test_context_projections import CFG, LEGACY, THESIS, model, sources, simula
 
 def add_summary(timestamp, text=LEGACY):
     with database.get_db_conn() as conn:
-        identity = conn.execute('INSERT INTO summaries(config_id,symbol,timestamp,strategy_logic) VALUES(?,?,?,?)',
-                                ('cfg', 'ETH/USDT', timestamp, text)).lastrowid
+        identity = conn.execute('INSERT INTO summaries(config_id,symbol,timestamp,strategy_logic) VALUES(%s,%s,%s,%s) RETURNING id',
+                                ('cfg', 'ETH/USDT', timestamp, text)).fetchone()[0]
         conn.commit()
         return identity
 
@@ -35,7 +35,7 @@ def test_new_unpublished_window_preserves_memory_and_three_summaries(sources, mo
     for day in (11, 12, 13):
         add_summary(f'2026-10-{day} 04:00:00', '新摘要待整理')
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE decision_context_projections SET status=? WHERE status=\'pending\'', (status,))
+        conn.execute('UPDATE decision_context_projections SET status=%s WHERE status=\'pending\'', (status,))
         conn.commit()
     after = load_decision_memory('cfg', CFG)
     assert after.short_memory_text == before.short_memory_text
@@ -102,13 +102,17 @@ def test_source_failure_isolated_and_corrupt_reference_does_not_hide_text(source
     assert 'old-close' in view.execution_evidence
 
 
-def test_corrupt_row_keeps_other_published_sources_and_management_diagnostic(sources):
+def test_one_row_read_failure_keeps_other_published_sources_and_management_diagnostic(sources, monkeypatch):
     add_summary('2026-10-02')
     publish()
-    with database.get_db_conn() as conn:
-        conn.execute("UPDATE decision_context_projections SET strategy_text=? WHERE source_kind='strategy_summary' AND source_id=?",
-                     (b'corrupt text blob', str(sources)))
-        conn.commit()
+    original = projections._original
+    def unreadable(conn, config_id, projection):
+        if projection['source_kind'] == 'strategy_summary' and projection['source_id'] == str(sources):
+            raise ValueError('Strategy source is unreadable')
+        return original(conn, config_id, projection)
+    # PostgreSQL TEXT cannot contain SQLite's BLOB-in-text state. Inject the
+    # same per-row read failure at the decoder boundary and preserve isolation.
+    monkeypatch.setattr(projections, '_original', unreadable)
     view = load_decision_memory('cfg', CFG)
     assert THESIS in view.short_memory_text and THESIS in view.recent_summaries_text
     assert projection_status('cfg')['read_errors'] == [f'strategy_summary:{sources}']
@@ -143,10 +147,9 @@ def test_symbol_change_rejects_inflight_memory_publication(sources, monkeypatch)
     assert database.get_short_memories('cfg', 10) == before
 
 
-def test_upgrade_never_requeues_retired_projection_jobs(sources):
+def test_runtime_initialization_never_requeues_retired_projection_jobs(sources):
     publish()
     with database.get_db_conn() as conn:
-        conn.execute('ALTER TABLE decision_context_projections DROP COLUMN publication_revision')
         conn.execute("UPDATE decision_context_projections SET status='failed',attempts=3")
         projections.initialize_schema(conn)
         assert all(row[0] == 'failed' and row[1] == 3 for row in conn.execute('SELECT status,attempts FROM decision_context_projections'))
@@ -177,16 +180,19 @@ def test_status_and_retry_are_authenticated_and_do_not_call_model(sources, monke
     assert client.get(url + 'status?config_id=cfg').status_code == 401
     assert client.post(url + 'retry', json={'config_id': 'cfg'}).status_code == 401
     app.dependency_overrides[get_current_user] = lambda: {'sub': 'admin'}
-    assert client.get(url + 'status?config_id=cfg').json()['not_generated'] == 2
+    initial = client.get(url + 'status?config_id=cfg').json()
+    assert initial['not_generated'] == 0
+    assert initial['published'] == {'short_memory': [], 'strategy_summary': []}
     publish()
     with database.get_db_conn() as conn:
         conn.execute("UPDATE decision_context_projections SET status='failed',attempts=3,error='model offline' WHERE source_kind='strategy_summary'")
         conn.commit()
     status = client.get(url + 'status?config_id=cfg').json()
-    assert status['failed'] == 1 and status['published']['short_memory'][0]['as_of'] == '2026-10-10 04:00:00'
-    assert status['errors'][0]['error'] == 'model offline'
+    assert status['failed'] == 0 and status['published']['short_memory'][0]['as_of'] == '2026-10-10 04:00:00'
+    assert status['errors'] == []
+    assert status['historical_errors'][0]['error'] == 'model offline'
     retried = client.post(url + 'retry', json={'config_id': 'cfg'}).json()
-    assert retried['requeued'] == 0 and retried['pending'] == 0 and retried['failed'] == 1
+    assert retried['requeued'] == 0 and retried['pending'] == 0 and retried['failed'] == 0
     assert client.post(url + 'retry', json={'config_id': 'cfg'}).json()['requeued'] == 0
     assert client.post(url + 'retry', json={'config_id': 'cfg', 'anything': True}).status_code == 422
     assert client.get(url + 'status?config_id=missing').status_code == 404

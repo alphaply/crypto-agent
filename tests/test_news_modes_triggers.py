@@ -16,7 +16,7 @@ from backend.utils import llm_utils
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'news.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     monkeypatch.setattr(llm_utils, 'sync_langsmith_environment', lambda: {})
     monkeypatch.setenv('LANGSMITH_TRACING', 'false')
     monkeypatch.setenv('LANGCHAIN_TRACING_V2', 'false')
@@ -244,7 +244,7 @@ def test_auxiliary_trace_switch_keeps_agent_calls_and_local_audit(env, monkeypat
     with tracing_context(enabled='local'):
         audited_invoke(operation, config_id='task', purpose=purpose, model='offline', messages=[])
     with database.get_db_conn() as conn:
-        assert conn.execute('SELECT COUNT(*) FROM agent_runs WHERE purpose=?', (purpose,)).fetchone()[0] == 1
+        assert conn.execute('SELECT COUNT(*) FROM agent_runs WHERE purpose=%s', (purpose,)).fetchone()[0] == 1
 
 
 @pytest.mark.parametrize('mode', ['off', 'summary', 'full'])
@@ -261,3 +261,6 @@ def test_news_trace_modes_preserve_local_processing(env, monkeypatch, mode):
     assert bool(result['trace_id']) == (mode != 'off')
     if mode == 'full': assert spans[0].name == 'news.summarize'
     if mode == 'off': assert spans[0] is None
+
+
+pytestmark = pytest.mark.usefixtures("pg")

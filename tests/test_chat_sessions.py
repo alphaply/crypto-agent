@@ -1,4 +1,5 @@
-import sqlite3
+import pytest
+from backend import storage
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,21 +10,7 @@ from backend.database_chat import ChatSessionStore
 
 
 def create_chat_sessions_table(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        '''
-        CREATE TABLE chat_sessions (
-            session_id TEXT PRIMARY KEY,
-            title TEXT,
-            config_id TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        '''
-    )
-    conn.commit()
-    conn.close()
+    """The isolated PostgreSQL fixture installs the full production schema."""
 
 
 class ChatSessionTests(unittest.TestCase):
@@ -81,3 +68,5 @@ class ChatSessionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+pytestmark = pytest.mark.usefixtures("pg")

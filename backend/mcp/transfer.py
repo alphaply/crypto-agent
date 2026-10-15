@@ -1,5 +1,6 @@
 """Configuration migration; OAuth grants intentionally stay bound to their issuer."""
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import json
 import time
@@ -56,14 +57,14 @@ def import_settings(payload, connection=None):
         records.extend([('key', key_id, value), ('key_lookup', value['digest'], {'id': key_id})])
 
     def write(conn):
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         accounts = {row['profile_id']: row['market_type'] for row in conn.execute('SELECT profile_id,market_type FROM exchange_profiles')} if 'exchange_profiles' in tables else {}
         managed_transition = False
         imported_profiles = []
         for profile, model in zip(parsed_profiles, profile_models):
             if accounts.get(profile['exchange_profile_id']) != profile['market_type']:
                 raise ValueError('Imported MCP profile references a missing or incompatible exchange account')
-            previous_row = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=?", (profile['profile_id'],)).fetchone()
+            previous_row = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=%s", (profile['profile_id'],)).fetchone()
             previous = json.loads(previous_row[0]) if previous_row else None
             if previous:
                 for field in ('position_management_policy', 'management_scopes', 'exit_mode'):
@@ -76,12 +77,12 @@ def import_settings(payload, connection=None):
             if previous:
                 from .config_guard import assert_profile_transition
                 assert_profile_transition(conn, previous, profile)
-                used = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=? LIMIT 1', (profile['profile_id'],)).fetchone() if 'mcp_operations' in tables else None
+                used = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=%s LIMIT 1', (profile['profile_id'],)).fetchone() if 'mcp_operations' in tables else None
                 if used and any(previous.get(key) != profile[key] for key in ('exchange_profile_id', 'market_type')):
                     raise ValueError('Cannot import a different account over an MCP profile with trading history')
             imported_profiles.append(('profile', profile['profile_id'], profile))
         for kind, key, value in [*records, *imported_profiles]:
-            conn.execute('INSERT INTO mcp_records VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload',
+            conn.execute('INSERT INTO mcp_records(kind,id,payload) VALUES(%s,%s,%s) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload',
                          (kind, key, json.dumps(value, ensure_ascii=False)))
         if managed_transition:
             from backend.config_store import load_runtime_snapshot
@@ -92,10 +93,10 @@ def import_settings(payload, connection=None):
             synchronize_configuration(conn, snapshot)
     # Initialize lazily before joining a caller's transaction.
     if connection is not None:
-        connection.execute('CREATE TABLE IF NOT EXISTS mcp_records(kind TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(kind,id))')
+        # Table installed by the explicit PostgreSQL migration.
         write(connection)
     else:
         with store.connection() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            lock_scope(conn, 'runtime-config')
             write(conn)
             conn.commit()

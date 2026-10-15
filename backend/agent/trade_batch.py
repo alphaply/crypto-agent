@@ -215,6 +215,8 @@ def execute_trade_actions(actions: list, config_id: str, symbol: str, contract_v
     退出仅针对已成交仓位；数量为标的币数量。先校验整批，默认失败停止；v2可选execution_policy=independent，逐项核验实际依赖，depends_on仅接受已完成前项的索引。
     普通调用自动取证，无需提前查询；已提交不等于已成交，多个交易所写入不是原子事务。
     返回逐项真实结果和状态；未知操作等待核验，不得换工具或换ID盲目重试。"""
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     from backend.config import config
     from backend.utils.exit_policy import effective_exit_mode, validate_entry_protection
     cfg = config.get_config_by_id(config_id)

@@ -1,5 +1,6 @@
 """Durable tool-call receipts: uncertain exchange writes are never blindly replayed."""
 from __future__ import annotations
+from backend.storage import lock_scope
 
 from contextvars import ContextVar
 import hashlib
@@ -103,9 +104,9 @@ def _merge_reconciled_result(row, observed: list[dict], request):
 
 def _reconciled_receipt(conn, row):
     """Resolve a lost acknowledgement only from durable native execution evidence."""
-    tables = {item[0] for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {item[0] for item in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     if 'trade_operation_requests' in tables:
-        saved_request = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
+        saved_request = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=%s AND operation_id=%s',
                                      (row['config_id'], row['operation_id'])).fetchone()
         if saved_request and json.loads(saved_request['request_json']).get('contract_version') == 3:
             # v3 mappings may contain bounded hashed child IDs and mode-specific
@@ -116,7 +117,7 @@ def _reconciled_receipt(conn, row):
             receipt = find_adoption_receipt(row['config_id'], row['operation_id'], row['symbol'])
             if receipt is not None:
                 result = {**receipt, 'reconciled': True}
-                conn.execute('UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?',
+                conn.execute('UPDATE trade_action_runs SET status=%s,result=%s,updated_at=%s WHERE config_id=%s AND operation_id=%s',
                              ('completed', json.dumps(result, ensure_ascii=False), time.time(), row['config_id'], row['operation_id']))
                 return result
     observed = []
@@ -126,7 +127,7 @@ def _reconciled_receipt(conn, row):
             FROM spot_budget_reservations r JOIN orders o ON o.config_id=r.config_id
                 AND o.symbol=r.symbol AND o.order_id=r.order_id
             JOIN spot_order_fills f ON f.config_id=r.config_id AND f.symbol=r.symbol AND f.order_id=r.order_id
-            WHERE r.config_id=? AND r.status='submitted' AND o.trade_mode='SPOT_DCA'
+            WHERE r.config_id=%s AND r.status='submitted' AND o.trade_mode='SPOT_DCA'
                 AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
                 AND UPPER(o.side) IN ('BUY','BUY_LIMIT')''', (row['config_id'],)).fetchall()
         for record in records:
@@ -143,7 +144,7 @@ def _reconciled_receipt(conn, row):
                 'filled': values[0], 'cost': values[1],
                 'status': 'open' if status in {'partial', 'partially_filled'} else status})
     if 'real_protection_plans' in tables:
-        plans = conn.execute('SELECT symbol,payload FROM real_protection_plans WHERE config_id=?', (row['config_id'],)).fetchall()
+        plans = conn.execute('SELECT symbol,payload FROM real_protection_plans WHERE config_id=%s', (row['config_id'],)).fetchall()
         for stored in plans:
             if not _same_symbol(stored['symbol'], row['symbol']):
                 continue
@@ -208,7 +209,7 @@ def _reconciled_receipt(conn, row):
                 # Corrupt local evidence must never authorize a replay or report success.
                 return None
     if 'mock_trade_operations' in tables:
-        records = conn.execute('SELECT operation_id,symbol,result FROM mock_trade_operations WHERE config_id=?', (row['config_id'],)).fetchall()
+        records = conn.execute('SELECT operation_id,symbol,result FROM mock_trade_operations WHERE config_id=%s', (row['config_id'],)).fetchall()
         for record in records:
             if _operation_matches(record['operation_id'], row['operation_id']) and _same_symbol(record['symbol'], row['symbol']):
                 try:
@@ -220,14 +221,14 @@ def _reconciled_receipt(conn, row):
                     return None
     if not observed:
         return None
-    metadata = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
+    metadata = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=%s AND operation_id=%s',
                             (row['config_id'], row['operation_id'])).fetchone() if 'trade_operation_requests' in tables else None
     request = json.loads(metadata['request_json']) if metadata else None
     result = _merge_reconciled_result(row, observed, request)
     status = tool_result_status(result)
     from backend.utils.trade_evidence import append_receipt
     append_receipt(conn, row['config_id'], row['operation_id'], result)
-    conn.execute('UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?',
+    conn.execute('UPDATE trade_action_runs SET status=%s,result=%s,updated_at=%s WHERE config_id=%s AND operation_id=%s',
                  (status, json.dumps(result, ensure_ascii=False), time.time(), row['config_id'], row['operation_id']))
     return result
 
@@ -235,15 +236,15 @@ def _reconciled_receipt(conn, row):
 def reconcile_pending_trade_operations(config_id: str, *, operation_id: str | None = None) -> int:
     """Refresh uncertain receipts from local evidence; never call an exchange or tool."""
     from backend import database
-    filter_sql = ' AND r.operation_id=?' if operation_id else ''
+    filter_sql = ' AND r.operation_id=%s' if operation_id else ''
     filters = (config_id, operation_id) if operation_id else (config_id,)
     with database.get_db_conn() as conn:
-        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
+        if not conn.execute("SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname=current_schema() AND tablename='trade_action_runs'").fetchone():
             return 0
         versioned = conn.execute('SELECT r.operation_id,r.symbol,r.result,r.status FROM trade_action_runs r '
                                  'JOIN trade_operation_requests q ON q.config_id=r.config_id AND q.operation_id=r.operation_id '
-                                 'WHERE r.config_id=? AND json_extract(q.request_json,\'$.contract_version\')=3' + filter_sql + ' LIMIT 128', filters).fetchall() if conn.execute(
-                                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_operation_requests'").fetchone() else []
+                                 'WHERE r.config_id=%s AND (q.request_json::jsonb->>\'contract_version\')=\'3\'' + filter_sql + ' LIMIT 128', filters).fetchall() if conn.execute(
+                                     "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname=current_schema() AND tablename='trade_operation_requests'").fetchone() else []
     v3_ids = {row['operation_id'] for row in versioned}
     versioned_count = 0
     from backend.agent.unified_trading import query_unified_operation
@@ -253,7 +254,7 @@ def reconcile_pending_trade_operations(config_id: str, *, operation_id: str | No
             versioned_count += result != _decode_receipt(row['result'])
     if is_independent_real(config_id):
         with database.get_db_conn() as conn:
-            rows = conn.execute('SELECT r.operation_id,r.symbol,r.result FROM trade_action_runs r WHERE r.config_id=?' + filter_sql + ' LIMIT 128', filters).fetchall()
+            rows = conn.execute('SELECT r.operation_id,r.symbol,r.result FROM trade_action_runs r WHERE r.config_id=%s' + filter_sql + ' LIMIT 128', filters).fetchall()
         count = versioned_count
         for row in rows:
             if row['operation_id'] in v3_ids:
@@ -261,7 +262,7 @@ def reconcile_pending_trade_operations(config_id: str, *, operation_id: str | No
             with database.get_db_conn() as conn:
                 scoped = has_scoped_evidence(conn, config_id, row['operation_id'])
                 if not scoped:
-                    full = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+                    full = conn.execute('SELECT * FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',
                                         (config_id, row['operation_id'])).fetchone()
                     if full['status'] in {'running', 'pending', 'unknown'} and _reconciled_receipt(conn, full) is not None:
                         count += 1
@@ -272,9 +273,9 @@ def reconcile_pending_trade_operations(config_id: str, *, operation_id: str | No
         return count
     count = versioned_count
     with database.get_db_conn() as conn:
-        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
+        if not conn.execute("SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname=current_schema() AND tablename='trade_action_runs'").fetchone():
             return 0
-        rows = conn.execute("SELECT r.* FROM trade_action_runs r WHERE r.config_id=? AND r.status IN ('running','unknown','pending')" + filter_sql + ' LIMIT 128', filters).fetchall()
+        rows = conn.execute("SELECT r.* FROM trade_action_runs r WHERE r.config_id=%s AND r.status IN ('running','unknown','pending')" + filter_sql + ' LIMIT 128', filters).fetchall()
         for row in rows:
             if row['operation_id'] in v3_ids:
                 continue
@@ -285,16 +286,8 @@ def reconcile_pending_trade_operations(config_id: str, *, operation_id: str | No
 
 
 def initialize_trade_operations_schema(cursor):
-    from backend.utils.trade_evidence import initialize_schema
-    initialize_schema(cursor)
-    cursor.execute("""CREATE TABLE IF NOT EXISTS trade_action_runs (
-        config_id TEXT NOT NULL, operation_id TEXT NOT NULL, symbol TEXT NOT NULL,
-        request_hash TEXT NOT NULL, status TEXT NOT NULL, result TEXT,
-        created_at REAL NOT NULL, updated_at REAL NOT NULL,
-        PRIMARY KEY(config_id,operation_id))""")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS trade_operation_requests (
-        config_id TEXT NOT NULL, operation_id TEXT NOT NULL, request_json TEXT NOT NULL,
-        PRIMARY KEY(config_id,operation_id))""")
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def tool_result_status(result) -> str:
@@ -363,14 +356,16 @@ def tool_result_status(result) -> str:
 
 
 def run_once(config_id: str, symbol: str, operation_id: str | None, request: dict, callback):
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     from backend import database
     operation_id = operation_id or uuid.uuid4().hex
     encoded = json.dumps(request, sort_keys=True, ensure_ascii=False, default=str)
     fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
     with database.get_db_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        lock_scope(conn, 'trade-operation', config_id, operation_id)
         initialize_trade_operations_schema(conn.cursor())
-        row = conn.execute("SELECT * FROM trade_action_runs WHERE config_id=? AND operation_id=?", (config_id, operation_id)).fetchone()
+        row = conn.execute("SELECT * FROM trade_action_runs WHERE config_id=%s AND operation_id=%s", (config_id, operation_id)).fetchone()
         if row:
             if row["request_hash"] != fingerprint or row["symbol"] != symbol:
                 raise ValueError("操作 ID 已用于不同请求；禁止重用")
@@ -384,8 +379,8 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
         else:
             existing = None
             now = time.time()
-            conn.execute("INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)", (config_id, operation_id, symbol, fingerprint, "running", None, now, now))
-            conn.execute('INSERT INTO trade_operation_requests VALUES(?,?,?)', (config_id, operation_id, encoded))
+            conn.execute('INSERT INTO trade_action_runs(config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)', (config_id, operation_id, symbol, fingerprint, "running", None, now, now))
+            conn.execute('INSERT INTO trade_operation_requests(config_id,operation_id,request_json) VALUES(%s,%s,%s)', (config_id, operation_id, encoded))
         conn.commit()
     if existing is not None:
         if scoped and is_independent_real(config_id) and request.get('contract_version') != 3:
@@ -422,10 +417,10 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
     status = tool_result_status(result)
     try:
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            lock_scope(conn, 'trade-operation', config_id, operation_id)
             from backend.utils.trade_evidence import append_receipt
             append_receipt(conn, config_id, operation_id, result)
-            conn.execute("UPDATE trade_action_runs SET status=?,result=?,updated_at=? WHERE config_id=? AND operation_id=?", (status, json.dumps(result, ensure_ascii=False, default=str), time.time(), config_id, operation_id))
+            conn.execute("UPDATE trade_action_runs SET status=%s,result=%s,updated_at=%s WHERE config_id=%s AND operation_id=%s", (status, json.dumps(result, ensure_ascii=False, default=str), time.time(), config_id, operation_id))
             conn.commit()
     except Exception:
         import logging
@@ -447,7 +442,7 @@ def is_independent_real(config_id: str) -> bool:
 
 def has_scoped_evidence(conn, config_id: str, operation_id: str) -> bool:
     return any(_operation_matches(row[0], operation_id) for row in conn.execute(
-        'SELECT DISTINCT operation_id FROM trade_operation_evidence WHERE config_id=?', (config_id,)))
+        'SELECT DISTINCT operation_id FROM trade_operation_evidence WHERE config_id=%s', (config_id,)))
 
 
 def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, previous=None, *, read_exchange=True):
@@ -466,7 +461,7 @@ def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, pr
         if previous is None:
             from backend.database import get_db_conn
             with get_db_conn() as conn:
-                saved = conn.execute('SELECT symbol,result FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+                saved = conn.execute('SELECT symbol,result FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',
                                      (config_id, operation_id)).fetchone()
             if saved and _same_symbol(saved['symbol'], symbol):
                 previous = saved['result']

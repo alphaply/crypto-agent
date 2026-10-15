@@ -26,8 +26,9 @@ def full_text(label: str, repeats: int = 500) -> str:
 def local_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'memory-integrity.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [CONFIG])
+    monkeypatch.setattr(agent_graph.global_config, 'get_config_by_id', lambda cid: CONFIG if cid == 'cfg' else None)
     monkeypatch.setattr(agent_graph, 'invoke_with_retry', lambda operation, **_: operation())
 
 
@@ -71,7 +72,7 @@ def test_every_memory_writer_preserves_long_input_and_output(local_db, monkeypat
                                CONFIG['symbol'], 'cfg', previous, '', 1)
     with database.get_db_conn() as conn:
         conn.execute(
-            'INSERT INTO summaries(timestamp,config_id,strategy_logic) VALUES(?,?,?)',
+            "INSERT INTO summaries(timestamp,config_id,strategy_logic,symbol) VALUES(%s,%s,%s,'ETH/USDT')",
             ('2026-10-01 09:00:00', 'cfg', strategy),
         )
         conn.commit()
@@ -106,9 +107,9 @@ def test_rolling_review_reads_every_record_within_selected_window(local_db, monk
     ]
     records.append((NOW.strftime('%Y-%m-%d %H:%M:%S'), 'cfg', 'current-second-evidence'))
     with database.get_db_conn() as conn:
-        conn.executemany('INSERT INTO summaries(timestamp,config_id,strategy_logic) VALUES(?,?,?)', records)
-        conn.executemany(
-            'INSERT INTO summaries(timestamp,config_id,strategy_logic) VALUES(?,?,?)',
+        conn.cursor().executemany("INSERT INTO summaries(timestamp,config_id,strategy_logic,symbol) VALUES(%s,%s,%s,'ETH/USDT')", records)
+        conn.cursor().executemany(
+            "INSERT INTO summaries(timestamp,config_id,strategy_logic,symbol) VALUES(%s,%s,%s,'ETH/USDT')",
             [('2026-09-30 21:59:59', 'cfg', 'too-old'),
              ('2026-10-01 10:00:01', 'cfg', 'future-evidence'),
              ('2026-10-01 09:00:00', 'another-config', 'another-config-evidence')],
@@ -131,8 +132,8 @@ def test_complete_memory_and_recent_decisions_reach_trading_prompt(local_db, mon
     database.save_short_memory('2026-10-01 00:00:00', '2026-10-01 04:00:00',
                                CONFIG['symbol'], 'cfg', memory, '', 1)
     with database.get_db_conn() as conn:
-        conn.executemany(
-            'INSERT INTO summaries(timestamp,config_id,strategy_logic) VALUES(?,?,?)',
+        conn.cursor().executemany(
+            "INSERT INTO summaries(timestamp,config_id,strategy_logic,symbol) VALUES(%s,%s,%s,'ETH/USDT')",
             [(f'2026-10-01 0{index}:00:00', 'cfg', text) for index, text in enumerate(decisions)],
         )
         conn.commit()
@@ -149,3 +150,6 @@ def test_complete_memory_and_recent_decisions_reach_trading_prompt(local_db, mon
     prompt = result.messages[0].content
     assert memory in prompt
     assert all(decision in prompt for decision in decisions)
+
+
+pytestmark = pytest.mark.usefixtures("pg")

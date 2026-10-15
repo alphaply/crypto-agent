@@ -16,10 +16,10 @@ from test_exclusive_position_management import ExclusiveExchange, make_service, 
 
 
 @pytest.fixture
-def managed(tmp_path, monkeypatch):
+def managed(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'recovery.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     exchange = ExclusiveExchange()
     monkeypatch.setattr(time, 'time', lambda: exchange.now / 1000)
     service = make_service(exchange)
@@ -29,7 +29,7 @@ def managed(tmp_path, monkeypatch):
 
 def reservation(service, operation_id, state='unresolved', side='LONG'):
     with database.get_db_conn() as conn:
-        conn.execute('INSERT OR REPLACE INTO position_management_actions VALUES(?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO position_management_actions(account_scope,symbol,side,owner,operation_id,state,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,side) DO UPDATE SET owner=excluded.owner,operation_id=excluded.operation_id,state=excluded.state,updated_at=excluded.updated_at',
                      (service.account_scope, SYMBOL, side, service.config_id, operation_id, state, 0))
         conn.commit()
 
@@ -83,9 +83,9 @@ def test_child_reservation_recovers_from_exact_parent_item(managed):
     with database.get_db_conn() as conn:
         now = time.time()
         result = {'status': 'unknown', 'results': [{'index': 0, 'status': 'unknown', 'result': raw}]}
-        conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO trade_action_runs (config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                      (service.config_id, 'original-batch', SYMBOL, 'saved-hash', 'unknown', json.dumps(result), now, now))
-        conn.execute('INSERT INTO trade_operation_requests VALUES(?,?,?)',
+        conn.execute('INSERT INTO trade_operation_requests (config_id,operation_id,request_json) VALUES(%s,%s,%s)',
                      (service.config_id, 'original-batch', json.dumps({'tool': 'execute_trade_actions', 'actions': [{'action': 'close'}]})))
         conn.commit()
     reservation(service, child)
@@ -98,7 +98,7 @@ def test_similar_prefix_cannot_borrow_another_receipt(managed):
     service, _ = managed
     reservation(service, 'original-other:0')
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO trade_action_runs (config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                      (service.config_id, 'original', SYMBOL, 'hash', 'completed', '{"status":"completed"}', 0, 0))
         conn.commit()
     assert management.recover_reservations(service, SYMBOL) == 0
@@ -244,7 +244,7 @@ def test_background_recovery_updates_original_mcp_outer_identity_without_resubmi
     before = deepcopy(exchange.writes)
     assert management.recover_reservations(service, SYMBOL) == 1
     with database.get_db_conn() as conn:
-        outer = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=?', ('scope', public_id)).fetchone()
+        outer = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=%s AND operation_id=%s', ('scope', public_id)).fetchone()
         resolved = json.loads(outer['result'])
     assert resolved['operation_id'] == public_id and outer['principal'] == principal
     assert outer['state'] in {'submitted', 'completed'}
@@ -267,10 +267,10 @@ def _callback_with_visible_ack(db_path, entered, release, crash):
         current['exits'].append(record)
         service._save(current)
         with database.get_db_conn() as conn:
-            conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+            conn.execute('INSERT INTO trade_action_runs (config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                          (service.config_id, 'visible-ack-original', SYMBOL, fingerprint, 'running',
                           '{"status":"unknown","operation_id":"visible-ack-original"}', time.time(), time.time()))
-            conn.execute('INSERT INTO trade_operation_requests VALUES(?,?,?)',
+            conn.execute('INSERT INTO trade_operation_requests (config_id,operation_id,request_json) VALUES(%s,%s,%s)',
                          (service.config_id, 'visible-ack-original', encoded))
             conn.commit()
         entered.set()
@@ -293,7 +293,7 @@ def test_visible_ack_does_not_release_live_process_but_crash_can_recover_proof(m
         assert management.recover_reservations(service, SYMBOL) == 0
         assert reservation_state() == 'running'
         with database.get_db_conn() as conn:
-            assert conn.execute('SELECT status FROM trade_action_runs WHERE operation_id=?',
+            assert conn.execute('SELECT status FROM trade_action_runs WHERE operation_id=%s',
                                 ('visible-ack-original',)).fetchone()[0] == 'running'
         with pytest.raises(ValueError, match='running'):
             with management.action_reservation(service, SYMBOL, 'LONG', 'new-operation'):
@@ -327,3 +327,9 @@ def test_nested_same_scope_reuses_os_lock_and_other_scope_cannot_bypass(managed)
             with management.action_reservation(service, SYMBOL, 'SHORT', 'nested-other-side'):
                 pytest.fail('Nested action bypassed side coordination')
     assert reservation_state() == 'finished'
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

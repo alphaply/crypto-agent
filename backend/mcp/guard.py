@@ -46,8 +46,8 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
     plans = []
     links = {}
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        placeholders = ','.join('?' for _ in aliases)
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
+        placeholders = ','.join('%s' for _ in aliases)
         if 'real_protection_plans' in tables:
             for row in conn.execute(f'SELECT config_id,payload FROM real_protection_plans WHERE symbol IN ({placeholders})', aliases):
                 plan = json.loads(row['payload'])
@@ -58,7 +58,7 @@ def assert_position_owner(market_tool, symbol, *, plan_override=None, adopted_on
                         plan = plan_override
                     plans.append(plan)
         if 'execution_order_links' in tables:
-            for row in conn.execute(f'SELECT order_id,config_id,role,payload FROM execution_order_links WHERE account_scope=? AND symbol IN ({placeholders})', (scope, *aliases)):
+            for row in conn.execute(f'SELECT order_id,config_id,role,payload FROM execution_order_links WHERE account_scope=%s AND symbol IN ({placeholders})', (scope, *aliases)):
                 links[str(row['order_id'])] = {'config_id': row['config_id'], 'role': row['role'], **json.loads(row['payload'])}
     for plan in plans:
         independent = plan.get('execution_mode') == 'independent_exits'

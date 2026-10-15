@@ -110,7 +110,7 @@ def test_supplied_equity_change_and_incomplete_profit_are_distinct(simulation, m
     ledger = complete_ledger(window_complete=False, unknown_owner_fill_count=5, fill_count=0)
     monkeypatch.setattr(execution_ledger, 'execution_context', lambda *a, **k: '\n' + json.dumps(ledger))
     with database.get_db_conn() as conn:
-        conn.executemany('INSERT INTO balance_history(config_id,symbol,timestamp,total_equity) VALUES(?,?,?,?)', [
+        conn.cursor().executemany('INSERT INTO balance_history(config_id,symbol,timestamp,total_equity) VALUES(%s,%s,%s,%s)', [
             ('cfg', 'ETH/USDT', '2026-10-14 00:00:18', 591.12),
             ('cfg', 'ETH/USDT', '2026-10-14 12:00:09', 589.00)])
         conn.commit()
@@ -125,8 +125,8 @@ def test_supplied_equity_change_and_incomplete_profit_are_distinct(simulation, m
 def test_strategy_metrics_keep_zero_missing_values_and_window_separate(simulation):
     now = datetime(2026, 10, 14, 13)
     with database.get_db_conn() as conn:
-        conn.executemany('INSERT INTO mock_orders(order_id,config_id,symbol,status,close_time,realized_pnl) '
-                         'VALUES(?,?,?,?,?,?)', [
+        conn.cursor().executemany('INSERT INTO mock_orders(order_id,config_id,symbol,status,close_time,realized_pnl) '
+                         'VALUES(%s,%s,%s,%s,%s,%s)', [
                              ('recent', 'cfg', 'ETH/USDT', 'CLOSED', '2026-10-14 12:00:00', 0),
                              ('older', 'cfg', 'ETH/USDT', 'CLOSED', '2026-10-12 12:00:00', 7),
                              ('other', 'other', 'ETH/USDT', 'CLOSED', '2026-10-14 12:00:00', 99)])
@@ -155,7 +155,7 @@ def test_real_details_preserve_same_account_and_snapshot_boundaries(simulation, 
             timestamp = int(now.replace(hour=hour).timestamp() * 1000)
             conn.execute('INSERT INTO execution_position_history(position_id,account_scope,config_id,symbol,side,'
                          'opened_at_ms,closed_at_ms,realized_pnl,fees_json,payload,updated_at_ms) '
-                         'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                          (name, scope, 'cfg', 'ETH/USDT:USDT', 'LONG', timestamp - 60000, timestamp,
                           3, '{"USDT":0.1}', '{"missing_fees":false}', timestamp))
         conn.commit()

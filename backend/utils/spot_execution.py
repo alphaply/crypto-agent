@@ -5,6 +5,7 @@ reserved and blocks further buys until reconciled; changing symbols or tool IDs
 must never manufacture more budget.
 """
 from __future__ import annotations
+from backend.storage import lock_scope
 
 from contextvars import ContextVar
 from datetime import datetime, timedelta
@@ -30,22 +31,8 @@ def resolve_spot_symbol(config: dict, requested: str | None = None) -> str:
 
 
 def _initialize(conn) -> None:
-    conn.execute("""CREATE TABLE IF NOT EXISTS spot_budget_reservations (
-        config_id TEXT NOT NULL, operation_id TEXT NOT NULL, cycle_id TEXT NOT NULL,
-        symbol TEXT NOT NULL, quote_cost REAL NOT NULL, status TEXT NOT NULL,
-        order_id TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
-        PRIMARY KEY(config_id, operation_id))""")
-    columns = {row[1] for row in conn.execute('PRAGMA table_info(spot_budget_reservations)')}
-    for name, column_type in (('client_order_id', 'TEXT'), ('entry_price', 'REAL'), ('amount', 'REAL')):
-        if name not in columns:
-            conn.execute(f'ALTER TABLE spot_budget_reservations ADD COLUMN {name} {column_type}')
-    for name, declaration in (('reservation_kind', "TEXT NOT NULL DEFAULT 'buy'"), ('allocation_ceiling', 'REAL'), ('fill_cost_anchor', 'REAL')):
-        if name not in columns:
-            conn.execute(f'ALTER TABLE spot_budget_reservations ADD COLUMN {name} {declaration}')
-    conn.execute('''CREATE TABLE IF NOT EXISTS spot_budget_cycles (
-        config_id TEXT NOT NULL, cycle_id TEXT NOT NULL, origin TEXT NOT NULL,
-        budget REAL NOT NULL, created_at REAL NOT NULL,
-        PRIMARY KEY(config_id,cycle_id))''')
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def ensure_spot_budget_cycle(config_id: str, config: dict, cycle_id: str, origin: str = 'manual') -> str:
@@ -58,7 +45,7 @@ def ensure_spot_budget_cycle(config_id: str, config: dict, cycle_id: str, origin
     amount = _positive(100 if amount in (None, '') else amount, '每次运行组合预算')
     with database.get_db_conn() as conn:
         _initialize(conn)
-        conn.execute('INSERT OR IGNORE INTO spot_budget_cycles VALUES (?,?,?,?,?)',
+        conn.execute('INSERT INTO spot_budget_cycles(config_id,cycle_id,origin,budget,created_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',
                      (config_id, str(cycle_id), origin, amount, time.time()))
         conn.commit()
     return str(cycle_id)
@@ -72,7 +59,7 @@ def _cycle_commitments(conn, config_id, cycle_id, reservations):
     for row in rows:
         if row['reservation_kind'] == 'edit':
             cost = float(row['quote_cost'])
-            fill = conn.execute('SELECT * FROM spot_order_fills WHERE config_id=? AND symbol=? AND order_id=?',
+            fill = conn.execute('SELECT * FROM spot_order_fills WHERE config_id=%s AND symbol=%s AND order_id=%s',
                                 (config_id, row['symbol'], row['order_id'])).fetchone()
             if fill and str(fill['status']).upper() in {'CANCELLED','CANCELED','EXPIRED','REJECTED','FILLED','CLOSED'}:
                 cost = min(cost, max(0, float(fill['filled_cost'] or 0) - float(row['fill_cost_anchor'] or 0)))
@@ -83,7 +70,7 @@ def _cycle_commitments(conn, config_id, cycle_id, reservations):
             continue
         if row['order_id']:
             seen.add(key)
-        fill = conn.execute('SELECT * FROM spot_order_fills WHERE config_id=? AND symbol=? AND order_id=?',
+        fill = conn.execute('SELECT * FROM spot_order_fills WHERE config_id=%s AND symbol=%s AND order_id=%s',
                             (config_id, row['symbol'], row['order_id'])).fetchone() if row['order_id'] else None
         cost = float(row['quote_cost'])
         if fill:
@@ -137,7 +124,7 @@ def _known_commitments(conn, config_id: str, created_after: float | None = None)
         f.avg_fill_price AS sync_price
         FROM orders o LEFT JOIN spot_order_fills f
         ON f.order_id=o.order_id AND f.config_id=o.config_id AND f.symbol=o.symbol
-        WHERE o.config_id=? AND o.trade_mode='SPOT_DCA'
+        WHERE o.config_id=%s AND o.trade_mode='SPOT_DCA'
         AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
         AND UPPER(o.side) IN ('BUY', 'BUY_LIMIT') ORDER BY o.id DESC""", (config_id,)).fetchall()
     seen = set()
@@ -188,7 +175,7 @@ def _reconcile_known_reservations(conn, config_id: str) -> None:
         ON o.config_id=r.config_id AND o.symbol=r.symbol AND o.order_id=r.order_id
         JOIN spot_order_fills f
         ON f.config_id=r.config_id AND f.symbol=r.symbol AND f.order_id=r.order_id
-        WHERE r.config_id=? AND r.status IN ('reserved','unknown') AND r.reservation_kind='buy'
+        WHERE r.config_id=%s AND r.status IN ('reserved','unknown') AND r.reservation_kind='buy'
         AND o.trade_mode='SPOT_DCA' AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
         AND UPPER(o.side) IN ('BUY','BUY_LIMIT')""", (config_id,)).fetchall()
     for row in rows:
@@ -199,8 +186,8 @@ def _reconcile_known_reservations(conn, config_id: str) -> None:
             continue
         if values[0] > 0 and values[1] <= 0 and values[2] <= 0:
             continue
-        conn.execute("UPDATE spot_budget_reservations SET status='submitted',updated_at=? "
-                     'WHERE config_id=? AND operation_id=?', (time.time(), config_id, row['operation_id']))
+        conn.execute("UPDATE spot_budget_reservations SET status='submitted',updated_at=%s "
+                     'WHERE config_id=%s AND operation_id=%s', (time.time(), config_id, row['operation_id']))
 
 
 def reserve_spot_batch(config_id: str, config: dict, parent_id: str, orders: list) -> None:
@@ -218,15 +205,15 @@ def reserve_spot_batch(config_id: str, config: dict, parent_id: str, orders: lis
     if not math.isfinite(requested):
         raise ValueError('订单总金额必须为有限正数')
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'spot-budget', config_id)
         _initialize(conn)
-        cycle = conn.execute('SELECT budget FROM spot_budget_cycles WHERE config_id=? AND cycle_id=?',
+        cycle = conn.execute('SELECT budget FROM spot_budget_cycles WHERE config_id=%s AND cycle_id=%s',
                              (config_id, cycle_id)).fetchone()
         if not cycle:
             raise ValueError('现货运行周期未注册或旧审批已过期，请重新分析')
         per_cycle = min(per_cycle, float(cycle['budget']))
         _reconcile_known_reservations(conn, config_id)
-        reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=?', (config_id,)).fetchall()
+        reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=%s', (config_id,)).fetchall()
         if any(row['status'] in {'reserved', 'unknown'} for row in reservations):
             raise ValueError('之前的现货下单结果未知或正在提交，待核验后才能继续买入')
         spent = _cycle_commitments(conn, config_id, cycle_id, reservations)
@@ -239,9 +226,9 @@ def reserve_spot_batch(config_id: str, config: dict, parent_id: str, orders: lis
             if committed + requested > lifetime + 1e-8:
                 raise ValueError(f'所有标的共享任务总预算 {lifetime:g}，已成交及挂单占用 {committed:g}，申请 {requested:g}')
         now = time.time()
-        conn.executemany('''INSERT INTO spot_budget_reservations
+        conn.cursor().executemany('''INSERT INTO spot_budget_reservations
             (config_id,operation_id,cycle_id,symbol,quote_cost,status,order_id,created_at,updated_at,
-             client_order_id,entry_price,amount) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''', [
+             client_order_id,entry_price,amount) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''', [
             (config_id, f'{parent_id}:{index}', cycle_id, order.symbol, cost, 'reserved', None, now, now,
              spot_client_order_id(config_id, f'{parent_id}:{index}'), order.entry_price, order.amount)
             for index, (order, cost) in enumerate(zip(orders, costs))
@@ -262,7 +249,7 @@ def reserve_spot_edit(config_id, config, operation_id, symbol, order, amount, pr
     cycle_id = current_spot_cycle_id.get()
     with database.get_db_conn() as conn:
         _initialize(conn)
-        own = conn.execute("SELECT 1 FROM orders WHERE config_id=? AND symbol=? AND order_id=? AND trade_mode='SPOT_DCA' "
+        own = conn.execute("SELECT 1 FROM orders WHERE config_id=%s AND symbol=%s AND order_id=%s AND trade_mode='SPOT_DCA' "
                            "AND UPPER(side) IN ('BUY','BUY_LIMIT') AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' LIMIT 1",
                            (config_id, symbol, str(order['id']))).fetchone()
     charge = increase if own else new_cost if increase>1e-8 else 0
@@ -271,21 +258,21 @@ def reserve_spot_edit(config_id, config, operation_id, symbol, order, amount, pr
             raise ValueError('现货买单改单需要共同运行周期')
         ensure_spot_budget_cycle(config_id, config, cycle_id, 'edit')
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'spot-budget', config_id)
         _initialize(conn)
-        if conn.execute('SELECT 1 FROM spot_budget_reservations WHERE config_id=? AND operation_id=?', (config_id, operation_id)).fetchone():
+        if conn.execute('SELECT 1 FROM spot_budget_reservations WHERE config_id=%s AND operation_id=%s', (config_id, operation_id)).fetchone():
             raise ValueError('原现货改单预算身份已有记录，必须查询原请求而不能重新提交')
-        reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=?', (config_id,)).fetchall()
+        reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=%s', (config_id,)).fetchall()
         if charge > 1e-8 and any(r['status'] in {'reserved','unknown'} for r in reservations):
             raise ValueError('现货原操作未核验，不能增加买单承诺')
         if own:
-            conn.execute("UPDATE orders SET entry_price=?,amount=?,filled_amount=? WHERE config_id=? AND symbol=? AND order_id=? "
+            conn.execute("UPDATE orders SET entry_price=%s,amount=%s,filled_amount=%s WHERE config_id=%s AND symbol=%s AND order_id=%s "
                          "AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'",
                          (float(order['price']), float(order['amount']), float(order['filled']), config_id, symbol, str(order['id'])))
         spent = _cycle_commitments(conn, config_id, cycle_id, reservations)
         limit = config.get('dca_amount', config.get('dca_budget',100))
         limit = _nonnegative(100 if limit in (None,'') else limit, '本轮预算')
-        cycle = conn.execute('SELECT budget FROM spot_budget_cycles WHERE config_id=? AND cycle_id=?', (config_id,cycle_id)).fetchone()
+        cycle = conn.execute('SELECT budget FROM spot_budget_cycles WHERE config_id=%s AND cycle_id=%s', (config_id,cycle_id)).fetchone()
         if cycle:
             limit = min(limit, float(cycle['budget']))
         if charge > 1e-8 and (not cycle or spent + charge > limit + 1e-8):
@@ -295,12 +282,12 @@ def reserve_spot_edit(config_id, config, operation_id, symbol, order, amount, pr
         lifetime = config.get('dca_budget')
         if lifetime not in (None,'') and committed + charge > _nonnegative(lifetime,'任务总预算') + 1e-8:
             raise ValueError('现货买单改单超过所有标的共享的任务总预算')
-        conn.execute("UPDATE spot_budget_reservations SET allocation_ceiling=COALESCE(allocation_ceiling,quote_cost) WHERE config_id=? AND symbol=? AND order_id=? AND reservation_kind='buy'",
+        conn.execute("UPDATE spot_budget_reservations SET allocation_ceiling=COALESCE(allocation_ceiling,quote_cost) WHERE config_id=%s AND symbol=%s AND order_id=%s AND reservation_kind='buy'",
                      (config_id,symbol,str(order['id'])))
         now = time.time()
         conn.execute('''INSERT INTO spot_budget_reservations
             (config_id,operation_id,cycle_id,symbol,quote_cost,status,order_id,created_at,updated_at,entry_price,amount,reservation_kind,fill_cost_anchor)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
             (config_id,operation_id,cycle_id or 'reduction',symbol,charge,'reserved',str(order['id']),now,now,price,amount,'edit',float(order.get('cost') or 0)))
         conn.commit()
 
@@ -308,10 +295,10 @@ def reserve_spot_edit(config_id, config, operation_id, symbol, order, amount, pr
 def finish_spot_edit(config_id, operation_id, symbol, order, *, confirmed):
     with database.get_db_conn() as conn:
         _initialize(conn)
-        conn.execute('UPDATE spot_budget_reservations SET status=?,updated_at=? WHERE config_id=? AND operation_id=?',
+        conn.execute('UPDATE spot_budget_reservations SET status=%s,updated_at=%s WHERE config_id=%s AND operation_id=%s',
                      ('submitted' if confirmed else 'unknown',time.time(),config_id,operation_id))
         if confirmed:
-            conn.execute("UPDATE orders SET entry_price=?,amount=?,filled_amount=? WHERE config_id=? AND symbol=? AND order_id=? "
+            conn.execute("UPDATE orders SET entry_price=%s,amount=%s,filled_amount=%s WHERE config_id=%s AND symbol=%s AND order_id=%s "
                          "AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'",
                          (float(order['price']),float(order['amount']),float(order['filled']),config_id,symbol,str(order['id'])))
         conn.commit()
@@ -328,12 +315,12 @@ def spot_budget_status(config_id: str, config: dict, cycle_id: str | None = None
     lifetime_limit = _nonnegative(lifetime_limit, '任务总预算') if lifetime_limit not in (None, '') else None
     with database.get_db_conn() as conn:
         _initialize(conn)
-        cycle = conn.execute('SELECT budget FROM spot_budget_cycles WHERE config_id=? AND cycle_id=?',
+        cycle = conn.execute('SELECT budget FROM spot_budget_cycles WHERE config_id=%s AND cycle_id=%s',
                              (config_id, cycle_id)).fetchone()
         if cycle:
             limit = min(limit, float(cycle['budget']))
-        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='spot_budget_reservations'").fetchone()
-        reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=?', (config_id,)).fetchall() if exists else []
+        exists = conn.execute("SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname=current_schema() AND tablename='spot_budget_reservations'").fetchone()
+        reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=%s', (config_id,)).fetchall() if exists else []
         spent = _cycle_commitments(conn, config_id, cycle_id, reservations)
         committed, known = _known_commitments(conn, config_id)
         committed += sum(float(row['quote_cost']) for row in reservations
@@ -352,8 +339,8 @@ def spot_budget_status(config_id: str, config: dict, cycle_id: str | None = None
 def finish_spot_reservation(config_id: str, operation_id: str, status: str, order_id=None) -> None:
     with database.get_db_conn() as conn:
         _initialize(conn)
-        conn.execute('UPDATE spot_budget_reservations SET status=?,order_id=COALESCE(?,order_id),updated_at=? '
-                     'WHERE config_id=? AND operation_id=?',
+        conn.execute('UPDATE spot_budget_reservations SET status=%s,order_id=COALESCE(%s,order_id),updated_at=%s '
+                     'WHERE config_id=%s AND operation_id=%s',
                      (status, str(order_id) if order_id else None, time.time(), config_id, operation_id))
         conn.commit()
 
@@ -367,7 +354,7 @@ def reconcile_spot_reservations(config_id: str, config: dict, market_factory) ->
     with database.get_db_conn() as conn:
         _initialize(conn)
         rows = [dict(row) for row in conn.execute('''SELECT * FROM spot_budget_reservations
-            WHERE config_id=? AND (status='unknown' OR (status='reserved' AND updated_at<?))''',
+            WHERE config_id=%s AND (status='unknown' OR (status='reserved' AND updated_at<%s))''',
             (config_id, time.time() - 60))]
         conn.commit()
     if not rows:
@@ -417,8 +404,8 @@ def reconcile_spot_reservations(config_id: str, config: dict, market_factory) ->
                             'CANCELLED' if status in {'canceled', 'cancelled', 'expired', 'rejected'} else
                             'PARTIAL' if qty > 0 else 'OPEN')
             with database.get_db_conn() as conn:
-                exists = conn.execute('''SELECT 1 FROM orders WHERE config_id=? AND symbol=?
-                    AND order_id=? AND trade_mode='SPOT_DCA'
+                exists = conn.execute('''SELECT 1 FROM orders WHERE config_id=%s AND symbol=%s
+                    AND order_id=%s AND trade_mode='SPOT_DCA'
                     AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''',
                     (config_id, row['symbol'], order_id)).fetchone()
             if not exists:
@@ -428,8 +415,8 @@ def reconcile_spot_reservations(config_id: str, config: dict, market_factory) ->
                                         amount=row['amount'] or order.get('amount') or qty, status=local_status)
                 with database.get_db_conn() as conn:
                     created = datetime.fromtimestamp(row['created_at'], database.TZ_CN).strftime('%Y-%m-%d %H:%M:%S')
-                    conn.execute('''UPDATE orders SET timestamp=? WHERE config_id=? AND symbol=?
-                        AND order_id=? AND trade_mode='SPOT_DCA'
+                    conn.execute('''UPDATE orders SET timestamp=%s WHERE config_id=%s AND symbol=%s
+                        AND order_id=%s AND trade_mode='SPOT_DCA'
                         AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''',
                         (created, config_id, row['symbol'], order_id))
                     conn.commit()
@@ -467,7 +454,7 @@ def assert_owned_spot_order(market_tool, symbol: str, order_id: str, config_id: 
             raise ValueError('Current spot target identity could not be verified')
         return {'source': 'current_management_claim', 'role': 'managed', 'trigger': False}
     with database.get_db_conn() as conn:
-        rows = conn.execute("""SELECT config_id FROM orders WHERE order_id=? AND symbol=?
+        rows = conn.execute("""SELECT config_id FROM orders WHERE order_id=%s AND symbol=%s
             AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'
             AND UPPER(side) IN ('BUY','BUY_LIMIT')""", (str(order_id), symbol)).fetchall()
         if not any(row['config_id'] == config_id for row in rows):

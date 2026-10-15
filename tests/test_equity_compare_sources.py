@@ -1,4 +1,5 @@
-import sqlite3
+import pytest
+from backend import storage
 from contextlib import contextmanager
 
 from backend.app.services import dashboard_service
@@ -19,53 +20,27 @@ class StubConfig:
 
 def test_equity_compare_uses_config_scoped_sources(tmp_path, monkeypatch):
     db_path = tmp_path / "compare.db"
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE balance_history (
-            id INTEGER PRIMARY KEY,
-            timestamp TEXT,
-            symbol TEXT,
-            config_id TEXT,
-            total_equity REAL
-        );
-        CREATE TABLE mock_balance_history (
-            id INTEGER PRIMARY KEY,
-            timestamp TEXT,
-            symbol TEXT,
-            config_id TEXT,
-            balance REAL,
-            total_equity REAL
-        );
-        CREATE TABLE dca_daily_snapshots (
-            id INTEGER PRIMARY KEY,
-            snapshot_date TEXT,
-            symbol TEXT,
-            config_id TEXT,
-            total_invested REAL
-        );
-        """
-    )
+    conn = storage.connect()
+    None  # Production schema is installed by pg.
     conn.execute(
-        "INSERT INTO balance_history (timestamp, symbol, config_id, total_equity) VALUES (?, ?, ?, ?)",
+        "INSERT INTO balance_history (timestamp, symbol, config_id, total_equity) VALUES (%s, %s, %s, %s)",
         ("2026-07-01 10:00:00", "BTC/USDT", "real-a", 12000),
     )
     conn.execute(
-        "INSERT INTO balance_history (timestamp, symbol, config_id, total_equity) VALUES (?, ?, ?, ?)",
+        "INSERT INTO balance_history (timestamp, symbol, config_id, total_equity) VALUES (%s, %s, %s, %s)",
         ("2026-07-01 10:00:00", "BTC/USDT", None, 99999),
     )
     conn.execute(
-        "INSERT INTO mock_balance_history (timestamp, symbol, config_id, balance, total_equity) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO mock_balance_history (timestamp, symbol, config_id, balance, total_equity) VALUES (%s, %s, %s, %s, %s)",
         ("2026-07-01 10:00:00", "BTC/USDT", "strategy-a", 10000, 10100),
     )
     conn.execute(
-        "INSERT INTO dca_daily_snapshots (snapshot_date, symbol, config_id, total_invested) VALUES (?, ?, ?, ?)",
+        "INSERT INTO dca_daily_snapshots (snapshot_date, symbol, config_id, total_invested) VALUES (%s, %s, %s, %s)",
         ("2026-07-01", "BTC/USDT", "dca-a", 2500),
     )
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(stats_service, "DB_NAME", str(db_path))
     monkeypatch.setattr(stats_service, "global_config", StubConfig())
 
     payload = stats_service.get_equity_compare_payload("BTC/USDT", "real-a,strategy-a,dca-a")
@@ -83,30 +58,17 @@ def test_equity_compare_uses_config_scoped_sources(tmp_path, monkeypatch):
 
 def test_dashboard_data_includes_spot_dca_configs(tmp_path, monkeypatch):
     db_path = tmp_path / "dashboard.db"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
-        CREATE TABLE summaries (
-            id INTEGER PRIMARY KEY,
-            config_id TEXT,
-            agent_name TEXT,
-            symbol TEXT,
-            content TEXT,
-            strategy_logic TEXT,
-            timestamp TEXT,
-            agent_type TEXT
-        )
-        """
-    )
-    conn.execute("CREATE TABLE orders (config_id TEXT, trade_mode TEXT, timestamp TEXT)")
+    conn = storage.connect()
+
+    None  # Production schema is installed by pg.
+    None  # Production schema is installed by pg.
     conn.commit()
     conn.close()
 
     @contextmanager
     def connect():
-        db_conn = sqlite3.connect(db_path)
-        db_conn.row_factory = sqlite3.Row
+        db_conn = storage.connect()
+
         try:
             yield db_conn
         finally:
@@ -125,19 +87,8 @@ def test_dashboard_data_includes_spot_dca_configs(tmp_path, monkeypatch):
 
 def test_global_compare_uses_each_task_symbol_and_deduplicates_real_account(tmp_path, monkeypatch):
     db_path = tmp_path / 'global-compare.db'
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript('''
-            CREATE TABLE balance_history(id INTEGER PRIMARY KEY,timestamp TEXT,symbol TEXT,config_id TEXT,total_equity REAL);
-            CREATE TABLE mock_balance_history(id INTEGER PRIMARY KEY,timestamp TEXT,symbol TEXT,config_id TEXT,balance REAL,total_equity REAL);
-            CREATE TABLE dca_daily_snapshots(id INTEGER PRIMARY KEY,snapshot_date TEXT,symbol TEXT,config_id TEXT,total_invested REAL);
-            INSERT INTO balance_history VALUES(1,'2026-10-01 10:00','BTC/USDT','real-btc',100);
-            INSERT INTO balance_history VALUES(2,'2026-10-01 11:00','ETH/USDT','real-eth',105);
-            INSERT INTO balance_history VALUES(3,'2026-10-01 12:00','BTC/USDT','other-account',50);
-            INSERT INTO mock_balance_history VALUES(1,'2026-10-01','ETH/USDT','strategy-eth',200,220);
-            INSERT INTO mock_balance_history VALUES(2,'2026-10-01','BTC/USDT','strategy-eth',999,999);
-            INSERT INTO dca_daily_snapshots VALUES(1,'2026-10-01','BTC/USDT','spot',10);
-            INSERT INTO dca_daily_snapshots VALUES(2,'2026-10-01','ETH/USDT','spot',20);
-        ''')
+    with storage.connect() as conn:
+        conn.execute("INSERT INTO balance_history(id,timestamp,symbol,config_id,total_equity) VALUES(1,'2026-10-01 10:00','BTC/USDT','real-btc',100);\n            INSERT INTO balance_history(id,timestamp,symbol,config_id,total_equity) VALUES(2,'2026-10-01 11:00','ETH/USDT','real-eth',105);\n            INSERT INTO balance_history(id,timestamp,symbol,config_id,total_equity) VALUES(3,'2026-10-01 12:00','BTC/USDT','other-account',50);\n            INSERT INTO mock_balance_history(id,timestamp,symbol,config_id,balance,total_equity) VALUES(1,'2026-10-01','ETH/USDT','strategy-eth',200,220);\n            INSERT INTO mock_balance_history(id,timestamp,symbol,config_id,balance,total_equity) VALUES(2,'2026-10-01','BTC/USDT','strategy-eth',999,999);\n            INSERT INTO dca_daily_snapshots(id,snapshot_date,symbol,config_id,total_invested) VALUES(1,'2026-10-01','BTC/USDT','spot',10);\n            INSERT INTO dca_daily_snapshots(id,snapshot_date,symbol,config_id,total_invested) VALUES(2,'2026-10-01','ETH/USDT','spot',20);")
     class GlobalConfig:
         def get_all_symbol_configs(self):
             return [
@@ -151,7 +102,6 @@ def test_global_compare_uses_each_task_symbol_and_deduplicates_real_account(tmp_
         def get_exchange_credentials(self, config_id):
             return 'binance', 'other-key' if config_id == 'other-account' else 'shared-key', 'secret', ''
 
-    monkeypatch.setattr(stats_service, 'DB_NAME', str(db_path))
     monkeypatch.setattr(stats_service, 'global_config', GlobalConfig())
     payload = stats_service.get_equity_compare_payload()
     by_id = {item['config_id']: item for item in payload['series']}
@@ -165,3 +115,6 @@ def test_global_compare_uses_each_task_symbol_and_deduplicates_real_account(tmp_
     assert [item['mode'] for item in payload['groups']] == ['REAL', 'STRATEGY', 'SPOT_DCA']
     filtered = stats_service.get_equity_compare_payload(config_ids='real-eth,strategy-eth')
     assert [item['config_id'] for item in filtered['series']] == ['real-eth', 'strategy-eth']
+
+
+pytestmark = pytest.mark.usefixtures("pg")

@@ -1,3 +1,4 @@
+from backend.storage import table_columns
 import uuid
 import json
 import os
@@ -468,7 +469,7 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
                     if trade_mode == 'SPOT_DCA':
                         with database.get_db_conn() as conn:
                             owned_ids = {str(row[0]) for row in conn.execute(
-                                "SELECT order_id FROM orders WHERE config_id=? AND symbol=? AND trade_mode='SPOT_DCA' "
+                                "SELECT order_id FROM orders WHERE config_id=%s AND symbol=%s AND trade_mode='SPOT_DCA' "
                                 "AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'", (config_id, asset))}
                         recent_trades = [t for t in recent_trades if str(t.get('order')) in owned_ids]
                         database.save_trade_history(recent_trades, config_id=config_id)
@@ -1357,8 +1358,8 @@ def run_agent_for_config(config: dict, human_message: str = None, progress_callb
     symbol = config['symbol']
     run_id = run_id or 'manual:' + uuid.uuid4().hex
     with database.get_db_conn() as conn:
-        columns = {row[1] for row in conn.execute('PRAGMA table_info(summaries)')}
-        if 'run_id' in columns and conn.execute('SELECT 1 FROM summaries WHERE config_id=? AND run_id=?',
+        columns = {column['name'] for column in table_columns(conn, 'summaries')}
+        if 'run_id' in columns and conn.execute('SELECT 1 FROM summaries WHERE config_id=%s AND run_id=%s',
                                                (config_id, run_id)).fetchone():
             logger.info('Run %s already has a persisted result; trading is not replayed', run_id)
             return

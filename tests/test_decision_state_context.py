@@ -68,7 +68,7 @@ def test_old_unresolved_all_is_scoped_and_not_dropped_after_twenty(real_short):
     call('close', dict(side='SHORT', order_type='market', close_all=True, reason='close'), 'old-unknown')
     with database.get_db_conn() as conn:
         for n in range(25):
-            conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+            conn.execute('INSERT INTO trade_action_runs(config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                          ('cfg', f'history-{n}', 'ETH/USDT', 'hash', 'completed', '{}', 0, n))
         conn.commit()
     writes = len(exchange.calls)

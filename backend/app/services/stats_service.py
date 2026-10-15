@@ -1,11 +1,11 @@
-import sqlite3
+from backend import storage
 import json
 import time
 
 import pandas as pd
 
 from backend.config import config as global_config
-from backend.database import DB_NAME, delete_model_pricing, get_all_pricing, get_history_pnl_stats, save_trade_history, update_model_pricing
+from backend.database import delete_model_pricing, get_all_pricing, get_history_pnl_stats, save_trade_history, update_model_pricing
 from backend.utils.indicators import calc_ema
 from backend.utils.market_data import MarketTool
 
@@ -36,10 +36,10 @@ def _local_management_projection(config_id: str, symbol: str, cfg: dict, account
             projection.update(current, policy='visible_first_claim')
         with get_db_conn() as conn:
             if account_scope and projection.get('policy') != 'visible_first_claim':
-                valid_sides = {row[0] for row in conn.execute('SELECT side FROM position_management_scopes WHERE owner=? AND symbol=? AND account_scope=?',
+                valid_sides = {row[0] for row in conn.execute('SELECT side FROM position_management_scopes WHERE owner=%s AND symbol=%s AND account_scope=%s',
                                                             (config_id, canonical, account_scope))}
                 projection['scopes'] = [scope for scope in projection['scopes'] if scope['side'] in valid_sides]
-            rows = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=?', (config_id,)).fetchall()
+            rows = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s', (config_id,)).fetchall()
         for row in rows:
             plan = json.loads(row['payload'])
             if (canonical_symbol(plan['symbol']) != canonical or plan.get('state') == 'DONE'
@@ -50,6 +50,8 @@ def _local_management_projection(config_id: str, symbol: str, cfg: dict, account
                     records[order_reference(record)] = (plan, record)
                 if record.get('execution_order_id'):
                     records['regular:' + str(record['execution_order_id'])] = (plan, record)
+    except storage.Error:
+        raise
     except Exception as exc:
         projection.update(error=str(exc), complete=False)
     existing = {(scope['symbol'], scope['side']) for scope in projection['scopes']}
@@ -162,39 +164,38 @@ def delete_pricing_payload(model: str):
 
 
 def get_financial_stats_payload(symbol: str):
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    with storage.get_connection() as conn:
 
-    balance_history = cursor.execute(
-        "SELECT timestamp, total_equity, total_balance FROM balance_history WHERE symbol = ? ORDER BY id ASC LIMIT 200",
-        (symbol,),
-    ).fetchall()
+        cursor = conn.cursor()
 
-    daily_equity = cursor.execute(
-        """
-        SELECT day, total_equity FROM (
-            SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
-                   row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-            FROM balance_history WHERE symbol = ?
-        ) WHERE rn = 1 ORDER BY day ASC
-        """,
-        (symbol,),
-    ).fetchall()
+        balance_history = cursor.execute(
+            "SELECT timestamp, total_equity, total_balance FROM balance_history WHERE symbol = %s ORDER BY id ASC LIMIT 200",
+            (symbol,),
+        ).fetchall()
 
-    trades = cursor.execute("SELECT realized_pnl FROM trade_history WHERE symbol = ?", (symbol,)).fetchall()
-    total_pnl = sum(trade["realized_pnl"] for trade in trades)
-    win_trades = [trade for trade in trades if trade["realized_pnl"] > 0]
-    lose_trades = [trade for trade in trades if trade["realized_pnl"] < 0]
-    win_rate = (len(win_trades) / len(trades) * 100) if trades else 0
+        daily_equity = cursor.execute(
+            """
+            SELECT day, total_equity FROM (
+                SELECT substring(timestamp from 1 for 10) as day, total_equity,
+                       row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY timestamp DESC NULLS LAST) as rn
+                FROM balance_history WHERE symbol = %s
+            ) WHERE rn = 1 ORDER BY day ASC
+            """,
+            (symbol,),
+        ).fetchall()
 
-    latest_equity = balance_history[-1]["total_equity"] if balance_history else 0
-    latest_balance = balance_history[-1]["total_balance"] if balance_history else 0
-    conn.close()
+        trades = cursor.execute("SELECT realized_pnl FROM trade_history WHERE symbol = %s", (symbol,)).fetchall()
+        total_pnl = sum(trade["realized_pnl"] for trade in trades)
+        win_trades = [trade for trade in trades if trade["realized_pnl"] > 0]
+        lose_trades = [trade for trade in trades if trade["realized_pnl"] < 0]
+        win_rate = (len(win_trades) / len(trades) * 100) if trades else 0
+
+        latest_equity = balance_history[-1]["total_equity"] if balance_history else 0
+        latest_balance = balance_history[-1]["total_balance"] if balance_history else 0
 
     return {
-        "balance_history": [dict(row) for row in balance_history],
-        "daily_equity": [dict(row) for row in daily_equity],
+        "balance_history": [storage.record(row) for row in balance_history],
+        "daily_equity": [storage.record(row) for row in daily_equity],
         "summary": {
             "total_trades": len(trades),
             "total_pnl": round(total_pnl, 2),
@@ -237,6 +238,8 @@ def _safe_float(value, default=0.0):
         if value is None:
             return default
         return float(value)
+    except storage.Error:
+        raise
     except Exception:
         return default
 
@@ -308,13 +311,15 @@ def _fetch_real_position_data(mt, symbol, cfg):
             from backend.database import get_db_conn
             with get_db_conn() as conn:
                 rows = conn.execute(
-                    "SELECT payload FROM real_protection_plans WHERE config_id=?",
+                    "SELECT payload FROM real_protection_plans WHERE config_id=%s",
                     (config_id,)
                 ).fetchall()
                 for r in rows:
                     p = json.loads(r["payload"])
                     if p.get("state") != "DONE" and str(p.get('symbol', '')).split(':')[0] == symbol.split(':')[0]:
                         active_plans[p.get("side")] = p
+        except storage.Error:
+            raise
         except Exception as exc:
             logger.warning(f"Failed to load active protection plans for {config_id}: {exc}")
 
@@ -357,6 +362,8 @@ def _fetch_real_position_data(mt, symbol, cfg):
                     "protection_error": plan.get("error"),
                 }
             )
+    except storage.Error:
+        raise
     except Exception as exc:
         fetch_errors.append(f"fetch_positions_failed({type(exc).__name__}): {exc}")
         logger.error(f"REAL positions fetch failed config_id={cfg.get('config_id')} symbol={symbol}: {exc}", exc_info=True)
@@ -374,6 +381,8 @@ def _fetch_real_position_data(mt, symbol, cfg):
             if info.get(key) not in (None, ""):
                 balance = float(info.get(key) or 0)
                 break
+    except storage.Error:
+        raise
     except Exception as exc:
         fetch_errors.append(f"fetch_balance_failed({type(exc).__name__}): {exc}")
         logger.error(f"REAL balance fetch failed config_id={cfg.get('config_id')} symbol={symbol}: {exc}", exc_info=True)
@@ -430,6 +439,8 @@ def _fetch_real_position_data(mt, symbol, cfg):
                     }
                 )
             recent_trades = sorted(display_trades, key=lambda item: item["time"], reverse=True)[:5]
+    except storage.Error:
+        raise
     except Exception as exc:
         logger.warning(f"Fetch trades error config_id={cfg.get('config_id')} symbol={symbol}: {exc}")
 
@@ -440,6 +451,8 @@ def _fetch_real_position_data(mt, symbol, cfg):
             trade_summary["lose_count"] = pnl_stats.get("lose_count", 0)
             trade_summary["total_trades"] = pnl_stats.get("total_trades", 0)
             trade_summary["realized_pnl"] = pnl_stats.get("total_pnl", 0)
+    except storage.Error:
+        raise
     except Exception as exc:
         logger.warning(f"Failed to load full PnL stats from DB: {exc}")
 
@@ -457,6 +470,8 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
     try:
         ticker = mt.exchange.fetch_ticker(symbol)
         current_price = float(ticker.get("last", 0))
+    except storage.Error:
+        raise
     except Exception as exc:
         logger.warning(f"Fetch ticker error in STRATEGY mode: {exc}")
 
@@ -466,7 +481,7 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
     with get_db_conn() as conn:
         cursor = conn.cursor()
         open_mocks = cursor.execute(
-            "SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN'",
+            "SELECT * FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='OPEN'",
             (config_id, symbol),
         ).fetchall()
         from backend.utils.exit_policy import effective_exit_mode
@@ -512,7 +527,7 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
             )
 
         closed_mocks = cursor.execute(
-            "SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='CLOSED' AND realized_pnl IS NOT NULL",
+            "SELECT * FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='CLOSED' AND realized_pnl IS NOT NULL",
             (config_id, symbol),
         ).fetchall()
         for order in closed_mocks:
@@ -536,7 +551,7 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
             for trade in closed_mocks[-5:]
         ]
         if effective_exit_mode(cfg) == 'independent_exits':
-            history = cursor.execute("SELECT * FROM position_history WHERE config_id=? AND symbol=? AND source='mock_aggregate'", (config_id, symbol)).fetchall()
+            history = cursor.execute("SELECT * FROM position_history WHERE config_id=%s AND symbol=%s AND source='mock_aggregate'", (config_id, symbol)).fetchall()
             trade_summary['realized_pnl'] += sum(float(r['realized_pnl'] or 0) for r in history)
             closed = [r for r in history if r['status'] == 'CLOSED']
             trade_summary['total_trades'] += len(closed)
@@ -613,6 +628,8 @@ def get_position_stats_payload(config_id: str):
                 from backend.database_independent import MockIndependentTrading
                 exit_management = MockIndependentTrading(config_id, symbol).snapshot()
                 exit_management['mode'] = 'independent_exits'
+        except storage.Error:
+            raise
         except Exception as exc:
             exit_management.update(pending=True, error=str(exc), uncovered={'LONG': None, 'SHORT': None})
 
@@ -623,6 +640,8 @@ def get_position_stats_payload(config_id: str):
         management, managed_records = _local_management_projection(config_id, symbol, cfg, account_scope(mt.exchange, config_id))
         try:
             management['resource_states'] = {side: resource_management_status(mt, symbol, side) for side in ('LONG', 'SHORT')}
+        except storage.Error:
+            raise
         except Exception as exc:
             management.update(complete=False, error=str(exc))
         positions = _management_position_metadata(positions, management)
@@ -700,110 +719,109 @@ def get_equity_compare_payload(symbol: str | None = None, config_ids: str = ""):
             item = {**cfg, '_config_ids': [cfg['config_id']]}
         grouped_configs.append(item)
 
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    series = []
-    for cfg in grouped_configs:
-        config_id = cfg.get("config_id")
-        mode = str(cfg.get("mode") or "STRATEGY").upper()
-        display_name = cfg.get("title") or cfg.get("display_name") or config_id
-        label = f"{display_name} ({mode})"
-        points = []
-        data_source = None
-        selected_symbol = symbol or cfg.get('symbol') or next(iter(get_config_symbols(cfg)), '')
-        if mode == "REAL":
-            ids = cfg['_config_ids']
-            id_placeholders = ','.join('?' for _ in ids)
-            symbol_clause = ' AND symbol = ?' if symbol else ''
-            rows = cursor.execute(
-                f"""
-                SELECT day, total_equity FROM (
-                    SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
-                           row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                    FROM balance_history
-                    WHERE config_id IN ({id_placeholders}){symbol_clause} AND total_equity > 0
-                ) WHERE rn = 1 ORDER BY day ASC
-                """,
-                [*ids, *([symbol] if symbol else [])],
-            ).fetchall()
-            points = [{"date": row["day"], "equity": row["total_equity"]} for row in rows]
-            data_source = {
-                "table": "balance_history",
-                "field": "total_equity",
-                "scope": "account" if not symbol else "config_id",
-                "config_id": config_id,
-                "symbol": symbol,
-                "label": "balance_history.total_equity",
-                "display_label": "实盘账户权益快照",
-                "kind": "real_equity",
-            }
-        elif mode == "STRATEGY":
-            rows = cursor.execute(
-                """
-                SELECT h.day as day, COALESCE(h.total_equity, h.balance) as equity FROM (
-                    SELECT date(timestamp) as day,
-                           total_equity, balance, timestamp,
-                           row_number() OVER (PARTITION BY date(timestamp) ORDER BY id DESC) as rn
-                    FROM mock_balance_history
-                    WHERE config_id = ? AND symbol = ? AND COALESCE(total_equity, balance) > 0
-                ) h WHERE h.rn = 1 ORDER BY h.day ASC
-                """,
-                (config_id, selected_symbol),
-            ).fetchall()
-            points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
-            data_source = {
-                "table": "mock_balance_history",
-                "field": "total_equity",
-                "fallback_field": "balance",
-                "scope": "config_id",
-                "config_id": config_id,
-                "symbol": selected_symbol,
-                "label": "mock_balance_history.total_equity",
-                "display_label": "策略模拟权益快照",
-                "kind": "strategy_equity",
-            }
-        elif mode == "SPOT_DCA":
-            target_symbols = [symbol] if symbol else get_config_symbols(cfg)
-            placeholders = ','.join('?' for _ in target_symbols)
-            rows = cursor.execute(
-                f"""
-                SELECT snapshot_date AS day, SUM(total_invested) AS equity
-                FROM dca_daily_snapshots
-                WHERE config_id = ? AND symbol IN ({placeholders}) AND total_invested > 0
-                GROUP BY snapshot_date
-                ORDER BY snapshot_date ASC
-                """,
-                (config_id, *target_symbols),
-            ).fetchall()
-            points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
-            data_source = {
-                "table": "dca_daily_snapshots",
-                "field": "total_invested",
-                "scope": "config_id",
-                "config_id": config_id,
-                "symbol": symbol,
-                "label": "dca_daily_snapshots.total_invested",
-                "display_label": "定投累计投入快照",
-                "kind": "dca_invested",
-                "symbols": target_symbols,
-            }
+    with storage.get_connection() as conn:
 
-        series.append(
-            {
-                "config_id": config_id,
-                "config_ids": cfg['_config_ids'],
-                "account_scope": cfg.get('_account_scope'),
-                "symbol": selected_symbol if mode != 'SPOT_DCA' else symbol,
-                "label": label,
-                "mode": mode,
-                "points": points,
-                "data_source": data_source,
-                **_equity_series_metadata(points),
-            }
-        )
+        cursor = conn.cursor()
+        series = []
+        for cfg in grouped_configs:
+            config_id = cfg.get("config_id")
+            mode = str(cfg.get("mode") or "STRATEGY").upper()
+            display_name = cfg.get("title") or cfg.get("display_name") or config_id
+            label = f"{display_name} ({mode})"
+            points = []
+            data_source = None
+            selected_symbol = symbol or cfg.get('symbol') or next(iter(get_config_symbols(cfg)), '')
+            if mode == "REAL":
+                ids = cfg['_config_ids']
+                id_placeholders = ','.join('%s' for _ in ids)
+                symbol_clause = ' AND symbol = %s' if symbol else ''
+                rows = cursor.execute(
+                    f"""
+                    SELECT day, total_equity FROM (
+                        SELECT substring(timestamp from 1 for 10) as day, total_equity,
+                               row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY timestamp DESC NULLS LAST) as rn
+                        FROM balance_history
+                        WHERE config_id IN ({id_placeholders}){symbol_clause} AND total_equity > 0
+                    ) WHERE rn = 1 ORDER BY day ASC
+                    """,
+                    [*ids, *([symbol] if symbol else [])],
+                ).fetchall()
+                points = [{"date": row["day"], "equity": row["total_equity"]} for row in rows]
+                data_source = {
+                    "table": "balance_history",
+                    "field": "total_equity",
+                    "scope": "account" if not symbol else "config_id",
+                    "config_id": config_id,
+                    "symbol": symbol,
+                    "label": "balance_history.total_equity",
+                    "display_label": "实盘账户权益快照",
+                    "kind": "real_equity",
+                }
+            elif mode == "STRATEGY":
+                rows = cursor.execute(
+                    """
+                    SELECT h.day as day, COALESCE(h.total_equity, h.balance) as equity FROM (
+                        SELECT substring(timestamp from 1 for 10) as day,
+                               total_equity, balance, timestamp,
+                               row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY id DESC) as rn
+                        FROM mock_balance_history
+                        WHERE config_id = %s AND symbol = %s AND COALESCE(total_equity, balance) > 0
+                    ) h WHERE h.rn = 1 ORDER BY h.day ASC
+                    """,
+                    (config_id, selected_symbol),
+                ).fetchall()
+                points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
+                data_source = {
+                    "table": "mock_balance_history",
+                    "field": "total_equity",
+                    "fallback_field": "balance",
+                    "scope": "config_id",
+                    "config_id": config_id,
+                    "symbol": selected_symbol,
+                    "label": "mock_balance_history.total_equity",
+                    "display_label": "策略模拟权益快照",
+                    "kind": "strategy_equity",
+                }
+            elif mode == "SPOT_DCA":
+                target_symbols = [symbol] if symbol else get_config_symbols(cfg)
+                placeholders = ','.join('%s' for _ in target_symbols)
+                rows = cursor.execute(
+                    f"""
+                    SELECT snapshot_date AS day, SUM(total_invested) AS equity
+                    FROM dca_daily_snapshots
+                    WHERE config_id = %s AND symbol IN ({placeholders}) AND total_invested > 0
+                    GROUP BY snapshot_date
+                    ORDER BY snapshot_date ASC
+                    """,
+                    (config_id, *target_symbols),
+                ).fetchall()
+                points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
+                data_source = {
+                    "table": "dca_daily_snapshots",
+                    "field": "total_invested",
+                    "scope": "config_id",
+                    "config_id": config_id,
+                    "symbol": symbol,
+                    "label": "dca_daily_snapshots.total_invested",
+                    "display_label": "定投累计投入快照",
+                    "kind": "dca_invested",
+                    "symbols": target_symbols,
+                }
 
-    conn.close()
+            series.append(
+                {
+                    "config_id": config_id,
+                    "config_ids": cfg['_config_ids'],
+                    "account_scope": cfg.get('_account_scope'),
+                    "symbol": selected_symbol if mode != 'SPOT_DCA' else symbol,
+                    "label": label,
+                    "mode": mode,
+                    "points": points,
+                    "data_source": data_source,
+                    **_equity_series_metadata(points),
+                }
+            )
+
     return {"symbol": symbol, "series": series, "groups": [
         {'mode': mode, 'series': [item for item in series if item['mode'] == mode]}
         for mode in ('REAL', 'STRATEGY', 'SPOT_DCA')
@@ -818,23 +836,19 @@ def _load_order_reasons(config_id: str, order_ids: list[str]) -> dict[str, str]:
     if not config_id or not unique_ids:
         return {}
 
-    placeholders = ",".join("?" for _ in unique_ids)
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    try:
+    placeholders = ",".join("%s" for _ in unique_ids)
+    with storage.get_connection() as conn:
         rows = conn.execute(
             f"""
             SELECT order_id, reason
             FROM orders
-            WHERE config_id = ?
+            WHERE config_id = %s
               AND order_id IN ({placeholders})
               AND COALESCE(reason, '') != ''
             ORDER BY id DESC
             """,
             (config_id, *unique_ids),
         ).fetchall()
-    finally:
-        conn.close()
 
     reasons: dict[str, str] = {}
     for row in rows:
@@ -907,6 +921,8 @@ def _fetch_real_open_orders(mt: MarketTool, symbol: str, current_side: str, posi
             rows = mt.exchange.fetch_open_orders(symbol, params=params)
             if not isinstance(rows, list):
                 raise ValueError('Order channel is unavailable')
+        except storage.Error:
+            raise
         except Exception as exc:
             failure = f"orders:{channel}:{params.get('ordType', 'default')}:{type(exc).__name__}"
             logger.warning(f'Kline order channel unavailable: {failure}')
@@ -1003,13 +1019,15 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
                 from backend.database import get_db_conn
                 with get_db_conn() as conn:
                     rows = conn.execute(
-                        "SELECT payload FROM real_protection_plans WHERE config_id=?",
+                        "SELECT payload FROM real_protection_plans WHERE config_id=%s",
                         (config_id,)
                     ).fetchall()
                     for r in rows:
                         p = json.loads(r["payload"])
                         if p.get("state") != "DONE" and str(p.get('symbol', '')).split(':')[0] == symbol.split(':')[0]:
                             active_plans[p.get("side")] = p
+            except storage.Error:
+                raise
             except Exception:
                 pass
         try:
@@ -1036,17 +1054,18 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
                     positions.append(payload)
             if positions:
                 position = positions[0]
+        except storage.Error:
+            raise
         except Exception as exc:
             position_complete = False
             logger.warning(f"Kline positions fetch failed: {exc}")
     elif mode == "STRATEGY":
-        conn = sqlite3.connect(DB_NAME)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT side, price, amount, stop_loss, take_profit, order_id FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=1 ORDER BY timestamp ASC",
-            (config_id, symbol),
-        ).fetchall()
-        conn.close()
+        with storage.get_connection() as conn:
+
+            rows = conn.execute(
+                "SELECT side, price, amount, stop_loss, take_profit, order_id FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='OPEN' AND is_filled=1 ORDER BY timestamp ASC",
+                (config_id, symbol),
+            ).fetchall()
         for row in rows:
             payload = {
                 "side": "LONG" if "BUY" in str(row["side"]).upper() else "SHORT",
@@ -1107,13 +1126,12 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
             pending_orders = _fetch_real_open_orders(mt, symbol, current_side, positions, config_id, errors=order_errors,
                                                     qualify_ids=cfg.get('position_management_policy') == 'exclusive_scope')
         elif mode == "STRATEGY":
-            conn = sqlite3.connect(DB_NAME)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT order_id, side, price, amount, stop_loss, take_profit, status FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=0",
-                (config_id, symbol),
-            ).fetchall()
-            conn.close()
+            with storage.get_connection() as conn:
+
+                rows = conn.execute(
+                    "SELECT order_id, side, price, amount, stop_loss, take_profit, status FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='OPEN' AND is_filled=0",
+                    (config_id, symbol),
+                ).fetchall()
             for row in rows:
                 side = str(row["side"]).upper()
                 pending_orders.append(
@@ -1129,24 +1147,23 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
                     }
                 )
         elif mode == "SPOT_DCA":
-            conn = sqlite3.connect(DB_NAME)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT DISTINCT o.order_id, o.side, o.entry_price,
-                    MAX(0, COALESCE(o.amount,0)-COALESCE(f.filled_qty,o.filled_amount,0)) AS amount,
-                    COALESCE(f.status,o.status) AS status
-                FROM orders o LEFT JOIN spot_order_fills f ON o.order_id = f.order_id
-                    AND f.config_id = o.config_id AND f.symbol = o.symbol
-                WHERE o.config_id=? AND o.trade_mode='SPOT_DCA' AND o.status IN ('OPEN', 'PARTIAL')
-                  AND o.symbol = ?
-                  AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
-                  AND UPPER(o.side) IN ('BUY','BUY_LIMIT')
-                  AND (f.status IS NULL OR UPPER(f.status) NOT IN ('FILLED','CLOSED','CANCELED','CANCELLED','EXPIRED','REJECTED'))
-                """,
-                (config_id, symbol),
-            ).fetchall()
-            conn.close()
+            with storage.get_connection() as conn:
+
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT o.order_id, o.side, o.entry_price,
+                        GREATEST(0, COALESCE(o.amount,0)-COALESCE(f.filled_qty,o.filled_amount,0)) AS amount,
+                        COALESCE(f.status,o.status) AS status
+                    FROM orders o LEFT JOIN spot_order_fills f ON o.order_id = f.order_id
+                        AND f.config_id = o.config_id AND f.symbol = o.symbol
+                    WHERE o.config_id=%s AND o.trade_mode='SPOT_DCA' AND o.status IN ('OPEN', 'PARTIAL')
+                      AND o.symbol = %s
+                      AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
+                      AND UPPER(o.side) IN ('BUY','BUY_LIMIT')
+                      AND (f.status IS NULL OR UPPER(f.status) NOT IN ('FILLED','CLOSED','CANCELED','CANCELLED','EXPIRED','REJECTED'))
+                    """,
+                    (config_id, symbol),
+                ).fetchall()
             for row in rows:
                 pending_orders.append(
                     {
@@ -1158,6 +1175,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
                         "status": row["status"] or "OPEN",
                     }
                 )
+    except storage.Error:
+        raise
     except Exception as exc:
         order_errors.append(f"orders:{type(exc).__name__}")
         logger.warning(f"Kline pending orders fetch failed: {exc}")
@@ -1177,6 +1196,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
                 snapshot = IndependentExits(mt).snapshot(symbol)
             from backend.utils.exit_context import independent_exit_chart_lines
             risk_lines = independent_exit_chart_lines(snapshot)
+        except storage.Error:
+            raise
         except Exception as exc:
             logger.warning(f'Independent exit chart refresh failed: {exc}')
 
@@ -1187,6 +1208,8 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
         from backend.utils.position_management import resource_management_status
         try:
             management['resource_states'] = {side: resource_management_status(mt, symbol, side) for side in ('LONG', 'SHORT')}
+        except storage.Error:
+            raise
         except Exception as exc:
             management.update(complete=False, error=str(exc))
         positions = _management_position_metadata(positions, management)
@@ -1273,7 +1296,7 @@ def update_position_protection_payload(
         with get_db_conn() as conn:
             cursor = conn.cursor()
             open_orders = cursor.execute(
-                "SELECT * FROM mock_orders WHERE config_id=? AND symbol=? AND status='OPEN' AND is_filled=1 AND UPPER(side) LIKE ?",
+                "SELECT * FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='OPEN' AND is_filled=1 AND UPPER(side) LIKE %s",
                 (config_id, symbol, target_side_pattern),
             ).fetchall()
             if not open_orders:
@@ -1283,7 +1306,7 @@ def update_position_protection_payload(
                 new_sl = None if clear_stop_loss else (stop_loss if stop_loss is not None else order["stop_loss"])
                 new_tp = None if clear_take_profit else (take_profit if take_profit is not None else order["take_profit"])
                 cursor.execute(
-                    "UPDATE mock_orders SET stop_loss=?, take_profit=? WHERE order_id=?",
+                    "UPDATE mock_orders SET stop_loss=%s, take_profit=%s WHERE order_id=%s",
                     (new_sl, new_tp, order["order_id"]),
                 )
             conn.commit()

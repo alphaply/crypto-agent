@@ -49,7 +49,7 @@ def test_observed_excursions_and_flat_reason(service):
 def test_post_exit_samples_only_closed_bars_at_fixed_horizons(local_db):
     value = {'flat_observed_at': 6000000, 'post_exit': {}}
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO execution_episodes VALUES(?,?,?,?,?)', ('e', 'scope', 'cfg', 'ETH/USDT:USDT', json.dumps(value)))
+        conn.execute('INSERT INTO execution_episodes(episode_id,account_scope,config_id,symbol,payload) VALUES(%s,%s,%s,%s,%s)', ('e', 'scope', 'cfg', 'ETH/USDT:USDT', json.dumps(value)))
         conn.commit()
     ex = SimpleNamespace(fetch_ohlcv=lambda *args, **kwargs: [[6000000 + i * 60000, 100, 110, 90, 100 + i, 1] for i in range(65)])
     update_post_exit(ex, 'scope', 'ETH/USDT:USDT', now_ms=6000000 + 16 * 60000)

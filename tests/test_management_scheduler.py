@@ -70,7 +70,7 @@ def test_scheduler_process_reservation_and_slow_mcp_keep_web_responsive(tmp_path
     monkeypatch.setenv('MCP_READ_BUDGET_SECONDS', '.06')
     monkeypatch.setenv('MCP_QUEUE_SECONDS', '.02')
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     context = multiprocessing.get_context('spawn')
     entered, release = context.Event(), context.Event()
     process = context.Process(target=_hold_reservation, args=(database.DB_NAME, entered, release))
@@ -116,3 +116,9 @@ def test_scheduler_process_reservation_and_slow_mcp_keep_web_responsive(tmp_path
             process.terminate()
         pool.executor.shutdown()
     assert process.exitcode == 0
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

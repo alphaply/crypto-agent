@@ -1,5 +1,7 @@
 """Adapters for v3 intent; legacy call paths and their serializers stay intact."""
 from __future__ import annotations
+from backend.storage import record as storage_record
+from backend.storage import lock_scope
 
 from contextlib import nullcontext
 from datetime import datetime
@@ -104,10 +106,8 @@ def _raw_order_id(identity):
 
 
 def _native_table(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS unified_native_intents (
-        config_id TEXT NOT NULL,operation_id TEXT NOT NULL,symbol TEXT NOT NULL,
-        account_scope TEXT NOT NULL,client_id TEXT NOT NULL,request_json TEXT NOT NULL,
-        result TEXT,PRIMARY KEY(config_id,operation_id))''')
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def _attached_close(action, config_id, symbol, operation_id, mt, service):
@@ -143,9 +143,9 @@ def _attached_close(action, config_id, symbol, operation_id, mt, service):
     intent = {'action': action.model_dump(exclude_none=True), 'native_type': native_kind,
               'amount': quantity, 'price': price, 'params': params, 'contract_size': size}
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'trade-operation', config_id, operation_id)
         _native_table(conn)
-        conn.execute('INSERT INTO unified_native_intents VALUES(?,?,?,?,?,?,NULL)',
+        conn.execute('INSERT INTO unified_native_intents(config_id,operation_id,symbol,account_scope,client_id,request_json,result) VALUES(%s,%s,%s,%s,%s,%s,NULL)',
                      (config_id, operation_id, symbol, service.account_scope, client_id, json.dumps(intent, sort_keys=True)))
         conn.commit()
     try:
@@ -161,7 +161,7 @@ def _attached_close(action, config_id, symbol, operation_id, mt, service):
         result.update(status='submitted', order_status='filled', error_code='fill_unverified')
     try:
         with database.get_db_conn() as conn:
-            conn.execute('UPDATE unified_native_intents SET result=? WHERE config_id=? AND operation_id=?',
+            conn.execute('UPDATE unified_native_intents SET result=%s WHERE config_id=%s AND operation_id=%s',
                          (json.dumps(result), config_id, operation_id))
             conn.commit()
     except Exception:
@@ -176,10 +176,10 @@ def refresh_native_operation(config_id, symbol, operation_id, previous, *, marke
     from backend.config import config as runtime
     cfg = runtime.get_config_by_id(config_id) or dict(getattr(market_tool, 'runtime_config', {}) or {})
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        native = conn.execute('SELECT * FROM unified_native_intents WHERE config_id=? AND operation_id=? AND symbol=?',
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
+        native = conn.execute('SELECT * FROM unified_native_intents WHERE config_id=%s AND operation_id=%s AND symbol=%s',
                               (config_id, operation_id, symbol)).fetchone() if 'unified_native_intents' in tables else None
-        saved = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
+        saved = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=%s AND operation_id=%s',
                              (config_id, operation_id)).fetchone()
         original = json.loads(saved[0]) if saved else {}
         context = original.get('trusted_context', {})
@@ -293,7 +293,7 @@ def _refresh_attached_operation(config_id, symbol, operation_id, previous, *, na
     result = dict(previous) if isinstance(previous, dict) else {'status': 'unknown'}
     try:
         with database.get_db_conn() as conn:
-            row = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=? AND operation_id=?',
+            row = conn.execute('SELECT request_json FROM trade_operation_requests WHERE config_id=%s AND operation_id=%s',
                                (config_id, operation_id)).fetchone()
         intent = json.loads(row[0]) if row else {}
         action, args = intent.get('action'), intent.get('arguments', {})
@@ -351,8 +351,8 @@ def _refresh_attached_operation(config_id, symbol, operation_id, previous, *, na
                 expected = plan.get('record_version', 0)
                 plan['record_version'] = expected + 1
                 with database.get_db_conn() as conn:
-                    conn.execute('UPDATE real_protection_plans SET payload=? WHERE config_id=? AND symbol=? AND side=? '
-                                 'AND COALESCE(json_extract(payload,\'$.record_version\'),0)=?',
+                    conn.execute('UPDATE real_protection_plans SET payload=%s WHERE config_id=%s AND symbol=%s AND side=%s '
+                                 'AND COALESCE((payload::jsonb->>\'record_version\')::bigint,0)=%s',
                                  (json.dumps(plan), stored_owner, market['symbol'], side, expected))
                     conn.commit()
         if not observed:
@@ -392,23 +392,23 @@ def _strategy_attached(action, config_id, symbol, operation_id, mt):
     intent = json.dumps(action.model_dump(exclude_none=True), sort_keys=True)
     order_id = 'ST3-' + hashlib.sha256(f'{config_id}\0{operation_id}'.encode()).hexdigest()[:28]
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'mock-account', config_id)
         initialize_independent_schema(conn.cursor())
-        saved = conn.execute('SELECT result,request_json FROM mock_trade_operations WHERE config_id=? AND symbol=? AND operation_id=?',
+        saved = conn.execute('SELECT result,request_json FROM mock_trade_operations WHERE config_id=%s AND symbol=%s AND operation_id=%s',
                              (config_id, symbol, operation_id)).fetchone()
         if saved:
             if saved['request_json'] != intent:
                 raise ValueError('identity_conflict: simulated action intent changed')
             return json.loads(saved['result'])
         if action.action == 'open':
-            conn.execute('INSERT OR IGNORE INTO mock_accounts(config_id,symbol,balance,failures) VALUES(?,?,10000,0)', (config_id, symbol))
-            balance = float(conn.execute('SELECT balance FROM mock_accounts WHERE config_id=?', (config_id,)).fetchone()[0])
-            reserved = float(conn.execute("SELECT COALESCE(SUM(price*amount),0) FROM mock_orders WHERE config_id=? AND status='OPEN'", (config_id,)).fetchone()[0])
+            conn.execute('INSERT INTO mock_accounts(config_id,symbol,balance,failures) VALUES(%s,%s,10000,0) ON CONFLICT DO NOTHING', (config_id, symbol))
+            balance = float(conn.execute('SELECT balance FROM mock_accounts WHERE config_id=%s', (config_id,)).fetchone()[0])
+            reserved = float(conn.execute("SELECT COALESCE(SUM(price*amount),0) FROM mock_orders WHERE config_id=%s AND status='OPEN'", (config_id,)).fetchone()[0])
             if action.price * action.amount > max(0, balance - reserved):
                 raise ValueError('Insufficient strategy balance for the requested entry')
             PositionProtection._validate(action.side, action.price, action.stop_loss, action.take_profit)
             conn.execute('''INSERT INTO mock_orders(order_id,timestamp,symbol,agent_name,config_id,side,type,price,amount,
-                            stop_loss,take_profit,expire_at,status,is_filled) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',0)''',
+                            stop_loss,take_profit,expire_at,status,is_filled) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',0)''',
                          (order_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), symbol, config_id, config_id,
                           'BUY' if action.side == 'LONG' else 'SELL', 'limit', action.price, action.amount,
                           action.stop_loss, action.take_profit, time.time() + (action.valid_duration_hours or 24) * 3600))
@@ -419,7 +419,7 @@ def _strategy_attached(action, config_id, symbol, operation_id, mt):
             if str(action.order_id).startswith('algo:'):
                 raise ValueError('Attached strategy orders use the regular channel')
             identity = _raw_order_id(action.order_id)
-            row = conn.execute('SELECT * FROM mock_orders WHERE order_id=? AND config_id=? AND symbol=?',
+            row = conn.execute('SELECT * FROM mock_orders WHERE order_id=%s AND config_id=%s AND symbol=%s',
                                (identity, config_id, symbol)).fetchone()
             if not row:
                 raise ValueError('Order is not in this task and symbol')
@@ -428,7 +428,7 @@ def _strategy_attached(action, config_id, symbol, operation_id, mt):
                 if row['is_filled'] and row['status'] == 'OPEN':
                     raise ValueError('A filled position cannot be canceled; use close')
                 if row['status'] == 'OPEN':
-                    conn.execute("UPDATE mock_orders SET status='CANCELLED' WHERE order_id=?", (identity,))
+                    conn.execute("UPDATE mock_orders SET status='CANCELLED' WHERE order_id=%s", (identity,))
                 state = 'canceled' if row['status'] in {'OPEN', 'CANCELLED'} else 'filled' if row['is_filled'] else row['status'].lower()
                 result = {'status': 'completed', 'order_status': state, 'order_id': action.order_id}
             elif action.action == 'edit':
@@ -439,11 +439,11 @@ def _strategy_attached(action, config_id, symbol, operation_id, mt):
                 sl = action.stop_loss if action.stop_loss is not None else row['stop_loss']
                 tp = action.take_profit if action.take_profit is not None else row['take_profit']
                 PositionProtection._validate(side, price, sl, tp)
-                balance_row = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=?', (config_id,)).fetchone()
-                reserved = conn.execute("SELECT COALESCE(SUM(price*amount),0) FROM mock_orders WHERE config_id=? AND status='OPEN' AND order_id!=?", (config_id, identity)).fetchone()[0]
+                balance_row = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=%s', (config_id,)).fetchone()
+                reserved = conn.execute("SELECT COALESCE(SUM(price*amount),0) FROM mock_orders WHERE config_id=%s AND status='OPEN' AND order_id!=%s", (config_id, identity)).fetchone()[0]
                 if not balance_row or price * amount > max(0, float(balance_row[0]) - float(reserved)):
                     raise ValueError('Edited entry exceeds available strategy balance')
-                conn.execute('UPDATE mock_orders SET price=?,amount=?,stop_loss=?,take_profit=? WHERE order_id=?', (price, amount, sl, tp, identity))
+                conn.execute('UPDATE mock_orders SET price=%s,amount=%s,stop_loss=%s,take_profit=%s WHERE order_id=%s', (price, amount, sl, tp, identity))
                 result = {'status': 'completed', 'order_status': 'open', 'order_id': action.order_id,
                           'price': price, 'remaining_amount': amount, 'edit_method': 'native'}
             else:
@@ -452,10 +452,10 @@ def _strategy_attached(action, config_id, symbol, operation_id, mt):
                 sl = action.stop_loss if action.stop_loss is not None else row['stop_loss']
                 tp = action.take_profit if action.take_profit is not None else row['take_profit']
                 PositionProtection._validate(side, row['price'], sl, tp)
-                conn.execute('UPDATE mock_orders SET stop_loss=?,take_profit=? WHERE order_id=?', (sl, tp, identity))
+                conn.execute('UPDATE mock_orders SET stop_loss=%s,take_profit=%s WHERE order_id=%s', (sl, tp, identity))
                 result = {'status': 'completed', 'order_id': action.order_id, 'side': side, 'stop_loss': sl, 'take_profit': tp}
         result.update(contract_version=3, receipt_version=1, operation_id=operation_id, action=action.action, symbol=symbol)
-        conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(?,?,?,?,?)',
+        conn.execute('INSERT INTO mock_trade_operations(config_id,symbol,operation_id,result,request_json) VALUES(%s,%s,%s,%s,%s)',
                      (config_id, symbol, operation_id, json.dumps(result), intent))
         conn.commit()
     if action.action == 'open':
@@ -511,9 +511,9 @@ def _attached_real(action, config_id, symbol, cfg, operation_id, mt):
         expected = (before or {}).get('revision', 0)
         intent = {'action': action.model_dump(exclude_none=True), 'expected_revision': expected}
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            lock_scope(conn, 'trade-operation', config_id, operation_id)
             _native_table(conn)
-            conn.execute('INSERT INTO unified_native_intents VALUES(?,?,?,?,?,?,NULL)',
+            conn.execute('INSERT INTO unified_native_intents(config_id,operation_id,symbol,account_scope,client_id,request_json,result) VALUES(%s,%s,%s,%s,%s,%s,NULL)',
                          (config_id, operation_id, symbol, service.account_scope, '', json.dumps(intent)))
             conn.commit()
         plan = service.adjust(symbol, action.side, sl=action.stop_loss, tp=action.take_profit, expected_revision=expected)
@@ -530,7 +530,7 @@ def _attached_real(action, config_id, symbol, cfg, operation_id, mt):
                 **({'error': plan['error']} if plan.get('error') else {})}
         try:
             with database.get_db_conn() as conn:
-                conn.execute('UPDATE unified_native_intents SET result=? WHERE config_id=? AND operation_id=?',
+                conn.execute('UPDATE unified_native_intents SET result=%s WHERE config_id=%s AND operation_id=%s',
                              (json.dumps(result), config_id, operation_id))
                 conn.commit()
         except Exception:
@@ -647,13 +647,13 @@ def dispatch_live_action(action, config_id, symbol, config, operation_id):
 def _attached_write_started(config_id, operation_id):
     from backend import database
     with database.get_db_conn() as conn:
-        plans = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=?', (config_id,))]
+        plans = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s', (config_id,))]
         if any(record.get('operation_id') == operation_id or record.get('cancel_operation_id') == operation_id or
                (record.get('amendment') or {}).get('operation_id') == operation_id
                for plan in plans for record in plan.get('entries', []) + plan.get('legs', [])):
             return True
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        native = conn.execute('SELECT request_json,result FROM unified_native_intents WHERE config_id=? AND operation_id=?',
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
+        native = conn.execute('SELECT request_json,result FROM unified_native_intents WHERE config_id=%s AND operation_id=%s',
                               (config_id, operation_id)).fetchone() if 'unified_native_intents' in tables else None
     if native:
         intent = json.loads(native['request_json'])
@@ -669,8 +669,8 @@ def live_account_summary(config_id, parsed, config):
         from backend.database_independent import MockIndependentTrading
         symbols = list(dict.fromkeys(action.symbol for action in parsed.actions))
         with database.get_db_conn() as conn:
-            account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=?', (config_id,)).fetchone()
-            attached = [dict(row) for row in conn.execute("SELECT * FROM mock_orders WHERE config_id=? AND is_filled=1 AND status='OPEN'", (config_id,))]
+            account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=%s', (config_id,)).fetchone()
+            attached = [storage_record(row) for row in conn.execute("SELECT * FROM mock_orders WHERE config_id=%s AND is_filled=1 AND status='OPEN'", (config_id,))]
         positions = attached + [position for symbol in symbols for position in MockIndependentTrading(config_id, symbol).snapshot()['positions']]
         return {'status': 'completed' if account else 'unavailable', 'symbols': symbols,
                 'balance': account[0] if account else None, 'positions': positions,

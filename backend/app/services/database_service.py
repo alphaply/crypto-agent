@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
+from backend import storage
+from backend.storage_paths import DATA_DIR
 import threading
 import uuid
 from contextlib import closing
@@ -26,38 +27,28 @@ _maintenance_lock = threading.Lock()
 
 
 def inspect_database(path: str | Path | None = None) -> dict:
-    target = Path(path or database.DB_NAME).resolve()
-    with closing(sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)) as conn:
-        conn.execute('PRAGMA query_only=ON')
-        integrity = conn.execute('PRAGMA quick_check').fetchone()[0]
-        pages = conn.execute('PRAGMA page_count').fetchone()[0]
-        page_size = conn.execute('PRAGMA page_size').fetchone()[0]
-        free = conn.execute('PRAGMA freelist_count').fetchone()[0]
-        sizes = {}
-        try:
-            sizes = dict(conn.execute('SELECT name,SUM(pgsize) FROM dbstat GROUP BY name'))
-        except sqlite3.OperationalError:
-            pass
+    if path is not None:
+        from .sqlite_analysis import inspect_sqlite_copy
+        return inspect_sqlite_copy(path)
+    from backend.storage import database_label, table_names, table_columns, sql
+    with database.get_db_conn() as conn:
         rows = []
-        names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
-        for name in names:
-            quoted = '"' + name.replace('"', '""') + '"'
-            columns = {r[1]: r[2] for r in conn.execute(f'PRAGMA table_info({quoted})')}
+        names = table_names(conn)
+        for name in sorted(names):
+            columns = {row['name'] for row in table_columns(conn, name)}
             time_col = next((c for c in [CLEANABLE.get(name), 'timestamp_ms', 'timestamp', 'closed_at_ms', 'created_at'] if c in columns), None)
-            span = conn.execute(f'SELECT MIN("{time_col}"),MAX("{time_col}") FROM {quoted}').fetchone() if time_col else (None, None)
-            rows.append({'table': name, 'rows': conn.execute(f'SELECT COUNT(*) FROM {quoted}').fetchone()[0],
-                         'bytes': sizes.get(name), 'oldest': span[0], 'newest': span[1],
-                         'task_scoped': 'config_id' in columns, 'cleanable': name in CLEANABLE and CLEANABLE[name] in columns})
-        unlinked = None
-        if {'execution_fills', 'execution_order_links'} <= set(names):
-            unlinked = conn.execute('SELECT COUNT(*) FROM execution_fills f LEFT JOIN execution_order_links l '
-                                    'USING(account_scope,symbol,order_id) WHERE l.order_id IS NULL').fetchone()[0]
-        return {'database_path': str(target) if path is None else '导入副本（只读临时文件）',
-                'integrity': integrity, 'file_bytes': target.stat().st_size,
-                'allocated_bytes': pages * page_size, 'reclaimable_bytes': free * page_size,
-                'wal_bytes': Path(str(target) + '-wal').stat().st_size if Path(str(target) + '-wal').exists() else 0,
-                'unlinked_fills': unlinked, 'tables': rows,
-                'size_note': '表占用不可用时显示未知；空闲页需执行空间回收才会缩小文件。'}
+            table = sql.Identifier(name)
+            count = conn.execute(sql.SQL('SELECT COUNT(*) FROM {}').format(table)).fetchone()[0]
+            size = conn.execute('SELECT pg_total_relation_size(%s::regclass)', (name,)).fetchone()[0]
+            span = conn.execute(sql.SQL('SELECT MIN({0}),MAX({0}) FROM {1}').format(sql.Identifier(time_col),table)).fetchone() if time_col else (None,None)
+            rows.append({'table':name,'rows':count,'bytes':size,'oldest':span[0],'newest':span[1],
+                         'task_scoped':'config_id' in columns,'cleanable':name in CLEANABLE and CLEANABLE[name] in columns})
+        unlinked = conn.execute('SELECT COUNT(*) FROM execution_fills f LEFT JOIN execution_order_links l USING(account_scope,symbol,order_id) WHERE l.order_id IS NULL').fetchone()[0] if {'execution_fills','execution_order_links'} <= names else None
+        size = conn.execute('SELECT pg_database_size(current_database())').fetchone()[0]
+        return {'backend':'postgresql','database_path':database_label(),'integrity':'connected',
+                'file_bytes':size,'allocated_bytes':size,'reclaimable_bytes':None,'wal_bytes':None,
+                'unlinked_fills':unlinked,'tables':rows,
+                'size_note':'PostgreSQL 关系占用；SQLite 空闲页与 WAL 文件指标不适用。VACUUM 回收可复用空间，不保证文件缩小。'}
 
 
 def _selection(conn, tables: list[str], before: str, config_id: str | None):
@@ -71,25 +62,28 @@ def _selection(conn, tables: list[str], before: str, config_id: str | None):
     selected = {}
     digest = hashlib.sha256(json.dumps([sorted(set(tables)), before, config_id]).encode())
     for table in sorted(set(tables)):
-        cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+        cols = {r[1] for r in storage.table_columns(conn, table)}
         if CLEANABLE[table] not in cols:
             raise ValueError(f'{table} 不支持此版本清理')
-        predicate = f'"{CLEANABLE[table]}" < ?'
+        predicate = f'"{CLEANABLE[table]}" < %s'
         args = [cutoff.strftime('%Y-%m-%d %H:%M:%S')]
         if config_id:
             if 'config_id' not in cols:
                 raise ValueError(f'{table} 是全局数据，不能按任务清理')
-            predicate += ' AND config_id=?'
+            predicate += ' AND config_id=%s'
             args.append(config_id)
         if table == 'short_memories':
-            predicate += ' AND rowid NOT IN (SELECT MAX(rowid) FROM short_memories GROUP BY config_id)'
+            predicate += ' AND storage_id NOT IN (SELECT MAX(storage_id) FROM short_memories GROUP BY config_id)'
         digest.update(table.encode())
         count = 0
-        cursor = conn.execute(f'SELECT rowid FROM "{table}" WHERE {predicate} ORDER BY rowid', args)
-        while batch := cursor.fetchmany(4096):
-            for row in batch:
-                digest.update(f'{row[0]},'.encode())
-            count += len(batch)
+        with conn.cursor(name='cleanup_' + uuid.uuid4().hex) as cursor:
+            cursor.execute(f'SELECT storage_id, xmin::text FROM "{table}" WHERE {predicate} ORDER BY storage_id', args)
+            while batch := cursor.fetchmany(4096):
+                for row in batch:
+                    # UPDATE keeps storage_id but creates a new MVCC row version.
+                    # Include that version without reading potentially large payloads.
+                    digest.update(f'{row[0]}:{row[1]},'.encode())
+                count += len(batch)
         selected[table] = {'count': count, 'predicate': predicate, 'args': args}
     return selected, digest.hexdigest()
 
@@ -105,12 +99,12 @@ def cleanup_targets() -> dict:
     """Include removed task IDs so legacy runtime data remains discoverable."""
     counts = {}
     with database.get_db_conn() as conn:
-        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        names = storage.table_names(conn)
         active = {row[0] for row in conn.execute('SELECT config_id FROM agent_configs')} if 'agent_configs' in names else set()
         for table in CLEANABLE:
             if table not in names:
                 continue
-            columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+            columns = {row[1] for row in storage.table_columns(conn, table)}
             if 'config_id' not in columns:
                 continue
             for task_id, count in conn.execute(f'SELECT config_id, COUNT(*) FROM "{table}" GROUP BY config_id'):
@@ -121,11 +115,11 @@ def cleanup_targets() -> dict:
 
 
 def _backup() -> str:
-    directory = Path(database.DB_NAME).resolve().parent / 'maintenance-backups'
+    from backend.storage.backup import dump_database
+    directory = DATA_DIR / 'maintenance-backups'
     directory.mkdir(parents=True, exist_ok=True)
-    name = f'{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}.db'
-    with database.get_db_conn() as source, closing(sqlite3.connect(directory / name)) as destination:
-        source.backup(destination)
+    name = f'{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}.dump'
+    dump_database(directory / name)
     return name
 
 
@@ -136,15 +130,17 @@ def clean_database(tables: list[str], before: str, preview_token: str, config_id
             raise ValueError('数据已变化，请重新预览')
         backup = _backup()
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            storage.lock_scope(conn, 'database-maintenance')
+            for table in sorted(set(tables)):
+                if table not in CLEANABLE:
+                    raise ValueError('Unsupported cleanup table')
+                conn.execute(storage.sql.SQL('LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE').format(storage.sql.Identifier(table)))
             selected, token = _selection(conn, tables, before, config_id)
             if token != preview_token:
                 raise ValueError('数据已变化，请重新预览')
             deleted = {t: conn.execute(f'DELETE FROM "{t}" WHERE {s["predicate"]}', s['args']).rowcount
                        for t, s in selected.items()}
-            conn.execute('CREATE TABLE IF NOT EXISTS database_maintenance_log '
-                         '(id INTEGER PRIMARY KEY, timestamp TEXT, payload TEXT)')
-            conn.execute('INSERT INTO database_maintenance_log(timestamp,payload) VALUES(?,?)',
+            conn.execute('INSERT INTO database_maintenance_log(timestamp,payload) VALUES(%s,%s)',
                          (database._current_timestamp(), json.dumps({'deleted': deleted, 'backup': backup})))
             conn.commit()
         return {'deleted': deleted, 'backup': backup}
@@ -152,13 +148,14 @@ def clean_database(tables: list[str], before: str, preview_token: str, config_id
 
 def compact_database() -> dict:
     with _maintenance_lock:
-        before = Path(database.DB_NAME).stat().st_size
-        with database.get_db_conn() as conn:
-            conn.execute('VACUUM')
-            checkpoint = conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
-            if checkpoint[0]:
-                raise sqlite3.OperationalError('WAL checkpoint busy; retry later')
-        return {'before_bytes': before, 'after_bytes': Path(database.DB_NAME).stat().st_size}
+        with closing(storage.connect(autocommit=True)) as conn:
+            before = conn.execute('SELECT pg_database_size(current_database())').fetchone()[0]
+            conn.execute("SET statement_timeout = '90s'")
+            conn.execute("SET lock_timeout = '2s'")
+            conn.execute('VACUUM (ANALYZE)')
+            after = conn.execute('SELECT pg_database_size(current_database())').fetchone()[0]
+        return {'before_bytes':before,'after_bytes':after,'mode':'VACUUM ANALYZE',
+                'notice':'空间可被 PostgreSQL 重用；不保证文件缩小，不执行 VACUUM FULL。'}
 
 
 def rebuild_history() -> dict:

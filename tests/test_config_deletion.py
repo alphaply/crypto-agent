@@ -1,5 +1,5 @@
 from copy import deepcopy
-import sqlite3
+from backend import storage
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -17,8 +17,8 @@ from backend.utils.spot_execution import _initialize
 @pytest.fixture
 def deletion_api(tmp_path, monkeypatch):
     path = tmp_path / 'deletion.sqlite'
-    with sqlite3.connect(path) as conn:
-        initialize_schema(conn)
+    with storage.connect() as conn:
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
         _initialize(conn)
     monkeypatch.setattr(config_store, 'DB_NAME', path)
     monkeypatch.setattr(database, 'DB_NAME', str(path))
@@ -57,8 +57,8 @@ def seed_task_data(status='OPEN'):
 
 
 def dump_database(path):
-    with sqlite3.connect(path) as conn:
-        return list(conn.iterdump())
+    with storage.connect() as conn:
+        return {table: sorted([tuple(row) for row in conn.execute(storage.sql.SQL('SELECT * FROM {}').format(storage.sql.Identifier(table)))], key=repr) for table in sorted(storage.table_names(conn))}
 
 
 @pytest.mark.parametrize('status', ['OPEN', 'PARTIAL', 'FILLED', 'CANCELLED'])
@@ -191,3 +191,8 @@ def test_config_roundtrip_with_global_credentials_and_owned_spot_orders(
         assert response.status_code == 409, response.text
         assert dump_database(path) == before_db
     assert getattr(runtime, f'global_{exchange}_api_key') == 'saved-exchange-key'
+
+
+@pytest.fixture(autouse=True)
+def isolated_postgres(pg):
+    yield

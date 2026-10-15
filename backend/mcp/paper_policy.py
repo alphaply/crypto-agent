@@ -36,17 +36,21 @@ def _receipt_sources(conn, namespace, user_id, resource, kind, key):
 
 def _scan_receipt_sources(conn, namespace, user_id, resource, kind, key):
     fingerprint = resource_fingerprint(resource)
-    saved = conn.execute('SELECT fingerprint,payload FROM paper_origin_scans WHERE namespace=? AND user_id=? AND kind=? AND resource_key=?',
+    saved = conn.execute('SELECT fingerprint,payload FROM paper_origin_scans WHERE namespace=%s AND user_id=%s AND kind=%s AND resource_key=%s',
                          (namespace, user_id, kind, key)).fetchone()
-    state = json.loads(saved['payload']) if saved and saved['fingerprint'] == fingerprint else {
-        'cursor': 0, 'horizon': conn.execute('SELECT COALESCE(MAX(rowid),0) FROM paper_operations WHERE namespace=? AND user_id=?',
+    revision_row = conn.execute('SELECT revision FROM paper_source_revisions WHERE namespace=%s AND user_id=%s', (namespace, user_id)).fetchone()
+    revision = revision_row[0] if revision_row else 0
+    previous = json.loads(saved['payload']) if saved and saved['fingerprint'] == fingerprint else None
+    state = previous if previous and previous.get('source_revision') == revision else {
+        'source_revision': revision,
+        'cursor': 0, 'horizon': previous['horizon'] if previous else conn.execute('SELECT COALESCE(MAX(storage_id),0) FROM paper_operations WHERE namespace=%s AND user_id=%s',
                                             (namespace, user_id)).fetchone()[0],
         'sources': [], 'complete': False, 'origin_seen': False, 'evidence': []}
     if state['complete']:
         return set(state['sources']), True
     sources, cursor, completed, origin_seen = set(state['sources']), state['cursor'], False, state['origin_seen']
     for _ in range(1):
-        rows, page = paper_storage.payload_page(conn, 'paper_operations', 'namespace=? AND user_id=?',
+        rows, page = paper_storage.payload_page(conn, 'paper_operations', 'namespace=%s AND user_id=%s',
                                                 (namespace, user_id), cursor=cursor, column='result',
                                                 ceiling=state['horizon'])
         for row in rows:
@@ -89,8 +93,10 @@ def _scan_receipt_sources(conn, namespace, user_id, resource, kind, key):
         if not page['has_more']:
             completed = True
             break
+    latest = conn.execute('SELECT revision FROM paper_source_revisions WHERE namespace=%s AND user_id=%s', (namespace,user_id)).fetchone()
+    completed = completed and (latest[0] if latest else 0) == revision
     state.update(cursor=cursor, sources=sorted(sources), complete=completed, origin_seen=origin_seen)
-    conn.execute('INSERT INTO paper_origin_scans VALUES(?,?,?,?,?,?) ON CONFLICT(namespace,user_id,kind,resource_key) DO UPDATE SET fingerprint=excluded.fingerprint,payload=excluded.payload',
+    conn.execute('INSERT INTO paper_origin_scans(namespace,user_id,kind,resource_key,fingerprint,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(namespace,user_id,kind,resource_key) DO UPDATE SET fingerprint=excluded.fingerprint,payload=excluded.payload',
                  (namespace, user_id, kind, key, fingerprint, json.dumps(state, separators=(',', ':'))))
     return sources, completed
 
@@ -132,8 +138,7 @@ def resource_fingerprint(resource):
 
 def persist_origin(conn, account, kind, key, resource, fact):
     fingerprint = resource_fingerprint(resource)
-    conn.execute('INSERT INTO paper_resource_origins VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(namespace,user_id,kind,resource_key) '
-                 'DO UPDATE SET fingerprint=excluded.fingerprint,classification=excluded.classification,reason_code=excluded.reason_code,policy_version=excluded.policy_version',
+    conn.execute('INSERT INTO paper_resource_origins(namespace,user_id,kind,resource_key,fingerprint,classification,reason_code,policy_version) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(namespace,user_id,kind,resource_key) DO UPDATE SET fingerprint=excluded.fingerprint,classification=excluded.classification,reason_code=excluded.reason_code,policy_version=excluded.policy_version',
                  (account['namespace'], account['user_id'], kind, key, fingerprint, fact['classification'], fact['reason_code'], VERSION))
 
 
@@ -158,7 +163,7 @@ def event_visible(event, *, conn=None, account=None):
     if embedded:
         return all(visible(order, account=account, conn=conn) for order in embedded)
     if payload.get('order_id') and conn is not None and account is not None:
-        order = paper_storage.one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?',
+        order = paper_storage.one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s',
                                   (account['namespace'], account['user_id'], payload['order_id']), identity='event order')
         return bool(order and visible(order, account=account, conn=conn))
     return False
@@ -173,9 +178,9 @@ def performance_complete(conn, account):
 def _performance_scan(conn, account):
     namespace, user_id = account['namespace'], account['user_id']
     worker = 'performance:' + hashlib.sha256((namespace + '\0' + user_id).encode()).hexdigest()
-    saved = conn.execute('SELECT cursor FROM paper_scan_progress WHERE worker=?', (worker,)).fetchone()
+    saved = conn.execute('SELECT cursor FROM paper_scan_progress WHERE worker=%s', (worker,)).fetchone()
     cursor = saved[0] if saved else 0
-    events, progress = paper_storage.payload_page(conn, 'paper_events', 'namespace=? AND user_id=?',
+    events, progress = paper_storage.payload_page(conn, 'paper_events', 'namespace=%s AND user_id=%s',
         (namespace, user_id), cursor=cursor)
 
     def remember(event):
@@ -184,36 +189,36 @@ def _performance_scan(conn, account):
         else:
             fill = event['payload'].get('fill') or {}
             state = 'excluded' if fill.get('exchange') in {'okx', 'bybit', 'bitget'} else 'unresolved'
-        conn.execute('INSERT INTO paper_performance_events VALUES(?,?,?,?) ON CONFLICT(namespace,user_id,event_id) DO UPDATE SET state=excluded.state',
+        conn.execute('INSERT INTO paper_performance_events(namespace,user_id,event_id,state) VALUES(%s,%s,%s,%s) ON CONFLICT(namespace,user_id,event_id) DO UPDATE SET state=excluded.state',
                      (namespace, user_id, event['id'], state))
 
     for event in events:
         remember(event)
     for skipped in progress['skipped_records']:
-        conn.execute('INSERT INTO paper_performance_events VALUES(?,?,?,?) ON CONFLICT(namespace,user_id,event_id) DO NOTHING',
+        conn.execute('INSERT INTO paper_performance_events(namespace,user_id,event_id,state) VALUES(%s,%s,%s,%s) ON CONFLICT(namespace,user_id,event_id) DO NOTHING',
                      (namespace, user_id, skipped['scan_id'], 'unresolved'))
-    conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
+    conn.execute('INSERT INTO paper_scan_progress(worker,cursor,payload) VALUES(%s,%s,%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
                  (worker, progress['next_cursor'], '{}'))
     # Retry only a bounded page of unresolved source proofs. A newly completed
     # origin scan can restore eligibility; closed foreign fills never can.
     retry_worker = worker + ':unresolved'
-    saved = conn.execute('SELECT cursor FROM paper_scan_progress WHERE worker=?', (retry_worker,)).fetchone()
+    saved = conn.execute('SELECT cursor FROM paper_scan_progress WHERE worker=%s', (retry_worker,)).fetchone()
     retry_cursor = saved[0] if saved else 0
-    refs = conn.execute("SELECT event_id FROM paper_performance_events WHERE namespace=? AND user_id=? AND state='unresolved' AND event_id>? ORDER BY event_id LIMIT ?",
+    refs = conn.execute("SELECT event_id FROM paper_performance_events WHERE namespace=%s AND user_id=%s AND state='unresolved' AND event_id>%s ORDER BY event_id LIMIT %s",
                         (namespace, user_id, retry_cursor, paper_storage.batch_size())).fetchall()
     for ref in refs:
         try:
-            payload = paper_storage.one(conn, 'paper_events', 'payload', 'namespace=? AND user_id=? AND id=?',
+            payload = paper_storage.one(conn, 'paper_events', 'payload', 'namespace=%s AND user_id=%s AND id=%s',
                                         (namespace, user_id, ref['event_id']), identity='performance event')
         except paper_storage.PaperPayloadLimit:
             continue
         if payload is None:
             continue
-        row = conn.execute('SELECT kind FROM paper_events WHERE id=?', (ref['event_id'],)).fetchone()
+        row = conn.execute('SELECT kind FROM paper_events WHERE id=%s', (ref['event_id'],)).fetchone()
         remember({'id': ref['event_id'], 'kind': row[0], 'payload': payload})
-    conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
+    conn.execute('INSERT INTO paper_scan_progress(worker,cursor,payload) VALUES(%s,%s,%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
                  (retry_worker, refs[-1]['event_id'] if len(refs) == paper_storage.batch_size() else 0, '{}'))
-    unresolved = conn.execute("SELECT 1 FROM paper_performance_events WHERE namespace=? AND user_id=? AND state!='binance' LIMIT 1",
+    unresolved = conn.execute("SELECT 1 FROM paper_performance_events WHERE namespace=%s AND user_id=%s AND state!='binance' LIMIT 1",
                               (namespace, user_id)).fetchone()
     if progress['has_more']:
         return False, 'paper_performance_scan_incomplete'
@@ -231,7 +236,7 @@ def preflight_actions(conn, account, actions):
         symbol = canonical(values['symbol'], kind) if values.get('symbol') else None
         side = values.get('side', 'LONG')
         if action_name in {'edit', 'cancel'}:
-            target = paper_storage.one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?',
+            target = paper_storage.one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s',
                                        (account['namespace'], account['user_id'], values['order_id']), identity='batch original target')
             if target is None:
                 raise ValueError('Order not found in this account; no financial step started')

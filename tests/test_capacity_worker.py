@@ -41,6 +41,39 @@ def run_diagnostic_child(body):
     return json.loads(result.stdout), result.stderr
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Requires Linux prctl and core limits')
+def test_probe_disables_native_core_and_keeps_fatal_tracebacks():
+    outcome, _ = run_diagnostic_child('''
+        import ctypes, resource
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+        prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+        prctl.restype = ctypes.c_int
+        assert PROBE_CORE_DUMPS_DISABLED
+        assert prctl(3, 0, 0, 0, 0) == 0
+        assert resource.getrlimit(resource.RLIMIT_CORE) == (0, 0)
+        assert faulthandler.is_enabled()
+        print(json.dumps({'native_core_disabled': True, 'fatal_tracebacks': True}))
+    ''')
+    assert outcome == {'native_core_disabled': True, 'fatal_tracebacks': True}
+
+
+def test_core_policy_failure_stops_probe_before_application_imports():
+    program = """
+import ctypes, sys, types
+class DeniedPrctl:
+    def __call__(self, *_args):
+        return -1
+ctypes.CDLL = lambda *_args, **_kwargs: types.SimpleNamespace(prctl=DeniedPrctl())
+sys.modules['resource'] = types.SimpleNamespace(RLIMIT_CORE=4, setrlimit=lambda *_: None)
+sys.platform = 'linux'
+""" + diagnostic_prefix() + "\nraise AssertionError('Probe continued after core policy failure')"
+    result = subprocess.run([sys.executable, '-c', program], capture_output=True,
+                            text=True, timeout=15)
+    assert result.returncode != 0
+    assert 'Cannot disable capacity probe core dumps' in result.stderr
+    assert 'Probe continued' not in result.stderr
+
+
 @pytest.mark.skipif(not hasattr(signal, 'SIGUSR1'), reason='Requires a real POSIX SIGUSR1')
 def test_signal_dump_runs_on_main_python_thread_with_gil():
     outcome, stderr = run_diagnostic_child('''
@@ -161,7 +194,7 @@ def test_drive_cancels_phase_watchdog_when_recovery_seed_fails(tmp_path):
                  'PROFILE': SimpleNamespace(phase_seconds={'cold': .01}),
                  'state': {'critical': 0, 'running': True, 'phases': {}}, 'state_lock': threading.Lock(),
                  'retired_keys_seen': set(),
-                 'ROOT': tmp_path, 'json': json,
+                 'ROOT': tmp_path, 'ROLE': 'web', 'json': json,
                  'resource_snapshot': lambda: {'resources': {'process': {'rss_bytes': 1}}},
                  'read_effective_resources': lambda: _resource_counters(1),
                  'get_capacity_manager': lambda: SimpleNamespace(snapshot=lambda: {}),
@@ -182,7 +215,7 @@ def test_drive_cancels_phase_watchdog_when_recovery_seed_fails(tmp_path):
     assert len(watchdogs) == 1 and watchdogs[0].daemon and not watchdogs[0].is_alive()
     assert namespace['state']['phases']['cold']['errors'] == ['RuntimeError: seed failed']
     assert not namespace['state']['phases']['cold']['workload_completed']
-    assert json.loads((tmp_path / 'verification-state.json').read_text())['running'] is False
+    assert json.loads((tmp_path / 'verification-state-web.json').read_text())['running'] is False
 
 
 def _resource_counters(rss, *, peak=None):
@@ -257,7 +290,7 @@ def _run_retirement_probe(tmp_path, *, cached_rss, final_read_fails=False, worke
         'PROFILE': SimpleNamespace(phase_seconds={'key_retirement': .24},
                                    concurrent_requests=2, retired_keys=2),
         'state': {'critical': 0, 'running': True, 'phases': {}},
-        'state_lock': lock, 'retired_keys_seen': keys, 'ROOT': tmp_path,
+        'state_lock': lock, 'retired_keys_seen': keys, 'ROOT': tmp_path, 'ROLE': 'web',
         'read_effective_resources': read,
         # This stale asynchronous observation represents a different lifecycle.
         'resource_snapshot': lambda: {'resources': _resource_counters(cached_rss, peak=2000)},
@@ -271,7 +304,7 @@ def _run_retirement_probe(tmp_path, *, cached_rss, final_read_fails=False, worke
     namespace['drive']('key_retirement')
     result = namespace['state']['phases']['key_retirement']
     assert lifecycle['watchdogs_stopped'] == 1 and lifecycle['pool_shutdown']
-    assert json.loads((tmp_path / 'verification-state.json').read_text())['running'] is False
+    assert json.loads((tmp_path / 'verification-state-web.json').read_text())['running'] is False
     return result, lifecycle
 
 
@@ -316,12 +349,12 @@ def test_retirement_worker_failure_joins_workers_before_final_measurement(tmp_pa
 
 
 @pytest.fixture
-def probe(tmp_path, monkeypatch):
+def probe(tmp_path, monkeypatch, pg):
     from backend.agent import unified_trading
 
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'probe.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
     monkeypatch.setattr(config, 'get_config_by_id', config.get_config_by_id)
     monkeypatch.setattr(unified_trading, 'query_unified_operation', unified_trading.query_unified_operation)
     monkeypatch.setattr(runtime_capacity, '_manager', runtime_capacity.CapacityManager())
@@ -352,7 +385,7 @@ def test_scheduler_completion_counts_durable_original_when_second_helper_process
     second = background_receipts.reconcile(limit=1, after_cursor=rowid-1)
     assert second['processed'] == 0
     with database.get_db_conn() as conn:
-        latest = json.loads(conn.execute('SELECT result FROM trade_action_runs WHERE rowid=?', (rowid,)).fetchone()[0])
+        latest = json.loads(conn.execute('SELECT result FROM trade_action_runs WHERE storage_id=%s', (rowid,)).fetchone()[0])
     assert latest['operation_id'] == operation_id and latest['status'] == 'completed'
     assert probe['state']['critical'] == 0
     probe['background_recovery_progress']()
@@ -373,7 +406,7 @@ def test_completed_other_identity_cannot_count_as_seeded_original(probe, monkeyp
     probe['seed_recovery']('slow_dependencies')
     rowid, _ = probe['recovery_target']
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE trade_action_runs SET result=? WHERE rowid=?',
+        conn.execute('UPDATE trade_action_runs SET result=%s WHERE storage_id=%s',
                      (json.dumps({'operation_id': 'another-original', 'status': 'completed'}), rowid))
         conn.commit()
     monkeypatch.setattr(background_receipts, 'reconcile', lambda **_: {'processed': 0})

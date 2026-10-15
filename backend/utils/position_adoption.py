@@ -39,11 +39,11 @@ def _number(value, name: str, *, zero: bool = False) -> float:
 
 def _adoption_records(config_id: str, operation_id: str, *, strict: bool = False) -> list[dict]:
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         sources = [table for table in ('real_protection_plans', 'real_protection_events') if table in tables]
         if not sources:
             return []
-        rows = conn.execute(' UNION ALL '.join(f'SELECT payload FROM {table} WHERE config_id=?' for table in sources),
+        rows = conn.execute(' UNION ALL '.join(f'SELECT payload FROM {table} WHERE config_id=%s' for table in sources),
                             [config_id] * len(sources)).fetchall()
     records = []
     for row in rows:
@@ -88,10 +88,10 @@ def _saved_result(service: IndependentExits, operation_id: str, request_hash: st
 
 
 def _assert_no_local_conflicts(service: IndependentExits, aliases: tuple[str, ...], operation_id: str) -> None:
-    placeholders = ",".join("?" for _ in aliases)
+    placeholders = ",".join("%s" for _ in aliases)
     current = current_operation_id.get()
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
         mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
         has_active_registry = bool(active_agents or mcp_profiles)
@@ -122,7 +122,7 @@ def _assert_no_local_conflicts(service: IndependentExits, aliases: tuple[str, ..
                 # Old operation receipts lack an account scope. Do not assume an
                 # unresolved same-symbol submission belongs to a different account.
                 raise ValueError("An unresolved operation on this symbol must be reconciled before adoption")
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         if 'mcp_operations' in tables:
             for row in conn.execute("SELECT profile_id,principal,operation_id,state FROM mcp_operations "
                                     "WHERE state IN ('started','running','unknown','pending')"):
@@ -131,7 +131,7 @@ def _assert_no_local_conflicts(service: IndependentExits, aliases: tuple[str, ..
                             and current == stable_id and operation_id == stable_id)
                 if own_call:
                     continue
-                profile_row = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=?",
+                profile_row = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=%s",
                                            (row['profile_id'],)).fetchone() if 'mcp_records' in tables else None
                 profile = json.loads(profile_row[0]) if profile_row else None
                 if profile and profile.get('market_type') == 'spot':
@@ -142,8 +142,8 @@ def _assert_no_local_conflicts(service: IndependentExits, aliases: tuple[str, ..
                         continue
                 raise ValueError("An unresolved MCP operation may affect this position; reconcile it before adoption")
         if conn.execute(
-            f"SELECT 1 FROM execution_position_history WHERE account_scope=? AND symbol IN ({placeholders}) "
-            "AND config_id!=? AND closed_at_ms IS NULL AND amount>0 LIMIT 1",
+            f"SELECT 1 FROM execution_position_history WHERE account_scope=%s AND symbol IN ({placeholders}) "
+            "AND config_id!=%s AND closed_at_ms IS NULL AND amount>0 LIMIT 1",
             (service.account_scope, *aliases, service.config_id),
         ).fetchone():
             raise ValueError("Another task has an unclosed position history for this account and symbol; adoption denied")
@@ -223,10 +223,10 @@ def _trade_boundary(exchange, symbol: str, since_ms: int) -> dict[str, dict]:
 
 
 def _assert_unclaimed_boundary(service: IndependentExits, aliases: tuple[str, ...], observed: dict[str, dict]) -> None:
-    placeholders = ",".join("?" for _ in aliases)
+    placeholders = ",".join("%s" for _ in aliases)
     with database.get_db_conn() as conn:
         links = {str(row["order_id"]): row["config_id"] for row in conn.execute(
-            f"SELECT order_id,config_id FROM execution_order_links WHERE account_scope=? AND symbol IN ({placeholders})",
+            f"SELECT order_id,config_id FROM execution_order_links WHERE account_scope=%s AND symbol IN ({placeholders})",
             (service.account_scope, *aliases),
         )}
         if any(value["order"] in links and links[value["order"]] != service.config_id for value in observed.values()):

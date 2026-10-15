@@ -1,4 +1,5 @@
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import json
 import os
@@ -126,17 +127,17 @@ def save_profile(payload: MCPProfile):
         normalize_spot_symbols(payload.symbols)
     from .config_guard import assert_profile_transition
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        current = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=?", (payload.profile_id,)).fetchone()
+        lock_scope(conn, 'runtime-config')
+        current = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=%s", (payload.profile_id,)).fetchone()
         current = json.loads(current[0]) if current else None
         if current != previous:
             raise ValueError('MCP profile changed during save; refresh its configuration')
         assert_profile_transition(conn, previous, payload.model_dump())
         if previous and any(previous.get(key) != getattr(payload, key) for key in ('exchange_profile_id', 'market_type')):
-            used = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=? LIMIT 1', (payload.profile_id,)).fetchone()
+            used = conn.execute('SELECT 1 FROM mcp_operations WHERE profile_id=%s LIMIT 1', (payload.profile_id,)).fetchone()
             if used:
                 raise ValueError('This profile has execution history; create a new profile for another account')
-        conn.execute('INSERT INTO mcp_records VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload',
+        conn.execute('INSERT INTO mcp_records(kind,id,payload) VALUES(%s,%s,%s) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload',
                      ('profile', payload.profile_id, json.dumps(payload.model_dump())))
         from backend.config_store import load_runtime_snapshot
         from backend.utils.position_management import synchronize_configuration

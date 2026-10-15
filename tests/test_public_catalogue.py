@@ -1,6 +1,7 @@
 """Offline catalogue fixtures also support the isolated capacity harness."""
 import copy
 import gc
+import sys
 import threading
 import time
 import weakref
@@ -10,6 +11,42 @@ import pytest
 
 from backend.utils import public_catalogue as catalogues, runtime_capacity as capacity
 from backend.mcp import exchange_runtime
+
+
+def test_resident_size_counts_mixed_shared_and_cyclic_objects_once(monkeypatch):
+    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'true')
+    leaf_key, mapping_key, sequence_key = 'leaf', 'mapping', 'sequence'
+    leaf = bytearray(b'catalogue payload')
+    shared = {leaf_key: leaf}
+    numbers = {10001, 10002}
+    frozen = frozenset({20001})
+    sequence = []
+    pair = (shared, numbers, frozen, sequence)
+    sequence.extend((shared, pair, sequence))
+    value = {mapping_key: shared, sequence_key: sequence}
+    # Enumerate this graph's known nodes independently of the traversal under
+    # test, including the cycle and objects reached through more than one path.
+    nodes = (value, mapping_key, sequence_key, shared, leaf_key, leaf,
+             sequence, pair, numbers, *numbers, frozen, *frozen)
+    expected = sum(sys.getsizeof(node) for node in {id(node): node for node in nodes}.values())
+    assert catalogues.resident_size(value, limit=expected) == expected
+    assert catalogues.resident_size(value, limit=expected - 1) == expected
+
+
+def test_resident_size_measures_full_dictionary_despite_legacy_budget(monkeypatch):
+    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'true')
+    visited = []
+
+    class ObservedItems(dict):
+        def items(self):
+            visited.append('first')
+            yield ('first', 1)
+            visited.append('last')
+            yield ('last', 2)
+
+    value = ObservedItems()
+    assert catalogues.resident_size(value, limit=sys.getsizeof(value)) > sys.getsizeof(value)
+    assert visited == ['first', 'last']
 
 
 class OfflineExchange:
@@ -113,14 +150,13 @@ def test_refresh_reserves_old_new_and_consumer_peak(local_capacity, monkeypatch)
     catalogues.release_catalogue_client(client)
 
 
-def test_catalogue_bytes_reject_before_compact_copy(local_capacity, monkeypatch):
+def test_catalogue_bytes_do_not_reject_complete_metadata(local_capacity, monkeypatch):
     client = OfflineExchange()
     monkeypatch.setenv('RUNTIME_CATALOGUE_BYTES', '100')
-    monkeypatch.setattr(catalogues.copy, 'deepcopy', lambda *_: pytest.fail('overlarge retained row was copied'))
-    with pytest.raises(capacity.CapacityBusy, match='catalogue_bytes'):
-        catalogues.load_public_catalogue(client)
-    assert catalogues.catalogue_diagnostics()['bytes'] == 0
+    catalogues.load_public_catalogue(client)
+    assert client.markets and catalogues.catalogue_diagnostics()['bytes'] > 100
     catalogues.release_catalogue_client(client)
+    catalogues.retire_catalogues(all_idle=True)
     assert local_capacity.snapshot()['bytes'] == 0
 
 
@@ -133,7 +169,7 @@ def test_retired_consumers_and_keys_release_bytes(local_capacity):
     assert catalogues.catalogue_diagnostics()['entries'] == 0
 
 
-def test_http_limit_stops_stream_before_ccxt_parse(local_capacity, monkeypatch):
+def test_http_response_is_complete_despite_legacy_body_limit(local_capacity, monkeypatch):
     monkeypatch.setenv('RUNTIME_HTTP_RESPONSE_BYTES', '8')
     class Response:
         headers = {}
@@ -141,7 +177,7 @@ def test_http_limit_stops_stream_before_ccxt_parse(local_capacity, monkeypatch):
         def iter_content(self, chunk_size):
             yield b'12345678'
             yield b'9'
-            pytest.fail('read beyond limit')
+            yield b'0'
         def close(self):
             self.closed = True
     response = Response()
@@ -152,9 +188,11 @@ def test_http_limit_stops_stream_before_ccxt_parse(local_capacity, monkeypatch):
     client = OfflineExchange()
     client.session = Session()
     catalogues.install_bounded_http(client)
-    with pytest.raises(capacity.CapacityBusy, match='response_bytes'):
-        client.session.request('GET', 'https://fixture.invalid')
-    assert response.closed and local_capacity.snapshot()['bytes'] == 0
+    assert client.session.request('GET', 'https://fixture.invalid')._content == b'1234567890'
+    assert response.closed and local_capacity.snapshot()['bytes'] == 40
+    del response
+    gc.collect()
+    assert local_capacity.snapshot()['bytes'] == 0
 
 
 def test_coordinator_with_active_lock_is_not_retired(local_capacity):
@@ -208,10 +246,10 @@ def test_coordinator_entry_limit_pins_active_clients_and_reclaims_rotated_keys(l
     clients = [Transport(), Transport(), Transport()]
     exchange_runtime.install_transport(clients[0], 'rotation-a')
     exchange_runtime.install_transport(clients[1], 'rotation-b')
-    with pytest.raises(capacity.CapacityBusy, match='coordinator_entries'):
-        exchange_runtime.install_transport(clients[2], 'rotation-c')
-    exchange_runtime.close_runtime_client(clients[0])
     exchange_runtime.install_transport(clients[2], 'rotation-c')
+    assert all(key in exchange_runtime._accounts for key in ('rotation-a', 'rotation-b', 'rotation-c'))
+    exchange_runtime.close_runtime_client(clients[0])
+    exchange_runtime.retire_runtime_caches(all_idle=True)
     assert 'rotation-a' not in exchange_runtime._accounts
     for client in clients[1:]:
         assert exchange_runtime.close_runtime_client(client)
@@ -309,8 +347,8 @@ def test_client_slots_are_bounded_until_actual_close(local_capacity, monkeypatch
     monkeypatch.setenv('RUNTIME_CLIENT_ENTRIES', '1')
     first, second = OfflineExchange(), OfflineExchange()
     catalogues.load_public_catalogue(first)
-    with pytest.raises(capacity.CapacityBusy, match='client_entries'):
-        catalogues.load_public_catalogue(second)
+    catalogues.load_public_catalogue(second)
+    assert catalogues.catalogue_diagnostics()['clients'] == 2
     catalogues.release_catalogue_client(first)
     catalogues.load_public_catalogue(second)
     assert catalogues.catalogue_diagnostics()['clients'] == 1
@@ -437,7 +475,7 @@ def test_binance_futures_catalogue_does_not_send_spot_parameter(local_capacity, 
         client.session.close()
 
 
-def test_gzip_decoded_body_still_obeys_default_http_cap(local_capacity, monkeypatch):
+def test_gzip_decoded_body_is_not_truncated_by_former_http_cap(local_capacity, monkeypatch):
     import gzip
     import io
     import requests
@@ -461,9 +499,11 @@ def test_gzip_decoded_body_still_obeys_default_http_cap(local_capacity, monkeypa
     client = OfflineExchange()
     client.session = Session()
     catalogues.install_bounded_http(client)
-    with pytest.raises(capacity.CapacityBusy, match='exchange: response_bytes'):
-        client.session.request('GET', 'https://fixture.invalid/api/v3/exchangeInfo')
+    assert len(client.session.request('GET', 'https://fixture.invalid/api/v3/exchangeInfo').content) == cap + 1
     assert response.raw.closed
+    assert local_capacity.snapshot()['bytes'] == (cap + 1) * 4
+    del response
+    gc.collect()
     assert local_capacity.snapshot()['bytes'] == 0
 
 

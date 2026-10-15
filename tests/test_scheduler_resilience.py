@@ -1,5 +1,6 @@
 import concurrent.futures
-import sqlite3
+import pytest
+from backend import storage
 import unittest
 from contextlib import contextmanager
 from datetime import datetime
@@ -25,6 +26,7 @@ class RecordingExecutor:
         return future
 
 
+@pytest.mark.usefixtures('pg')
 class SchedulerResilienceTests(unittest.TestCase):
     def setUp(self):
         scheduler._last_run_times.clear()
@@ -52,13 +54,16 @@ class SchedulerResilienceTests(unittest.TestCase):
         self.assertEqual(due_minutes, [0, 20, 40])
 
     def test_scheduler_run_insert_dedupes_same_config_job_and_minute(self):
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-        initialize_schema(conn)
+        conn = storage.connect()
+        conn.row_factory = storage.row_factory
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
 
         @contextmanager
         def temp_conn():
-            yield conn
+            try:
+                yield conn
+            finally:
+                conn.rollback()
 
         try:
             with patch("backend.database.get_db_conn", temp_conn):
@@ -73,13 +78,16 @@ class SchedulerResilienceTests(unittest.TestCase):
         self.assertTrue(other_minute)
 
     def test_scheduler_progress_persists_reasoning_tokens(self):
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-        initialize_schema(conn)
+        conn = storage.connect()
+        conn.row_factory = storage.row_factory
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
 
         @contextmanager
         def temp_conn():
-            yield conn
+            try:
+                yield conn
+            finally:
+                conn.rollback()
 
         scheduled_at = "2026-05-29 08:20:00"
         try:
@@ -96,7 +104,7 @@ class SchedulerResilienceTests(unittest.TestCase):
                     },
                 )
             row = conn.execute(
-                "SELECT reasoning_content, reasoning_tokens FROM scheduler_runs WHERE config_id = ?",
+                'SELECT reasoning_content, reasoning_tokens FROM scheduler_runs WHERE config_id = %s',
                 ("cfg-a",),
             ).fetchone()
         finally:

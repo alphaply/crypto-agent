@@ -20,10 +20,10 @@ PAYLOAD = {'pos_side': 'SHORT', 'expected_amount': 0.37, 'reason': '用户要求
 
 
 @pytest.fixture
-def adoption_tool(tmp_path, monkeypatch):
+def adoption_tool(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'adoption-tools.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     state = SimpleNamespace(
         cfg={'config_id': 'cfg', 'mode': 'REAL', 'exit_mode': 'independent_exits'},
         clients=[], calls=[], error=None,
@@ -162,3 +162,9 @@ def test_adoption_error_classification_and_retry_do_not_repeat_service(adoption_
 def test_adoption_schema_keeps_reason_explicit():
     with pytest.raises(ValidationError):
         AdoptPositionRealSchema.model_validate({'pos_side': 'SHORT', 'expected_amount': 0.37})
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

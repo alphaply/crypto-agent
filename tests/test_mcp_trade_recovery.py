@@ -137,7 +137,7 @@ def test_mcp_read_and_replay_refresh_same_internal_operation_without_writes(cont
     assert not_found_profile['state'] == 'not_found' and not_found_profile['found'] is False
     assert len(exchange.calls) == 2
     with store.connection() as conn:
-        link = conn.execute('SELECT * FROM mcp_operation_links WHERE operation_id=?', ('mcp-close-recover',)).fetchone()
+        link = conn.execute('SELECT * FROM mcp_operation_links WHERE operation_id=%s', ('mcp-close-recover',)).fetchone()
         assert link['principal'] == caller['id']
         assert link['internal_operation_id'] == 'mcp:' + store.digest(caller['id'] + ':mcp-close-recover')
         assert conn.execute('SELECT count(*) FROM mcp_operation_revisions').fetchone()[0] >= 2
@@ -182,7 +182,7 @@ def test_mcp_spot_order_recovery_resolves_to_filled(contracts, monkeypatch):
     store.complete_operation('spot', op_id, submitted_result)
 
     with store.connection() as conn:
-        row = conn.execute('SELECT state FROM mcp_operations WHERE profile_id="spot" AND operation_id=?', (op_id,)).fetchone()
+        row = conn.execute("SELECT state FROM mcp_operations WHERE profile_id='spot' AND operation_id=%s", (op_id,)).fetchone()
         assert row['state'] == 'submitted'
 
     result = service.operation(reader, 'spot', op_id)
@@ -196,7 +196,7 @@ def test_mcp_spot_order_recovery_resolves_to_filled(contracts, monkeypatch):
     assert res_data['filled_at'] is not None
 
     with database.get_db_conn() as conn:
-        fill_row = conn.execute('SELECT * FROM spot_order_fills WHERE order_id="spot-12345"').fetchone()
+        fill_row = conn.execute("SELECT * FROM spot_order_fills WHERE order_id='spot-12345'").fetchone()
         assert fill_row is not None
         assert fill_row['status'] == 'FILLED'
         assert fill_row['filled_qty'] == 0.05

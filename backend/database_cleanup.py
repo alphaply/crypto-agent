@@ -1,14 +1,14 @@
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 import json
-import sqlite3
+from backend import storage
 
 
 def _recovery_retained_rows(conn, config_id, tables):
     """Keep original execution facts referenced by explicitly accepted handoffs."""
     if 'management_recovery_grants' not in tables:
         return {}
-    grants = list(conn.execute('SELECT operation_id,payload FROM management_recovery_grants WHERE source_owner=?',
+    grants = list(conn.execute('SELECT operation_id,payload FROM management_recovery_grants WHERE source_owner=%s',
                                (config_id,)))
     if not grants:
         return {}
@@ -18,7 +18,7 @@ def _recovery_retained_rows(conn, config_id, tables):
     def rows(table):
         if table not in tables:
             return []
-        cursor = conn.execute(f'SELECT rowid AS cleanup_rowid,* FROM {table} WHERE config_id=?', (config_id,))
+        cursor = conn.execute(f'SELECT storage_id AS cleanup_rowid,* FROM {table} WHERE config_id=%s', (config_id,))
         columns = [column[0] for column in cursor.description]
         return [dict(zip(columns, tuple(row))) for row in cursor]
 
@@ -153,27 +153,22 @@ class ConfigCleanupStore:
                 "spot_budget_reservations", "spot_order_fills", "dca_daily_snapshots", "trade_history",
                 "spot_budget_cycles", "memory_update_jobs",
             ]
-            existing_tables = {
-                row[0]
-                for row in cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
+            existing_tables = storage.table_names(conn)
             counts = {}
             for table in tables:
                 if table not in existing_tables:
                     continue
                 counts[table] = cursor.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE config_id = ?",
+                    f"SELECT COUNT(*) FROM {table} WHERE config_id = %s",
                     (config_id,),
                 ).fetchone()[0]
 
             counts["open_mock_orders"] = cursor.execute(
-                "SELECT COUNT(*) FROM mock_orders WHERE config_id = ? AND status = 'OPEN'",
+                "SELECT COUNT(*) FROM mock_orders WHERE config_id = %s AND status = 'OPEN'",
                 (config_id,),
             ).fetchone()[0]
             counts["open_orders"] = cursor.execute(
-                "SELECT COUNT(*) FROM orders WHERE config_id = ? AND status = 'OPEN'",
+                "SELECT COUNT(*) FROM orders WHERE config_id = %s AND status = 'OPEN'",
                 (config_id,),
             ).fetchone()[0]
             return counts
@@ -183,24 +178,24 @@ class ConfigCleanupStore:
             cursor = conn.cursor()
 
             deleted_chat_sessions = cursor.execute(
-                "DELETE FROM chat_sessions WHERE config_id = ?",
+                "DELETE FROM chat_sessions WHERE config_id = %s",
                 (config_id,),
             ).rowcount
             deleted_mock_accounts = cursor.execute(
-                "DELETE FROM mock_accounts WHERE config_id = ?",
+                "DELETE FROM mock_accounts WHERE config_id = %s",
                 (config_id,),
             ).rowcount
             deleted_mock_balance_history = cursor.execute(
-                "DELETE FROM mock_balance_history WHERE config_id = ?",
+                "DELETE FROM mock_balance_history WHERE config_id = %s",
                 (config_id,),
             ).rowcount
 
             closed_open_mock_orders = cursor.execute(
-                "UPDATE mock_orders SET status = 'CLOSED', close_time = ? WHERE config_id = ? AND status = 'OPEN'",
+                "UPDATE mock_orders SET status = 'CLOSED', close_time = %s WHERE config_id = %s AND status = 'OPEN'",
                 (self._now_factory(), config_id),
             ).rowcount
             cancelled_open_orders = cursor.execute(
-                "UPDATE orders SET status = 'CANCELLED' WHERE config_id = ? AND status = 'OPEN'",
+                "UPDATE orders SET status = 'CANCELLED' WHERE config_id = %s AND status = 'OPEN'",
                 (config_id,),
             ).rowcount
 
@@ -214,62 +209,57 @@ class ConfigCleanupStore:
                 "open_orders_cancelled": cancelled_open_orders,
             }
 
-    def purge_all_data(self, config_id: str, *, connection: sqlite3.Connection | None = None):
+    def purge_all_data(self, config_id: str, *, connection: storage.Connection | None = None):
         """Purge local data, joining the caller's transaction when supplied."""
         with nullcontext(connection) if connection is not None else self._conn_factory() as conn:
             cursor = conn.cursor()
-            existing_tables = {
-                row[0]
-                for row in cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
+            existing_tables = storage.table_names(conn)
             retained = _recovery_retained_rows(conn, config_id, existing_tables)
 
             def delete_rows(table):
                 protected = sorted(retained.get(table, set()))
                 if protected:
-                    placeholders = ','.join('?' for _ in protected)
-                    return cursor.execute(f'DELETE FROM {table} WHERE config_id=? AND rowid NOT IN ({placeholders})',
+                    placeholders = ','.join('%s' for _ in protected)
+                    return cursor.execute(f'DELETE FROM {table} WHERE config_id=%s AND storage_id NOT IN ({placeholders})',
                                           (config_id, *protected)).rowcount
-                return cursor.execute(f'DELETE FROM {table} WHERE config_id=?', (config_id,)).rowcount
+                return cursor.execute(f'DELETE FROM {table} WHERE config_id=%s', (config_id,)).rowcount
 
             cleanup = {
                 "chat_sessions_deleted": cursor.execute(
-                    "DELETE FROM chat_sessions WHERE config_id = ?",
+                    "DELETE FROM chat_sessions WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
                 "mock_accounts_deleted": cursor.execute(
-                    "DELETE FROM mock_accounts WHERE config_id = ?",
+                    "DELETE FROM mock_accounts WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
                 "mock_balance_history_deleted": cursor.execute(
-                    "DELETE FROM mock_balance_history WHERE config_id = ?",
+                    "DELETE FROM mock_balance_history WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
                 "mock_orders_deleted": cursor.execute(
-                    "DELETE FROM mock_orders WHERE config_id = ?",
+                    "DELETE FROM mock_orders WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
                 "orders_deleted": delete_rows('orders'),
                 "summaries_deleted": cursor.execute(
-                    "DELETE FROM summaries WHERE config_id = ?",
+                    "DELETE FROM summaries WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
                 "token_usage_deleted": cursor.execute(
-                    "DELETE FROM token_usage WHERE config_id = ?",
+                    "DELETE FROM token_usage WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
                 "daily_summaries_deleted": cursor.execute(
-                    "DELETE FROM daily_summaries WHERE config_id = ?",
+                    "DELETE FROM daily_summaries WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
                 "short_memories_deleted": cursor.execute(
-                    "DELETE FROM short_memories WHERE config_id = ?",
+                    "DELETE FROM short_memories WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
                 "position_history_deleted": cursor.execute(
-                    "DELETE FROM position_history WHERE config_id = ?",
+                    "DELETE FROM position_history WHERE config_id = %s",
                     (config_id,),
                 ).rowcount,
             }

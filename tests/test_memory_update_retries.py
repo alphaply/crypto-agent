@@ -12,17 +12,17 @@ from backend.agent import memory_updates as updates
 def job(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'memory-updates.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
-        cursor = conn.execute('INSERT INTO summaries(timestamp,symbol,config_id,strategy_logic) VALUES(?,?,?,?)',
+        pass  # Full schema is created by pg.
+        cursor = conn.execute('INSERT INTO summaries(timestamp,symbol,config_id,strategy_logic) VALUES(%s,%s,%s,%s) RETURNING id',
                               ('2026-10-09 10:00:00', 'ETH/USDT', 'cfg', 'new verified evidence'))
-        summary_id = cursor.lastrowid
+        summary_id = cursor.fetchone()[0]
         conn.commit()
     database.save_short_memory('2026-10-09 08:00:00', '2026-10-09 09:00:00', 'ETH/USDT', 'cfg', 'prior memory', '', 1)
-    updates.enqueue_memory_update('cfg', 'run-1', summary_id)
-    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *args: 'Confirmed execution evidence')
     from backend.config import config
     cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'STRATEGY'}
     monkeypatch.setattr(config, 'get_config_by_id', lambda cid: cfg if cid == 'cfg' else None)
+    updates.enqueue_memory_update('cfg', 'run-1', summary_id)
+    monkeypatch.setattr(memory_service, 'format_recent_position_history_for_memory', lambda *args: 'Confirmed execution evidence')
     return cfg
 
 
@@ -72,3 +72,6 @@ def test_incomplete_provider_reason_reaches_job_status_and_preserves_old_memory(
     assert not updates.process_memory_update('cfg', 'run-1', job)
     assert state()['error'] == error
     assert database.get_short_memories('cfg') == old
+
+
+pytestmark = pytest.mark.usefixtures("pg")

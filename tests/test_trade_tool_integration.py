@@ -13,10 +13,10 @@ from backend.database_schema import initialize_schema
 
 
 @pytest.fixture
-def simulation(tmp_path, monkeypatch):
+def simulation(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'tools.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # financial_pg installs the complete native migration schema.
     cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'STRATEGY', 'exit_mode': 'independent_exits'}
     monkeypatch.setattr(config, 'get_config_by_id', lambda cid: cfg if cid == 'cfg' else None)
     monkeypatch.setattr(agent_tools, 'MarketTool', lambda **_: SimpleNamespace(exchange=SimpleNamespace(fetch_ticker=lambda _: {'last': 100})))
@@ -35,7 +35,7 @@ def recover(operation_id):
     """Pure backend recovery coverage; no model query tool is registered or invoked."""
     from backend.utils.trade_operations import refresh_operation_receipt, _decode_receipt
     with database.get_db_conn() as conn:
-        row=conn.execute('SELECT result FROM trade_action_runs WHERE config_id=? AND operation_id=?',('cfg',operation_id)).fetchone()
+        row=conn.execute('SELECT result FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',('cfg',operation_id)).fetchone()
     if row is None:
         return {'status':'failed','error_code':'operation_not_found'}
     return refresh_operation_receipt('cfg','ETH/USDT',operation_id,_decode_receipt(row['result']))
@@ -271,7 +271,7 @@ def test_stats_show_aggregate_position_and_exit_quantities(simulation, monkeypat
     assert stats['exit_management']['uncovered']['LONG'] == .5
 
 
-def test_legacy_cancel_list_stops_after_unknown_result(monkeypatch):
+def test_legacy_cancel_list_stops_after_unknown_result(monkeypatch, financial_pg):
     calls = []
 
     def cancel(**kwargs):

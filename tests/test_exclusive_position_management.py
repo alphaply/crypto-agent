@@ -160,10 +160,10 @@ class ExclusiveExchange:
 
 
 @pytest.fixture(params=['binanceusdm', 'okx'])
-def managed(tmp_path, monkeypatch, request):
+def managed(tmp_path, monkeypatch, request, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'exclusive.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # financial_pg installs the complete native migration schema.
     exchange = ExclusiveExchange(request.param)
     monkeypatch.setattr(time, 'time', lambda: exchange.now / 1000)
     service = make_service(exchange)
@@ -363,7 +363,7 @@ def _hold_reservation(db_path, entered, release):
 def test_separate_process_cannot_submit_inside_active_reservation(managed):
     service, _ = managed
     if service.ex.id == 'okx':
-        pytest.skip('Same SQLite reservation semantics already exercised with Binance scope')
+        pytest.skip('Same PostgreSQL reservation and shared-directory lock already exercised with Binance scope')
     context = multiprocessing.get_context('spawn')
     entered, release = context.Event(), context.Event()
     process = context.Process(target=_hold_reservation, args=(database.DB_NAME, entered, release))
@@ -687,7 +687,6 @@ def test_close_all_uses_current_reduced_quantity_with_real_close_only_semantics(
 
 def _stats_runtime(monkeypatch, service, exchange):
     from backend.app.services import stats_service
-    monkeypatch.setattr(stats_service, 'DB_NAME', database.DB_NAME)
     monkeypatch.setattr(stats_service.global_config, 'get_config_by_id', lambda _: service.mt.runtime_config)
     monkeypatch.setattr(stats_service, 'MarketTool', lambda **_: service.mt)
     monkeypatch.setattr(exchange, 'fetch_ohlcv', lambda *args, **kwargs: [[exchange.now-3600000, 2500, 2565, 2415, 2500, 10]], raising=False)

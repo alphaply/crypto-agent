@@ -1,9 +1,7 @@
-import sqlite3
-import tempfile
+import pytest
+from backend import storage
 import unittest
 from contextlib import closing
-from pathlib import Path
-from unittest.mock import patch
 
 from backend.app.services import stats_service
 
@@ -37,42 +35,17 @@ class FakeMarketTool:
     exchange = FakeExchange()
 
 
-def create_orders_table(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id TEXT,
-            config_id TEXT,
-            reason TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
 class PendingOrderReasonTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "pending_reasons.db"
-        create_orders_table(self.db_path)
-        self.db_patch = patch.object(stats_service, "DB_NAME", str(self.db_path))
-        self.db_patch.start()
 
-    def tearDown(self) -> None:
-        self.db_patch.stop()
-        self.temp_dir.cleanup()
 
     def test_fetch_real_open_orders_backfills_reason_from_local_order_log(self):
-        with closing(sqlite3.connect(self.db_path)) as conn:
+        with closing(storage.connect()) as conn:
             conn.execute(
-                "INSERT INTO orders (order_id, config_id, reason) VALUES (?, ?, ?)",
+                "INSERT INTO orders (order_id, config_id, reason) VALUES (%s, %s, %s)",
                 ("limit-1", "cfg-a", "entry retest"),
             )
             conn.execute(
-                "INSERT INTO orders (order_id, config_id, reason) VALUES (?, ?, ?)",
+                "INSERT INTO orders (order_id, config_id, reason) VALUES (%s, %s, %s)",
                 ("stop-1", "cfg-a", "risk invalidation"),
             )
             conn.commit()
@@ -92,3 +65,6 @@ class PendingOrderReasonTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+pytestmark = pytest.mark.usefixtures("pg")

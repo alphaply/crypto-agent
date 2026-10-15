@@ -11,10 +11,10 @@ from backend.database_schema import initialize_schema
 
 
 @pytest.fixture
-def spot_runtime(tmp_path, monkeypatch):
+def spot_runtime(tmp_path, monkeypatch, financial_pg):
     path = tmp_path / 'spot.sqlite'
-    with sqlite3.connect(path) as conn:
-        initialize_schema(conn)
+    with database.get_db_conn() as conn:
+        pass  # financial_pg installs the complete native migration schema.
     monkeypatch.setattr(database, 'DB_NAME', str(path))
     config = {'config_id': 'spot', 'mode': 'SPOT_DCA', 'model': 'offline',
               'symbol': 'BTC/USDT', 'symbols': ['BTC/USDT', 'ETH/USDT'],
@@ -245,19 +245,19 @@ def test_task_deletion_cleans_reservations_but_history_cleanup_preserves_them(sp
     assert buy([order()], operation='buy')['status'] == 'submitted'
 
 
-def test_database_export_preserves_budget_reservations(spot_runtime):
-    from contextlib import closing
+def test_database_export_preserves_budget_reservations(spot_runtime, backup_client, restore_dump):
     from pathlib import Path
+    import psycopg
     from backend.app.services.database_export import database_file_response
-
     assert buy([order()])['status'] == 'submitted'
     response = database_file_response()
     try:
-        with closing(sqlite3.connect(response.path)) as conn:
+        restored = restore_dump(Path(response.path).read_bytes())
+        with psycopg.connect(restored) as conn:
             row = conn.execute('SELECT quote_cost,status FROM spot_budget_reservations').fetchone()
         assert row == (40, 'submitted')
     finally:
-        Path(response.path).unlink()
+        Path(response.path).unlink(missing_ok=True)
 
 
 def test_new_run_gets_its_own_allowance_and_legacy_still_counts_lifetime(spot_runtime):

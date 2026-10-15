@@ -1,6 +1,6 @@
 import math
 import json
-import sqlite3
+from backend import storage
 import time
 import traceback
 from datetime import datetime, timedelta
@@ -189,7 +189,7 @@ def _normalize_order_record(order: dict) -> dict:
 
 
 def _normalize_trade_activity_record(row: dict) -> dict:
-    payload = dict(row)
+    payload = storage.record(row)
     side = str(payload.get("side") or "").lower()
     realized_pnl = float(payload.get("realized_pnl") or 0)
     if abs(realized_pnl) > 1e-12:
@@ -261,12 +261,12 @@ def _get_recent_order_activity(config_id: str, limit: int = 20) -> list[dict]:
                     parent_order_id,
                     is_auto
                 FROM orders
-                WHERE config_id = ?
+                WHERE config_id = %s
 
                 UNION ALL
 
                 SELECT
-                    rowid AS sort_id,
+                    storage_id AS sort_id,
                     'trade' AS activity_type,
                     NULL AS id,
                     order_id,
@@ -295,14 +295,14 @@ def _get_recent_order_activity(config_id: str, limit: int = 20) -> list[dict]:
                     order_id AS parent_order_id,
                     0 AS is_auto
                 FROM trade_history
-                WHERE config_id = ?
+                WHERE config_id = %s
             )
-            ORDER BY timestamp DESC, sort_id DESC
-            LIMIT ?
+            ORDER BY timestamp DESC NULLS LAST, sort_id DESC
+            LIMIT %s
             """,
             (config_id, config_id, int(limit or 20)),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [storage.record(row) for row in rows]
 
 
 def _collapse_recent_order_activity(rows: list[dict]) -> list[dict]:
@@ -340,7 +340,7 @@ def _collapse_recent_order_activity(rows: list[dict]) -> list[dict]:
                 continue
             emitted_cancel_order_ids.add(order_id)
 
-            merged = dict(row)
+            merged = storage.record(row)
             source_row = latest_cancelled_open_by_order.get(order_id)
             if source_row:
                 for field in ("entry_price", "amount", "take_profit", "stop_loss"):
@@ -363,7 +363,7 @@ def _collapse_recent_order_activity(rows: list[dict]) -> list[dict]:
 def build_symbol_overview_metrics(symbol: str, agent_summaries: list[dict]) -> dict:
     config_ids = [item.get("config_id") for item in agent_summaries if item.get("config_id")]
     with get_db_conn() as conn:
-        placeholders = ",".join(["?"] * len(config_ids))
+        placeholders = ",".join(["%s"] * len(config_ids))
         token_total = 0
         cost_total = 0.0
         if config_ids:
@@ -412,12 +412,12 @@ def build_config_compare_rows(symbol: str, agent_summaries: list[dict]) -> list[
                 """
                 SELECT
                     COUNT(*) AS total_orders,
-                    SUM(CASE WHEN LOWER(side) LIKE '%buy%' OR LOWER(side) LIKE '%long%' THEN 1 ELSE 0 END) AS long_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%sell%' OR LOWER(side) LIKE '%short%' THEN 1 ELSE 0 END) AS short_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%close%' OR status = 'CLOSED' THEN 1 ELSE 0 END) AS close_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%cancel%' OR status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancel_count
+                    SUM(CASE WHEN LOWER(side) LIKE '%%buy%%' OR LOWER(side) LIKE '%%long%%' THEN 1 ELSE 0 END) AS long_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%%sell%%' OR LOWER(side) LIKE '%%short%%' THEN 1 ELSE 0 END) AS short_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%%close%%' OR status = 'CLOSED' THEN 1 ELSE 0 END) AS close_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%%cancel%%' OR status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancel_count
                 FROM orders
-                WHERE config_id = ?
+                WHERE config_id = %s
                 """,
                 (config_id,),
             ).fetchone()
@@ -525,15 +525,16 @@ def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
             with get_db_conn() as conn:
                 open_rows = conn.execute(
                     """
-                    SELECT DISTINCT order_id
+                    SELECT order_id
                     FROM orders
-                    WHERE config_id = ?
-                      AND symbol = ?
+                    WHERE config_id = %s
+                      AND symbol = %s
                       AND trade_mode = 'SPOT_DCA'
                       AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'
                       AND UPPER(side) IN ('BUY','BUY_LIMIT')
                       AND status IN ('OPEN', 'PARTIAL')
-                    ORDER BY id DESC
+                    GROUP BY order_id
+                    ORDER BY MAX(id) DESC
                     LIMIT 100
                     """,
                     (config_id, symbol),
@@ -571,15 +572,19 @@ def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
                         local_status = "PARTIAL"
 
                     with get_db_conn() as conn:
-                        conn.execute('''UPDATE orders SET status=?, filled_amount=?, filled_cost=?,
-                            avg_fill_price=?, filled_at=? WHERE order_id=? AND config_id=? AND symbol=?
+                        conn.execute('''UPDATE orders SET status=%s, filled_amount=%s, filled_cost=%s,
+                            avg_fill_price=%s, filled_at=%s WHERE order_id=%s AND config_id=%s AND symbol=%s
                             AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''',
                             (local_status, filled_qty, filled_cost, avg_price, filled_at, order_id, config_id, symbol))
                         conn.commit()
                     upsert_spot_order_fill(order_id, config_id, symbol, local_status, filled_qty, filled_cost, avg_price, filled_at)
+                except storage.Error:
+                    raise
                 except Exception as one_error:
                     sync_errors.append(f'{symbol} 订单 {order_id} 同步失败')
                     logger.debug(f"Skip spot order sync: {order_id} => {one_error}")
+        except storage.Error:
+            raise
         except Exception as sync_error:
             sync_errors.append(f'{symbol} 委托同步失败')
             logger.warning(f"DCA order sync failed for {config_id}: {sync_error}")
@@ -589,9 +594,11 @@ def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
             if trades:
                 with get_db_conn() as conn:
                     owned_ids = {str(row[0]) for row in conn.execute('''SELECT order_id FROM orders
-                        WHERE config_id=? AND symbol=? AND trade_mode='SPOT_DCA'
+                        WHERE config_id=%s AND symbol=%s AND trade_mode='SPOT_DCA'
                         AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''', (config_id, symbol))}
                 save_trade_history([trade for trade in trades if str(trade.get('order') or trade.get('order_id') or '') in owned_ids], config_id=config_id)
+        except storage.Error:
+            raise
         except Exception as trade_error:
             sync_errors.append(f'{symbol} 成交历史同步失败')
             logger.warning(f"Fetch my_trades failed for {symbol}: {trade_error}")
@@ -607,9 +614,9 @@ def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
                   ON f.config_id=o.config_id AND f.symbol=o.symbol AND f.order_id=o.order_id
                 LEFT JOIN (SELECT order_id,SUM(amount) AS traded_qty,SUM(cost) AS traded_cost,
                     MIN(timestamp) AS first_buy,MAX(timestamp) AS last_buy FROM trade_history
-                    WHERE symbol=? AND (config_id=? OR config_id IS NULL OR config_id='')
+                    WHERE symbol=%s AND (config_id=%s OR config_id IS NULL OR config_id='')
                       AND LOWER(side)='buy' GROUP BY order_id) t ON t.order_id=o.order_id
-                WHERE o.config_id=? AND o.symbol=? AND o.trade_mode='SPOT_DCA'
+                WHERE o.config_id=%s AND o.symbol=%s AND o.trade_mode='SPOT_DCA'
                   AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
                   AND UPPER(o.side) IN ('BUY','BUY_LIMIT') ORDER BY o.id DESC''',
                 (symbol, config_id, config_id, symbol)).fetchall()
@@ -642,8 +649,8 @@ def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
                 """
                 SELECT COUNT(DISTINCT order_id) AS pending_count
                 FROM orders
-                WHERE config_id = ?
-                  AND symbol = ?
+                WHERE config_id = %s
+                  AND symbol = %s
                   AND trade_mode = 'SPOT_DCA'
                   AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'
                   AND UPPER(side) IN ('BUY','BUY_LIMIT')
@@ -659,6 +666,8 @@ def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
             current_qty = float(base_balance.get('total') or (balances.get('total') or {}).get(base_asset) or 0)
             if not math.isfinite(current_qty) or current_qty < 0:
                 raise ValueError('交易所持仓余额无效')
+        except storage.Error:
+            raise
         except Exception:
             current_qty = None
             sync_errors.append(f'{symbol} 账户余额同步失败')
@@ -678,6 +687,8 @@ def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
             current_price = float(ticker.get("last") or ticker.get("close") or 0)
             if not math.isfinite(current_price) or current_price <= 0:
                 raise ValueError('无有效现货价格')
+        except storage.Error:
+            raise
         except Exception as ticker_error:
             current_price = None
             sync_errors.append(f'{symbol} 价格同步失败，市值及收益暂不可用')
@@ -716,6 +727,8 @@ def _calculate_dca_symbol_stats(config_id, cfg, symbol, force_sync=False):
             save_dca_daily_snapshot(config_id, symbol, result)
         DCA_STATS_CACHE[cache_key] = {"timestamp": now_ts, "signature": cache_signature, "data": result}
         return result
+    except storage.Error:
+        raise
     except Exception as exc:
         logger.error(f"Error calculating CCXT DCA stats for {config_id}: {exc}\n{traceback.format_exc()}")
         return None
@@ -737,7 +750,7 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
             for config in symbol_configs:
                 config_id = config["config_id"]
                 latest_summary_row = conn.execute(
-                    "SELECT * FROM summaries WHERE config_id = ? ORDER BY id DESC LIMIT 1",
+                    "SELECT * FROM summaries WHERE config_id = %s ORDER BY id DESC LIMIT 1",
                     (config_id,),
                 ).fetchone()
                 try:
@@ -747,20 +760,20 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                                tool_calls_json, decision_json, scheduled_at, started_at, finished_at,
                                created_at, updated_at, error
                         FROM scheduler_runs
-                        WHERE config_id = ? AND job_type = 'agent'
+                        WHERE config_id = %s AND job_type = 'agent'
                         ORDER BY id DESC LIMIT 1
                         """,
                         (config_id,),
                     ).fetchone()
-                except sqlite3.OperationalError:
-                    latest_execution_row = None
+                except storage.Error:
+                    raise
 
                 mode = str(config.get("mode", "STRATEGY")).upper()
                 model_name = config.get("model", "Unknown")
                 enabled = config.get("enabled", True)
 
                 if latest_summary_row:
-                    summary_dict = dict(latest_summary_row)
+                    summary_dict = storage.record(latest_summary_row)
                 else:
                     summary_dict = {
                         "config_id": config_id,
@@ -807,14 +820,14 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 if summary_dict.get('run_id'):
                     try:
                         memory_job = conn.execute(
-                            'SELECT status,attempts,error FROM memory_update_jobs WHERE config_id=? AND run_id=?',
+                            'SELECT status,attempts,error FROM memory_update_jobs WHERE config_id=%s AND run_id=%s',
                             (config_id, summary_dict['run_id']),
                         ).fetchone()
-                        summary_dict['memory_update'] = dict(memory_job) if memory_job else None
-                    except sqlite3.OperationalError:
-                        pass
+                        summary_dict['memory_update'] = storage.record(memory_job) if memory_job else None
+                    except storage.Error:
+                        raise
                 if latest_execution_row:
-                    execution = dict(latest_execution_row)
+                    execution = storage.record(latest_execution_row)
                     try:
                         execution["tool_calls"] = json.loads(execution.pop("tool_calls_json") or "[]")
                     except (TypeError, json.JSONDecodeError):
@@ -830,6 +843,8 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 agent_summaries.append(summary_dict)
 
         return agent_summaries
+    except storage.Error:
+        raise
     except Exception as exc:
         logger.error(f"Failed to load dashboard data for {symbol}: {exc}")
         return []
@@ -845,14 +860,14 @@ def build_dashboard_overview(symbol: str | None = None, page: int = 1):
     with get_db_conn() as conn:
         try:
             for row in conn.execute(
-                "SELECT status, COUNT(*) AS n FROM scheduler_runs WHERE job_type='agent' AND created_at >= ? GROUP BY status",
+                "SELECT status, COUNT(*) AS n FROM scheduler_runs WHERE job_type='agent' AND created_at >= %s GROUP BY status",
                 ((datetime.now(TZ_CN) - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S'),),
             ):
                 status = str(row['status']).lower()
                 if status in run_counts:
                     run_counts[status] = row['n']
-        except sqlite3.OperationalError:
-            pass
+        except storage.Error:
+            raise
     return {
         "generated_at": datetime.now(TZ_CN).isoformat(),
         "timezone": str(TZ_CN),
@@ -920,14 +935,16 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
                 rows = conn.execute(
                     """
                     SELECT day, total_equity FROM (
-                        SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
-                               row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                        FROM balance_history WHERE config_id = ? AND symbol = ? AND total_equity > 0
+                        SELECT substring(timestamp from 1 for 10) as day, total_equity,
+                               row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY timestamp DESC NULLS LAST) as rn
+                        FROM balance_history WHERE config_id = %s AND symbol = %s AND total_equity > 0
                     ) WHERE rn = 1 ORDER BY day ASC
                     """,
                     (agent_filter, symbol),
                 ).fetchall()
                 real_chart_data = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
+        except storage.Error:
+            raise
         except Exception as exc:
             logger.warning(f"Failed to load real chart data: {exc}")
 
@@ -935,6 +952,8 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
             mt = MarketTool(config_id=agent_filter)
             bal = mt.exchange.fetch_balance()
             real_balance = float(bal.get("USDT", {}).get("total", 0) or bal.get("total", {}).get("USDT", 0) or 0)
+        except storage.Error:
+            raise
         except Exception as exc:
             logger.warning(f"Failed to fetch live balance for REAL mode: {exc}")
 
@@ -960,9 +979,9 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
                     rows = conn.execute(
                         """
                         SELECT day, total_equity FROM (
-                            SELECT strftime('%Y-%m-%d', timestamp) as day, total_equity,
-                                   row_number() OVER (PARTITION BY strftime('%Y-%m-%d', timestamp) ORDER BY timestamp DESC) as rn
-                            FROM balance_history WHERE config_id = ? AND symbol = ? AND total_equity > 0
+                            SELECT substring(timestamp from 1 for 10) as day, total_equity,
+                                   row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY timestamp DESC NULLS LAST) as rn
+                            FROM balance_history WHERE config_id = %s AND symbol = %s AND total_equity > 0
                         ) WHERE rn = 1 ORDER BY day ASC
                         """,
                         (config_id, symbol),
@@ -1005,7 +1024,7 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
                         """
                         SELECT snapshot_date AS day, total_invested AS equity
                         FROM dca_daily_snapshots
-                        WHERE config_id = ? AND symbol = ? AND total_invested > 0
+                        WHERE config_id = %s AND symbol = %s AND total_invested > 0
                         ORDER BY snapshot_date ASC
                         LIMIT 30
                         """,

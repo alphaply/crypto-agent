@@ -2,7 +2,7 @@
 
 import json
 import math
-import sqlite3
+from backend import storage
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -25,31 +25,8 @@ _METADATA_COLUMNS = '''run_id, parent_run_id, config_id, purpose, model, provide
     prompt_tokens, completion_tokens, total_tokens, cost, currency, cost_source'''
 
 
-def initialize_agent_runs_schema(cursor: sqlite3.Cursor) -> None:
-    cursor.execute('''CREATE TABLE IF NOT EXISTS agent_runs (
-        run_id TEXT PRIMARY KEY, parent_run_id TEXT, config_id TEXT NOT NULL,
-        purpose TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL,
-        started_at TEXT NOT NULL, finished_at TEXT,
-        input_chars INTEGER NOT NULL, message_chars INTEGER NOT NULL,
-        tool_chars INTEGER NOT NULL, output_chars INTEGER NOT NULL DEFAULT 0,
-        prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER,
-        cost REAL, currency TEXT, cost_source TEXT,
-        input_price_per_m REAL, output_price_per_m REAL, pricing_currency TEXT,
-        messages_json TEXT NOT NULL, tools_json TEXT NOT NULL,
-        output TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
-        details_json TEXT NOT NULL DEFAULT '{}'
-    )''')
-    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_agent_runs_config_time
-        ON agent_runs(config_id, started_at DESC)''')
-    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_agent_runs_time
-        ON agent_runs(started_at DESC)''')
-    existing = {row[1] for row in cursor.execute('PRAGMA table_info(agent_runs)')}
-    for name, column_type in (
-        ('cost_source', 'TEXT'), ('input_price_per_m', 'REAL'),
-        ('output_price_per_m', 'REAL'), ('pricing_currency', 'TEXT'), ('provider_id', 'TEXT'),
-    ):
-        if name not in existing:
-            cursor.execute(f'ALTER TABLE agent_runs ADD COLUMN {name} {column_type}')
+def initialize_agent_runs_schema(cursor: object) -> None:
+    """Structure is installed by the explicit PostgreSQL migration."""
 
 
 def _json_value(value: Any) -> Any:
@@ -112,30 +89,25 @@ def _amount(value: Any) -> float | None:
         return None
 
 
-def _pricing_snapshot(conn: sqlite3.Connection, model: str) -> tuple:
+def _pricing_snapshot(conn: storage.Connection, model: str) -> tuple:
     """Read configured rates only; an absent price is not a free model."""
-    try:
-        row = conn.execute('''SELECT input_price_per_m, output_price_per_m, currency
-            FROM model_pricing WHERE model = ?''', (model,)).fetchone()
-    except sqlite3.OperationalError as exc:
-        if 'no such table' in str(exc):
-            return None, None, None
-        raise
+    row = conn.execute('''SELECT input_price_per_m, output_price_per_m, currency
+        FROM model_pricing WHERE model = %s''', (model,)).fetchone()
     if row is None:
         return None, None, None
     return _amount(row[0]), _amount(row[1]), str(row[2] or 'USD')
 
 
-def _prune_expired(conn: sqlite3.Connection) -> None:
+def _prune_expired(conn: storage.Connection) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).isoformat(timespec='microseconds')
-    conn.execute('DELETE FROM agent_runs WHERE started_at < ?', (cutoff,))
+    conn.execute('DELETE FROM agent_runs WHERE started_at < %s', (cutoff,))
 
 
-def _prune(conn: sqlite3.Connection, config_id: str) -> None:
+def _prune(conn: storage.Connection, config_id: str) -> None:
     _prune_expired(conn)
-    conn.execute('''DELETE FROM agent_runs WHERE config_id = ? AND run_id NOT IN (
-        SELECT run_id FROM agent_runs WHERE config_id = ?
-        ORDER BY started_at DESC, rowid DESC LIMIT ?
+    conn.execute('''DELETE FROM agent_runs WHERE config_id = %s AND run_id NOT IN (
+        SELECT run_id FROM agent_runs WHERE config_id = %s
+        ORDER BY started_at DESC NULLS LAST, storage_id DESC LIMIT %s
     )''', (config_id, config_id, MAX_NEWS_RUNS if config_id == 'news-intelligence' else MAX_RUNS_PER_CONFIG))
 
 
@@ -164,7 +136,7 @@ def start_agent_run(
             run_id, parent_run_id, config_id, purpose, model, status, started_at,
             input_chars, message_chars, tool_chars, messages_json, tools_json,
             input_price_per_m, output_price_per_m, pricing_currency, provider_id
-        ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+        ) VALUES (%s, %s, %s, %s, %s, 'running', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''', (
             run_id, parent_run_id, str(config_id), purpose, str(model), started_at,
             len(messages_json) + len(tools_json), len(messages_json), len(tools_json),
             messages_json, tools_json, input_price, output_price, pricing_currency, provider_id,
@@ -208,7 +180,7 @@ def finish_agent_run(
         finished_at = _timestamp()
         durable = finish_usage(conn, run_id, usage, status, finished_at)
         price = conn.execute('''SELECT input_price_per_m, output_price_per_m, pricing_currency
-            FROM agent_runs WHERE run_id = ?''', (run_id,)).fetchone()
+            FROM agent_runs WHERE run_id = %s''', (run_id,)).fetchone()
         if cost is None and prompt_tokens is not None and completion_tokens is not None and price is not None:
             input_price, output_price = _amount(price[0]), _amount(price[1])
             if input_price is not None and output_price is not None:
@@ -220,9 +192,9 @@ def finish_agent_run(
         if durable is not None:
             prompt_tokens, completion_tokens, total_tokens = durable['prompt_tokens'], durable['completion_tokens'], durable['total_tokens']
             cost, currency, cost_source = durable['cost'], durable['currency'], durable['cost_source']
-        conn.execute('''UPDATE agent_runs SET status = ?, finished_at = ?, output = ?,
-            output_chars = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ?,
-            cost = ?, currency = ?, cost_source = ?, error = ?, details_json = ? WHERE run_id = ?''', (
+        conn.execute('''UPDATE agent_runs SET status = %s, finished_at = %s, output = %s,
+            output_chars = %s, prompt_tokens = %s, completion_tokens = %s, total_tokens = %s,
+            cost = %s, currency = %s, cost_source = %s, error = %s, details_json = %s WHERE run_id = %s''', (
             status, finished_at, output, len(output), prompt_tokens, completion_tokens,
             total_tokens, cost, currency, cost_source, error, _dumps(_json_value(details or {})), run_id,
         ))
@@ -237,12 +209,12 @@ def list_agent_runs(*, config_id: str | None = None, purpose: str | None = None,
         raise ValueError('Pagination outside supported range')
     filters, values = [], []
     if config_id is not None:
-        filters.append('config_id = ?')
+        filters.append('config_id = %s')
         values.append(config_id)
     if purpose is not None:
         if purpose not in PURPOSES:
             raise ValueError('Unknown agent run purpose')
-        filters.append('purpose = ?')
+        filters.append('purpose = %s')
         values.append(purpose)
     where = ' WHERE ' + ' AND '.join(filters) if filters else ''
     with get_db_conn() as conn:
@@ -251,8 +223,8 @@ def list_agent_runs(*, config_id: str | None = None, purpose: str | None = None,
         conn.commit()
         total = conn.execute('SELECT COUNT(*) FROM agent_runs' + where, values).fetchone()[0]
         rows = conn.execute('SELECT ' + _METADATA_COLUMNS + ' FROM agent_runs' + where +
-                            ' ORDER BY started_at DESC, rowid DESC LIMIT ? OFFSET ?', [*values, limit, offset]).fetchall()
-    return {'runs': [dict(row) for row in rows], 'total': total, 'limit': limit, 'offset': offset,
+                            ' ORDER BY started_at DESC NULLS LAST, storage_id DESC LIMIT %s OFFSET %s', [*values, limit, offset]).fetchall()
+    return {'runs': [storage.record(row) for row in rows], 'total': total, 'limit': limit, 'offset': offset,
             'retention': {'days': RETENTION_DAYS,
                           'per_config': MAX_NEWS_RUNS if config_id == 'news-intelligence' else MAX_RUNS_PER_CONFIG,
                           'news_per_config': MAX_NEWS_RUNS}}
@@ -265,10 +237,10 @@ def get_agent_run(run_id: str) -> dict | None:
         initialize_agent_runs_schema(conn.cursor())
         _prune_expired(conn)
         conn.commit()
-        row = conn.execute('SELECT * FROM agent_runs WHERE run_id = ?', (run_id,)).fetchone()
+        row = conn.execute('SELECT * FROM agent_runs WHERE run_id = %s', (run_id,)).fetchone()
     if row is None:
         return None
-    result = dict(row)
+    result = storage.record(row)
     for key in ('messages', 'tools', 'details'):
         result[key] = json.loads(result.pop(key + '_json'))
     return result

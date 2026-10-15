@@ -19,13 +19,13 @@ SYMBOL = 'ETH/USDT:USDT'
 
 
 @pytest.fixture
-def deletion_runtime(tmp_path, monkeypatch):
+def deletion_runtime(tmp_path, monkeypatch, financial_pg):
     path = tmp_path / 'recovery-delete.sqlite'
     monkeypatch.setattr(database, 'DB_NAME', str(path))
     monkeypatch.setattr(config_store, 'DB_NAME', path)
     monkeypatch.setattr(config_store, 'load_dotenv', lambda *args, **kwargs: None)
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'offline-recovery-delete-key')
-    database.init_db()
+    pass  # PostgreSQL migrations are installed by financial_pg.
     profile = {'profile_id': 'offline-account', 'exchange': 'binance', 'market_type': 'swap',
                'api_key': ExclusiveExchange.apiKey, 'secret': 'offline-secret'}
     agents = [{'config_id': owner, 'mode': 'REAL', 'symbol': SYMBOL, 'symbols': [SYMBOL],
@@ -65,15 +65,15 @@ def test_accepted_unknown_parent_survives_actual_source_task_delete(deletion_run
     register_order(scope, SYMBOL, 'unrelated-order', 'owner', 'exit', refresh=False,
                    operation_id='unrelated-private', episode_id='private-cycle')
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO execution_fills VALUES(?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO execution_fills (account_scope,symbol,trade_id,order_id,config_id,timestamp_ms,payload) VALUES(%s,%s,%s,%s,%s,%s,%s)',
                      (scope, SYMBOL, fill['id'], fill['order'], 'owner', fill['timestamp'], json.dumps(fill)))
-        conn.execute('INSERT INTO execution_episodes VALUES(?,?,?,?,?)',
+        conn.execute('INSERT INTO execution_episodes (episode_id,account_scope,config_id,symbol,payload) VALUES(%s,%s,%s,%s,%s)',
                      ('original-cycle', scope, 'owner', SYMBOL, json.dumps({'side': 'LONG'})))
-        conn.execute('INSERT INTO execution_episodes VALUES(?,?,?,?,?)',
+        conn.execute('INSERT INTO execution_episodes (episode_id,account_scope,config_id,symbol,payload) VALUES(%s,%s,%s,%s,%s)',
                      ('private-cycle', scope, 'owner', SYMBOL, json.dumps({'side': 'SHORT'})))
-        conn.execute('INSERT INTO execution_position_history(position_id,account_scope,config_id,symbol,payload) VALUES(?,?,?,?,?)',
+        conn.execute('INSERT INTO execution_position_history(position_id,account_scope,config_id,symbol,payload) VALUES(%s,%s,%s,%s,%s)',
                      ('original-history', scope, 'owner', SYMBOL, json.dumps({'plan_episode_id': 'original-cycle'})))
-        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                      ('offline', 'owner', SYMBOL, json.dumps({'side': 'SHORT', 'account_scope': scope})))
         conn.commit()
     claim = management.management_status('owner')['scopes'][0]
@@ -84,18 +84,19 @@ def test_accepted_unknown_parent_survives_actual_source_task_delete(deletion_run
     with database.get_db_conn() as conn:
         # Either exact accepted identity must retain the authoritative parent /
         # child relationship, without granting access to another private call.
-        conn.execute('DELETE FROM management_recovery_grants WHERE source_owner=? AND operation_id!=?',
+        conn.execute('DELETE FROM management_recovery_grants WHERE source_owner=%s AND operation_id!=%s',
                      ('owner', granted_id))
         conn.commit()
     run_once('owner', SYMBOL, 'unrelated-private', {'tool': 'private-history'}, lambda: {'status': 'completed'})
     with database.get_db_conn() as conn:
-        original_hashes = dict(conn.execute('SELECT operation_id,request_hash FROM trade_action_runs WHERE config_id=?', ('owner',)))
+        original_hashes = dict(conn.execute('SELECT operation_id,request_hash FROM trade_action_runs WHERE config_id=%s', ('owner',)))
     before = deepcopy(venue.writes)
 
     deleted = config_service.delete_config_payload('owner')
     assert deleted['exchange_orders_cancelled'] is False
     assert runtime.get_config_by_id('owner') is None
-    database.init_db()  # Restart must retain the granted immutable evidence.
+    from backend import storage
+    storage.close_pool()  # A new connection pool must retain granted evidence.
     def receiver_only(config_id):
         assert config_id == 'receiver', 'Recovery attempted to reuse deleted source credentials'
         return receiver.mt
@@ -109,15 +110,15 @@ def test_accepted_unknown_parent_survives_actual_source_task_delete(deletion_run
     assert venue.writes == before
     assert management.lookup_management_recovery('unrelated', grant['recovery_id']) is None
     with database.get_db_conn() as conn:
-        remaining = dict(conn.execute('SELECT operation_id,request_hash FROM trade_action_runs WHERE config_id=?', ('owner',)))
+        remaining = dict(conn.execute('SELECT operation_id,request_hash FROM trade_action_runs WHERE config_id=%s', ('owner',)))
         assert remaining == {identity: original_hashes[identity] for identity in ('original-parent', child_id)}
         assert conn.execute("SELECT COUNT(*) FROM trade_operation_requests WHERE config_id='owner'").fetchone()[0] == 2
         assert list(conn.execute("SELECT order_id,config_id FROM execution_order_links WHERE config_id='owner'").fetchone()) == ['managed-1', 'owner']
         assert list(conn.execute("SELECT trade_id,config_id FROM execution_fills WHERE config_id='owner'").fetchone()) == [fill['id'], 'owner']
         assert [row[0] for row in conn.execute("SELECT episode_id FROM execution_episodes WHERE config_id='owner'")] == ['original-cycle']
         assert conn.execute("SELECT config_id FROM execution_position_history WHERE position_id='original-history'").fetchone()[0] == 'owner'
-        assert not conn.execute("SELECT 1 FROM real_protection_events WHERE config_id='owner' AND json_extract(payload,'$.side')='SHORT'").fetchone()
-        assert conn.execute("SELECT 1 FROM real_protection_events WHERE config_id='owner' AND json_extract(payload,'$.side')='LONG'").fetchone()
+        assert not conn.execute("SELECT 1 FROM real_protection_events WHERE config_id='owner' AND (payload::jsonb->>'side')='SHORT'").fetchone()
+        assert conn.execute("SELECT 1 FROM real_protection_events WHERE config_id='owner' AND (payload::jsonb->>'side')='LONG'").fetchone()
 
 
 def test_ordinary_source_task_delete_without_grants_still_purges_history(deletion_runtime):
@@ -131,3 +132,9 @@ def test_ordinary_source_task_delete_without_grants_still_purges_history(deletio
     assert deleted['cleanup']['execution_order_links_deleted'] == 1
     assert not any('retained_for_recovery' in key for key in deleted['cleanup'])
     assert all(count == 0 for count in database.get_config_dependency_counts('owner').values())
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

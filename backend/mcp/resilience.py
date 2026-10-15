@@ -49,16 +49,18 @@ class BudgetExceeded(ValueError):
 
 @dataclass
 class Budget:
-    deadline: float
+    deadline: float | None
     request_id: str
     kind: str
     stage: str = 'queue'
     write_started: bool = False
     scope_ref: str = '-'
 
-    def remaining(self, stage=None):
+    def remaining(self, stage=None, default=30):
         if stage:
             self.stage = stage
+        if self.deadline is None:
+            return default
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise BudgetExceeded(f'MCP budget exhausted at {self.stage}; request={self.request_id}')
@@ -70,7 +72,7 @@ current_budget = contextvars.ContextVar('mcp_budget', default=None)
 
 def remaining(stage=None, default=30):
     budget = current_budget.get()
-    return budget.remaining(stage) if budget else default
+    return budget.remaining(stage, default) if budget else default
 
 
 def bind_scope(profile_id):
@@ -145,17 +147,18 @@ class WorkerPool:
 
     async def run(self, function, *, label=None, deadline=None):
         start = time.monotonic()
-        own_deadline = start + setting(self.kind.upper() + '_BUDGET_SECONDS', BUDGET_DEFAULTS[self.kind])
-        parent = current_budget.get()
+        timeout_key = self.kind.upper() + '_TIMEOUT_SECONDS'
+        legacy = os.getenv('MCP_' + self.kind.upper() + '_BUDGET_SECONDS', BUDGET_DEFAULTS[self.kind])
+        own_deadline = start + setting(timeout_key, legacy)
         if deadline is not None:
             if not isinstance(deadline, (float, int)) or not math.isfinite(deadline):
                 raise ValueError('Parent deadline must be a finite monotonic timestamp')
             own_deadline = min(own_deadline, deadline)
-        if parent:
-            own_deadline = min(own_deadline, parent.deadline)
-        budget = Budget(own_deadline, uuid.uuid4().hex, self.kind)
+        # Response timeout belongs to the awaiting caller. The physical worker
+        # finishes its observations without inheriting a cumulative deadline.
+        budget = Budget(None, uuid.uuid4().hex, self.kind)
         budget.remaining('queue')
-        queue_until = min(budget.deadline, start + setting('QUEUE_SECONDS', 2))
+        queue_until = min(own_deadline, start + setting('QUEUE_SECONDS', 2))
         manager = get_capacity_manager()
         limits_enabled = manager.limits_enabled
         acquired = False
@@ -244,7 +247,7 @@ class WorkerPool:
         wrapped.add_done_callback(lambda done: None if done.cancelled() else done.exception())
         try:
             with anyio.CancelScope(shield=True):
-                return await asyncio.wait_for(asyncio.shield(wrapped), max(.001, budget.deadline - time.monotonic()))
+                return await asyncio.wait_for(asyncio.shield(wrapped), max(.001, own_deadline - time.monotonic()))
         except asyncio.TimeoutError as exc:
             if wrapped.done() and not wrapped.cancelled():
                 # Preserve a dependency's own TimeoutError; only an unfinished
@@ -252,7 +255,7 @@ class WorkerPool:
                 return await wrapped
             from backend.utils.resource_diagnostics import record_resource_stage
             record_resource_stage('execution', 'timeout', role=capacity_role(self.kind), request_id=budget.request_id)
-            raise BudgetExceeded(f'MCP budget exhausted at {budget.stage}; request={budget.request_id}; '
+            raise BudgetExceeded(f'MCP response timeout at {budget.stage}; request={budget.request_id}; '
                                  'worker retains capacity until completion') from exc
 
 _pools = {}

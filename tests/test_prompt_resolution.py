@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from backend.app.services import config_service
 from backend.utils.prompt_utils import normalize_prompt_reference, resolve_prompt_file_content, render_prompt
 from backend.utils.prompts import PROMPT_MAP
@@ -75,6 +77,7 @@ class PromptResolutionTests(unittest.TestCase):
 
         self.assertEqual(normalized, "custom.txt")
 
+    @pytest.mark.usefixtures('pg')
     def test_save_config_normalizes_prompt_reference_before_persisting(self):
         globals_payload = {"market_timeframes": ["15m", "1h"]}
         agent_payload = {
@@ -85,7 +88,7 @@ class PromptResolutionTests(unittest.TestCase):
             "summarizer": {},
         }
 
-        with patch.object(config_service, "prompt_dir", return_value=str(self.prompt_path.parent)):
+        with patch.object(config_service, "_prompt_project_root", return_value=self.project_root):
             with patch.object(config_service, "save_runtime_snapshot") as save_runtime_snapshot:
                 with patch.object(config_service.global_config, "reload_config"):
                     config_service.save_config_payload(globals_payload, [agent_payload], [], [])

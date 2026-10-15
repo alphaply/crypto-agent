@@ -10,10 +10,10 @@ from backend.database_schema import initialize_schema
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
+def store(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'mock_v2.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     return MockIndependentTrading('cfg', 'ETH/USDT')
 
 
@@ -169,7 +169,7 @@ def test_partially_filled_child_edit_converts_remaining_to_total_without_losing_
     child=store.describe_order(order['order_id'])['order_id']
     # Load an already partially executed child, as a persisted lifecycle view.
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE mock_exit_orders SET filled_amount=.2,remaining=.5 WHERE order_id=?',(order['id'],))
+        conn.execute('UPDATE mock_exit_orders SET filled_amount=.2,remaining=.5 WHERE order_id=%s',(order['id'],))
         conn.execute('UPDATE mock_positions SET quantity=.8')
         conn.commit()
     edited=store.edit(child,remaining_amount=.4,price=98)
@@ -208,7 +208,7 @@ def test_close_replay_precedes_fresh_market_trigger_validation(store):
 def test_entry_edit_remaining_and_legacy_total_are_distinct(store):
     order=open_entry(store)
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE mock_orders SET filled_amount=.2 WHERE order_id=?',(order['id'],))
+        conn.execute('UPDATE mock_orders SET filled_amount=.2 WHERE order_id=%s',(order['id'],))
         conn.execute("UPDATE mock_positions SET quantity=.2,entry_price=100,status='ACTIVE'")
         conn.commit()
     changed=store.edit(order['order_id'],remaining_amount=.5,price=99,operation_id='edit')
@@ -306,7 +306,7 @@ def test_qualified_channel_identity_prevents_ambiguous_bare_id_writes(store):
     # Local IDs normally use different prefixes; model the exchange's equal
     # numeric IDs to ensure ownership lookup still resolves channel first.
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE mock_orders SET order_id=? WHERE order_id=?',(stop['id'],pending['id']))
+        conn.execute('UPDATE mock_orders SET order_id=%s WHERE order_id=%s',(stop['id'],pending['id']))
         conn.commit()
     with pytest.raises(ValueError,match='ambiguous'):
         store.edit(stop['id'],price=85,current_price=100)
@@ -359,3 +359,9 @@ def test_waiting_trigger_keeps_disabled_config_scheduled_for_maintenance(store,m
     scheduler.protection_tick()
     scheduler.protection_tick()
     assert calls==[config]
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

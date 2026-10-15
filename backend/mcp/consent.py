@@ -1,5 +1,6 @@
 """Browser consent with durable completion and a recoverable callback handoff."""
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import html
 import json
@@ -131,13 +132,13 @@ def _prepare(transaction):
     from .auth import encrypt
     key = store.digest(transaction)
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute("SELECT payload FROM mcp_records WHERE kind='pending' AND id=?", (key,)).fetchone()
+        lock_scope(conn, 'mcp-record', 'pending', key)
+        row = conn.execute("SELECT payload FROM mcp_records WHERE kind='pending' AND id=%s", (key,)).fetchone()
         pending = json.loads(row[0]) if row else None
         if pending and not pending.get('completed_at') and not pending.get('csrf_token') and pending['expires_at'] > time.time():
             csrf = secrets.token_urlsafe(32)
             pending.update(csrf=store.digest(csrf), csrf_token=encrypt(csrf))
-            conn.execute("UPDATE mcp_records SET payload=? WHERE kind='pending' AND id=?", (json.dumps(pending), key))
+            conn.execute("UPDATE mcp_records SET payload=%s WHERE kind='pending' AND id=%s", (json.dumps(pending), key))
         conn.commit()
     return pending
 
@@ -147,8 +148,8 @@ def _complete(provider, transaction, pending, *, scopes=None, profile_ids=None):
     from .auth import MCPCode, encrypt
     key = store.digest(transaction)
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute("SELECT payload FROM mcp_records WHERE kind='pending' AND id=?", (key,)).fetchone()
+        lock_scope(conn, 'mcp-record', 'pending', key)
+        row = conn.execute("SELECT payload FROM mcp_records WHERE kind='pending' AND id=%s", (key,)).fetchone()
         current = json.loads(row[0]) if row else None
         if not current or current['expires_at'] <= time.time():
             return None
@@ -166,14 +167,14 @@ def _complete(provider, transaction, pending, *, scopes=None, profile_ids=None):
                              resource=provider.resource, subject='admin').model_dump(mode='json')
             record.pop('code')
             current['code_digest'] = store.digest(code)
-            conn.execute('INSERT INTO mcp_records VALUES(?,?,?)', ('code', current['code_digest'], json.dumps(record)))
+            conn.execute('INSERT INTO mcp_records(kind,id,payload) VALUES(%s,%s,%s)', ('code', current['code_digest'], json.dumps(record)))
             callback_fields['code'] = code
         else:
             callback_fields['error'] = 'access_denied'
         current.update(completed_at=now, completed_expires_at=now + 120,
                        callback=encrypt(construct_redirect_uri(params['redirect_uri'], **callback_fields)))
-        conn.execute("UPDATE mcp_records SET payload=? WHERE kind='pending' AND id=?", (json.dumps(current), key))
-        conn.execute('INSERT INTO mcp_audit(timestamp,principal,tool,status,result) VALUES(?,?,?,?,?)',
+        conn.execute("UPDATE mcp_records SET payload=%s WHERE kind='pending' AND id=%s", (json.dumps(current), key))
+        conn.execute('INSERT INTO mcp_audit(timestamp,principal,tool,status,result) VALUES(%s,%s,%s,%s,%s)',
                      (now, 'admin', 'oauth_authorize', 'completed' if scopes is not None else 'denied',
                       json.dumps({'client_id': current['client_id'], 'scopes': scopes, 'profile_ids': profile_ids,
                                   'transaction_ref': key[:12]})))

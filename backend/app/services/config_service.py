@@ -120,7 +120,8 @@ def _validate_removed_spot_configs(agents: list[dict]) -> None:
 
 
 def _prompt_project_root() -> Path:
-    return Path(prompt_dir()).resolve().parents[2]
+    from backend.storage_paths import PROJECT_ROOT
+    return PROJECT_ROOT
 
 
 def _normalize_prompt_field(raw_value, *, field_name: str, project_root: Path):
@@ -355,7 +356,7 @@ def full_export_payload(include_secrets: bool = True) -> tuple[str, str]:
 
 
 def export_database_payload() -> tuple[bytes, str]:
-    """导出当前 SQLite 数据库二进制数据及文件名。"""
+    """导出当前 PostgreSQL custom 格式备份及文件名。"""
     return export_database_bytes()
 
 

@@ -20,15 +20,16 @@ class Exchange:
 
 
 @pytest.fixture
-def index_db(tmp_path, monkeypatch):
+def index_db(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'index.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         conn.commit()
 
 
-def test_cross_page_regular_evidence_precedes_alias_retirement_and_restart_resumes(index_db, monkeypatch):
+def test_cross_page_regular_evidence_completes_in_one_call_before_alias_retirement(index_db, monkeypatch):
     monkeypatch.setenv('RUNTIME_SCAN_BATCH_SIZE', '2')
+    monkeypatch.setenv('RUNTIME_INDEX_SCAN_SECONDS', '.001')
     scope = hashlib.sha256(b'binance:index-fixture').hexdigest()
     plans = [dict(account_scope=scope, symbol='ETH/USDT:USDT', side='LONG', state='DONE',
                   execution_mode='independent_exits', exits=[dict(id='7', order_type='stop_market')])]
@@ -36,26 +37,18 @@ def test_cross_page_regular_evidence_precedes_alias_retirement_and_restart_resum
     plans.append(dict(account_scope=scope, symbol='ETH/USDT:USDT', side='LONG', state='DONE', entries=[dict(id='7')]))
     original = [json.dumps(plan) for plan in plans]
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO execution_order_links (account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                      (scope, 'ETH/USDT:USDT', '7', 'cfg', 'stop_loss', '{}'))
         for payload in original:
-            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                          ('2026-10-15 12:00:00', 'cfg', 'ETH/USDT:USDT', payload))
         conn.commit()
     exchange = Exchange()
     first = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-    assert not first.index_state['complete']
-    assert first.index_state['processed'] <= 2
-    pending = first.sync(now_ms=100000, start_ms=0)
-    assert not pending['complete'] and not exchange.calls
-    with database.get_db_conn() as conn:
-        assert conn.execute("SELECT role FROM execution_order_links WHERE order_id='7'").fetchone()[0] == 'stop_loss'
-    for _ in range(30):
-        resumed = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-        assert resumed.index_state['processed'] <= 2
-        if resumed.index_state['complete']:
-            break
-    assert resumed.index_state['complete']
+    assert first.index_state['complete']
+    assert first.index_state['processed'] > 2
+    resumed = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
+    assert resumed.index_state['complete'] and resumed.index_state['processed'] == 0
     with database.get_db_conn() as conn:
         assert conn.execute("SELECT role FROM execution_order_links WHERE order_id='7'").fetchone()[0] == 'entry'
         assert [row[0] for row in conn.execute('SELECT payload FROM real_protection_events ORDER BY id')] == original
@@ -63,20 +56,19 @@ def test_cross_page_regular_evidence_precedes_alias_retirement_and_restart_resum
     assert not exchange.calls
 
 
-def test_oversized_source_is_not_loaded_and_sync_remains_explicitly_incomplete(index_db, monkeypatch):
+def test_large_source_is_loaded_and_sync_completes_despite_legacy_byte_setting(index_db, monkeypatch):
     monkeypatch.setenv('RUNTIME_MAX_RECORD_BYTES', '100')
     raw = json.dumps({'state': 'DONE', 'large': 'x' * 2000})
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                      ('2026-10-15 12:00:00', 'cfg', 'ETH/USDT:USDT', raw))
         conn.commit()
     from backend.utils import execution_plan_index
-    monkeypatch.setattr(execution_plan_index, '_load', lambda *_: pytest.fail('oversized payload fetched'))
     exchange = Exchange()
     ledger = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-    assert not ledger.index_state['complete'] and ledger.index_state['error']
+    assert ledger.index_state['complete'] and not ledger.index_state['error']
     result = ledger.sync(start_ms=0, now_ms=100000)
-    assert not result['complete'] and not exchange.calls
+    assert result['complete'] and exchange.calls
     with database.get_db_conn() as conn:
         assert conn.execute('SELECT payload FROM real_protection_events').fetchone()[0] == raw
 
@@ -84,7 +76,7 @@ def test_oversized_source_is_not_loaded_and_sync_remains_explicitly_incomplete(i
 def test_empty_baseline_plan_does_not_rebuild_unaffected_owned_history(index_db, monkeypatch):
     raw = json.dumps({'state': 'DONE', 'entries': [], 'exits': []})
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                      ('2026-10-15 12:00:00', 'cfg', 'ETH/USDT:USDT', raw))
         conn.commit()
     import backend.utils.execution_ledger as ledger_module
@@ -96,7 +88,7 @@ def test_empty_baseline_plan_does_not_rebuild_unaffected_owned_history(index_db,
 def test_final_history_publication_marks_complete_even_if_its_record_used_time_budget(index_db, monkeypatch):
     raw = json.dumps({'state': 'DONE', 'entries': [{'id': 'entry'}], 'exits': []})
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                      ('2026-10-15 12:00:00', 'cfg', 'ETH/USDT:USDT', raw))
         conn.commit()
     import backend.utils.execution_ledger as ledger_module
@@ -110,3 +102,9 @@ def test_final_history_publication_marks_complete_even_if_its_record_used_time_b
     monkeypatch.setattr(ledger_module, 'rebuild_execution_position_history', rebuild)
     assert ExecutionLedger(Exchange(), 'cfg', 'ETH/USDT').index_state['complete']
     assert len(rebuilt) == 1
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

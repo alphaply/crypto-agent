@@ -1,5 +1,7 @@
-"""SQLite persistence for MCP grants, profiles and durable call receipts."""
+"""PostgreSQL persistence for MCP grants, profiles and durable call receipts."""
 from __future__ import annotations
+from backend.storage import record as storage_record
+from backend.storage import lock_scope
 
 import hashlib
 import json
@@ -67,51 +69,17 @@ def storage_slot(recovery=False):
 
 
 def initialize_schema(conn):
-    """Startup migration; execute statements without committing caller state."""
-    schema = """
-            CREATE TABLE IF NOT EXISTS mcp_records (
-                kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL,
-                PRIMARY KEY(kind,id));
-            CREATE TABLE IF NOT EXISTS mcp_audit (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL,
-                principal TEXT NOT NULL, profile_id TEXT, tool TEXT NOT NULL,
-                operation_id TEXT, status TEXT NOT NULL, request TEXT, result TEXT);
-            CREATE TABLE IF NOT EXISTS mcp_operations (
-                profile_id TEXT NOT NULL, operation_id TEXT NOT NULL,
-                fingerprint TEXT NOT NULL, principal TEXT NOT NULL, state TEXT NOT NULL,
-                result TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
-                PRIMARY KEY(profile_id,operation_id));
-            CREATE TABLE IF NOT EXISTS mcp_operation_requests (
-                profile_id TEXT NOT NULL, operation_id TEXT NOT NULL,
-                contract_version INTEGER NOT NULL, request_json TEXT NOT NULL,
-                PRIMARY KEY(profile_id,operation_id));
-            CREATE TABLE IF NOT EXISTS mcp_operation_links (
-                profile_id TEXT NOT NULL, operation_id TEXT NOT NULL, principal TEXT NOT NULL,
-                internal_operation_id TEXT NOT NULL, symbol TEXT NOT NULL,
-                PRIMARY KEY(profile_id,operation_id,principal));
-            CREATE TABLE IF NOT EXISTS mcp_operation_revisions (
-                profile_id TEXT NOT NULL, operation_id TEXT NOT NULL, revision INTEGER NOT NULL,
-                observed_at REAL NOT NULL, result TEXT NOT NULL,
-                PRIMARY KEY(profile_id,operation_id,revision));
-        """
-    for statement in schema.split(';'):
-        if statement.strip():
-            conn.execute(statement)
-    # Older releases retained revoked credentials in the settings list. Remove
-    # both the encrypted credential and every lookup when migrating that data.
-    conn.execute("DELETE FROM mcp_records WHERE kind='key_lookup' AND json_extract(payload,'$.id') IN "
-                 "(SELECT id FROM mcp_records WHERE kind='key' AND json_extract(payload,'$.revoked')=1)")
-    conn.execute("DELETE FROM mcp_records WHERE kind='key' AND json_extract(payload,'$.revoked')=1")
-    from .paper_schema import initialize_schema as initialize_paper_schema
-    initialize_paper_schema(conn)
+    """Perform startup data cleanup; table DDL belongs to explicit migrations."""
+    conn.execute("DELETE FROM mcp_records WHERE kind='key_lookup' AND payload::jsonb->>'id' IN "
+                 "(SELECT id FROM mcp_records WHERE kind='key' AND payload::jsonb->>'revoked' IN ('true','1'))")
+    conn.execute("DELETE FROM mcp_records WHERE kind='key' AND payload::jsonb->>'revoked' IN ('true','1')")
 
 
 @contextmanager
 def connection(*, recovery=False):
     from .resilience import remaining, setting, stage
-    with storage_slot(recovery), database.get_db_conn() as conn:
-        timeout_ms = max(1, int(min(setting('DB_WAIT_SECONDS', 0.25), 1 if recovery else remaining('storage')) * 1000))
-        conn.execute(f'PRAGMA busy_timeout={timeout_ms}')
+    timeout = min(setting('DB_WAIT_SECONDS', 0.25), 1 if recovery else remaining('storage'))
+    with storage_slot(recovery), database.get_db_conn(timeout=timeout) as conn:
         if recovery:
             yield conn
         else:
@@ -125,25 +93,25 @@ def digest(value: str) -> str:
 
 def get(kind: str, key: str):
     with connection() as conn:
-        row = conn.execute("SELECT payload FROM mcp_records WHERE kind=? AND id=?", (kind, key)).fetchone()
+        row = conn.execute("SELECT payload FROM mcp_records WHERE kind=%s AND id=%s", (kind, key)).fetchone()
     return json.loads(row[0]) if row else None
 
 
 def put(kind: str, key: str, payload: dict):
     with connection() as conn:
-        conn.execute("INSERT INTO mcp_records VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload",
+        conn.execute('INSERT INTO mcp_records(kind,id,payload) VALUES(%s,%s,%s) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload',
                      (kind, key, json.dumps(payload, ensure_ascii=False)))
         conn.commit()
 
 
 def pop(kind: str, key: str):
     with connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT payload FROM mcp_records WHERE kind=? AND id=?", (kind, key)).fetchone()
+        lock_scope(conn, 'mcp-record', kind, key)
+        row = conn.execute("SELECT payload FROM mcp_records WHERE kind=%s AND id=%s", (kind, key)).fetchone()
         if kind == 'profile':
             from backend.utils.position_management import assert_configuration_claims
             assert_configuration_claims(conn, 'mcp:' + key)
-        conn.execute("DELETE FROM mcp_records WHERE kind=? AND id=?", (kind, key))
+        conn.execute("DELETE FROM mcp_records WHERE kind=%s AND id=%s", (kind, key))
         conn.commit()
     return json.loads(row[0]) if row else None
 
@@ -151,9 +119,9 @@ def pop(kind: str, key: str):
 def delete_api_key(key_id: str) -> bool:
     """Delete a credential and its authentication lookups in one transaction."""
     with connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        result = conn.execute("DELETE FROM mcp_records WHERE kind='key' AND id=?", (key_id,))
-        conn.execute("DELETE FROM mcp_records WHERE kind='key_lookup' AND json_extract(payload,'$.id')=?",
+        lock_scope(conn, 'mcp-record', 'key', key_id)
+        result = conn.execute("DELETE FROM mcp_records WHERE kind='key' AND id=%s", (key_id,))
+        conn.execute("DELETE FROM mcp_records WHERE kind='key_lookup' AND (payload::jsonb->>'id')=%s",
                      (key_id,))
         conn.commit()
     return result.rowcount > 0
@@ -161,12 +129,12 @@ def delete_api_key(key_id: str) -> bool:
 
 def list_records(kind: str):
     with connection() as conn:
-        return [json.loads(row[0]) for row in conn.execute("SELECT payload FROM mcp_records WHERE kind=? ORDER BY id", (kind,))]
+        return [json.loads(row[0]) for row in conn.execute("SELECT payload FROM mcp_records WHERE kind=%s ORDER BY id", (kind,))]
 
 
 def audit(principal, tool, status, *, profile_id=None, operation_id=None, request=None, result=None):
     with connection() as conn:
-        conn.execute("INSERT INTO mcp_audit(timestamp,principal,profile_id,tool,operation_id,status,request,result) VALUES(?,?,?,?,?,?,?,?)",
+        conn.execute("INSERT INTO mcp_audit(timestamp,principal,profile_id,tool,operation_id,status,request,result) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
                      (time.time(), principal, profile_id, tool, operation_id, status,
                       json.dumps(request, ensure_ascii=False, default=str), json.dumps(result, ensure_ascii=False, default=str)))
         conn.commit()
@@ -174,14 +142,14 @@ def audit(principal, tool, status, *, profile_id=None, operation_id=None, reques
 
 def audit_rows(limit=100):
     with connection() as conn:
-        return [dict(row) for row in conn.execute("SELECT * FROM mcp_audit ORDER BY id DESC LIMIT ?", (limit,))]
+        return [storage_record(row) for row in conn.execute("SELECT * FROM mcp_audit ORDER BY id DESC LIMIT %s", (limit,))]
 
 
 def reserve_operation(profile_id, operation_id, principal, request):
     fingerprint = digest(json.dumps(request, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
     with connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=?", (profile_id, operation_id)).fetchone()
+        lock_scope(conn, 'mcp-operation', profile_id, operation_id)
+        row = conn.execute("SELECT * FROM mcp_operations WHERE profile_id=%s AND operation_id=%s", (profile_id, operation_id)).fetchone()
         if row:
             if row['fingerprint'] != fingerprint:
                 raise ValueError("operation_id already belongs to a different request")
@@ -191,11 +159,11 @@ def reserve_operation(profile_id, operation_id, principal, request):
                 "status": "unknown", "operation_id": operation_id,
                 "message": "This operation was already started; inspect its orders before any further action."}
         now = time.time()
-        conn.execute("INSERT INTO mcp_operations VALUES(?,?,?,?,?,?,?,?)", (profile_id, operation_id, fingerprint, principal, 'started', None, now, now))
-        conn.execute('INSERT INTO mcp_operation_requests VALUES(?,?,?,?)', (
+        conn.execute('INSERT INTO mcp_operations(profile_id,operation_id,fingerprint,principal,state,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)', (profile_id, operation_id, fingerprint, principal, 'started', None, now, now))
+        conn.execute('INSERT INTO mcp_operation_requests(profile_id,operation_id,contract_version,request_json) VALUES(%s,%s,%s,%s)', (
             profile_id, operation_id, request.get('contract_version', 1),
             json.dumps(request, sort_keys=True, ensure_ascii=False, separators=(',', ':'))))
-        conn.execute('INSERT INTO mcp_operation_links VALUES(?,?,?,?,?)',
+        conn.execute('INSERT INTO mcp_operation_links(profile_id,operation_id,principal,internal_operation_id,symbol) VALUES(%s,%s,%s,%s,%s)',
                      (profile_id, operation_id, principal, 'mcp:' + digest(principal + ':' + operation_id), request['symbol']))
         conn.commit()
     return None
@@ -203,21 +171,21 @@ def reserve_operation(profile_id, operation_id, principal, request):
 
 def complete_operation(profile_id, operation_id, result):
     with connection(recovery=True) as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'mcp-operation', profile_id, operation_id)
         encoded = json.dumps(result, ensure_ascii=False, default=str)
-        old = conn.execute('SELECT revision,result FROM mcp_operation_revisions WHERE profile_id=? AND operation_id=? '
+        old = conn.execute('SELECT revision,result FROM mcp_operation_revisions WHERE profile_id=%s AND operation_id=%s '
                            'ORDER BY revision DESC LIMIT 1', (profile_id, operation_id)).fetchone()
         if old is None:
-            initial = conn.execute('SELECT result,updated_at FROM mcp_operations WHERE profile_id=? AND operation_id=?',
+            initial = conn.execute('SELECT result,updated_at FROM mcp_operations WHERE profile_id=%s AND operation_id=%s',
                                    (profile_id, operation_id)).fetchone()
             if initial and initial['result'] and initial['result'] != encoded:
-                conn.execute('INSERT INTO mcp_operation_revisions VALUES(?,?,?,?,?)',
+                conn.execute('INSERT INTO mcp_operation_revisions(profile_id,operation_id,revision,observed_at,result) VALUES(%s,%s,%s,%s,%s)',
                              (profile_id, operation_id, 0, initial['updated_at'], initial['result']))
                 old = {'revision': 0, 'result': initial['result']}
         if old is None or old['result'] != encoded:
-            conn.execute('INSERT INTO mcp_operation_revisions VALUES(?,?,?,?,?)',
+            conn.execute('INSERT INTO mcp_operation_revisions(profile_id,operation_id,revision,observed_at,result) VALUES(%s,%s,%s,%s,%s)',
                          (profile_id, operation_id, old['revision'] + 1 if old else 0, time.time(), encoded))
-        conn.execute("UPDATE mcp_operations SET state=?,result=?,updated_at=? WHERE profile_id=? AND operation_id=?",
+        conn.execute("UPDATE mcp_operations SET state=%s,result=%s,updated_at=%s WHERE profile_id=%s AND operation_id=%s",
                      (str(result.get('status') or 'completed'), json.dumps(result, ensure_ascii=False, default=str), time.time(), profile_id, operation_id))
         conn.commit()
 

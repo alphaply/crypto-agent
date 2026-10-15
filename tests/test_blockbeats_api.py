@@ -8,7 +8,8 @@ from backend import config_store, database
 from backend.app.schemas.news import BLOCKBEATS_API_URL, BLOCKBEATS_LEGACY_RSS_URL, NewsSettings, NewsSource
 from backend.app.schemas.payloads import ConfigGlobalPayload
 from backend.app.services import news_service
-from backend.database_schema import initialize_schema
+from backend import storage
+from psycopg import sql
 from backend.utils import blockbeats, news_context
 
 
@@ -94,14 +95,14 @@ def test_defaults_and_legacy_source_migration_preserve_switches():
 
 
 @pytest.fixture
-def config_db(tmp_path, monkeypatch):
+def config_db(tmp_path, monkeypatch, pg):
     path = tmp_path / 'config.sqlite'
     monkeypatch.setattr(database, 'DB_NAME', str(path))
     monkeypatch.setattr(config_store, 'DB_NAME', path)
     monkeypatch.setattr(config_store, 'load_dotenv', lambda *_a, **_kw: None)
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'blockbeats-test-master')
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     news_context._memory_cache.clear()
     news_context._failure_cache.clear()
 
@@ -114,7 +115,7 @@ def test_blockbeats_key_uses_encrypted_secret_store_and_config_roundtrip(config_
     assert snapshot['globals']['secrets']['global_blockbeats_api_key']['configured']
     assert 'private-test-key' not in json.dumps(snapshot)
     with database.get_db_conn() as conn:
-        assert 'private-test-key' not in '\n'.join(conn.iterdump())
+        assert 'private-test-key' not in _database_text(conn)
     editable = config_store.load_management_snapshot(include_secrets=True)
     assert editable['globals']['secrets']['global_blockbeats_api_key']['value'] == 'private-test-key'
     config_store.save_runtime_snapshot(snapshot['globals'], [])
@@ -129,7 +130,7 @@ def test_existing_saved_rss_migrates_on_management_read(config_db):
                           'url': BLOCKBEATS_LEGACY_RSS_URL, 'enabled': False}]}
     config_store.save_runtime_snapshot({}, [])
     with database.get_db_conn() as conn:
-        conn.execute("UPDATE app_settings SET value_json=? WHERE key='news'", (json.dumps(legacy),))
+        conn.execute("UPDATE app_settings SET value_json=%s WHERE key='news'", (json.dumps(legacy),))
         conn.commit()
     source = config_store.load_management_snapshot()['globals']['news']['sources'][0]
     assert source['kind'] == 'blockbeats' and source['enabled'] is False
@@ -145,4 +146,10 @@ def test_api_failure_preserves_source_cache_without_storing_credentials(config_d
     failed = news_service._source_result(source, NewsSettings(), later, 'private-test-key')
     assert failed['status'] == 'stale' and failed['items'] == first['items']
     with database.get_db_conn() as conn:
-        assert 'private-test-key' not in '\n'.join(conn.iterdump())
+        assert 'private-test-key' not in _database_text(conn)
+
+
+def _database_text(conn):
+    rows = {table: [dict(row) for row in conn.execute(sql.SQL("SELECT * FROM {}").format(sql.Identifier(table)))]
+            for table in storage.table_names(conn)}
+    return json.dumps(rows, ensure_ascii=False, default=str)

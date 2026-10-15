@@ -37,6 +37,7 @@ import { Bubble, Conversations, Sender, XProvider } from '@ant-design/x';
 import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import ChatRunProgress from '../components/ChatRunProgress';
+import ToolResultContent from '../components/ToolResultContent';
 import MarketSymbolPicker from '../components/MarketSymbolPicker';
 import { api, streamSse } from '../lib/api';
 import { createChatStreamLifecycle, reduceChatStreamLifecycle } from '../lib/chatStreamLifecycle';
@@ -78,7 +79,7 @@ function ToolMessage({ content, locale }) {
       items={[{
         key: 'tool-result',
         label: locale === 'zh' ? '工具执行结果' : 'Tool result',
-        children: <MarkdownBlock content={String(content || '')} />,
+        children: <ToolResultContent content={content} zh={locale === 'zh'} />,
       }]}
     />
   );

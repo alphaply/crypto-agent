@@ -1,3 +1,4 @@
+from backend import storage
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 
@@ -30,13 +31,10 @@ class SummaryStore:
         timestamp = self._timestamp_factory()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            conn.execute('BEGIN IMMEDIATE')
-            columns = {row[1] for row in cursor.execute("PRAGMA table_info(summaries)").fetchall()}
-            for name in ('report_json', 'run_id', 'decision_json', 'reasoning_diagnostics'):
-                if name not in columns:
-                    cursor.execute(f'ALTER TABLE summaries ADD COLUMN {name} TEXT')
+            storage.lock_scope(conn, 'summary', config_id or agent_name)
+            columns = {row[1] for row in storage.table_columns(conn, 'summaries')}
             if run_id:
-                existing = cursor.execute('SELECT id FROM summaries WHERE run_id=? AND config_id=?',
+                existing = cursor.execute('SELECT id FROM summaries WHERE run_id=%s AND config_id=%s',
                                           (run_id, config_id or agent_name)).fetchone()
                 if existing:
                     conn.commit()
@@ -47,7 +45,7 @@ class SummaryStore:
                     INSERT INTO summaries (
                         timestamp, symbol, timeframe, agent_name, config_id, agent_type,
                         content, reasoning_content, reasoning_tokens, strategy_logic
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                     ''',
                     (
                         timestamp,
@@ -68,7 +66,7 @@ class SummaryStore:
                     INSERT INTO summaries (
                         timestamp, symbol, timeframe, agent_name, config_id, agent_type,
                         content, reasoning_content, strategy_logic
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                     ''',
                     (
                         timestamp,
@@ -89,20 +87,20 @@ class SummaryStore:
                     INSERT INTO summaries (
                         timestamp, symbol, timeframe, agent_name, config_id, agent_type,
                         content, strategy_logic
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                     ''',
                     (timestamp, symbol, timeframe, agent_name, config_id or agent_name, agent_type, content, strategy_logic),
                 )
-            summary_id = cursor.lastrowid
+            summary_id = cursor.fetchone()['id']
             import json
-            cursor.execute('UPDATE summaries SET reasoning_diagnostics=? WHERE id=?',
+            cursor.execute('UPDATE summaries SET reasoning_diagnostics=%s WHERE id=%s',
                            (json.dumps(reasoning_diagnostics, ensure_ascii=False) if reasoning_diagnostics is not None else None, summary_id))
-            cursor.execute('UPDATE summaries SET report_json=?,run_id=?,decision_json=? WHERE id=?',
+            cursor.execute('UPDATE summaries SET report_json=%s,run_id=%s,decision_json=%s WHERE id=%s',
                            (report_json, run_id, decision_json, summary_id))
             from backend.config import config
             if valid_compressed_summary(strategy_logic) and config.get_config_by_id(config_id or agent_name):
                 from backend.agent.context_projections import publish_text, _source, source_refs
-                saved = dict(cursor.execute('SELECT * FROM summaries WHERE id=?', (summary_id,)).fetchone())
+                saved = storage.record(cursor.execute('SELECT * FROM summaries WHERE id=%s', (summary_id,)).fetchone())
                 cid = config_id or agent_name
                 publish_text(conn, cid, 'strategy_summary', saved, source_refs(cid, _source('strategy_summary', saved)))
             if run_id and enqueue_memory and valid_compressed_summary(strategy_logic):
@@ -116,10 +114,12 @@ class SummaryStore:
             cursor = conn.cursor()
             try:
                 rows = cursor.execute(
-                    "SELECT DISTINCT config_id FROM summaries WHERE symbol = ? AND config_id IS NOT NULL",
+                    "SELECT DISTINCT config_id FROM summaries WHERE symbol = %s AND config_id IS NOT NULL",
                     (symbol,),
                 ).fetchall()
                 return [row[0] for row in rows if row[0]]
+            except storage.Error:
+                raise
             except Exception:
                 return []
 
@@ -130,8 +130,8 @@ class SummaryStore:
                 cursor.execute(
                     '''
                     SELECT * FROM summaries
-                    WHERE symbol = ? AND agent_type = ?
-                    ORDER BY id DESC LIMIT ?
+                    WHERE symbol = %s AND agent_type = %s
+                    ORDER BY id DESC LIMIT %s
                     ''',
                     (symbol, agent_type, limit),
                 )
@@ -139,8 +139,8 @@ class SummaryStore:
                 cursor.execute(
                     '''
                     SELECT * FROM summaries
-                    WHERE symbol = ? AND config_id = ?
-                    ORDER BY id DESC LIMIT ?
+                    WHERE symbol = %s AND config_id = %s
+                    ORDER BY id DESC LIMIT %s
                     ''',
                     (symbol, config_id, limit),
                 )
@@ -148,8 +148,8 @@ class SummaryStore:
                 cursor.execute(
                     '''
                     SELECT * FROM summaries
-                    WHERE symbol = ? AND agent_name = ?
-                    ORDER BY id DESC LIMIT ?
+                    WHERE symbol = %s AND agent_name = %s
+                    ORDER BY id DESC LIMIT %s
                     ''',
                     (symbol, agent_name, limit),
                 )
@@ -157,23 +157,23 @@ class SummaryStore:
                 cursor.execute(
                     '''
                     SELECT * FROM summaries
-                    WHERE symbol = ?
-                    ORDER BY id DESC LIMIT ?
+                    WHERE symbol = %s
+                    ORDER BY id DESC LIMIT %s
                     ''',
                     (symbol, limit),
                 )
-            return [dict(row) for row in cursor.fetchall()]
+            return [storage.record(row) for row in cursor.fetchall()]
 
     def get_recent_summary_logic(self, config_id, since_time=None, limit=12):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             params = [config_id]
             where = [
-                "config_id = ?",
+                "config_id = %s",
                 "(COALESCE(strategy_logic, '') != '' OR COALESCE(content, '') != '')",
             ]
             if since_time:
-                where.append("timestamp >= ?")
+                where.append("timestamp >= %s")
                 params.append(since_time)
             params.append(int(limit or 12))
             rows = cursor.execute(
@@ -182,7 +182,7 @@ class SummaryStore:
                 FROM summaries
                 WHERE {' AND '.join(where)}
                 ORDER BY id DESC
-                LIMIT ?
+                LIMIT %s
                 ''',
                 tuple(params),
             ).fetchall()
@@ -192,12 +192,14 @@ class SummaryStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             try:
-                sql = "SELECT COUNT(*) FROM summaries WHERE symbol = ?"
+                sql = "SELECT COUNT(*) FROM summaries WHERE symbol = %s"
                 params = [symbol]
                 if config_id and config_id != "ALL":
-                    sql += " AND config_id = ?"
+                    sql += " AND config_id = %s"
                     params.append(config_id)
                 return cursor.execute(sql, tuple(params)).fetchone()[0]
+            except storage.Error:
+                raise
             except Exception:
                 return 0
 
@@ -206,15 +208,17 @@ class SummaryStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             try:
-                sql = "SELECT * FROM summaries WHERE symbol = ?"
+                sql = "SELECT * FROM summaries WHERE symbol = %s"
                 params = [symbol]
                 if config_id and config_id != "ALL":
-                    sql += " AND config_id = ?"
+                    sql += " AND config_id = %s"
                     params.append(config_id)
-                sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+                sql += " ORDER BY id DESC LIMIT %s OFFSET %s"
                 params.extend([per_page, offset])
                 cursor.execute(sql, tuple(params))
-                return [dict(row) for row in cursor.fetchall()]
+                return [storage.record(row) for row in cursor.fetchall()]
+            except storage.Error:
+                raise
             except Exception as exc:
                 self._logger.error(
                     f"Failed to get paginated summaries: symbol={symbol}, page={page}, per_page={per_page}, config_id={config_id}, error={exc}"
@@ -224,15 +228,15 @@ class SummaryStore:
     def delete_by_symbol(self, symbol):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM summaries WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM summaries WHERE symbol = %s", (symbol,))
             summary_count = cursor.rowcount
             # Spot order evidence enforces lifetime spending and cancellation
             # ownership. History cleanup must not reset those safety limits.
-            columns = {row[1] for row in cursor.execute('PRAGMA table_info(orders)')}
+            columns = {row[1] for row in storage.table_columns(conn, 'orders')}
             spot_filter = " AND COALESCE(trade_mode,'') != 'SPOT_DCA'" if 'trade_mode' in columns else ''
-            cursor.execute(f"DELETE FROM orders WHERE symbol = ?{spot_filter}", (symbol,))
+            cursor.execute(f"DELETE FROM orders WHERE symbol = %s{spot_filter}", (symbol,))
             order_count = cursor.rowcount
-            cursor.execute("DELETE FROM mock_orders WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM mock_orders WHERE symbol = %s", (symbol,))
             conn.commit()
             self._logger.info(f"🗑️ Cleaned {symbol}: {summary_count} summaries, {order_count} orders.")
             return summary_count

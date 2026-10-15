@@ -1,0 +1,28 @@
+# Normalize line endings: repository and working tree both use LF.
+# Files are detected as text automatically; known binary formats are excluded.
+* text=auto eol=lf
+
+# Windows shell scripts keep CRLF so native interpreters always parse them.
+*.ps1 text eol=crlf
+
+# Binary assets are never converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.xlsx binary
+*.xls binary
+*.so binary
+*.dll binary
+*.exe binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary

@@ -19,6 +19,7 @@ from .auth import AuthorizationProvider, sdk_revoke
 from .settings import settings, SCOPES
 from .discovery import DiscoveryHeadersMiddleware
 from .tools import TOOL_CATALOG, register_tools
+from backend.utils.deployment_mode import maintenance_enabled
 
 _server = None
 _public_url = None
@@ -59,8 +60,7 @@ def build_server(public_url):
 def install_mcp(app):
     """Call before SPA catchall routes. The host must enter mcp_lifespan once."""
     global _server, _public_url
-    # Route construction reads persisted OAuth settings before the ASGI
-    # lifespan runs. This is startup migration, never a per-request side effect.
+    # Called after the host has checked the deployed schema and loaded config.
     from backend import database
     from . import store
     with database.get_db_conn() as conn:
@@ -68,7 +68,8 @@ def install_mcp(app):
         conn.commit()
     from .management import router
     from .paper_competition import bootstrap
-    bootstrap()
+    if not maintenance_enabled():
+        bootstrap()
     _public_url = settings()['public_url']
     _server, provider = build_server(_public_url)
     app.include_router(router)
@@ -106,7 +107,6 @@ def install_mcp(app):
     app.router.routes.append(Route('/.well-known/oauth-authorization-server/oauth', endpoint=metadata_app, methods=['GET', 'OPTIONS']))
     app.router.routes.append(Route('/.well-known/oauth-authorization-server', endpoint=metadata_app, methods=['GET', 'OPTIONS']))
     app.mount('/oauth', Starlette(routes=auth_routes))
-    app.add_middleware(DiscoveryHeadersMiddleware, public_url=_public_url)
     return _server
 
 
@@ -116,6 +116,9 @@ async def mcp_lifespan():
         yield
     else:
         async with _server.session_manager.run():
+            if maintenance_enabled():
+                yield
+                return
             from .paper import maintenance
             stop = asyncio.Event()
             worker = asyncio.create_task(maintenance(stop), name='paper-maintenance')

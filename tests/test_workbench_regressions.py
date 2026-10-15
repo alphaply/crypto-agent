@@ -42,14 +42,13 @@ def test_rsi_and_adx_match_hand_calculated_wilder_seeds():
     assert adx.iloc[4] == pytest.approx((100 + 0 + 900 / 17) / 3)
 
 
-def test_download_cookie_scope_expiry_and_consistent_snapshot(tmp_path, monkeypatch):
-    source = tmp_path / 'source.db'
-    conn = sqlite3.connect(source)
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('CREATE TABLE evidence(value TEXT)')
-    conn.execute("INSERT INTO evidence VALUES ('committed WAL record')")
-    conn.commit()
-    monkeypatch.setattr(database_export.database, 'DB_NAME', str(source))
+def test_download_cookie_scope_expiry_and_consistent_snapshot(pg, backup_client, restore_dump):
+    from backend import storage
+    import psycopg
+    with storage.get_connection() as conn:
+        conn.execute('CREATE TABLE evidence(value TEXT)')
+        conn.execute("INSERT INTO evidence VALUES ('committed PostgreSQL record')")
+        conn.commit()
     client = TestClient(app)
     assert client.get('/api/config/database/download').status_code == 401
     headers = {'Authorization': f'Bearer {create_access_token()}'}
@@ -62,15 +61,13 @@ def test_download_cookie_scope_expiry_and_consistent_snapshot(tmp_path, monkeypa
     assert response.status_code == 200
     assert response.headers['cache-control'] == 'no-store'
     assert int(response.headers['content-length']) == len(response.content)
-    snapshot = tmp_path / 'snapshot.db'
-    snapshot.write_bytes(response.content)
-    with sqlite3.connect(snapshot) as exported:
-        assert exported.execute('SELECT value FROM evidence').fetchone()[0] == 'committed WAL record'
-        assert exported.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+    assert response.content.startswith(b'PGDMP')
+    restored = restore_dump(response.content)
+    with psycopg.connect(restored) as conn:
+        assert conn.execute('SELECT value FROM evidence').fetchone()[0] == 'committed PostgreSQL record'
     expired = jwt.encode({'sub': 'admin', 'aud': 'database-download', 'exp': int(time.time()) - 10}, JWT_SECRET, algorithm=JWT_ALGORITHM)
     response = client.get('/api/config/database/download', headers={'Cookie': f'db_download={expired}'})
     assert response.status_code == 401
-    conn.close()
 
 
 @pytest.mark.parametrize('name', ['../outside.txt', '/tmp/outside.txt', 'C:\\outside.txt', '..\\outside.txt', 'folder/name.txt'])

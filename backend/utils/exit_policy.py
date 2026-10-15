@@ -39,9 +39,9 @@ def assert_exit_mode_change_allowed(previous: dict, updated: dict) -> None:
     reconcile_pending_trade_operations(cid)
     blockers = []
     with database.get_db_conn() as conn:
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         if "real_protection_plans" in tables:
-            for row in conn.execute("SELECT payload FROM real_protection_plans WHERE config_id=?", (cid,)):
+            for row in conn.execute("SELECT payload FROM real_protection_plans WHERE config_id=%s", (cid,)):
                 try:
                     plan = json.loads(row[0])
                     if not isinstance(plan, dict):
@@ -52,17 +52,17 @@ def assert_exit_mode_change_allowed(previous: dict, updated: dict) -> None:
                     blockers.append(f"{plan.get('side')}: {plan.get('state', 'pending')}")
         if "mock_orders" in tables and str(previous.get("mode")).upper() == "STRATEGY":
             blockers.extend(str(r[0]) for r in conn.execute(
-                "SELECT order_id FROM mock_orders WHERE config_id=? AND status='OPEN'", (cid,)))
+                "SELECT order_id FROM mock_orders WHERE config_id=%s AND status='OPEN'", (cid,)))
         if str(previous.get('mode')).upper() == 'STRATEGY':
             if 'mock_positions' in tables:
                 blockers.extend(str(r[0]) for r in conn.execute(
-                    'SELECT episode_id FROM mock_positions WHERE config_id=? AND quantity>0', (cid,)))
+                    'SELECT episode_id FROM mock_positions WHERE config_id=%s AND quantity>0', (cid,)))
             if 'mock_exit_orders' in tables:
                 blockers.extend(str(r[0]) for r in conn.execute(
-                    "SELECT order_id FROM mock_exit_orders WHERE config_id=? AND status IN ('OPEN','WAITING_TRIGGER','PENDING','UNKNOWN')", (cid,)))
+                    "SELECT order_id FROM mock_exit_orders WHERE config_id=%s AND status IN ('OPEN','WAITING_TRIGGER','PENDING','UNKNOWN')", (cid,)))
         if "trade_action_runs" in tables:
             blockers.extend(str(r[0]) for r in conn.execute(
-                "SELECT operation_id FROM trade_action_runs WHERE config_id=? AND status IN ('running','unknown','pending')", (cid,)))
+                "SELECT operation_id FROM trade_action_runs WHERE config_id=%s AND status IN ('running','unknown','pending')", (cid,)))
     if blockers:
         raise ExitModeConflict("退出模式切换需先结束持仓及挂单/待核验操作：" + ", ".join(blockers[:10]))
     if str(previous.get("mode")).upper() == "REAL":

@@ -1,3 +1,4 @@
+from backend import storage
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from uuid import uuid4
@@ -23,28 +24,13 @@ class ChatSessionStore:
         now = self._now_factory()
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            columns = {row[1] for row in cursor.execute("PRAGMA table_info(chat_sessions)").fetchall()}
-            if "session_type" not in columns:
-                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'task'")
-            if "runtime_json" not in columns:
-                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'")
-            if "parent_session_id" not in columns:
-                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN parent_session_id TEXT")
-            if "root_session_id" not in columns:
-                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN root_session_id TEXT")
-            if "fork_message_index" not in columns:
-                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN fork_message_index INTEGER")
-            if "title_summary_cursor" not in columns:
-                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN title_summary_cursor INTEGER NOT NULL DEFAULT 0")
-            if "title_summary_token" not in columns:
-                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN title_summary_token TEXT NOT NULL DEFAULT ''")
             cursor.execute(
                 '''
                 INSERT INTO chat_sessions (
                     session_id, title, config_id, symbol, session_type, runtime_json,
                     parent_session_id, root_session_id, fork_message_index, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ''',
                 (
                     session_id,
@@ -67,7 +53,7 @@ class ChatSessionStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE chat_sessions SET updated_at = ? WHERE session_id = ?",
+                "UPDATE chat_sessions SET updated_at = %s WHERE session_id = %s",
                 (now, session_id),
             )
             conn.commit()
@@ -76,27 +62,27 @@ class ChatSessionStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             row = cursor.execute(
-                "SELECT * FROM chat_sessions WHERE session_id = ?",
+                "SELECT * FROM chat_sessions WHERE session_id = %s",
                 (session_id,),
             ).fetchone()
-            return dict(row) if row else None
+            return storage.record(row) if row else None
 
     def list_sessions(self, limit: int = 100):
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             rows = cursor.execute(
-                "SELECT * FROM chat_sessions ORDER BY updated_at DESC LIMIT ?",
+                "SELECT * FROM chat_sessions ORDER BY updated_at DESC NULLS LAST LIMIT %s",
                 (limit,),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [storage.record(row) for row in rows]
 
     def update_title(self, session_id: str, title: str, *, summary_token: str | None = None) -> bool:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            condition = " AND title_summary_token = ?" if summary_token is not None else ""
+            condition = " AND title_summary_token = %s" if summary_token is not None else ""
             params = (title, session_id, summary_token) if summary_token is not None else (title, session_id)
             cursor.execute(
-                "UPDATE chat_sessions SET title = ? WHERE session_id = ?" + condition,
+                "UPDATE chat_sessions SET title = %s WHERE session_id = %s" + condition,
                 params,
             )
             conn.commit()
@@ -110,8 +96,8 @@ class ChatSessionStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE chat_sessions SET title_summary_cursor = ?, title_summary_token = ? "
-                "WHERE session_id = ? AND title_summary_cursor < ?",
+                "UPDATE chat_sessions SET title_summary_cursor = %s, title_summary_token = %s "
+                "WHERE session_id = %s AND title_summary_cursor < %s",
                 (summary_cursor, token, session_id, summary_cursor),
             )
             conn.commit()
@@ -120,7 +106,7 @@ class ChatSessionStore:
     def reset_title_summary(self, session_id: str) -> None:
         with self._conn_factory() as conn:
             conn.execute(
-                "UPDATE chat_sessions SET title_summary_cursor = 0, title_summary_token = '' WHERE session_id = ?",
+                "UPDATE chat_sessions SET title_summary_cursor = 0, title_summary_token = '' WHERE session_id = %s",
                 (session_id,),
             )
             conn.commit()
@@ -128,7 +114,7 @@ class ChatSessionStore:
     def delete_session(self, session_id: str) -> int:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM chat_sessions WHERE session_id = %s", (session_id,))
             deleted = cursor.rowcount
             conn.commit()
             return deleted
@@ -139,7 +125,7 @@ class ChatSessionStore:
             return 0
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            placeholders = ",".join(["?"] * len(ids))
+            placeholders = ",".join(["%s"] * len(ids))
             cursor.execute(f"DELETE FROM chat_sessions WHERE session_id IN ({placeholders})", tuple(ids))
             deleted = cursor.rowcount
             conn.commit()

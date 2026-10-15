@@ -1,11 +1,12 @@
 """Durable ordered paper requests; recovery never submits an unattempted tail."""
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import contextvars
 import json
 import os
 import re
-import sqlite3
+from backend.storage import Error as StorageError
 import threading
 import time
 import uuid
@@ -26,13 +27,11 @@ def _encode(value):
 
 def _load(conn, namespace, user_id, operation_id):
     from .paper_storage import max_payload, PaperPayloadLimit, blob_size, read_blob
-    row = conn.execute('SELECT rowid FROM paper_batches WHERE namespace=? AND user_id=? AND operation_id=?',
+    row = conn.execute('SELECT storage_id AS rowid FROM paper_batches WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                         (namespace, user_id, operation_id)).fetchone()
-    if row and blob_size(conn, 'paper_batches', 'payload', row[0]) > max_payload():
-        raise PaperPayloadLimit('paper_payload_limit: original parent requires bounded authorized audit; raw identity retained')
     if row is None:
         return None
-    metadata = conn.execute('SELECT namespace,user_id,operation_id,fingerprint,worker_pid,worker_token,updated_at FROM paper_batches WHERE rowid=?',
+    metadata = conn.execute('SELECT namespace,user_id,operation_id,fingerprint,worker_pid,worker_token,updated_at FROM paper_batches WHERE storage_id=%s',
                             (row[0],)).fetchone()
     return {**dict(metadata), 'payload': read_blob(conn, 'paper_batches', 'payload', row[0], identity='paper parent')}
 
@@ -40,17 +39,15 @@ def _load(conn, namespace, user_id, operation_id):
 def _save(conn, namespace, user_id, operation_id, payload):
     from .paper_storage import max_payload, PaperPayloadLimit
     encoded = _encode(payload)
-    if len(encoded.encode('utf-8')) > max_payload():
-        raise PaperPayloadLimit('paper_payload_limit: parent progress exceeds complete read budget')
     from .paper_storage import receipt_revision
     # Preserve the first available pre-upgrade observation before recovery.
     old = _load(conn, namespace, user_id, operation_id)
     if old is not None:
         receipt_revision(conn, namespace, user_id, operation_id, old['payload'])
     receipt_revision(conn, namespace, user_id, operation_id, encoded)
-    conn.execute('UPDATE paper_batches SET payload=?,updated_at=? WHERE namespace=? AND user_id=? AND operation_id=?',
+    conn.execute('UPDATE paper_batches SET payload=%s,updated_at=%s WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                  (encoded, time.time(), namespace, user_id, operation_id))
-    conn.execute('INSERT INTO paper_batch_status VALUES(?,?,?,?) ON CONFLICT(namespace,user_id,operation_id) DO UPDATE SET status=excluded.status',
+    conn.execute('INSERT INTO paper_batch_status(namespace,user_id,operation_id,status) VALUES(%s,%s,%s,%s) ON CONFLICT(namespace,user_id,operation_id) DO UPDATE SET status=excluded.status',
                  (namespace, user_id, operation_id, payload['status']))
 
 
@@ -90,7 +87,7 @@ def _serialized_batch(function):
                             raise ValueError('operation_id was already used for a different paper batch')
                         return _recover(conn, row, active=True)
             except Exception as exc:
-                if storage_opened and not isinstance(exc, sqlite3.Error):
+                if storage_opened and not isinstance(exc, StorageError):
                     raise
                 return _intent_storage_failure(operation_id, user_id)
             return {'operation_id': operation_id, 'status': 'pending', 'contract_version': 3,
@@ -159,13 +156,13 @@ def _recover(conn, row, active=None):
     was_running = payload['status'] in {'started', 'pending'}
     active = was_running and (_worker_active(row) if active is None else active)
     for item in payload['results']:
-        receipt = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+        receipt = one(conn, 'paper_operations', 'result', 'namespace=%s AND user_id=%s AND operation_id=%s',
                       (row['namespace'], row['user_id'], item['operation_id']), identity='paper child evidence')
         if receipt:
             from .paper_storage import observe_receipt
             original = observe_receipt(conn, row['namespace'], row['user_id'], item['operation_id'], receipt)
             if original.get('order', {}).get('order_id'):
-                current = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?',
+                current = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s',
                               (row['namespace'], row['user_id'], original['order']['order_id']), identity='paper original order')
                 if current:
                     original['order'] = current
@@ -189,11 +186,11 @@ def operation(caller, user_id, operation_id):
     namespace = paper.require(caller)
     paper.identity(user_id)
     with store.connection(recovery=True) as conn:
-        conn.execute('BEGIN IMMEDIATE')
+        lock_scope(conn, 'paper-account', namespace, user_id)
         row = _load(conn, namespace, user_id, operation_id)
         if row is None:
             child = conn.execute('SELECT parent_operation_id,action_index FROM paper_batch_children '
-                                 'WHERE namespace=? AND user_id=? AND child_operation_id=?',
+                                 'WHERE namespace=%s AND user_id=%s AND child_operation_id=%s',
                                  (namespace, user_id, operation_id)).fetchone()
             if child is None:
                 return None
@@ -262,6 +259,8 @@ def _dispatch(caller, user_id, action, child_id):
 @_serialized_batch
 @bounded
 def execute(caller, user_id, request, operation_id):
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     paper.require(caller, 'read')
     namespace = paper.require(caller, 'trade')
     paper.identity(user_id)
@@ -276,7 +275,7 @@ def execute(caller, user_id, request, operation_id):
         try:
             with store.connection() as conn:
                 storage_opened = True
-                conn.execute('BEGIN IMMEDIATE')
+                lock_scope(conn, 'paper-account', namespace, user_id)
                 previous = _load(conn, namespace, user_id, operation_id)
                 if previous:
                     if previous['fingerprint'] != fingerprint:
@@ -284,11 +283,11 @@ def execute(caller, user_id, request, operation_id):
                     result = _recover(conn, previous, active=False)
                     conn.commit()
                     return result
-                legacy = conn.execute('SELECT 1 FROM paper_operations WHERE namespace=? AND user_id=? AND operation_id=?',
+                legacy = conn.execute('SELECT 1 FROM paper_operations WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                                       (namespace, user_id, operation_id)).fetchone()
                 if legacy:
                     raise ValueError('operation_id already belongs to a legacy paper request')
-                if conn.execute('SELECT 1 FROM paper_batch_children WHERE namespace=? AND user_id=? AND child_operation_id=?',
+                if conn.execute('SELECT 1 FROM paper_batch_children WHERE namespace=%s AND user_id=%s AND child_operation_id=%s',
                                 (namespace, user_id, operation_id)).fetchone():
                     raise ValueError('operation_id already belongs to a reserved paper batch child')
                 actions = request.get('actions') if isinstance(request.get('actions'), list) else []
@@ -298,13 +297,13 @@ def execute(caller, user_id, request, operation_id):
                 payload = {'operation_id': operation_id, 'contract_version': 3, 'paper': True, 'status': 'started',
                            'request': request, 'results': items,
                            'recovery': {'status': 'system_updates', 'operation_id': operation_id, 'user_id': user_id}}
-                conn.execute('INSERT INTO paper_batches VALUES(?,?,?,?,?,?,?,?)',
+                conn.execute('INSERT INTO paper_batches(namespace,user_id,operation_id,fingerprint,payload,worker_pid,worker_token,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                              (namespace, user_id, operation_id, fingerprint, _encode(payload), os.getpid(), token, time.time()))
-                conn.executemany('INSERT INTO paper_batch_children VALUES(?,?,?,?,?)',
+                conn.cursor().executemany('INSERT INTO paper_batch_children(namespace,user_id,child_operation_id,parent_operation_id,action_index) VALUES(%s,%s,%s,%s,%s)',
                                  [(namespace, user_id, item['operation_id'], operation_id, item['index']) for item in items])
                 conn.commit()
         except Exception as exc:
-            if storage_opened and not isinstance(exc, sqlite3.Error):
+            if storage_opened and not isinstance(exc, StorageError):
                 raise  # Intent/identity conflicts retain their original contract.
             return _intent_storage_failure(operation_id, user_id)
         try:
@@ -328,7 +327,7 @@ def execute(caller, user_id, request, operation_id):
                 remaining('paper_action')
                 item.update(status='pending', attempted=True)
                 with store.connection() as conn:
-                    conn.execute('BEGIN IMMEDIATE')
+                    lock_scope(conn, 'paper-account', namespace, user_id)
                     _save(conn, namespace, user_id, operation_id, payload)
                     conn.commit()
                 step_token = _step.set((namespace, user_id, operation_id, index, item['action']))
@@ -340,7 +339,7 @@ def execute(caller, user_id, request, operation_id):
                     # that receipt before classifying a post-commit exception.
                     try:
                         with store.connection(recovery=True) as conn:
-                            saved = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+                            saved = one(conn, 'paper_operations', 'result', 'namespace=%s AND user_id=%s AND operation_id=%s',
                                         (namespace, user_id, item['operation_id']), identity='committed paper child')
                         if saved:
                             item.update(_action_receipt(saved, item['action']))
@@ -362,7 +361,7 @@ def execute(caller, user_id, request, operation_id):
             payload.update(status=_status(items) if any(item['attempted'] for item in items) else 'failed', error=str(exc))
         try:
             with store.connection(recovery=True) as conn:
-                conn.execute('BEGIN IMMEDIATE')
+                lock_scope(conn, 'paper-account', namespace, user_id)
                 _save(conn, namespace, user_id, operation_id, payload)
                 conn.commit()
         except Exception:
@@ -380,17 +379,15 @@ def recover_pending():
     with store.connection(recovery=True) as conn:
         saved = conn.execute("SELECT cursor FROM paper_scan_progress WHERE worker='batch-recovery'").fetchone()
         cursor = saved[0] if saved else 0
-        records = conn.execute('SELECT b.rowid,b.namespace,b.user_id,b.operation_id '
+        records = conn.execute('SELECT b.storage_id AS rowid,b.namespace,b.user_id,b.operation_id '
             'FROM paper_batches b LEFT JOIN paper_batch_status s ON s.namespace=b.namespace AND s.user_id=b.user_id AND s.operation_id=b.operation_id '
-            "WHERE b.rowid>? AND (s.status IS NULL OR s.status IN ('started','pending','submitted','unknown')) ORDER BY b.rowid LIMIT ?",
+            "WHERE b.storage_id>%s AND (s.status IS NULL OR s.status IN ('started','pending','submitted','unknown')) ORDER BY b.storage_id LIMIT %s",
             (cursor, batch_size() + 1)).fetchall()
+        # Match foreground account writers before loading mutable parent state.
+        for namespace, user_id in sorted({(row['namespace'], row['user_id']) for row in records[:batch_size()]}):
+            lock_scope(conn, 'paper-account', namespace, user_id)
         skipped, refreshed = [], 0
         for record in records[:batch_size()]:
-            if blob_size(conn, 'paper_batches', 'payload', record['rowid']) > max_payload():
-                skipped.append(record['rowid'])
-                conn.execute('INSERT INTO paper_batch_status VALUES(?,?,?,?) ON CONFLICT(namespace,user_id,operation_id) DO UPDATE SET status=excluded.status',
-                             (record['namespace'], record['user_id'], record['operation_id'], 'audit_only'))
-                continue
             row = _load(conn, record['namespace'], record['user_id'], record['operation_id'])
             try:
                 _recover(conn, row)
@@ -399,7 +396,7 @@ def recover_pending():
                 skipped.append(record['rowid'])
         more = len(records) > batch_size()
         next_cursor = records[min(len(records), batch_size()) - 1]['rowid'] if records else cursor
-        conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor,payload=excluded.payload',
+        conn.execute('INSERT INTO paper_scan_progress(worker,cursor,payload) VALUES(%s,%s,%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor,payload=excluded.payload',
                      ('batch-recovery', next_cursor if more else 0, '{}'))
         conn.commit()
     return {'refreshed': refreshed, 'skipped_records': skipped, 'scan_complete': not more, 'next_cursor': next_cursor if more else None}

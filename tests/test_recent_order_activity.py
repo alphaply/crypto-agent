@@ -1,72 +1,12 @@
-import sqlite3
-import tempfile
+import pytest
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 
 import backend.database as database
 from backend.app.services import dashboard_service
 
 
-def create_activity_tables(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id TEXT,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            trade_mode TEXT,
-            side TEXT,
-            entry_price REAL,
-            amount REAL,
-            take_profit REAL,
-            stop_loss REAL,
-            reason TEXT,
-            status TEXT DEFAULT 'OPEN',
-            event_type TEXT,
-            parent_order_id TEXT,
-            is_auto INTEGER DEFAULT 0,
-            realized_pnl REAL DEFAULT 0
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE trade_history (
-            trade_id TEXT,
-            order_id TEXT,
-            timestamp TEXT,
-            symbol TEXT,
-            config_id TEXT,
-            side TEXT,
-            price REAL,
-            amount REAL,
-            cost REAL,
-            fee REAL,
-            fee_currency TEXT,
-            realized_pnl REAL
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
 class RecentOrderActivityTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "activity.db"
-        create_activity_tables(self.db_path)
-        self.db_patch = patch.object(database, "DB_NAME", str(self.db_path))
-        self.db_patch.start()
 
-    def tearDown(self) -> None:
-        self.db_patch.stop()
-        self.temp_dir.cleanup()
 
     def test_recent_activity_collapses_duplicate_cancel_logs(self):
         database.save_order_log(
@@ -84,7 +24,7 @@ class RecentOrderActivityTests(unittest.TestCase):
             status="OPEN",
         )
         with database.get_db_conn() as conn:
-            conn.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", ("ST-1",))
+            conn.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = %s", ("ST-1",))
             conn.commit()
         database.save_order_log(
             "ST-1",
@@ -129,3 +69,6 @@ class RecentOrderActivityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+pytestmark = pytest.mark.usefixtures("pg")

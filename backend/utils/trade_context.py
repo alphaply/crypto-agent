@@ -31,9 +31,9 @@ def load_trade_plans(config_id: str, account_scope: str, symbol: str) -> list[di
     """Read all cycle associations; a late unresolved order has no page cutoff."""
     from backend.database import get_db_conn
     with get_db_conn() as conn:
-        rows = conn.execute('SELECT symbol,payload FROM trade_cycle_evidence WHERE config_id=? AND account_scope=?',
+        rows = conn.execute('SELECT symbol,payload FROM trade_cycle_evidence WHERE config_id=%s AND account_scope=%s',
                             (config_id, account_scope)).fetchall()
-        current = conn.execute('SELECT symbol,payload FROM real_protection_plans WHERE config_id=?',
+        current = conn.execute('SELECT symbol,payload FROM real_protection_plans WHERE config_id=%s',
                                (config_id,)).fetchall()
     plans = {}
     for row in [*rows, *current]:
@@ -52,7 +52,7 @@ def load_pending_operations(config_id: str, account_scope: str, symbol: str) -> 
     from backend.database import get_db_conn
     from backend.utils.trade_recovery import operation_evidence
     with get_db_conn() as conn:
-        rows = conn.execute("SELECT operation_id,symbol FROM trade_action_runs WHERE config_id=? "
+        rows = conn.execute("SELECT operation_id,symbol FROM trade_action_runs WHERE config_id=%s "
                             "AND status IN ('running','unknown','pending')", (config_id,)).fetchall()
     return operation_evidence(config_id, symbol, [r['operation_id'] for r in rows if _same_symbol(r['symbol'], symbol)],
                               account_scope=account_scope)

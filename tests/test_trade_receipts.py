@@ -1,5 +1,5 @@
 import json
-import sqlite3
+from backend import storage
 from pathlib import Path
 import re
 
@@ -57,11 +57,10 @@ def test_unknown_fill_is_null_but_last_verified_fill_survives():
     assert result['last_known_fill_at'] == 123
 
 
-def test_evidence_migration_and_original_receipt_are_idempotent():
-    conn = sqlite3.connect(':memory:')
-    conn.row_factory = sqlite3.Row
+def test_native_evidence_and_original_receipt_are_idempotent(financial_pg):
+    conn = storage.connect()
     initialize_trade_operations_schema(conn.cursor())
-    conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+    conn.execute('INSERT INTO trade_action_runs(config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                  ('cfg', 'op', 'ETH/USDT', 'unchanged-hash', 'unknown', '{}', 1, 1))
     append_receipt(conn, 'cfg', 'op', {'status': 'unknown'})
     append_receipt(conn, 'cfg', 'op', {'status': 'completed'})
@@ -79,38 +78,29 @@ def test_evidence_migration_and_original_receipt_are_idempotent():
     with pytest.raises(RuntimeError, match='backwards'):
         save_plan(conn, 'cfg', dict(account_scope='test-account', symbol='ETH/USDT', episode_id='old', record_version=2,
                                    entries=[dict(client_id='old', operation_id='old', filled=0)]))
-
-
-def test_real_old_database_upgrade_preserves_raw_first_receipt_and_hash(tmp_path):
-    conn = sqlite3.connect(tmp_path / 'old.sqlite')
-    conn.row_factory = sqlite3.Row
-    conn.execute('CREATE TABLE trade_action_runs(config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at)')
-    original = json.dumps({'status': 'unknown', 'error': 'historical timeout'})
-    conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)', ('cfg', 'old-op', 'ETH/USDT', 'old-hash', 'unknown', original, 1, 2))
-    conn.execute('CREATE TABLE real_protection_events(id INTEGER PRIMARY KEY,config_id,symbol,payload)')
-    plan = dict(account_scope='old-account', episode_id='old-cycle', execution_mode='independent_exits', symbol='ETH/USDT',
-                entries=[dict(client_id='old-client', operation_id='old-op', id='1', filled=1, status='closed')])
-    conn.execute('INSERT INTO real_protection_events VALUES(?,?,?,?)', (1, 'cfg', 'ETH/USDT', json.dumps(plan)))
-    for _ in range(2):
-        initialize_trade_operations_schema(conn.cursor())
-    assert conn.execute('SELECT payload FROM trade_receipt_revisions WHERE revision=0').fetchone()[0] == original
-    assert conn.execute('SELECT request_hash FROM trade_action_runs').fetchone()[0] == 'old-hash'
-    assert conn.execute('SELECT count(*) FROM trade_cycle_evidence').fetchone()[0] == 1
-    assert conn.execute('SELECT count(*) FROM trade_operation_evidence').fetchone()[0] == 1
-    conn.commit()
-    # Rollback drill: stop writers, take a full backup, inspect through the old
-    # tables without deleting new evidence, then upgrade the restored copy.
-    backup = sqlite3.connect(tmp_path / 'rollback.sqlite')
-    backup.row_factory = sqlite3.Row
-    conn.backup(backup)
     conn.close()
-    evidence_before = list(backup.execute('SELECT * FROM trade_operation_evidence'))
-    assert backup.execute('SELECT status,result FROM trade_action_runs').fetchone()['result'] == original
-    initialize_trade_operations_schema(backup.cursor())
-    assert list(backup.execute('SELECT * FROM trade_operation_evidence')) == evidence_before
-    assert backup.execute('SELECT request_hash FROM trade_action_runs').fetchone()[0] == 'old-hash'
-    assert backup.execute('SELECT payload FROM trade_receipt_revisions').fetchone()[0] == original
-    backup.close()
+
+
+def test_native_restart_preserves_raw_first_receipt_and_hash(financial_pg):
+    original = json.dumps({'status': 'unknown', 'error': 'historical timeout'})
+    plan = dict(account_scope='old-account', episode_id='old-cycle', execution_mode='independent_exits', symbol='ETH/USDT',
+                record_version=1, entries=[dict(client_id='old-client', operation_id='old-op', id='1', filled=1, status='closed')])
+    with storage.connect() as conn:
+        conn.execute('INSERT INTO trade_action_runs(config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) '
+                     'VALUES(%s,%s,%s,%s,%s,%s,%s,%s)', ('cfg', 'old-op', 'ETH/USDT', 'old-hash', 'unknown', original, 1, 2))
+        append_receipt(conn, 'cfg', 'old-op', json.loads(original))
+        save_plan(conn, 'cfg', plan)
+    with storage.connect() as reopened:
+        before = [tuple(row) for row in reopened.execute('SELECT * FROM trade_operation_evidence')]
+        for _ in range(2):
+            initialize_trade_operations_schema(reopened.cursor())
+        assert [tuple(row) for row in reopened.execute('SELECT * FROM trade_operation_evidence')] == before
+        assert tuple(reopened.execute('SELECT request_hash,result FROM trade_action_runs').fetchone()) == ('old-hash', original)
+        assert json.loads(reopened.execute('SELECT payload FROM trade_receipt_revisions').fetchone()[0]) == json.loads(original)
+        assert reopened.execute('SELECT count(*) FROM trade_cycle_evidence').fetchone()[0] == 1
+        reopened.execute('DELETE FROM trade_operation_evidence')
+        reopened.rollback()
+        assert [tuple(row) for row in reopened.execute('SELECT * FROM trade_operation_evidence')] == before
 
 
 def test_documented_synthetic_receipt_matches_schema():

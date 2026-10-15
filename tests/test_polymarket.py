@@ -123,14 +123,14 @@ def test_preview_requires_auth_and_validates_target(monkeypatch, event_payload):
     assert response.json()['event']['fetched_at']
 
 
-def test_config_round_trip_and_export(monkeypatch, tmp_path):
-    import sqlite3
+def test_config_round_trip_and_export(monkeypatch, tmp_path, pg):
+    from backend import storage
     from backend import config_store
     from backend.database_schema import initialize_schema
 
     path = tmp_path / 'config.db'
-    with sqlite3.connect(path) as conn:
-        initialize_schema(conn)
+    with storage.connect() as conn:
+        pass  # Full schema is created by pg.
     monkeypatch.setattr(config_store, 'DB_NAME', path)
     settings = {'enabled': True, 'events': [f'https://polymarket.com/zh/event/{SLUG}'], 'refresh_seconds': 120}
     config_store.save_runtime_snapshot({'polymarket': settings}, [])

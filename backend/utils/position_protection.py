@@ -5,6 +5,7 @@ exchange protection orders without an LLM. All exchange writes have durable clie
 IDs; ambiguous responses are queried before another submission.
 """
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import json
 import threading
@@ -57,7 +58,7 @@ class PositionProtection:
         with get_db_conn() as conn:
             conn.execute('BEGIN')
             row = conn.execute(
-                "SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side=?",
+                "SELECT payload FROM real_protection_plans WHERE config_id=%s AND symbol=%s AND side=%s",
                 (self.config_id, symbol, side),
             ).fetchone()
             plan = json.loads(row["payload"]) if row else None
@@ -82,18 +83,18 @@ class PositionProtection:
     def _save(self, plan):
         plan["updated_at"] = time.time()
         with get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            lock_scope(conn, 'protection-account', self.account_scope, plan['symbol'])
             from backend.utils.visible_management import assert_current_owner
             management = plan.get('management') or {}
             if not (plan.get('transferred_to') and plan.get('state') == 'DONE'):
                 assert_current_owner(conn, self.config_id, self.account_scope, plan['symbol'], plan['side'],
                                      claim_id=management.get('claim_id'), version=management.get('claim_version'))
-            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
             active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
             mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
             has_registry = bool(active_agents or mcp_profiles)
 
-            for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol=? AND config_id!=?',
+            for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol=%s AND config_id!=%s',
                                     (plan['symbol'], self.config_id)).fetchall():
                 if plan.get('transferred_to') and plan.get('state') == 'DONE':
                     continue
@@ -107,14 +108,14 @@ class PositionProtection:
                         continue
                     raise ValueError('Another config owns protection for this exchange account and symbol')
             plan['account_scope'] = self.account_scope
-            previous_row = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side=?',
+            previous_row = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s AND symbol=%s AND side=%s',
                                         (self.config_id, plan['symbol'], plan['side'])).fetchone()
             previous = json.loads(previous_row['payload']) if previous_row else {}
             adoption = plan.get('adoption') or {}
             if adoption and adoption.get('operation_id') != (previous.get('adoption') or {}).get('operation_id'):
                 if previous and previous.get('state') != 'DONE':
                     raise ValueError('An active position cycle already exists; manual adoption cannot replace it')
-                for row in conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side!=?',
+                for row in conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s AND symbol=%s AND side!=%s',
                                         (self.config_id, plan['symbol'], plan['side'])):
                     other = json.loads(row['payload'])
                     if other.get('account_scope') == self.account_scope and other.get('state') != 'DONE':
@@ -132,10 +133,10 @@ class PositionProtection:
                 return {k: v for k, v in value.items() if k not in {'updated_at', 'verified_at', 'record_version'}}
             if audit_view(previous) != audit_view(plan):
                 from backend.database import _current_timestamp
-                conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+                conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                              (_current_timestamp(), self.config_id, plan['symbol'], json.dumps(audit_view(plan))))
             conn.execute(
-                "INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?) "
+                "INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s) "
                 "ON CONFLICT(config_id,symbol,side) DO UPDATE SET payload=excluded.payload",
                 (self.config_id, plan["symbol"], plan["side"], json.dumps(plan)),
             )
@@ -962,11 +963,10 @@ class PositionProtection:
 
     def reconcile_plan_page(self, *, limit=32, after_cursor=0, respect_backoff=False):
         """Inspect lengths before fetching JSON; preserve a stable continuation."""
-        from backend.utils.runtime_capacity import positive_setting, reserve_bytes, capacity_limits_enabled
+        from backend.utils.runtime_capacity import positive_setting, reserve_bytes
         if type(limit) is not int or limit < 1:
             raise ValueError('Plan scan limit must be a positive integer')
-        maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES', 4 * 1024 * 1024)
-        limits_enabled = capacity_limits_enabled()
+        maximum = 4 * 1024 * 1024
         with _lock(self.account_scope):
             with get_db_conn() as conn:
                 from backend.utils.protection_scan import active_plan_page, activity_scan_complete
@@ -976,10 +976,6 @@ class PositionProtection:
                 conn.commit()
             results = []
             for row in rows:
-                if limits_enabled and row['payload_bytes'] > maximum:
-                    results.append({'symbol': row['symbol'], 'side': row['side'], 'state': 'unknown',
-                                    'error': 'Plan payload over resource budget; original evidence retained'})
-                    continue
                 with reserve_bytes('parse', row['payload_bytes'] * 4):
                     with get_db_conn() as conn:
                         from backend.utils.sqlite_blob import bounded_text
@@ -988,7 +984,7 @@ class PositionProtection:
                                 plan = json.loads(raw)
                         except (ValueError, TypeError):
                             results.append({'symbol': row['symbol'], 'side': row['side'], 'state': 'unknown',
-                                            'error': 'Plan JSON invalid or over resource budget; original evidence retained'})
+                                            'error': 'Plan JSON invalid; original evidence retained'})
                             continue
                 if plan['state'] != 'DONE' and plan.get('account_scope') != self.account_scope:
                     results.append({'symbol': plan['symbol'], 'side': plan['side'], 'state': plan['state'],

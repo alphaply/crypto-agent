@@ -16,9 +16,7 @@ from backend.database_schema import initialize_schema
 def local_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'context.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
-
-
+        pass  # Full schema is created by pg.
 def test_daily_memory_is_seven_calendar_days_not_seven_rows(local_db):
     store = SummaryMemoryStore(database.get_db_conn, lambda: datetime(2026, 10, 1, 12), Mock())
     for day in ('2026-09-01', '2026-09-24', '2026-09-25', '2026-09-30', '2026-10-01', '2026-10-02'):
@@ -29,9 +27,9 @@ def test_daily_memory_is_seven_calendar_days_not_seven_rows(local_db):
 def test_recent_decisions_are_three_chronological_complete_summaries(local_db, monkeypatch):
     with database.get_db_conn() as conn:
         for index in range(4):
-            conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic) VALUES(?,?,?)',
+            conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic) VALUES(%s,%s,%s)',
                          ('cfg', f'2026-10-01 0{index}:00:00', str(index) * 700))
-        conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic) VALUES(?,?,?)', ('other', '2026-10-01', 'other task'))
+        conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic) VALUES(%s,%s,%s)', ('other', '2026-10-01', 'other task'))
         conn.commit()
     from memory_test_support import publish_strategy_views
     publish_strategy_views(monkeypatch)
@@ -157,3 +155,6 @@ def test_failed_write_does_not_invoke_retired_recovery_or_later_trade(monkeypatc
     outputs = chat_graph.tools_node({'messages': [message]}, {'configurable': {'config_id': 'cfg'}})['messages']
     assert run.call_count == 2 and 'not_executed' in outputs[-1].content
     assert approve.call_count == 1
+
+
+pytestmark = pytest.mark.usefixtures("pg")

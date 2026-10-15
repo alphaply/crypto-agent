@@ -1,68 +1,11 @@
-import sqlite3
-import tempfile
+import pytest
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 
 import backend.database as database
 
 
-def create_order_fill_tables(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        '''
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id TEXT,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            trade_mode TEXT,
-            side TEXT,
-            entry_price REAL,
-            amount REAL,
-            take_profit REAL,
-            stop_loss REAL,
-            reason TEXT,
-            status TEXT DEFAULT 'OPEN',
-            filled_amount REAL DEFAULT 0,
-            filled_cost REAL DEFAULT 0,
-            avg_fill_price REAL DEFAULT 0,
-            filled_at TEXT
-        )
-        '''
-    )
-    conn.execute(
-        '''
-        CREATE TABLE spot_order_fills (
-            order_id TEXT PRIMARY KEY,
-            config_id TEXT,
-            symbol TEXT,
-            status TEXT,
-            filled_qty REAL DEFAULT 0,
-            filled_cost REAL DEFAULT 0,
-            avg_fill_price REAL DEFAULT 0,
-            filled_at TEXT,
-            last_sync_at TEXT
-        )
-        '''
-    )
-    conn.commit()
-    conn.close()
-
-
 class OrderFillTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "order_fill.db"
-        create_order_fill_tables(self.db_path)
-        self.db_patch = patch.object(database, "DB_NAME", str(self.db_path))
-        self.db_patch.start()
 
-    def tearDown(self) -> None:
-        self.db_patch.stop()
-        self.temp_dir.cleanup()
 
     def test_save_order_log_normalizes_trade_mode_and_config_fallback(self):
         database.save_order_log(
@@ -82,7 +25,7 @@ class OrderFillTests(unittest.TestCase):
 
         with database.get_db_conn() as conn:
             row = conn.execute(
-                "SELECT config_id, trade_mode, amount, status FROM orders WHERE order_id = ?",
+                "SELECT config_id, trade_mode, amount, status FROM orders WHERE order_id = %s",
                 ("ORD-1",),
             ).fetchone()
 
@@ -94,7 +37,7 @@ class OrderFillTests(unittest.TestCase):
     def test_update_order_fill_status_updates_fill_fields(self):
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO orders (order_id, status) VALUES (?, ?)",
+                "INSERT INTO orders (order_id, status) VALUES (%s, %s)",
                 ("ORD-2", "OPEN"),
             )
             conn.commit()
@@ -103,7 +46,7 @@ class OrderFillTests(unittest.TestCase):
 
         with database.get_db_conn() as conn:
             row = conn.execute(
-                "SELECT status, filled_amount, filled_cost, avg_fill_price, filled_at FROM orders WHERE order_id = ?",
+                "SELECT status, filled_amount, filled_cost, avg_fill_price, filled_at FROM orders WHERE order_id = %s",
                 ("ORD-2",),
             ).fetchone()
 
@@ -119,7 +62,7 @@ class OrderFillTests(unittest.TestCase):
 
         with database.get_db_conn() as conn:
             row = conn.execute(
-                "SELECT status, filled_qty, filled_cost, avg_fill_price, filled_at, last_sync_at FROM spot_order_fills WHERE order_id = ?",
+                "SELECT status, filled_qty, filled_cost, avg_fill_price, filled_at, last_sync_at FROM spot_order_fills WHERE order_id = %s",
                 ("ORD-3",),
             ).fetchone()
 
@@ -145,3 +88,6 @@ class OrderFillTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+pytestmark = pytest.mark.usefixtures("pg")

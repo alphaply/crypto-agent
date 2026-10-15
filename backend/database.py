@@ -1,5 +1,5 @@
 import os
-import sqlite3
+from backend import storage
 import time
 import uuid
 import pytz
@@ -17,54 +17,37 @@ from backend.database_position import PositionHistoryStore
 from backend.database_pricing import PricingStore
 from backend.database_summary import SummaryStore
 from backend.database_trade import TradeHistoryStore
-from backend.storage_paths import DATA_DIR, PROJECT_ROOT, data_file
+from backend.storage_paths import DATA_DIR, PROJECT_ROOT
 from backend.database_schema import initialize_schema
 from backend.utils.logger import setup_logger
 
 # 设置时区
 TZ_CN = pytz.timezone('Asia/Shanghai')
 
-# 使用绝对路径定位数据库文件
-# 强制获取项目根目录
 BASE_DIR = str(PROJECT_ROOT)
-DB_NAME = str(data_file("TRADING_DB_PATH", "trading_data.db"))
+# Inert compatibility value for legacy callers; PostgreSQL never opens or copies it.
+DB_NAME = os.path.abspath(os.getenv("TRADING_DB_PATH", str(DATA_DIR / "trading_data.db")))
 logger = setup_logger("Database")
 
 @contextmanager
-def get_db_conn():
-    """数据库连接上下文管理器，自动处理关闭和超时"""
-    timeout = 30
-    # Only MCP workers carry this context; Web/scheduler defaults are unchanged.
+def get_db_conn(timeout=30):
+    """Acquire PostgreSQL with the caller's existing bounded wait budget."""
     from backend.mcp.resilience import current_budget, setting
     budget = current_budget.get()
     if budget:
-        # Final durable result writes use a short recovery grace after the I/O
-        # deadline; no network operation can start in that grace.
-        timeout = min(setting('DB_WAIT_SECONDS', 0.25), max(0.001, budget.deadline - time.monotonic()))
-    conn = sqlite3.connect(DB_NAME, timeout=timeout)
-    conn.row_factory = sqlite3.Row
-    try:
+        timeout = min(timeout, setting('DB_WAIT_SECONDS', 0.25))
+    with storage.get_connection(timeout=timeout) as conn:
         yield conn
-    finally:
-        conn.close()
 
 
 def _initialize_runtime_config() -> None:
-    try:
-        from backend.config_store import ensure_runtime_config_initialized
-
-        ensure_runtime_config_initialized()
-    except Exception as e:
-        logger.error(f"❌ 初始化 SQLite 运行配置失败: {e}")
+    from backend.config_store import ensure_runtime_config_initialized
+    ensure_runtime_config_initialized()
 
 
 def _reload_runtime_config() -> None:
-    try:
-        from backend.config import config as runtime_config
-
-        runtime_config.reload_config()
-    except Exception as e:
-        logger.error(f"❌ 重新加载运行配置失败: {e}")
+    from backend.config import config as runtime_config
+    runtime_config.reload_config()
 
 
 def _current_timestamp() -> str:
@@ -92,9 +75,12 @@ _summary_store = SummaryStore(get_db_conn, _current_timestamp, logger)
 _trade_history_store = TradeHistoryStore(get_db_conn, logger)
 
 def init_db():
-    logger.info(f"🔍 正在检查数据库位置: {DB_NAME}")
+    logger.info("Checking PostgreSQL schema version")
     with get_db_conn() as conn:
         initialize_schema(conn)
+        from backend.utils.protection_scan import initialize_schema as initialize_scan_mode
+        initialize_scan_mode(conn.cursor())
+        conn.commit()
 
     _initialize_runtime_config()
     _reload_runtime_config()
@@ -158,9 +144,11 @@ def save_token_usage(symbol, config_id, model, prompt_tokens, completion_tokens)
         try:
             c.execute('''
                 INSERT INTO token_usage (timestamp, symbol, config_id, model, prompt_tokens, completion_tokens, total_tokens)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             ''', (timestamp, symbol, config_id, model, prompt_tokens, completion_tokens, total_tokens))
             conn.commit()
+        except storage.Error:
+            raise
         except Exception as e:
             logger.error(f"❌ DB Error (save_token_usage): {e}")
 
@@ -227,13 +215,15 @@ def save_order_log(
                     event_type = "SL_HIT"
                 elif tp_price > 0 and abs(close_price - tp_price) <= 1e-12:
                     event_type = "TP_HIT"
+            except storage.Error:
+                raise
             except Exception:
                 event_type = "AUTO_CLOSE"
         if not realized_pnl:
             try:
                 with get_db_conn() as conn:
                     row = conn.execute(
-                        "SELECT side, price, amount FROM mock_orders WHERE order_id = ? LIMIT 1",
+                        "SELECT side, price, amount FROM mock_orders WHERE order_id = %s LIMIT 1",
                         (parent_id,),
                     ).fetchone()
                 if row:
@@ -242,6 +232,8 @@ def save_order_log(
                     qty = float(amount or row["amount"] or 0)
                     direction = 1 if "BUY" in str(row["side"]).upper() else -1
                     realized_pnl = (close_price - entry_price) * qty * direction
+            except storage.Error:
+                raise
             except Exception:
                 realized_pnl = 0.0
     _order_persistence_store.save_order_log(
@@ -516,7 +508,7 @@ def save_news_snapshot(symbol, config_id, news_context):
         conn.execute(
             """
             INSERT INTO news_snapshots (timestamp, symbol, config_id, headlines, source, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (
                 _current_timestamp(),
@@ -534,10 +526,10 @@ def get_latest_news_snapshot(symbol=None, config_id=None):
     clauses = []
     params = []
     if config_id:
-        clauses.append("config_id = ?")
+        clauses.append("config_id = %s")
         params.append(str(config_id))
     if symbol:
-        clauses.append("symbol = ?")
+        clauses.append("symbol = %s")
         params.append(str(symbol))
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with get_db_conn() as conn:
@@ -546,21 +538,25 @@ def get_latest_news_snapshot(symbol=None, config_id=None):
             SELECT *
             FROM news_snapshots
             {where}
-            ORDER BY timestamp DESC, id DESC
+            ORDER BY timestamp DESC NULLS LAST, id DESC
             LIMIT 1
             """,
             tuple(params),
         ).fetchone()
     if not row:
         return None
-    payload = dict(row)
+    payload = storage.record(row)
     payload.pop("risk_level", None)
     try:
         payload["headlines"] = json.loads(payload.get("headlines") or "[]")
+    except storage.Error:
+        raise
     except Exception:
         payload["headlines"] = []
     try:
         payload["raw"] = json.loads(payload.get("raw_json") or "{}")
+    except storage.Error:
+        raise
     except Exception:
         payload["raw"] = {}
     payload["raw"].pop("risk_level", None)
@@ -574,7 +570,7 @@ def save_intelligence_source_cache(source_key, fetched_at, payload, last_error=N
         conn.execute(
             """
             INSERT INTO intelligence_source_cache (source_key, fetched_at, payload_json, last_error)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT(source_key) DO UPDATE SET
                 fetched_at = excluded.fetched_at,
                 payload_json = excluded.payload_json,
@@ -588,14 +584,16 @@ def save_intelligence_source_cache(source_key, fetched_at, payload, last_error=N
 def get_intelligence_source_cache(source_key):
     with get_db_conn() as conn:
         row = conn.execute(
-            "SELECT source_key, fetched_at, payload_json, last_error FROM intelligence_source_cache WHERE source_key = ?",
+            "SELECT source_key, fetched_at, payload_json, last_error FROM intelligence_source_cache WHERE source_key = %s",
             (str(source_key),),
         ).fetchone()
     if not row:
         return None
-    payload = dict(row)
+    payload = storage.record(row)
     try:
         payload["payload"] = json.loads(payload.pop("payload_json") or "[]")
+    except storage.Error:
+        raise
     except Exception:
         payload["payload"] = []
     return payload
@@ -682,6 +680,8 @@ def _config_mode_for_stats(config_id):
         from backend.config import config as global_config
 
         cfg = global_config.get_config_by_id(config_id)
+    except storage.Error:
+        raise
     except Exception:
         cfg = None
     return str(cfg.get("mode") or "").upper() if cfg else ""
@@ -693,7 +693,7 @@ def get_closed_positions_7d(
     days: int = 7,
     mode: str | None = None,
 ) -> list[dict]:
-    """Retrieve positions closed within the past N days strictly from the local SQLite database.
+    """Retrieve positions closed within the past N days from the runtime database.
 
     Standardized fields per record:
         opened_at: str,
@@ -716,7 +716,7 @@ def get_closed_positions_7d(
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        tables = {row[0] for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        tables = storage.table_names(conn)
 
         # 1. STRATEGY mode: query mock_orders
         if mode == "STRATEGY":
@@ -724,11 +724,11 @@ def get_closed_positions_7d(
                 query = (
                     "SELECT timestamp, close_time, symbol, side, price, close_price, amount, "
                     "take_profit, stop_loss, realized_pnl FROM mock_orders "
-                    "WHERE config_id = ? AND status = 'CLOSED' AND close_time >= ?"
+                    "WHERE config_id = %s AND status = 'CLOSED' AND close_time >= %s"
                 )
                 params = [config_id, cutoff_str]
                 if clean_sym:
-                    query += " AND (symbol = ? OR symbol LIKE ?)"
+                    query += " AND (symbol = %s OR symbol LIKE %s)"
                     params.extend([clean_sym, f"{clean_sym}%"])
                 query += " ORDER BY close_time DESC"
 
@@ -759,11 +759,11 @@ def get_closed_positions_7d(
                 "SELECT position_id, opened_at_ms, closed_at_ms, symbol, side, entry_price, "
                 "close_price, amount, take_profit, stop_loss, realized_pnl, fees_json, "
                 "exit_reason, payload FROM execution_position_history "
-                "WHERE config_id = ? AND closed_at_ms >= ? AND closed_at_ms <= ?"
+                "WHERE config_id = %s AND closed_at_ms >= %s AND closed_at_ms <= %s"
             )
             params = [config_id, cutoff_ms, int(now.timestamp() * 1000)]
             if clean_sym:
-                query += " AND (symbol = ? OR symbol LIKE ?)"
+                query += " AND (symbol = %s OR symbol LIKE %s)"
                 params.extend([clean_sym, f"{clean_sym}%"])
             query += " ORDER BY closed_at_ms DESC"
 
@@ -805,11 +805,11 @@ def get_closed_positions_7d(
             m_query = (
                 "SELECT timestamp, close_time, symbol, side, price, close_price, amount, "
                 "take_profit, stop_loss, realized_pnl FROM mock_orders "
-                "WHERE config_id = ? AND status = 'CLOSED' AND close_time >= ?"
+                "WHERE config_id = %s AND status = 'CLOSED' AND close_time >= %s"
             )
             m_params = [config_id, cutoff_str]
             if clean_sym:
-                m_query += " AND (symbol = ? OR symbol LIKE ?)"
+                m_query += " AND (symbol = %s OR symbol LIKE %s)"
                 m_params.extend([clean_sym, f"{clean_sym}%"])
             m_query += " ORDER BY close_time DESC"
 
@@ -945,16 +945,14 @@ def _aggregate_config_trade_stats(cursor, symbol, config_id):
     mode = _config_mode_for_stats(config_id)
 
     if mode == "REAL":
-        table_exists = cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='execution_position_history'"
-        ).fetchone()
+        table_exists = 'execution_position_history' in storage.table_names(cursor.connection)
         if table_exists:
             exec_rows = cursor.execute(
                 """
                 SELECT realized_pnl
                 FROM execution_position_history
-                WHERE config_id = ?
-                  AND (symbol = ? OR symbol LIKE ?)
+                WHERE config_id = %s
+                  AND (symbol = %s OR symbol LIKE %s)
                 """,
                 (config_id, symbol, symbol_prefix),
             ).fetchall()
@@ -965,9 +963,9 @@ def _aggregate_config_trade_stats(cursor, symbol, config_id):
             """
             SELECT realized_pnl
             FROM position_history
-            WHERE config_id = ?
+            WHERE config_id = %s
               AND status = 'CLOSED'
-              AND (symbol = ? OR symbol LIKE ?)
+              AND (symbol = %s OR symbol LIKE %s)
             """,
             (config_id, symbol, symbol_prefix),
         ).fetchall()
@@ -978,8 +976,8 @@ def _aggregate_config_trade_stats(cursor, symbol, config_id):
             """
             SELECT realized_pnl
             FROM trade_history
-            WHERE config_id = ?
-              AND (symbol = ? OR symbol LIKE ?)
+            WHERE config_id = %s
+              AND (symbol = %s OR symbol LIKE %s)
             """,
             (config_id, symbol, symbol_prefix),
         ).fetchall()
@@ -990,8 +988,8 @@ def _aggregate_config_trade_stats(cursor, symbol, config_id):
             """
             SELECT realized_pnl
             FROM mock_orders
-            WHERE symbol = ?
-              AND config_id = ?
+            WHERE symbol = %s
+              AND config_id = %s
               AND status = 'CLOSED'
             """,
             (symbol, config_id),
@@ -1003,8 +1001,8 @@ def _aggregate_config_trade_stats(cursor, symbol, config_id):
             """
             SELECT realized_pnl
             FROM trade_history
-            WHERE config_id = ?
-              AND (symbol = ? OR symbol LIKE ?)
+            WHERE config_id = %s
+              AND (symbol = %s OR symbol LIKE %s)
             """,
             (config_id, symbol, symbol_prefix),
         ).fetchall()
@@ -1014,8 +1012,8 @@ def _aggregate_config_trade_stats(cursor, symbol, config_id):
         """
         SELECT realized_pnl
         FROM mock_orders
-        WHERE symbol = ?
-          AND config_id = ?
+        WHERE symbol = %s
+          AND config_id = %s
           AND status = 'CLOSED'
         """,
         (symbol, config_id),
@@ -1024,8 +1022,8 @@ def _aggregate_config_trade_stats(cursor, symbol, config_id):
         """
         SELECT realized_pnl
         FROM trade_history
-        WHERE config_id = ?
-          AND (symbol = ? OR symbol LIKE ?)
+        WHERE config_id = %s
+          AND (symbol = %s OR symbol LIKE %s)
         """,
         (config_id, symbol, symbol_prefix),
     ).fetchall()
@@ -1044,7 +1042,7 @@ def get_history_pnl_stats_for_configs(symbol, config_ids):
         return _build_pnl_stats([])
 
     with get_db_conn() as conn:
-        conn.row_factory = sqlite3.Row
+
         c = conn.cursor()
         realized_pnls = []
         total_trades = 0
@@ -1064,22 +1062,24 @@ def get_history_pnl_stats(symbol, config_id='ALL'):
             from backend.config import config as global_config
 
             config_ids = [cfg.get("config_id") for cfg in global_config.get_configs_by_symbol(symbol) if cfg.get("config_id")]
+        except storage.Error:
+            raise
         except Exception:
             config_ids = []
         if config_ids:
             return get_history_pnl_stats_for_configs(symbol, config_ids)
 
     with get_db_conn() as conn:
-        conn.row_factory = sqlite3.Row
+
         c = conn.cursor()
 
         if config_id == 'ALL':
             trades = c.execute(
-                "SELECT realized_pnl FROM trade_history WHERE symbol LIKE ?",
+                "SELECT realized_pnl FROM trade_history WHERE symbol LIKE %s",
                 (symbol + '%',),
             ).fetchall()
             mocks = c.execute(
-                "SELECT realized_pnl FROM mock_orders WHERE symbol = ? AND status='CLOSED'",
+                "SELECT realized_pnl FROM mock_orders WHERE symbol = %s AND status='CLOSED'",
                 (symbol,),
             ).fetchall()
             return _build_pnl_stats(
@@ -1099,7 +1099,7 @@ def get_agent_trade_stats(config_id):
         try:
             # 总订单数
             total = c.execute(
-                "SELECT COUNT(*) FROM orders WHERE config_id = ?", (config_id,)
+                "SELECT COUNT(*) FROM orders WHERE config_id = %s", (config_id,)
             ).fetchone()[0]
 
             if total == 0:
@@ -1113,13 +1113,13 @@ def get_agent_trade_stats(config_id):
             # 分类计数
             rows = c.execute("""
                 SELECT 
-                    SUM(CASE WHEN LOWER(side) LIKE '%buy%' THEN 1 ELSE 0 END) as buy_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%sell%' THEN 1 ELSE 0 END) as sell_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%cancel%' THEN 1 ELSE 0 END) as cancel_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%close%' THEN 1 ELSE 0 END) as close_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%%buy%%' THEN 1 ELSE 0 END) as buy_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%%sell%%' THEN 1 ELSE 0 END) as sell_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%%cancel%%' THEN 1 ELSE 0 END) as cancel_count,
+                    SUM(CASE WHEN LOWER(side) LIKE '%%close%%' THEN 1 ELSE 0 END) as close_count,
                     MIN(timestamp) as first_order_at,
                     MAX(timestamp) as last_order_at
-                FROM orders WHERE config_id = ?
+                FROM orders WHERE config_id = %s
             """, (config_id,)).fetchone()
 
             buy = rows['buy_count'] or 0
@@ -1148,6 +1148,8 @@ def get_agent_trade_stats(config_id):
                 "first_order_at": rows['first_order_at'],
                 "last_order_at": rows['last_order_at'],
             }
+        except storage.Error:
+            raise
         except Exception as e:
             logger.error(f"❌ get_agent_trade_stats error: {e}")
             return {"total_orders": 0, "error": str(e)}
@@ -1168,44 +1170,15 @@ def soft_delete_config_runtime_data(config_id: str):
     return _config_cleanup_store.soft_delete_runtime_data(config_id)
 
 
-def purge_config_all_data(config_id: str, *, connection: sqlite3.Connection | None = None):
+def purge_config_all_data(config_id: str, *, connection: storage.Connection | None = None):
     """清理任务历史与运行数据，保留已接受交接所需的原执行证据。"""
     return _config_cleanup_store.purge_all_data(config_id, connection=connection)
 
 
 def export_database_bytes() -> tuple[bytes, str]:
-    """
-    Safely export the current SQLite database using SQLite's online backup API.
-    Returns (bytes, filename).
-    """
-    import tempfile
-
-    timestamp = datetime.now(TZ_CN).strftime("%Y%m%d_%H%M%S")
-    filename = f"trading_data_{timestamp}.db"
-
-    init_db()
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        tmp_path = tmp.name
-
-    try:
-        source_conn = sqlite3.connect(DB_NAME, timeout=30)
-        dest_conn = sqlite3.connect(tmp_path)
-        try:
-            source_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-            source_conn.close()
-
-        with open(tmp_path, "rb") as f:
-            content = f.read()
-        return content, filename
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+    """Export a PostgreSQL custom-format dump using the shared backup service."""
+    from backend.storage.backup import export_database_bytes as export_dump
+    return export_dump()
 
 
 if __name__ == "__main__":

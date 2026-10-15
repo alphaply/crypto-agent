@@ -52,10 +52,17 @@ function Mock-Command {
         if ($Values[0] -eq 'run') {
             if ($Values -contains '--rm') { '{"host":{"memory_available_bytes":25769803776}}' }
             else { 'isolated-smoke-id' }
+            if ($scenario -eq 'migration_failure' -and $Values -contains 'backend.storage.migrate') {
+                $global:LASTEXITCODE = 1
+            }
+            if ($scenario -eq 'database_failure' -and $Values -contains 'POSTGRES_USER=smoke') {
+                $global:LASTEXITCODE = 1
+            }
         }
         if ($Values[0] -eq 'build' -and $scenario -eq 'build_failure') { $global:LASTEXITCODE = 1 }
         if ($Values[0] -eq 'exec') {
-            if (($Values -join ' ') -like '*urllib.request*') {
+            if ($Values -contains 'pg_isready') { 'accepting connections' }
+            elseif (($Values -join ' ') -like '*urllib.request*') {
                 $global:probes++
                 if ($scenario -eq 'startup_retry' -and $global:probes -eq 1) { throw 'Container is starting' }
                 'health and frontend OK; scheduler disabled'
@@ -98,6 +105,10 @@ Write-Output ('TEST_RESULT=' + (@{failed=$failed; commands=$global:commands} | C
         profile = Path(directory) / 'verified-fixture.json'
         profile.write_text(json.dumps({'web': {'memory_bytes': 2147483648,
                                              'memory_swap_total_bytes': 2415919104, 'cpu_cpus': 1},
+                                       'db': {'memory_bytes': 536870912,
+                                              'memory_swap_total_bytes': 536870912, 'cpu_cpus': 1,
+                                              'image': 'postgres:17-alpine@sha256:' + 'a' * 64,
+                                              'max_connections': 96},
                                        'application': {'RUNTIME_CAPACITY_TOTAL_WORKERS': '6'}}), encoding='utf-8')
         harness = harness.replace('__PROFILE__', str(profile).replace("'", "''"))
         result = subprocess.run(
@@ -128,20 +139,30 @@ def test_release_checks_build_and_smoke_before_publishing(scenario):
     ]
     smoke = next(command for command in commands if command.startswith("docker run") and 'RUN_SCHEDULER_IN_WEB=false' in command)
     assert "RUN_SCHEDULER_IN_WEB=false" in smoke
+    assert 'DEPLOYMENT_MAINTENANCE=true' in smoke
+    assert 'DATABASE_URL=postgresql://' in smoke
     assert "--mount" not in smoke and " -v " not in smoke
     assert '--memory 2147483648' in smoke and '--memory-swap 2415919104' in smoke and '--cpus 1' in smoke
     host_validation = next(index for index, command in enumerate(commands) if command.startswith('uv ') and 'check-profile.py' in command)
     smoke_start = commands.index(smoke)
+    database_start = next(index for index, command in enumerate(commands)
+                          if command.startswith('docker run') and 'POSTGRES_USER=smoke' in command)
+    migration = next(index for index, command in enumerate(commands)
+                     if command.startswith('docker run') and 'backend.storage.migrate' in command)
     inspect = next(index for index, command in enumerate(commands) if command.startswith('docker inspect'))
     cgroup = next(index for index, command in enumerate(commands) if command.startswith('docker exec') and 'read_effective_resources' in command)
     acceptance = next(index for index, command in enumerate(commands) if command.startswith('uv ') and 'verify-runtime-capacity.py' in command)
     git_push = next(index for index, command in enumerate(commands) if command.startswith('git push'))
-    assert host_validation < smoke_start < inspect < cgroup < acceptance < git_push
+    assert host_validation < database_start < migration < smoke_start < inspect < cgroup < acceptance < git_push
+    assert '--memory 536870912' in commands[database_start]
+    assert ' -p ' not in commands[database_start]
+    assert any(command.startswith('docker volume rm') for command in commands)
+    assert any(command.startswith('docker network rm') for command in commands)
     assert "org.opencontainers.image.revision=abc1234full" in next(
         command for command in commands if command.startswith("docker build")
     )
     if scenario == "startup_retry":
-        assert starts.count(["docker", "exec"]) == 3
+        assert sum('urllib.request' in command for command in commands if command.startswith('docker exec')) == 2
 
 
 def test_release_resolves_default_profile_after_parameter_binding():
@@ -150,7 +171,7 @@ def test_release_resolves_default_profile_after_parameter_binding():
     commands = result['commands']
     acceptance = next(command for command in commands
                       if command.startswith('uv ') and 'verify-runtime-capacity.py' in command)
-    assert 'local-verified-v12.json' in acceptance
+    assert 'postgresql-local-v1.json' in acceptance
     smoke = next(command for command in commands
                  if command.startswith('docker run') and 'RUN_SCHEDULER_IN_WEB=false' in command)
     assert '--memory 1073741824' in smoke and '--memory-swap 1207959552' in smoke
@@ -164,6 +185,8 @@ def test_release_resolves_default_profile_after_parameter_binding():
         ("frontend_failure", False, 0),
         ("build_failure", False, 0),
         ("host_headroom_failure", False, 0),
+        ("database_failure", False, 0),
+        ("migration_failure", False, 0),
         ("inspect_limits_failure", False, 0),
         ("effective_limits_failure", False, 0),
         ("capacity_failure", False, 0),
@@ -180,3 +203,8 @@ def test_release_stops_dependent_publication_on_failure(scenario, git_pushed, im
     assert sum(command.startswith("docker push") for command in commands) == image_push_attempts
     if scenario in {"dirty_inputs", "frontend_failure", "build_failure"}:
         assert not any(command.startswith("docker run") for command in commands)
+    if scenario == 'migration_failure':
+        assert not any('RUN_SCHEDULER_IN_WEB=false' in command for command in commands)
+        assert any(command.startswith('docker rm -f') for command in commands)
+        assert any(command.startswith('docker volume rm') for command in commands)
+        assert any(command.startswith('docker network rm') for command in commands)

@@ -3,15 +3,18 @@ from starlette.datastructures import MutableHeaders
 
 
 class DiscoveryHeadersMiddleware:
-    def __init__(self, app, public_url: str):
+    def __init__(self, app, public_url: str | None = None):
         self.app = app
-        self.standard = public_url + '/.well-known/oauth-protected-resource/mcp'
-        self.compatible = public_url + '/oauth/resource-metadata'
+        self.public_url = public_url
 
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
         path = scope.get('path', '')
+        from .server import active_public_url
+        public_url = self.public_url or active_public_url() or ''
+        standard = public_url + '/.well-known/oauth-protected-resource/mcp'
+        compatible = public_url + '/oauth/resource-metadata'
 
         async def send_response(message):
             if message['type'] == 'http.response.start':
@@ -25,8 +28,8 @@ class DiscoveryHeadersMiddleware:
                     # not prevent a client from starting resource discovery.
                     challenge = headers.get('WWW-Authenticate', '')
                     headers['WWW-Authenticate'] = challenge.replace(
-                        f'resource_metadata="{self.standard}"',
-                        f'resource_metadata="{self.compatible}"',
+                        f'resource_metadata="{standard}"',
+                        f'resource_metadata="{compatible}"',
                     )
                     headers['Cache-Control'] = 'no-store'
             await send(message)

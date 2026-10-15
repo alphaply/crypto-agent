@@ -1,3 +1,4 @@
+from backend import storage
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 
@@ -40,7 +41,7 @@ class OrderPersistenceStore:
 
         with self._conn_factory() as conn:
             cursor = conn.cursor()
-            columns = {row[1] for row in cursor.execute("PRAGMA table_info(orders)").fetchall()}
+            columns = {row[1] for row in storage.table_columns(conn, 'orders')}
             base_values = (
                 str(order_id), timestamp, symbol, str(agent_name), config_id or str(agent_name), side,
                 entry, amount, tp, sl, reason, valid_mode, status,
@@ -54,7 +55,7 @@ class OrderPersistenceStore:
                         trade_mode, status, event_type, parent_order_id, is_auto,
                         realized_pnl
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ''',
                     base_values + (
                         normalized_event_type,
@@ -70,7 +71,7 @@ class OrderPersistenceStore:
                         order_id, timestamp, symbol, agent_name, config_id, side,
                         entry_price, amount, take_profit, stop_loss, reason, trade_mode, status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ''',
                     base_values,
                 )
@@ -82,12 +83,12 @@ class OrderPersistenceStore:
             cursor.execute(
                 '''
                 UPDATE orders
-                SET status = ?,
-                    filled_amount = ?,
-                    filled_cost = ?,
-                    avg_fill_price = ?,
-                    filled_at = ?
-                WHERE order_id = ?
+                SET status = %s,
+                    filled_amount = %s,
+                    filled_cost = %s,
+                    avg_fill_price = %s,
+                    filled_at = %s
+                WHERE order_id = %s
                 ''',
                 (status, float(filled_qty or 0), float(filled_cost or 0), float(avg_fill_price or 0), filled_at, str(order_id)),
             )
@@ -95,20 +96,7 @@ class OrderPersistenceStore:
 
     @staticmethod
     def ensure_spot_fill_key(conn):
-        if not conn.in_transaction:
-            conn.execute('BEGIN IMMEDIATE')
-        primary = [row[1] for row in conn.execute('PRAGMA table_info(spot_order_fills)') if row[5]]
-        if primary != ['order_id']:
-            return
-        conn.execute('''CREATE TABLE spot_order_fills_scoped (
-            order_id TEXT, config_id TEXT, symbol TEXT, status TEXT,
-            filled_qty REAL DEFAULT 0, filled_cost REAL DEFAULT 0, avg_fill_price REAL DEFAULT 0,
-            filled_at TEXT, last_sync_at TEXT, PRIMARY KEY(order_id, config_id, symbol))''')
-        conn.execute('''INSERT INTO spot_order_fills_scoped
-            SELECT order_id, config_id, symbol, status, filled_qty, filled_cost, avg_fill_price,
-            filled_at, last_sync_at FROM spot_order_fills''')
-        conn.execute('DROP TABLE spot_order_fills')
-        conn.execute('ALTER TABLE spot_order_fills_scoped RENAME TO spot_order_fills')
+        """Structure is installed by the explicit PostgreSQL migration."""
 
     def upsert_spot_fill(self, order_id, config_id, symbol, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None):
         last_sync_at = self._timestamp_factory()
@@ -118,7 +106,7 @@ class OrderPersistenceStore:
             cursor.execute(
                 '''
                 INSERT INTO spot_order_fills (order_id, config_id, symbol, status, filled_qty, filled_cost, avg_fill_price, filled_at, last_sync_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(order_id, config_id, symbol) DO UPDATE SET
                     status = excluded.status,
                     filled_qty = excluded.filled_qty,
@@ -146,11 +134,11 @@ class OrderPersistenceStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM orders WHERE config_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM orders WHERE config_id = %s ORDER BY id DESC LIMIT %s OFFSET %s",
                 (config_id, per_page, offset),
             )
-            orders = [dict(row) for row in cursor.fetchall()]
+            orders = [storage.record(row) for row in cursor.fetchall()]
 
-            cursor.execute("SELECT COUNT(*) FROM orders WHERE config_id = ?", (config_id,))
+            cursor.execute("SELECT COUNT(*) FROM orders WHERE config_id = %s", (config_id,))
             total = cursor.fetchone()[0]
             return orders, total

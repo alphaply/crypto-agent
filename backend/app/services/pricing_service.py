@@ -1,5 +1,6 @@
 """Provider-specific prices and cached models.dev synchronization."""
 from __future__ import annotations
+from backend import storage
 
 import json
 import math
@@ -17,11 +18,7 @@ RATE_FIELDS = ('input_price_per_m', 'output_price_per_m', 'cache_read_price_per_
 
 
 def _initialize(conn) -> None:
-    conn.execute('''CREATE TABLE IF NOT EXISTS provider_model_pricing (
-        provider_id TEXT NOT NULL, model TEXT NOT NULL, payload_json TEXT NOT NULL,
-        updated_at TEXT NOT NULL, PRIMARY KEY(provider_id, model))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS model_catalog_cache (
-        id INTEGER PRIMARY KEY CHECK(id=1), fetched_at TEXT NOT NULL, payload_json TEXT NOT NULL)''')
+    """Versioned PostgreSQL migrations install pricing tables."""
 
 
 def _runtime() -> dict:
@@ -54,7 +51,7 @@ def _save_rates(provider_id: str, model: str, values: dict) -> None:
     from backend.database import get_db_conn
     with get_db_conn() as conn:
         _initialize(conn)
-        conn.execute('INSERT INTO provider_model_pricing VALUES (?,?,?,?) ON CONFLICT(provider_id,model) DO UPDATE SET payload_json=excluded.payload_json,updated_at=excluded.updated_at', (provider_id, model, json.dumps(values), database_news.now_iso()))
+        conn.execute('INSERT INTO provider_model_pricing(provider_id,model,payload_json,updated_at) VALUES (%s,%s,%s,%s) ON CONFLICT(provider_id,model) DO UPDATE SET payload_json=excluded.payload_json,updated_at=excluded.updated_at', (provider_id, model, json.dumps(values), database_news.now_iso()))
         conn.commit()
 
 
@@ -75,6 +72,8 @@ def resolve_provider_id(model: str, config_id: str = '', purpose: str = '', *, b
         if requested and any(p['provider_id'] == requested for p in candidates):
             return requested
         return str(candidates[0]['provider_id']) if len(candidates) == 1 else None
+    except storage.Error:
+        raise
     except Exception:
         return None
 
@@ -90,11 +89,15 @@ def get_price_snapshot(model: str, provider_id: str | None = None, *, conn=None)
                 # A channel exists but attribution was ambiguous or did not match
                 # the actual connection. Model-only legacy prices cannot price it.
                 return {**{key: None for key in RATE_FIELDS}, 'currency': 'USD', 'source': None}
+        except storage.Error:
+            raise
         except Exception:
             pass
     if provider_id:
         try:
             provider = next((p for p in _runtime().get('llm_providers', []) if p['provider_id'] == provider_id and p.get('model') == model), None)
+        except storage.Error:
+            raise
         except Exception:
             pass
         if provider and provider.get('pricing_mode', 'manual') != 'models_dev':
@@ -102,14 +105,16 @@ def get_price_snapshot(model: str, provider_id: str | None = None, *, conn=None)
     with (nullcontext(conn) if conn is not None else get_db_conn()) as db:
         _initialize(db)
         if provider_id:
-            row = db.execute('SELECT payload_json FROM provider_model_pricing WHERE provider_id=? AND model=?', (provider_id, model)).fetchone()
+            row = db.execute('SELECT payload_json FROM provider_model_pricing WHERE provider_id=%s AND model=%s', (provider_id, model)).fetchone()
             if row:
                 data = json.loads(row[0])
                 if not provider or data.get('source') == 'models_dev':
                     return data
             return {**{key: None for key in RATE_FIELDS}, 'currency': 'USD', 'source': None}
         try:
-            row = db.execute('SELECT input_price_per_m,output_price_per_m,currency FROM model_pricing WHERE model=?', (model,)).fetchone()
+            row = db.execute('SELECT input_price_per_m,output_price_per_m,currency FROM model_pricing WHERE model=%s', (model,)).fetchone()
+        except storage.Error:
+            raise
         except Exception:
             row = None
         if row:
@@ -136,9 +141,11 @@ def get_catalog(*, force: bool = False) -> dict:
         fetched = database_news.now_iso()
         with get_db_conn() as conn:
             _initialize(conn)
-            conn.execute('INSERT OR REPLACE INTO model_catalog_cache VALUES (1,?,?)', (fetched, json.dumps(data)))
+            conn.execute('INSERT INTO model_catalog_cache(id,fetched_at,payload_json) VALUES (1,%s,%s) ON CONFLICT(id) DO UPDATE SET fetched_at=excluded.fetched_at,payload_json=excluded.payload_json', (fetched, json.dumps(data)))
             conn.commit()
         return {'data': data, 'fetched_at': fetched, 'stale': False}
+    except storage.Error:
+        raise
     except Exception:
         if row:
             return {'data': json.loads(row['payload_json']), 'fetched_at': row['fetched_at'], 'stale': True, 'error': 'models.dev is unavailable; showing the cached catalog'}
@@ -187,6 +194,8 @@ def sync_prices(*, force: bool = True, owner: str | None = None) -> dict:
             _save_rates(provider['provider_id'], provider['model'], values)
             changed += 1
         result = {'status': 'success', 'last_success_at': database_news.now_iso(), 'updated': changed, 'unmatched_provider_ids': unmatched, 'error': None}
+    except storage.Error:
+        raise
     except Exception as exc:
         result = {'status': 'error', 'error': str(exc) if isinstance(exc, ValueError) else 'models.dev synchronization failed; existing prices were retained'}
     database_news.update_state('pricing', result, owner=owner, release=True)

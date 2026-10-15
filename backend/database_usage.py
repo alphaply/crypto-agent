@@ -1,5 +1,6 @@
 """Immutable call-time accounting independent of short-lived raw model traces."""
 from __future__ import annotations
+from backend import storage
 
 import json
 from collections import defaultdict
@@ -71,56 +72,27 @@ def calculate_cost(usage: dict, prices: dict) -> tuple:
 
 
 def initialize(conn) -> None:
-    conn.execute('''CREATE TABLE IF NOT EXISTS durable_usage (
-        run_id TEXT PRIMARY KEY, config_id TEXT, symbol TEXT, provider_id TEXT,
-        purpose TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL,
-        started_at TEXT NOT NULL, finished_at TEXT,
-        prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER,
-        cache_read_tokens INTEGER, cache_write_tokens INTEGER, reasoning_tokens INTEGER,
-        cost REAL, currency TEXT, cost_source TEXT, prices_json TEXT NOT NULL
-    )''')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_durable_usage_time ON durable_usage(started_at)')
-    conn.execute('CREATE TABLE IF NOT EXISTS durable_usage_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
-    if conn.execute("SELECT 1 FROM durable_usage_meta WHERE key='legacy_imported'").fetchone():
-        return
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if 'token_usage' in tables:
-        columns = {r[1] for r in conn.execute('PRAGMA table_info(token_usage)')}
-        if {'model', 'timestamp', 'prompt_tokens', 'completion_tokens', 'config_id', 'symbol'}.issubset(columns):
-            legacy_prices = {}
-            if 'model_pricing' in tables:
-                for row in conn.execute('SELECT * FROM model_pricing'):
-                    legacy_prices[row['model']] = dict(row)
-            for row in conn.execute('SELECT rowid AS legacy_id,* FROM token_usage').fetchall():
-                usage = {'prompt_tokens': row['prompt_tokens'], 'completion_tokens': row['completion_tokens']}
-                counts = normalize_usage(usage)
-                prices = legacy_prices.get(row['model'], {})
-                cost, currency, _ = calculate_cost(usage, prices)
-                conn.execute('''INSERT OR IGNORE INTO durable_usage(run_id,config_id,symbol,purpose,model,status,started_at,finished_at,prompt_tokens,completion_tokens,total_tokens,cost,currency,cost_source,prices_json)
-                    VALUES (?,?,?,'legacy',?,'success',?,?,?,?,?,?,?, ?,?)''',
-                    (f"legacy:{row['legacy_id']}", row['config_id'], row['symbol'], row['model'] or 'unknown', row['timestamp'] or '', row['timestamp'], counts['prompt_tokens'], counts['completion_tokens'], counts['total_tokens'], cost, currency, 'legacy_estimate' if cost is not None else None, json.dumps(prices)))
-    conn.execute("INSERT OR IGNORE INTO durable_usage_meta VALUES ('legacy_imported',?)", (datetime.now(timezone.utc).isoformat(),))
+    """Structure is installed by the explicit PostgreSQL migration."""
 
 
 def start_usage(conn, run_id: str, *, config_id: str, purpose: str, model: str, provider_id: str | None, started_at: str, prices: dict, symbol: str = '') -> None:
     initialize(conn)
-    conn.execute('''INSERT OR IGNORE INTO durable_usage(run_id,config_id,symbol,provider_id,purpose,model,status,started_at,prices_json)
-        VALUES (?,?,?,?,?,?,'running',?,?)''', (run_id, config_id, symbol, provider_id, purpose, model, started_at, json.dumps(prices)))
+    conn.execute("INSERT INTO durable_usage(run_id,config_id,symbol,provider_id,purpose,model,status,started_at,prices_json)\n        VALUES (%s,%s,%s,%s,%s,%s,'running',%s,%s) ON CONFLICT(run_id) DO NOTHING", (run_id, config_id, symbol, provider_id, purpose, model, started_at, json.dumps(prices)))
 
 
 def finish_usage(conn, run_id: str, usage: dict, status: str, finished_at: str) -> dict | None:
     initialize(conn)
-    row = conn.execute('SELECT * FROM durable_usage WHERE run_id=?', (run_id,)).fetchone()
+    row = conn.execute('SELECT * FROM durable_usage WHERE run_id=%s', (run_id,)).fetchone()
     if not row:
         return None
     if row['status'] != 'running':
-        return dict(row)
+        return storage.record(row)
     counts = normalize_usage(usage)
     cost, currency, source = calculate_cost(usage, json.loads(row['prices_json']))
-    conn.execute('''UPDATE durable_usage SET status=?,finished_at=?,prompt_tokens=?,completion_tokens=?,total_tokens=?,
-        cache_read_tokens=?,cache_write_tokens=?,reasoning_tokens=?,cost=?,currency=?,cost_source=? WHERE run_id=? AND status='running' ''',
+    conn.execute('''UPDATE durable_usage SET status=%s,finished_at=%s,prompt_tokens=%s,completion_tokens=%s,total_tokens=%s,
+        cache_read_tokens=%s,cache_write_tokens=%s,reasoning_tokens=%s,cost=%s,currency=%s,cost_source=%s WHERE run_id=%s AND status='running' ''',
         (status, finished_at, counts['prompt_tokens'], counts['completion_tokens'], counts['total_tokens'], counts['cache_read_tokens'], counts['cache_write_tokens'], counts['reasoning_tokens'], cost, currency, source, run_id))
-    return dict(conn.execute('SELECT * FROM durable_usage WHERE run_id=?', (run_id,)).fetchone())
+    return storage.record(conn.execute('SELECT * FROM durable_usage WHERE run_id=%s', (run_id,)).fetchone())
 
 
 def token_stats() -> dict:
@@ -129,7 +101,7 @@ def token_stats() -> dict:
     with get_db_conn() as conn:
         initialize(conn)
         conn.commit()
-        rows = [dict(r) for r in conn.execute('SELECT * FROM durable_usage')]
+        rows = [storage.record(r) for r in conn.execute('SELECT * FROM durable_usage')]
     timezone_name = getattr(config, 'timezone', 'Asia/Shanghai')
     tz = ZoneInfo(timezone_name)
     today = datetime.now(tz).date().isoformat()

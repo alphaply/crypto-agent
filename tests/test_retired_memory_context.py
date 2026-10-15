@@ -50,7 +50,7 @@ def test_failed_memory_source_does_not_erase_other_sources(monkeypatch):
 def test_actual_trade_and_bound_chat_prompt_remove_daily_sections(tmp_path, monkeypatch, role, expected):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'retirement.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     market = Mock()
     market.get_market_analysis.side_effect = RuntimeError('offline isolated test')
     monkeypatch.setattr(agent_graph, 'MarketTool', lambda **_: market)
@@ -82,7 +82,7 @@ def test_old_daily_generation_http_endpoint_is_retired_without_touching_archive(
     from backend.app.core.deps import get_current_user
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'daily-archive.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     database.save_daily_summary('2026-10-01', 'ETH/USDT', 'cfg', 'preserved archive', 1)
     app = FastAPI()
     app.include_router(router)
@@ -91,3 +91,6 @@ def test_old_daily_generation_http_endpoint_is_retired_without_touching_archive(
         response = client.post('/api/history/daily-summaries/generate', json={'config_id': 'cfg', 'date': '2026-10-01'})
         assert response.status_code == 410
     assert database.list_daily_summaries(config_id='cfg')[0]['summary'] == 'preserved archive'
+
+
+pytestmark = pytest.mark.usefixtures("pg")

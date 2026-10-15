@@ -67,10 +67,10 @@ class ReadOnlyExchange:
 
 
 @pytest.fixture
-def market_tool(tmp_path, monkeypatch):
+def market_tool(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'adoption.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     exchange = ReadOnlyExchange()
     return SimpleNamespace(exchange=exchange, config_id='cfg', market_type='swap',
                            runtime_config={'mode': 'REAL', 'market_type': 'swap', 'exit_mode': 'independent_exits'})
@@ -271,7 +271,7 @@ def test_existing_cycle_in_either_direction_blocks_adoption(market_tool, owner, 
 @pytest.mark.parametrize('status', ['running', 'unknown', 'pending'])
 def test_unknown_local_operation_blocks_adoption(market_tool, status):
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO trade_action_runs (config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                      ('cfg', 'old-operation', 'ETH/USDT', 'hash', status, None, 0, 0))
         conn.commit()
     with pytest.raises(ValueError, match='unresolved operation'):
@@ -288,7 +288,7 @@ def test_current_run_once_operation_is_the_only_local_exception(market_tool):
 def test_known_foreign_fill_cannot_be_reclassified_as_manual(market_tool):
     service = IndependentExits(market_tool)
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO execution_order_links (account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                      (service.account_scope, 'ETH/USDT:USDT', 'manual-order', 'another-task', 'entry', '{}'))
         conn.commit()
     with pytest.raises(ValueError, match='Another task owns fills'):
@@ -332,7 +332,7 @@ def test_receipt_lookup_on_legacy_database_without_history_tables(tmp_path, monk
 @pytest.mark.parametrize('payload', ['not-json', '[]', '{"adoption": "invalid"}'])
 def test_receipt_lookup_ignores_corrupt_unrelated_history(market_tool, payload):
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                      ('test', 'cfg', 'ETH/USDT:USDT', payload))
         conn.commit()
     assert find_adoption_receipt('cfg', 'unknown-operation') is None
@@ -344,11 +344,11 @@ def test_corrupt_exact_adoption_receipt_never_repeats_adoption(market_tool):
     adopt(market_tool)
     with database.get_db_conn() as conn:
         for table in ('real_protection_plans', 'real_protection_events'):
-            rows = conn.execute(f'SELECT rowid AS record_id,payload FROM {table}').fetchall()
+            rows = conn.execute(f'SELECT storage_id AS record_id,payload FROM {table}').fetchall()
             for row in rows:
                 plan = json.loads(row['payload'])
                 plan['adoption']['result'] = None
-                conn.execute(f'UPDATE {table} SET payload=? WHERE rowid=?', (json.dumps(plan), row['record_id']))
+                conn.execute(f'UPDATE {table} SET payload=%s WHERE storage_id=%s', (json.dumps(plan), row['record_id']))
         conn.commit()
     count = len(market_tool.exchange.reads)
     assert find_adoption_receipt('cfg', 'adopt-manual-short') is None
@@ -413,3 +413,9 @@ def test_okx_unavailable_algo_book_is_not_assumed_empty(market_tool):
     with pytest.raises(ccxt.NotSupported):
         adopt(market_tool)
     assert_no_adoption(market_tool)
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

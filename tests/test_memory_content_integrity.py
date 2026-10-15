@@ -23,11 +23,12 @@ from backend.utils.trade_review import daily_exchange_evidence, daily_execution_
 
 @pytest.fixture
 def memory_db(tmp_path, monkeypatch):
+    from backend.config import config
+    cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'STRATEGY'}
+    monkeypatch.setattr(config, 'get_config_by_id', lambda cid: cfg if cid == 'cfg' else None)
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'memory-content.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
-
-
+        pass  # Full schema is created by pg.
 @pytest.fixture
 def memory_client(memory_db):
     app = FastAPI()
@@ -122,11 +123,11 @@ def test_legacy_decision_sources_restore_full_saved_analysis_without_changing_hi
     ]
     with database.get_db_conn() as conn:
         for timestamp, logic, content in records:
-            conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic,content) VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic,content) VALUES(%s,%s,%s,%s)',
                          ('cfg', timestamp, logic, content))
-        conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic,content) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic,content) VALUES(%s,%s,%s,%s)',
                      ('other', '2026-10-05 06:00:00', 'other-task', 'other source'))
-        conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic,content) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic,content) VALUES(%s,%s,%s,%s)',
                      ('cfg', '2026-10-04 06:00:00', 'before-window', 'before source'))
         conn.commit()
     if reader == 'recent':
@@ -166,7 +167,7 @@ def test_configured_model_summary_is_used_without_expanding_raw_analysis(memory_
     compressed = '\n模型压缩摘要：\n' + ('保留入场条件、风险与失效条件。\n' * 90) + '引用历史标记【决策摘录】及原文截取，非完整总结并不表示当前摘要被截断。\n摘要最后一个有效条件。\n'
     assert len(original) > len(compressed) * 10
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic,content) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO summaries(config_id,timestamp,strategy_logic,content) VALUES(%s,%s,%s,%s)',
                      ('cfg', '2026-10-05 01:00:00', compressed, original))
         conn.commit()
     if reader == 'recent':
@@ -216,7 +217,7 @@ def test_seven_day_memory_keeps_all_fills_cycles_and_observations(memory_db):
     with database.get_db_conn() as conn:
         for i in range(25):
             value = {'flat_observed_at': end_ms - 90000 + i, 'samples': i + 1}
-            conn.execute('INSERT INTO execution_episodes VALUES(?,?,?,?,?)',
+            conn.execute('INSERT INTO execution_episodes(episode_id,account_scope,config_id,symbol,payload) VALUES(%s,%s,%s,%s,%s)',
                          (f'episode-{i}', ledger.scope, 'cfg', ledger.symbol, json.dumps(value)))
         # Older observations and other task/account/symbol data must stay out.
         for key, scope, cfg, symbol, observed in (
@@ -226,7 +227,7 @@ def test_seven_day_memory_keeps_all_fills_cycles_and_observations(memory_db):
             ('other-scope', 'other', 'cfg', ledger.symbol, end_ms - 1000),
             ('other-symbol', ledger.scope, 'cfg', 'BTC/USDT:USDT', end_ms - 1000),
         ):
-            conn.execute('INSERT INTO execution_episodes VALUES(?,?,?,?,?)',
+            conn.execute('INSERT INTO execution_episodes(episode_id,account_scope,config_id,symbol,payload) VALUES(%s,%s,%s,%s,%s)',
                          (key, scope, cfg, symbol, json.dumps({'flat_observed_at': observed, 'samples': key})))
         conn.commit()
     review = metrics_context('cfg', end_ms - 7 * 86400000, end_ms, ledger.scope, ledger.symbol)
@@ -249,11 +250,11 @@ def test_daily_local_evidence_keeps_more_than_200_records_and_protection_events(
     with database.get_db_conn() as conn:
         for i in range(205):
             timestamp = f'{day} 12:{i // 60:02d}:{i % 60:02d}'
-            conn.execute('INSERT INTO trade_history(trade_id, config_id, timestamp, symbol, realized_pnl) VALUES(?,?,?,?,?)',
+            conn.execute('INSERT INTO trade_history(trade_id, config_id, timestamp, symbol, realized_pnl) VALUES(%s,%s,%s,%s,%s)',
                          (f'trade-{i}', 'cfg', timestamp, 'ETH/USDT', i))
-            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
                          (timestamp, 'cfg', 'ETH/USDT', json.dumps({'revision': i})))
-        conn.execute('INSERT INTO trade_history(trade_id,config_id,timestamp) VALUES(?,?,?)',
+        conn.execute('INSERT INTO trade_history(trade_id,config_id,timestamp) VALUES(%s,%s,%s)',
                      ('outside-day', 'cfg', '2026-10-04 12:00:00'))
         conn.commit()
     text = daily_execution_evidence('cfg', day)
@@ -277,3 +278,6 @@ def test_daily_spot_evidence_keeps_all_fetched_fills_after_deduplication(monkeyp
     assert payload['returned_fill_count'] == len(payload['fills']) == 205
     assert payload['omitted_detail_count'] == 0
     assert [item['id'] for item in payload['fills']] == [str(i) for i in range(205)]
+
+
+pytestmark = pytest.mark.usefixtures("pg")

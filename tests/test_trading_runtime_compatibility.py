@@ -1,4 +1,5 @@
 """Repeated startup and a rejected old-runtime rollback preserve original evidence."""
+import pytest
 import json
 from unittest.mock import Mock
 
@@ -6,7 +7,12 @@ from backend import database
 from backend.agent import unified_trading as unified
 from backend.database_schema import initialize_schema
 from backend.utils.runtime_compatibility import trading_compatibility_report
-from test_unified_trading import ledger, execute, batch, cancel
+from test_unified_trading import CFG, execute, batch, cancel
+from backend.config import config
+
+@pytest.fixture
+def ledger(checkpoint_url, monkeypatch):
+    monkeypatch.setattr(config, "get_config_by_id", lambda _: dict(CFG))
 
 
 def test_repeated_schema_initialization_preserves_unknown_parent_and_child(ledger):
@@ -30,12 +36,11 @@ def test_repeated_schema_initialization_preserves_unknown_parent_and_child(ledge
 
 def test_rollback_report_is_read_only_and_keeps_management_owner(ledger):
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO visible_management_claims VALUES(?,?,?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO visible_management_claims (claim_id,physical_account,market_type,resource,side,owner,state,version,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                      ('claim', 'physical:offline', 'swap', 'ETH/USDT', 'BOTH', 'cfg', 'owned', 1, json.dumps({'source': 'first_claim'})))
         conn.commit()
-        before = conn.total_changes
+        conn.execute("SET TRANSACTION READ ONLY")
         report = trading_compatibility_report(conn, supported_contract_version=2)
         assert report['status'] == 'blocked'
-        assert conn.total_changes == before
         assert conn.execute('SELECT owner FROM visible_management_claims').fetchone()[0] == 'cfg'
         assert 'visible_management_claims' in report['preserve_tables']

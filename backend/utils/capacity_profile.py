@@ -29,6 +29,18 @@ class ContainerBudget(BaseModel):
         return self
 
 
+class DatabaseBudget(ContainerBudget):
+    image: str = Field(pattern=r'^postgres:17[^\s]*@sha256:[a-f0-9]{64}$')
+    max_connections: int = Field(ge=10, le=1000)
+    connection_peak_upper: int = Field(ge=1)
+
+    @model_validator(mode='after')
+    def connection_headroom(self):
+        if self.connection_peak_upper >= self.max_connections - 3:
+            raise ValueError('PostgreSQL connection budget must preserve administrative headroom')
+        return self
+
+
 class CapacityProfile(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     version: str = Field(pattern=r'^[A-Za-z0-9_.-]{1,80}$')
@@ -40,6 +52,8 @@ class CapacityProfile(BaseModel):
     retired_keys: int = Field(ge=2, le=128)
     web: ContainerBudget
     scheduler: ContainerBudget
+    # Older retained reports remain readable; PostgreSQL verification requires db.
+    db: DatabaseBudget | None = None
     other_services_reserved_bytes: int = Field(ge=0)
     host_headroom_bytes: int = Field(gt=0)
     web_p95_ms: float = Field(gt=0)
@@ -69,7 +83,9 @@ class CapacityProfile(BaseModel):
             'RUNTIME_QUOTE_REFRESH_BYTES', 'RUNTIME_INDEX_SCAN_SECONDS', 'RUNTIME_STREAM_BYTES',
             'RUNTIME_STREAM_ITEMS', 'RUNTIME_NEWS_CACHE_ENTRIES', 'RUNTIME_NEWS_CACHE_BYTES',
             'RUNTIME_NEWS_WORK_BYTES', 'MCP_RECOVERY_CONCURRENCY', 'MCP_RECOVERY_QUEUE_LIMIT',
-            'MCP_RECOVERY_BUDGET_SECONDS'}
+            'MCP_RECOVERY_BUDGET_SECONDS', 'DB_POOL_MAX_SIZE', 'DB_POOL_MIN_SIZE',
+            'DB_CHECKPOINT_POOL_MAX_SIZE', 'DB_POOL_TIMEOUT_SECONDS', 'DB_STATEMENT_TIMEOUT_MS',
+            'DB_LOCK_TIMEOUT_MS'}
         if set(self.application) - allowed:
             raise ValueError('Only fixed resource settings belong in a capacity profile')
         required = {'RUNTIME_CAPACITY_TOTAL_WORKERS', 'RUNTIME_CAPACITY_RESERVED_WORKERS',
@@ -102,13 +118,15 @@ class CapacityProfile(BaseModel):
     def check_host(self, memory_total, memory_available, cpu_count):
         if memory_total is None or memory_available is None or cpu_count is None:
             raise ValueError('Host memory, available headroom and CPU evidence are required')
-        committed = self.web.memory_bytes + self.scheduler.memory_bytes + self.other_services_reserved_bytes + self.host_headroom_bytes
+        budgets = [self.web, self.scheduler] + ([self.db] if self.db is not None else [])
+        app_memory = sum(item.memory_bytes for item in budgets)
+        committed = app_memory + self.other_services_reserved_bytes + self.host_headroom_bytes
         if committed > memory_total:
-            raise ValueError(f'Dual container commitments exceed host capacity by {committed - memory_total} bytes')
-        if self.web.memory_bytes + self.scheduler.memory_bytes + self.host_headroom_bytes > memory_available:
+            raise ValueError(f'Container commitments exceed host capacity by {committed - memory_total} bytes')
+        if app_memory + self.host_headroom_bytes > memory_available:
             raise ValueError('Available host memory cannot cover isolated commitments and headroom')
-        if self.web.cpu_cpus + self.scheduler.cpu_cpus > cpu_count:
-            raise ValueError('Dual container CPU commitments exceed effective host capacity')
+        if sum(item.cpu_cpus for item in budgets) > cpu_count:
+            raise ValueError('Container CPU commitments exceed effective host capacity')
         return committed
 
 
@@ -167,6 +185,30 @@ def assess_report(profile, report):
             failures.append(f'{role}:financial_continuity')
         if item.get('oom_kill_delta') != 0:
             failures.append(f'{role}:oom_evidence_missing_or_increased')
+    if profile.db is not None:
+        database = report.get('database', {})
+        limits = database.get('effective_limits', {})
+        budget = profile.db
+        if (limits.get('memory_bytes') != budget.memory_bytes
+                or limits.get('memory_swap_total_bytes') != budget.memory_swap_total_bytes
+                or limits.get('cpu_cpus') != budget.cpu_cpus):
+            failures.append('db:effective_limits_mismatch')
+        if database.get('image_reference') != budget.image:
+            failures.append('db:image_mismatch')
+        if set(database.get('phases', {})) != set(PHASES):
+            failures.append('db:missing_phases')
+        for phase in PHASES:
+            sample = database.get('phases', {}).get(phase, {})
+            if sample.get('sample_count', 0) < 2:
+                failures.append(f'db:{phase}:missing_series')
+            peak = sample.get('memory_peak_bytes')
+            if peak is None or peak > budget.memory_peak_upper_bytes:
+                failures.append(f'db:{phase}:memory_bounds')
+            connections = sample.get('connections_peak')
+            if connections is None or not 1 <= connections <= budget.connection_peak_upper:
+                failures.append(f'db:{phase}:connection_bounds')
+        if database.get('oom_kill_delta') != 0:
+            failures.append('db:oom_evidence_missing_or_increased')
     web = report.get('web_latency', {})
     if (web.get('samples', 0) < 20 or web.get('errors') != 0
             or web.get('p95_ms', float('inf')) > profile.web_p95_ms

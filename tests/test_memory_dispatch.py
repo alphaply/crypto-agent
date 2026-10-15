@@ -14,9 +14,7 @@ from backend.database_schema import initialize_schema
 def local_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'memory-dispatch.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
-
-
+        pass  # Full schema is created by pg.
 def test_manual_review_uses_rolling_four_hours_and_reports_existing_result(local_db, monkeypatch):
     now = dashboard_service.TZ_CN.localize(datetime(2026, 10, 6, 10, 15))
     class Clock(datetime):
@@ -69,3 +67,6 @@ def test_lost_lease_rejects_memory_writes(local_db, monkeypatch):
         with pytest.raises(RuntimeError, match='租约'):
             memory_service.save_short_memory('2026-10-06 00:00:00', '2026-10-06 04:00:00', 'ETH/USDT', 'cfg', 'stale', '', 1)
     assert database.get_short_memories('cfg') == []
+
+
+pytestmark = pytest.mark.usefixtures("pg")

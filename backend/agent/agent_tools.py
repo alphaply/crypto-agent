@@ -1,3 +1,4 @@
+from backend.storage import lock_scope
 import json
 import math
 import uuid
@@ -257,6 +258,8 @@ def update_exit_order(order_id: str, reason: str, config_id: str, symbol: str,
                       amount: Optional[float] = None, price: Optional[float] = None,
                       trigger_price: Optional[float] = None):
     """修改独立退出单的剩余标的币数量或价格；省略字段保留。只管理本任务当前仓位周期的订单，返回实际修改结果；待核验时不得重复提交。"""
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) != 'independent_exits':
         return '❌ 仅独立退出模式支持退出改单'
     if all(v is None for v in (amount, price, trigger_price)):
@@ -284,6 +287,8 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
     有执行决定时调用，等待无需调用；用户要求保持的挂单不得改动。
     返回委托不等于成交，接口失败如实报告，不把文字计划当作已执行，不重复提交未知结果。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     import ccxt
     from backend.config import config as global_config
     from backend.utils.spot_execution import (resolve_spot_symbol, reserve_spot_batch, finish_spot_reservation,
@@ -390,6 +395,8 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
     WAITING为待成交；ACTIVE且error为空仅代表最近核验通过；EXITING为退出清理未完成。不得声称未核验保护已生效。
     用户要求保持的挂单不得改动；失败/结果未知时停止并核对，不重复开仓。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         return _independent_orders(orders, config_id, symbol, opening=True)
     from backend.config import config as global_config
@@ -434,6 +441,8 @@ def adopt_position_real(pos_side: str, expected_amount: float, reason: str, conf
     接管只建立本任务管理记录，不下单、不成交、不创建保护，也不改变已有仓位和挂单。成功后再按用户要求调用close_position_real挂独立SL/TP或平仓。
     接管成功不代表止损止盈已生效；返回拒绝或未知结果时停止并核对，不通过新增开仓或更换operation_id重试绕过校验。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     from backend.config import config
     from backend.utils.trade_operations import current_operation_id
     try:
@@ -464,6 +473,8 @@ def close_position_real(orders: List[CloseOrder], config_id: str, symbol: str):
     独立退出模式每档数量固定，加仓不扩大旧退出单；退出委托仅针对已成交仓位。旧entry_price参数仍兼容。
     订单提交不等于已成交；策略失效后不能靠等待更优价格延长风险。返回错误或未知结果需报告并核对，不把文字计划当作已执行。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         return _independent_orders(orders, config_id, symbol)
     from backend.config import config as global_config
@@ -558,8 +569,8 @@ def _cancel_spot_order(order_id: str, reason: str, config_id: str, symbol: str, 
             raise ValueError('撤单后的成交成本无效，保留原预算占用')
         local_status = 'FILLED' if status in {'closed', 'filled'} else 'CANCELLED'
         with database.get_db_conn() as conn:
-            conn.execute("""UPDATE orders SET status=?,filled_amount=?,filled_cost=?,avg_fill_price=?
-                WHERE order_id=? AND config_id=? AND symbol=? AND trade_mode='SPOT_DCA'
+            conn.execute("""UPDATE orders SET status=%s,filled_amount=%s,filled_cost=%s,avg_fill_price=%s
+                WHERE order_id=%s AND config_id=%s AND symbol=%s AND trade_mode='SPOT_DCA'
                 AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'""",
                          (local_status, filled, cost, average, str(order_id), config_id, symbol))
             conn.commit()
@@ -582,6 +593,8 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
     不得取消保护来绕过入场/TP/SL校验，不用撤单重开绕过改单pending/未知状态。
     撤单结果以工具返回为准；缺少订单或成交证据时由系统后台核验，不声称已完成，不重复提交。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
     if agent_config.get('mode', '').upper() == 'SPOT_DCA':
@@ -602,14 +615,14 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
             from backend.utils.order_ownership import assert_owned_perpetual_order
             assert_owned_perpetual_order(market_tool, symbol, oid, config_id, allow_unmanaged=True)
         aliases = symbol_aliases(market_tool, symbol)
-        placeholders = ','.join('?' for _ in aliases)
+        placeholders = ','.join('%s' for _ in aliases)
         with database.get_db_conn() as _conn:
             latest_row = _conn.execute(
-                f"SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? AND symbol IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+                f"SELECT side, status FROM orders WHERE order_id = %s AND config_id = %s AND symbol IN ({placeholders}) ORDER BY id DESC LIMIT 1",
                 (oid, config_id, *aliases)
             ).fetchone()
             base_row = _conn.execute(
-                f"SELECT side FROM orders WHERE order_id = ? AND config_id = ? AND symbol IN ({placeholders}) AND LOWER(side) NOT LIKE 'cancel%' ORDER BY id DESC LIMIT 1",
+                f"SELECT side FROM orders WHERE order_id = %s AND config_id = %s AND symbol IN ({placeholders}) AND LOWER(side) NOT LIKE 'cancel%%' ORDER BY id DESC LIMIT 1",
                 (oid, config_id, *aliases),
             ).fetchone()
         latest_side = str((latest_row["side"] if latest_row else "") or "").upper()
@@ -621,7 +634,7 @@ def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
         orig_side = _cancel_side_from_value(base_row["side"] if base_row else (latest_row["side"] if latest_row else None))
         market_tool.place_real_order(symbol, 'CANCEL', {"cancel_order_id": oid}, agent_name=config_id)
         with database.get_db_conn() as _conn:
-            _conn.execute(f"UPDATE orders SET status = 'CANCELLED' WHERE order_id = ? AND config_id=? AND symbol IN ({placeholders}) "
+            _conn.execute(f"UPDATE orders SET status = 'CANCELLED' WHERE order_id = %s AND config_id=%s AND symbol IN ({placeholders}) "
                           "AND status = 'OPEN' AND COALESCE(event_type, 'ORDER_CREATED') = 'ORDER_CREATED'",
                           (oid, config_id, *aliases))
             _conn.commit()
@@ -646,6 +659,8 @@ def update_position_protection_real(pos_side: str, reason: str, config_id: str, 
     以实际返回确认结果；WAITING为等待成交；ACTIVE且error为空只表示最近核验通过，不是未来保证；EXITING表示退出清理未完成。
     用户要求保持的订单不得改动；不得把扩大止损作为默认解套手段，说明新的失效条件和风险变化。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         return '❌ 独立退出模式通过 close/update_exit_order 管理退出，不使用整仓 TP/SL'
     if stop_loss is None and take_profit is None:
@@ -675,6 +690,8 @@ def update_entry_order_real(order_id: str, reason: str, config_id: str, symbol: 
     两个调用不是原子事务，任一步失败立即停止并核对，不能取消保护绕过校验。
     仅confirmed表示改单确认；pending由系统后台核验，不可重复提交或撤单重开；unchanged表示原值未变。报告实际返回，不能把计划当作执行结果。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         return _independent_call(config_id, symbol, 'amend_entry', order_id=order_id, entry_price=entry_price,
                                  amount=amount, reason=reason, pos_side=pos_side)
@@ -699,6 +716,8 @@ def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, confi
     多单SL<入场<TP、空单TP<入场<SL；用户要求保持的挂单不得改动。
     已成交仓位不可修改历史入场价，只能用update_position_protection_strategy管理保护。以返回结果为准，失败不能当作已修改。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         if stop_loss is not None or take_profit is not None:
             return '❌ 独立退出模式不在入场单附带 TP/SL'
@@ -711,9 +730,9 @@ def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, confi
         return '❌ 必须提供修改理由'
     try:
         with database.get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            lock_scope(conn, 'mock-account', config_id)
             row = conn.execute(
-                "SELECT * FROM mock_orders WHERE order_id=? AND config_id=? AND symbol=? AND status='OPEN' AND is_filled=0",
+                "SELECT * FROM mock_orders WHERE order_id=%s AND config_id=%s AND symbol=%s AND status='OPEN' AND is_filled=0",
                 (order_id, config_id, symbol),
             ).fetchone()
             if not row:
@@ -729,14 +748,14 @@ def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, confi
             tp = take_profit if take_profit is not None else row['take_profit']
             PositionProtection._validate(side, price, sl, tp)
             # Simulation reserves full order notional. Check all open orders while holding the write lock.
-            account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=?', (config_id,)).fetchone()
+            account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=%s', (config_id,)).fetchone()
             reserved = conn.execute(
-                "SELECT COALESCE(SUM(price*amount),0) FROM mock_orders WHERE config_id=? AND status='OPEN' AND order_id!=?",
+                "SELECT COALESCE(SUM(price*amount),0) FROM mock_orders WHERE config_id=%s AND status='OPEN' AND order_id!=%s",
                 (config_id, order_id),
             ).fetchone()[0]
             if not account or price * new_amount > max(0, float(account['balance']) - reserved):
                 return '❌ 修改后订单名义金额超过模拟可用余额'
-            conn.execute('UPDATE mock_orders SET price=?,stop_loss=?,take_profit=?,amount=? WHERE order_id=? AND config_id=? AND symbol=?',
+            conn.execute('UPDATE mock_orders SET price=%s,stop_loss=%s,take_profit=%s,amount=%s WHERE order_id=%s AND config_id=%s AND symbol=%s',
                          (price, sl, tp, new_amount, order_id, config_id, symbol))
             conn.commit()
         audit_warning = ''
@@ -761,6 +780,8 @@ def update_position_protection_strategy(order_id: str, reason: str, config_id: s
     BUY为LONG多仓，SELL为SHORT空仓；未成交按入场价校验多单SL<入场<TP、空单TP<入场<SL，已成交按当前价校验，允许保护盈利的移动止损。
     用户要求保持的订单不得改动；报告实际返回，失败不能当作已更新。调整需说明新的失效条件和风险变化。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         return '❌ 独立退出模式通过 close/update_exit_order 管理退出'
     if stop_loss is None and take_profit is None:
@@ -768,7 +789,7 @@ def update_position_protection_strategy(order_id: str, reason: str, config_id: s
     from backend.utils.position_protection import PositionProtection
     try:
         with database.get_db_conn() as conn:
-            row = conn.execute("SELECT * FROM mock_orders WHERE order_id=? AND config_id=? AND symbol=? AND status='OPEN'",
+            row = conn.execute("SELECT * FROM mock_orders WHERE order_id=%s AND config_id=%s AND symbol=%s AND status='OPEN'",
                                (order_id, config_id, symbol)).fetchone()
         if not row:
             return '❌ 未找到该配置的活跃模拟订单'
@@ -783,7 +804,7 @@ def update_position_protection_strategy(order_id: str, reason: str, config_id: s
         PositionProtection._validate(side, reference, sl, tp)
         with database.get_db_conn() as conn:
             changed = conn.execute(
-                "UPDATE mock_orders SET stop_loss=?,take_profit=? WHERE order_id=? AND config_id=? AND symbol=? AND status='OPEN' AND is_filled=? AND price=? AND stop_loss IS ? AND take_profit IS ?",
+                "UPDATE mock_orders SET stop_loss=%s,take_profit=%s WHERE order_id=%s AND config_id=%s AND symbol=%s AND status='OPEN' AND is_filled=%s AND price=%s AND stop_loss IS NOT DISTINCT FROM %s AND take_profit IS NOT DISTINCT FROM %s",
                 (sl, tp, order_id, config_id, symbol, row['is_filled'], row['price'], row['stop_loss'], row['take_profit']),
             ).rowcount
             conn.commit()
@@ -805,6 +826,8 @@ def open_position_strategy(orders: List[OpenOrderStrategy], config_id: str, symb
     有执行决定时调用，等待无需调用。记录挂单不等于成交，以工具返回为准；失败如实报告，不能把文字计划当作已执行。
     用户要求保持的挂单不得改动，不盲目叠加同方向挂单/仓位。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         return _independent_orders(orders, config_id, symbol, opening=True)
     agent_name = config_id
@@ -860,6 +883,8 @@ def cancel_orders_strategy(order_id: str, reason: str, config_id: str, symbol: s
     """【撤销模拟挂单】每次只传一个order_id及reason；用户要求保持的挂单不得撤销。
     以返回确认撤单结果，失败/不确定需核对，不声称已完成。保护调整使用update_position_protection_strategy。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         return _independent_call(config_id, symbol, 'cancel', order_id=order_id)
     agent_name = config_id
@@ -869,10 +894,10 @@ def cancel_orders_strategy(order_id: str, reason: str, config_id: str, symbol: s
     try:
         with database.get_db_conn() as _conn:
             mock_row = _conn.execute(
-                "SELECT side FROM mock_orders WHERE order_id = ? AND config_id=? AND symbol=? AND is_filled=0 LIMIT 1", (oid, config_id, symbol)
+                "SELECT side FROM mock_orders WHERE order_id = %s AND config_id=%s AND symbol=%s AND is_filled=0 LIMIT 1", (oid, config_id, symbol)
             ).fetchone()
             latest_row = _conn.execute(
-                "SELECT side, status FROM orders WHERE order_id = ? AND config_id = ? ORDER BY id DESC LIMIT 1",
+                "SELECT side, status FROM orders WHERE order_id = %s AND config_id = %s ORDER BY id DESC LIMIT 1",
                 (oid, config_id),
             ).fetchone()
         latest_side = str((latest_row["side"] if latest_row else "") or "").upper()
@@ -903,6 +928,8 @@ def close_position_strategy(orders: List[CloseOrder], config_id: str, symbol: st
     amount为标的币数量，0解析为当前已成交数量；加仓不会自动扩大已有退出数量。旧参数兼容。
     必须提供reason；以返回的平仓结果和盈亏为准，失败不能当作已平仓。
     """
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     if _exit_mode(config_id) == 'independent_exits':
         return _independent_orders(orders, config_id, symbol)
     try:

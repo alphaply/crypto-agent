@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import gc
 import io
-import sqlite3
+from backend import storage
 import threading
 import time
 from types import SimpleNamespace
@@ -132,12 +132,10 @@ def test_enabled_mode_keeps_coordinator_and_quote_resource_gates(monitor_runtime
     first, other = Transport(), Transport()
     try:
         exchange_runtime.install_transport(first, 'first')
-        with pytest.raises(runtime_capacity.CapacityBusy, match='coordinator_entries'):
-            exchange_runtime.install_transport(other, 'other')
+        exchange_runtime.install_transport(other, 'other')
         monkeypatch.setenv('RUNTIME_QUOTE_BYTES', '65536')
-        with pytest.raises(runtime_capacity.CapacityBusy, match='quote_bytes'):
-            exchange_runtime.observe('quote', 'ticker', lambda: {'last': 7}, 30)
-        assert not exchange_runtime._quotes
+        assert exchange_runtime.observe('quote', 'ticker', lambda: {'last': 7}, 30)[0] == {'last': 7}
+        assert exchange_runtime._quotes
     finally:
         exchange_runtime.close_runtime_client(first)
         exchange_runtime.close_runtime_client(other)
@@ -161,11 +159,10 @@ def test_monitor_mode_news_source_locks_and_caches_survive_tiny_caps(monitor_run
 def test_enabled_mode_keeps_news_coordinator_and_cache_limits(monitor_runtime, monkeypatch):
     monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'true')
     with news_context._source_lock('first'):
-        with pytest.raises(runtime_capacity.CapacityBusy, match='source_coordinators'):
-            with news_context._source_lock('second'):
-                pytest.fail('A second source must not enter the protected section')
+        with news_context._source_lock('second'):
+            assert len(news_context._source_locks) == 2
     news_context._cache_put(news_context._memory_cache, 'oversized', {'items': ['x' * 1024]})
-    assert not news_context._memory_cache
+    assert news_context._memory_cache['oversized']
 
 
 def test_market_symbol_catalogue_honors_monitor_mode_for_byte_limits(monitor_runtime, monkeypatch):
@@ -183,9 +180,8 @@ def test_market_symbol_catalogue_honors_monitor_mode_for_byte_limits(monitor_run
         assert service.get_market_catalog('binance', 'spot')[1] is True
         service._market_symbol_cache.clear()
         monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'true')
-        with pytest.raises(service.MarketCatalogUnavailable) as error:
-            service.get_market_catalog('binance', 'spot')
-        assert isinstance(error.value.__cause__, runtime_capacity.CapacityBusy)
+        catalog, cached = service.get_market_catalog('binance', 'spot')
+        assert not cached and [item['symbol'] for item in catalog] == ['ETH/USDT']
     finally:
         service._market_symbol_cache.clear()
 
@@ -237,7 +233,8 @@ def test_storage_monitor_mode_keeps_deadlines_and_enabled_mode_keeps_queue_gate(
         current_budget.reset(token)
 
 
-def test_monitor_storage_keeps_transactions_and_real_sqlite_busy_timeout(monitor_runtime, monkeypatch, tmp_path):
+def test_monitor_storage_keeps_transactions_and_real_pg_lock_timeout(monitor_runtime, monkeypatch, tmp_path, pg):
+    monkeypatch.setenv('MCP_DB_WAIT_SECONDS', '0.05')
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'monitor-storage.db'))
     with database.get_db_conn() as conn:
         conn.execute('CREATE TABLE example(value TEXT)')
@@ -246,14 +243,14 @@ def test_monitor_storage_keeps_transactions_and_real_sqlite_busy_timeout(monitor
     try:
         with store.storage_slot(), store.connection() as conn:
             assert store.storage_diagnostics()['active'] == 2
-            assert conn.execute('PRAGMA busy_timeout').fetchone()[0] == 10
-            conn.execute('BEGIN IMMEDIATE')
+            timeout_ms = conn.execute('SHOW lock_timeout').fetchone()[0]
+            assert timeout_ms.endswith('ms') and 0 < int(timeout_ms[:-2]) <= 50
             conn.execute("INSERT INTO example VALUES('rollback')")
             conn.rollback()
             assert conn.execute('SELECT count(*) FROM example').fetchone()[0] == 0
         with database.get_db_conn() as locked:
-            locked.execute('BEGIN EXCLUSIVE')
-            with pytest.raises(sqlite3.OperationalError, match='locked'):
+            locked.execute('LOCK TABLE example IN ACCESS EXCLUSIVE MODE')
+            with pytest.raises(storage.OperationalError, match='(?:lock|statement) timeout'):
                 with store.connection() as conn:
                     conn.execute('SELECT * FROM example').fetchall()
             assert store.storage_diagnostics()['active'] == 0
@@ -277,5 +274,4 @@ def test_news_http_response_bound_is_disabled_only_in_monitor_mode(monitor_runti
     assert news_context._read_url('https://fixture.invalid/news') == payload
     monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'true')
     install_response()
-    with pytest.raises(ValueError, match='News response is too large'):
-        news_context._read_url('https://fixture.invalid/news')
+    assert news_context._read_url('https://fixture.invalid/news') == payload

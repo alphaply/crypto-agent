@@ -1,4 +1,5 @@
-import sqlite3
+import pytest
+from backend import storage
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,42 +9,7 @@ import backend.database as database
 
 
 def create_balance_and_order_tables(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        '''
-        CREATE TABLE balance_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            symbol TEXT,
-            config_id TEXT,
-            total_balance REAL,
-            unrealized_pnl REAL,
-            total_equity REAL
-        )
-        '''
-    )
-    conn.execute(
-        '''
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id TEXT,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            trade_mode TEXT,
-            side TEXT,
-            entry_price REAL,
-            amount REAL,
-            take_profit REAL,
-            stop_loss REAL,
-            reason TEXT,
-            status TEXT DEFAULT 'OPEN'
-        )
-        '''
-    )
-    conn.commit()
-    conn.close()
+    """The isolated PostgreSQL fixture installs the full production schema."""
 
 
 class BalanceAndOrdersTests(unittest.TestCase):
@@ -75,15 +41,15 @@ class BalanceAndOrdersTests(unittest.TestCase):
     def test_get_balance_history_prefers_config_rows_then_falls_back_to_symbol(self):
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO balance_history (timestamp, symbol, config_id, total_balance, unrealized_pnl, total_equity) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO balance_history (timestamp, symbol, config_id, total_balance, unrealized_pnl, total_equity) VALUES (%s, %s, %s, %s, %s, %s)",
                 ("2026-05-10 10:00:00", "BTC/USDT", None, 900, 0, 900),
             )
             conn.execute(
-                "INSERT INTO balance_history (timestamp, symbol, config_id, total_balance, unrealized_pnl, total_equity) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO balance_history (timestamp, symbol, config_id, total_balance, unrealized_pnl, total_equity) VALUES (%s, %s, %s, %s, %s, %s)",
                 ("2026-05-11 10:00:00", "BTC/USDT", None, 950, 0, 950),
             )
             conn.execute(
-                "INSERT INTO balance_history (timestamp, symbol, config_id, total_balance, unrealized_pnl, total_equity) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO balance_history (timestamp, symbol, config_id, total_balance, unrealized_pnl, total_equity) VALUES (%s, %s, %s, %s, %s, %s)",
                 ("2026-05-12 10:00:00", "BTC/USDT", "cfg-a", 1000, 50, 1050),
             )
             conn.commit()
@@ -98,10 +64,10 @@ class BalanceAndOrdersTests(unittest.TestCase):
 
     def test_get_paginated_orders_returns_desc_rows_and_total_count(self):
         with database.get_db_conn() as conn:
-            conn.execute("INSERT INTO orders (order_id, config_id, symbol, status) VALUES (?, ?, ?, ?)", ("o-1", "cfg-a", "BTC/USDT", "OPEN"))
-            conn.execute("INSERT INTO orders (order_id, config_id, symbol, status) VALUES (?, ?, ?, ?)", ("o-2", "cfg-a", "BTC/USDT", "CLOSED"))
-            conn.execute("INSERT INTO orders (order_id, config_id, symbol, status) VALUES (?, ?, ?, ?)", ("o-3", "cfg-a", "BTC/USDT", "OPEN"))
-            conn.execute("INSERT INTO orders (order_id, config_id, symbol, status) VALUES (?, ?, ?, ?)", ("o-x", "cfg-b", "ETH/USDT", "OPEN"))
+            conn.execute("INSERT INTO orders (order_id, config_id, symbol, status) VALUES (%s, %s, %s, %s)", ("o-1", "cfg-a", "BTC/USDT", "OPEN"))
+            conn.execute("INSERT INTO orders (order_id, config_id, symbol, status) VALUES (%s, %s, %s, %s)", ("o-2", "cfg-a", "BTC/USDT", "CLOSED"))
+            conn.execute("INSERT INTO orders (order_id, config_id, symbol, status) VALUES (%s, %s, %s, %s)", ("o-3", "cfg-a", "BTC/USDT", "OPEN"))
+            conn.execute("INSERT INTO orders (order_id, config_id, symbol, status) VALUES (%s, %s, %s, %s)", ("o-x", "cfg-b", "ETH/USDT", "OPEN"))
             conn.commit()
 
         rows, total = database.get_paginated_orders("cfg-a", page=1, per_page=2)
@@ -115,3 +81,5 @@ class BalanceAndOrdersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+pytestmark = pytest.mark.usefixtures("pg")

@@ -18,6 +18,7 @@ class Exchange:
                        for index in range(count)]
         self.calls = []
         self.fail = False
+        self.fail_at = None
 
     def load_markets(self):
         pass
@@ -27,31 +28,31 @@ class Exchange:
 
     def fetch_my_trades(self, symbol, since, limit, params):
         self.calls.append((since, params['until']))
-        if self.fail:
+        if self.fail or len(self.calls) == self.fail_at:
             raise RuntimeError('offline')
         return [trade for trade in self.trades if since <= trade['timestamp'] <= params['until']][:limit]
 
 
 @pytest.fixture
-def local_db(tmp_path):
+def local_db(tmp_path, financial_pg):
     with patch.object(database, 'DB_NAME', str(tmp_path / 'progress.db')):
         with database.get_db_conn() as conn:
-            initialize_schema(conn)
+            pass  # PostgreSQL migrations are installed by financial_pg.
         yield
 
 
-def test_small_budgets_resume_completed_leaves_across_restart(local_db):
+def test_failed_read_resumes_completed_leaves_across_restart(local_db):
     exchange = Exchange()
     ledger = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-    first = ledger.sync(now_ms=200000, start_ms=40000, max_calls=4)
-    assert not first['complete'] and first['calls'] == 4
+    exchange.fail_at = 5
+    first = ledger.sync(now_ms=200000, start_ms=40000)
+    assert not first['complete'] and first['calls'] == 5
     assert first['covered_intervals'] and first['pending_windows']
     completed = tuple(first['covered_intervals'][0])
     already_fetched = exchange.calls.count(completed)
     for _ in range(30):
         restarted = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-        state = restarted.sync(now_ms=200000, start_ms=40000, max_calls=4)
-        assert state['calls'] <= 4
+        state = restarted.sync(now_ms=200000, start_ms=40000)
         if state['complete']:
             break
     assert state['complete'] and state['pending_windows'] == []
@@ -66,7 +67,7 @@ def test_completed_partitions_make_dense_overlap_refresh_bounded_and_find_late_f
     assert ledger.sync(now_ms=120000, start_ms=40000)['complete']
     initial_calls = len(exchange.calls)
     exchange.trades.append({**exchange.trades[5], 'id': 'delayed-new-id', 'timestamp': 100500})
-    state = ExecutionLedger(exchange, 'cfg', 'ETH/USDT').sync(now_ms=120001, start_ms=40000, max_calls=20)
+    state = ExecutionLedger(exchange, 'cfg', 'ETH/USDT').sync(now_ms=120001, start_ms=40000)
     assert state['complete']
     assert len(exchange.calls) - initial_calls <= 20
     with database.get_db_conn() as conn:
@@ -76,10 +77,11 @@ def test_completed_partitions_make_dense_overlap_refresh_bounded_and_find_late_f
 def test_failed_page_retains_frontier_and_never_advances_coverage(local_db):
     exchange = Exchange()
     ledger = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-    first = ledger.sync(now_ms=200000, start_ms=40000, max_calls=4)
+    exchange.fail_at = 5
+    first = ledger.sync(now_ms=200000, start_ms=40000)
     assert first['pending_windows']
     exchange.fail = True
-    failed = ExecutionLedger(exchange, 'cfg', 'ETH/USDT').sync(now_ms=200000, start_ms=40000, max_calls=4)
+    failed = ExecutionLedger(exchange, 'cfg', 'ETH/USDT').sync(now_ms=200000, start_ms=40000)
     assert failed['calls'] == 1 and failed['error'] == 'offline'
     assert failed['covered_intervals'] == first['covered_intervals']
     assert failed['through_ms'] == first['through_ms']
@@ -91,7 +93,7 @@ def test_same_millisecond_overflow_remains_incomplete_and_recoverable(local_db):
     for trade in exchange.trades:
         trade['timestamp'] = 100000
     ledger = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-    result = ledger.sync(now_ms=100000, start_ms=100000, max_calls=2)
+    result = ledger.sync(now_ms=100000, start_ms=100000)
     assert not result['complete']
     assert 'one millisecond' in result['error']
     assert result['pending_windows'] == [[100000, 100000]]
@@ -102,7 +104,13 @@ def test_full_page_outside_time_bounds_is_not_accepted_as_coverage(local_db):
     exchange = Exchange(100)
     exchange.fetch_my_trades = lambda *args, **kwargs: exchange.trades
     ledger = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
-    result = ledger.sync(now_ms=200000, start_ms=150000, max_calls=4)
+    result = ledger.sync(now_ms=200000, start_ms=150000)
     assert not result['complete'] and 'time window' in result['error']
     assert result['pending_windows'] == [[150000, 200000]]
     assert not result.get('covered_intervals')
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

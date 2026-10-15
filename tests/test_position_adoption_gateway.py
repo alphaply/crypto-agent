@@ -134,10 +134,10 @@ class AdoptionExchange:
 
 
 @pytest.fixture
-def gateway(tmp_path, monkeypatch):
+def gateway(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'adoption-gateway.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     account = {'profile_id': 'swap-account', 'exchange': 'binance', 'market_type': 'swap',
                'api_key': AdoptionExchange.apiKey, 'secret': 'offline-secret'}
     monkeypatch.setattr(cfg, 'exchange_profile', lambda _: dict(account))
@@ -178,7 +178,7 @@ def close_arguments(exit_type='stop_market'):
 
 def current_plan(config_id):
     with database.get_db_conn() as conn:
-        row = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=? AND symbol=? AND side=?',
+        row = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s AND symbol=%s AND side=%s',
                            (config_id, SYMBOL, 'SHORT')).fetchone()
     return json.loads(row['payload']) if row else None
 
@@ -251,7 +251,7 @@ def test_only_the_current_adoption_operation_is_exempt_from_pending_gate(gateway
                                 {'tool': 'close_position_real', 'symbol': SYMBOL, 'arguments': close_arguments()})
     else:
         with database.get_db_conn() as conn:
-            conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
+            conn.execute('INSERT INTO trade_action_runs (config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                          ('mcp:manual', 'other-trade-0001', SYMBOL, 'offline-hash', 'running', None,
                           time.time(), time.time()))
             conn.commit()
@@ -291,9 +291,9 @@ def test_crashed_gateway_receipt_recovers_from_adoption_evidence_without_exchang
 
     stable_id = 'mcp:' + store.digest(gateway.caller['id'] + ':' + operation_id)
     with store.connection() as conn:
-        conn.execute("UPDATE mcp_operations SET state='started',result=NULL WHERE profile_id=? AND operation_id=?",
+        conn.execute("UPDATE mcp_operations SET state='started',result=NULL WHERE profile_id=%s AND operation_id=%s",
                      ('manual', operation_id))
-        conn.execute("UPDATE trade_action_runs SET status='unknown',result=? WHERE config_id=? AND operation_id=?",
+        conn.execute("UPDATE trade_action_runs SET status='unknown',result=%s WHERE config_id=%s AND operation_id=%s",
                      (json.dumps({'status': 'unknown', 'error': 'simulated lost receipt'}), 'mcp:manual', stable_id))
         conn.commit()
     reads, writes = deepcopy(gateway.exchange.reads), deepcopy(gateway.exchange.writes)
@@ -301,12 +301,22 @@ def test_crashed_gateway_receipt_recovers_from_adoption_evidence_without_exchang
         from backend.utils.background_receipts import reconcile_mcp
         reconcile_mcp(limit=100, cap=1048576, deadline=time.monotonic()+2)
         with store.connection() as conn:
-            row = conn.execute('SELECT state,result FROM mcp_operations WHERE profile_id=? AND operation_id=?',
+            row = conn.execute('SELECT state,result FROM mcp_operations WHERE profile_id=%s AND operation_id=%s',
                                ('manual', operation_id)).fetchone()
         assert row['state'] == 'completed'
         recovered = json.loads(row['result'])
     else:
-        recovered = execute(gateway, 'adopt_position_real', ADOPTION, operation_id)
+        replay = execute(gateway, 'adopt_position_real', ADOPTION, operation_id)
+        # The accepted simplified execution contract returns the saved outer
+        # receipt on replay; authorized audit/background reads own recovery.
+        assert replay['status'] == 'unknown'
+        assert gateway.exchange.reads == reads and gateway.exchange.writes == writes
+        with store.connection() as conn:
+            assert conn.execute('SELECT state FROM mcp_operations WHERE profile_id=%s AND operation_id=%s',
+                                ('manual', operation_id)).fetchone()[0] == 'started'
+        observed = service.operation(gateway.caller, 'manual', operation_id)
+        assert observed['state'] == 'completed'
+        recovered = observed['result']
     assert recovered['status'] == 'completed', recovered
     assert recovered['result']['episode_id'] == original_episode
     from backend.utils.trade_summary import compact_trade_receipt
@@ -314,7 +324,13 @@ def test_crashed_gateway_receipt_recovers_from_adoption_evidence_without_exchang
     assert gateway.exchange.reads == reads
     assert gateway.exchange.writes == writes
     with store.connection() as conn:
-        assert conn.execute('SELECT state FROM mcp_operations WHERE profile_id=? AND operation_id=?',
+        assert conn.execute('SELECT state FROM mcp_operations WHERE profile_id=%s AND operation_id=%s',
                             ('manual', operation_id)).fetchone()[0] == 'completed'
-        assert conn.execute('SELECT status FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+        assert conn.execute('SELECT status FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',
                             ('mcp:manual', stable_id)).fetchone()[0] == 'completed'
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

@@ -18,7 +18,7 @@ from backend.mcp.server import install_mcp, mcp_lifespan
 
 
 @pytest.fixture
-def gateway(tmp_path, monkeypatch):
+def gateway(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'mcp.db'))
     with database.get_db_conn() as conn:
         store.initialize_schema(conn)
@@ -65,7 +65,7 @@ def test_sdk_initialization_tool_list_and_scoped_call(gateway):
 def test_unauthenticated_discovery_and_revoked_key(gateway):
     response = gateway.post('/mcp', json={})
     assert response.status_code == 401
-    assert '/oauth/resource-metadata' in response.headers['www-authenticate']
+    assert '/.well-known/oauth-protected-resource/mcp' in response.headers['www-authenticate']
     metadata = gateway.get('/.well-known/oauth-authorization-server/oauth').json()
     assert metadata['code_challenge_methods_supported'] == ['S256']
     assert metadata['token_endpoint'] == 'http://localhost:7860/oauth/token'
@@ -274,8 +274,7 @@ def test_foreign_and_untracked_positions_fail_closed_but_owned_reduction_allowed
     plan = {'account_scope': scope, 'symbol': 'ETH/USDT:USDT', 'side': 'LONG', 'state': 'ACTIVE',
             'entries': [{'id': 'entry-1', 'created_at': 100}], 'exits': [{'id': 'exit-1'}]}
     with store.connection() as conn:
-        conn.execute('CREATE TABLE real_protection_plans(config_id TEXT,symbol TEXT,side TEXT,payload TEXT)')
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('mcp:test', plan['symbol'], 'LONG', json.dumps(plan)))
+        conn.execute('INSERT INTO real_protection_plans (config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)', ('mcp:test', plan['symbol'], 'LONG', json.dumps(plan)))
         conn.commit()
     assert_position_owner(mt, 'ETH/USDT')
     monkeypatch.setattr(market_data, 'MarketTool', lambda **kwargs: mt)
@@ -286,7 +285,7 @@ def test_foreign_and_untracked_positions_fail_closed_but_owned_reduction_allowed
     # Cancellation only still delegates to the existing per-order ownership gate.
     preflight_tool('cancel_orders_real', {}, mt.config_id, 'ETH/USDT')
     with store.connection() as conn:
-        conn.execute('UPDATE real_protection_plans SET config_id=?', ('internal-agent',))
+        conn.execute('UPDATE real_protection_plans SET config_id=%s', ('internal-agent',))
         conn.commit()
     with pytest.raises(ValueError, match='Another strategy'):
         assert_position_owner(mt, 'ETH/USDT')
@@ -309,8 +308,7 @@ def test_algo_parent_cannot_claim_regular_fills_with_same_id(gateway):
             'exits': [{'id': '77', 'exchange_channel': 'algo',
                        'order_type': 'stop_market', 'contract_version': 2}]}
     with store.connection() as conn:
-        conn.execute('CREATE TABLE real_protection_plans(config_id TEXT,symbol TEXT,side TEXT,payload TEXT)')
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans (config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      ('mcp:test', plan['symbol'], 'LONG', json.dumps(plan)))
         conn.commit()
     with pytest.raises(ValueError, match='foreign fills'):
@@ -320,7 +318,7 @@ def test_algo_parent_cannot_claim_regular_fills_with_same_id(gateway):
         {'id': 'entry-fill', 'order': 'entry-1', 'amount': 1},
         {'id': 'owned-child-fill', 'order': '88', 'amount': .25}]
     with store.connection() as conn:
-        conn.execute('UPDATE real_protection_plans SET payload=?', (json.dumps(plan),))
+        conn.execute('UPDATE real_protection_plans SET payload=%s', (json.dumps(plan),))
         conn.commit()
     assert_position_owner(mt, 'ETH/USDT')
 
@@ -371,8 +369,7 @@ def test_mcp_settings_migration_reencrypts_keys_and_rolls_back_invalid_profile(g
     redacted = json.dumps(export_settings(False))
     assert key['secret'] not in redacted and key['digest'] not in redacted
     with store.connection() as conn:
-        conn.execute('CREATE TABLE exchange_profiles(profile_id TEXT,market_type TEXT)')
-        conn.execute("INSERT INTO exchange_profiles VALUES('account','swap')")
+        conn.execute("INSERT INTO exchange_profiles (profile_id,name,exchange,market_type,updated_at) VALUES('account','Account','binance','swap','2026-01-01')")
         conn.commit()
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'different-destination-master-key')
     import_settings(exported)
@@ -395,8 +392,7 @@ def test_account_and_profile_edits_preserve_active_mcp_lifecycle(gateway, monkey
     validate = account_change_hook()
     profile = cfg.profiles()[0]
     with store.connection() as conn:
-        conn.execute('CREATE TABLE real_protection_plans(config_id TEXT,symbol TEXT,side TEXT,payload TEXT)')
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('mcp:test', 'ETH/USDT:USDT', 'LONG', '{"state":"ACTIVE"}'))
+        conn.execute('INSERT INTO real_protection_plans (config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)', ('mcp:test', 'ETH/USDT:USDT', 'LONG', '{"state":"ACTIVE"}'))
         validate(conn)  # Saving the same plaintext credentials is not rotation.
         next_accounts[0]['api_key'] = 'rotated-key'
         with pytest.raises(ValueError, match='credentials cannot change'):
@@ -405,7 +401,7 @@ def test_account_and_profile_edits_preserve_active_mcp_lifecycle(gateway, monkey
             assert_profile_transition(conn, profile, {**profile, 'symbols': ['BTC/USDT']})
         with pytest.raises(ValueError, match='still has positions'):
             assert_profile_transition(conn, profile, {**profile, 'exit_mode': 'independent_exits'})
-        conn.execute('UPDATE real_protection_plans SET payload=?', ('{"state":"DONE"}',))
+        conn.execute('UPDATE real_protection_plans SET payload=%s', ('{"state":"DONE"}',))
         validate(conn)  # Credential rotation is allowed after the lifecycle ends.
         next_accounts.clear()
         with pytest.raises(ValueError, match='referenced by MCP'):
@@ -446,3 +442,9 @@ def test_oauth_consent_can_grant_read_only_and_admin_can_revoke(gateway):
     assert token['refresh_token'] not in json.dumps(overview)
     assert gateway.delete('/api/mcp/oauth-grants/' + connection['id'], headers=headers).status_code == 200
     assert rpc(gateway, token['access_token'], 'tools/list').status_code == 401
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

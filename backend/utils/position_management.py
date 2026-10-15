@@ -4,6 +4,7 @@ Discovery only reads exchange facts and records local evidence. Trading remains
 in the existing action layer, with its permissions, client IDs and receipts.
 """
 from __future__ import annotations
+from backend.storage import lock_scope
 
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -23,18 +24,8 @@ _discovery_success = {}
 
 
 def initialize_schema(conn):
-    from backend.utils.visible_management import initialize_schema as initialize_visible_schema
-    initialize_visible_schema(conn)
-    conn.execute('''CREATE TABLE IF NOT EXISTS position_management_scopes (
-        account_scope TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
-        owner TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(account_scope,symbol,side))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS position_management_facts (
-        account_scope TEXT NOT NULL, symbol TEXT NOT NULL, identity TEXT NOT NULL,
-        owner TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(account_scope,symbol,identity))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS position_management_actions (
-        account_scope TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
-        owner TEXT NOT NULL, operation_id TEXT NOT NULL, state TEXT NOT NULL,
-        updated_at REAL NOT NULL, PRIMARY KEY(account_scope,symbol,side))''')
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def _number(value):
@@ -47,32 +38,32 @@ def _number(value):
 
 
 def _scope_active(conn, row):
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     if 'position_management_actions' in tables and conn.execute(
-            "SELECT 1 FROM position_management_actions WHERE owner=? AND account_scope=? AND symbol=? "
-            "AND side IN (?, 'BOTH') AND state IN ('running','unresolved','pending','unknown') LIMIT 1",
+            "SELECT 1 FROM position_management_actions WHERE owner=%s AND account_scope=%s AND symbol=%s "
+            "AND side IN (%s, 'BOTH') AND state IN ('running','unresolved','pending','unknown') LIMIT 1",
             (row['owner'], row['account_scope'], row['symbol'], row['side'])).fetchone():
         return True
     if 'real_protection_plans' in tables:
-        for plan_row in conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=?', (row['owner'],)):
+        for plan_row in conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s', (row['owner'],)):
             plan = json.loads(plan_row[0])
             if (plan.get('account_scope') == row['account_scope']
                     and canonical_symbol(plan['symbol']) == row['symbol']
                     and (row['side'] == 'BOTH' or plan.get('side') == row['side']) and plan.get('state') != 'DONE'):
                 return True
-    if 'trade_action_runs' in tables and conn.execute("SELECT 1 FROM trade_action_runs WHERE config_id=? "
+    if 'trade_action_runs' in tables and conn.execute("SELECT 1 FROM trade_action_runs WHERE config_id=%s "
             "AND status IN ('running','pending','unknown') LIMIT 1", (row['owner'],)).fetchone():
         return True
     profile_id = row['owner'][4:] if row['owner'].startswith('mcp:') else None
     return bool(profile_id and 'mcp_operations' in tables and conn.execute(
-        "SELECT 1 FROM mcp_operations WHERE profile_id=? AND state IN ('started','unknown','pending') LIMIT 1",
+        "SELECT 1 FROM mcp_operations WHERE profile_id=%s AND state IN ('started','unknown','pending') LIMIT 1",
         (profile_id,)).fetchone())
 
 
 def configuration_candidates(conn, snapshot):
     candidates = list(snapshot.get('agents') or [])
     accounts = {a['profile_id']: a for a in snapshot.get('exchange_profiles') or []}
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     if 'mcp_records' in tables:
         for row in conn.execute("SELECT payload FROM mcp_records WHERE kind='profile'"):
             profile = json.loads(row[0])
@@ -120,7 +111,7 @@ def configuration_candidates(conn, snapshot):
 def synchronize_configuration(conn, snapshot):
     """Caller holds the configuration transaction; no network or separate commit."""
     desired = configuration_candidates(conn, snapshot)
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     if 'position_management_scopes' not in tables:
         if not desired:
             return
@@ -168,7 +159,7 @@ def synchronize_configuration(conn, snapshot):
                 if other['side'] == row['side'] or not known_hedged(row):
                     raise ValueError('Another task/profile has an overlapping exclusive management scope')
         if 'real_protection_plans' in tables:
-            for stored in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol IN (?,?)',
+            for stored in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol IN (%s,%s)',
                                        (row['symbol'], row['symbol'].split(':')[0])):
                 plan = json.loads(stored['payload'])
                 if (plan.get('account_scope') == row['account_scope'] and stored['config_id'] != row['owner']
@@ -176,11 +167,11 @@ def synchronize_configuration(conn, snapshot):
                     raise ValueError('Another task owns an existing position cycle in this scope')
     for row in existing:
         if (row['account_scope'], row['symbol'], row['side'], row['owner']) not in wanted:
-            conn.execute('DELETE FROM position_management_scopes WHERE account_scope=? AND symbol=? AND side=?',
+            conn.execute('DELETE FROM position_management_scopes WHERE account_scope=%s AND symbol=%s AND side=%s',
                          (row['account_scope'], row['symbol'], row['side']))
-            conn.execute("UPDATE visible_management_claims SET state='released',version=version+1 WHERE owner=? AND resource=? "
-                         "AND json_extract(payload,'$.source')='migration' AND json_extract(payload,'$.legacy_policy')='exclusive_scope' "
-                         "AND json_extract(payload,'$.resource_bound')=0",
+            conn.execute("UPDATE visible_management_claims SET state='released',version=version+1 WHERE owner=%s AND resource=%s "
+                         "AND (payload::jsonb->>'source')='migration' AND (payload::jsonb->>'legacy_policy')='exclusive_scope' "
+                         "AND (payload::jsonb->>'resource_bound') IN ('false','0')",
                          (row['owner'], row['symbol']))
     for row in desired:
         previous = next((r for r in existing if all(r[k] == row[k] for k in ('account_scope', 'symbol', 'side', 'owner'))), None)
@@ -188,8 +179,7 @@ def synchronize_configuration(conn, snapshot):
         payload['credential_revision'] = row['credential_revision']
         payload['policy_revision'] = row['policy_revision']
         payload['authorization_source'] = 'configuration'
-        conn.execute('INSERT INTO position_management_scopes VALUES(?,?,?,?,?) ON CONFLICT(account_scope,symbol,side) '
-                     'DO UPDATE SET owner=excluded.owner,payload=excluded.payload',
+        conn.execute('INSERT INTO position_management_scopes(account_scope,symbol,side,owner,payload) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,side) DO UPDATE SET owner=excluded.owner,payload=excluded.payload',
                      (row['account_scope'], row['symbol'], row['side'], row['owner'], json.dumps(payload)))
 
 
@@ -220,13 +210,13 @@ def enabled(service, symbol, side=None):
 def _claim(service, symbol, side, hedged):
     from backend.database import get_db_conn
     with get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        rows = list(conn.execute('SELECT * FROM position_management_scopes WHERE account_scope=? AND symbol=?',
+        lock_scope(conn, 'management-account', service.account_scope, symbol)
+        rows = list(conn.execute('SELECT * FROM position_management_scopes WHERE account_scope=%s AND symbol=%s',
                                  (service.account_scope, symbol)))
         for row in rows:
             if row['owner'] != service.config_id and (not hedged or row['side'] == side):
                 raise ValueError('Another manager owns this exchange position scope')
-        for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol IN (?,?)',
+        for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol IN (%s,%s)',
                                  (symbol, symbol.split(':')[0])):
             plan = json.loads(row['payload'])
             if (plan.get('account_scope') == service.account_scope and row['config_id'] != service.config_id
@@ -235,8 +225,7 @@ def _claim(service, symbol, side, hedged):
         own = next((r for r in rows if r['side'] == side), None)
         payload = json.loads(own['payload']) if own else {'policy': 'exclusive_scope', 'sync_status': 'pending'}
         payload['hedged'] = hedged
-        conn.execute('INSERT INTO position_management_scopes VALUES(?,?,?,?,?) ON CONFLICT(account_scope,symbol,side) '
-                     'DO UPDATE SET payload=excluded.payload',
+        conn.execute('INSERT INTO position_management_scopes(account_scope,symbol,side,owner,payload) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,side) DO UPDATE SET payload=excluded.payload',
                      (service.account_scope, symbol, side, service.config_id, json.dumps(payload)))
         conn.commit()
 
@@ -319,19 +308,18 @@ def _external_record(order, side, role, all_close):
 
 
 def _facts(conn, service, symbol, identity, payload):
-    conn.execute('INSERT INTO position_management_facts VALUES(?,?,?,?,?) ON CONFLICT(account_scope,symbol,identity) '
-                 'DO UPDATE SET payload=excluded.payload',
+    conn.execute('INSERT INTO position_management_facts(account_scope,symbol,identity,owner,payload) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,identity) DO UPDATE SET payload=excluded.payload',
                  (service.account_scope, symbol, identity, service.config_id, json.dumps(payload, default=str)))
 
 
 def _save_observation(conn, service, symbol, side, observation):
-    row = conn.execute('SELECT payload FROM position_management_scopes WHERE account_scope=? AND symbol=? AND side=? AND owner=?',
+    row = conn.execute('SELECT payload FROM position_management_scopes WHERE account_scope=%s AND symbol=%s AND side=%s AND owner=%s',
                        (service.account_scope, symbol, side, service.config_id)).fetchone()
     if row:
         payload = {**json.loads(row['payload']), **observation}
         if observation.get('sync_status') == 'verified':
             payload.pop('error', None)
-        conn.execute('UPDATE position_management_scopes SET payload=? WHERE account_scope=? AND symbol=? AND side=? AND owner=?',
+        conn.execute('UPDATE position_management_scopes SET payload=%s WHERE account_scope=%s AND symbol=%s AND side=%s AND owner=%s',
                      (json.dumps(payload), service.account_scope, symbol, side, service.config_id))
 
 
@@ -359,7 +347,7 @@ def ensure_managed(service, symbol, side=None):
         from backend.database import get_db_conn
         try:
             with get_db_conn() as conn:
-                for row in conn.execute('SELECT side FROM position_management_scopes WHERE owner=? AND account_scope=? AND symbol=?',
+                for row in conn.execute('SELECT side FROM position_management_scopes WHERE owner=%s AND account_scope=%s AND symbol=%s',
                                         (service.config_id, service.account_scope, key[1])):
                     if side is None or row['side'] == side:
                         _save_observation(conn, service, key[1], row['side'],
@@ -453,18 +441,18 @@ def _discover(service, symbol, requested_side):
             except Exception as exc:
                 record.update(fill_pending=True, query_error=type(exc).__name__ + ': order observation incomplete')
         ledger = ExecutionLedger(service.ex, service.config_id, symbol)
-        sync = ledger.sync(now_ms=now_ms, start_ms=max(0, management['baseline_at_ms']-60000), min_interval=0, max_calls=20)
+        sync = ledger.sync(now_ms=now_ms, start_ms=max(0, management['baseline_at_ms']-60000), min_interval=0)
         if not sync.get('complete'):
             management.update(sync_status='partial', error=sync.get('error') or 'Fill coverage is incomplete')
             plan['ownership_error'] = management['error']
             service._save(plan)
             raise ValueError(management['error'])
         with get_db_conn() as conn:
-            fills = [dict(r) for r in conn.execute('SELECT * FROM execution_fills WHERE account_scope=? AND symbol=? '
-                                                  'AND timestamp_ms>=? ORDER BY timestamp_ms,trade_id',
+            fills = [dict(r) for r in conn.execute('SELECT * FROM execution_fills WHERE account_scope=%s AND symbol=%s '
+                                                  'AND timestamp_ms>=%s ORDER BY timestamp_ms,trade_id',
                                                   (service.account_scope, symbol, management['baseline_at_ms']))]
             links = {str(r['order_id']): dict(r) for r in conn.execute('SELECT * FROM execution_order_links '
-                     'WHERE account_scope=? AND symbol=?', (service.account_scope, symbol))}
+                     'WHERE account_scope=%s AND symbol=%s', (service.account_scope, symbol))}
         for record in plan.get('entries', []) + plan.get('exits', []):
             reference = order_reference(record)
             if reference and reference.startswith('regular:'):
@@ -566,19 +554,19 @@ def _discover(service, symbol, requested_side):
         # Batch new facts/links in one short local transaction. Existing source
         # and episode associations are immutable when an observation repeats.
         with get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+            lock_scope(conn, 'management-account', service.account_scope, symbol)
             for index, (fill, payload, role, link) in enumerate(observed_fills):
                 source = (json.loads(link['payload']).get('source') or 'agent') if link else 'external'
                 episode = old_episode if boundary is not None and index < boundary else plan['episode_id']
                 metadata = {'side': side, 'episode_id': episode, 'source': source}
-                existing_link = conn.execute('SELECT config_id FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+                existing_link = conn.execute('SELECT config_id FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                                             (service.account_scope, symbol, str(fill['order_id']))).fetchone()
                 if existing_link and existing_link['config_id'] not in {service.config_id, plan.get('original_owner')}:
                     raise ValueError('A fill belongs to another active manager')
                 if not existing_link:
-                    conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?)',
+                    conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                                  (service.account_scope, symbol, str(fill['order_id']), service.config_id, role, json.dumps(metadata)))
-                    conn.execute('UPDATE execution_fills SET config_id=? WHERE account_scope=? AND symbol=? AND order_id=?',
+                    conn.execute('UPDATE execution_fills SET config_id=%s WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                                  (service.config_id, service.account_scope, symbol, str(fill['order_id'])))
                 _facts(conn, service, symbol, 'trade:' + fill['trade_id'], {**payload, 'source': source})
             conn.commit()
@@ -650,7 +638,7 @@ def management_snapshot(config_id, symbol=None):
     from backend.database import get_db_conn
     with get_db_conn() as conn:
         scopes = [{**json.loads(r['payload']), 'symbol': r['symbol'], 'side': r['side'], 'owner': r['owner']}
-                  for r in conn.execute('SELECT * FROM position_management_scopes WHERE owner=?', (config_id,))
+                  for r in conn.execute('SELECT * FROM position_management_scopes WHERE owner=%s', (config_id,))
                   if not symbol or canonical_symbol(symbol) == r['symbol']]
     return {'policy': 'exclusive_scope' if scopes else 'strict_owned', 'scopes': scopes}
 
@@ -730,9 +718,9 @@ def _recover_reservations(service, symbol):
     from backend.utils.trade_order_evidence import classify_saved_order
     from backend.utils.exit_orders import order_reference
     with get_db_conn() as conn:
-        rows = list(conn.execute("SELECT * FROM position_management_actions WHERE owner=? AND account_scope=? AND symbol=? "
+        rows = list(conn.execute("SELECT * FROM position_management_actions WHERE owner=%s AND account_scope=%s AND symbol=%s "
                                  "AND state IN ('running','unresolved')", (service.config_id, service.account_scope, symbol)))
-        receipts = list(conn.execute('SELECT * FROM trade_action_runs WHERE config_id=?', (service.config_id,)))
+        receipts = list(conn.execute('SELECT * FROM trade_action_runs WHERE config_id=%s', (service.config_id,)))
     released = 0
     for row in rows:
         try:
@@ -793,7 +781,7 @@ def _recover_reservations(service, symbol):
                     if candidates:
                         parent = candidates[0]
                         try:
-                            # Network observations occur outside the SQLite transaction.
+                            # Network observations occur outside the database transaction.
                             recovered = recover_operation(service.config_id, symbol, parent['operation_id'], service=service)
                             evidence = operation_evidence(service.config_id, symbol, [identity], account_scope=service.account_scope)[identity]
                             latest = evidence.get('latest', {})
@@ -810,7 +798,7 @@ def _recover_reservations(service, symbol):
                                 from backend.mcp import store
                                 from backend.mcp.service import _external_operation_receipt
                                 with get_db_conn() as conn:
-                                    links = list(conn.execute('SELECT * FROM mcp_operation_links WHERE profile_id=? AND internal_operation_id=?',
+                                    links = list(conn.execute('SELECT * FROM mcp_operation_links WHERE profile_id=%s AND internal_operation_id=%s',
                                                               (service.config_id[4:], parent['operation_id'])))
                                 for link in links:
                                     result = {'operation_id': link['operation_id'], 'status': tool_result_status(recovered),
@@ -821,8 +809,8 @@ def _recover_reservations(service, symbol):
                             proven = False
                 if proven:
                     with get_db_conn() as conn:
-                        changed = conn.execute("UPDATE position_management_actions SET state='finished',updated_at=? "
-                                               "WHERE owner=? AND account_scope=? AND symbol=? AND side=? AND operation_id=? AND state=?",
+                        changed = conn.execute("UPDATE position_management_actions SET state='finished',updated_at=%s "
+                                               "WHERE owner=%s AND account_scope=%s AND symbol=%s AND side=%s AND operation_id=%s AND state=%s",
                                                (time.time(), service.config_id, service.account_scope, symbol, row['side'], identity, row['state']))
                         released += changed.rowcount
                         conn.commit()
@@ -851,16 +839,15 @@ def action_reservation(service, symbol, side, operation_id):
     if not isinstance(mode, dict) or type(mode.get('hedged')) is not bool:
         raise ValueError('Position mode is unavailable for financial coordination')
     scope_side = side if mode['hedged'] else 'BOTH'
-    with _lock(service.account_scope), scope_file_lock(service.account_scope, symbol, scope_side):
+    with scope_file_lock(service.account_scope, symbol, scope_side), _lock(service.account_scope):
         with get_db_conn() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            old = conn.execute("SELECT * FROM position_management_actions WHERE account_scope=? AND symbol=? "
-                               "AND (side=? OR side='BOTH' OR ?='BOTH') AND state IN ('running','unresolved') LIMIT 1",
+            lock_scope(conn, 'management-account', service.account_scope, symbol)
+            old = conn.execute("SELECT * FROM position_management_actions WHERE account_scope=%s AND symbol=%s "
+                               "AND (side=%s OR side='BOTH' OR %s='BOTH') AND state IN ('running','unresolved') LIMIT 1",
                                (service.account_scope, symbol, scope_side, scope_side)).fetchone()
             if old:
                 raise ValueError('Another exchange action is running; inspect its original operation')
-            conn.execute('INSERT INTO position_management_actions VALUES(?,?,?,?,?,?,?) ON CONFLICT(account_scope,symbol,side) '
-                         'DO UPDATE SET owner=excluded.owner,operation_id=excluded.operation_id,state=excluded.state,updated_at=excluded.updated_at',
+            conn.execute('INSERT INTO position_management_actions(account_scope,symbol,side,owner,operation_id,state,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,side) DO UPDATE SET owner=excluded.owner,operation_id=excluded.operation_id,state=excluded.state,updated_at=excluded.updated_at',
                          (service.account_scope, symbol, scope_side, service.config_id, operation_id, 'running', time.time()))
             conn.commit()
         token = _in_action.set({'operation_id': operation_id, 'account_scope': service.account_scope,
@@ -877,8 +864,8 @@ def action_reservation(service, symbol, side, operation_id):
                 state = 'finished'
             _in_action.reset(token)
             with get_db_conn() as conn:
-                conn.execute('UPDATE position_management_actions SET state=?,updated_at=? WHERE account_scope=? AND symbol=? '
-                             'AND side=? AND operation_id=?', (state, time.time(), service.account_scope, symbol, scope_side, operation_id))
+                conn.execute('UPDATE position_management_actions SET state=%s,updated_at=%s WHERE account_scope=%s AND symbol=%s '
+                             'AND side=%s AND operation_id=%s', (state, time.time(), service.account_scope, symbol, scope_side, operation_id))
                 conn.commit()
 
 

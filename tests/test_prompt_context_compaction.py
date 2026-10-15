@@ -8,21 +8,19 @@ import backend.database as database
 from backend.agent import agent_graph
 from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode
-from backend.database_schema import initialize_schema
 from backend.utils.order_context import load_protection_plans
 from backend.utils.formatters import format_orders_to_agent_friendly
 
 
 @pytest.fixture
-def local_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'test.db'))
-    with database.get_db_conn() as conn:
-        initialize_schema(conn)
+def local_db(pg):
+    """Use the migrated PostgreSQL schema supplied by the shared fixture."""
+    return pg
 
 
 def save_plan(config_id, side, payload):
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+        conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                      (config_id, 'ETH/USDT:USDT', side, json.dumps(payload)))
         conn.commit()
 
@@ -132,13 +130,11 @@ def test_decision_prompt_only_loads_compressed_history_and_current_protection(lo
     monkeypatch.setattr(agent_graph.global_config, 'get_config_by_id', lambda _: {
         'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': mode, 'exit_mode': exit_mode})
     monkeypatch.setattr(trade_evidence, 'configured_account_scope', lambda _: 'fixture-account')
-    context = context_projections.prepare_review('cfg')
-    strategy = {'strategy_text': 'compressed lessons only', 'execution_refs': [], 'unlinked_execution_notes': []}
-    metadata = context_projections.validate_review({
-        'summary': 'compressed lessons only', 'memory': strategy,
-        'projections': [{**{k: s[k] for k in ('source_kind', 'source_id', 'source_hash')}, **strategy}
-                        for s in context['sources']]}, context)
-    context_projections.persist_projections('cfg', metadata)
+    for source in context_projections.current_sources('cfg'):
+        refs = context_projections.source_refs('cfg', source)
+        with database.get_db_conn() as conn:
+            context_projections.publish_text(conn, 'cfg', source['source_kind'], source['row'], refs)
+            conn.commit()
     state = AgentState(symbol='ETH/USDT', messages=[], market_context={}, account_context={},)
     result = agent_graph.start_node(state, {'configurable': {
         'config_id': 'cfg', 'agent_config': {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': mode,
@@ -173,7 +169,8 @@ def test_native_bound_schema_contains_amendment_and_protection_contracts():
     amend = tools['update_entry_order_real']
     protect = tools['update_position_protection_real']
     close = tools['close_position_real']
-    assert 'confirmed' in amend['description'] and 'pending不可重复提交' in amend['description']
+    assert 'confirmed' in amend['description']
+    assert 'pending由系统后台核验，不可重复提交或撤单重开' in amend['description']
     assert '不能翻多/翻空' in amend['description']
     assert '两个调用不是原子事务' in amend['description']
     assert '包含已成交部分' in amend['parameters']['properties']['amount']['description']

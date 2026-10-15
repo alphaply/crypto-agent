@@ -9,12 +9,10 @@ from backend.utils import exit_policy
 
 
 @pytest.fixture
-def local_db(tmp_path, monkeypatch):
+def local_db(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'policy.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
-
-
+        pass  # PostgreSQL migrations are installed by financial_pg.
 def test_backward_compatible_defaults_and_explicit_entry_policy():
     assert exit_policy.effective_exit_mode({'mode': 'REAL'}) == 'attached_optional'
     assert exit_policy.effective_exit_mode({'mode': 'STRATEGY'}) == 'attached_required'
@@ -40,7 +38,7 @@ def test_exit_mode_change_rejects_each_active_or_uncertain_lifecycle(local_db, b
         elif blocker == 'exit':
             conn.execute("INSERT INTO mock_exit_orders(order_id,config_id,symbol,pos_side,episode_id,exit_type,amount,remaining,status,timestamp,created_at) VALUES('exit','cfg','ETH/USDT','LONG','episode','stop_market',1,1,'OPEN','now',0)")
         elif blocker == 'unknown_operation':
-            conn.execute("INSERT INTO trade_action_runs VALUES('cfg','operation','ETH/USDT','hash','unknown',NULL,0,0)")
+            conn.execute("INSERT INTO trade_action_runs (config_id,operation_id,symbol,request_hash,status,result,created_at,updated_at) VALUES('cfg','operation','ETH/USDT','hash','unknown',NULL,0,0)")
         else:
             conn.execute("INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES('cfg','ETH/USDT','LONG','corrupt-json')")
         conn.commit()
@@ -80,3 +78,9 @@ def test_settings_preserve_existing_default_and_new_task_is_required(monkeypatch
     monkeypatch.setattr(llm_utils, 'sync_langsmith_environment', lambda: None)
     config_service.save_config_payload({}, [{'config_id': 'old', 'mode': 'REAL', **mode_field}, {'config_id': 'new', 'mode': 'REAL', **mode_field}])
     assert [row['exit_mode'] for row in save.call_args.args[1]] == ['attached_optional', 'attached_required']
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

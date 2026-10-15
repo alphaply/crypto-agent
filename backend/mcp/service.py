@@ -1,5 +1,6 @@
 """Scoped gateway to existing market and durable trading services."""
 from __future__ import annotations
+from backend.storage import record as storage_record
 
 import json
 import math
@@ -330,11 +331,11 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                         from backend import database
                         with database.get_db_conn() as conn:
                             local_row = conn.execute(
-                                'SELECT * FROM orders WHERE order_id IN (?,?) AND config_id=? LIMIT 1',
+                                'SELECT * FROM orders WHERE order_id IN (%s,%s) AND config_id=%s LIMIT 1',
                                 (str(order_id), identity if channel else str(order_id), 'mcp:' + profile_id)
                             ).fetchone()
                         if local_row:
-                            result = {**dict(local_row), 'source': 'local_record', 'status': 'partial',
+                            result = {**storage_record(local_row), 'source': 'local_record', 'status': 'partial',
                                       'pending': True, 'missing_sources': ['exchange_order']}
                         else:
                             raise exc
@@ -536,12 +537,12 @@ def _external_operation_receipt(value, stable_id, operation_id, profile_id, *, p
         if principal:
             try:
                 with store.connection(recovery=True) as conn:
-                    rows = conn.execute('SELECT operation_id FROM mcp_operations WHERE profile_id=? AND principal=?',
+                    rows = conn.execute('SELECT operation_id FROM mcp_operations WHERE profile_id=%s AND principal=%s',
                                         (profile_id, principal)).fetchall()
-                    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
                     children = conn.execute('SELECT c.child_operation_id,c.action_index,l.operation_id FROM unified_trade_children c '
                                             'JOIN mcp_operation_links l ON l.internal_operation_id=c.parent_operation_id '
-                                            'WHERE c.config_id=? AND l.profile_id=? AND l.principal=?',
+                                            'WHERE c.config_id=%s AND l.profile_id=%s AND l.principal=%s',
                                             ('mcp:' + profile_id, profile_id, principal)).fetchall() if 'unified_trade_children' in tables else []
                 mapping.update({'mcp:' + store.digest(principal + ':' + row['operation_id']): row['operation_id'] for row in rows})
                 if children:
@@ -584,7 +585,7 @@ def _recover_spot_trade_receipt(caller, profile_id, operation_id):
     with store.connection() as conn:
         op_row = conn.execute('SELECT o.state, o.result, r.request_json FROM mcp_operations o '
                               'LEFT JOIN mcp_operation_requests r USING(profile_id,operation_id) '
-                              'WHERE o.profile_id=? AND o.operation_id=? AND o.principal=?',
+                              'WHERE o.profile_id=%s AND o.operation_id=%s AND o.principal=%s',
                               (profile_id, operation_id, caller['id'])).fetchone()
     if not op_row:
         return None
@@ -651,13 +652,13 @@ def _recover_spot_trade_receipt(caller, profile_id, operation_id):
                 except Exception:
                     pass
 
-            local_status = 'FILLED' if exch_status in ('closed', 'filled') else \
-                           'CANCELLED' if exch_status in ('canceled', 'cancelled', 'expired', 'rejected') else \
+            local_status = 'FILLED' if exch_status in ('closed', 'filled') else\
+                           'CANCELLED' if exch_status in ('canceled', 'cancelled', 'expired', 'rejected') else\
                            'PARTIAL' if filled_qty > 0 else 'OPEN'
 
             with database.get_db_conn() as conn:
-                conn.execute('''UPDATE orders SET status=?, filled_amount=?, filled_cost=?,
-                    avg_fill_price=?, filled_at=? WHERE order_id=? AND config_id=? AND symbol=?
+                conn.execute('''UPDATE orders SET status=%s, filled_amount=%s, filled_cost=%s,
+                    avg_fill_price=%s, filled_at=%s WHERE order_id=%s AND config_id=%s AND symbol=%s
                     AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''',
                     (local_status, filled_qty, filled_cost, avg_price, filled_at, str(order_id), cfg_id, symbol))
                 conn.commit()
@@ -710,7 +711,7 @@ def _recover_trade_receipt(caller, profile_id, operation_id):
         return None
     with store.connection() as conn:
         row = conn.execute('SELECT r.request_json FROM mcp_operations o JOIN mcp_operation_requests r '
-                           'USING(profile_id,operation_id) WHERE o.profile_id=? AND o.operation_id=? AND o.principal=?',
+                           'USING(profile_id,operation_id) WHERE o.profile_id=%s AND o.operation_id=%s AND o.principal=%s',
                            (profile_id, operation_id, caller['id'])).fetchone()
     if not row:
         return None
@@ -720,7 +721,7 @@ def _recover_trade_receipt(caller, profile_id, operation_id):
     stable_id = 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
     from backend.database import get_db_conn
     with get_db_conn() as conn:
-        inner = conn.execute('SELECT result FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+        inner = conn.execute('SELECT result FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',
                              ('mcp:' + profile_id, stable_id)).fetchone()
     if not inner:
         return None
@@ -749,6 +750,8 @@ def _recover_adoption_receipt(caller, profile_id, operation_id, symbol=None):
 
 @serialized_spot_execution
 def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     bind_scope(profile_id)
     if not isinstance(operation_id, str) or not re.fullmatch(r'[a-zA-Z0-9_.:-]{8,160}', operation_id):
         raise ValueError('operation_id must contain 8–160 letters, numbers, dots, underscores, colons or hyphens')
@@ -870,7 +873,7 @@ def operation(caller, profile_id, operation_id):
     bind_scope(profile_id)
     require(caller, 'read', profile_id)
     with store.connection() as conn:
-        row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=? AND principal=?',
+        row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=%s AND operation_id=%s AND principal=%s',
                            (profile_id, operation_id, caller['id'])).fetchone()
     if not row:
         from .canonical_tools import query_child
@@ -892,13 +895,13 @@ def operation(caller, profile_id, operation_id):
     recovered_trade = recover_unified(caller, profile_id, operation_id) or _recover_trade_receipt(caller, profile_id, operation_id)
     if recovered_trade is not None:
         with store.connection() as conn:
-            row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=? AND principal=?',
+            row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=%s AND operation_id=%s AND principal=%s',
                                (profile_id, operation_id, caller['id'])).fetchone()
     if row['state'] in {'started', 'unknown', 'pending'}:
         recovered = _recover_adoption_receipt(caller, profile_id, operation_id)
         if recovered is not None:
             with store.connection() as conn:
-                row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=? AND operation_id=? AND principal=?',
+                row = conn.execute('SELECT * FROM mcp_operations WHERE profile_id=%s AND operation_id=%s AND principal=%s',
                                    (profile_id, operation_id, caller['id'])).fetchone()
     return sanitize({'operation_id': operation_id, 'state': row['state'],
             'result': json.loads(row['result']) if row['result'] else None,

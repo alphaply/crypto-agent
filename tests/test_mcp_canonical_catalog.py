@@ -7,7 +7,7 @@ from test_mcp_paper import create, ledger
 from backend.mcp import canonical_tools, paper, service
 from backend.mcp.tools import register_tools
 from backend.mcp.paper_tools import register_paper_tools
-from test_mcp_tool_contracts import contracts
+from test_mcp_tool_contracts import contracts, call
 
 
 def server_for(caller, monkeypatch):
@@ -141,7 +141,7 @@ def test_paper_sdk_batch_and_recovery_compact_vs_detail(ledger, monkeypatch):
     arguments = {'user_id': '123456', 'operation_id': 'sdk-batch-canonical', 'contract_version': 3,
                  'actions': [{'action': 'open', 'market_type': 'spot', 'symbol': 'BTC/USDT', 'side': 'LONG',
                               'order_type': 'market', 'amount': 1, 'reason': 'requested buy'}]}
-    result = asyncio.run(server._tool_manager.call_tool('execute_trade_actions', arguments))
+    result = call(server, 'execute_trade_actions', arguments)
     assert result['status'] == 'completed' and 'account' not in result['results'][0]
     from backend.mcp import paper_batch
     assert server._tool_manager.get_tool('get_operation') is None
@@ -179,7 +179,7 @@ def test_all_scope_live_v3_explicit_symbol_and_private_child_recovery(contracts,
     request = {'profile_id': 'swap', 'operation_id': 'all-scope-parent-v3', 'contract_version': 3,
                'actions': [{'action': 'open', 'symbol': 'ETH/USDT:USDT', 'side': 'LONG',
                             'order_type': 'limit', 'price': 10, 'amount': .1, 'reason': 'requested entry'}]}
-    first = asyncio.run(server._tool_manager.call_tool('execute_trade_actions', request))
+    first = call(server, 'execute_trade_actions', request)
     assert first['status'] == 'completed' and len(effects) == 1
     child_id = first['result']['results'][0]['operation_id']
     assert child_id.startswith('mcp-step:')
@@ -187,7 +187,7 @@ def test_all_scope_live_v3_explicit_symbol_and_private_child_recovery(contracts,
     recovered = canonical_tools.query_child(caller,'swap',child_id)
     assert recovered['parent_operation_id'] == request['operation_id']
     assert recovered['status'] == 'completed'
-    assert asyncio.run(server._tool_manager.call_tool('execute_trade_actions', request))['status'] == 'completed'
+    assert call(server, 'execute_trade_actions', request)['status'] == 'completed'
     assert len(effects) == 1
     denied = service.operation({**caller, 'id': 'another-principal'}, 'swap', child_id)
     assert denied['state'] == 'not_found'

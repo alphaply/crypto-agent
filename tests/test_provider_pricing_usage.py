@@ -13,7 +13,7 @@ from backend.database_schema import initialize_schema
 def usage_env(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'usage.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     state = {'llm_providers': [
         {'provider_id': 'a', 'model': 'same-model', 'pricing_mode': 'manual', 'input_price_per_m': 1, 'output_price_per_m': 2, 'cache_read_price_per_m': .1, 'cache_write_price_per_m': 1.25},
         {'provider_id': 'b', 'model': 'same-model', 'pricing_mode': 'models_dev', 'models_dev_provider_id': 'upstream', 'models_dev_model_id': 'same-model'},
@@ -85,7 +85,9 @@ def test_unknown_price_not_zero_and_currencies_not_combined(usage_env):
     assert set(stats['today']['costs_by_currency']) == {'USD', 'CNY'}
 
 
-def test_legacy_rows_import_once_without_double_counting_new_calls(usage_env):
+def test_durable_usage_does_not_double_count_token_usage_mirror_rows(usage_env):
+    legacy_run = database_agent_runs.start_agent_run('old-cfg', 'decision', 'legacy-model', [], price_snapshot={})
+    database_agent_runs.finish_agent_run(legacy_run, status='success', usage={'input_tokens': 10, 'output_tokens': 20})
     database.save_token_usage('BTC', 'old-cfg', 'legacy-model', 10, 20)
     run = database_agent_runs.start_agent_run('cfg', 'decision', 'same-model', [], provider_id='a')
     database.save_token_usage('BTC', 'cfg', 'same-model', 100, 200)
@@ -122,3 +124,6 @@ def test_summarizer_provider_follows_effective_connection_not_agent_reference(mo
     assert resolve_summarizer_provider_id(agent) == 'summary'
     agent['summarizer'] = {'api_key': 'inline-key'}
     assert resolve_summarizer_provider_id(agent) is None
+
+
+pytestmark = pytest.mark.usefixtures("pg")

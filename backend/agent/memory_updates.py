@@ -1,5 +1,6 @@
 """Durable per-run memory updates; retries never invoke the trading graph."""
 from __future__ import annotations
+from backend.storage import table_columns
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -20,13 +21,8 @@ MAX_JOB_ATTEMPTS = 3
 
 
 def _initialize(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS memory_update_jobs (
-        config_id TEXT NOT NULL, run_id TEXT NOT NULL, summary_id INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-        next_attempt REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY(config_id,run_id))''')
-    from backend.agent.memory_contract_recovery import initialize_contract_state
-    initialize_contract_state(conn, 'memory_update_jobs')
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def _enqueue(conn, config_id, run_id, summary_id):
@@ -35,15 +31,14 @@ def _enqueue(conn, config_id, run_id, summary_id):
     if not summary_id:
         raise ValueError('Memory update requires a persisted summary ID')
     _initialize(conn)
-    row = conn.execute('SELECT symbol FROM summaries WHERE config_id=? AND id=?',
+    row = conn.execute('SELECT symbol FROM summaries WHERE config_id=%s AND id=%s',
                        (config_id, summary_id)).fetchone()
     if not row:
         raise ValueError('Memory source summary no longer exists')
     witness = job_source(conn, config_id, summary_id, configured_account_scope(config_id), row['symbol'])
     if not witness:
         raise ValueError('Memory source summary has no valid symbol')
-    conn.execute('INSERT OR IGNORE INTO memory_update_jobs'
-                 '(config_id,run_id,summary_id,review_contract_revision,review_source) VALUES (?,?,?,?,?)',
+    conn.execute('INSERT INTO memory_update_jobs(config_id,run_id,summary_id,review_contract_revision,review_source) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',
                  (config_id, run_id, summary_id, CONTRACT_REVISION, json.dumps(witness)))
 
 
@@ -60,7 +55,7 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
             return False
         with database.get_db_conn() as conn:
             _initialize(conn)
-            job = conn.execute('SELECT * FROM memory_update_jobs WHERE config_id=? AND run_id=?',
+            job = conn.execute('SELECT * FROM memory_update_jobs WHERE config_id=%s AND run_id=%s',
                                (config_id, run_id)).fetchone()
             if not job or job['status'] != 'pending':
                 return bool(job and job['status'] == 'completed')
@@ -78,11 +73,11 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
                 if not current_source or (captured_source and captured_source != current_source):
                     raise ValueError('Memory recovery source or account changed')
                 captured_source = captured_source or current_source
-                conn.execute('UPDATE memory_update_jobs SET review_contract_revision=?,review_source=? '
-                             'WHERE config_id=? AND run_id=?',
+                conn.execute('UPDATE memory_update_jobs SET review_contract_revision=%s,review_source=%s '
+                             'WHERE config_id=%s AND run_id=%s',
                              (CONTRACT_REVISION, json.dumps(captured_source), config_id, run_id))
                 conn.commit()
-                row = conn.execute('SELECT id,timestamp,strategy_logic FROM summaries WHERE id=? AND config_id=?',
+                row = conn.execute('SELECT id,timestamp,strategy_logic FROM summaries WHERE id=%s AND config_id=%s',
                                    (job['summary_id'], config_id)).fetchone()
                 if not row:
                     raise ValueError('Memory source summary no longer exists')
@@ -91,11 +86,11 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
                     raise ValueError('Memory source strategy compression did not succeed')
                 end = datetime.fromisoformat(row['timestamp'])
                 beginning = (end - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
-                columns = {item[1] for item in conn.execute('PRAGMA table_info(summaries)')}
+                columns = {column['name'] for column in table_columns(conn, 'summaries')}
                 report_field = 'report_json' if 'report_json' in columns else 'NULL AS report_json'
                 decision_field = 'decision_json' if 'decision_json' in columns else 'NULL AS decision_json'
                 rows = conn.execute(f'''SELECT id,config_id,symbol,timestamp,strategy_logic,{report_field},{decision_field} FROM summaries
-                    WHERE config_id=? AND timestamp>=? AND timestamp<=? AND id<=?
+                    WHERE config_id=%s AND timestamp>=%s AND timestamp<=%s AND id<=%s
                     ORDER BY timestamp,id''', (config_id, beginning, row['timestamp'], row['id'])).fetchall()
             from backend.agent.context_projections import capture_sources, memory_summary_rows
             rows = memory_summary_rows(config_id, [dict(item) for item in rows])
@@ -121,7 +116,7 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
                                     window_end=row['timestamp'], source_summary_ids=[item['id'] for item in rows],
                                     run_id=run_id, **({'source_guard': captured_source} if captured_source else {}))
             with database.get_db_conn() as conn:
-                conn.execute("UPDATE memory_update_jobs SET status='completed',error='' WHERE config_id=? AND run_id=?",
+                conn.execute("UPDATE memory_update_jobs SET status='completed',error='' WHERE config_id=%s AND run_id=%s",
                              (config_id, run_id))
                 conn.commit()
             return True
@@ -134,7 +129,7 @@ def process_memory_update(config_id: str, run_id: str, agent_config: dict) -> bo
             else:
                 status = 'failed' if attempts >= MAX_JOB_ATTEMPTS else 'pending'
             with database.get_db_conn() as conn:
-                conn.execute("UPDATE memory_update_jobs SET status=?,attempts=attempts+1,next_attempt=?,error=? WHERE config_id=? AND run_id=?",
+                conn.execute("UPDATE memory_update_jobs SET status=%s,attempts=attempts+1,next_attempt=%s,error=%s WHERE config_id=%s AND run_id=%s",
                              (status, time.time() + 60 * 5 ** min(attempts - 1, 2), str(exc), config_id, run_id))
                 conn.commit()
             logger.warning('Memory update %s for %s (attempt %s/%s): %s', status, run_id, attempts, MAX_JOB_ATTEMPTS, exc)
@@ -154,10 +149,10 @@ def tick_memory_updates():
         with database.get_db_conn() as conn:
             _initialize(conn)
             active_ids = list(_active)
-            exclusion = ' AND config_id NOT IN (' + ','.join('?' for _ in active_ids) + ')' if active_ids else ''
+            exclusion = ' AND config_id NOT IN (' + ','.join('%s' for _ in active_ids) + ')' if active_ids else ''
             rows = conn.execute("SELECT j.* FROM memory_update_jobs j WHERE j.status='pending'" + exclusion +
                 " AND NOT EXISTS (SELECT 1 FROM memory_update_jobs older WHERE older.config_id=j.config_id "
-                "AND older.status='pending' AND older.summary_id<j.summary_id) ORDER BY j.summary_id LIMIT ?",
+                "AND older.status='pending' AND older.summary_id<j.summary_id) ORDER BY j.summary_id LIMIT %s",
                 (*active_ids, positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32))).fetchall()
         selected = set()
         for row in rows:

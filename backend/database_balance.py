@@ -1,3 +1,4 @@
+from backend import storage
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 
@@ -16,7 +17,7 @@ class BalanceHistoryStore:
             cursor.execute(
                 '''
                 INSERT INTO balance_history (timestamp, symbol, config_id, total_balance, unrealized_pnl, total_equity)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ''',
                 (timestamp, symbol, str(config_id) if config_id else None, balance, unrealized_pnl, equity),
             )
@@ -29,17 +30,17 @@ class BalanceHistoryStore:
                 cursor.execute(
                     '''
                     SELECT * FROM balance_history
-                    WHERE config_id = ? AND symbol = ?
-                    ORDER BY id ASC LIMIT ?
+                    WHERE config_id = %s AND symbol = %s
+                    ORDER BY id ASC LIMIT %s
                     ''',
                     (str(config_id), symbol, limit),
                 )
-                rows = [dict(row) for row in cursor.fetchall()]
+                rows = [storage.record(row) for row in cursor.fetchall()]
                 if rows:
                     return rows
 
             cursor.execute(
-                "SELECT * FROM balance_history WHERE symbol = ? ORDER BY id ASC LIMIT ?",
+                "SELECT * FROM balance_history WHERE symbol = %s ORDER BY id ASC LIMIT %s",
                 (symbol, limit),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            return [storage.record(row) for row in cursor.fetchall()]

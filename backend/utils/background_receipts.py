@@ -1,24 +1,25 @@
 """Bounded original-identity observations. Never dispatch financial callbacks."""
 from __future__ import annotations
+from backend.storage import lock_scope
 
 import json
 import time
 from contextlib import ExitStack
 
-from backend.utils.runtime_capacity import capacity_scope, positive_setting, CapacityBusy, capacity_limits_enabled
+from backend.utils.runtime_capacity import capacity_scope, positive_setting, CapacityBusy
 
 
 def initialize(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS background_receipt_retries (
-        config_id TEXT NOT NULL, operation_id TEXT NOT NULL, attempts INTEGER NOT NULL,
-        next_attempt REAL NOT NULL, result TEXT NOT NULL,
-        PRIMARY KEY(config_id,operation_id))''')
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def _pending(value):
     if not isinstance(value, dict):
         return False
     if value.get('status') in {'running', 'unknown', 'pending', 'submitted'}:
+        return True
+    if isinstance(value.get('query'), dict) and value['query'].get('status') in {'partial', 'failed'}:
         return True
     if isinstance(value.get('cleanup'), dict) and value['cleanup'].get('status') in {'pending', 'unknown'}:
         return True
@@ -35,22 +36,20 @@ def reconcile(*, limit=32, after_cursor=None):
     cursor = int(after_cursor or 0)
     if cursor < 0:
         raise ValueError('Invalid background receipt cursor')
-    cap = positive_setting('RUNTIME_FINANCIAL_PAYLOAD_BYTES', 1048576)
-    deadline = time.monotonic() + positive_setting('RUNTIME_RECOVERY_SECONDS', 10.0)
+    cap = 1048576
+    deadline = None
     with capacity_scope('recovery', critical=True, timeout=0):
         with get_db_conn() as conn:
             initialize(conn)
-            rows = conn.execute('''SELECT r.rowid AS scan_id,q.rowid AS request_rowid,r.config_id,r.operation_id,r.symbol,
+            rows = conn.execute('''SELECT r.storage_id AS scan_id,q.storage_id AS request_rowid,r.config_id,r.operation_id,r.symbol,
                 COALESCE(b.attempts,0) AS attempts,COALESCE(b.next_attempt,0) AS next_attempt
                 FROM trade_action_runs r LEFT JOIN trade_operation_requests q
                 ON q.config_id=r.config_id AND q.operation_id=r.operation_id
                 LEFT JOIN background_receipt_retries b ON b.config_id=r.config_id AND b.operation_id=r.operation_id
-                WHERE r.rowid>? ORDER BY r.rowid LIMIT ?''', (cursor, limit)).fetchall()
+                WHERE r.storage_id>%s ORDER BY r.storage_id LIMIT %s''', (cursor, limit)).fetchall()
             conn.commit()
         processed, skipped, next_cursor = 0, [], cursor
         for metadata in rows:
-            if time.monotonic() >= deadline:
-                break
             next_cursor = metadata['scan_id']
             row = dict(metadata)
             if row['next_attempt'] > time.time():
@@ -88,18 +87,24 @@ def _observe(row, cap, deadline):
     outcome = 'observed'
     try:
         from backend.mcp.resilience import Budget, current_budget
-        budget = Budget(deadline, 'background-receipt', 'read')
+        budget = Budget(None, 'background-receipt', 'read')
         token = current_budget.set(budget)
         try:
             request = json.loads(row['request_json'])
             if request.get('contract_version') == 3:
                 from backend.agent.unified_trading import query_unified_operation
-                latest = query_unified_operation(row['config_id'], row['symbol'], row['operation_id'], read_exchange=True)
+                # Children have their own durable rows and retry cursors. A
+                # parent must only aggregate them here: recursively querying
+                # them repeats the same exchange reads and delays later children.
+                options = {'read_exchange': True}
+                if request.get('tool') == 'execute_trade_actions':
+                    options = {'read_exchange': False, 'refresh_children': False}
+                latest = query_unified_operation(row['config_id'], row['symbol'], row['operation_id'], **options)
             elif cfg.get('mode') == 'STRATEGY':
                 from backend.utils.trade_operations import reconcile_pending_trade_operations
                 reconcile_pending_trade_operations(row['config_id'], operation_id=row['operation_id'])
                 with get_db_conn() as conn:
-                    updated = conn.execute('SELECT rowid FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+                    updated = conn.execute('SELECT storage_id AS rowid FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',
                         (row['config_id'], row['operation_id'])).fetchone()
                     from backend.utils.sqlite_blob import bounded_text
                     if updated:
@@ -121,20 +126,18 @@ def _observe(row, cap, deadline):
             current_budget.reset(token)
         if isinstance(latest, dict) and latest != previous:
             encoded = json.dumps(latest, ensure_ascii=False, allow_nan=False, default=str)
-            if capacity_limits_enabled() and len(encoded.encode('utf-8')) > cap:
-                raise CapacityBusy('recovery', 'receipt_bytes')
             with get_db_conn() as conn:
-                conn.execute('BEGIN IMMEDIATE')
-                current = conn.execute('SELECT 1 FROM trade_action_runs WHERE config_id=? AND operation_id=? AND result=?',
+                lock_scope(conn, 'trade-operation', row['config_id'], row['operation_id'])
+                current = conn.execute('SELECT 1 FROM trade_action_runs WHERE config_id=%s AND operation_id=%s AND result=%s',
                     (row['config_id'], row['operation_id'], row['result'])).fetchone()
                 # A concurrent execution/recovery always wins over our old
                 # observation. The next pass reloads that version.
                 if current:
                     append_receipt(conn, row['config_id'], row['operation_id'], latest)
-                    conn.execute('UPDATE trade_action_runs SET result=?,status=?,updated_at=? WHERE config_id=? AND operation_id=?',
+                    conn.execute('UPDATE trade_action_runs SET result=%s,status=%s,updated_at=%s WHERE config_id=%s AND operation_id=%s',
                         (encoded, tool_result_status(latest), time.time(), row['config_id'], row['operation_id']))
                 conn.commit()
-        if isinstance(latest, dict) and latest.get('query', {}).get('status') == 'failed':
+        if isinstance(latest, dict) and latest.get('query', {}).get('status') in {'partial', 'failed'}:
             outcome = 'read_failed'
         row['observed'] = True
     except Exception:
@@ -142,8 +145,7 @@ def _observe(row, cap, deadline):
     attempts = min(row['attempts'] + 1, 12)
     delay = min(300, 5 * 2 ** min(attempts - 1, 6)) if outcome == 'read_failed' else 5
     with get_db_conn() as conn:
-        conn.execute('INSERT INTO background_receipt_retries VALUES(?,?,?,?,?) ON CONFLICT(config_id,operation_id) '
-            'DO UPDATE SET attempts=excluded.attempts,next_attempt=excluded.next_attempt,result=excluded.result',
+        conn.execute('INSERT INTO background_receipt_retries(config_id,operation_id,attempts,next_attempt,result) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(config_id,operation_id) DO UPDATE SET attempts=excluded.attempts,next_attempt=excluded.next_attempt,result=excluded.result',
             (row['config_id'], row['operation_id'], attempts if outcome == 'read_failed' else 0, time.time() + delay, outcome))
         conn.commit()
 
@@ -154,22 +156,20 @@ def reconcile_mcp(*, limit, cap, deadline):
     from backend.mcp.resilience import Budget, current_budget
     from backend.mcp.canonical_tools import recover_unified
     with store.connection(recovery=True) as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS background_receipt_progress (worker TEXT PRIMARY KEY,cursor INTEGER NOT NULL)')
-        conn.execute('CREATE TABLE IF NOT EXISTS background_mcp_retries (profile_id TEXT,operation_id TEXT,attempts INTEGER,next_attempt REAL,PRIMARY KEY(profile_id,operation_id))')
+        # Table installed by the explicit PostgreSQL migration.
+        # Table installed by the explicit PostgreSQL migration.
         saved = conn.execute("SELECT cursor FROM background_receipt_progress WHERE worker='mcp'").fetchone()
         cursor = saved[0] if saved else 0
-        rows = conn.execute('SELECT rowid AS scan_id,profile_id,operation_id,principal,state,result IS NULL AS missing_result '
-            'FROM mcp_operations WHERE rowid>? ORDER BY rowid LIMIT ?', (cursor, limit)).fetchall()
+        rows = conn.execute('SELECT storage_id AS scan_id,profile_id,operation_id,principal,state,result IS NULL AS missing_result '
+            'FROM mcp_operations WHERE storage_id>%s ORDER BY storage_id LIMIT %s', (cursor, limit)).fetchall()
         conn.commit()
     processed = 0
     for row in rows:
-        if time.monotonic() >= deadline:
-            break
         cursor = row['scan_id']
         with ExitStack() as payloads:
             from backend.utils.sqlite_blob import bounded_text
             with store.connection(recovery=True) as conn:
-                retry = conn.execute('SELECT attempts,next_attempt FROM background_mcp_retries WHERE profile_id=? AND operation_id=?', (row['profile_id'], row['operation_id'])).fetchone()
+                retry = conn.execute('SELECT attempts,next_attempt FROM background_mcp_retries WHERE profile_id=%s AND operation_id=%s', (row['profile_id'], row['operation_id'])).fetchone()
                 if retry and retry['next_attempt'] > time.time():
                     continue
                 try:
@@ -184,7 +184,7 @@ def reconcile_mcp(*, limit, cap, deadline):
                 continue
             # Use the principal and external identity from the original durable link.
             caller = {'id': row['principal'], 'key_type': 'live', 'scopes': ['read'], 'profile_ids': [row['profile_id']]}
-            token = current_budget.set(Budget(deadline, 'background-mcp-receipt', 'read'))
+            token = current_budget.set(Budget(None, 'background-mcp-receipt', 'read'))
             attempts = 0
             try:
                 recover_unified(caller, row['profile_id'], row['operation_id']) or service._recover_adoption_receipt(caller, row['profile_id'], row['operation_id']) or service._recover_trade_receipt(caller, row['profile_id'], row['operation_id'])
@@ -195,11 +195,11 @@ def reconcile_mcp(*, limit, cap, deadline):
                 current_budget.reset(token)
             delay = min(300, 5 * 2 ** min(max(0, attempts - 1), 6))
             with store.connection(recovery=True) as conn:
-                conn.execute('INSERT INTO background_mcp_retries VALUES(?,?,?,?) ON CONFLICT(profile_id,operation_id) DO UPDATE SET attempts=excluded.attempts,next_attempt=excluded.next_attempt', (row['profile_id'], row['operation_id'], attempts, time.time() + delay))
+                conn.execute('INSERT INTO background_mcp_retries(profile_id,operation_id,attempts,next_attempt) VALUES(%s,%s,%s,%s) ON CONFLICT(profile_id,operation_id) DO UPDATE SET attempts=excluded.attempts,next_attempt=excluded.next_attempt', (row['profile_id'], row['operation_id'], attempts, time.time() + delay))
                 conn.commit()
     complete = not rows or len(rows) < limit and cursor == rows[-1]['scan_id']
     with store.connection(recovery=True) as conn:
-        conn.execute("INSERT INTO background_receipt_progress VALUES('mcp',?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor",
+        conn.execute("INSERT INTO background_receipt_progress(worker,cursor) VALUES('mcp',%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor",
                      (0 if complete else cursor,))
         conn.commit()
     return {'processed': processed, 'scan_complete': complete, 'next_cursor': 0 if complete else cursor}

@@ -14,13 +14,12 @@ def test_strategy_close_only_realizes_filled_positions(
 ):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'close.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         entries = [('pending', order_side, 0), ('opposite', 'SELL' if order_side == 'BUY' else 'BUY', 1)]
         if has_filled_position:
             entries.append(('filled', order_side, 1))
-        conn.executemany(
-            "INSERT INTO mock_orders(order_id,symbol,config_id,agent_name,side,price,amount,is_filled,status) "
-            "VALUES(?, 'ETH/USDT', 'cfg', 'cfg', ?, 100, 1, ?, 'OPEN')",
+        conn.cursor().executemany(
+            "INSERT INTO mock_orders(order_id,symbol,config_id,agent_name,side,price,amount,is_filled,status) VALUES(%s, 'ETH/USDT', 'cfg', 'cfg', %s, 100, 1, %s, 'OPEN')",
             entries,
         )
         conn.commit()
@@ -57,3 +56,9 @@ def test_strategy_close_only_realizes_filled_positions(
         assert '没有找到' in result
     expected_balance = initial_balance + (expected_pnl if has_filled_position else 0)
     assert database.get_mock_account('cfg', 'ETH/USDT')['balance'] == expected_balance
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

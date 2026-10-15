@@ -4,6 +4,8 @@ No local price watcher emulates stops. Unacknowledged submissions retain their
 reservation and are recovered only by exact exchange/client order identity.
 """
 from __future__ import annotations
+from backend.storage import record as storage_record
+from backend.storage import lock_scope
 
 import hashlib
 import json
@@ -80,23 +82,19 @@ def tool_schemas():
 
 
 def _initialize(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS mcp_spot_exits (
-        exit_id TEXT PRIMARY KEY, config_id TEXT NOT NULL, symbol TEXT NOT NULL,
-        account_scope TEXT NOT NULL, operation_id TEXT NOT NULL, request_hash TEXT NOT NULL,
-        kind TEXT NOT NULL, amount REAL NOT NULL, filled REAL NOT NULL DEFAULT 0,
-        state TEXT NOT NULL, payload TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
-        UNIQUE(config_id,operation_id))''')
+    """Schema is installed by the explicit PostgreSQL migration command."""
+    return None
 
 
 def _rows(config_id, symbol=None):
     with database.get_db_conn() as conn:
         _initialize(conn)
-        query = 'SELECT * FROM mcp_spot_exits WHERE config_id=?'
+        query = 'SELECT * FROM mcp_spot_exits WHERE config_id=%s'
         args = [config_id]
         if symbol:
-            query += ' AND symbol=?'
+            query += ' AND symbol=%s'
             args.append(symbol)
-        rows = [dict(row) for row in conn.execute(query, args)]
+        rows = [storage_record(row) for row in conn.execute(query, args)]
         conn.commit()
     return [{**row, 'payload': json.loads(row['payload'])} for row in rows]
 
@@ -114,7 +112,7 @@ def _managed_rows(mt, symbol=None):
     if not accepted:
         return own
     with database.get_db_conn() as conn:
-        rows = [dict(r) for r in conn.execute('SELECT * FROM mcp_spot_exits')
+        rows = [storage_record(r) for r in conn.execute('SELECT * FROM mcp_spot_exits')
                 if r['exit_id'] in accepted and (symbol is None or r['symbol'] == symbol)]
     by_id = {row['exit_id']: row for row in own}
     for row in rows:
@@ -126,7 +124,7 @@ def _managed_rows(mt, symbol=None):
 
 def _save(row):
     with database.get_db_conn() as conn:
-        conn.execute('UPDATE mcp_spot_exits SET amount=?,filled=?,state=?,payload=?,updated_at=? WHERE exit_id=?',
+        conn.execute('UPDATE mcp_spot_exits SET amount=%s,filled=%s,state=%s,payload=%s,updated_at=%s WHERE exit_id=%s',
                      (row['amount'], row['filled'], row['state'], json.dumps(row['payload']), time.time(), row['exit_id']))
         conn.commit()
 
@@ -305,20 +303,20 @@ def _configured_account_scope(config_id):
 
 def _assert_no_foreign_ownership(conn, config_id, base, scope):
     """Balance equality alone cannot rule out another strategy's same-base lot."""
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
     evidence = list(conn.execute('''SELECT DISTINCT config_id,symbol,order_id FROM orders
-        WHERE COALESCE(config_id,'')<>? AND trade_mode='SPOT_DCA'
+        WHERE COALESCE(config_id,'')<>%s AND trade_mode='SPOT_DCA'
         AND UPPER(side) IN ('BUY','BUY_LIMIT')
         AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''', (config_id,)))
     if 'spot_budget_reservations' in tables:
         evidence.extend(conn.execute('''SELECT config_id,symbol,order_id FROM spot_budget_reservations
-            WHERE config_id<>? AND status<>'released' ''', (config_id,)))
+            WHERE config_id<>%s AND status<>'released' ''', (config_id,)))
     owners = {}
     for row in evidence:
         if str(row['symbol']).split('/')[0] != base:
             continue
         if 'spot_order_fills' in tables and conn.execute('''SELECT 1 FROM spot_order_fills
-            WHERE config_id=? AND symbol=? AND order_id=?
+            WHERE config_id=%s AND symbol=%s AND order_id=%s
             AND UPPER(status) IN ('CANCELLED','CANCELED','EXPIRED','REJECTED')
             AND COALESCE(filled_qty,0)=0 AND COALESCE(filled_cost,0)=0''',
                 (row['config_id'], row['symbol'], row['order_id'])).fetchone():
@@ -344,11 +342,11 @@ def _inventory(mt, symbol):
     exits = [row for row in _rows(config_id) if row['symbol'].split('/')[0] == base]
     with database.get_db_conn() as conn:
         _assert_no_foreign_ownership(conn, config_id, base, scope)
-        buys = [dict(row) for row in conn.execute('''SELECT order_id,symbol,MIN(timestamp) AS timestamp FROM orders
-            WHERE config_id=? AND trade_mode='SPOT_DCA' AND UPPER(side) IN ('BUY','BUY_LIMIT')
+        buys = [storage_record(row) for row in conn.execute('''SELECT order_id,symbol,MIN(timestamp) AS timestamp FROM orders
+            WHERE config_id=%s AND trade_mode='SPOT_DCA' AND UPPER(side) IN ('BUY','BUY_LIMIT')
             AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' GROUP BY symbol,order_id''', (config_id,))
             if row['symbol'].split('/')[0] == base]
-        foreign_exits = conn.execute('SELECT 1 FROM mcp_spot_exits WHERE account_scope=? AND config_id<>? AND state NOT IN (\'filled\',\'cancelled\',\'failed\') AND symbol LIKE ? LIMIT 1',
+        foreign_exits = conn.execute('SELECT 1 FROM mcp_spot_exits WHERE account_scope=%s AND config_id<>%s AND state NOT IN (\'filled\',\'cancelled\',\'failed\') AND symbol LIKE %s LIMIT 1',
                                      (scope, config_id, base + '/%')).fetchone()
     if foreign_exits:
         raise ValueError('Another MCP profile has reserved this spot asset')
@@ -542,17 +540,17 @@ def _create(mt, market, args, operation_id):
            'amount': amount, 'filled': 0, 'state': 'submitting',
            'payload': {'adapter': adapter, 'client_id': client_id, 'request': args, 'order_ids': []}}
     with database.get_db_conn() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        current = conn.execute('SELECT COALESCE(SUM(amount-filled),0) FROM mcp_spot_exits WHERE account_scope=? AND symbol LIKE ? AND state NOT IN (\'filled\',\'cancelled\',\'failed\')',
+        lock_scope(conn, 'spot-inventory', stock['account_scope'], symbol.split('/')[0])
+        current = conn.execute('SELECT COALESCE(SUM(amount-filled),0) FROM mcp_spot_exits WHERE account_scope=%s AND symbol LIKE %s AND state NOT IN (\'filled\',\'cancelled\',\'failed\')',
                                (stock['account_scope'], symbol.split('/')[0] + '/%')).fetchone()[0]
-        current_filled = conn.execute('SELECT COALESCE(SUM(filled),0) FROM mcp_spot_exits WHERE config_id=? AND symbol LIKE ?',
+        current_filled = conn.execute('SELECT COALESCE(SUM(filled),0) FROM mcp_spot_exits WHERE config_id=%s AND symbol LIKE %s',
                                       (config_id, symbol.split('/')[0] + '/%')).fetchone()[0]
         # Another worker may have reconciled a fill after the inventory read.
         # A completed exit must reduce owned quantity, not create fresh capacity.
         new_fills = max(0, float(current_filled) - stock['_exit_filled_quantity'])
         if float(current) + amount > stock.get('managed_quantity', stock['owned_quantity']) - new_fills + 1e-10:
             raise ValueError('Spot inventory was reserved by another operation')
-        conn.execute('INSERT INTO mcp_spot_exits VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        conn.execute('INSERT INTO mcp_spot_exits(exit_id,config_id,symbol,account_scope,operation_id,request_hash,kind,amount,filled,state,payload,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                      (client_id, config_id, symbol, row['account_scope'], operation_id, request_hash,
                       row['kind'], amount, 0, row['state'], json.dumps(row['payload']), time.time(), time.time()))
         conn.commit()

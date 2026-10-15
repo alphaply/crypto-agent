@@ -1,7 +1,7 @@
 """Offline supplier catalogs: credentials, protocol contracts and bounded failures."""
 import asyncio
 import copy
-import sqlite3
+from backend import storage
 
 import httpx
 import pytest
@@ -283,13 +283,13 @@ def test_later_timeout_preserves_partial_catalog(client, transport, monkeypatch)
     assert response.json()['warning']['code'] == 'timeout' and len(calls) == 2
 
 
-def test_saved_and_replaced_keys_do_not_change_encrypted_config(tmp_path, monkeypatch, transport):
+def test_saved_and_replaced_keys_do_not_change_encrypted_config(tmp_path, monkeypatch, transport, pg):
     from backend import config_store
     from backend.config import Config
     from backend.database_schema import initialize_schema
     path = tmp_path / 'discovery-config.sqlite'
-    with sqlite3.connect(path) as conn:
-        initialize_schema(conn)
+    with storage.connect() as conn:
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
     monkeypatch.setattr(config_store, 'DB_NAME', path)
     monkeypatch.setattr(config_store, 'load_dotenv', lambda *a, **k: None)
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'discovery-test-encryption')
@@ -297,8 +297,8 @@ def test_saved_and_replaced_keys_do_not_change_encrypted_config(tmp_path, monkey
         'provider_id': 'stored', 'name': 'Stored fixture', 'api_base': BASE, 'api_key': KEY,
         'model': 'my-private-model', 'input_price_per_m': 1.25, 'compatibility_mode': 'auto',
         'thinking_enabled': True, 'reasoning_effort': 'medium'}], [])
-    with sqlite3.connect(path) as conn:
-        before = list(conn.iterdump())
+    with storage.connect() as conn:
+        before = {table: sorted([tuple(row) for row in conn.execute(storage.sql.SQL('SELECT * FROM {}').format(storage.sql.Identifier(table)))], key=repr) for table in sorted(storage.table_names(conn))}
     def forbidden(*args, **kwargs):
         pytest.fail('Read-only discovery attempted a write or reload')
     monkeypatch.setattr(config_store, 'save_runtime_snapshot', forbidden)
@@ -313,5 +313,5 @@ def test_saved_and_replaced_keys_do_not_change_encrypted_config(tmp_path, monkey
             response = client.post(ENDPOINT, json=request_body(credential=credential))
             assert response.status_code == status, response.text
     assert [r.headers['authorization'] for r in calls] == ['Bearer ' + KEY, 'Bearer replacement-draft-key']
-    with sqlite3.connect(path) as conn:
-        assert list(conn.iterdump()) == before
+    with storage.connect() as conn:
+        assert {table: sorted([tuple(row) for row in conn.execute(storage.sql.SQL('SELECT * FROM {}').format(storage.sql.Identifier(table)))], key=repr) for table in sorted(storage.table_names(conn))} == before

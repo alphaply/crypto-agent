@@ -1,21 +1,20 @@
 # 隔离容量验证
 
-本 change 已通过本机 Docker Desktop 的 v12 全时长隔离容量验收。生产主机尚未验收；历史 v10 的一次 SIGSEGV 仍未定因，不能据本轮通过宣称它已修复。镜像发布不重建生产容器，也不能证明线上故障已经消除。
+当前 PostgreSQL 升级使用三容器 `postgresql-local-v1` profile，最终结果见 [PostgreSQL 验收记录](POSTGRES_ACCEPTANCE.md)。下文 v7–v12 是此前 SQLite 版本的历史证据，v12 的通过不能替代 PostgreSQL 验收。生产主机尚未验收；历史 v10 的一次 SIGSEGV 仍未定因，镜像发布不重建生产容器，也不能证明线上故障已经消除。
 
-最低 Python 版本为 3.11：使用 SQLite `blobopen` 检查账本长度并分块读取，避免 `length(CAST(payload AS BLOB))` 先加载整个值。Docker 使用 Python 3.11。
+当前锁定依赖及 Docker 使用 Python 3.11。账本长度及分段读取已使用 PostgreSQL 端 UTF-8 字节长度和切片，应用不会为了分页取回整个 payload；不再依赖 SQLite `blobopen`。
 
 ## 预先声明与执行
 
-`scripts/capacity/*.json` 固定两个进程各自的 memory、memory+swap、CPU、目录样本规模、并发、轮换 key 数量、七个阶段时长、应用总额度、Web SLO 和宿主余量。校准报告只能得到 `calibrated`；最终文件冻结后另跑 `acceptance`。报告保存完整 profile 指纹、镜像 ID、revision、实际 inspect/cgroup 限额、两进程峰值及失败原因。失败报告保留，不覆盖为通过。
+`scripts/capacity/*.json` 固定 Web、scheduler 和 PG 各自的 memory、memory+swap、CPU，以及目录样本规模、并发、轮换 key 数量、七个阶段时长、应用总额度、Web SLO、数据库连接上限和宿主余量。校准报告只能得到 `calibrated`；最终文件冻结后另跑 `acceptance`。报告保存完整 profile 指纹、镜像 ID、revision、实际 inspect/cgroup 限额、三容器峰值、PG 连接峰值及失败原因。失败报告保留，不覆盖为通过。
 
 ```powershell
 npm run build --prefix frontend
 docker build -f Dockerfile.prebuilt --build-arg IMAGE_REVISION=working-calibration --label org.opencontainers.image.revision=working-calibration -t crypto-agent-capacity:calibration .
-uv run python scripts/verify-runtime-capacity.py --image crypto-agent-capacity:calibration --profile scripts/capacity/local-calibration-v11.json --mode calibration --output data/capacity-reports
-uv run python scripts/verify-runtime-capacity.py --image crypto-agent-capacity:calibration --profile scripts/capacity/local-verified-v12.json --mode acceptance --output data/capacity-reports
+uv run python scripts/verify-runtime-capacity.py --image crypto-agent-capacity:calibration --profile scripts/capacity/postgresql-local-v1.json --mode acceptance --output data/capacity-reports
 ```
 
-验证器先用 64 MiB、无网络的探针读取 Docker 宿主可用内存和 CPU，校验 Web + scheduler + 其他服务预留 + 主机余量。之后只创建带随机名称的两个受限容器，使用独立临时目录、空配置、假 Binance 目录和模拟订单。所有外部 socket 连接被拒绝；不读取仓库 `.env`、生产数据库或交易密钥。只终止本轮创建的受限 worker，不制造宿主 OOM。scheduler 容器执行真实调度循环，配置为空。
+验证器先用 64 MiB、无网络的探针读取 Docker 宿主可用内存和 CPU，校验 Web + scheduler + PG + 其他服务预留 + 主机余量。之后创建随机名称的受限 Web、scheduler 和 PG 容器、独立网络及 PG 卷；执行正式迁移并共享应用临时目录，使用空配置、假 Binance 目录和模拟订单。应用仅允许本轮内部依赖连接，外部 socket 连接被拒绝；不读取仓库 `.env`、生产数据库或交易密钥。只终止本轮创建的受限 worker，结束按确切名称清理容器、卷和网络，不制造宿主 OOM。scheduler 容器执行真实调度循环，配置为空。
 
 每个 catalogue 阶段必须实际成功加载样本，不能把 busy 拒绝算作完成；缓存保留字节必须非零。采样缓冲最多 3600 项。退休阶段必须覆盖声明的全部 key，最终目录与消费者引用归零；同时核验绝对峰值、整轮 RSS 增长和后半轮 RSS 增长。后半轮容许 16 MiB 分配器波动，整轮上限由独立校准决定。失败后应重新校准并生成新版本，不修改已经执行的 profile。
 

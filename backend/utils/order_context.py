@@ -10,7 +10,7 @@ def load_protection_plans(config_id: str) -> list[dict]:
 
     with get_db_conn() as conn:
         rows = conn.execute(
-            'SELECT symbol, side, payload FROM real_protection_plans WHERE config_id=? ORDER BY symbol, side',
+            'SELECT symbol, side, payload FROM real_protection_plans WHERE config_id=%s ORDER BY symbol, side',
             (config_id,),
         ).fetchall()
     plans = []

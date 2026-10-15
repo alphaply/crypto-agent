@@ -16,7 +16,7 @@ from backend.utils.llm_utils import require_complete_response
 def local_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'audit-validation.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
 
 
 def latest_run():
@@ -103,3 +103,8 @@ def test_summary_rejection_is_an_error_audit_with_billable_usage(local_db, monke
     assert source in saved['messages'][0]['content']
     save_usage.assert_called_once_with(symbol='ETH/USDT', config_id='cfg', model='offline',
                                        prompt_tokens=75, completion_tokens=25)
+
+
+@pytest.fixture(autouse=True)
+def isolated_postgres(pg):
+    yield

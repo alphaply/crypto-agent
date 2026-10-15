@@ -12,6 +12,11 @@ from backend.app.services import market_catalog_service
 from backend.utils import spot_config_guard
 
 
+@pytest.fixture(autouse=True)
+def isolated_storage(pg):
+    yield
+
+
 @pytest.fixture
 def client():
     app = FastAPI()

@@ -1,3 +1,4 @@
+from backend import storage
 import json
 import uuid
 from collections.abc import Callable
@@ -42,7 +43,7 @@ class PositionHistoryStore:
                 INSERT INTO position_history (
                     config_id, symbol, position_key, side, status, source, opened_at,
                     closed_at, entry_price, close_price, amount, realized_pnl, raw_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(config_id, position_key) DO UPDATE SET
                     symbol = excluded.symbol,
                     side = COALESCE(excluded.side, position_history.side),
@@ -83,9 +84,9 @@ class PositionHistoryStore:
         with self._conn_factory() as conn:
             cursor = conn.cursor()
             params = [config_id]
-            where = "WHERE config_id = ?"
+            where = "WHERE config_id = %s"
             if since_time:
-                where += " AND (updated_at >= ? OR closed_at >= ? OR opened_at >= ?)"
+                where += " AND (updated_at >= %s OR closed_at >= %s OR opened_at >= %s)"
                 params.extend([since_time, since_time, since_time])
             params.append(int(limit or 50))
             rows = cursor.execute(
@@ -95,11 +96,11 @@ class PositionHistoryStore:
                 FROM position_history
                 {where}
                 ORDER BY COALESCE(closed_at, updated_at, opened_at) DESC
-                LIMIT ?
+                LIMIT %s
                 ''',
                 tuple(params),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [storage.record(row) for row in rows]
 
     def sync_open_positions(self, config_id, symbol, positions, source="exchange_position"):
         for position in positions or []:
@@ -121,6 +122,8 @@ class PositionHistoryStore:
                     amount=amount,
                     raw=position,
                 )
+            except storage.Error:
+                raise
             except Exception as exc:
                 self._logger.warning(f"Failed to sync open position history: {exc}")
 
@@ -157,5 +160,7 @@ class PositionHistoryStore:
                     realized_pnl=realized_pnl,
                     raw=trade,
                 )
+            except storage.Error:
+                raise
             except Exception as exc:
                 self._logger.warning(f"Failed to sync trade position history: {exc}")

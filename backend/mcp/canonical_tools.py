@@ -69,8 +69,8 @@ def child_alias(profile_id, principal, parent_id, index):
 def recover_unified(caller, profile_id, operation_id):
     with store.connection(recovery=True) as conn:
         link = conn.execute('SELECT l.* FROM mcp_operation_links l JOIN mcp_operation_requests r '
-                            'USING(profile_id,operation_id) WHERE l.profile_id=? AND l.operation_id=? '
-                            'AND l.principal=? AND r.contract_version=3', (profile_id, operation_id, caller['id'])).fetchone()
+                            'USING(profile_id,operation_id) WHERE l.profile_id=%s AND l.operation_id=%s '
+                            'AND l.principal=%s AND r.contract_version=3', (profile_id, operation_id, caller['id'])).fetchone()
     if not link:
         return None
     from backend.agent.unified_trading import query_unified_operation
@@ -87,12 +87,12 @@ def query_child(caller, profile_id, operation_id):
     if not operation_id.startswith('mcp-step:'):
         return None
     with store.connection(recovery=True) as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         if 'unified_trade_children' not in tables:
             return None
         rows = conn.execute('SELECT c.action_index,l.operation_id FROM unified_trade_children c '
                             'JOIN mcp_operation_links l ON l.internal_operation_id=c.parent_operation_id '
-                            'WHERE c.config_id=? AND l.profile_id=? AND l.principal=?',
+                            'WHERE c.config_id=%s AND l.profile_id=%s AND l.principal=%s',
                             ('mcp:' + profile_id, profile_id, caller['id'])).fetchall()
     found = next((row for row in rows if child_alias(profile_id, caller['id'], row['operation_id'], row['action_index']) == operation_id), None)
     if found is None:
@@ -225,6 +225,8 @@ def records(caller, record_type, profile_id=None, user_id=None, symbol=None, ord
 
 @serialized_spot_execution
 def execute_live(caller, profile_id, symbol, request, operation_id):
+    from backend.utils.deployment_mode import ensure_execution_enabled
+    ensure_execution_enabled()
     from .settings import get_runtime_profile, runtime_symbols
     from backend.agent.unified_trading import validate_for_config
     from backend.agent.tool_registry import run_trade_tool

@@ -6,7 +6,7 @@ from backend import database
 def scope_spot_accounts(config_id: str, accounts: dict[str, dict]) -> dict[str, dict]:
     with database.get_db_conn() as conn:
         owned = {(str(row['symbol']), str(row['order_id'])) for row in conn.execute(
-            "SELECT symbol, order_id FROM orders WHERE config_id=? AND trade_mode='SPOT_DCA' "
+            "SELECT symbol, order_id FROM orders WHERE config_id=%s AND trade_mode='SPOT_DCA' "
             "AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'", (config_id,))}
     scoped = {}
     for symbol, account in accounts.items():

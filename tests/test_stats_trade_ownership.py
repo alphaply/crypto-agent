@@ -1,3 +1,4 @@
+import pytest
 from types import SimpleNamespace
 
 import backend.database as database
@@ -9,8 +10,7 @@ from backend.utils.execution_ledger import account_scope
 def test_same_account_fills_are_persisted_only_for_their_verified_real_task(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'owned-stats.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
-
+        pass  # Full schema is created by pg.
     def fill(order):
         return {'id': f'fill-{order}', 'order': order, 'timestamp': 1720000000000,
                 'datetime': '2024-07-03T09:46:40Z', 'symbol': 'BTC/USDT:USDT',
@@ -28,9 +28,9 @@ def test_same_account_fills_are_persisted_only_for_their_verified_real_task(tmp_
     with database.get_db_conn() as conn:
         for order in ('a-owned', 'stale-log'):
             conn.execute('''INSERT INTO orders (order_id,config_id,symbol,trade_mode,side,event_type)
-                VALUES (?, 'task-a', 'BTC/USDT', 'REAL', 'SELL', 'CLOSE_ORDER_CREATED')''', (order,))
+                VALUES (%s, 'task-a', 'BTC/USDT', 'REAL', 'SELL', 'CLOSE_ORDER_CREATED')''', (order,))
         for order in ('b-owned', 'stale-log'):
-            conn.execute('INSERT INTO execution_order_links VALUES (?,?,?,?,?,?)',
+            conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES (%s,%s,%s,%s,%s,%s)',
                          (account_scope(exchange, 'task-b'), 'BTC/USDT:USDT', order, 'task-b', 'agent_exit', '{}'))
         conn.commit()
     monkeypatch.setattr(stats_service, 'global_config', SimpleNamespace(get_leverage=lambda _: 1))
@@ -43,3 +43,6 @@ def test_same_account_fills_are_persisted_only_for_their_verified_real_task(tmp_
     assert {(row['trade_id'], row['config_id']) for row in rows} == {
         ('fill-a-owned', 'task-a'), ('fill-b-owned', 'task-b'), ('fill-stale-log', 'task-b'),
     }
+
+
+pytestmark = pytest.mark.usefixtures("pg")

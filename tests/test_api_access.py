@@ -1,5 +1,6 @@
 import os
 import unittest
+import pytest
 
 os.environ.setdefault("RUN_SCHEDULER_IN_WEB", "false")
 
@@ -9,6 +10,13 @@ from backend.app.core.security import get_expected_password
 from backend.app.main import app
 
 
+@pytest.fixture(autouse=True)
+def isolated_login(monkeypatch):
+    monkeypatch.setenv('ADMIN_PASSWORD', 'api-access-test-only')
+    monkeypatch.delenv('CHAT_PASSWORD', raising=False)
+
+
+@pytest.mark.usefixtures('pg', 'backup_client')
 class ApiAccessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -77,9 +85,10 @@ class ApiAccessTests(unittest.TestCase):
 
         res = self.client.get("/api/config/database/export", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(res.status_code, 200)
-        self.assertIn("application/x-sqlite3", res.headers.get("content-type", ""))
+        self.assertIn("application/octet-stream", res.headers.get("content-type", ""))
         self.assertTrue(res.headers.get("content-disposition", "").startswith('attachment; filename="trading_data_'))
-        self.assertTrue(res.content.startswith(b"SQLite format 3\x00"))
+        self.assertTrue(res.content.startswith(b"PGDMP"))
+        self.assertIn('.dump', res.headers['content-disposition'])
 
 
 if __name__ == "__main__":

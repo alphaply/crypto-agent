@@ -11,12 +11,18 @@ Set-StrictMode -Version Latest
 $repoRoot = Split-Path $PSScriptRoot -Parent
 if ([string]::IsNullOrWhiteSpace($CapacityProfile)) {
     # Windows PowerShell 5.1 resolves param defaults before PSScriptRoot is set.
-    $CapacityProfile = Join-Path $PSScriptRoot 'capacity/local-verified-v12.json'
+    $CapacityProfile = Join-Path $PSScriptRoot 'capacity/postgresql-local-v1.json'
 }
 $imageRepository = 'alphaply712/crypto-agent'
 $stage = 'preflight'
 $smokeCreated = $false
 $smokeName = 'crypto-agent-release-' + [Guid]::NewGuid().ToString('N')
+$smokeNetwork = $smokeName + '-network'
+$smokeDatabase = $smokeName + '-db'
+$smokeDatabaseVolume = $smokeName + '-pgdata'
+$networkCreated = $false
+$databaseCreated = $false
+$databaseVolumeCreated = $false
 $gitPushed = $false
 $commitImagePushed = $false
 $latestPushed = $false
@@ -61,6 +67,7 @@ try {
     $latestImage = $imageRepository + ':latest'
     if (-not (Test-Path -LiteralPath $CapacityProfile)) { throw 'The frozen verified capacity profile is required.' }
     $capacityConfiguration = Get-Content -LiteralPath $CapacityProfile -Raw | ConvertFrom-Json
+    if (-not $capacityConfiguration.db) { throw 'PostgreSQL release requires a three-container capacity profile.' }
     Invoke-Checked docker @('info', '--format', '{{.ServerVersion}}')
     Invoke-Checked openspec @('validate', '--specs', '--strict')
 
@@ -87,11 +94,47 @@ try {
         '--host-total', [string]$dockerHost.MemTotal,
         '--host-available', [string]$hostMetrics.host.memory_available_bytes,
         '--host-cpus', [string]$dockerHost.NCPU)
-    $smokeArguments = @('run', '-d', '--name', $smokeName,
+    $stage = 'isolated PostgreSQL initialization'
+    Invoke-Checked docker @('network', 'create', '--internal', $smokeNetwork)
+    $networkCreated = $true
+    Invoke-Checked docker @('volume', 'create', $smokeDatabaseVolume)
+    $databaseVolumeCreated = $true
+    $databasePassword = [Guid]::NewGuid().ToString('N')
+    $databaseUrl = 'postgresql://smoke:' + $databasePassword + '@db:5432/smoke'
+    Invoke-Checked docker @('run', '-d', '--name', $smokeDatabase,
+        '--network', $smokeNetwork, '--network-alias', 'db',
+        '--memory', [string]$capacityConfiguration.db.memory_bytes,
+        '--memory-swap', [string]$capacityConfiguration.db.memory_swap_total_bytes,
+        '--cpus', [string]$capacityConfiguration.db.cpu_cpus,
+        '--mount', ('type=volume,source=' + $smokeDatabaseVolume + ',target=/var/lib/postgresql/data'),
+        '-e', 'POSTGRES_USER=smoke', '-e', 'POSTGRES_DB=smoke',
+        '-e', ('POSTGRES_PASSWORD=' + $databasePassword),
+        [string]$capacityConfiguration.db.image, 'postgres', '-c',
+        ('max_connections=' + $capacityConfiguration.db.max_connections))
+    $databaseCreated = $true
+    $databaseReady = $false
+    $deadline = (Get-Date).AddSeconds(90)
+    do {
+        & docker exec $smokeDatabase pg_isready -h 127.0.0.1 -U smoke -d smoke 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $databaseReady = $true; break }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+    if (-not $databaseReady) { throw 'Isolated PostgreSQL did not become ready within 90 seconds.' }
+    $stage = 'isolated schema migration'
+    Invoke-Checked docker @('run', '--rm', '--network', $smokeNetwork,
+        '--memory', [string]$capacityConfiguration.web.memory_bytes,
+        '--memory-swap', [string]$capacityConfiguration.web.memory_swap_total_bytes,
+        '--cpus', [string]$capacityConfiguration.web.cpu_cpus,
+        '-e', ('DATABASE_URL=' + $databaseUrl), $commitImage,
+        '/app/.venv/bin/python', '-m', 'backend.storage.migrate')
+    $stage = 'isolated PostgreSQL application smoke test'
+    $smokeArguments = @('run', '-d', '--name', $smokeName, '--network', $smokeNetwork,
         '--memory', [string]$capacityConfiguration.web.memory_bytes,
         '--memory-swap', [string]$capacityConfiguration.web.memory_swap_total_bytes,
         '--cpus', [string]$capacityConfiguration.web.cpu_cpus,
         '-e', 'RUN_SCHEDULER_IN_WEB=false',
+        '-e', 'DEPLOYMENT_MAINTENANCE=true',
+        '-e', ('DATABASE_URL=' + $databaseUrl),
         '-e', ('RESOURCE_EXPECTED_MEMORY_BYTES=' + $capacityConfiguration.web.memory_bytes),
         '-e', ('RESOURCE_EXPECTED_MEMORY_SWAP_TOTAL_BYTES=' + $capacityConfiguration.web.memory_swap_total_bytes),
         '-e', ('RESOURCE_EXPECTED_CPU_CPUS=' + $capacityConfiguration.web.cpu_cpus),
@@ -134,8 +177,14 @@ try {
         [string]$capacityConfiguration.web.memory_bytes, [string]$capacityConfiguration.web.memory_swap_total_bytes, [string]$capacityConfiguration.web.cpu_cpus)
     Invoke-Checked docker @('rm', '-f', $smokeName)
     $smokeCreated = $false
+    Invoke-Checked docker @('rm', '-f', $smokeDatabase)
+    $databaseCreated = $false
+    Invoke-Checked docker @('volume', 'rm', $smokeDatabaseVolume)
+    $databaseVolumeCreated = $false
+    Invoke-Checked docker @('network', 'rm', $smokeNetwork)
+    $networkCreated = $false
 
-    $stage = 'dual-container capacity acceptance'
+    $stage = 'three-container PostgreSQL capacity acceptance'
     Invoke-Checked uv @('run', 'python', 'scripts/verify-runtime-capacity.py', '--image', $commitImage,
         '--profile', $CapacityProfile, '--mode', 'acceptance', '--output', 'data/capacity-reports')
 
@@ -172,5 +221,8 @@ catch {
 }
 finally {
     if ($smokeCreated) { & docker rm -f $smokeName }
+    if ($databaseCreated) { & docker rm -f $smokeDatabase }
+    if ($databaseVolumeCreated) { & docker volume rm $smokeDatabaseVolume }
+    if ($networkCreated) { & docker network rm $smokeNetwork }
     Pop-Location
 }

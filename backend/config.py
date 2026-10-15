@@ -26,6 +26,7 @@ class Config:
     global_okx_secret = None
     global_okx_passphrase = None
     langchain_tracing = False
+    langchain_background_tracing = False
     langchain_api_key = ""
     langchain_project = "crypto-agent"
     llm_timeout_seconds = 120.0
@@ -38,8 +39,14 @@ class Config:
     configs_by_id: Dict[str, Dict] = {}
     source = "env"
 
-    def __init__(self):
-        self.reload_config()
+    def __init__(self, *, defer_load: bool = False):
+        self.polymarket = {}
+        self.news = {}
+        self.pricing_sync = {}
+        self.llm_providers = []
+        self.exchange_profiles = []
+        if not defer_load:
+            self.reload_config()
 
     def _load_bootstrap_settings(self) -> None:
         load_dotenv(override=False)
@@ -218,4 +225,5 @@ class Config:
         self._apply_snapshot(snapshot)
 
 
-config = Config()
+# Startup initializes storage and publishes configuration before accepting work.
+config = Config(defer_load=True)

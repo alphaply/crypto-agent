@@ -1,36 +1,30 @@
-"""Bounded-memory, consistent SQLite exports, cleaned up after transmission."""
+"""Consistent PostgreSQL exports streamed from a temporary backup file."""
 import os
-import sqlite3
 import tempfile
-import time
-from contextlib import closing
-from datetime import datetime
-
+from datetime import datetime, timezone
 from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
+from backend.storage.backup import dump_database
 
-from backend import database
+
+class TemporaryBackupResponse(FileResponse):
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Also clean up when a disconnected client cancels/raises in send.
+            if os.path.exists(self.path):
+                os.unlink(self.path)
 
 
 def database_file_response() -> FileResponse:
-    fd, path = tempfile.mkstemp(prefix="crypto-export-", suffix=".db")
+    fd, path = tempfile.mkstemp(prefix='crypto-export-', suffix='.dump')
     os.close(fd)
-    deadline = time.monotonic() + 90
-
-    def progress(status, remaining, total):
-        if time.monotonic() > deadline:
-            raise TimeoutError("Database busy; retry export shortly")
-
     try:
-        with closing(sqlite3.connect(database.DB_NAME, timeout=10)) as source:
-            with closing(sqlite3.connect(path)) as target:
-                source.backup(target, pages=1024, progress=progress, sleep=0.05)
-        filename = f"trading_data_{datetime.now(database.TZ_CN):%Y%m%d_%H%M%S}.db"
-        return FileResponse(
-            path, filename=filename, media_type="application/x-sqlite3",
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-            background=BackgroundTask(os.unlink, path),
-        )
+        dump_database(path)
+        filename = f'trading_data_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.dump'
+        return TemporaryBackupResponse(path, filename=filename, media_type='application/octet-stream',
+            headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
     except BaseException:
-        os.unlink(path)
+        if os.path.exists(path):
+            os.unlink(path)
         raise

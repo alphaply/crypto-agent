@@ -52,16 +52,16 @@ def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str,
             raise ValueError('Current order identity could not be verified')
         return {'source': 'current_management_claim', 'role': 'managed', 'account_scope': scope, 'trigger': bool(params)}
     aliases = symbol_aliases(market_tool, symbol)
-    placeholders = ','.join('?' for _ in aliases)
+    placeholders = ','.join('%s' for _ in aliases)
     with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
         mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
         has_registry = bool(active_agents or mcp_profiles)
 
         if 'execution_order_links' in tables:
-            links = conn.execute(f'SELECT config_id,role,payload FROM execution_order_links WHERE account_scope=? '
-                                 f'AND symbol IN ({placeholders}) AND order_id=?',
+            links = conn.execute(f'SELECT config_id,role,payload FROM execution_order_links WHERE account_scope=%s '
+                                 f'AND symbol IN ({placeholders}) AND order_id=%s',
                                  (scope, *aliases, str(order_id))).fetchall()
             if links:
                 if any(row['config_id'] != config_id for row in links):
@@ -96,9 +96,9 @@ def assert_owned_perpetual_order(market_tool, symbol: str, order_id: str,
         if owned_plan:
             return owned_plan
         if 'orders' in tables:
-            row = conn.execute(f"SELECT id FROM orders WHERE order_id=? AND config_id=? AND symbol IN ({placeholders}) "
+            row = conn.execute(f"SELECT id FROM orders WHERE order_id=%s AND config_id=%s AND symbol IN ({placeholders}) "
                                "AND trade_mode='REAL' AND COALESCE(event_type,'ORDER_CREATED') IN ('ORDER_CREATED','CLOSE_ORDER_CREATED') "
-                               "AND UPPER(COALESCE(side,'')) NOT LIKE 'CANCEL%' LIMIT 1",
+                               "AND UPPER(COALESCE(side,'')) NOT LIKE 'CANCEL%%' LIMIT 1",
                                (str(order_id), config_id, *aliases)).fetchone()
             if row:
                 return {'source': 'legacy_order_log', 'account_scope': scope, 'role': 'legacy'}

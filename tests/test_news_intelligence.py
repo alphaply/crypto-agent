@@ -1,5 +1,6 @@
+import pytest
 import json
-import sqlite3
+from backend import storage
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -207,8 +208,8 @@ def test_fresh_persistent_cache_skips_network_after_restart(monkeypatch):
 
 def test_intelligence_cache_persists_across_process_memory(tmp_path, monkeypatch):
     db_path = tmp_path / "intelligence.sqlite"
-    with sqlite3.connect(db_path) as conn:
-        initialize_schema(conn)
+    with storage.connect() as conn:
+        pass  # Full schema is created by pg.
     monkeypatch.setattr(database, "DB_NAME", str(db_path))
     database.save_intelligence_source_cache("calendar_bls", "2026-07-11T00:00:00+00:00", [{"title": "CPI"}])
     cached = database.get_intelligence_source_cache("calendar_bls")
@@ -272,3 +273,6 @@ def test_all_sources_unavailable_has_no_risk_level_fields(monkeypatch):
     assert "risk_reasons" not in result
     assert result["headlines"] == []
     assert "unavailable" in result["error"].lower()
+
+
+pytestmark = pytest.mark.usefixtures("pg")

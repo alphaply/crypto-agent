@@ -16,7 +16,7 @@ from backend.database_schema import initialize_schema
 def local_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "DB_NAME", str(tmp_path / "titles.sqlite"))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
     database.create_chat_session("session", "cfg", "BTC/USDT", "保留原始标题")
     return "session"
 
@@ -196,15 +196,13 @@ def test_claim_handles_deleted_session_branch_and_clear_without_stale_overwrite(
     assert database.update_chat_session_title(local_db, "当前标题", summary_token=new_token)
 
 
-def test_existing_chat_session_schema_migrates_title_claim_fields(tmp_path, monkeypatch):
-    path = tmp_path / "legacy.sqlite"
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE chat_sessions (session_id TEXT PRIMARY KEY, title TEXT, config_id TEXT, symbol TEXT, created_at TEXT, updated_at TEXT)")
-        conn.execute("INSERT INTO chat_sessions VALUES ('legacy','旧标题','cfg','BTC/USDT','old','old')")
-        initialize_schema(conn)
-    monkeypatch.setattr(database, "DB_NAME", str(path))
-    assert database.get_chat_session("legacy")["title_summary_cursor"] == 0
-    assert database.claim_chat_title_summary("legacy", 4)
+def test_native_chat_schema_preserves_title_claim_fields(pg):
+    database.create_chat_session('legacy', 'cfg', 'BTC/USDT', '旧标题')
+    assert database.get_chat_session('legacy')['title'] == '旧标题'
+    token = database.claim_chat_title_summary('legacy', 4)
+    assert token
+    assert database.update_chat_session_title('legacy', '新标题', summary_token=token)
+    assert database.get_chat_session('legacy')['title'] == '新标题'
 
 
 def test_manual_compact_payload_returns_latest_title(compacting_app):
@@ -237,3 +235,8 @@ def test_optional_title_readback_failure_keeps_persisted_done(compacting_app, mo
     assert done["type"] == "done" and done["persisted"] is True
     assert done["persistence_error"] is None
     assert done["messages"][-1]["content"] == "继续分析市场。"
+
+
+@pytest.fixture(autouse=True)
+def isolated_postgres(pg):
+    yield

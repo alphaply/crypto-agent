@@ -24,17 +24,15 @@ def exposure(account, kind, symbol, side=None, exchange_name=None, *, include_ex
 
 def rows(conn, namespace, user_id=None, state='open'):
     from .paper_storage import decode, history_limit, max_payload, PaperPayloadLimit, blob_size, read_blob
-    query, params = 'SELECT rowid FROM paper_orders WHERE namespace=?', [namespace]
+    query, params = 'SELECT storage_id AS rowid FROM paper_orders WHERE namespace=%s', [namespace]
     if user_id is not None:
-        query += ' AND user_id=?'
+        query += ' AND user_id=%s'
         params.append(user_id)
     if state is not None:
-        query += ' AND state=?'
+        query += ' AND state=%s'
         params.append(state)
-    query += ' ORDER BY created_at,order_id LIMIT ?'
-    metadata = conn.execute(query, [*params, history_limit() + 1]).fetchall()
-    if len(metadata) > history_limit() or any(blob_size(conn, 'paper_orders', 'payload', row['rowid']) > max_payload() for row in metadata):
-        raise PaperPayloadLimit('paper_payload_limit: complete order commitments exceed the financial work budget; raw orders retained')
+    query += ' ORDER BY created_at,order_id'
+    metadata = conn.execute(query, params).fetchall()
     return [decode(read_blob(conn, 'paper_orders', 'payload', row['rowid']), identity='paper order') for row in metadata]
 
 
@@ -42,9 +40,7 @@ def save(conn, order):
     from .paper_storage import max_payload, PaperPayloadLimit
     order['updated_at'] = time.time()
     encoded = json.dumps(order, allow_nan=False)
-    if len(encoded.encode('utf-8')) > max_payload():
-        raise PaperPayloadLimit('paper_payload_limit: complete order exceeds financial write budget')
-    conn.execute('INSERT INTO paper_orders VALUES(?,?,?,?,?,?,?) ON CONFLICT(namespace,user_id,order_id) DO UPDATE SET state=excluded.state,payload=excluded.payload,updated_at=excluded.updated_at',
+    conn.execute('INSERT INTO paper_orders(namespace,user_id,order_id,state,payload,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(namespace,user_id,order_id) DO UPDATE SET state=excluded.state,payload=excluded.payload,updated_at=excluded.updated_at',
                  (order['namespace'], order['user_id'], order['order_id'], order['state'], encoded, order['created_at'], order['updated_at']))
 
 
@@ -142,9 +138,9 @@ def existing_receipt(caller, user_id, operation_id, request):
         if original is None:
             return None
         from .paper_storage import one
-        revision = conn.execute('SELECT revision FROM paper_receipt_revisions WHERE namespace=? AND user_id=? AND operation_id=? ORDER BY revision DESC LIMIT 1',
+        revision = conn.execute('SELECT revision FROM paper_receipt_revisions WHERE namespace=%s AND user_id=%s AND operation_id=%s ORDER BY revision DESC LIMIT 1',
                                 (namespace, user_id, operation_id)).fetchone()
-        return one(conn, 'paper_receipt_revisions', 'payload', 'namespace=? AND user_id=? AND operation_id=? AND revision=?',
+        return one(conn, 'paper_receipt_revisions', 'payload', 'namespace=%s AND user_id=%s AND operation_id=%s AND revision=%s',
                    (namespace, user_id, operation_id, revision[0]), identity='latest original paper receipt') if revision else original
 
 
@@ -331,23 +327,23 @@ def records_page(caller, user_id, state='open', limit=100, offset=0, *, cursor=0
     from .paper_policy import visible
     with store.connection() as conn:
         account = {'namespace': namespace, 'user_id': user_id}
-        if not conn.execute('SELECT 1 FROM paper_accounts WHERE namespace=? AND user_id=?', (namespace, user_id)).fetchone():
+        if not conn.execute('SELECT 1 FROM paper_accounts WHERE namespace=%s AND user_id=%s', (namespace, user_id)).fetchone():
             raise ValueError('Paper account does not exist')
         if order_id is not None:
             # Exact historical identities are an authorized passive audit path.
-            order = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?',
+            order = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s',
                         (namespace, user_id, order_id), identity='paper order audit')
             if order is None:
                 raise ValueError('Order not found in this account')
             return {'order': order, 'execution_mode': 'paper'}
-        where, params = 'namespace=? AND user_id=?', [namespace, user_id]
+        where, params = 'namespace=%s AND user_id=%s', [namespace, user_id]
         if state != 'all':
-            where += ' AND state=?'
+            where += ' AND state=%s'
             params.append(state)
         if offset:
-            selected = conn.execute('SELECT rowid FROM paper_orders WHERE ' + where + ' ORDER BY rowid LIMIT 1 OFFSET ?',
+            selected = conn.execute('SELECT storage_id AS rowid FROM paper_orders WHERE ' + where + ' ORDER BY storage_id LIMIT 1 OFFSET %s',
                                     (*params, offset - 1)).fetchone()
-            cursor = selected[0] if selected else conn.execute('SELECT COALESCE(MAX(rowid),0) FROM paper_orders').fetchone()[0]
+            cursor = selected[0] if selected else conn.execute('SELECT COALESCE(MAX(storage_id),0) FROM paper_orders').fetchone()[0]
         found, page = payload_page(conn, 'paper_orders', where, params, cursor=cursor, count=limit)
         items = [row['payload'] for row in found if visible(row['payload'], account=account, conn=conn)
                  and (not symbol or row['payload'].get('symbol') == symbol)]
@@ -359,7 +355,7 @@ def cancel(caller, user_id, order_id, operation_id):
     from .paper_policy import require_target
     def change(account, conn):
         from .paper_storage import one
-        found = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?', (account['namespace'], user_id, order_id))
+        found = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s', (account['namespace'], user_id, order_id))
         if not found:
             raise ValueError('Order not found in this account')
         require_target(found, account=account, conn=conn)
@@ -378,7 +374,7 @@ def edit(caller, user_id, order_id, operation_id, price=None, trigger_price=None
     namespace = paper.require(caller, 'trade')
     from .paper_storage import one
     with store.connection() as conn:
-        order = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?', (namespace, user_id, order_id))
+        order = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s', (namespace, user_id, order_id))
     if not order or order['state'] != 'open':
         raise ValueError('Only an open order in this account can be edited')
     from .paper_policy import require_target
@@ -386,7 +382,7 @@ def edit(caller, user_id, order_id, operation_id, price=None, trigger_price=None
         require_target(order, account=paper._get(conn, namespace, user_id), conn=conn)
     quote = get_quote(order['symbol'], order['market_type'], order['exchange'])
     def change(account, conn):
-        current = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?', (namespace, user_id, order_id))
+        current = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s', (namespace, user_id, order_id))
         if not current or current['state'] != 'open' or current.get('updated_at') != order.get('updated_at'):
             raise ValueError('Order changed during edit; inspect its current state')
         current['state'] = 'editing'
@@ -451,7 +447,7 @@ def match(conn, account, kind, symbol, quote, cfg):
     for order in rows(conn, account['namespace'], account['user_id']):
         if not visible(order, account=account, conn=conn):
             continue
-        current = conn.execute('SELECT state FROM paper_orders WHERE namespace=? AND user_id=? AND order_id=?',
+        current = conn.execute('SELECT state FROM paper_orders WHERE namespace=%s AND user_id=%s AND order_id=%s',
                                (account['namespace'], account['user_id'], order['order_id'])).fetchone()
         if not current or current[0] != 'open':
             continue
@@ -510,7 +506,7 @@ def admin_orders(namespace=None, user_id=None, state='open', limit=100, *, curso
         clauses, params = [], []
         for column, value in [('namespace', namespace), ('user_id', user_id), ('state', state if state != 'all' else None)]:
             if value:
-                clauses.append(column + '=?')
+                clauses.append(column + '=%s')
                 params.append(value)
         where = ' AND '.join(clauses) or '1=1'
         count = conn.execute('SELECT COUNT(*) FROM paper_orders WHERE ' + where, params).fetchone()[0]

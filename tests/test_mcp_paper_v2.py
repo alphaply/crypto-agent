@@ -289,7 +289,7 @@ def test_http_polling_sdk_adapters_and_admin_dashboard(ledger, monkeypatch):
         def rpc(name, args):
             result = client.post('/mcp', headers={**hdr, 'Accept': 'application/json,text/event-stream'}, json={'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': name, 'arguments': args}}).json()['result']
             assert not result.get('isError'), result
-            return json.loads(result['content'][0]['text'])
+            return result.get('structuredContent') or json.loads(result['content'][0]['text'])
         placed = rpc('paper_place_order', {'user_id': '123456', 'market_type': 'swap', 'symbol': 'ETH', 'action': 'open_short', 'order_type': 'limit', 'price': 110, 'margin_amount': 20, 'leverage': 5, 'stop_loss': 115, 'take_profit': 100, 'operation_id': 'sdk-limit-short'})
         assert placed['status'] == 'submitted' and placed['order_status'] == 'open'
         assert placed['order_id'] and placed['quantity_unit'] == 'base'

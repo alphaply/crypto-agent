@@ -36,14 +36,14 @@ class CatalogExchange:
 
 
 @pytest.fixture
-def contracts(tmp_path, monkeypatch):
+def contracts(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'tool-contracts.sqlite'))
     with database.get_db_conn() as conn:
         from backend.database_schema import initialize_schema
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         conn.commit()
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     monkeypatch.setattr(cfg, 'exchange_profile', lambda name: {
         'profile_id': name, 'exchange': 'binance', 'market_type': 'spot' if name == 'spot-account' else 'swap',
         'api_key': 'offline-test-key', 'secret': 'offline-test-secret',
@@ -66,7 +66,11 @@ def contracts(tmp_path, monkeypatch):
 
 
 def call(server, name, arguments):
-    return asyncio.run(server._tool_manager.call_tool(name, arguments))
+    result = asyncio.run(server._tool_manager.call_tool(name, arguments))
+    if hasattr(result, 'structuredContent'):
+        assert not result.isError, result
+        return result.structuredContent or json.loads(result.content[0].text)
+    return result
 
 
 def spot_arguments():
@@ -97,7 +101,7 @@ def test_canonical_mcp_tools_use_same_v2_payload_and_persist_version(contracts):
     }) == first
     dispatch.assert_called_once()
     with store.connection() as conn:
-        row = conn.execute('SELECT contract_version,request_json FROM mcp_operation_requests WHERE operation_id=?',
+        row = conn.execute('SELECT contract_version,request_json FROM mcp_operation_requests WHERE operation_id=%s',
                            (request['operation_id'],)).fetchone()
     assert row['contract_version'] == 2 and json.loads(row['request_json'])['contract_version'] == 2
 
@@ -195,7 +199,7 @@ def test_flat_mcp_batch_preserves_policy_dependencies_and_replay(contracts):
     assert call(server, 'execute_trade_actions', args) == result
     dispatch.assert_called_once()
     with store.connection() as conn:
-        row = conn.execute('SELECT request_json FROM mcp_operation_requests WHERE operation_id=?', (args['operation_id'],)).fetchone()
+        row = conn.execute('SELECT request_json FROM mcp_operation_requests WHERE operation_id=%s', (args['operation_id'],)).fetchone()
     stored = json.loads(row['request_json'])['arguments']
     assert stored['execution_policy'] == 'independent' and stored['actions'][1]['depends_on'] == [0]
     with pytest.raises(ToolError):
@@ -633,3 +637,9 @@ def test_mcp_get_order_and_get_trade_history_read_only_contracts(contracts):
     assert order_read['id'] == 'order-101'
     trades_read = service.query(read_only_caller, 'trade_history', profile_id='spot', symbol='BTC/USDT', limit=5)
     assert len(trades_read) == 1
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

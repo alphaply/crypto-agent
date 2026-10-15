@@ -38,16 +38,16 @@ class Exchange:
 
 
 @pytest.fixture
-def unrestricted(tmp_path, monkeypatch):
+def unrestricted(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'scope.db'))
     with database.get_db_conn() as conn:
         from backend.database_schema import initialize_schema
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         conn.commit()
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
         _initialize(conn)
-        conn.executemany("INSERT INTO exchange_profiles(profile_id,name,exchange,market_type,updated_at) VALUES(?,'test','binance',?,'2026-10-09')",
+        conn.cursor().executemany("INSERT INTO exchange_profiles(profile_id,name,exchange,market_type,updated_at) VALUES(%s,'test','binance',%s,'2026-10-09')",
                          [('spot-account', 'spot'), ('swap-account', 'swap')])
         conn.commit()
     monkeypatch.setattr(cfg, 'exchange_profile', lambda name: {
@@ -204,7 +204,7 @@ def test_disabled_unrestricted_profiles_keep_all_owned_perpetual_symbols_for_mai
 
     with database.get_db_conn() as conn:
         for symbol in ('ETH/USDT:USDT', 'SOL/USDC:USDC'):
-            conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(?,?,?,?)',
+            conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                          ('mcp:swap', symbol, 'LONG', json.dumps({'state': 'ACTIVE'})))
         conn.commit()
     profile = store.get('profile', 'swap')
@@ -287,7 +287,7 @@ def test_real_spot_dispatch_uses_dynamic_symbols_and_preserves_cancel_ownership(
     # The submitted budget reservation remains as durable evidence after a
     # cancellation. A verified zero-fill cancellation must not pin its symbol.
     with database.get_db_conn() as conn:
-        reservation = conn.execute('SELECT status FROM spot_budget_reservations WHERE order_id=?',
+        reservation = conn.execute('SELECT status FROM spot_budget_reservations WHERE order_id=%s',
                                    ('exchange-2',)).fetchone()
     assert reservation['status'] == 'submitted'
     cfg.save_profile(cfg.MCPProfile.model_validate(profile))  # Return to all.
@@ -349,3 +349,9 @@ def test_linear_catalog_filter_applies_before_counts_pagination_and_selection(mo
     assert [item['symbol'] for item in filtered['selected_symbols']] == ['BTC/USDT:USDT']
     default = market_catalog_service.list_market_symbols_payload(exchange='okx', market_type='swap')
     assert default['total'] == 2
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

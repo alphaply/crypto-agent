@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 import os
-import sqlite3
+from backend import storage
 from copy import deepcopy
 from contextlib import nullcontext, contextmanager
 from pathlib import Path
@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from backend.utils.logger import setup_logger
 from backend.utils.run_schedule import DcaSchedule, validate_run_schedule
 from backend.utils.spot_portfolio import SPOT_MARKET_TIMEFRAMES, normalize_spot_symbols
-from backend.storage_paths import DATA_DIR, PROJECT_ROOT, data_file
+from backend.storage_paths import DATA_DIR, PROJECT_ROOT
 from backend.app.schemas.news import NewsSettings, default_news_settings, default_pricing_sync_settings
 
 
@@ -24,7 +24,8 @@ logger = setup_logger("ConfigStore")
 LAST_RUNTIME_CONFIG_ERROR: str | None = None
 
 BASE_DIR = PROJECT_ROOT
-DB_NAME = data_file("TRADING_DB_PATH", "trading_data.db")
+# Inert compatibility value for legacy callers; importing config must not copy SQLite.
+DB_NAME = Path(os.getenv("TRADING_DB_PATH", str(DATA_DIR / "trading_data.db"))).absolute()
 
 DEFAULT_GLOBAL_SETTINGS: dict[str, Any] = {
     "news": default_news_settings(),
@@ -95,13 +96,10 @@ MODE_SORT_ORDER = {
 
 @contextmanager
 def _get_conn():
-    conn = sqlite3.connect(DB_NAME, timeout=30)
-    conn.row_factory = sqlite3.Row
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    """Config writes retain their existing commit-on-success contract."""
+    with storage.get_connection(timeout=30) as conn:
+        yield conn
+        conn.commit()
 
 
 def _now() -> str:
@@ -156,6 +154,8 @@ def _master_key_bytes() -> bytes:
         try:
             base64.urlsafe_b64decode(raw_key.encode("utf-8"))
             return raw_key.encode("utf-8")
+        except storage.Error:
+            raise
         except Exception:
             pass
     digest = hashlib.sha256(raw_key.encode("utf-8")).digest()
@@ -234,73 +234,27 @@ def _parse_secret_update(update: Any) -> tuple[str | None, str | None]:
     return "set", text
 
 
-def _table_names(conn: sqlite3.Connection) -> set[str]:
-    rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    return {row["name"] for row in rows}
+def _table_names(conn: storage.Connection) -> set[str]:
+    return storage.table_names(conn)
 
 
-def _column_names(conn: sqlite3.Connection, table_name: str) -> set[str]:
-    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return {row["name"] for row in rows}
+def _column_names(conn: storage.Connection, table_name: str) -> set[str]:
+    return {row['name'] for row in storage.table_columns(conn, table_name)}
 
 
-def _ensure_agent_config_sort_order(conn: sqlite3.Connection) -> None:
-    if "agent_configs" not in _table_names(conn):
-        return
-    if "sort_order" in _column_names(conn, "agent_configs"):
-        return
-    conn.execute("ALTER TABLE agent_configs ADD COLUMN sort_order INTEGER")
+def _ensure_agent_config_sort_order(conn: storage.Connection) -> None:
+    """Structure is installed by the explicit PostgreSQL migration."""
 
 
-def _ensure_provider_tables(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS llm_providers (
-            provider_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            model TEXT NOT NULL,
-            api_base TEXT,
-            temperature REAL,
-            role TEXT NOT NULL DEFAULT 'agent',
-            extra_body TEXT NOT NULL DEFAULT '{}',
-            compatibility_mode TEXT NOT NULL DEFAULT 'auto',
-            thinking_enabled INTEGER,
-            reasoning_effort TEXT,
-            system_prompt_role TEXT NOT NULL DEFAULT 'system',
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    if "compatibility_mode" not in _column_names(conn, "llm_providers"):
-        conn.execute("ALTER TABLE llm_providers ADD COLUMN compatibility_mode TEXT NOT NULL DEFAULT 'auto'")
-    if "thinking_enabled" not in _column_names(conn, "llm_providers"):
-        conn.execute("ALTER TABLE llm_providers ADD COLUMN thinking_enabled INTEGER")
-    if "reasoning_effort" not in _column_names(conn, "llm_providers"):
-        conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_effort TEXT")
-    if "system_prompt_role" not in _column_names(conn, "llm_providers"):
-        conn.execute("ALTER TABLE llm_providers ADD COLUMN system_prompt_role TEXT NOT NULL DEFAULT 'system'")
-    if "settings_json" not in _column_names(conn, "llm_providers"):
-        conn.execute("ALTER TABLE llm_providers ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS exchange_profiles (
-            profile_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            exchange TEXT NOT NULL,
-            market_type TEXT,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    if 'physical_account_id' not in _column_names(conn, 'exchange_profiles'):
-        conn.execute('ALTER TABLE exchange_profiles ADD COLUMN physical_account_id TEXT')
+def _ensure_provider_tables(conn: storage.Connection) -> None:
+    """Structure is installed by the explicit PostgreSQL migration."""
 
 
-def _has_runtime_storage(conn: sqlite3.Connection) -> bool:
+def _has_runtime_storage(conn: storage.Connection) -> bool:
     return TABLE_NAMES.issubset(_table_names(conn))
 
 
-def _has_runtime_rows(conn: sqlite3.Connection) -> bool:
+def _has_runtime_rows(conn: storage.Connection) -> bool:
     if not _has_runtime_storage(conn):
         return False
     settings_count = conn.execute("SELECT COUNT(*) AS count FROM app_settings").fetchone()["count"]
@@ -645,49 +599,33 @@ def _env_snapshot() -> dict[str, Any]:
 
 def ensure_runtime_config_initialized() -> None:
     load_dotenv(override=False)
-    if not DB_NAME.exists():
-        return
-
-    migrate_existing = False
     with _get_conn() as conn:
         if not _has_runtime_storage(conn):
-            return
-        _ensure_agent_config_sort_order(conn)
-        _ensure_provider_tables(conn)
+            raise storage.DatabaseError("PostgreSQL schema is not initialized; run the database migration")
         if _has_runtime_rows(conn):
-            provider_count = conn.execute("SELECT COUNT(*) AS count FROM llm_providers").fetchone()["count"]
-            profile_count = conn.execute("SELECT COUNT(*) AS count FROM exchange_profiles").fetchone()["count"]
-            migrate_existing = provider_count == 0 or profile_count == 0
-        else:
-            migrate_existing = None
-
-    if migrate_existing:
-        snapshot = load_runtime_snapshot()
-        if snapshot:
-            save_runtime_snapshot(snapshot, snapshot.get("agents", []))
-        return
-    if migrate_existing is False:
-        return
-
+            return
     snapshot = _env_snapshot()
     save_runtime_snapshot(
         {key: snapshot[key] for key in snapshot if key not in {"agents", "source"}},
-        snapshot["agents"],
+        snapshot["agents"], initialize_only=True,
     )
-    logger.info("Runtime configuration migrated from .env into SQLite.")
 
 
-def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+def load_runtime_snapshot(
+    *, connection: storage.Connection | None = None, raise_on_error: bool = False,
+) -> dict[str, Any] | None:
     global LAST_RUNTIME_CONFIG_ERROR
     LAST_RUNTIME_CONFIG_ERROR = None
 
-    if connection is None and not DB_NAME.exists():
-        return None
 
     # A save can read its own uncommitted candidate without opening a second
     # connection (which would see only the previous committed configuration).
     with (nullcontext(connection) if connection is not None else _get_conn()) as conn:
-        if not _has_runtime_storage(conn) or not _has_runtime_rows(conn):
+        if connection is None:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        if not _has_runtime_storage(conn):
+            raise storage.DatabaseError("PostgreSQL schema is not initialized; run the database migration")
+        if not _has_runtime_rows(conn):
             return None
         _ensure_agent_config_sort_order(conn)
         _ensure_provider_tables(conn)
@@ -713,11 +651,14 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
             try:
                 decrypted = _decrypt_secret(row["encrypted_value"])
             except InvalidToken:
-                LAST_RUNTIME_CONFIG_ERROR = (
+                message = (
                     "Runtime secrets cannot be decrypted with the current CONFIG_MASTER_KEY. "
                     "Restore the matching CONFIG_MASTER_KEY for this database or rotate saved secrets from setup/config."
                 )
-                logger.error(LAST_RUNTIME_CONFIG_ERROR)
+                LAST_RUNTIME_CONFIG_ERROR = message
+                logger.error(message)
+                if raise_on_error:
+                    raise RuntimeError(message) from None
                 return None
             if row["scope"] == "global":
                 global_secrets[field_name] = decrypted
@@ -906,7 +847,9 @@ def load_runtime_snapshot(*, connection: sqlite3.Connection | None = None) -> di
 
 
 def load_effective_runtime_snapshot() -> dict[str, Any]:
-    snapshot = load_runtime_snapshot()
+    # None means an empty store only here. A persisted secret failure must not
+    # select legacy environment tasks, even if another reader clears diagnostics.
+    snapshot = load_runtime_snapshot(raise_on_error=True)
     return snapshot or _env_snapshot()
 
 
@@ -981,7 +924,8 @@ def save_runtime_snapshot(
     exchange_profiles_payload: list[dict[str, Any]] | None = None,
     *,
     validate_snapshot: Callable[[dict[str, Any]], None] | None = None,
-    transaction_hook: Callable[[sqlite3.Connection], None] | None = None,
+    transaction_hook: Callable[[storage.Connection], None] | None = None,
+    initialize_only: bool = False,
 ) -> None:
     load_dotenv(override=False)
     normalized_agents = _normalize_agents(agents_payload)
@@ -1033,7 +977,9 @@ def save_runtime_snapshot(
     with _get_conn() as conn:
         _ensure_agent_config_sort_order(conn)
         _ensure_provider_tables(conn)
-        conn.execute("BEGIN IMMEDIATE")
+        storage.lock_scope(conn, 'runtime-config')
+        if initialize_only and _has_runtime_rows(conn):
+            return
         try:
             from backend.utils.position_management import synchronize_configuration
             previous_snapshot = load_runtime_snapshot(connection=conn)
@@ -1047,8 +993,8 @@ def save_runtime_snapshot(
                         profile['physical_account_id'] = (old_accounts.get(profile.get('profile_id')) or {}).get('physical_account_id')
             conn.execute("DELETE FROM app_settings")
             timestamp = _now()
-            conn.executemany(
-                "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)",
+            conn.cursor().executemany(
+                "INSERT INTO app_settings (key, value_json, updated_at) VALUES (%s, %s, %s)",
                 [
                     (key, json.dumps(_ensure_jsonable(value), ensure_ascii=False), timestamp)
                     for key, value in settings.items()
@@ -1060,7 +1006,7 @@ def save_runtime_snapshot(
             active_provider_ids = {str(item.get("provider_id") or "") for item in llm_providers}
             active_profile_ids = {str(item.get("profile_id") or "") for item in exchange_profiles}
             if active_provider_ids:
-                placeholders = ",".join("?" for _ in active_provider_ids)
+                placeholders = ",".join("%s" for _ in active_provider_ids)
                 conn.execute(
                     f"DELETE FROM secret_store WHERE scope = 'llm_provider' AND scope_id NOT IN ({placeholders})",
                     tuple(active_provider_ids),
@@ -1068,7 +1014,7 @@ def save_runtime_snapshot(
             else:
                 conn.execute("DELETE FROM secret_store WHERE scope = 'llm_provider'")
             if active_profile_ids:
-                placeholders = ",".join("?" for _ in active_profile_ids)
+                placeholders = ",".join("%s" for _ in active_profile_ids)
                 conn.execute(
                     f"DELETE FROM secret_store WHERE scope = 'exchange_profile' AND scope_id NOT IN ({placeholders})",
                     tuple(active_profile_ids),
@@ -1087,7 +1033,7 @@ def save_runtime_snapshot(
                     """
                     INSERT INTO llm_providers (
                         provider_id, name, model, api_base, temperature, role, extra_body, compatibility_mode, thinking_enabled, reasoning_effort, system_prompt_role, updated_at, settings_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         provider_id,
@@ -1120,7 +1066,7 @@ def save_runtime_snapshot(
                     """
                     INSERT INTO exchange_profiles (
                         profile_id, name, exchange, market_type, updated_at, physical_account_id
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
                     """,
                     (
                         profile_id,
@@ -1145,9 +1091,9 @@ def save_runtime_snapshot(
             next_ids = {item["config_id"] for item in normalized_agents}
             removed_ids = existing_ids - next_ids
             for removed_id in removed_ids:
-                conn.execute("DELETE FROM agent_configs WHERE config_id = ?", (removed_id,))
+                conn.execute("DELETE FROM agent_configs WHERE config_id = %s", (removed_id,))
                 conn.execute(
-                    "DELETE FROM secret_store WHERE scope = 'agent' AND scope_id = ?",
+                    "DELETE FROM secret_store WHERE scope = 'agent' AND scope_id = %s",
                     (removed_id,),
                 )
 
@@ -1162,7 +1108,7 @@ def save_runtime_snapshot(
                 conn.execute(
                     """
                     INSERT INTO agent_configs (config_id, symbol, enabled, mode, data_json, updated_at, sort_order)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT(config_id) DO UPDATE SET
                         symbol = excluded.symbol,
                         enabled = excluded.enabled,
@@ -1195,15 +1141,17 @@ def save_runtime_snapshot(
             for removed_id in removed_ids:
                 # Active exclusive plans must remain visible to the retirement
                 # guard; deleting them earlier would erase the only inventory proof.
-                conn.execute('DELETE FROM real_protection_plans WHERE config_id=?', (removed_id,))
+                conn.execute('DELETE FROM real_protection_plans WHERE config_id=%s', (removed_id,))
             conn.commit()
+        except storage.Error:
+            raise
         except Exception:
             conn.rollback()
             raise
 
 
 def _apply_secret_updates(
-    conn: sqlite3.Connection,
+    conn: storage.Connection,
     scope: str,
     scope_id: str,
     updates: dict[str, Any],
@@ -1219,7 +1167,7 @@ def _apply_secret_updates(
             conn.execute(
                 """
                 DELETE FROM secret_store
-                WHERE scope = ? AND scope_id = ? AND secret_key = ?
+                WHERE scope = %s AND scope_id = %s AND secret_key = %s
                 """,
                 (scope, scope_id, secret_key),
             )
@@ -1228,7 +1176,7 @@ def _apply_secret_updates(
         conn.execute(
             """
             INSERT INTO secret_store (scope, scope_id, secret_key, encrypted_value, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT(scope, scope_id, secret_key) DO UPDATE SET
                 encrypted_value = excluded.encrypted_value,
                 updated_at = excluded.updated_at
@@ -1376,7 +1324,7 @@ def import_full_snapshot(
     prompt_files: dict[str, str] | None = None,
     model_pricing: list[dict[str, Any]] | None = None,
     validate_snapshot: Callable[[dict[str, Any]], None] | None = None,
-    transaction_hook: Callable[[sqlite3.Connection], None] | None = None,
+    transaction_hook: Callable[[storage.Connection], None] | None = None,
 ) -> dict[str, Any]:
     """
     将完整配置快照还原到数据库，可选写入 .env 引导变量。
@@ -1421,70 +1369,85 @@ def import_full_snapshot(
         transaction_hook=transaction_hook,
     )
 
-    # 还原 prompt 文件
-    prompts_restored: list[str] = []
-    if prompt_files:
-        import os as _os
-        prompt_directory = Path(__file__).resolve().parent / "agent" / "prompts"
-        prompt_directory.mkdir(parents=True, exist_ok=True)
-        for filename, content in prompt_files.items():
-            # 基本安全校验
-            if not filename or ".." in filename or not filename.endswith(".txt"):
-                continue
-            dest = prompt_directory / filename
-            dest.write_text(content, encoding="utf-8")
-            prompts_restored.append(filename)
-
-    # 还原模型计价
-    pricing_restored = 0
-    if model_pricing:
-        for row in model_pricing:
-            model_name = row.get("model")
-            if not model_name:
-                continue
-            update_model_pricing(
-                model_name,
-                row.get("input_price_per_m", 0),
-                row.get("output_price_per_m", 0),
-                row.get("currency", "USD"),
-            )
-            pricing_restored += 1
-
-    # 可选写入 .env 文件
-    env_written: list[str] = []
-    if write_env:
-        env_data: dict[str, str] = data.get("env") or {}
-        if env_data:
-            env_path = BASE_DIR / ".env"
-            # 读取现有内容
-            existing_lines: list[str] = []
-            if env_path.exists():
-                existing_lines = env_path.read_text(encoding="utf-8").splitlines()
-
-            existing_keys: dict[str, int] = {}
-            for idx, line in enumerate(existing_lines):
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#") and "=" in stripped:
-                    k = stripped.split("=", 1)[0].strip()
-                    existing_keys[k] = idx
-
-            updated_lines = list(existing_lines)
-            for k, v in env_data.items():
-                if not v:
+    try:
+        # 还原 prompt 文件
+        prompts_restored: list[str] = []
+        if prompt_files:
+            import os as _os
+            from backend.app.services.common import prompt_dir
+            prompt_directory = Path(prompt_dir())
+            prompt_directory.mkdir(parents=True, exist_ok=True)
+            for filename, content in prompt_files.items():
+                # 基本安全校验
+                if not filename or ".." in filename or "/" in filename or "\\" in filename or not filename.endswith(".txt"):
                     continue
-                new_line = f"{k}={v}"
-                if k in existing_keys:
-                    updated_lines[existing_keys[k]] = new_line
-                else:
-                    updated_lines.append(new_line)
-                env_written.append(k)
+                dest = prompt_directory / filename
+                dest.write_text(content, encoding="utf-8")
+                prompts_restored.append(filename)
 
-            env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+    except Exception as exc:
+        raise RuntimeError("Configuration database import committed; Prompt files restoration failed") from exc
+
+    try:
+        # 还原模型计价
+        pricing_restored = 0
+        if model_pricing:
+            for row in model_pricing:
+                model_name = row.get("model")
+                if not model_name:
+                    continue
+                update_model_pricing(
+                    model_name,
+                    row.get("input_price_per_m", 0),
+                    row.get("output_price_per_m", 0),
+                    row.get("currency", "USD"),
+                )
+                pricing_restored += 1
+
+    except Exception as exc:
+        raise RuntimeError("Configuration database import committed; model pricing restoration failed") from exc
+
+    try:
+        # 可选写入 .env 文件
+        env_written: list[str] = []
+        if write_env:
+            env_data: dict[str, str] = data.get("env") or {}
+            if env_data:
+                env_path = BASE_DIR / ".env"
+                # 读取现有内容
+                existing_lines: list[str] = []
+                if env_path.exists():
+                    existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+
+                existing_keys: dict[str, int] = {}
+                for idx, line in enumerate(existing_lines):
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#") and "=" in stripped:
+                        k = stripped.split("=", 1)[0].strip()
+                        existing_keys[k] = idx
+
+                updated_lines = list(existing_lines)
+                for k, v in env_data.items():
+                    if k not in _EXPORT_ENV_KEYS or not v:
+                        continue
+                    new_line = f"{k}={v}"
+                    if k in existing_keys:
+                        updated_lines[existing_keys[k]] = new_line
+                    else:
+                        updated_lines.append(new_line)
+                    env_written.append(k)
+
+                env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+
+    except Exception as exc:
+        raise RuntimeError("Configuration database import committed; environment file restoration failed") from exc
 
     # 重载运行配置
     try:
         from backend.config import config as runtime_config
         runtime_config.reload_config()
+    except storage.Error:
+        raise
     except Exception as e:
         logger.warning(f"⚠️ 导入后重载配置失败: {e}")
 

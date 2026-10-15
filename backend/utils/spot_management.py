@@ -14,11 +14,11 @@ def _intent(config_id, symbol, operation_id, target, action, metadata):
     if claim:
         metadata = {**metadata,'physical_account':claim['physical_account']}
     with database.get_db_conn() as conn:
-        existing = conn.execute('SELECT payload FROM spot_management_intents WHERE config_id=? AND operation_id=?',
+        existing = conn.execute('SELECT payload FROM spot_management_intents WHERE config_id=%s AND operation_id=%s',
                                 (config_id, operation_id)).fetchone()
         if existing:
             raise ValueError('Original spot action is already recorded; query its identity instead of resubmitting')
-        conn.execute('INSERT INTO spot_management_intents VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO spot_management_intents(config_id,operation_id,symbol,target_id,action,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                      (config_id,operation_id,symbol,target,action,json.dumps(metadata)))
         conn.commit()
 
@@ -27,7 +27,7 @@ def recover_spot_action(mt, config_id, symbol, operation_id, args, previous):
     """Query an exact recorded native mutation; never claim, cancel or amend."""
     from backend.mcp.spot_orders import _TERMINAL
     with database.get_db_conn() as conn:
-        row = conn.execute('SELECT * FROM spot_management_intents WHERE config_id=? AND operation_id=? AND symbol=?',
+        row = conn.execute('SELECT * FROM spot_management_intents WHERE config_id=%s AND operation_id=%s AND symbol=%s',
                            (config_id,operation_id,symbol)).fetchone()
     if not row:
         return None
@@ -57,7 +57,7 @@ def recover_spot_action(mt, config_id, symbol, operation_id, args, previous):
                 finish_spot_edit(config_id,operation_id,symbol,observed,confirmed=confirmed)
         if metadata.get('claim_id'):
             with database.get_db_conn() as conn:
-                claim = conn.execute("SELECT * FROM visible_management_claims WHERE claim_id=? AND state='owned'", (metadata['claim_id'],)).fetchone()
+                claim = conn.execute("SELECT * FROM visible_management_claims WHERE claim_id=%s AND state='owned'", (metadata['claim_id'],)).fetchone()
             if claim:
                 from backend.utils.visible_management import _decode
                 link_resource(_decode(claim), metadata.get('resource_id', 'order:'+row['target_id']), None,
@@ -79,7 +79,7 @@ def _historical_inventory(mt, base, exits):
     from backend.mcp.spot_orders import _order, _fees_and_fills
     with database.get_db_conn() as conn:
         buys = [dict(row) for row in conn.execute("SELECT order_id,symbol,MIN(timestamp) AS timestamp FROM orders "
-                "WHERE config_id=? AND trade_mode='SPOT_DCA' AND UPPER(side) IN ('BUY','BUY_LIMIT') "
+                "WHERE config_id=%s AND trade_mode='SPOT_DCA' AND UPPER(side) IN ('BUY','BUY_LIMIT') "
                 "AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' GROUP BY symbol,order_id", (mt.config_id,))
                 if row['symbol'].split('/')[0] == base]
     if not buys:
@@ -123,11 +123,11 @@ def visible_inventory(mt, symbol, *, claim=None):
     current = claim or next((c for c in scopes if c['market_type'] == 'spot' and c['resource'] == base), None)
     historical = 0.0
     with database.get_db_conn() as conn:
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         if 'spot_order_fills' in tables:
-            historical = float(conn.execute("SELECT COALESCE(SUM(filled_qty),0) FROM spot_order_fills WHERE config_id=? AND symbol LIKE ?",
+            historical = float(conn.execute("SELECT COALESCE(SUM(filled_qty),0) FROM spot_order_fills WHERE config_id=%s AND symbol LIKE %s",
                                             (mt.config_id, base + '/%')).fetchone()[0])
-        existing = conn.execute('SELECT payload FROM management_resource_links WHERE claim_id=? AND identity=?',
+        existing = conn.execute('SELECT payload FROM management_resource_links WHERE claim_id=%s AND identity=%s',
                                 (current['claim_id'], 'inventory:' + base)).fetchone() if current else None
     baseline = json.loads(existing['payload']) if existing else {}
     exits = [r for r in _managed_rows(mt) if r['symbol'].split('/')[0] == base]
@@ -323,9 +323,9 @@ def execute_spot_action(config_id, symbol, action, operation_id):
                     result={'status':'failed','error_code':type(exc).__name__,'order_id':'regular:'+target,
                             'symbol':symbol,'message':'Native amend was rejected; the original order commitment is retained.'}
                     with database.get_db_conn() as conn:
-                        saved=conn.execute('SELECT payload FROM spot_management_intents WHERE config_id=? AND operation_id=?',(config_id,operation_id)).fetchone()
+                        saved=conn.execute('SELECT payload FROM spot_management_intents WHERE config_id=%s AND operation_id=%s',(config_id,operation_id)).fetchone()
                         metadata=json.loads(saved[0]);metadata['failed_result']=result
-                        conn.execute('UPDATE spot_management_intents SET payload=? WHERE config_id=? AND operation_id=?',(json.dumps(metadata),config_id,operation_id))
+                        conn.execute('UPDATE spot_management_intents SET payload=%s WHERE config_id=%s AND operation_id=%s',(json.dumps(metadata),config_id,operation_id))
                         conn.commit()
                     if order['side']=='buy':
                         from backend.utils.spot_execution import finish_spot_reservation

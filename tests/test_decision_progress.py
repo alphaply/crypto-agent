@@ -63,7 +63,7 @@ def test_stream_with_no_reasoning_still_publishes_model_and_tool_progress():
 def test_live_loop_preserves_prior_turns_receipts_and_skipped_calls_after_reload(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'progress.sqlite'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
     scheduled = '2026-10-10 12:00:00'
     scheduler._insert_scheduler_run('cfg', scheduler.AGENT_JOB_TYPE, scheduled)
     events = []
@@ -92,3 +92,8 @@ def test_live_loop_preserves_prior_turns_receipts_and_skipped_calls_after_reload
     assert [item['status'] for item in saved['execution_results']] == ['completed', 'unknown', 'skipped']
     assert 'private system prompt' not in json.dumps(saved)
     assert any(event['phase'] == 'tool_running' and event['decision']['execution_results'] for event in events)
+
+
+@pytest.fixture(autouse=True)
+def isolated_postgres(pg):
+    yield

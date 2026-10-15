@@ -13,10 +13,10 @@ from backend.utils.trade_review import daily_exchange_evidence
 
 
 @pytest.fixture
-def local_db(tmp_path):
+def local_db(tmp_path, financial_pg):
     with patch.object(database, 'DB_NAME', str(tmp_path / 'test.db')):
         with database.get_db_conn() as conn:
-            initialize_schema(conn)
+            pass  # PostgreSQL migrations are installed by financial_pg.
         yield
 
 
@@ -58,7 +58,7 @@ def test_filled_position_racing_management_cannot_be_resurrected(local_db):
 
 def test_protection_monitor_runs_disabled_config_without_scheduling_duplicate_jobs(local_db):
     with database.get_db_conn() as conn:
-        conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('cfg', 'ETH/USDT', 'LONG', '{"state":"WAITING"}'))
+        conn.execute('INSERT INTO real_protection_plans (config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)', ('cfg', 'ETH/USDT', 'LONG', '{"state":"WAITING"}'))
         conn.commit()
     calls = []
     def submit(fn, cfg):
@@ -118,3 +118,9 @@ def test_invalid_management_arguments_are_rejected_before_exchange_initializatio
         with pytest.raises(ValueError):
             run_trade_tool('update_position_protection_real', {'pos_side': 'LONG', 'stop_loss': -10, 'reason': 'invalid'}, 'cfg', 'ETH/USDT')
     factory.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

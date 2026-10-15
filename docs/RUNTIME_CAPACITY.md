@@ -1,222 +1,50 @@
-# Runtime capacity
+# 工具调用链路：并发与资源观测
 
-Web and scheduler enforce **separate process-local budgets**. Their container
-limits and observed peaks must both fit the declared host capacity. See
-[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for verified capacity profiles and
-[RESOURCE_DIAGNOSTICS.md](RESOURCE_DIAGNOSTICS.md) for effective limits and
-persistent incident evidence. Publishing an image does not change production
-container limits.
+2026-10-15 起，工具调用链路移除内存/缓存准入门槛、CPU 配额对线程数的进一步压缩、归属索引时间片和累计执行预算。保留并发、请求/响应超时、重试、账户锁、订单归属校验和现货定投资金预算。确认范围见 [限制清单](LIMITS_REVIEW_20261015.md)。
 
-Python 3.11 or newer is required for incremental SQLite blob reads. Size checks
-open the stored blob and inspect its byte length before allocating its contents.
-`length(CAST(payload AS BLOB))` and `substr(CAST(...))` are not safe substitutes:
-SQLite can materialize the whole value inside its own VM.
+## 并发与请求超时
 
-## Worker admission
+`RUNTIME_CAPACITY_ENABLED=true` 控制进程总并发、角色和队列准入。顺序子工作复用父任务名额，并行子工作单独申请。关键恢复保留名额包含在总量内。物理线程在响应超时或客户端断开后仍持有名额，直到完成；不得因调用方离开而重放金融操作。
 
-`runtime_capacity` counts a worker when it is committed to an executor, before
-execution begins. `active` includes such commitments; `running` records workers
-that have actually started. There is one total budget across Agent, MCP reads,
-MCP writes/authentication, maintenance, recovery, memory, news, metadata, streams
-and Paper. Dedicated executor limits remain additional bounds.
+`RUNTIME_CAPACITY_ENABLED=false` 保持原有仅观测并发的行为。两个模式下，字节数与内存压力都不拒绝任务。scheduler 使用 `SCHEDULER_MAX_WORKERS`，不再按 CPU 配额缩小。
 
-Sequential child work borrows its parent's live lease. Parallel children acquire
-their own commitments before submission. Saturated parallel fan-out returns
-`CapacityBusy` within its wait budget, rather than waiting indefinitely for a
-parent-held slot. Eligible queued work advances in FIFO order; a blocked role
-does not prevent another eligible role or reserved recovery from progressing.
-There is no unbounded executor backlog behind this admission boundary.
+MCP 响应等待默认读取 20 秒、执行 40 秒、认证 3 秒、恢复 20 秒，变量名为 `MCP_READ/EXECUTE/AUTH/RECOVERY_TIMEOUT_SECONDS`。旧 `MCP_*_BUDGET_SECONDS` 兼容为响应超时；新变量优先。响应超时不会令物理线程后续读取和落盘立即失败。
 
-`critical=True` permits original-result recovery and existing protection duties
-to use reserved workers. Reserved workers are **included in the total**. Pausing
-decisions does not release durable ownership or authorize another task to claim
-an unresolved position. Pressure admission restricts ordinary work while bounded
-critical maintenance remains available. All work still obeys its role limit.
+每次交易所 HTTP 请求独立应用 `MCP_DEPENDENCY_TIMEOUT_SECONDS`（默认 8 秒）及客户端传输超时。队列、锁和数据库请求仍有各自超时。超时不代表订单未提交或已成交，仍需按原操作身份核验。
 
-A caller deadline/disconnect does not release a running worker. MCP returns the
-timeout stage while the physical worker keeps its lease until completion. A
-successfully cancelled, demonstrably unstarted queued future releases only its
-own commitment. Financial recovery uses original identities; neither cancellation
-nor a worker disappearing authorizes replay or continuation of an unattempted
-batch tail. An authoritative trading ACK returns directly; it does not acquire
-another read slot for compulsory post-submit order/position verification.
+## 完整证据与分页
 
-MCP request budgets include local/global queues and dependencies. A passed
-absolute monotonic parent `deadline` further bounds the pool budget; nested
-`current_budget` deadlines are inherited. Paper maintenance uses this to preserve
-one round deadline across individual calls. Authentication runs off the event
-loop. Health and static pages use lightweight routes independent of exchange
-worker waits.
-Paper original-receipt/batch recovery uses the dedicated internal `recovery`
-pool, which acquires a critical recovery lease from the same total. It does not
-queue behind ordinary read-pool workers before attempting reserved admission.
+归属索引在一次调用里继续所有数据库页，`RUNTIME_SCAN_BATCH_SIZE` 仅控制每页读取量，不限制总记录数或执行时间。全部来源扫描完成后再处理 algo 别名冲突，保留跨页普通订单证据。真实失败后的持久游标仍可恢复。无效证据和并发身份变化如实报告。
 
-Scheduler Agent sizing uses the smaller of the configured Agent count and the
-ceiling of readable effective CPU quota/affinity. Missing quota/affinity remains
-unavailable in diagnostics; it is not replaced with a purported measured host
-CPU count. The verified profile/container CPU limit remains the operational
-capacity boundary.
+迁移 `0005` 避免仅观察字段变化反复重置归属扫描；`0006` 删除计划大小导致 UNKNOWN 的条件，并重新推进旧活动索引。无效 JSON 仍为 UNKNOWN，原始记录保留。
 
-## Public metadata, clients and observations
+成交和资金流水同步持续到请求范围完整或真实依赖/数据错误，不再设置总调用次数和页数预算。交易所每页长度及原有查询范围不变。回执恢复和 Paper 维护不再共享整轮截止时间；后台分页、游标和重试退避保留。
 
-Every backend `load_markets` call goes through `public_catalogue`. Public cache
-keys distinguish venue, market type, public endpoint maps, precision mode and
-public options/version. Credentials and credential rotation do not create public
-metadata identities. Different public options/endpoints intentionally remain
-different keys. Web and scheduler each load their own process-local copy.
+HTTP 正文、存储记录、市场目录、报价、成交流批次、新闻缓存及 Paper payload 不因字节或缓存数量门槛拒绝或跳过。Paper 订单承诺完整读取。模型回执保留事实投影，但不再因 4 KiB/32 KiB 硬预算拒绝或删除已投影字段。完整原始证据仍持久保存。
 
-Cold loading and refresh are single-flight per key. A dedicated anonymous CCXT
-loader obtains public metadata. Its raw response body is bounded before JSON
-parsing. Compact snapshots retain normalized fields and native fields required
-by the pinned CCXT implementation (`orderTypes`, filters, OKX `uly`/`instFamily`,
-Binance `pair`, and related execution capabilities). Unused native payload is
-discarded. Compaction checks retained byte limits before copying each row.
+## 缓存与观测
 
-Each mutable account client gets independent compact markets, currencies,
-derived CCXT indexes, time adjustment and credentials. Mutating one client cannot
-mutate another. Account coordinator keys remain credential-sensitive because
-pacing and account mutual exclusion must follow the actual account credentials.
-Client slots have a separate entry cap and a base byte commitment in addition to
-their metadata copies, so a tiny directory cannot admit unbounded SDK clients.
+市场目录键仍区分交易所、市场类型、端点和公开选项。匿名公开加载、单次共享刷新、紧凑标准字段和独立可变客户端保持不变。账户凭证区分账户协调器，不进入公开目录身份。失败刷新保留旧观察时间，过期信息不会成为新的账户证据。
 
-Byte commitments include retained compact cache entries, mutable consumers,
-refresh old/new overlap, parsed loader/snapshot space, bounded HTTP buffers,
-quotes and coordinators. A refresh reserves its peak **before** loading. Its new
-retained snapshot transfers bytes out of that already-admitted reservation, so
-two simultaneous refreshes cannot both deadlock on a second allocation at the
-aggregate limit. Raw loader size is constrained by refresh space; retained
-snapshot size is constrained separately by the catalogue limit.
+TTL、空闲退休和显式关闭释放缓存。活动锁与用户引用保持固定。字节 lease 仅记录估算占用，不作准入；诊断显示 `byte_limit=null`、`memory_limits_enabled=false`。估算不是 RSS。RSS/cgroup 与内存压力保持观测。
 
-These are conservative Python-object/commitment estimates, not RSS. Recursive
-size traversal counts each object identity once and stops at its bound. Real RSS,
-cgroup current/peak, CPU throttling and allocator retention are measured
-independently during dual-container verification.
-
-Public quotes also use bounded single-flight refresh. A failed refresh preserves
-the old observation time and does not publish a new success timestamp. Expired
-public observations are not current private-account evidence or write admission.
-Metadata refresh failures retain source/observation information on the exception
-and in bounded cache diagnostics. Reads that require current metadata fail
-explicitly; the cache does not silently authorize trades with stale metadata.
-
-Clients release their consumer/account references on close. Idle cache entries,
-quote refresh locks and coordinators are retired on maintenance and later
-access. Entry/byte caps can reclaim unreferenced LRU objects earlier. Active
-refreshes, locks and account users are pinned. Credential lookup pins the
-coordinator under the same lock as lookup, preventing retirement races from
-creating duplicate account locks. Deleting a task does not delete durable trade
-receipts, ownership evidence or unknown submission identities.
-
-## Bounded protection and ownership scans
-
-`protection_plan_activity` is a small indexed projection of original plan state,
-size and observation time. Triggers keep new writes atomic with the original
-plan. Legacy indexing advances with a persistent bounded cursor. DONE plans are
-excluded at the storage index before polling. Oversized/malformed originals stay
-UNKNOWN; incomplete legacy indexing remains explicit, and original JSON is
-retained. The projection never changes a financial fact or releases ownership.
-Recent completed-plan metadata has a separate bounded cursor so late-fill
-accounting can continue for paused tasks without loading DONE plan JSON or
-returning completed plans to protection polling.
-
-Execution ownership migration uses durable phases/cursors and disk-backed
-regular/conditional identity evidence. It scans bounded pages of events, current
-plans and legacy orders, retaining a fixed snapshot of each accepted source.
-Only after all source facts are examined can ambiguous algo aliases be retired
-and candidate links published. Positive regular-order evidence on later pages
-therefore cannot be lost. Work resumes after process restart. Oversized sources
-remain unprocessed with an incomplete result; synchronization performs no
-exchange reads until ownership indexing is complete. Raw stream fills may be
-saved without assigning a new owner while historical ownership is incomplete.
-Default execution context exposes that incompleteness instead of treating a
-partial historical index as a complete reconciliation.
-
-## Binance spot metadata response sizing
-
-On 2026-10-15 the production `/api/v3/exchangeInfo` response contained 3,729 symbols: 322,077 compressed bytes, but 17,767,621 decoded bytes. The HTTP bound correctly applies to decoded content and rejected it at 8 MiB. Public Binance spot refreshes now request `showPermissionSets=false`, which leaves the symbol scope unchanged and omits a field neither CCXT nor the retained catalogue consumes. The measured decoded body becomes 6,759,438 bytes; the 8 MiB HTTP limit remains enforced. Futures requests do not receive the spot-only parameter.
-
-The actual CCXT raw maps occupied 34,819,893 resident bytes and the retained compact maps 32,641,483 bytes, exceeding the former 64 MiB refresh budget together. Defaults now reserve 128 MiB for a refresh and allow 512 MiB of aggregate commitments, including warm old/new catalogues and client copies. Owned loader maps are cleared before releasing refresh space. Production concurrent spot/swap cold loads and expired refreshes succeeded with a measured commitment peak of 495,366,640 bytes and process peak RSS of 303,536 KiB in a separate diagnostic process. This is dependency sizing evidence, not a replacement for isolated resource acceptance or authenticated MCP verification.
-
-Use the frozen `scripts/capacity/metadata-fix-v13.json` for local resource acceptance and `scripts/capacity/production-metadata-fix-v1.json` for the upgraded target host. Historical v12 reports and profiles remain unchanged.
-
-## Explicit observation mode
-
-`RUNTIME_CAPACITY_ENABLED=false` disables application resource admission for a user-requested host sizing test. Worker/queue/role and aggregate byte commitments remain observable but do not reject work; MCP calls start physical workers without its configured pool/queue admission caps. HTTP decoded-body, public catalogue/client/coordinator, quote/news cache and runtime record-size gates are bypassed. Idle retirement, cache TTL, actual account mutexes/rate limiting, request deadlines, SQLite transactions, payload contracts and trading ownership/idempotency remain active. This is an explicit restart-required environment setting; the default remains `true`. Invalid boolean values fail clearly. Existing non-admission executor topology and product result/page sizes are unchanged.
-
-Diagnostics expose `capacity.settings.limits_enabled=false` and `mode=observe_only`, so configured numeric budgets are not mistaken for enforced ceilings. Resource leases still follow the physical worker after caller cancellation or timeout. Process RSS and host/cgroup measurements remain the evidence for actual memory consumption. Do not interpret estimated byte commitments as measured RSS.
-
-For the 8GiB server test, production also omits Docker memory/swap/CPU quotas and `RESOURCE_EXPECTED_*` declarations; the source/image, telemetry, read-only query outcomes, swap/OOM and host available memory are recorded separately. An interrupted or failed bounded acceptance is never relabelled as an accepted unbounded workload.
-
-## Settings
-
-All values below are finite **calibration defaults**, not verified production
-sizing. A frozen measured capacity profile supplies the accepted deployment
-values. Invalid numeric/role configuration raises a clear error.
-
-| Setting | Default | Meaning |
+| 配置 | 默认 | 含义 |
 | --- | ---: | --- |
-| `RUNTIME_CAPACITY_ENABLED` | true | Enforce capacity gates; false keeps observation and lifecycle tracking only |
-| `RUNTIME_CAPACITY_TOTAL_WORKERS` | 8 | Process-wide committed workers |
-| `RUNTIME_CAPACITY_RESERVED_WORKERS` | 2 | Critical reserve included in total; must be smaller than total |
-| `RUNTIME_CAPACITY_QUEUE_LIMIT` | 16 | Process-wide waiting tickets; 0 allows immediate admission only |
-| `RUNTIME_CAPACITY_QUEUE_SECONDS` | 2 | Admission wait budget |
-| `RUNTIME_CAPACITY_BYTES` | 536870912 | Total admitted retained/transient bytes |
-| `RUNTIME_CAPACITY_ROLE_LIMITS` | `{}` | JSON overrides for the fixed role map |
-| `RUNTIME_CATALOGUE_BYTES` | 67108864 | Aggregate retained compact catalogue bytes, including replacement overlap |
-| `RUNTIME_CATALOGUE_REFRESH_BYTES` | 134217728 | One raw-loader/compact refresh peak; default is twice retained catalogue cap and at least 8× response cap |
-| `RUNTIME_CATALOGUE_ENTRIES` | 32 | Retained/in-flight public keys |
-| `RUNTIME_HTTP_RESPONSE_BYTES` | 8388608 | Bounded streamed response body; separate parse amplification commitment |
-| `RUNTIME_CACHE_IDLE_SECONDS` | 300 | Idle retirement for unused runtime resources |
-| `RUNTIME_CATALOGUE_TTL_SECONDS` | 300 | Metadata refresh TTL |
-| `RUNTIME_CATALOGUE_RETRY_SECONDS` | 2 | Failed metadata refresh backoff |
-| `RUNTIME_COORDINATOR_ENTRIES` | 128 | Account coordinator key cap |
-| `RUNTIME_CLIENT_ENTRIES` | 32 | Live consumer/client slots, including failed initializers until close/GC |
-| `RUNTIME_CLIENT_BASE_BYTES` | 262144 | Base SDK/client commitment in addition to metadata copies |
-| `RUNTIME_QUOTE_ENTRIES` | 256 | Public observations/refresh-lock key cap |
-| `RUNTIME_QUOTE_BYTES` | 8388608 | Retained quote and copy commitment cap |
-| `RUNTIME_QUOTE_REFRESH_BYTES` | 16777216 | One quote refresh parse/clone reservation |
-| `RUNTIME_SCAN_BATCH_SIZE` | 32 | Protection/ownership references per bounded page |
-| `RUNTIME_MAX_RECORD_BYTES` | 4194304 | Full original record decode limit |
-| `RUNTIME_INDEX_SCAN_SECONDS` | 0.25 | Ownership indexing time budget checked between records, plus page-size bound |
-| `MCP_RECOVERY_CONCURRENCY` | 2 | Dedicated internal original-result recovery workers within total/role budget |
-| `MCP_RECOVERY_QUEUE_LIMIT` | 4 | Bounded internal recovery queue |
-| `MCP_RECOVERY_BUDGET_SECONDS` | 20 | Recovery request budget, further bounded by its parent round |
+| `RUNTIME_CAPACITY_ENABLED` | true | 并发/排队准入开关 |
+| `RUNTIME_CAPACITY_TOTAL_WORKERS` | 8 | 总物理工作承诺 |
+| `RUNTIME_CAPACITY_RESERVED_WORKERS` | 2 | 包含在总数内的恢复保留名额 |
+| `RUNTIME_CAPACITY_QUEUE_LIMIT` | 16 | 等待队列 |
+| `RUNTIME_CAPACITY_QUEUE_SECONDS` | 2 | 排队超时 |
+| `RUNTIME_CAPACITY_ROLE_LIMITS` | `{}` | 固定角色并发配置 |
+| `RUNTIME_SCAN_BATCH_SIZE` | 32 | 数据库每页大小 |
+| `RUNTIME_CACHE_IDLE_SECONDS` | 300 | 空闲退休 |
+| `RUNTIME_CATALOGUE_TTL_SECONDS` | 300 | 目录有效期 |
+| `RUNTIME_CATALOGUE_RETRY_SECONDS` | 2 | 刷新失败退避 |
 
-Default role limits are Agent 2, MCP read 4, MCP execute 2, MCP auth 2,
-maintenance 2, recovery 2, memory 2, news 4, metadata 2, stream 2 and Paper 2.
-They are ceilings within the aggregate budget. MCP pool concurrency/queue and
-request budgets add their own constraints; fractional worker counts, invalid
-numbers and out-of-range values are rejected rather than silently clamped.
+旧 `RUNTIME_*_BYTES/ENTRIES/ITEMS`、`RUNTIME_INDEX_SCAN_SECONDS`、`RUNTIME_RECOVERY_SECONDS`、`MCP_MANAGEMENT_DISCOVERY_BUDGET_SECONDS`、`PAPER_MAX_PAYLOAD_BYTES`、`PAPER_MAINTENANCE_SECONDS` 不再设置工具门槛。无需继续增大这些环境值解决未同步。字段契约、权限、交易金额/精度与现货定投资金预算语义不变。
 
-For example, with total 6 and reserve 2, ordinary work can commit at most 4
-workers. Two critical jobs may use the remaining workers, subject to role caps;
-the total is still at most 6. If a timed-out ordinary worker is still running,
-it remains in those four commitments.
+## 部署与历史证据
 
-Run focused offline verification with Python 3.11:
+仓库 Compose 不再设置 CPU/内存/swap 配额。推镜像不会修改服务器 Compose 或已运行容器配额；需同步该修改并重建相应容器，见 [部署指南](DEPLOYMENT_GUIDE.md)。数据库迁移仍须在新程序启动前完成。
 
-```powershell
-uv run --python 3.11 python -m pytest -q tests/test_runtime_capacity.py tests/test_public_catalogue.py tests/test_mcp_capacity_integration.py tests/test_mcp_resilience.py tests/test_protection_scan.py tests/test_execution_plan_index.py
-```
-
-These tests verify admission/lifetime, single-flight loading, actual CCXT
-precision and contract units, isolation, cache retirement, parent deadlines,
-bounded active-plan migration and cross-page alias evidence. The capacity
-verification reports provide actual dual-container peak and SLO evidence; unit
-tests alone do not establish a safe production memory/swap/CPU allocation.
-
-News source parsing holds `RUNTIME_NEWS_WORK_BYTES` (32 MiB by default) within
-the aggregate byte budget. The three memory/failure/digest caches together use
-at most `RUNTIME_NEWS_CACHE_BYTES` (16 MiB); each cache and the live source-lock
-map use `RUNTIME_NEWS_CACHE_ENTRIES` (64). Source locks retire after the last
-waiting/active user. Cache commitments release when their actual retained
-values are no longer referenced. Busy fetching preserves durable stale facts
-and explicit source health rather than creating additional workers.
-
-Execution and announcement streams reserve `RUNTIME_STREAM_BYTES` (8 MiB)
-before starting each physical thread. Execution batches contain at most
-`RUNTIME_STREAM_ITEMS` (1000) trades. Idle receive checks allow shutdown;
-reconnect backoff is interruptible. Credential replacement first stops the old
-worker and waits for it to finish; only its `finally` releases commitments.
-Deleted/unused configurations are retired by maintenance. These commitments
-estimate work sets; cgroup/RSS observations independently measure actual memory.
+旧容量 profile 和 [验收记录](CAPACITY_VERIFICATION.md) 保留为历史测量，不代表本版本强制阈值。事务规则见 [PostgreSQL 并发](POSTGRES_CONCURRENCY.md)，监控见 [资源诊断](RESOURCE_DIAGNOSTICS.md)。

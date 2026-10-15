@@ -34,8 +34,8 @@ def test_actual_memory_model_receives_latest_identity_in_both_writers(real_short
     call('get_trade_operation', {'target_operation_id': 'memory-close'}, 'read-memory-close')
     stamp = '2026-10-13 10:00:00'
     with database.get_db_conn() as conn:
-        sid = conn.execute('INSERT INTO summaries(config_id,symbol,timestamp,strategy_logic,decision_json) VALUES(?,?,?,?,?)',
-                           ('cfg', 'ETH/USDT', stamp, '本轮策略条件只出现一次', raw)).lastrowid
+        sid = conn.execute('INSERT INTO summaries(config_id,symbol,timestamp,strategy_logic,decision_json) VALUES(%s,%s,%s,%s,%s) RETURNING id',
+                           ('cfg', 'ETH/USDT', stamp, '本轮策略条件只出现一次', raw)).fetchone()[0]
         conn.commit()
     cfg = dict(config_id='cfg', symbol='ETH/USDT', mode='REAL', exit_mode='independent_exits', model='offline')
     monkeypatch.setattr(memory_service.global_config, 'get_config_by_id', lambda cid: cfg if cid == 'cfg' else None)
@@ -58,14 +58,16 @@ def test_actual_memory_model_receives_latest_identity_in_both_writers(real_short
     assert 'memory-close' not in sent[0]
     assert 'resolution' not in sent[0]
     with database.get_db_conn() as conn:
-        assert conn.execute('SELECT decision_json FROM summaries WHERE id=?', (sid,)).fetchone()[0] == raw
+        assert conn.execute('SELECT decision_json FROM summaries WHERE id=%s', (sid,)).fetchone()[0] == raw
 
 
 @pytest.fixture
-def local_db(tmp_path):
+def local_db(tmp_path, monkeypatch):
+    registered = {"config_id": "cfg", "symbol": "ETH/USDT", "mode": "STRATEGY"}
+    monkeypatch.setattr(agent_graph.global_config, "get_config_by_id", lambda cid: registered if cid == "cfg" else None)
     with patch.object(database, 'DB_NAME', str(tmp_path / 'test.db')):
         with database.get_db_conn() as conn:
-            initialize_schema(conn)
+            pass  # Full schema is created by pg.
         yield
 
 
@@ -134,7 +136,7 @@ def test_short_memory_includes_local_7d_closed_positions_and_stats(local_db):
                    position_id,account_scope,config_id,symbol,side,opened_at_ms,closed_at_ms,
                    entry_price,close_price,amount,take_profit,stop_loss,realized_pnl,
                    fees_json,exit_reason,updated_at_ms,payload
-               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
                 'test_pos_1', 'scope', 'cfg', 'ETH/USDT:USDT', 'SHORT',
                 int(opened.timestamp() * 1000), int(now.timestamp() * 1000),
@@ -163,8 +165,8 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
     cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL'}
     monkeypatch.setattr(agent_graph.global_config, 'get_all_symbol_configs', lambda: [cfg])
     with database.get_db_conn() as conn:
-        conn.executemany(
-            'INSERT INTO balance_history(timestamp,symbol,config_id,total_equity) VALUES(?,?,?,?)',
+        conn.cursor().executemany(
+            'INSERT INTO balance_history(timestamp,symbol,config_id,total_equity) VALUES(%s,%s,%s,%s)',
             [('2026-09-01', 'ETH/USDT', 'cfg', 100),
              ('2026-09-02', 'ETH/USDT', 'cfg', 80),
              ('2026-09-03', 'ETH/USDT', 'cfg', 92),
@@ -173,7 +175,7 @@ def test_all_memory_writers_receive_equity_and_ledger_once(local_db, monkeypatch
         )
         if writer != 'empty_bucket':
             conn.execute(
-                'INSERT INTO summaries(timestamp,symbol,config_id,strategy_logic) VALUES(?,?,?,?)',
+                'INSERT INTO summaries(timestamp,symbol,config_id,strategy_logic) VALUES(%s,%s,%s,%s)',
                 ('2026-09-28 09:00:00', 'ETH/USDT', 'cfg', 'new support'),
             )
         conn.commit()
@@ -218,3 +220,6 @@ def test_empty_window_failed_compression_keeps_previous_memory(local_db, monkeyp
     assert not memory_service.generate_rolling_short_memory_for_config('cfg', now_cn=now)
     assert database.get_short_memories('cfg', 1)[0]['market_summary'] == 'prior memory and risk'
     assert 'prior memory and risk' not in decision_context.format_short_memory_for_llm('cfg')
+
+
+pytestmark = pytest.mark.usefixtures("pg")

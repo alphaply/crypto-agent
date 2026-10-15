@@ -1,7 +1,7 @@
 import concurrent.futures
 import json
 import os
-import sqlite3
+from backend import storage
 import time
 import threading
 import math
@@ -57,9 +57,7 @@ MAINTENANCE_JOB_TYPE = "maintenance"
 
 def _scheduler_max_workers() -> int:
     configured = positive_setting('SCHEDULER_MAX_WORKERS', get_capacity_manager().role_limits['agent'])
-    from backend.utils.resource_diagnostics import read_effective_resources
-    available = read_effective_resources()['cpu']['effective_cpus']
-    return min(configured, max(1, math.ceil(available))) if available is not None else configured
+    return configured
 
 
 def _maintenance_max_workers() -> int:
@@ -107,7 +105,7 @@ def _insert_scheduler_run(config_id: str, job_type: str, scheduled_at: str, stat
                 INSERT INTO scheduler_runs (
                     config_id, job_type, scheduled_at, status, started_at,
                     finished_at, error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(config_id),
@@ -123,7 +121,7 @@ def _insert_scheduler_run(config_id: str, job_type: str, scheduled_at: str, stat
             )
             conn.commit()
         return True
-    except sqlite3.IntegrityError:
+    except storage.IntegrityError:
         return False
 
 
@@ -131,8 +129,8 @@ def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status
     from backend.database import get_db_conn
 
     now_str = _timestamp()
-    started_at_sql = ", started_at = COALESCE(started_at, ?)" if status == "RUNNING" else ""
-    finished_at_sql = ", finished_at = ?" if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING", "SKIPPED_CAPACITY"} else ""
+    started_at_sql = ", started_at = COALESCE(started_at, %s)" if status == "RUNNING" else ""
+    finished_at_sql = ", finished_at = %s" if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING", "SKIPPED_CAPACITY"} else ""
     params = [status]
     if status == "RUNNING":
         params.append(now_str)
@@ -144,10 +142,10 @@ def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status
         conn.execute(
             f"""
             UPDATE scheduler_runs
-            SET status = ?{started_at_sql}{finished_at_sql},
-                error = ?,
-                updated_at = ?
-            WHERE config_id = ? AND job_type = ? AND scheduled_at = ?
+            SET status = %s{started_at_sql}{finished_at_sql},
+                error = %s,
+                updated_at = %s
+            WHERE config_id = %s AND job_type = %s AND scheduled_at = %s
             """,
             tuple(params),
         )
@@ -163,22 +161,22 @@ def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> 
     reasoning = event.get("reasoning_content")
     reasoning_tokens = event.get("reasoning_tokens")
     tool_calls = event.get("tool_calls")
-    assignments = ["phase = ?", "progress_message = ?", "updated_at = ?"]
+    assignments = ["phase = %s", "progress_message = %s", "updated_at = %s"]
     params = [phase, message, _timestamp()]
     if reasoning is not None:
-        assignments.append("reasoning_content = ?")
+        assignments.append("reasoning_content = %s")
         params.append(str(reasoning or ""))
     if reasoning_tokens is not None:
-        assignments.append("reasoning_tokens = ?")
+        assignments.append("reasoning_tokens = %s")
         params.append(max(int(reasoning_tokens or 0), 0))
     if tool_calls is not None:
-        assignments.append("tool_calls_json = ?")
+        assignments.append("tool_calls_json = %s")
         params.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
     if event.get('reasoning_diagnostics') is not None:
-        assignments.append('reasoning_diagnostics = ?')
+        assignments.append('reasoning_diagnostics = %s')
         params.append(json.dumps(event['reasoning_diagnostics'], ensure_ascii=False))
     if event.get('decision') is not None:
-        assignments.append('decision_json = ?')
+        assignments.append('decision_json = %s')
         params.append(json.dumps(event['decision'], ensure_ascii=False, default=str))
     params.extend([str(config_id), AGENT_JOB_TYPE, str(scheduled_at)])
 
@@ -187,7 +185,7 @@ def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> 
             f"""
             UPDATE scheduler_runs
             SET {', '.join(assignments)}
-            WHERE config_id = ? AND job_type = ? AND scheduled_at = ?
+            WHERE config_id = %s AND job_type = %s AND scheduled_at = %s
             """,
             tuple(params),
         )
@@ -211,9 +209,9 @@ def check_dca_executed(config_id, now, freq="1d"):
                 """
                 SELECT count(*) as cnt
                 FROM orders
-                WHERE config_id = ?
+                WHERE config_id = %s
                   AND trade_mode = 'SPOT_DCA'
-                  AND timestamp >= ?
+                  AND timestamp >= %s
                 """,
                 (config_id, query_time),
             )
@@ -231,7 +229,7 @@ def dca_was_dispatched(config_id, now, freq=None, config=None):
         return False
     from backend.database import get_db_conn
     with get_db_conn() as conn:
-        return bool(conn.execute('SELECT 1 FROM scheduler_runs WHERE config_id=? AND job_type=? AND scheduled_at>=? AND scheduled_at<=?',
+        return bool(conn.execute('SELECT 1 FROM scheduler_runs WHERE config_id=%s AND job_type=%s AND scheduled_at>=%s AND scheduled_at<=%s',
                                 (config_id, AGENT_JOB_TYPE, _scheduled_at(slot.astimezone(TZ_CN)), _scheduled_at(now.astimezone(TZ_CN)))).fetchone())
 
 
@@ -710,6 +708,9 @@ def tick_shared_services():
 
 
 def run_scheduler_forever():
+    from backend.utils.deployment_mode import maintenance_enabled
+    if maintenance_enabled():
+        raise RuntimeError('Scheduler is disabled during deployment maintenance')
     from backend.utils.resource_diagnostics import start_resource_collector
     start_resource_collector('scheduler')
     logger.info(f"[System] scheduler loop started (max_workers={_scheduler_max_workers()})")
@@ -718,7 +719,8 @@ def run_scheduler_forever():
         init_db()
         logger.info("Database initialized for scheduler")
     except Exception as e:
-        logger.error(f"Database initialization failed in scheduler: {e}")
+        logger.error("Database initialization failed in scheduler")
+        raise
 
     global_config.reload_config()
     _start_protection_monitor()
@@ -764,7 +766,7 @@ def protection_tick():
                                           after_cursor=_recent_plan_scan_cursor, limit=page_size)
         _recent_plan_scan_cursor = (completed[-1]['updated_at'], completed[-1]['plan_rowid']) if len(completed) == page_size else (0, 0)
         mock_ids = {r[0] for r in conn.execute("SELECT DISTINCT config_id FROM mock_orders WHERE status='OPEN'")}
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = storage.table_names(conn)
         if 'mock_positions' in tables:
             mock_ids.update(r[0] for r in conn.execute('SELECT DISTINCT config_id FROM mock_positions WHERE quantity>0'))
         if 'mock_exit_orders' in tables:
@@ -893,4 +895,10 @@ def _start_protection_monitor():
 
 
 if __name__ == "__main__":
-    run_scheduler_forever()
+    from backend.storage import close_pool
+    from backend.storage.checkpoints import close_checkpoints
+    try:
+        run_scheduler_forever()
+    finally:
+        close_checkpoints()
+        close_pool()

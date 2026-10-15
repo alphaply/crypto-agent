@@ -25,7 +25,7 @@ def processing(tmp_path, monkeypatch):
     monkeypatch.setenv('LANGCHAIN_TRACING_V2', 'false')
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'offline-processing-test')
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Full schema is created by pg.
     snapshot = {'news': {'scorer_provider_id': 'jev', 'summarizer_provider_id': 'summary'}, 'llm_providers': [
         {'provider_id': 'jev', 'name': 'Official Jev', 'model': 'jev-latest', 'api_protocol': 'decisions',
          'decisions_api': 'typesafe', 'api_key': 'test-secret', 'input_price_per_m': 0.042, 'output_price_per_m': 0},
@@ -313,3 +313,6 @@ def test_recovery_serializes_with_new_worker_start(processing):
         owner = future.result(timeout=3)
     recovered = database_news.processing_run(owner)
     assert recovered['status'] == 'running' and not recovered.get('interrupted')
+
+
+pytestmark = pytest.mark.usefixtures("pg")

@@ -1,4 +1,4 @@
-import sqlite3
+from backend import storage
 from unittest.mock import patch
 
 import pytest
@@ -24,23 +24,23 @@ def test_equity_loss_recovery_and_drawdown():
 def test_performance_is_strictly_scoped_and_uses_selected_window():
     from datetime import datetime
     from backend.utils.performance_context import performance_data
-    conn = sqlite3.connect(':memory:')
-    conn.row_factory = sqlite3.Row
-    conn.execute('CREATE TABLE balance_history (id INTEGER, config_id TEXT, symbol TEXT, timestamp TEXT, total_equity REAL)')
-    conn.executemany('INSERT INTO balance_history VALUES (?, ?, ?, ?, ?)', [
+    conn = storage.connect()
+
+    None  # Production schema is installed by pg.
+    conn.cursor().executemany('INSERT INTO balance_history(id,config_id,symbol,timestamp,total_equity) VALUES (%s, %s, %s, %s, %s)', [
         (1, 'a', 'BTC/USDT', '2026-10-14 00:00:18', 100),
         (2, 'b', 'BTC/USDT', '2026-10-14 01:00:00', 1000),
         (3, 'a', 'ETH/USDT', '2026-10-14 01:00:00', 1),
         (4, 'a', 'BTC/USDT', '2026-10-14 12:00:09', 92),
         (5, 'a', 'BTC/USDT', '2020-01-01', 1000),
     ])
-    with patch('backend.database.get_db_conn', return_value=conn):
-        data = performance_data('a', 'BTC/USDT', 'REAL', now=datetime(2026, 10, 14, 13))
-        assert data['equity']['return_pct'] == pytest.approx(-8)
-        assert data['equity']['start']['timestamp'] == '2026-10-14 00:00:18'
-        assert data['profit']['available'] is False
-        assert not performance_data('missing', 'BTC/USDT', 'REAL')['equity']['available']
-        assert performance_context('a', 'BTC/USDT', 'SPOT_DCA') == ''
+    conn.commit()
+    data = performance_data('a', 'BTC/USDT', 'REAL', now=datetime(2026, 10, 14, 13))
+    assert data['equity']['return_pct'] == pytest.approx(-8)
+    assert data['equity']['start']['timestamp'] == '2026-10-14 00:00:18'
+    assert data['profit']['available'] is False
+    assert not performance_data('missing', 'BTC/USDT', 'REAL')['equity']['available']
+    assert performance_context('a', 'BTC/USDT', 'SPOT_DCA') == ''
     conn.close()
 
 
@@ -75,3 +75,6 @@ def test_sentiment_partial_failure_preserves_other_sources():
     assert 'Taker buy/sell volume' in text
     assert 'fetch failed' in text
     assert 'timestamp_ms' in text
+
+
+pytestmark = pytest.mark.usefixtures("pg")

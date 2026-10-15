@@ -36,11 +36,7 @@ def _refresh_exclusive_management(tool, symbol):
     from backend.mcp.resilience import Budget, current_budget, setting
     from backend.utils.position_management import ensure_managed, management_snapshot
     from backend.utils.independent_exits import IndependentExits
-    parent_budget = current_budget.get()
-    deadline = time.monotonic() + setting('MANAGEMENT_DISCOVERY_BUDGET_SECONDS', 5)
-    if parent_budget:
-        deadline = min(deadline, parent_budget.deadline)
-    budget = Budget(deadline, uuid.uuid4().hex, 'read', stage='management_discovery')
+    budget = Budget(None, uuid.uuid4().hex, 'read', stage='management_discovery')
     token = current_budget.set(budget)
     original_fetch = getattr(tool.exchange, 'fetch', None)
 
@@ -396,7 +392,7 @@ class MarketTool:
                 try:
                     with database.get_db_conn() as conn:
                         conn.execute(
-                            "UPDATE orders SET status = 'CANCELLED' WHERE order_id = ? AND status = 'OPEN'",
+                            "UPDATE orders SET status = 'CANCELLED' WHERE order_id = %s AND status = 'OPEN'",
                             (order_id,),
                         )
                         conn.commit()

@@ -78,7 +78,7 @@ def test_cancel_strategy_tool_schema_uses_order_id_and_reason():
     assert "order_ids" not in cancel_tool.args
 
 
-def test_run_trade_tool_injects_config_and_symbol(monkeypatch):
+def test_run_trade_tool_injects_config_and_symbol(pg, monkeypatch):
     calls = []
 
     def fake_func(**kwargs):
@@ -109,7 +109,7 @@ def test_run_trade_tool_injects_config_and_symbol(monkeypatch):
     ]
 
 
-def test_run_trade_tool_decodes_json_encoded_orders(monkeypatch):
+def test_run_trade_tool_decodes_json_encoded_orders(pg, monkeypatch):
     calls = []
 
     def fake_func(**kwargs):
@@ -182,7 +182,7 @@ def test_run_trade_tool_unknown_tool_returns_error():
 
 
 @pytest.mark.parametrize("tool_name", ["cancel_orders_real", "cancel_orders_strategy"])
-def test_run_trade_tool_expands_legacy_cancel_list_args(monkeypatch, tool_name):
+def test_run_trade_tool_expands_legacy_cancel_list_args(pg, monkeypatch, tool_name):
     calls = []
 
     def fake_func(**kwargs):
@@ -198,7 +198,7 @@ def test_run_trade_tool_expands_legacy_cancel_list_args(monkeypatch, tool_name):
     assert [call["reason"] for call in calls] == ["未提供撤单原因", "未提供撤单原因"]
 
 
-def test_run_trade_tool_expands_legacy_cancel_order_ids_dict(monkeypatch):
+def test_run_trade_tool_expands_legacy_cancel_order_ids_dict(pg, monkeypatch):
     calls = []
 
     def fake_func(**kwargs):
@@ -223,7 +223,7 @@ def test_run_trade_tool_expands_legacy_cancel_order_ids_dict(monkeypatch):
     assert [call["reason"] for call in calls] == ["未提供撤单原因", "未提供撤单原因"]
 
 
-def test_run_trade_tool_adds_default_cancel_reason_for_legacy_string(monkeypatch):
+def test_run_trade_tool_adds_default_cancel_reason_for_legacy_string(pg, monkeypatch):
     calls = []
 
     def fake_func(**kwargs):

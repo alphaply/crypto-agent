@@ -1,0 +1,55 @@
+name: crypto-agent
+
+x-app: &app
+  image: ${APP_IMAGE:-alphaply712/crypto-agent:latest}
+  env_file: .env
+  environment:
+    DATABASE_URL: ${DATABASE_URL:?Set the PostgreSQL DATABASE_URL in .env}
+    DATA_DIR: /app/data
+    RUN_SCHEDULER_IN_WEB: "false"
+    PORT: "7860"
+  volumes:
+    - app_data:/app/data
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  web:
+    <<: *app
+    ports:
+      - "${HOST_PORT:-31421}:7860"
+  scheduler:
+    <<: *app
+    profiles: [scheduler]
+    command: [uv, run, --no-sync, python, -m, backend.app.core.scheduler]
+    healthcheck:
+      disable: true
+  migrate:
+    <<: *app
+    profiles: [tools]
+    restart: "no"
+    command: [uv, run, --no-sync, python, -m, backend.storage.migrate]
+    healthcheck:
+      disable: true
+
+volumes:
+  pg_data:
+    name: crypto_agent_pg17_data
+  app_data:
+    name: crypto_agent_pg_app_data

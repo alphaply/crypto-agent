@@ -143,7 +143,7 @@ Content-Type: application/json
 
 本节描述 `attached_required` / `attached_optional` 的附带保护模式。默认入口的每项 `open` 提供持仓方向 `side`、限价 `price`、标的币数量 `amount` 和 `reason`；兼容入口 `open_position_real` 保留原 `action`、`entry_price` 参数。`attached_required` 要求同时提供 `stop_loss`、`take_profit`；`attached_optional` 可省略或单独提供。多单止损须低于入场、止盈须高于入场，空单反之；价格与数量必须为有限正数，交易所精度调整后再次校验。首次开仓未提供的保护不会自动创建；可选模式下同方向加仓省略参数继承现有保护，填写则先更新该项整仓保护再加仓，工具返回有效价格。
 
-订单跟踪计划先写入 SQLite `real_protection_plans`，然后提交限价入场。订单响应、状态变化和保护调整写入 `real_protection_events`。成交后，独立维护任务只为已提供的止损或止盈创建交易所条件市价单；首次开仓两者都未提供时仅跟踪成交，不创建保护单；加仓继承的保护继续有效。LLM 不负责轮询触发价格。
+订单跟踪计划先写入 PostgreSQL `real_protection_plans`，然后提交限价入场。订单响应、状态变化和保护调整写入 `real_protection_events`。成交后，独立维护任务只为已提供的止损或止盈创建交易所条件市价单；首次开仓两者都未提供时仅跟踪成交，不创建保护单；加仓继承的保护继续有效。LLM 不负责轮询触发价格。
 
 当前支持 Binance USD-M 线性永续和 OKX 线性永续。工具输入为标的币数量，发送 OKX 等合约订单时按 `contractSize` 转换为合约张数。Binance 使用 `closePosition`；OKX 单向模式使用 `closeFraction=1`，双向模式按当前仓位数量设置并在部分成交或减仓后重建覆盖。关闭委托采用平仓方向/只减仓语义，避免反向开仓。
 

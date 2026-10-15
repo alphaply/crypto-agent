@@ -3,6 +3,7 @@ import MarkdownBlock from './MarkdownBlock';
 import ReasoningBlock from './ReasoningBlock';
 import { splitThinkingContent } from '../lib/thinking';
 import AuditDisclosure from './AuditDisclosure';
+import ToolResultContent from './ToolResultContent';
 
 const colors = { failed: 'error', unknown: 'warning', pending: 'warning', partial: 'warning', completed: 'success', submitted: 'processing', running: 'processing' };
 const labels = { failed: '失败', unknown: '待核验', pending: '待确认', partial: '部分返回', submitted: '已提交', completed: '已返回', not_executed: '未执行', skipped: '未执行', planned: '已规划', running: '执行中' };
@@ -37,7 +38,7 @@ export function ToolReceipt({ item, zh }) {
   const scope = receipt?.current_scope || continuation?.scope;
   return <div className="decision-tool-result" style={{ overflowWrap: 'anywhere', minWidth: 0 }}>
     <Space wrap><Typography.Text strong>{item.tool || 'tool'}</Typography.Text>{status && <Tag color={colors[status]}>{isQuery ? (zh ? `查询${labels[status] || status}` : `Query ${status}`) : filled ? (zh ? '本次已成交' : 'Execution filled') : (zh ? labels[status] || status : status)}</Tag>}<Typography.Text type="secondary">{item.tool_call_id}</Typography.Text></Space>
-    {structured && <div style={{ marginTop: 10, overflowWrap: 'anywhere' }}>
+    {structured && !Array.isArray(receipt.results) && <div style={{ marginTop: 10, overflowWrap: 'anywhere' }}>
       <Space wrap><Typography.Text strong>{isQuery ? (zh ? '原交易结果' : 'Original trade result') : (zh ? '当前核验结果' : 'Current verification')}</Typography.Text>
         <Tag color={colors[receipt.status]}>{filled ? (zh ? '本次已成交' : 'Execution filled') : (zh ? labels[receipt.status] || receipt.status : receipt.status)}</Tag>
         {cleanupPending && <Tag color="warning">{zh ? '清理待核验' : 'Cleanup pending'}</Tag>}
@@ -54,7 +55,7 @@ export function ToolReceipt({ item, zh }) {
         description={<>{zh ? reasons[rule.reason_code] || rule.reason_code : rule.reason_code}{(rule.blockers || []).map((blocker, i) => <div key={i}>{blocker.order_id || blocker.client_id || blocker.missing_evidence} · {zh ? reasons[blocker.reason_code] || blocker.reason_code : blocker.reason_code}</div>)}
           <div>{zh ? '系统在后台更新相关事实，无关动作单独判断。' : 'The system updates related evidence in the background. Unrelated actions are assessed separately.'}</div></>} />)}
       {(receipt.admission?.warnings || []).length > 0 && <p>{zh ? '历史告警：' : 'Historical warnings: '}{receipt.admission.warnings.map(w => zh ? reasons[w.reason_code] || w.reason_code : w.reason_code).join(' · ')}</p>}
-      {receipt.query?.errors?.length > 0 && <Alert type="warning" title={zh ? '部分证据未返回' : 'Evidence unavailable'} description={receipt.query.errors.join(' · ')} />}
+      {receipt.query?.errors?.length > 0 && <Alert type="warning" title={zh ? '部分证据未返回' : 'Evidence unavailable'} description={<ToolResultContent content={receipt.query.errors} zh={zh} />} />}
       {filled && <p>{zh ? '已成交数量' : 'Filled amount'}：{receipt.filled_amount ?? '—'} · {zh ? '当前方向仓位' : 'Current position'}：{receipt.position?.status === 'verified' ? receipt.position?.amount : (zh ? '待核验' : 'Unverified')}</p>}
       {cleanupPending && <Alert type="warning" showIcon title={zh ? '相关订单核验后才能继续受影响的交易' : 'Affected trades await order verification'} description={<>
         {(receipt.cleanup.orders || []).map((order) => <div key={order.order_id || order.client_id}>{order.order_id || order.client_id} · {order.reason_code || order.order_status}</div>)}
@@ -62,7 +63,7 @@ export function ToolReceipt({ item, zh }) {
       </>} />}
       {observed && <Typography.Text type="secondary">{zh ? '核验时间' : 'Verified at'}：{new Date(observed * 1000).toLocaleString()}</Typography.Text>}
     </div>}
-    <details className="content-disclosure"><summary>{zh ? '执行摘要' : 'Execution summary'}</summary><pre>{formatResult(receipt) || (zh ? '未返回内容' : 'No output')}</pre></details>
+    <ToolResultContent content={receipt ?? item.result} zh={zh} />
     {item.audit?.url && <AuditDisclosure url={item.audit.url} zh={zh} />}
   </div>;
 }

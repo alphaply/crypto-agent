@@ -1,71 +1,71 @@
 """Streaming cycle reconstruction with explicit limits and complete-result publication."""
-from contextlib import nullcontext, ExitStack
+from contextlib import nullcontext, ExitStack, contextmanager
+from uuid import uuid4
 from datetime import datetime
 import hashlib
 import json
 
 from backend.database import get_db_conn, TZ_CN
-from backend.utils.runtime_capacity import positive_setting, CapacityBusy, capacity_limits_enabled
+from backend.utils.runtime_capacity import positive_setting, CapacityBusy
 from backend.utils.sqlite_blob import bounded_text
+
+
+@contextmanager
+def _stream(conn, statement, parameters):
+    """Keep the server result bounded while payloads are read by byte range."""
+    with conn.cursor(name='cycle_' + uuid4().hex) as cursor:
+        cursor.itersize = positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32)
+        cursor.execute(statement, parameters)
+        yield cursor
 
 
 def _rows(config_id, end_ms, scope, symbol, maximum, read_conn):
     with (nullcontext(read_conn) if read_conn is not None else get_db_conn()) as conn:
-        records = conn.execute(
-            'SELECT f.rowid AS fill_rowid,l.rowid AS link_rowid,'
-            'f.account_scope,f.symbol,f.trade_id,f.order_id,f.config_id,f.timestamp_ms,l.role '
-            'FROM execution_fills f LEFT JOIN execution_order_links l '
-            'ON f.account_scope=l.account_scope AND f.symbol=l.symbol AND f.order_id=l.order_id '
-            'WHERE EXISTS (SELECT 1 FROM execution_order_links own WHERE own.config_id=? '
-            'AND own.account_scope=f.account_scope AND own.symbol=f.symbol) AND f.timestamp_ms<? '
-            'AND (? IS NULL OR f.account_scope=?) AND (? IS NULL OR f.symbol=?) '
-            'ORDER BY f.timestamp_ms,LENGTH(f.trade_id),f.trade_id',
-            (config_id,end_ms,scope,scope,symbol,symbol))
-        for record in records:
-            row = dict(record)
-            with ExitStack() as stack:
-                try:
-                    row['payload'] = stack.enter_context(bounded_text(
-                        conn,'execution_fills','payload',row['fill_rowid'],limit=maximum))
-                    row['link_metadata'] = stack.enter_context(bounded_text(
-                        conn,'execution_order_links','payload',row['link_rowid'],limit=maximum)) if row['link_rowid'] is not None else None
-                    row['payload_bytes'] = len(row['payload'].encode('utf-8'))
-                    row['metadata_bytes'] = len((row['link_metadata'] or '').encode('utf-8'))
-                except CapacityBusy as exc:
-                    if exc.reason != 'record_bytes':
-                        raise
-                    row.update(payload=None,payload_bytes=maximum+1,metadata_bytes=0)
-                yield row
+        with _stream(conn,
+            'SELECT f.storage_id AS fill_rowid,l.storage_id AS link_rowid,f.account_scope,f.symbol,f.trade_id,f.order_id,f.config_id,f.timestamp_ms,l.role FROM execution_fills f LEFT JOIN execution_order_links l ON f.account_scope=l.account_scope AND f.symbol=l.symbol AND f.order_id=l.order_id WHERE EXISTS (SELECT 1 FROM execution_order_links own WHERE own.config_id=%s AND own.account_scope=f.account_scope AND own.symbol=f.symbol) AND f.timestamp_ms<%s AND (%s::text IS NULL OR f.account_scope=%s) AND (%s::text IS NULL OR f.symbol=%s) ORDER BY f.timestamp_ms,LENGTH(f.trade_id),f.trade_id',
+            (config_id,end_ms,scope,scope,symbol,symbol)) as records:
+            for record in records:
+                row = dict(record)
+                with ExitStack() as stack:
+                    try:
+                        row['payload'] = stack.enter_context(bounded_text(
+                            conn,'execution_fills','payload',row['fill_rowid'],limit=maximum))
+                        row['link_metadata'] = stack.enter_context(bounded_text(
+                            conn,'execution_order_links','payload',row['link_rowid'],limit=maximum)) if row['link_rowid'] is not None else None
+                        row['payload_bytes'] = len(row['payload'].encode('utf-8'))
+                        row['metadata_bytes'] = len((row['link_metadata'] or '').encode('utf-8'))
+                    except CapacityBusy as exc:
+                        if exc.reason != 'record_bytes':
+                            raise
+                        row.update(payload=None,payload_bytes=maximum+1,metadata_bytes=0)
+                    yield row
 
 
 def _protection(cycle, config_id, maximum, read_conn):
-    limits_enabled = capacity_limits_enabled()
     revisions, used = {}, 0
     with (nullcontext(read_conn) if read_conn is not None else get_db_conn()) as conn:
-        rows=conn.execute('SELECT rowid AS audit_rowid,timestamp FROM real_protection_events WHERE config_id=? ORDER BY id', (config_id,))
-        for audit in rows:
-            try:
-                with bounded_text(conn,'real_protection_events','payload',audit['audit_rowid'],limit=maximum) as payload:
-                    plan=json.loads(payload)
-            except CapacityBusy as exc:
-                if exc.reason!='record_bytes':
-                    raise
-                return False
-            if (plan.get('account_scope'),plan.get('symbol'),plan.get('side')) != (
-                    cycle['account_scope'],cycle['symbol'],cycle['side']):
-                continue
-            if cycle.get('plan_episode_id') and plan.get('episode_id') != cycle['plan_episode_id']:
-                continue
-            ts=int(TZ_CN.localize(datetime.fromisoformat(audit['timestamp'])).timestamp()*1000)
-            if ts>cycle['closed_at_ms']:
-                continue
-            revision=plan.get('revision',0)
-            if revision not in revisions:
-                item={'timestamp_ms':ts,'revision':revision,'stop_loss':plan.get('stop_loss'),'take_profit':plan.get('take_profit')}
-                used+=len(json.dumps(item).encode('utf-8'))+128
-                if limits_enabled and used>maximum:
+        with _stream(conn,'SELECT storage_id AS audit_rowid,timestamp FROM real_protection_events WHERE config_id=%s ORDER BY id', (config_id,)) as rows:
+            for audit in rows:
+                try:
+                    with bounded_text(conn,'real_protection_events','payload',audit['audit_rowid'],limit=maximum) as payload:
+                        plan=json.loads(payload)
+                except CapacityBusy as exc:
+                    if exc.reason!='record_bytes':
+                        raise
                     return False
-                revisions[revision]=item
+                if (plan.get('account_scope'),plan.get('symbol'),plan.get('side')) != (
+                        cycle['account_scope'],cycle['symbol'],cycle['side']):
+                    continue
+                if cycle.get('plan_episode_id') and plan.get('episode_id') != cycle['plan_episode_id']:
+                    continue
+                ts=int(TZ_CN.localize(datetime.fromisoformat(audit['timestamp'])).timestamp()*1000)
+                if ts>cycle['closed_at_ms']:
+                    continue
+                revision=plan.get('revision',0)
+                if revision not in revisions:
+                    item={'timestamp_ms':ts,'revision':revision,'stop_loss':plan.get('stop_loss'),'take_profit':plan.get('take_profit')}
+                    used+=len(json.dumps(item).encode('utf-8'))+128
+                    revisions[revision]=item
     timeline=sorted(revisions.values(),key=lambda item:item['timestamp_ms'])
     before=[item for item in timeline if item['timestamp_ms']<=cycle['opened_at_ms']]
     cycle['protection_history']=before[-1:]+[item for item in timeline if item['timestamp_ms']>cycle['opened_at_ms']]
@@ -77,8 +77,7 @@ def _protection(cycle, config_id, maximum, read_conn):
 
 def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_sink=None,read_conn=None):
     from backend.utils.execution_ledger import number
-    maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES',4*1024*1024)
-    limits_enabled = capacity_limits_enabled()
+    maximum = 4*1024*1024
     rows = _rows(config_id,end_ms,scope,symbol,maximum,read_conn)
     current = {}
     work_sizes, current_bytes, output_bytes = {}, 0, 0
@@ -90,7 +89,7 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
     unmatched = 0
     for row in rows:
         last_cursor={'timestamp_ms':row['timestamp_ms'],'trade_id':row['trade_id']}
-        if row['payload'] is None or limits_enabled and (row['metadata_bytes'] or 0)>maximum:
+        if row['payload'] is None:
             scan_complete,reason_code=False,'cycle_record_budget'
             break
         fill = json.loads(row['payload'])
@@ -120,9 +119,6 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
             continue
         row_work=(row['payload_bytes'] or 0)+(row['metadata_bytes'] or 0)+512
         previous_work=work_sizes.get(key,0)
-        if limits_enabled and current_bytes+row_work>maximum:
-            scan_complete,reason_code=False,'cycle_working_set_budget'
-            break
         work_sizes[key]=previous_work+row_work
         current_bytes+=row_work
         cycle = current.get(key)
@@ -227,25 +223,16 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
                         scan_complete,reason_code=False,'cycle_protection_budget'
                         break
                     encoded_size=len(json.dumps(cycle,ensure_ascii=False,default=str).encode('utf-8'))
-                    if limits_enabled and encoded_size>maximum:
-                        scan_complete,reason_code=False,'cycle_record_budget'
-                        break
                     completed_count+=1
                     if cycle_sink is not None:
                         cycle_sink(cycle)
-                    if not limits_enabled or output_bytes+encoded_size<=maximum:
-                        completed.append(cycle)
-                        output_bytes+=encoded_size
-                    else:
-                        omitted_completed+=1
+                    completed.append(cycle)
+                    output_bytes+=encoded_size
                 elif cycle['owned_entry'] or row['config_id'] == config_id:
                     excluded_count+=1
                     encoded_size=len(json.dumps(cycle,ensure_ascii=False,default=str).encode('utf-8'))
-                    if not limits_enabled or output_bytes+encoded_size<=maximum:
-                        excluded.append(cycle)
-                        output_bytes+=encoded_size
-                    else:
-                        omitted_excluded+=1
+                    excluded.append(cycle)
+                    output_bytes+=encoded_size
             current.pop(key, None)
             current_bytes-=work_sizes.pop(key,0)
     return {'completed':completed,'completed_count':completed_count if scan_complete else None,

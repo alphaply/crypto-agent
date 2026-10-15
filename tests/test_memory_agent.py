@@ -322,3 +322,6 @@ def test_memory_follows_main_tracing_regardless_of_auxiliary_switch(environment,
     with tracing_context(enabled='local'):
         result = memory.run_memory_review(SOURCE, CONFIG, operation_id='trace-memory')
     assert result.status == 'completed' and len(fake.calls) == 1
+
+
+pytestmark = pytest.mark.usefixtures("pg")

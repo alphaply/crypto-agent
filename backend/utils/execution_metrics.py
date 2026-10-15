@@ -12,7 +12,7 @@ def observe(service, plan, position, reference=None):
         return
     now = int(time.time() * 1000)
     with get_db_conn() as conn:
-        row = conn.execute('SELECT payload FROM execution_episodes WHERE episode_id=?', (episode_id,)).fetchone()
+        row = conn.execute('SELECT payload FROM execution_episodes WHERE episode_id=%s', (episode_id,)).fetchone()
         value = json.loads(row['payload']) if row else {}
         if position:
             entry = number(position.get('entryPrice'))
@@ -35,7 +35,7 @@ def observe(service, plan, position, reference=None):
         elif value and not value.get('flat_observed_at'):
             value.update(flat_observed_at=now, exit_reason=plan.get('exit_reason', 'unknown'))
         if value:
-            conn.execute('INSERT INTO execution_episodes VALUES(?,?,?,?,?) ON CONFLICT(episode_id) DO UPDATE SET payload=excluded.payload',
+            conn.execute('INSERT INTO execution_episodes(episode_id,account_scope,config_id,symbol,payload) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(episode_id) DO UPDATE SET payload=excluded.payload',
                          (episode_id, service.account_scope, service.config_id, plan['symbol'], json.dumps(value)))
             conn.commit()
 
@@ -43,7 +43,7 @@ def observe(service, plan, position, reference=None):
 def update_post_exit(exchange, scope, symbol, now_ms=None):
     now = int(now_ms if now_ms is not None else time.time() * 1000)
     with get_db_conn() as conn:
-        rows = conn.execute('SELECT episode_id,payload FROM execution_episodes WHERE account_scope=? AND symbol=?',
+        rows = conn.execute('SELECT episode_id,payload FROM execution_episodes WHERE account_scope=%s AND symbol=%s',
                             (scope, symbol)).fetchall()
     for row in rows:
         value = json.loads(row['payload'])
@@ -70,14 +70,13 @@ def update_post_exit(exchange, scope, symbol, now_ms=None):
                 'basis': 'last_price_1m_close_after_flat_observation',
             }
         with get_db_conn() as conn:
-            conn.execute('UPDATE execution_episodes SET payload=? WHERE episode_id=?', (json.dumps(value), row['episode_id']))
+            conn.execute('UPDATE execution_episodes SET payload=%s WHERE episode_id=%s', (json.dumps(value), row['episode_id']))
             conn.commit()
 
 
 def metrics_context(config_id, start_ms, end_ms, scope=None, symbol=None):
     with get_db_conn() as conn:
-        rows = conn.execute('SELECT payload FROM execution_episodes WHERE config_id=? AND (? IS NULL OR account_scope=?) '
-                            'AND (? IS NULL OR symbol=?)',
+        rows = conn.execute('SELECT payload FROM execution_episodes WHERE config_id=%s AND (%s::text IS NULL OR account_scope=%s) AND (%s::text IS NULL OR symbol=%s)',
                             (config_id, scope, scope, symbol, symbol)).fetchall()
     values = [json.loads(row['payload']) for row in rows]
     values = [v for v in values if start_ms <= v.get('flat_observed_at', v.get('last_observed_at', 0)) < end_ms]

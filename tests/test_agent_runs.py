@@ -80,7 +80,7 @@ def test_unknown_usage_errors_parent_and_sensitive_metadata(local_runs):
 
 def test_cost_estimate_uses_call_time_prices_and_persists_currency(local_runs):
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
     database.update_model_pricing('test-model', 2.5, 8, 'CNY')
     run_id = start()
     database.update_model_pricing('test-model', 10, 100, 'USD')
@@ -96,7 +96,7 @@ def test_cost_estimate_uses_call_time_prices_and_persists_currency(local_runs):
 @pytest.mark.parametrize('usage', [{}, {'total_tokens': 1000}, {'prompt_tokens': 2000}, {'completion_tokens': 500}])
 def test_priced_model_without_complete_usage_has_unknown_cost(local_runs, usage):
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
     database.update_model_pricing('test-model', 2.5, 8)
     run_id = start()
     runs.finish_agent_run(run_id, status='success', usage=usage)
@@ -106,7 +106,7 @@ def test_priced_model_without_complete_usage_has_unknown_cost(local_runs, usage)
 
 def test_unpriced_model_unknown_cost_and_provider_cost_takes_priority(local_runs):
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # Native schema installed by the isolated PostgreSQL fixture.
     run_id = start()
     runs.finish_agent_run(run_id, status='success', usage={'prompt_tokens': 2000, 'completion_tokens': 500})
     assert runs.get_agent_run(run_id)['cost'] is None
@@ -195,17 +195,22 @@ def test_retention_keeps_per_task_limit_and_expires_on_read(local_runs, monkeypa
     assert runs.get_agent_run(stale) is None
     assert {item['run_id'] for item in runs.list_agent_runs()['runs']} == {*retained, other}
     with database.get_db_conn() as conn:
-        conn.execute("UPDATE agent_runs SET started_at = '2000-01-01T00:00:00+00:00' WHERE run_id = ?", (other,))
+        conn.execute("UPDATE agent_runs SET started_at = '2000-01-01T00:00:00+00:00' WHERE run_id = %s", (other,))
         conn.commit()
     assert runs.get_agent_run(other) is None
     assert runs.list_agent_runs()['total'] == 2
 
 
-def test_schema_initialization_is_additive_and_idempotent(local_runs):
+def test_schema_initialization_is_additive_and_idempotent(checkpoint_url):
     with database.get_db_conn() as conn:
         initialize_schema(conn)
         conn.execute("INSERT INTO agent_runs (run_id, config_id, purpose, model, status, started_at, input_chars, message_chars, tool_chars, messages_json, tools_json) VALUES ('existing', 'cfg', 'decision', 'model', 'running', 'now', 0, 0, 0, '[]', '[]')")
         conn.commit()
         initialize_schema(conn)
         assert conn.execute('SELECT COUNT(*) FROM agent_runs').fetchone()[0] == 1
-        assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'mock_orders'").fetchone()
+        assert 'mock_orders' in __import__('backend.storage', fromlist=['table_names']).table_names(conn)
+
+
+@pytest.fixture(autouse=True)
+def isolated_postgres(pg):
+    yield

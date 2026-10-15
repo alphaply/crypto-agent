@@ -50,7 +50,7 @@ export default function DatabaseMaintenance() {
         });
         return false;
       }}><Button disabled={busy}>导入副本，仅分析</Button></Upload>
-      <Popconfirm title="回收当前数据库空闲页？数据库繁忙时可能失败，可稍后重试。"
+      <Popconfirm title="执行 PostgreSQL VACUUM ANALYZE？回收可复用空间，不保证文件缩小。繁忙时可稍后重试。"
         onConfirm={() => run(async () => { await api.post('/database/compact'); await load(); message.success('空间回收完成'); })}>
         <Button disabled={busy || !!imported}>回收空闲空间</Button>
       </Popconfirm>
@@ -63,9 +63,9 @@ export default function DatabaseMaintenance() {
       <Typography.Paragraph style={{ overflowWrap: 'anywhere' }}>数据库：{shown.database_path || '未知'}</Typography.Paragraph>
       <Space wrap style={{ marginBottom: 16 }}>
         <Typography.Text>完整性：{shown.integrity}</Typography.Text>
-        <Typography.Text>文件：{bytes(shown.file_bytes)}</Typography.Text>
-        <Typography.Text>可回收：{bytes(shown.reclaimable_bytes)}</Typography.Text>
-        <Typography.Text>WAL：{bytes(shown.wal_bytes)}</Typography.Text>
+        <Typography.Text>{shown.backend === 'postgresql' ? '数据库占用' : '文件'}：{bytes(shown.file_bytes)}</Typography.Text>
+        <Typography.Text>可回收：{shown.backend === 'postgresql' ? '不适用（SQLite 指标）' : bytes(shown.reclaimable_bytes)}</Typography.Text>
+        <Typography.Text>WAL 文件：{shown.backend === 'postgresql' ? '不适用（SQLite 指标）' : bytes(shown.wal_bytes)}</Typography.Text>
         <Typography.Text>未关联成交：{shown.unlinked_fills ?? '未知'}</Typography.Text>
       </Space>
       <Table size="small" rowKey="table" dataSource={shown.tables} scroll={{ x: 760 }} columns={[

@@ -12,10 +12,10 @@ from backend.utils.position_protection import PositionProtection
 
 
 @pytest.fixture
-def local_db(tmp_path, monkeypatch):
+def local_db(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'independent.db'))
     with database.get_db_conn() as conn:
-        initialize_schema(conn)
+        pass  # PostgreSQL migrations are installed by financial_pg.
     return MockIndependentTrading('cfg', 'ETH/USDT')
 
 
@@ -68,7 +68,7 @@ def test_mock_conditions_stop_first_and_cycle_cleanup(local_db):
     assert store.snapshot()['entries']==[]
     assert store.snapshot()['exits']==[]
     with database.get_db_conn() as conn:
-        assert conn.execute('SELECT status FROM mock_orders WHERE order_id=?',(pending['id'],)).fetchone()[0]=='CANCELLED'
+        assert conn.execute('SELECT status FROM mock_orders WHERE order_id=%s',(pending['id'],)).fetchone()[0]=='CANCELLED'
         assert conn.execute('SELECT balance FROM mock_accounts').fetchone()[0]==9990
         history=conn.execute('SELECT amount,realized_pnl FROM position_history').fetchone()
         assert history['amount']==1 and history['realized_pnl']==-10
@@ -788,3 +788,9 @@ def test_unmanaged_order_cancellation_in_independent_exits(live_service):
     assert result.get('unmanaged') is True
     assert result['order_id'] == 'ext-manual-999'
 
+
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    """Run original financial contracts against an isolated PostgreSQL schema."""
+    yield

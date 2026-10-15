@@ -86,9 +86,9 @@ class Exchange:
 
 
 @pytest.fixture
-def service(tmp_path):
+def service(tmp_path, financial_pg):
     with patch.object(database, "DB_NAME", str(tmp_path / "test.db")):
-        database.init_db()
+        pass  # financial_pg installs the complete native migration schema.
         exchange = Exchange()
         yield PositionProtection(SimpleNamespace(exchange=exchange, config_id="test")), exchange
 

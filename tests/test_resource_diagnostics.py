@@ -111,7 +111,7 @@ def test_delta_identity_pressure_and_configuration(tmp_path, monkeypatch):
     assert first['configuration_fingerprint'] == second['configuration_fingerprint']
 
 
-def test_declared_limits_mismatch_and_oversized_application_budget_are_explicit(tmp_path, monkeypatch):
+def test_declared_container_limits_remain_visible_without_application_byte_gate(tmp_path, monkeypatch):
     item, root, manager = collector(tmp_path, monkeypatch)
     monkeypatch.setenv('RESOURCE_EXPECTED_MEMORY_BYTES','20000000')
     monkeypatch.setenv('RESOURCE_EXPECTED_MEMORY_SWAP_TOTAL_BYTES','11000000')
@@ -121,10 +121,10 @@ def test_declared_limits_mismatch_and_oversized_application_budget_are_explicit(
     observed=item.sample()
     assert observed['container_limit_comparison']=={'memory_bytes':'mismatched','memory_swap_total_bytes':'matched','cpu_cpus':'matched'}
     assert observed['declared_container_limits']['memory_bytes']==20000000
-    assert observed['capacity_bytes_exceed_container']
-    assert manager.snapshot()['pressure_reason']=='capacity_bytes_exceed_container'
-    with pytest.raises(ValueError,match='busy'):
-        manager.acquire('agent',timeout=0)
+    assert not observed['capacity_bytes_exceed_container']
+    assert manager.snapshot()['pressure_reason'] is None
+    lease = manager.acquire('agent', timeout=0)
+    lease.release()
     item.stop()
 
 

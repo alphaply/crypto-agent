@@ -18,6 +18,27 @@ import traceback
 faulthandler.enable(all_threads=True)
 
 
+def disable_probe_core_dumps():
+    """Keep fatal tracebacks without filling the host with native core files."""
+    if sys.platform != 'linux':
+        return False
+    import ctypes
+    import resource
+
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+    prctl.restype = ctypes.c_int
+    # WSL's piped core handler can ignore RLIMIT_CORE. This applies only to
+    # this isolated probe process, before its application imports or threads.
+    if prctl(4, 0, 0, 0, 0) != 0 or prctl(3, 0, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'Cannot disable capacity probe core dumps')
+    return True
+
+
+PROBE_CORE_DUMPS_DISABLED = disable_probe_core_dumps()
+
+
 def dump_probe_threads(_signum=None, _frame=None):
     # A Python callback holds the GIL while walking live thread frames.
     # CPython #116008 makes native asynchronous diagnostic dumps unsafe.
@@ -55,7 +76,7 @@ import uvicorn
 PROFILE = load_profile('/verification/profile.json')
 ROLE = os.environ['VERIFICATION_ROLE']
 ROOT = Path(os.environ['DATA_DIR'])
-CFG = {'config_id': 'verification', 'mode': 'STRATEGY', 'exit_mode': 'independent_exits', 'symbol': 'ETH/USDT'}
+CFG = {'config_id': 'verification-' + ROLE, 'mode': 'STRATEGY', 'exit_mode': 'independent_exits', 'symbol': 'ETH/USDT'}
 state = {'phase': None, 'running': False, 'phases': {}, 'busy': 0, 'critical': 0,
          'writes_replayed': 0, 'tail_executed': 0, 'restart_continuity': False}
 state_lock = threading.Lock()
@@ -82,10 +103,10 @@ def seed_recovery(phase):
         observed._verification_original = original_query
         unified_trading.query_unified_operation = observed
     operation_id='capacity-recovery-'+phase
-    run_once('verification','ETH/USDT',operation_id,{'contract_version':3},
+    run_once(CFG['config_id'],'ETH/USDT',operation_id,{'contract_version':3},
              lambda:{'contract_version':3,'operation_id':operation_id,'status':'unknown','order_id':'regular:'+operation_id})
     with get_db_conn() as conn:
-        row=conn.execute('SELECT rowid FROM trade_action_runs WHERE config_id=? AND operation_id=?',('verification',operation_id)).fetchone()
+        row=conn.execute('SELECT storage_id FROM trade_action_runs WHERE config_id=%s AND operation_id=%s',(CFG['config_id'],operation_id)).fetchone()
     recovery_target=(row[0],operation_id)
 
 # No configured/accidental external connection is possible in the probe.
@@ -160,8 +181,8 @@ def background_recovery_progress():
     # The scheduler may already have completed this same original identity.
     # Observe durable evidence regardless of which helper made the progress.
     with get_db_conn() as conn:
-        row = conn.execute('SELECT result FROM trade_action_runs WHERE rowid=? AND config_id=? AND operation_id=?',
-                           (target[0], 'verification', target[1])).fetchone()
+        row = conn.execute('SELECT result FROM trade_action_runs WHERE storage_id=%s AND config_id=%s AND operation_id=%s',
+                           (target[0], CFG['config_id'], target[1])).fetchone()
     if row is None:
         raise AssertionError('Seeded critical recovery identity disappeared')
     latest = json.loads(row[0])
@@ -209,16 +230,16 @@ def financial_fixture():
     config.get_config_by_id = lambda _: dict(CFG)
     payload = {'contract_version': 3, 'actions': [
         {'action': 'cancel', 'order_id': f'regular:{index}', 'reason': 'verification'} for index in range(3)]}
-    path = ROOT / 'attempted.json'
+    path = ROOT / ('attempted-' + ROLE + '.json')
     if path.exists():
         previous = json.loads(path.read_text())
-        result = unified.query_unified_operation('verification', 'ETH/USDT', 'verification-parent', read_exchange=False)
+        result = unified.query_unified_operation(CFG['config_id'], 'ETH/USDT', 'verification-parent', read_exchange=False)
 
         def forbidden(*_):
             state['writes_replayed'] += 1
             raise AssertionError('Restart must not replay any financial write')
 
-        replay = unified.execute_v3_actions(payload, config_id='verification', symbol='ETH/USDT',
+        replay = unified.execute_v3_actions(payload, config_id=CFG['config_id'], symbol='ETH/USDT',
             operation_id='verification-parent', config=CFG, dispatch=forbidden)
         statuses = [row['status'] for row in result['results']]
         state['tail_executed'] += int(statuses[2] != 'not_executed')
@@ -234,7 +255,7 @@ def financial_fixture():
         return {'receipt_version': 1, 'status': 'completed'}
 
     try:
-        unified.execute_v3_actions(payload, config_id='verification', symbol='ETH/USDT',
+        unified.execute_v3_actions(payload, config_id=CFG['config_id'], symbol='ETH/USDT',
             operation_id='verification-parent', config=CFG, dispatch=dispatch)
     except SystemExit:
         pass
@@ -348,7 +369,7 @@ def drive(phase):
     with state_lock:
         state['phases'][phase] = result
         state['running'] = False
-    (ROOT / 'verification-state.json').write_text(json.dumps(state))
+    (ROOT / ('verification-state-' + ROLE + '.json')).write_text(json.dumps(state))
 
 
 original_lifespan = app.router.lifespan_context
@@ -358,7 +379,7 @@ original_lifespan = app.router.lifespan_context
 async def probe_lifespan(app):
     start_resource_collector(ROLE)
     async with original_lifespan(app):
-        saved = ROOT / 'verification-state.json'
+        saved = ROOT / ('verification-state-' + ROLE + '.json')
         if saved.exists():
             state.update(json.loads(saved.read_text()))
             state['running'] = False

@@ -1,4 +1,4 @@
-"""Measure two bounded isolated application containers against a frozen profile.
+"""Measure bounded Web, scheduler and PostgreSQL against a frozen profile.
 
 Usage: uv run python scripts/verify-runtime-capacity.py --image IMAGE --profile PATH
        --mode calibration|acceptance --output DIRECTORY
@@ -25,8 +25,12 @@ from backend.utils.capacity_profile import PHASES, load_profile, assess_report
 
 
 def command(*args, timeout=30):
-    result = subprocess.run(list(args), cwd=ROOT, capture_output=True, text=True,
-                            encoding='utf-8', errors='replace', timeout=timeout)
+    try:
+        result = subprocess.run(list(args), cwd=ROOT, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace', timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Do not serialize command arguments: Docker -e can contain test DSNs.
+        raise RuntimeError(f'{args[0]} did not respond within {timeout} seconds') from None
     if result.returncode:
         raise RuntimeError(f'{args[0]} exited {result.returncode}: {result.stderr[-2048:]}')
     if len(result.stdout.encode('utf-8')) > 2 * 1024 * 1024:
@@ -56,6 +60,25 @@ def wait_ready(url, seconds=90):
     raise RuntimeError('Isolated application did not become healthy')
 
 
+def database_observation(name):
+    """Read Linux cgroup v2 and connection evidence inside the isolated DB."""
+    query = """SELECT json_build_object(
+        'memory_current_bytes',pg_read_file('/sys/fs/cgroup/memory.current')::bigint,
+        'memory_peak_bytes',pg_read_file('/sys/fs/cgroup/memory.peak')::bigint,
+        'memory_limit_bytes',pg_read_file('/sys/fs/cgroup/memory.max')::bigint,
+        'swap_limit_bytes',pg_read_file('/sys/fs/cgroup/memory.swap.max')::bigint,
+        'cpu_max',trim(pg_read_file('/sys/fs/cgroup/cpu.max')),
+        'memory_events',pg_read_file('/sys/fs/cgroup/memory.events'),
+        'connections',(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()),
+        'max_connections',current_setting('max_connections')::int)"""
+    result = json.loads(command('docker', 'exec', name, 'psql', '-XAt', '-U', 'capacity', '-d', 'capacity', '-c', query))
+    events = dict(line.split() for line in result.pop('memory_events').splitlines())
+    result['oom_kill'] = int(events['oom_kill'])
+    quota, period = result.pop('cpu_max').split()
+    result['cpu_cpus'] = int(quota) / int(period)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', required=True)
@@ -64,6 +87,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     profile = load_profile(args.profile)
+    if profile.db is None:
+        raise ValueError('PostgreSQL verification requires a profile with an explicit db budget')
     image_id = command('docker', 'image', 'inspect', args.image, '--format', '{{.Id}}')
     revision = command('docker', 'image', 'inspect', args.image,
         '--format', '{{index .Config.Labels "org.opencontainers.image.revision"}}')
@@ -81,11 +106,17 @@ def main():
     (destination / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     report = {key: manifest[key] for key in ('run_id', 'profile_sha256', 'mode', 'image_id', 'source_revision')}
     report['containers'] = {}
+    report['database'] = {'image_reference': profile.db.image, 'phases': {}}
     report['production_verified'] = False
     containers, urls, latencies, errors = {}, {}, [], 0
     initial_oom = None
     min_available = None
     temporary_workspace = tempfile.TemporaryDirectory(prefix='crypto-capacity-')
+    network = 'crypto-capacity-' + run_id.lower()
+    db_name = network + '-db'
+    db_volume = network + '-pgdata'
+    created_network = created_database = created_volume = False
+    database_first = None
     try:
         # First measure the Linux host through a small bounded, read-only helper.
         # It imports no application config and has no data/secret mounts.
@@ -96,18 +127,55 @@ def main():
         host = probe['host']
         profile.check_host(info['MemTotal'], host['memory_available_bytes'], info['NCPU'])
         initial_oom, min_available = host.get('oom_kill_counter'), host['memory_available_bytes']
+        # A private bridge is required for host-loopback HTTP latency probes;
+        # Docker's --internal networks suppress published ports. PostgreSQL has
+        # no published port; the application driver denies external sockets.
+        created_network = True
+        command('docker', 'network', 'create', network)
+        created_volume = True
+        command('docker', 'volume', 'create', db_volume)
+        password = uuid.uuid4().hex
+        database_url = 'postgresql://capacity:' + password + '@db:5432/capacity'
+        database_budget = profile.db
+        created_database = True
+        command('docker', 'run', '-d', '--name', db_name, '--network', network, '--network-alias', 'db',
+            '--memory', str(database_budget.memory_bytes), '--memory-swap', str(database_budget.memory_swap_total_bytes),
+            '--cpus', str(database_budget.cpu_cpus),
+            '--mount', f'type=volume,source={db_volume},target=/var/lib/postgresql/data',
+            '-e', 'POSTGRES_USER=capacity', '-e', 'POSTGRES_DB=capacity', '-e', 'POSTGRES_PASSWORD=' + password,
+            database_budget.image, 'postgres', '-c', 'max_connections=' + str(database_budget.max_connections))
+        ready_deadline = time.monotonic() + 90
+        while True:
+            try:
+                command('docker', 'exec', db_name, 'pg_isready', '-h', '127.0.0.1', '-U', 'capacity', '-d', 'capacity')
+                break
+            except RuntimeError:
+                if time.monotonic() >= ready_deadline:
+                    raise RuntimeError('Isolated PostgreSQL did not become ready within 90 seconds')
+                time.sleep(.5)
+        command('docker', 'run', '--rm', '--network', network,
+            '--memory', str(profile.web.memory_bytes), '--memory-swap', str(profile.web.memory_swap_total_bytes),
+            '--cpus', str(profile.web.cpu_cpus), '-e', 'DATABASE_URL=' + database_url,
+            args.image, '/app/.venv/bin/python', '-m', 'backend.storage.migrate', timeout=120)
+        database_first = database_observation(db_name)
+        report['database'].update(image_id=command('docker', 'inspect', '--format', '{{.Image}}', db_name),
+            effective_limits={'memory_bytes': database_first['memory_limit_bytes'],
+                'memory_swap_total_bytes': database_first['memory_limit_bytes'] + database_first['swap_limit_bytes'],
+                'cpu_cpus': database_first['cpu_cpus']}, max_connections=database_first['max_connections'])
         with nullcontext(temporary_workspace.name) as temporary:
             temporary = Path(temporary)
             frozen = temporary / 'verification'
             frozen.mkdir()
             (frozen / 'profile.json').write_text(json.dumps(profile.model_dump()), encoding='utf-8')
             (frozen / 'worker.py').write_bytes((ROOT / 'scripts/capacity/worker.py').read_bytes())
+            data = temporary / 'shared-data'
+            data.mkdir()
+            jwt_secret = uuid.uuid4().hex
+            config_master_key = uuid.uuid4().hex
             for role in ('web', 'scheduler'):
                 budget = getattr(profile, role)
-                data = temporary / role
-                data.mkdir()
                 name = 'crypto-capacity-' + run_id.lower() + '-' + role
-                args_run = ['docker', 'run', '-d', '--name', name,
+                args_run = ['docker', 'run', '-d', '--name', name, '--network', network,
                     '--memory', str(budget.memory_bytes), '--memory-swap', str(budget.memory_swap_total_bytes),
                     '--cpus', str(budget.cpu_cpus), '-p', '127.0.0.1::7860',
                     '--mount', f'type=bind,source={frozen},target=/verification,readonly',
@@ -116,16 +184,16 @@ def main():
                     '-e', f'RESOURCE_EXPECTED_MEMORY_BYTES={budget.memory_bytes}',
                     '-e', f'RESOURCE_EXPECTED_MEMORY_SWAP_TOTAL_BYTES={budget.memory_swap_total_bytes}',
                     '-e', f'RESOURCE_EXPECTED_CPU_CPUS={budget.cpu_cpus}',
-                    '-e', 'TRADING_DB_PATH=/app/data/trading.sqlite',
-                    '-e', 'CHAT_CHECKPOINT_DB=/app/data/chat.sqlite',
+                    '-e', 'DATABASE_URL=' + database_url,
+                    '-e', 'DEPLOYMENT_MAINTENANCE=false',
                     '-e', 'ADMIN_PASSWORD=isolated-verification', '-e', 'RUN_SCHEDULER_IN_WEB=' + ('true' if role == 'scheduler' else 'false'),
-                    '-e', 'JWT_SECRET=' + uuid.uuid4().hex, '-e', 'CONFIG_MASTER_KEY=' + uuid.uuid4().hex,
+                    '-e', 'JWT_SECRET=' + jwt_secret, '-e', 'CONFIG_MASTER_KEY=' + config_master_key,
                     '-e', 'CAPACITY_PROFILE_SHA256=' + profile.fingerprint()]
                 for key, value in profile.application.items():
                     args_run += ['-e', f'{key}={value}']
                 args_run += [args.image, '/app/.venv/bin/python', '/verification/worker.py']
-                command(*args_run)
                 containers[role] = name
+                command(*args_run)
                 port = command('docker', 'port', name, '7860/tcp').split(':')[-1]
                 urls[role] = 'http://127.0.0.1:' + port
             with ThreadPoolExecutor(max_workers=2) as pool:
@@ -134,6 +202,8 @@ def main():
                               for role, value in snapshots.items()}
             for phase in PHASES:
                 print(f'{args.mode}: {phase}', flush=True)
+                database_samples = [database_observation(db_name)]
+                database_next_sample = time.monotonic() + 1
                 if phase == 'restart':
                     # Kill only task-created, already bounded test containers.
                     for role, name in containers.items():
@@ -165,9 +235,18 @@ def main():
                         observed = current.get('resources', {}).get('resources', {}).get('host', {}).get('memory_available_bytes')
                         if observed is not None:
                             min_available = min(min_available, observed)
+                    if time.monotonic() >= database_next_sample:
+                        database_samples.append(database_observation(db_name))
+                        database_next_sample = time.monotonic() + 1
                     time.sleep(.2)
                 if len(done) < 2:
                     raise RuntimeError(f'Phase {phase} did not complete in its declared bounded deadline')
+                database_samples.append(database_observation(db_name))
+                report['database']['phases'][phase] = {
+                    'sample_count': len(database_samples),
+                    'memory_peak_bytes': max(sample['memory_peak_bytes'] for sample in database_samples),
+                    'connections_peak': max(sample['connections'] for sample in database_samples),
+                    'series': database_samples}
             for role, url in urls.items():
                 result = request(url + '/verification/result')
                 inspect = json.loads(command('docker', 'inspect', '--format', '{{json .HostConfig}}', containers[role]))
@@ -196,12 +275,15 @@ def main():
                     'financial_writes_replayed': result['writes_replayed'], 'unattempted_tail_executed': result['tail_executed'],
                     'busy_requests': result['busy'], 'oom_kill_delta': after_oom - before_oom if None not in (before_oom, after_oom) else None,
                     'final_resources': effective}
-                evidence = temporary / role / 'resource_evidence'
+                evidence = data / 'resource_evidence'
                 if evidence.exists():
                     for path in evidence.glob('*.jsonl*'):
                         (destination / (role + '-' + path.name)).write_bytes(path.read_bytes())
             final_host_oom = request(urls['web'] + '/verification/result')['resources']['resources']['host'].get('oom_kill_counter')
             report['host_oom_kill_delta'] = final_host_oom - initial_oom if None not in (initial_oom, final_host_oom) else None
+            database_last = database_observation(db_name)
+            report['database']['oom_kill_delta'] = database_last['oom_kill'] - database_first['oom_kill']
+            report['database']['final_resources'] = database_last
     except Exception as exc:
         report['verification_error'] = str(exc)[:2048]
     finally:
@@ -217,7 +299,7 @@ def main():
                     time.sleep(.2)
             except Exception as exc:
                 report['containers'].setdefault(role, {})['docker_state_capture_error'] = str(exc)[:1024]
-            evidence = Path(temporary_workspace.name) / role / 'resource_evidence'
+            evidence = Path(temporary_workspace.name) / 'shared-data' / 'resource_evidence'
             if evidence.exists():
                 for path in evidence.glob('*.jsonl*'):
                     (destination / (role + '-' + path.name)).write_bytes(path.read_bytes())
@@ -229,8 +311,30 @@ def main():
                 pass
             try:
                 command('docker', 'rm', '-f', name)
-            except Exception:
-                pass
+            except Exception as exc:
+                report.setdefault('cleanup_errors', []).append({'resource': name, 'error': str(exc)[:512]})
+        if created_database:
+            try:
+                report['database']['docker_state'] = json.loads(command('docker', 'inspect', '--format', '{{json .State}}', db_name))
+                log = subprocess.run(['docker', 'logs', '--tail', '200', db_name], capture_output=True,
+                    text=True, encoding='utf-8', errors='replace', timeout=10)
+                (destination / 'db-container.log').write_text((log.stdout + log.stderr)[-64*1024:], encoding='utf-8')
+            except Exception as exc:
+                report['database']['capture_error'] = type(exc).__name__
+            try:
+                command('docker', 'rm', '-f', db_name)
+            except Exception as exc:
+                report.setdefault('cleanup_errors', []).append({'resource': db_name, 'error': str(exc)[:512]})
+        if created_volume:
+            try:
+                command('docker', 'volume', 'rm', db_volume)
+            except Exception as exc:
+                report.setdefault('cleanup_errors', []).append({'resource': db_volume, 'error': str(exc)[:512]})
+        if created_network:
+            try:
+                command('docker', 'network', 'rm', network)
+            except Exception as exc:
+                report.setdefault('cleanup_errors', []).append({'resource': network, 'error': str(exc)[:512]})
         temporary_workspace.cleanup()
     ordered = sorted(latencies)
     report['web_latency'] = {'samples': len(ordered), 'errors': errors,
@@ -246,6 +350,9 @@ def main():
     if report.get('verification_error'):
         verdict['verdict'] = 'failed'
         verdict['failures'].append('verification_error')
+    if report.get('cleanup_errors'):
+        verdict['verdict'] = 'failed'
+        verdict['failures'].append('isolated_resource_cleanup_incomplete')
     report.update(verdict)
     report['finished_at_utc'] = datetime.now(timezone.utc).isoformat()
     (destination / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')

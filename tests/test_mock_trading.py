@@ -1,4 +1,4 @@
-import sqlite3
+import pytest
 import tempfile
 import time
 import unittest
@@ -8,105 +8,12 @@ from unittest.mock import patch
 import backend.database as database
 
 
-def create_mock_trading_tables(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        '''
-        CREATE TABLE mock_accounts (
-            config_id TEXT PRIMARY KEY,
-            symbol TEXT,
-            balance REAL DEFAULT 10000.0,
-            failures INTEGER DEFAULT 0
-        )
-        '''
-    )
-    conn.execute(
-        '''
-        CREATE TABLE mock_balance_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            config_id TEXT,
-            symbol TEXT,
-            timestamp TEXT,
-            balance REAL,
-            unrealized_pnl REAL DEFAULT 0,
-            total_equity REAL
-        )
-        '''
-    )
-    conn.execute(
-        '''
-        CREATE TABLE mock_orders (
-            order_id TEXT PRIMARY KEY,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            side TEXT,
-            type TEXT,
-            price REAL,
-            amount REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            expire_at REAL,
-            status TEXT DEFAULT 'OPEN',
-            close_price REAL,
-            realized_pnl REAL,
-            close_time TEXT,
-            is_filled INTEGER DEFAULT 0
-        )
-        '''
-    )
-    conn.execute(
-        '''
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id TEXT,
-            timestamp TEXT,
-            symbol TEXT,
-            agent_name TEXT,
-            config_id TEXT,
-            trade_mode TEXT,
-            side TEXT,
-            entry_price REAL,
-            amount REAL,
-            take_profit REAL,
-            stop_loss REAL,
-            reason TEXT,
-            status TEXT DEFAULT 'OPEN'
-        )
-        '''
-    )
-    conn.execute(
-        '''
-        CREATE TABLE position_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            config_id TEXT NOT NULL,
-            symbol TEXT,
-            position_key TEXT NOT NULL,
-            side TEXT,
-            status TEXT,
-            source TEXT,
-            opened_at TEXT,
-            closed_at TEXT,
-            entry_price REAL,
-            close_price REAL,
-            amount REAL,
-            realized_pnl REAL,
-            raw_json TEXT,
-            updated_at TEXT,
-            UNIQUE(config_id, position_key)
-        )
-        '''
-    )
-    conn.commit()
-    conn.close()
 
 
 class MockTradingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "mock_trading.db"
-        create_mock_trading_tables(self.db_path)
         self.db_patch = patch.object(database, "DB_NAME", str(self.db_path))
         self.db_patch.start()
 
@@ -129,7 +36,7 @@ class MockTradingTests(unittest.TestCase):
 
         with database.get_db_conn() as conn:
             history_row = conn.execute(
-                "SELECT balance, unrealized_pnl, total_equity FROM mock_balance_history WHERE config_id = ?",
+                "SELECT balance, unrealized_pnl, total_equity FROM mock_balance_history WHERE config_id = %s",
                 ("cfg-a",),
             ).fetchone()
 
@@ -143,7 +50,7 @@ class MockTradingTests(unittest.TestCase):
         database.get_mock_account("cfg-a", "BTC/USDT")
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO orders (order_id, symbol, config_id, status) VALUES (?, ?, ?, ?)",
+                "INSERT INTO orders (order_id, symbol, config_id, status) VALUES (%s, %s, %s, %s)",
                 ("MO-1", "BTC/USDT", "cfg-a", "OPEN"),
             )
             conn.commit()
@@ -166,19 +73,19 @@ class MockTradingTests(unittest.TestCase):
 
         with database.get_db_conn() as conn:
             mock_order = conn.execute(
-                "SELECT status, close_price, realized_pnl, close_time, is_filled FROM mock_orders WHERE order_id = ?",
+                "SELECT status, close_price, realized_pnl, close_time, is_filled FROM mock_orders WHERE order_id = %s",
                 ("MO-1",),
             ).fetchone()
             order_log = conn.execute(
-                "SELECT status FROM orders WHERE order_id = ?",
+                "SELECT status FROM orders WHERE order_id = %s",
                 ("MO-1",),
             ).fetchone()
             account = conn.execute(
-                "SELECT balance, failures FROM mock_accounts WHERE config_id = ?",
+                "SELECT balance, failures FROM mock_accounts WHERE config_id = %s",
                 ("cfg-a",),
             ).fetchone()
             position = conn.execute(
-                "SELECT status, close_price, realized_pnl FROM position_history WHERE config_id = ? AND position_key = ?",
+                "SELECT status, close_price, realized_pnl FROM position_history WHERE config_id = %s AND position_key = %s",
                 ("cfg-a", "MO-1"),
             ).fetchone()
 
@@ -221,20 +128,20 @@ class MockTradingTests(unittest.TestCase):
         future = time.time() + 3600
         with database.get_db_conn() as conn:
             conn.execute(
-                "INSERT INTO mock_orders (order_id, timestamp, symbol, agent_name, config_id, side, price, amount, expire_at, status, is_filled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO mock_orders (order_id, timestamp, symbol, agent_name, config_id, side, price, amount, expire_at, status, is_filled) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 ("MO-EXP", "2026-05-12 09:00:00", "BTC/USDT", "agent-a", "cfg-a", "BUY", 100, 1, past, "OPEN", 0),
             )
             conn.execute(
-                "INSERT INTO mock_orders (order_id, timestamp, symbol, agent_name, config_id, side, price, amount, expire_at, status, is_filled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO mock_orders (order_id, timestamp, symbol, agent_name, config_id, side, price, amount, expire_at, status, is_filled) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 ("MO-FILLED", "2026-05-12 09:00:00", "BTC/USDT", "agent-a", "cfg-a", "BUY", 100, 1, past, "OPEN", 1),
             )
             conn.execute(
-                "INSERT INTO mock_orders (order_id, timestamp, symbol, agent_name, config_id, side, price, amount, expire_at, status, is_filled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO mock_orders (order_id, timestamp, symbol, agent_name, config_id, side, price, amount, expire_at, status, is_filled) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 ("MO-FUTURE", "2026-05-12 09:00:00", "BTC/USDT", "agent-a", "cfg-a", "BUY", 100, 1, future, "OPEN", 0),
             )
-            conn.execute("INSERT INTO orders (order_id, symbol, config_id, status) VALUES (?, ?, ?, ?)", ("MO-EXP", "BTC/USDT", "cfg-a", "OPEN"))
-            conn.execute("INSERT INTO orders (order_id, symbol, config_id, status) VALUES (?, ?, ?, ?)", ("MO-FILLED", "BTC/USDT", "cfg-a", "OPEN"))
-            conn.execute("INSERT INTO orders (order_id, symbol, config_id, status) VALUES (?, ?, ?, ?)", ("MO-FUTURE", "BTC/USDT", "cfg-a", "OPEN"))
+            conn.execute("INSERT INTO orders (order_id, symbol, config_id, status) VALUES (%s, %s, %s, %s)", ("MO-EXP", "BTC/USDT", "cfg-a", "OPEN"))
+            conn.execute("INSERT INTO orders (order_id, symbol, config_id, status) VALUES (%s, %s, %s, %s)", ("MO-FILLED", "BTC/USDT", "cfg-a", "OPEN"))
+            conn.execute("INSERT INTO orders (order_id, symbol, config_id, status) VALUES (%s, %s, %s, %s)", ("MO-FUTURE", "BTC/USDT", "cfg-a", "OPEN"))
             conn.commit()
 
         closed = database.auto_close_expired_mock_orders(config_id="cfg-a", symbol="BTC/USDT")
@@ -265,3 +172,7 @@ class MockTradingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+@pytest.fixture(autouse=True)
+def _postgres_storage(financial_pg):
+    yield
