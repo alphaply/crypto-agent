@@ -76,6 +76,62 @@ def test_unauthenticated_discovery_and_revoked_key(gateway):
     assert rpc(gateway, key['secret'], 'tools/list').status_code == 401
 
 
+@pytest.mark.parametrize('key_type', ['live', 'paper'])
+def test_admin_key_revocation_deletes_credential_and_lookup(gateway, key_type):
+    from backend.app.core.security import create_access_token
+    from backend.mcp.transfer import export_settings
+    key = auth.create_api_key('Remove me', ['read'], [], key_type=key_type)
+    other = auth.create_api_key('Keep me', ['read'], [])
+    store.put('key_lookup', 'legacy-alias', {'id': key['id']})
+    store.audit('key:' + key['id'], 'get_account_state', 'completed')
+    oauth = auth.AuthorizationProvider('http://localhost:7860')._issue('independent-client', ['read'], [], 'independent-grant')
+    assert rpc(gateway, key['secret'], 'initialize', {
+        'protocolVersion': '2025-11-25', 'capabilities': {},
+        'clientInfo': {'name': 'key-revoke-test', 'version': '1'},
+    }).status_code == 200
+    headers = {'Authorization': 'Bearer ' + create_access_token()}
+
+    response = gateway.delete('/api/mcp/keys/' + key['id'], headers=headers)
+
+    assert response.status_code == 200
+    assert response.headers['cache-control'] == 'no-store'
+    assert store.get('key', key['id']) is None
+    assert store.get('key_lookup', key['digest']) is None
+    assert store.get('key_lookup', 'legacy-alias') is None
+    assert rpc(gateway, key['secret'], 'tools/list').status_code == 401
+    assert rpc(gateway, other['secret'], 'tools/list').status_code == 200
+    assert rpc(gateway, oauth.access_token, 'tools/list').status_code == 200
+    assert store.get('refresh', store.digest(oauth.refresh_token)) is not None
+    assert [row['id'] for row in gateway.get('/api/mcp', headers=headers).json()['keys']] == [other['id']]
+    assert key['id'] not in json.dumps(export_settings())
+    assert store.audit_rows()[0]['principal'] == 'key:' + key['id']
+    assert gateway.delete('/api/mcp/keys/' + key['id'], headers=headers).status_code == 404
+
+
+def test_startup_removes_legacy_revoked_keys_and_only_their_lookups(gateway):
+    old = auth.create_api_key('Legacy revoked key', ['read'], [])
+    active = auth.create_api_key('Active key', ['read'], [])
+    record = store.get('key', old['id'])
+    record['revoked'] = True
+    store.put('key', old['id'], record)
+    store.put('key_lookup', 'legacy-alias', {'id': old['id']})
+    store.audit('key:' + old['id'], 'get_trade_records', 'completed')
+
+    for _ in range(2):
+        with database.get_db_conn() as conn:
+            store.initialize_schema(conn)
+            conn.commit()
+
+    assert store.get('key', old['id']) is None
+    assert store.get('key_lookup', old['digest']) is None
+    assert store.get('key_lookup', 'legacy-alias') is None
+    assert store.get('key_lookup', active['digest']) == {'id': active['id']}
+    assert [row['id'] for row in auth.admin_keys()] == [active['id']]
+    assert rpc(gateway, old['secret'], 'tools/list').status_code == 401
+    assert rpc(gateway, active['secret'], 'tools/list').status_code == 200
+    assert store.audit_rows()[0]['principal'] == 'key:' + old['id']
+
+
 def oauth_code(client):
     reg = client.post('/oauth/register', json={'client_name': 'Test Client', 'redirect_uris': ['http://localhost:12345/callback'], 'token_endpoint_auth_method': 'none', 'grant_types': ['authorization_code', 'refresh_token'], 'scope': 'read trade cancel'})
     assert reg.status_code == 201, reg.text

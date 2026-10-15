@@ -13,6 +13,7 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
+from contextlib import contextmanager
 
 from backend.utils.runtime_capacity import (CapacityBusy, capacity_scope,
                                            positive_setting, reserve_bytes)
@@ -153,6 +154,23 @@ def _public_loader(exchange, market_type):
     return loader
 
 
+@contextmanager
+def _refresh_loader(exchange, market_type):
+    """Drop the raw SDK maps before releasing their refresh commitment."""
+    import ccxt
+
+    loader = _public_loader(exchange, market_type)
+    try:
+        yield loader
+    finally:
+        if loader is not exchange:
+            loader.session.close()
+            if isinstance(loader, ccxt.Exchange):
+                for name in ('markets', 'markets_by_id', 'currencies', 'currencies_by_id',
+                             'baseCurrencies', 'quoteCurrencies', 'symbols', 'codes'):
+                    setattr(loader, name, None)
+
+
 def _drop(key):
     item = _catalogues.pop(key)
     if item.get('lease'):
@@ -226,6 +244,8 @@ def load_public_catalogue(exchange, legacy_key=None, *, market_type=None, timeou
 
 
 def _load_public_catalogue(exchange, legacy_key=None, *, market_type=None, timeout=30):
+    import ccxt
+
     global _refresh_peak
     key = public_key(exchange, market_type=market_type, legacy_key=legacy_key)
     install_bounded_http(exchange)
@@ -259,15 +279,24 @@ def _load_public_catalogue(exchange, legacy_key=None, *, market_type=None, timeo
                 raise ValueError('Public market metadata temporarily unavailable; refresh backoff')
             response_bound = positive_setting('RUNTIME_HTTP_RESPONSE_BYTES', 8 * 1024 * 1024)
             max_bytes = positive_setting('RUNTIME_CATALOGUE_BYTES', 64 * 1024 * 1024)
-            peak = positive_setting('RUNTIME_CATALOGUE_REFRESH_BYTES', max(max_bytes, response_bound * 8))
+            peak = positive_setting('RUNTIME_CATALOGUE_REFRESH_BYTES', max(max_bytes * 2, response_bound * 8))
             ttl = positive_setting('RUNTIME_CATALOGUE_TTL_SECONDS', 300.0)
             retry_seconds = positive_setting('RUNTIME_CATALOGUE_RETRY_SECONDS', 2.0)
             loader = retained = None
             try:
-                with capacity_scope('metadata', timeout=timeout), reserve_bytes('parse', peak) as refresh_space:
+                with (capacity_scope('metadata', timeout=timeout),
+                      reserve_bytes('parse', peak) as refresh_space,
+                      _refresh_loader(exchange, market_type) as loader):
                     _refresh_peak = max(_refresh_peak, peak)
-                    loader = _public_loader(exchange, market_type)
-                    loader.load_markets()
+                    fetch_options = (getattr(loader, 'options', {}) or {}).get('fetchMarkets')
+                    if (isinstance(loader, ccxt.Exchange) and loader.id == 'binance'
+                            and isinstance(fetch_options, dict) and fetch_options.get('types') == ['spot']):
+                        # Binance's permissionSets can dwarf the entire useful
+                        # catalogue. CCXT and our retained snapshot do not use
+                        # them. This leaves the full symbol set and filters intact.
+                        loader.load_markets(params={'showPermissionSets': False})
+                    else:
+                        loader.load_markets()
                     # The refresh reservation covers both the parsed loader
                     # and its compact replacement before either is retained.
                     raw_size = resident_size((loader.markets, loader.currencies), peak // 2)
@@ -292,9 +321,6 @@ def _load_public_catalogue(exchange, legacy_key=None, *, market_type=None, timeo
                 exc.metadata_observation = {'source': entry['source'], 'market_type': entry['market_type'],
                                             'observed_at': entry['observed_at'], 'refresh_complete': False}
                 raise
-            finally:
-                if loader is not None and loader is not exchange:
-                    loader.session.close()
         # A separate commitment covers CCXT set_markets' mutable derived maps.
         lease = reserve_bytes('client', entry['bytes'] * 3)
         try:

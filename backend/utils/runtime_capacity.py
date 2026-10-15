@@ -124,7 +124,7 @@ class ByteLease:
 
 class CapacityManager:
     def __init__(self, *, total=8, reserved=2, queue_limit=16, wait_seconds=2.0,
-                 role_limits=None, byte_limit=256 * 1024 * 1024):
+                 role_limits=None, byte_limit=512 * 1024 * 1024):
         if (not isinstance(total, int) or not isinstance(reserved, int)
                 or total < 1 or reserved < 0 or reserved >= total
                 or not isinstance(queue_limit, int) or queue_limit < 0
@@ -154,7 +154,7 @@ class CapacityManager:
                    reserved=positive_setting('RUNTIME_CAPACITY_RESERVED_WORKERS', 2, minimum=0),
                    queue_limit=positive_setting('RUNTIME_CAPACITY_QUEUE_LIMIT', 16, minimum=0),
                    wait_seconds=positive_setting('RUNTIME_CAPACITY_QUEUE_SECONDS', 2.0, minimum=0),
-                   role_limits=limits, byte_limit=positive_setting('RUNTIME_CAPACITY_BYTES', 256 * 1024 * 1024))
+                   role_limits=limits, byte_limit=positive_setting('RUNTIME_CAPACITY_BYTES', 512 * 1024 * 1024))
 
     def _can_start(self, role, critical):
         return (sum(self.active.values()) < self.total and self.active[role] < self.role_limits[role]

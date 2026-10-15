@@ -34,6 +34,7 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
       const { data: next } = await api.get('/mcp');
       setData(next);
       setSettings(next.settings);
+      setSelectedKey((current) => next.keys?.some((key) => key.id === current && !key.revoked) ? current : '');
       setError('');
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
@@ -107,11 +108,11 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
     </Card>
 
     <Card className="panel-card" title={<Space><KeyOutlined />API Keys</Space>} extra={<Button icon={<PlusOutlined />} onClick={() => setKeyDraft({ name: '', scopes: ['read'], profile_ids: [] })}>{label('创建 API Key', 'Create API key')}</Button>}>
-      <div className="settings-stack">{(data.keys || []).map((key) => <div key={key.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border-soft)' }}>
-        <Space wrap><Text strong>{key.name}</Text><Tag color={key.key_type === 'paper' ? 'blue' : 'default'}>{key.key_type === 'paper' ? 'Paper' : label('真实交易', 'Live')}</Tag>{key.scopes.map((scope) => <Tag key={scope}>{scope}</Tag>)}{key.revoked ? <Tag>{label('已撤销', 'Revoked')}</Tag> : <Popconfirm title={label('撤销此 API Key？', 'Revoke this API key?')} onConfirm={() => mutate(() => api.delete(`/mcp/keys/${key.id}`))}><Button size="small" danger>{label('撤销', 'Revoke')}</Button></Popconfirm>}</Space>
-        {!key.revoked && <Input style={{ marginTop: 10 }} value={key.secret} readOnly addonAfter={<Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copy(key.secret)} />} />}
+      <div className="settings-stack">{activeKeys.map((key) => <div key={key.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border-soft)' }}>
+        <Space wrap><Text strong>{key.name}</Text><Tag color={key.key_type === 'paper' ? 'blue' : 'default'}>{key.key_type === 'paper' ? 'Paper' : label('真实交易', 'Live')}</Tag>{key.scopes.map((scope) => <Tag key={scope}>{scope}</Tag>)}<Popconfirm title={label('撤销并删除此 API Key？', 'Revoke and delete this API key?')} onConfirm={() => mutate(() => api.delete(`/mcp/keys/${key.id}`))}><Button size="small" danger>{label('撤销', 'Revoke')}</Button></Popconfirm></Space>
+        <Input style={{ marginTop: 10 }} value={key.secret} readOnly addonAfter={<Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copy(key.secret)} />} />
         <Text type="secondary">{label('配置范围', 'Profiles')}: {key.key_type === 'paper' ? label(`模拟账户 · ${key.paper_namespace}`, `Paper accounts · ${key.paper_namespace}`) : key.profile_ids.join(' · ') || label('仅共享消息', 'Shared news only')}</Text>
-      </div>)}{!data.keys?.length && <Empty description={label('尚未创建 API Key', 'No API keys yet')} />}</div>
+      </div>)}{!activeKeys.length && <Empty description={label('尚未创建 API Key', 'No API keys yet')} />}</div>
     </Card>
 
     <Card className="panel-card" title={label('可用工具', 'Available tools')}><Space wrap>{(data.tools || []).map((tool) => <Tag key={tool.name}>{tool.name} · {tool.scope}</Tag>)}</Space><Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>{label('交易请求必须携带稳定 operation_id；同一请求重试返回原回执。已受理或结果未知的原订单由系统后台核验并更新状态。', 'Trade requests require a stable operation_id; retries return the original receipt. The system verifies accepted or unresolved original orders in the background and updates their status.')}</Paragraph></Card>

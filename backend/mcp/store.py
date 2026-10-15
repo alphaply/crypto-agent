@@ -83,6 +83,11 @@ def initialize_schema(conn):
     for statement in schema.split(';'):
         if statement.strip():
             conn.execute(statement)
+    # Older releases retained revoked credentials in the settings list. Remove
+    # both the encrypted credential and every lookup when migrating that data.
+    conn.execute("DELETE FROM mcp_records WHERE kind='key_lookup' AND json_extract(payload,'$.id') IN "
+                 "(SELECT id FROM mcp_records WHERE kind='key' AND json_extract(payload,'$.revoked')=1)")
+    conn.execute("DELETE FROM mcp_records WHERE kind='key' AND json_extract(payload,'$.revoked')=1")
     from .paper_schema import initialize_schema as initialize_paper_schema
     initialize_paper_schema(conn)
 
@@ -127,6 +132,17 @@ def pop(kind: str, key: str):
         conn.execute("DELETE FROM mcp_records WHERE kind=? AND id=?", (kind, key))
         conn.commit()
     return json.loads(row[0]) if row else None
+
+
+def delete_api_key(key_id: str) -> bool:
+    """Delete a credential and its authentication lookups in one transaction."""
+    with connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        result = conn.execute("DELETE FROM mcp_records WHERE kind='key' AND id=?", (key_id,))
+        conn.execute("DELETE FROM mcp_records WHERE kind='key_lookup' AND json_extract(payload,'$.id')=?",
+                     (key_id,))
+        conn.commit()
+    return result.rowcount > 0
 
 
 def list_records(kind: str):

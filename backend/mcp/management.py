@@ -120,11 +120,8 @@ def add_key(payload: KeyRequest, response: Response):
 
 @router.delete('/keys/{key_id}')
 def revoke_key(key_id: str):
-    value = store.get('key', key_id)
-    if not value:
+    if not store.delete_api_key(key_id):
         raise HTTPException(404, 'MCP API key not found')
-    value['revoked'] = True
-    store.put('key', key_id, value)
     return {'success': True}
 
 

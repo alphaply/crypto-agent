@@ -131,6 +131,14 @@ saved without assigning a new owner while historical ownership is incomplete.
 Default execution context exposes that incompleteness instead of treating a
 partial historical index as a complete reconciliation.
 
+## Binance spot metadata response sizing
+
+On 2026-10-15 the production `/api/v3/exchangeInfo` response contained 3,729 symbols: 322,077 compressed bytes, but 17,767,621 decoded bytes. The HTTP bound correctly applies to decoded content and rejected it at 8 MiB. Public Binance spot refreshes now request `showPermissionSets=false`, which leaves the symbol scope unchanged and omits a field neither CCXT nor the retained catalogue consumes. The measured decoded body becomes 6,759,438 bytes; the 8 MiB HTTP limit remains enforced. Futures requests do not receive the spot-only parameter.
+
+The actual CCXT raw maps occupied 34,819,893 resident bytes and the retained compact maps 32,641,483 bytes, exceeding the former 64 MiB refresh budget together. Defaults now reserve 128 MiB for a refresh and allow 512 MiB of aggregate commitments, including warm old/new catalogues and client copies. Owned loader maps are cleared before releasing refresh space. Production concurrent spot/swap cold loads and expired refreshes succeeded with a measured commitment peak of 495,366,640 bytes and process peak RSS of 303,536 KiB in a separate diagnostic process. This is dependency sizing evidence, not a replacement for isolated resource acceptance or authenticated MCP verification.
+
+Use the frozen `scripts/capacity/metadata-fix-v13.json` for local resource acceptance and `scripts/capacity/production-metadata-fix-v1.json` for the upgraded target host. Historical v12 reports and profiles remain unchanged.
+
 ## Settings
 
 All values below are finite **calibration defaults**, not verified production
@@ -143,10 +151,10 @@ values. Invalid numeric/role configuration raises a clear error.
 | `RUNTIME_CAPACITY_RESERVED_WORKERS` | 2 | Critical reserve included in total; must be smaller than total |
 | `RUNTIME_CAPACITY_QUEUE_LIMIT` | 16 | Process-wide waiting tickets; 0 allows immediate admission only |
 | `RUNTIME_CAPACITY_QUEUE_SECONDS` | 2 | Admission wait budget |
-| `RUNTIME_CAPACITY_BYTES` | 268435456 | Total admitted retained/transient bytes |
+| `RUNTIME_CAPACITY_BYTES` | 536870912 | Total admitted retained/transient bytes |
 | `RUNTIME_CAPACITY_ROLE_LIMITS` | `{}` | JSON overrides for the fixed role map |
 | `RUNTIME_CATALOGUE_BYTES` | 67108864 | Aggregate retained compact catalogue bytes, including replacement overlap |
-| `RUNTIME_CATALOGUE_REFRESH_BYTES` | 67108864 | One raw-loader/compact refresh peak; default is also at least 8× response cap |
+| `RUNTIME_CATALOGUE_REFRESH_BYTES` | 134217728 | One raw-loader/compact refresh peak; default is twice retained catalogue cap and at least 8× response cap |
 | `RUNTIME_CATALOGUE_ENTRIES` | 32 | Retained/in-flight public keys |
 | `RUNTIME_HTTP_RESPONSE_BYTES` | 8388608 | Bounded streamed response body; separate parse amplification commitment |
 | `RUNTIME_CACHE_IDLE_SECONDS` | 300 | Idle retirement for unused runtime resources |

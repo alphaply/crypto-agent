@@ -338,3 +338,205 @@ def test_invalid_transport_adapter_cannot_leave_a_pinned_coordinator(local_capac
         exchange_runtime.install_transport(object(), 'invalid-offline-client')
     assert 'invalid-offline-client' not in exchange_runtime._accounts
     assert local_capacity.snapshot()['bytes'] == before
+
+
+def _binance_symbol(symbol='MUBUSDT', *, status='TRADING', contract=False):
+    market = {
+        'symbol': symbol, 'status': status, 'baseAsset': symbol[:-4],
+        'quoteAsset': 'USDT', 'baseAssetPrecision': 8, 'quotePrecision': 8,
+        'isSpotTradingAllowed': not contract, 'isMarginTradingAllowed': False,
+        'orderTypes': ['LIMIT', 'MARKET', 'STOP_LOSS_LIMIT'], 'ocoAllowed': True,
+        'permissions': ['SPOT'],
+        'filters': [
+            {'filterType': 'PRICE_FILTER', 'minPrice': '0.01',
+             'maxPrice': '100000', 'tickSize': '0.01'},
+            {'filterType': 'LOT_SIZE', 'minQty': '0.001',
+             'maxQty': '100000', 'stepSize': '0.001'},
+            {'filterType': 'MIN_NOTIONAL', 'minNotional': '5'},
+        ],
+    }
+    if contract:
+        market.update(contractType='PERPETUAL', marginAsset='USDT',
+                      deliveryDate=4133404800000, onboardDate=1700000000000,
+                      quantityPrecision=3, pricePrecision=2)
+    return market
+
+
+@pytest.mark.parametrize('legacy_options', [False, True])
+def test_binance_spot_full_catalogue_omits_unused_permissions_only(
+        local_capacity, monkeypatch, legacy_options):
+    import ccxt
+    from urllib.parse import parse_qs, urlsplit
+
+    requests = []
+    source = [_binance_symbol(), _binance_symbol('ETHUSDT', status='HALT')]
+
+    def fetch(self, url, method='GET', headers=None, body=None):
+        parsed = urlsplit(url)
+        requests.append((method, parsed.path, parse_qs(parsed.query)))
+        assert parsed.path == '/api/v3/exchangeInfo'
+        return {'symbols': copy.deepcopy(source)}
+
+    monkeypatch.setattr(ccxt.binance, 'fetch', fetch)
+    client = ccxt.binance({'options': {
+        'defaultType': 'spot', 'fetchCurrencies': False,
+        'fetchMarkets': ['spot'] if legacy_options else {'types': ['spot']},
+        'adjustForTimeDifference': False,
+    }})
+    try:
+        # Omitting market_type preserves CCXT's supported legacy option shape.
+        catalogues.load_public_catalogue(client)
+        assert len(requests) == 1
+        method, path, params = requests[0]
+        assert method == 'GET' and path == '/api/v3/exchangeInfo'
+        if not legacy_options:
+            assert params == {'showPermissionSets': ['false']}
+        else:
+            assert set(params) <= {'showPermissionSets'}
+        assert set(client.markets) == {'MUB/USDT', 'ETH/USDT'}
+        assert client.market('ETH/USDT')['active'] is False
+        market = client.market('MUB/USDT')
+        assert market['active'] is True and market['spot'] is True
+        assert client.amount_to_precision('MUB/USDT', 1.23456) == '1.234'
+        assert client.price_to_precision('MUB/USDT', 12.3456) == '12.35'
+        assert market['limits']['cost']['min'] == 5
+        assert market['info']['orderTypes'] == source[0]['orderTypes']
+        assert market['info']['ocoAllowed'] is True
+        assert market['info']['filters'] == source[0]['filters']
+    finally:
+        catalogues.release_catalogue_client(client)
+        client.session.close()
+
+
+def test_binance_futures_catalogue_does_not_send_spot_parameter(local_capacity, monkeypatch):
+    import ccxt
+    from urllib.parse import parse_qs, urlsplit
+
+    requests = []
+
+    def fetch(self, url, method='GET', headers=None, body=None):
+        parsed = urlsplit(url)
+        requests.append((parsed.path, parse_qs(parsed.query)))
+        assert parsed.path == '/fapi/v1/exchangeInfo'
+        return {'symbols': [_binance_symbol(contract=True)]}
+
+    monkeypatch.setattr(ccxt.binance, 'fetch', fetch)
+    client = ccxt.binance({'options': {
+        'defaultType': 'swap', 'fetchCurrencies': False,
+        'adjustForTimeDifference': False,
+    }})
+    try:
+        catalogues.load_public_catalogue(client, market_type='swap')
+        assert requests == [('/fapi/v1/exchangeInfo', {})]
+        market = client.market('MUB/USDT:USDT')
+        assert market['swap'] is True and market['linear'] is True
+        assert market['contractSize'] == 1
+        assert client.amount_to_precision('MUB/USDT:USDT', 1.23456) == '1.234'
+    finally:
+        catalogues.release_catalogue_client(client)
+        client.session.close()
+
+
+def test_gzip_decoded_body_still_obeys_default_http_cap(local_capacity, monkeypatch):
+    import gzip
+    import io
+    import requests
+    import urllib3
+
+    monkeypatch.delenv('RUNTIME_HTTP_RESPONSE_BYTES', raising=False)
+    cap = 8 * 1024 * 1024
+    compressed = gzip.compress(b'x' * (cap + 1))
+    assert len(compressed) < cap
+    response = requests.Response()
+    response.status_code = 200
+    response.headers.update({'Content-Encoding': 'gzip', 'Content-Length': str(len(compressed))})
+    response.raw = urllib3.response.HTTPResponse(
+        body=io.BytesIO(compressed), headers=response.headers, preload_content=False)
+
+    class Session:
+        def request(self, *args, **kwargs):
+            assert kwargs['stream'] is True
+            return response
+
+    client = OfflineExchange()
+    client.session = Session()
+    catalogues.install_bounded_http(client)
+    with pytest.raises(capacity.CapacityBusy, match='exchange: response_bytes'):
+        client.session.request('GET', 'https://fixture.invalid/api/v3/exchangeInfo')
+    assert response.raw.closed
+    assert local_capacity.snapshot()['bytes'] == 0
+
+
+def test_production_sized_catalogue_cold_and_warm_consumer_overlap(local_capacity, monkeypatch):
+    import ccxt
+
+    # Sizes measured on production with showPermissionSets=false. Virtual sizing
+    # exercises actual admission and lease transfer without a 35 MiB test fixture.
+    raw_bytes, compact_bytes = 34_819_893, 32_641_483
+    for name in ('RUNTIME_CAPACITY_BYTES', 'RUNTIME_CATALOGUE_BYTES',
+                 'RUNTIME_CATALOGUE_REFRESH_BYTES', 'RUNTIME_HTTP_RESPONSE_BYTES'):
+        monkeypatch.delenv(name, raising=False)
+    manager = capacity.CapacityManager.from_environment()
+    monkeypatch.setattr(capacity, '_manager', manager)
+    assert manager.byte_limit == 512 * 1024 * 1024
+    original_size = catalogues.resident_size
+    refresh_commitments, discarded_commitments = [], []
+
+    class TransientPayload:
+        pass
+
+    class RawMarkets(dict):
+        pass
+
+    class Loader(ccxt.binance):
+        def __init__(self):
+            super().__init__({'options': {'fetchCurrencies': False}})
+            self.counter = []
+
+        def load_markets(self, reload=False, params=None):
+            with capacity.reserve_bytes('parse', 32 * 1024 * 1024):
+                refresh_commitments.append(manager.snapshot()['bytes'])
+                OfflineExchange.load_markets(self)
+            self.markets = RawMarkets(self.markets)
+            payload = TransientPayload()
+            weakref.finalize(payload, lambda: discarded_commitments.append(
+                manager.snapshot()['byte_classes']['parse']))
+            self.markets['ETH/USDT']['info']['unused_directory_payload'] = payload
+
+    def measured_size(value, limit=None):
+        if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], dict):
+            measured = raw_bytes if isinstance(value[0], RawMarkets) else compact_bytes
+        elif isinstance(value, dict) and 'ETH/USDT' in value:
+            measured = compact_bytes
+        else:
+            return original_size(value, limit)
+        if limit is not None and measured > limit:
+            raise capacity.CapacityBusy('metadata', 'catalogue_bytes')
+        return measured
+
+    monkeypatch.setattr(catalogues, 'resident_size', measured_size)
+    monkeypatch.setattr(catalogues, '_public_loader', lambda *_: Loader())
+    first, second = OfflineExchange(), OfflineExchange(credential='second-account')
+    try:
+        observed = catalogues.load_public_catalogue(first)
+        assert catalogues.load_public_catalogue(second) == observed
+        entry = catalogues._catalogues[catalogues.public_key(first)]
+        assert entry['bytes'] == compact_bytes
+        entry['expires_at'] = 0
+        catalogues.load_public_catalogue(first)
+        assert len(refresh_commitments) == 2
+        assert refresh_commitments[-1] > 256 * 1024 * 1024
+        assert len(discarded_commitments) == 2
+        # The raw loader must disappear while its transient lease remains live.
+        assert all(amount >= 128 * 1024 * 1024 - compact_bytes
+                   for amount in discarded_commitments)
+        diagnostics = manager.snapshot()
+        assert diagnostics['byte_classes']['parse'] == 0
+        assert diagnostics['byte_classes']['catalogue'] == compact_bytes
+        assert diagnostics['peaks']['bytes'] <= manager.byte_limit
+        assert catalogues.catalogue_diagnostics()['refresh_peak_reserved_bytes'] == 128 * 1024 * 1024
+    finally:
+        catalogues.release_catalogue_client(first)
+        catalogues.release_catalogue_client(second)
+        catalogues.retire_catalogues(all_idle=True)
+    assert manager.snapshot()['bytes'] == 0
