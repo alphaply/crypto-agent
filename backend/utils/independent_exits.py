@@ -839,9 +839,23 @@ class IndependentExits(PositionProtection):
         record['last_operation_id'] = request.get('operation_id')
         self._save(plan)
         self._cancel(record, plan, allow_child=False)
-        if record.get('fill_pending'):
-            # An accepted cancel need not contain a cumulative-fill figure.
-            # Replacement sizing must not reuse the pre-cancel quantity.
+        # A dynamic replacement covers whatever the position holds at trigger
+        # time, so its quantity never depends on the cancelled order's fills.
+        # A fixed replacement does, and one bounded read can still quantify a
+        # cancellation ACK that carried no cumulative fill figure.
+        if record.get('fill_pending') and record.get('quantity_mode') != 'all':
+            budget = {'deadline': time.monotonic() + 2, 'calls': 0}
+            try:
+                record['attempt_count'] = record.get('attempt_count', 0) + 1
+                self._query(record, plan['symbol'], budget=budget)
+            except (ccxt.NetworkError, RuntimeError, TimeoutError) as exc:
+                record['query_error'] = str(exc)
+            if record.get('status') in TERMINAL and not record.get('fill_pending'):
+                record['cancel_confirmed_at'] = time.time()
+                if str(plan.get('error') or '').startswith('Cancellation confirmed but cumulative fill is unverified'):
+                    plan['error'] = None
+            self._save(plan)
+        if record.get('fill_pending') and record.get('quantity_mode') != 'all' and not record.get('execution_order_id'):
             record['unattempted_replacement'] = record.pop('replacement', None)
             record['replacement_error'] = 'Cancellation succeeded; replacement not submitted because cumulative fill is unverified'
             self._save(plan)

@@ -777,6 +777,93 @@ def test_cancel_ack_without_fill_keeps_terminal_status_through_stale_open_read(l
     assert len(ex.calls) == 2 and cancellations == [stop['id']]
 
 
+def _ack_only():
+    from backend.utils.trade_operations import financial_ack_only
+    return financial_ack_only.set(True)
+
+
+def _reset_ack_only(token):
+    from backend.utils.trade_operations import financial_ack_only
+    financial_ack_only.reset(token)
+
+
+def test_ack_only_edit_submits_fixed_successor_after_one_bounded_cancel_read(live_service):
+    """A single-call edit must not leave a conditional order cancelled without a successor."""
+    svc, ex = live_service
+    take_profit = svc.close('ETH/USDT', 'LONG', .5, 'stop_market', trigger_price=90)
+    original_cancel, original_query = ex.cancel_order, ex.fetch_order
+    reads = []
+
+    def cancel_without_fill(oid, symbol, params):
+        response = original_cancel(oid, symbol, params)
+        response['filled'] = None  # A cancellation ACK need not quantify the target.
+        return response
+
+    def counted_query(oid, symbol, params):
+        reads.append(str(oid))
+        return original_query(oid, symbol, params)
+
+    ex.cancel_order, ex.fetch_order = cancel_without_fill, counted_query
+    submitted = len(ex.calls)
+    token = _ack_only()
+    try:
+        result = svc.edit('ETH/USDT', take_profit['id'], remaining_amount=.3,
+                          reason='resize', operation_id='ack-only-resize')
+    finally:
+        _reset_ack_only(token)
+    assert result['edit_method'] == 'cancel_replace'
+    assert not result.get('replacement_error'), result
+    assert result['status'] in {'submitted', 'completed'}, result
+    assert len(ex.calls) == submitted + 1
+    plan = svc._load('ETH/USDT:USDT', 'LONG')
+    assert plan.get('error') is None
+    old = next(record for record in plan['exits'] if record['id'] == take_profit['id'])
+    assert old['status'] == 'canceled'
+    assert not old.get('fill_pending') and not old.get('unattempted_replacement')
+    successors = [record for record in plan['exits'] if str(record.get('replaces')) == str(take_profit['id'])]
+    assert len(successors) == 1 and successors[0]['amount'] == pytest.approx(.3)
+
+
+def test_ack_only_dynamic_stop_successor_ignores_unverifiable_cancel_fill(live_service):
+    """A dynamic successor covers whatever the position holds, so it never waits on the old fill."""
+    svc, ex = live_service
+    stop = svc.close('ETH/USDT', 'LONG', .5, 'stop_market', trigger_price=90)
+    plan = svc._load('ETH/USDT:USDT', 'LONG')
+    plan['exits'][0].update(quantity_mode='all', amount=None)  # dynamic all: covers whatever the position holds
+    svc._save(plan)
+    original_cancel, original_query = ex.cancel_order, ex.fetch_order
+    cancelled = []
+
+    def cancel_without_fill(oid, symbol, params):
+        cancelled.append(str(oid))
+        response = original_cancel(oid, symbol, params)
+        response['filled'] = None
+        return response
+
+    def unavailable_after_cancel(oid, symbol, params):
+        if cancelled and str(oid) == str(stop['id']):
+            raise ccxt.RequestTimeout('fill read unavailable')
+        return original_query(oid, symbol, params)
+
+    ex.cancel_order, ex.fetch_order = cancel_without_fill, unavailable_after_cancel
+    submitted = len(ex.calls)
+    token = _ack_only()
+    try:
+        result = svc.edit('ETH/USDT', stop['id'], trigger_price=95,
+                          reason='widen stop', operation_id='ack-only-widen')
+    finally:
+        _reset_ack_only(token)
+    assert not result.get('replacement_error'), result
+    assert result['trigger_price'] == pytest.approx(95)
+    assert len(ex.calls) == submitted + 1
+    plan = svc._load('ETH/USDT:USDT', 'LONG')
+    old = next(record for record in plan['exits'] if record['id'] == stop['id'])
+    assert old['quantity_mode'] == 'all' and old['status'] == 'canceled'
+    assert not old.get('unattempted_replacement')
+    successors = [record for record in plan['exits'] if str(record.get('replaces')) == str(stop['id'])]
+    assert len(successors) == 1 and successors[0]['trigger_price'] == pytest.approx(95)
+
+
 def test_unmanaged_order_cancellation_in_independent_exits(live_service):
     svc, ex = live_service
     # When an order is not tracked in the independent plan, but is on exchange
