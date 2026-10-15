@@ -7,6 +7,7 @@ from backend import database
 from backend.database_schema import initialize_schema
 from backend.mcp import service, settings as cfg, store
 from backend.mcp.transfer import export_settings, import_settings
+from backend.utils import market_data
 from backend.utils.spot_execution import _initialize
 
 
@@ -69,6 +70,35 @@ def spot_order(symbol=None, amount=1, price=10):
             **({'symbol': symbol} if symbol else {})}
 
 
+class ScopeExchange(Exchange):
+    """Offline spot client that fails like CCXT once its market maps are released."""
+
+    def market(self, symbol):
+        if self.markets is None:
+            raise ValueError('binance markets not loaded')
+        return self.markets[symbol]
+
+
+class OfflineMarketTool(market_data.MarketTool):
+    """Real tool lifecycle, including teardown, over an offline client."""
+
+    def __init__(self, config_id=None, symbol=None, proxy_port=None,
+                 exchange_profile=None, market_type=None):
+        self.config_id = config_id
+        self.symbol = symbol
+        self.market_type = market_type or 'spot'
+        self.exchange = ScopeExchange()
+
+
+@pytest.fixture
+def tool_owned_exchange(unrestricted, monkeypatch):
+    """Hand out the client through the tool object, exactly as the gateway does."""
+    caller, _ = unrestricted
+    monkeypatch.setattr(service, 'market_tool',
+                        lambda profile_id: OfflineMarketTool(config_id='mcp:' + profile_id))
+    return caller
+
+
 def test_explicit_scope_defaults_and_fresh_profiles(unrestricted):
     caller, _ = unrestricted
     with pytest.raises(ValueError, match='Select at least one'):
@@ -94,6 +124,40 @@ def test_unrestricted_validates_real_market_and_type(unrestricted, market, symbo
     _, exchange = unrestricted
     with pytest.raises(ValueError):
         service.normalize_symbol(store.get('profile', market), symbol, exchange)
+
+
+def test_v3_execute_holds_the_market_client_across_symbol_validation(tool_owned_exchange, monkeypatch):
+    """Releasing the temporary tool client must not invalidate the exchange it handed out."""
+    from backend.agent import tool_registry
+    from backend.mcp import canonical_tools
+
+    caller = tool_owned_exchange
+    dispatched = []
+    monkeypatch.setattr(tool_registry, 'run_trade_tool',
+                        lambda name, args, config_id, symbol, **kwargs:
+                        dispatched.append(symbol) or '{"status":"submitted"}')
+    result = canonical_tools.execute_live(
+        caller, 'spot', None,
+        {'contract_version': 3, 'actions': [{'action': 'open', 'symbol': 'BTC/USDT', 'side': 'LONG',
+                                             'order_type': 'limit', 'amount': 1, 'price': 10,
+                                             'reason': 'scope'}]},
+        'unrestricted-scope-operation')
+    assert result['status'] == 'submitted', result
+    assert dispatched == ['BTC/USDT']
+
+
+def test_legacy_execute_holds_the_market_client_across_symbol_validation(tool_owned_exchange, monkeypatch):
+    from backend.agent import tool_registry
+
+    caller = tool_owned_exchange
+    dispatched = []
+    monkeypatch.setattr(tool_registry, 'run_trade_tool',
+                        lambda name, args, config_id, symbol, **kwargs:
+                        dispatched.append(symbol) or '{"status":"submitted"}')
+    result = service.execute(caller, 'spot', 'BTC/USDT', 'open_position_spot_dca',
+                             {'orders': [spot_order('BTC/USDT')]}, 'legacy-scope-operation')
+    assert result['status'] == 'submitted', result
+    assert dispatched == ['BTC/USDT']
 
 
 def test_selected_aliases_stay_restricted_and_perpetual_queries_filter_other_markets(unrestricted):

@@ -240,7 +240,10 @@ def execute_live(caller, profile_id, symbol, request, operation_id):
         service.require(caller, 'trade', profile_id)
     cfg_id = 'mcp:' + profile_id
     config = get_runtime_profile(cfg_id)
-    exchange = service.market_tool(profile_id).exchange if profile.get('symbol_scope') == 'all' else None
+    # The tool owns its client's teardown, so it must outlive every symbol
+    # validation below instead of being released as a temporary.
+    mt = service.market_tool(profile_id) if profile.get('symbol_scope') == 'all' else None
+    exchange = mt.exchange if mt else None
     allowed = [service.normalize_symbol(profile, value, exchange, allow_inactive=True) for value in profile['symbols']]
     normalized_request = json.loads(json.dumps(request))
     for action in normalized_request.get('actions', []):

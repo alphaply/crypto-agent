@@ -768,7 +768,10 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
         ):
             require(caller, 'cancel', profile_id)
         unrestricted = profile.get('symbol_scope', 'selected') == 'all'
-        exchange = market_tool(profile_id).exchange if unrestricted else None
+        # The tool owns its client's teardown, so it must outlive every symbol
+        # validation below instead of being released as a temporary.
+        mt = market_tool(profile_id) if unrestricted else None
+        exchange = mt.exchange if mt else None
         symbol = normalize_symbol(profile, symbol, exchange, allow_inactive=True)
         allowed = {tool['name']: tool for tool in trading_tools(profile_id)}
         if tool_name not in allowed:
