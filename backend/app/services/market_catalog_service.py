@@ -9,11 +9,27 @@ import ccxt
 
 from backend.config_store import load_management_snapshot
 from backend.utils.spot_portfolio import normalize_spot_symbols
+from backend.utils.public_catalogue import load_public_catalogue, release_catalogue_client, resident_size
+from backend.utils.runtime_capacity import capacity_scope, positive_setting, reserve_bytes
 
 
 SUPPORTED_MARKETS = {"binance": ("spot", "swap"), "okx": ("spot", "swap")}
 MARKET_SYMBOL_CACHE_TTL_SECONDS = 5 * 60
-_market_symbol_cache: dict[tuple[str, str], tuple[float, list[dict[str, str]]]] = {}
+class _CatalogueCache(dict):
+    def clear(self):
+        for value in self.values():
+            if len(value) > 2:
+                value[2].release()
+        super().clear()
+
+    def __setitem__(self, key, value):
+        previous = self.get(key)
+        super().__setitem__(key, value)
+        if previous and len(previous) > 2:
+            previous[2].release()
+
+
+_market_symbol_cache = _CatalogueCache()
 _catalog_locks = {
     (exchange, market): threading.Lock()
     for exchange, markets in SUPPORTED_MARKETS.items()
@@ -58,12 +74,15 @@ def get_market_catalog(exchange: str, market_type: str = "spot") -> tuple[list[d
     _validate_exchange_market(exchange, market_type)
     key = (exchange, market_type)
     # Serialize cache misses per public exchange market, not per private profile.
-    with _catalog_locks[key]:
+    with capacity_scope('metadata'), _catalog_locks[key]:
         cached = _market_symbol_cache.get(key)
         if cached and time.monotonic() - cached[0] < MARKET_SYMBOL_CACHE_TTL_SECONDS:
             return [dict(item) for item in cached[1]], True
+        client = None
         try:
-            markets = _public_exchange(exchange, market_type).load_markets()
+            client = _public_exchange(exchange, market_type)
+            load_public_catalogue(client, market_type=market_type)
+            markets = client.markets
             records = {}
             for market in markets.values():
                 if market.get("active") is not True or not market.get(market_type):
@@ -92,13 +111,21 @@ def get_market_catalog(exchange: str, market_type: str = "spot") -> tuple[list[d
             catalog = sorted(records.values(), key=lambda item: (preferred_quotes.get(item["quote"], 9), item["symbol"]))
             if not catalog:
                 raise ValueError("Empty active instrument catalogue")
+            size = resident_size(catalog, positive_setting('RUNTIME_QUOTE_BYTES', 8 * 1024 * 1024))
+            lease = reserve_bytes('quotes', size * 2)
         except Exception as exc:
             # Upstream exceptions may contain URLs or other transport internals.
             # Expose a useful, stable message and do not save unverified targets.
             raise MarketCatalogUnavailable(
                 f"无法获取 {exchange.upper()} {market_type} 可交易标的，请稍后重试"
             ) from exc
-        _market_symbol_cache[key] = (time.monotonic(), catalog)
+        finally:
+            if client is not None:
+                release_catalogue_client(client)
+                session = getattr(client, 'session', None)
+                if session is not None:
+                    session.close()
+        _market_symbol_cache[key] = (time.monotonic(), catalog, lease)
         return [dict(item) for item in catalog], False
 
 

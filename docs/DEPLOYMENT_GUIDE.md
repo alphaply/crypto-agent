@@ -2,6 +2,8 @@
 
 ## MCP 故障定位与恢复
 
+持续资源证据、只读诊断、故障分类及宿主独立采集见 [资源诊断](RESOURCE_DIAGNOSTICS.md)。采集脚本不会重启容器；没有故障瞬间记录时不能仅凭断连确认 OOM。
+
 同一诊断时段先比较公网和服务器本机健康，再查 OAuth/MCP/交易所。参考 [MCP 分层排障](MCP.md#mcp-分层排障) 与 [2026-10-14 实测记录](MCP_OUTAGE_2026-10-14.md)。以下只读命令按实际映射端口/容器名替换；不要输出完整环境配置或认证头。
 
 ```bash
@@ -32,6 +34,10 @@ MCP 并发、预算、缓存和数据库短等待参数见 `.env.template` 与 [
 先拉取 `alphaply712/crypto-agent:latest`，再用新镜像重新创建原容器。保留原端口、数据卷、环境变量和 `CONFIG_MASTER_KEY`。推送或拉取镜像本身不会替换正在运行的容器。
 
 ```bash
+# 先按目标主机通过的 capacity profile 设置六个变量，并校验双容器合计及主机余量。
+# 本地 profile 的结果仅适用于隔离环境；变量未设置时不得启动。
+: "${WEB_MEMORY_BYTES:?capacity profile required}" "${WEB_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${WEB_CPUS:?capacity profile required}"
+: "${SCHEDULER_MEMORY_BYTES:?capacity profile required}" "${SCHEDULER_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${SCHEDULER_CPUS:?capacity profile required}"
 docker pull alphaply712/crypto-agent:latest
 docker image inspect alphaply712/crypto-agent:latest --format '{{json .RepoDigests}}'
 ```
@@ -65,12 +71,18 @@ TIMEZONE=Asia/Shanghai
 启动服务：
 
 ```bash
+# 先按目标主机通过的 capacity profile 设置六个变量，并校验双容器合计及主机余量。
+# 本地 profile 的结果仅适用于隔离环境；变量未设置时不得启动。
+: "${WEB_MEMORY_BYTES:?capacity profile required}" "${WEB_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${WEB_CPUS:?capacity profile required}"
+: "${SCHEDULER_MEMORY_BYTES:?capacity profile required}" "${SCHEDULER_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${SCHEDULER_CPUS:?capacity profile required}"
 docker pull alphaply712/crypto-agent:latest
 docker run -d --name crypto-agent --restart unless-stopped \
+  --memory "$WEB_MEMORY_BYTES" --memory-swap "$WEB_MEMORY_SWAP_TOTAL_BYTES" --cpus "$WEB_CPUS" \
   --env-file .env -e RUN_SCHEDULER_IN_WEB=false \
   -p 31421:7860 -v crypto_agent_data:/app/data \
   alphaply712/crypto-agent:latest
 docker run -d --name crypto-agent-scheduler --restart unless-stopped --no-healthcheck \
+  --memory "$SCHEDULER_MEMORY_BYTES" --memory-swap "$SCHEDULER_MEMORY_SWAP_TOTAL_BYTES" --cpus "$SCHEDULER_CPUS" \
   --env-file .env -e RUN_SCHEDULER_IN_WEB=false \
   -v crypto_agent_data:/app/data \
   alphaply712/crypto-agent:latest uv run --no-sync python -m backend.app.core.scheduler
@@ -107,6 +119,10 @@ curl http://localhost:31421/health
 
 ```bash
 docker inspect crypto-agent --format '{{.Image}}'
+# 先按目标主机通过的 capacity profile 设置六个变量，并校验双容器合计及主机余量。
+# 本地 profile 的结果仅适用于隔离环境；变量未设置时不得启动。
+: "${WEB_MEMORY_BYTES:?capacity profile required}" "${WEB_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${WEB_CPUS:?capacity profile required}"
+: "${SCHEDULER_MEMORY_BYTES:?capacity profile required}" "${SCHEDULER_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${SCHEDULER_CPUS:?capacity profile required}"
 docker pull alphaply712/crypto-agent:latest
 docker stop crypto-agent crypto-agent-scheduler
 docker cp crypto-agent:/app/data ./crypto_agent_data_backup
@@ -137,6 +153,7 @@ docker pull alphaply712/crypto-agent@sha256:替换为已记录的旧版本摘要
 
 ```bash
 docker run -d --name crypto-agent \
+  --memory "$WEB_MEMORY_BYTES" --memory-swap "$WEB_MEMORY_SWAP_TOTAL_BYTES" --cpus "$WEB_CPUS" \
   --restart unless-stopped \
   -p 31421:7860 \
   -v crypto_agent_data:/app/data \
@@ -164,7 +181,7 @@ docker run -d --name crypto-agent \
 ```bash
 npm run build --prefix frontend
 docker build -f Dockerfile.prebuilt -t alphaply712/crypto-agent:latest .
-docker run --rm -p 31421:7860 \
+docker run --rm --memory 1g --memory-swap 1152m --cpus 1 -p 31421:7860 \
   -e ADMIN_PASSWORD=local-password \
   -e JWT_SECRET=local-jwt-secret \
   -e CONFIG_MASTER_KEY=local-config-master-key \
@@ -211,3 +228,5 @@ docker image inspect alphaply712/crypto-agent:latest --format '{{json .RepoDiges
 该入口检查已提交的归档和干净的镜像输入，重新安装锁定的前端依赖、构建前端，再通过 `Dockerfile.prebuilt` 构建带 Git revision 的镜像。烟测使用一次性空数据容器、关闭调度器、不挂载生产数据，检查 `/health` 与前端入口后自动清理。成功后推送 `origin/beta`，依次发布 `alphaply712/crypto-agent:git-<short-sha>` 和 `:latest`，输出 commit 与镜像 digest。
 
 任一步失败都停止后续步骤，并报告已推送的阶段。修复后可对同一归档重新运行入口；不能将“目录已归档”当成“发布成功”。该流程由归档 Agent 按项目规则调用，直接运行裸 `openspec archive` 命令不会触发 Git 或 Docker 钩子。生产容器更新继续使用上面的部署流程，在用户请求部署时执行。
+
+双容器 profile、预先声明的校准/acceptance、memory+swap 总量与安全回退见 [容量验证](CAPACITY_VERIFICATION.md)。目标主机需分别设置预期memory/swap/CPU环境并核验实际cgroup；本地 Docker Desktop 报告不代表生产验收。

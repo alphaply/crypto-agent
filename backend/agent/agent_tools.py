@@ -529,11 +529,19 @@ def _cancel_spot_order(order_id: str, reason: str, config_id: str, symbol: str, 
         assert_owned_spot_order(None, symbol, order_id, config_id)
         market_tool = MarketTool(config_id=config_id)
         writing = True
-        market_tool.place_real_order(symbol, 'CANCEL', {'cancel_order_id': str(order_id)}, agent_name=config_id)
-        # Re-read fills after cancellation: a partial fill still consumes budget.
-        verified = market_tool.exchange.fetch_order(str(order_id), symbol)
+        acknowledgement = market_tool.place_real_order(symbol, 'CANCEL', {'cancel_order_id': str(order_id)}, agent_name=config_id)
+        # Preserve fills from the cancellation ACK: partial fills consume budget.
+        from backend.utils.trade_operations import financial_ack_only
+        verified = acknowledgement if financial_ack_only.get() else market_tool.exchange.fetch_order(str(order_id), symbol)
+        if not isinstance(verified, dict):
+            verified = {}
         status = str(verified.get('status') or '').lower()
-        if status not in {'canceled', 'cancelled', 'closed', 'filled', 'expired'} or verified.get('filled') is None:
+        if (str(verified.get('id')) != str(order_id) or status not in {'canceled', 'cancelled', 'closed', 'filled', 'expired'}
+                or verified.get('filled') is None):
+            if financial_ack_only.get():
+                return json.dumps({'status':'pending','action':'cancel','order_id':str(order_id),'symbol':symbol,
+                                   'order_status':status or None,'filled_amount':None,
+                                   'submission_state':'submitted','error_code':'cancel_fill_unverified'},ensure_ascii=False)
             raise ValueError('撤单或成交数量尚未核验，保留原预算占用')
         filled = float(verified['filled'])
         average = float(verified.get('average') or verified.get('price') or 0)
@@ -564,7 +572,7 @@ def _cancel_spot_order(order_id: str, reason: str, config_id: str, symbol: str, 
 def cancel_orders_real(order_id: str, reason: str, config_id: str, symbol: str):
     """【撤销真实挂单】每次只传一个order_id及reason。用户明确要求保持的挂单不得撤销。
     不得取消保护来绕过入场/TP/SL校验，不用撤单重开绕过改单pending/未知状态。
-    撤单结果以工具返回为准，失败或不确定需核对当前订单和成交，不声称已完成。
+    撤单结果以工具返回为准；缺少订单或成交证据时由系统后台核验，不声称已完成，不重复提交。
     """
     from backend.config import config as global_config
     agent_config = global_config.get_config_by_id(config_id) or {}
@@ -657,7 +665,7 @@ def update_entry_order_real(order_id: str, reason: str, config_id: str, symbol: 
     保留原TP/SL，新入场仍须满足多单SL<入场<TP、空单TP<入场<SL（仅校验已设置价格）。
     TP/SL用update_position_protection_real管理整个同方向仓位；若先调保护，须同时兼容旧入场、新入场及现有仓位。
     两个调用不是原子事务，任一步失败立即停止并核对，不能取消保护绕过校验。
-    仅confirmed表示改单确认；pending不可重复提交，需核对订单与成交，不可撤单重开；unchanged表示原值未变。报告实际返回，不能把计划当作执行结果。
+    仅confirmed表示改单确认；pending由系统后台核验，不可重复提交或撤单重开；unchanged表示原值未变。报告实际返回，不能把计划当作执行结果。
     """
     if _exit_mode(config_id) == 'independent_exits':
         return _independent_call(config_id, symbol, 'amend_entry', order_id=order_id, entry_price=entry_price,

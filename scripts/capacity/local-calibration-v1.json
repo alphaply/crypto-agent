@@ -1,0 +1,17 @@
+{
+  "version": "local-calibration-v1",
+  "target_environment": "Docker Desktop Linux amd64 cgroup v2, local verification only",
+  "scope": "Two isolated application processes with empty temporary configuration, fake Binance USDT spot and linear perpetual metadata, synthetic slow CPU/network work and durable original-ID restart fixture. No production accounts, external APIs or live trading. This is a calibration envelope; final acceptance has a separate frozen version.",
+  "phase_seconds": {"cold": 5, "idle": 10, "typical": 15, "concurrent_refresh": 20, "slow_dependencies": 15, "key_retirement": 20, "restart": 10},
+  "catalogue_symbols": 512,
+  "concurrent_requests": 24,
+  "retired_keys": 32,
+  "web": {"memory_bytes": 2147483648, "memory_swap_total_bytes": 2415919104, "cpu_cpus": 1, "measured_rss_lower_bytes": 1048576, "memory_peak_upper_bytes": 1932735283},
+  "scheduler": {"memory_bytes": 2147483648, "memory_swap_total_bytes": 2415919104, "cpu_cpus": 1, "measured_rss_lower_bytes": 1048576, "memory_peak_upper_bytes": 1932735283},
+  "other_services_reserved_bytes": 8589934592,
+  "host_headroom_bytes": 2147483648,
+  "web_p95_ms": 500,
+  "web_max_ms": 2000,
+  "retirement_growth_upper_bytes": 16777216,
+  "application": {"RUNTIME_CAPACITY_TOTAL_WORKERS": "6", "RUNTIME_CAPACITY_RESERVED_WORKERS": "2", "RUNTIME_CAPACITY_QUEUE_LIMIT": "16", "RUNTIME_CAPACITY_QUEUE_SECONDS": "0.25", "RUNTIME_CAPACITY_BYTES": "134217728", "RUNTIME_CATALOGUE_BYTES": "16777216", "RUNTIME_CATALOGUE_REFRESH_BYTES": "67108864", "RUNTIME_CATALOGUE_ENTRIES": "16", "RUNTIME_HTTP_RESPONSE_BYTES": "8388608", "RUNTIME_CACHE_IDLE_SECONDS": "2", "RESOURCE_SAMPLE_SECONDS": "0.5", "PAPER_MAX_PAYLOAD_BYTES": "1048576", "PAPER_SCAN_BATCH_SIZE": "20", "PAPER_HISTORY_SCAN_LIMIT": "100"}
+}

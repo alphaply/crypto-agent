@@ -105,14 +105,14 @@ def test_strict_fields_reject_ignored_or_invalid_intent(model, payload):
 def test_registry_recommends_only_canonical_actions_and_keeps_legacy_execution(independent):
     cfg = {'mode': 'REAL', 'exit_mode': 'independent_exits'}
     tools = tool_registry.get_trade_tools_for_mode('REAL', cfg)
-    assert [item.name for item in tools] == ['execute_trade_actions', 'get_trade_operation']
+    assert [item.name for item in tools] == ['execute_trade_actions']
     batch = tools[0].args_schema
     assert 'contract_version' in batch['required'] and batch['properties']['contract_version']['const'] == 3
     compatible = {item.name for item in tool_registry.get_trade_tools_for_mode('REAL', cfg, include_legacy=True)}
     assert {'open_position_real', 'close_position_real', 'update_exit_order'} <= compatible
     assert 'update_position_protection_real' not in compatible
     attached = {item.name for item in tool_registry.get_trade_tools_for_mode('REAL', {'mode': 'REAL', 'exit_mode': 'attached_optional'})}
-    assert attached == {'execute_trade_actions', 'get_trade_operation'}
+    assert attached == {'execute_trade_actions'}
     assert 'open_position_real' in {item.name for item in tool_registry.get_trade_tools_for_mode('REAL',
                                   {'mode': 'REAL', 'exit_mode': 'attached_optional'}, include_legacy=True)}
 

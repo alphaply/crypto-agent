@@ -44,7 +44,7 @@ def capabilities_for_config(config: dict | None, *, engine: str = 'live') -> dic
             'open_order_types': ['market', 'limit'] if paper else ['limit'], 'close_order_types': close_types,
             'sizing': ['amount', 'quote_amount', 'margin_amount'] if paper else ['amount'],
             'execution_policies': ['stop_on_error', 'independent'], 'max_actions': 20,
-            'query_required_before_action': False, 'quantity_units': 'base', 'recovery_tool': 'get_trade_operation'}
+            'query_required_before_action': False, 'quantity_units': 'base', 'verification': 'automatic_background'}
 
 
 def _action_fields(action: str, caps: dict) -> set[str]:
@@ -244,47 +244,10 @@ def unified_schema_for_config(config: dict | None, *, engine: str = 'live') -> d
     return schema
 
 
-_RECEIPT_FIELDS = {'contract_version', 'receipt_version', 'operation_id', 'parent_operation_id', 'action', 'index', 'order_ids',
-                   'stop_loss', 'take_profit', 'protection_state', 'protection_error', 'realized_pnl',
-                   'state', 'found', 'message', 'created_at', 'updated_at',
-                   'status', 'order_status', 'order_id', 'exchange_order_id', 'client_id', 'client_order_id', 'previous_order_id', 'execution_operation_id',
-                   'parent_order_id', 'execution_order_id', 'exit_id', 'oco_group', 'symbol', 'side', 'exchange_side', 'pos_side',
-                   'market_type', 'exchange', 'order_type', 'exit_type', 'quantity_mode', 'amount', 'requested_amount',
-                   'resolved_amount', 'filled', 'filled_amount', 'remaining', 'remaining_amount', 'actual_remaining',
-                   'closed_amount', 'price', 'trigger_price', 'average', 'average_price', 'fee', 'edit_method',
-                   'order_contract_version', 'episode_id', 'execution_amount', 'initial_position_amount',
-                   'last_known_filled_amount', 'last_known_fill_at', 'current_position',
-                   'error', 'error_code', 'reason_code', 'phase', 'submission_state', 'submitted', 'recovery',
-                   'blocked_by_index', 'blocked_by_indices', 'depends_on', 'execution_policy', 'summary', 'query',
-                   'partial_execution', 'rejected_by_user', 'reservation_change', 'reserved_cash', 'reserved_spot',
-                   'verified_at', 'observed_at', 'source', 'identity_status', 'management', 'warnings', 'details'}
-
-
 def compact_trade_receipt(payload):
-    """Project evidence without modifying or replacing its durable full receipt."""
-    value = _decode_receipt(payload)
-    if isinstance(value, list):
-        return [compact_trade_receipt(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    compact = {key: deepcopy(item) for key, item in value.items() if key in _RECEIPT_FIELDS and item is not None}
-    if isinstance(value.get('results'), list):
-        compact['results'] = [compact_trade_receipt(item) for item in value['results']]
-    if 'result' in value:
-        compact['result'] = compact_trade_receipt(value['result'])
-    for key in ('cleanup', 'continuation', 'position', 'execution'):
-        item = value.get(key)
-        if isinstance(item, dict):
-            selected = {name: deepcopy(detail) for name, detail in item.items() if name in {
-                'status', 'state', 'amount', 'side', 'error', 'error_code', 'pending', 'blocking_order_ids',
-                'blockers', 'blocked_actions', 'assessment_state', 'next_step', 'recovery', 'observed_at',
-                'phase', 'submission_state', 'fill_status', 'orders', 'side', 'requested_amount',
-                'filled_amount', 'remaining_amount', 'quantity_mode', 'parent_order_id', 'execution_order_id'}}
-            if selected:
-                compact[key] = selected
-    if 'account_summary' in value:
-        compact['account_summary'] = deepcopy(value['account_summary'])
-    return compact
+    """Project bounded facts after preserving the full durable receipt."""
+    from backend.utils.trade_summary import compact_trade_receipt as bounded_summary
+    return bounded_summary(payload)
 
 
 def stable_child_operation_id(owner_id: str, parent_id: str, index: int) -> str:
@@ -550,7 +513,7 @@ def query_unified_operation(config_id: str, symbol: str, operation_id: str, *, r
                 row = {**row, 'status': tool_result_status(result), 'result': result}
             else:
                 row = {**row, 'status': 'pending' if active else 'unknown',
-                       'recovery': {'tool': 'get_trade_operation', 'target_operation_id': operation_id}}
+                       'recovery': {'state': 'background', 'target_operation_id': operation_id}}
         else:
             row = {**row, 'status': 'pending' if active else 'not_executed'}
         rows.append(row)

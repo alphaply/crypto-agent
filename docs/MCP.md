@@ -2,11 +2,11 @@
 
 ## 默认目录与 v3 顺序执行
 
-重新 `tools/list` 获取按当前 Key 类型、scope 和授权 profile 生成的目录。live 可写目录为 8 项，只读为 7 项；paper 可写为 11 项，只读为 8 项。多个 profile 使用同一套工具名称，上下文分别列出各 profile 能力。目录不缓存其他用户的权限；每次调用仍重新检查身份与范围。
+重新 `tools/list` 获取按当前 Key 类型、scope 和授权 profile 生成的目录。live 可写目录为 7 项，只读为 6 项；paper 可写为 10 项，只读为 7 项。多个 profile 使用同一套工具名称，上下文分别列出各 profile 能力。目录不缓存其他用户的权限；每次调用仍重新检查身份与范围。
 
-核心名称为 `get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`、`get_operation`。paper 额外有 `paper_bank`、`configure_paper_account`、`get_paper_leaderboard`。只有 cancel 的 live Key 也可看到执行入口，但只能执行撤单；paper 撤单需要 read + trade。
+核心名称为 `get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`。paper 额外有 `paper_bank`、`configure_paper_account`、`get_paper_leaderboard`。只有 cancel 的 live Key 也可看到执行入口，但只能执行撤单；paper 撤单需要 read + trade。
 
-先读 `get_trading_context` 获取 profile、模式、授权 symbol 和动作能力。`get_account_state(include=["positions"])` 仅返回仓位；需要余额、库存或挂单时显式选择相应 facet。`get_trade_records(record_type="orders"|"order"|"fills"|"history")` 区分订单、指定 ID、实际成交与历史。单订单使用 order_id，恢复请求使用原 operation_id。
+先读 `get_trading_context` 获取 profile、模式、授权 symbol 和动作能力。`get_account_state(include=["positions"])` 仅返回仓位；需要余额、库存或挂单时显式选择相应 facet。`get_trade_records(record_type="orders"|"order"|"fills"|"history")` 区分订单、指定 ID、实际成交与历史。单订单使用 order_id；operation_id 仅标识原执行，不提供操作查询工具。
 
 记录查询支持 limit/offset，默认投影订单、数量、费用、观察时间与管理事实；`detail=true` 返回原完整记录。live 订单列表沿用 open 范围，结束的订单可按 ID 单查；fills/history 使用交易所实际成交记录，保留原查询的 200 项观察窗口。到达窗口上限会返回 window_limit/window_exhausted，不能将该窗口视为全部账户历史。Paper history 返回该账户成交、借还款及账户调整事件，分页范围限于当前 namespace/user。
 
@@ -22,15 +22,15 @@ REAL/STRATEGY 入场仍限价；现货 open/close 使用 LONG 买入/卖出；�
 
 可见且获交易授权的人工仓位/订单在有效管理动作中自动核验并认领，不要求先 adopt。管理者先到先得且跨空仓、暂停和重启保留；范围外、管理竞争、缺失执行证据或不支持原生目标仍明确拒绝。查询和工具发现不认领。
 
-每个父请求保留稳定 operation_id 与子项映射。批次非原子，后项失败不回滚前项；相同 ID 重试只查询或核验已尝试项，绝不补发 not_executed 尾部。超时先 `get_operation`，需要完整证据时传 `detail=true`。默认回执保留逐项真实状态和恢复身份，`include=["account"]` 最多返回一次末尾账户摘要。
+每个父请求保留稳定 operation_id 与子项映射。批次非原子，后项失败不回滚前项；相同 ID 重试只查询或核验已尝试项，绝不补发 not_executed 尾部。系统后台自动核验原身份。用户通过授权 HTTP/UI 按需读取原始/最新审计；操作查询工具及其旧适配器已移除。默认单项4096、整批32768 UTF-8字节以内，保留逐项真实状态和恢复身份，`include=["account"]` 最多返回一次末尾账户摘要。
 
-下面旧工具名称与 v2/无版本示例为兼容客户端说明，不在默认模型目录公布。旧客户端可继续按原名称、参数和 operation_id 调用，原权限、指纹、数量和回放含义保留；新客户端使用本节目录。
+下面旧工具名称与 v2/无版本示例为兼容客户端说明，不在默认模型目录公布。旧金融客户端可继续按原名称、参数和 operation_id 调用；操作查询名称不再可调用。原金融权限、指纹、数量和回放含义保留；新客户端使用本节目录。
 
 ## 可用性预算与数据完整性
 
-MCP 查询、金融执行、OAuth 认证分别使用专用有限线程池，默认并发为 4 / 2 / 2，排队上限为 8 / 4 / 4；存储另外限制为 2 个并发，等待最多 0.25 秒。超额请求返回 busy；已排队请求最多等待 2 秒。网页同步接口继续使用 Web 自己的线程池。认证及授权页面的数据库和密码校验在认证池执行，SQLite 锁等待默认 0.25 秒；建表只在启动迁移执行。
+MCP 查询、金融执行、OAuth 认证各自使用有限线程池，并共同受进程总准入、角色额度、队列和字节预算限制；独立线程池不能绕过总额度。存储另外限制为 2 个并发，等待最多 0.25 秒。超额请求返回 busy；已排队请求最多等待 2 秒。网页同步接口继续使用 Web 自己的线程池。认证及授权页面的数据库和密码校验在认证池执行，SQLite 锁等待默认 0.25 秒；建表只在启动迁移执行。
 
-预算包含排队、市场初始化、交易所 HTTP 和返回处理。查询默认 20 秒、执行 40 秒、认证 3 秒；每次交易所 HTTP 最多取 8 秒与剩余预算中的较小值。耗尽预算后不会启动后续请求。同步网络请求不能被 HTTP 断开强行终止，正在运行的 worker 继续占用真实额度直至结束；不能以请求断开为理由重发交易。结果可能已送达交易所时保留原操作身份和 unknown/pending，查询原操作；确认收到的 ACK 不会被后续审计失败覆盖。最终回执有短数据库落盘宽限，不允许在宽限期再启动网络操作。
+预算包含排队、市场初始化、交易所 HTTP 和返回处理。查询默认 20 秒、执行 40 秒、认证 3 秒；每次交易所 HTTP 最多取 8 秒与剩余预算中的较小值。耗尽预算后不会启动后续请求。同步网络请求不能被 HTTP 断开强行终止，正在运行的 worker 继续占用真实额度直至结束；不能以请求断开为理由重发交易。结果可能已送达交易所时保留原操作身份和 unknown/pending，由系统后台核验原身份；确认收到的 ACK 不会被后续审计失败覆盖。最终回执有短数据库落盘宽限，不允许在宽限期再启动网络操作。
 
 市场目录缓存 5 分钟，同账户配置版本/交易所/市场仅刷新一次；每个请求有独立 CCXT 客户端并复制元数据，凭证变化使旧 key 失效。同进程同账号的客户端共享有权重的限速协调；多个 Web 进程仍受交易所账户级限速约束，应控制进程数量及实际 API 权重，不能通过加线程避开限速。缓存不包含可用来批准写入的私有仓位/订单证据。
 
@@ -157,7 +157,7 @@ OAuth 状态保存在 `trading_data.db`，重启和不同工作进程需要访�
 
 所有令牌都包含 `read`。交易或撤单必须明确绑定至少一个 MCP 配置；没有配置授权的查询令牌只能读取共享消息等公共 MCP 信息。含交易及撤单的批次同时要求 `trade` 和 `cancel`。
 
-查询工具为 `list_profiles`、`list_symbols`、`get_news`、`get_market`、`get_balance`、`get_positions`、`get_orders`、`get_spot_inventory`、`get_trading_tools` 和 `get_operation`。`get_news` 读取全局缓存摘要及新鲜度，不触发抓取或模型计费。余额是账户余额，同一账户的多个策略不能相加；账户余额也不等于该 MCP 配置有权卖出的库存。
+查询工具为 `list_profiles`、`list_symbols`、`get_news`、`get_market`、`get_balance`、`get_positions`、`get_orders`、`get_spot_inventory` 和 `get_trading_tools`。`get_news` 读取全局缓存摘要及新鲜度，不触发抓取或模型计费。余额是账户余额，同一账户的多个策略不能相加；账户余额也不等于该 MCP 配置有权卖出的库存。
 
 合约退出需要匹配该配置的持仓归属和退出周期。`pos_side=LONG` 表示平多，`SHORT` 表示平空，不能按委托的买卖方向选择。若返回周期缺失、已结束或待核验，请先核对配置、标的、持仓方向及原始开仓记录；不能换配置或新增开仓来绕过归属校验。批次中 `not_executed` 表示之前的操作失败或未知，未提交该项；已确认无仓的跳过项不阻止其后操作。详见[合约独立退出排查](WORKBENCH.md#合约独立退出与平仓排查)。
 
@@ -297,7 +297,7 @@ fixed 档不会自动重分配。`quantity_conflict` 不等于 unknown；Agent �
 
 `execute_trade` 是兼容分发入口，不能绕过同样的模式、权限、归属及额度检查。`execute_trade_actions` 顺序执行，全部字段/模式/权限先校验；默认失败、pending、unknown 后停止。v2 可显式填写 `execution_policy: "independent"`，无依赖项继续逐笔准入；仅此策略支持 `depends_on: [前项索引]`，前项必须 completed，submitted 不满足依赖。省略策略不改变旧请求哈希，旧未执行项不重放。edit 需要 trade（含内部必要撤换），显式 cancel 需要 cancel；混合批次两种权限在首笔前检查。入场 edit 仍按已归属目标及修改后的实际敞口检查增仓额度。
 
-独立模式规范工具自行取证，无需先查询或手工解锁。明确拒绝的旧单不再连带阻塞新单；真实相关未知只限制依赖它的动作。`get_trading_tools` 声明 admission_version=1、scoped_admission、query_required_before_action=false。`get_operation` 回执内 query.status 表示本次查询，status 仍表示原交易结果；每个 blocker 分别映射到调用者可访问的原操作。完整字段和可校验示例见[回执与恢复](TRADE_RECEIPTS_AND_RECOVERY.md)。
+独立模式规范工具自行取证，无需先查询或手工解锁。明确拒绝的旧单不再连带阻塞新单；真实相关未知只限制依赖它的动作。`get_trading_tools` 声明 admission_version=1、scoped_admission、query_required_before_action=false。后台证据中的 query.status 表示取证过程，status 仍表示原交易结果；每个 blocker 分别映射到调用者可访问的原身份，不输出操作查询指导。完整字段和可校验示例见[回执与恢复](TRADE_RECEIPTS_AND_RECOVERY.md)。
 
 ## 5. 执行与恢复规则
 
@@ -308,7 +308,7 @@ fixed 档不会自动重分配。`quantity_conflict` 不等于 unknown；Agent �
 - 批次在首项影响前校验所有项的结构、模式能力、目标范围及权限；余额、数量、杠杆和库存承诺量在轮到该项时动态核验。后项动态失败不提前阻止合法前置 cancel。既有委托在配置停用后仍由后台维护，停用不会自动撤销交易所订单。
 - 现货买入通过每次调用的组合共用额度周期核算，批次内所有标的共享 `spot_allowance`；同一请求重试不会新增额度。修改额度不会扩大已建立周期的上限。现货退出按已经核实的归属库存预留数量，不创建买入额度；未确认的提交或撤销仍占用预留，直到后台查证交易所终态。
 - 所有扁平写入工具和旧 `execute_trade` 共用持久操作账本。`operation_id` 为 8–160 位字母、数字、点、下划线、冒号或连字符，必须由调用者提供。同一调用者对同一配置重试相同 ID/内容返回原回执；更换参数或调用者会被拒绝。等价的扁平调用与旧工具调用也共用回执。不同交易意图使用新 ID，客户端不应在超时后自动生成新 ID 重试。
-- 超时或无法确认的结果保持 `unknown`，不会自动重放。`get_operation` 核验原身份，按需传 `detail: true` 读取完整证据；`get_account_state` 与 `get_trade_records` 读取当前数量/订单/成交。网关 `submitted` 表示已受理，不能当作成交；退出回执内部 `open` 同样只是待执行。查询不重发、不撤改单、不续跑尾项。
+- 超时或无法确认的结果保持 `unknown`，不会自动重放。系统后台核验原身份，用户通过授权 HTTP/UI 按需读取完整证据；`get_account_state` 与 `get_trade_records` 读取当前数量/订单/成交。网关 `submitted` 表示已受理，不能当作成交；退出回执内部 `open` 同样只是待执行。查询不重发、不撤改单、不续跑尾项。
 - 持久管理权随任务/profile 保留，暂停与历史 DONE 不释放 owner。删除、缩小授权范围或换账户前须明确核验释放，或由接收任务接受交接；活跃资源和未决提交不能静默退休。已明确退休的管理范围可保留历史再退出配置，旧显式 strict 的历史保护约束继续兼容；普通名称与同值明文保存不受影响。
 
 ## 6. 导出、诊断与验证
@@ -326,9 +326,9 @@ uv run pytest -q tests/test_mcp_gateway.py tests/test_mcp_tool_contracts.py test
 测试不调用真实交易所、不提交真实交易。实际公网域名和第三方工作区连接需要部署后由账户持有者完成授权联调。
 # 原操作回执恢复
 
-独立交易的 `get_operation(profile_id, operation_id)` 与同 ID 重放会刷新原操作证据。
-只读查询保留 principal/profile 隔离，不 create/edit/cancel。`get_operation` 核验原回执；`get_orders` 在已显式授权的独占范围内可记录本地纳管事实，不会取消或修改交易所订单。
-已成交 close 可同时带 `cleanup.status=pending`；请使用返回的原操作 ID 查询具体 blocker。
+所有模式的后台核验与同 ID 重放使用原身份关联证据，不重复金融提交。
+只读审计保留 principal/profile 隔离，不 create/edit/cancel。后台自动核验原回执；`get_orders` 在已显式授权的独占范围内可记录本地纳管事实，不会取消或修改交易所订单。
+已成交 close 可同时带 `cleanup.status=pending`；具体 blocker 随摘要返回，后台自动推进；原始详情可在授权 HTTP/UI 展开。
 旧批次 `not_executed` 尾部不会因查询、后台对账或重放而执行，后续交易需要明确的新请求。
 首次回执及后续修订分别保存。完整字段和升级边界见 [交易回执与恢复](TRADE_RECEIPTS_AND_RECOVERY.md)。
 
@@ -348,7 +348,7 @@ uv run pytest -q tests/test_mcp_gateway.py tests/test_mcp_tool_contracts.py test
 
 人工撤单更新同一订单的终态。人工全平后由后台核验并清理旧周期挂单；全平后重新开仓进入新周期，旧 all 单列入旧单清理队列，不能算作新仓保护。发现和只读查询不执行清理写入。无法证明成交顺序的同毫秒边界保持待核验，当前已核验仓位仍可按减仓规则管理。
 
-超时后使用原操作 ID 读取证据，同 ID 回放不会再次提交。后台恢复原 Agent client ID 关联，交易所已受理但响应丢失的单不会作为第二笔人工订单登记。历史拒绝、批次未执行尾项及无关 unavailable 查询不要求 Agent 执行“解锁”；真实未知动作继续依原身份及依赖核验。独占授权不会增加 MCP scope，edit 仍需 trade，cancel 仍需 cancel，绑定聊天仍须原审批。
+超时后系统按原操作 ID 自动核验证据，同 ID 回放不会再次提交。后台恢复原 Agent client ID 关联，交易所已受理但响应丢失的单不会作为第二笔人工订单登记。历史拒绝、批次未执行尾项及无关 unavailable 查询不要求 Agent 执行“解锁”；真实未知动作继续依原身份及依赖核验。独占授权不会增加 MCP scope，edit 仍需 trade，cancel 仍需 cancel，绑定聊天仍须原审批。
 
 支持范围、启停与人工操作示例见 [独占仓位管理](exclusive-position-management.md)。
 

@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -281,7 +282,7 @@ class ConfigStoreTests(unittest.TestCase):
         }])
         runtime = config_store.load_runtime_snapshot()
         self.assertEqual(runtime['agents'][0]['fallback_models'][0]['api_key'], 'sensitive-fallback-value')
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             stored = conn.execute('SELECT data_json FROM agent_configs').fetchone()[0]
         self.assertNotIn('sensitive-fallback-value', stored)
         self.assertNotIn('sensitive-fallback-value', json.dumps(config_store.load_management_snapshot()))
@@ -412,7 +413,7 @@ class ConfigStoreTests(unittest.TestCase):
         config_store.save_runtime_snapshot(dict(config_store.DEFAULT_GLOBAL_SETTINGS), [
             {"config_id": "legacy", "mode": "REAL", "symbol": "BTC/USDT", "exchange_profile_id": "shared"},
         ], [], [{"profile_id": "shared", "name": "Shared", "exchange": "binance", "market_type": "swap"}])
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             row = conn.execute("SELECT data_json FROM agent_configs WHERE config_id='legacy'").fetchone()
             payload = json.loads(row[0])
             payload['mode'] = 'SPOT_DCA'
@@ -420,7 +421,7 @@ class ConfigStoreTests(unittest.TestCase):
         snapshot = config_store.load_runtime_snapshot()
         self.assertEqual(snapshot['agents'][0]['market_type'], 'spot')
         self.assertNotEqual(snapshot['agents'][0]['exchange_profile_id'], 'shared')
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM exchange_profiles').fetchone()[0], 1)
 
     def test_legacy_spot_single_symbol_keeps_initial_holdings_and_explicit_timeframes(self):

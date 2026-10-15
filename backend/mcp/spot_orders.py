@@ -185,6 +185,7 @@ def _refresh(exchange, row):
     symbol = row['symbol']
     market = exchange.market(symbol)
     native_done = False
+    actual_size = None
     if p['adapter'] == 'binance_oco':
         query = {'orderListId': p['exchange_id']} if p.get('exchange_id') else {'origClientOrderId': p['client_id']}
         native = exchange.privateGetOrderList(query)
@@ -240,6 +241,9 @@ def _refresh(exchange, row):
     if filled + 1e-10 < row['filled']:
         raise ValueError('Exchange fill quantity regressed')
     row['filled'] = filled
+    p['fill_verified'] = bool(orders or actual_size not in (None, '') and _number(actual_size,'algo execution size') == 0)
+    if p['fill_verified']:
+        p['fill_observed_at'] = time.time()
     done = native_done and all(str(order['status']).lower() in _TERMINAL for order in orders)
     row['state'] = ('filled' if filled >= row['amount'] - 1e-10 else 'cancelled') if done else 'open'
     p.pop('error', None)
@@ -397,8 +401,17 @@ def _inventory(mt, symbol):
 
 
 def _receipt(row):
+    known_fill = row['payload'].get('fill_verified') and row['state'] not in {'unknown','cancelling'}
+    exchange_id=row['payload'].get('exchange_id')
+    channel={'binance_oco':'oco','okx_algo':'algo'}.get(row['payload'].get('adapter'),'regular')
     result = {'exit_id': row['exit_id'], 'symbol': row['symbol'], 'exit_type': row['kind'], 'status': row['state'],
-            'amount': row['amount'], 'filled': row['filled'], 'exchange_id': row['payload'].get('exchange_id'),
+            'order_id':channel+':'+str(exchange_id) if exchange_id is not None else None,
+            'client_id':row['payload'].get('client_id'), 'quantity_mode':'fixed','quantity_unit':'base',
+            'amount': row['amount'], 'filled': row['filled'] if known_fill else None,
+            'remaining_amount':max(0,row['amount']-row['filled']) if known_fill else None,
+            'last_known_filled_amount': row['filled'] if row['payload'].get('fill_verified') else None,
+            'last_known_fill_at': row['payload'].get('fill_observed_at'),
+            'exchange_id': row['payload'].get('exchange_id'),
             'requested_amount': row['payload'].get('requested_amount', (row['payload'].get('request') or {}).get('amount', row['amount'])),
             'order_ids': row['payload'].get('order_ids', []),
             'message': 'Exchange acknowledgement is not fill confirmation.'}
@@ -413,7 +426,7 @@ def _receipt(row):
                 'NotSupported': 'Exchange does not support this order type or parameter combination. Query the instrument exit capabilities before creating a different operation.',
             }.get(result['error'], 'Exchange rejected the order. Verify the account and order constraints before creating a different operation.')
         else:
-            result['failure_reason'] = 'Exchange outcome is unknown and quantity remains reserved. Do not resubmit; query spot inventory to reconcile the existing exit.'
+            result['failure_reason'] = 'Exchange outcome is unknown and quantity remains reserved. The system verifies the original identity automatically; do not resubmit.'
         result['automatic_retry_allowed'] = False
     return result
 
@@ -549,6 +562,8 @@ def _create(mt, market, args, operation_id):
             if result.get('orderListId') is None:
                 raise RuntimeError('OCO acknowledgement has no order list identity')
             row['payload']['exchange_id'] = str(result['orderListId'])
+            row['payload']['order_ids'] = list(dict.fromkeys(str(item['orderId']) for item in result.get('orders',[])
+                                                            if isinstance(item,dict) and item.get('orderId') is not None))
         elif adapter == 'okx_algo':
             result = _okx_row(exchange.privatePostTradeOrderAlgo(request))
             if not result.get('algoId'):
@@ -560,6 +575,15 @@ def _create(mt, market, args, operation_id):
                 raise RuntimeError('Sell acknowledgement has no order identity')
             row['payload']['exchange_id'] = str(result['id'])
         row['state'] = 'open'
+        row['payload']['acknowledgement'] = result
+        if adapter == 'order' and result.get('filled') is not None:
+            row['filled'] = _number(result['filled'],'acknowledged spot fill')
+            row['payload']['fill_verified'] = True
+            row['payload']['fill_observed_at'] = time.time()
+            if result.get('status') in {'closed','filled'}:
+                row['state'] = 'filled'
+            elif result.get('status') in {'canceled','cancelled','expired'}:
+                row['state'] = 'cancelled'
     except (ccxt.InvalidOrder, ccxt.InsufficientFunds, ccxt.AuthenticationError, ccxt.PermissionDenied, ccxt.NotSupported) as exc:
         row['state'] = 'failed'
         row['payload']['error'] = type(exc).__name__
@@ -587,12 +611,21 @@ def _cancel(mt, market, args):
     _save(row)
     try:
         if p['adapter'] == 'binance_oco':
-            mt.exchange.privateDeleteOrderList({'symbol': market['id'], 'orderListId': p['exchange_id']})
+            acknowledgement = mt.exchange.privateDeleteOrderList({'symbol': market['id'], 'orderListId': p['exchange_id']})
         elif p['adapter'] == 'okx_algo':
-            _okx_row(mt.exchange.privatePostTradeCancelAlgos([{'instId': market['id'], 'algoId': p['exchange_id']}]))
+            acknowledgement = _okx_row(mt.exchange.privatePostTradeCancelAlgos([{'instId': market['id'], 'algoId': p['exchange_id']}]))
         else:
-            mt.exchange.cancel_order(p['exchange_id'], market['symbol'])
-        _refresh(mt.exchange, row)
+            acknowledgement = mt.exchange.cancel_order(p['exchange_id'], market['symbol'])
+        row['payload']['cancel_acknowledgement'] = acknowledgement
+        from backend.utils.trade_operations import financial_ack_only
+        if financial_ack_only.get():
+            same = isinstance(acknowledgement,dict) and str(acknowledgement.get('id')) == str(p['exchange_id'])
+            if same and acknowledgement.get('filled') is not None and acknowledgement.get('status') in {'canceled','cancelled','closed','filled','expired'}:
+                row.update(state='filled' if acknowledgement['status'] in {'closed','filled'} else 'cancelled',filled=float(acknowledgement['filled']))
+                row['payload']['fill_verified']=True
+            _save(row)
+        else:
+            _refresh(mt.exchange, row)
     except Exception as exc:
         row['state'] = 'unknown'
         p['error'] = type(exc).__name__

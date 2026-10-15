@@ -153,6 +153,54 @@ def create(args=None, operation='exit-operation'):
                          'mcp:test', 'BTC/USDT', operation)
 
 
+def test_ack_only_spot_exit_keeps_unknown_fill_null_and_never_postreads(spot,monkeypatch):
+    from backend.utils.trade_operations import financial_ack_only
+    original_create=spot.create_order
+    acknowledged=[]
+    def without_fill(*args,**kwargs):
+        result=original_create(*args,**kwargs)
+        result.pop('filled')
+        acknowledged.append(True)
+        return result
+    original_read=spot.fetch_order
+    def no_postread(*args,**kwargs):
+        assert not acknowledged,'A financial ACK must return without a second GET'
+        return original_read(*args,**kwargs)
+    monkeypatch.setattr(spot,'create_order',without_fill)
+    monkeypatch.setattr(spot,'fetch_order',no_postread)
+    token=financial_ack_only.set(True)
+    try:
+        result=create(operation='unknown-fill-ack')
+    finally:
+        financial_ack_only.reset(token)
+    assert result['status']=='open' and result['filled'] is None and acknowledged
+    assert len(spot.writes)==1
+
+
+def test_ack_only_spot_cancel_uses_terminal_response_without_postread(spot,monkeypatch):
+    from backend.utils.trade_operations import financial_ack_only
+    placed=create(operation='preexisting-exit')
+    acknowledgement=[]
+    original_cancel=spot.cancel_order
+    def cancel(identity,symbol):
+        original_cancel(identity,symbol)
+        acknowledgement.append(True)
+        return deepcopy(spot.orders[identity])
+    original_read=spot.fetch_order
+    def no_postread(*args,**kwargs):
+        assert not acknowledgement,'Canceled ACK must not require another GET'
+        return original_read(*args,**kwargs)
+    monkeypatch.setattr(spot,'cancel_order',cancel)
+    monkeypatch.setattr(spot,'fetch_order',no_postread)
+    token=financial_ack_only.set(True)
+    try:
+        result=exits.execute('cancel_spot_exit',{'exit_id':placed['exit_id'],'reason':'remove'},'mcp:test','BTC/USDT','cancel-once-ack')
+    finally:
+        financial_ack_only.reset(token)
+    assert result['status']=='cancelled' and result['filled']==0 and acknowledgement
+    assert len(spot.writes)==2
+
+
 def test_owned_inventory_deducts_base_fees_and_reserves_live_sells(spot):
     assert exits.inventory('mcp:test', 'BTC/USDT')['available_quantity'] == pytest.approx(9.99)
     row = create()

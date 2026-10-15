@@ -47,9 +47,27 @@ def read_decision_record(summary: dict) -> dict | None:
             if isinstance(record, dict) and isinstance(record.get('messages'), list):
                 from backend.utils.trade_recovery import latest_operation_receipts
                 latest = latest_operation_receipts(summary.get('config_id'), summary.get('symbol', ''))
+                from backend.utils.trade_summary import compact_trade_receipt
+                from backend.utils.trade_operations import _decode_receipt
+                from urllib.parse import quote
                 for entry in record['messages']:
-                    if entry.get('role') == 'tool' and entry.get('tool_call_id') in latest:
-                        entry['current_receipt'] = latest[entry['tool_call_id']]
+                    if entry.get('role') != 'tool':
+                        continue
+                    original = _decode_receipt(entry.get('result'))
+                    identity = original.get('operation_id') if isinstance(original, dict) else None
+                    identity = identity or entry.get('tool_call_id')
+                    if isinstance(original, dict):
+                        entry['result'] = compact_trade_receipt(original)
+                    if identity in latest:
+                        entry['current_receipt'] = compact_trade_receipt(latest[identity])
+                    if identity and summary.get('config_id') and entry.get('tool') not in {'get_operation', 'get_trade_operation'}:
+                        entry['audit'] = {'url': '/trade-receipts/' + quote(str(summary['config_id']), safe='') + '/' + quote(str(identity), safe='') + '/audit'}
+                for entry in record.get('execution_results', []):
+                    if not isinstance(entry, dict):
+                        continue
+                    value = _decode_receipt(entry.get('result'))
+                    if isinstance(value, dict):
+                        entry['result'] = compact_trade_receipt(value)
                 return record
         except (ValueError, TypeError):
             pass

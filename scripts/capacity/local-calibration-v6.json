@@ -1,0 +1,53 @@
+{
+  "version": "local-calibration-v6",
+  "target_environment": "Docker Desktop Linux amd64 cgroup v2, local verification only",
+  "scope": "Two isolated application processes; empty temporary configs; fake Binance 4096 USDT spot and 4096 linear perpetual markets, unique raw padding, 24 concurrent requests, critical recovery, rotating keys and original-ID restart. No production credentials or external network. Calibration only. Corrected acceptance counts successful catalogue loads separately from bounded rejection; sampled evidence is capped. Retirement allocator warmup is bounded by measured v3 growth plus margin; latter-half RSS growth <=16MiB; all 32 keys must successfully load. Critical progress now requires real bounded background reconciliation of a durable original unknown receipt; verification-only result polling allows 10 seconds, health retains 3 seconds and declared latency SLO. Retirement rotates consecutive pairs for deterministic coverage; the concurrent refresh phase retains all 24 simultaneous requests. Latest resource code adds expected/effective limit diagnostics and critical MCP recovery pool.",
+  "phase_seconds": {
+    "cold": 10,
+    "idle": 15,
+    "typical": 25,
+    "concurrent_refresh": 30,
+    "slow_dependencies": 15,
+    "key_retirement": 90,
+    "restart": 10
+  },
+  "catalogue_symbols": 4096,
+  "concurrent_requests": 24,
+  "retired_keys": 32,
+  "web": {
+    "memory_bytes": 1073741824,
+    "memory_swap_total_bytes": 1207959552,
+    "cpu_cpus": 1,
+    "measured_rss_lower_bytes": 1048576,
+    "memory_peak_upper_bytes": 966367641
+  },
+  "scheduler": {
+    "memory_bytes": 1073741824,
+    "memory_swap_total_bytes": 1207959552,
+    "cpu_cpus": 1,
+    "measured_rss_lower_bytes": 1048576,
+    "memory_peak_upper_bytes": 966367641
+  },
+  "other_services_reserved_bytes": 8589934592,
+  "host_headroom_bytes": 2147483648,
+  "web_p95_ms": 500,
+  "web_max_ms": 2000,
+  "retirement_growth_upper_bytes": 234881024,
+  "application": {
+    "RUNTIME_CAPACITY_TOTAL_WORKERS": "6",
+    "RUNTIME_CAPACITY_RESERVED_WORKERS": "2",
+    "RUNTIME_CAPACITY_QUEUE_LIMIT": "16",
+    "RUNTIME_CAPACITY_QUEUE_SECONDS": "0.25",
+    "RUNTIME_CAPACITY_BYTES": "134217728",
+    "RUNTIME_CATALOGUE_BYTES": "16777216",
+    "RUNTIME_CATALOGUE_REFRESH_BYTES": "67108864",
+    "RUNTIME_CATALOGUE_ENTRIES": "16",
+    "RUNTIME_HTTP_RESPONSE_BYTES": "8388608",
+    "RUNTIME_CACHE_IDLE_SECONDS": "2",
+    "RESOURCE_SAMPLE_SECONDS": "0.5",
+    "PAPER_MAX_PAYLOAD_BYTES": "1048576",
+    "PAPER_SCAN_BATCH_SIZE": "20",
+    "PAPER_HISTORY_SCAN_LIMIT": "100"
+  },
+  "retirement_steady_growth_upper_bytes": 16777216
+}

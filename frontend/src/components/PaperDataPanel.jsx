@@ -1,17 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Card, Space, Table, Tabs, Tag, Typography } from 'antd';
 import { api } from '../lib/api';
+import { formatPaperAmount, paperFilterCount, paperValuationIncomplete } from '../lib/paperDisplay';
 
 export default function PaperDataPanel({ namespace, userId, revision, zh }) {
   const label = (cn, en) => zh ? cn : en;
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const load = useCallback(async (signal) => {
+  const [cursor, setCursor] = useState({});
+  const load = useCallback(async (signal, pageCursor = {}) => {
     setLoading(true);
     try {
-      const { data: next } = await api.get('/mcp/paper/dashboard', { signal, params: { ...(namespace ? { namespace } : {}), ...(userId ? { user_id: userId } : {}), limit: 100 } });
-      if (!signal?.aborted) { setData(next); setError(''); }
+      const { data: next } = await api.get('/mcp/paper/dashboard', { signal, params: { ...(namespace ? { namespace } : {}), ...(userId ? { user_id: userId } : {}), ...pageCursor, limit: 100 } });
+      if (!signal?.aborted) { setData(next); setCursor(pageCursor); setError(''); }
     } catch (err) { if (!signal?.aborted) setError(err.message); }
     finally { if (!signal?.aborted) setLoading(false); }
   }, [namespace, userId]);
@@ -20,7 +22,7 @@ export default function PaperDataPanel({ namespace, userId, revision, zh }) {
     Promise.resolve().then(() => { if (!controller.signal.aborted) load(controller.signal); });
     return () => controller.abort();
   }, [load, revision]);
-  const format = (v) => v == null ? '—' : Number(v).toLocaleString(zh ? 'zh-CN' : 'en-US', { maximumFractionDigits: 8 });
+  const format = (v) => formatPaperAmount(v, zh);
   const time = (v) => v ? new Date(v * 1000).toLocaleString(zh ? 'zh-CN' : 'en-US', { timeZone: 'Asia/Shanghai' }) : '—';
   const positions = (data?.accounts || []).flatMap((a) => [
     ...(a.positions || []).map((p) => ({ ...p, user_id: a.user_id, account_type: a.account_type, market_type: 'swap' })),
@@ -29,12 +31,23 @@ export default function PaperDataPanel({ namespace, userId, revision, zh }) {
   const state = { open: label('待成交', 'Open'), filled: label('已成交', 'Filled'), cancelled: label('已撤销', 'Cancelled'), rejected: label('失败', 'Rejected') };
   const kinds = { order_filled: label('自动成交', 'Automatic fill'), liquidation: label('爆仓', 'Liquidation'), order_rejected: label('委托失败', 'Rejected order'), admin_adjustment: label('后台调整', 'Admin adjustment'), bot_created: label('Bot 开户', 'Bot created'), place_order: label('挂单', 'Order placed'), set_protection: label('设置止盈止损', 'Protection set'), borrow: label('借款', 'Borrow'), repay: label('还款', 'Repay') };
   const summary = data?.summary;
+  const incompleteAccounts = (data?.accounts || []).filter(paperValuationIncomplete).length;
+  const filteredResources = (data?.accounts || []).reduce((sum, account) => sum + (paperFilterCount(account.filter) || 0), 0);
   return <Card size="small" title={label('模拟盘数据 · 持仓 / 委托 / 排行 / 事件', 'Paper data · positions / orders / ranking / events')} extra={<Button onClick={() => load()} loading={loading}>{label('刷新数据', 'Refresh data')}</Button>} style={{ marginTop: 16 }}>
     {error && <Alert type="error" title={error} style={{ marginBottom: 12 }} />}
-    <Typography.Paragraph type="secondary">{label('使用交易所真实公开行情，资金与撮合为模拟。以下展示当前筛选返回的数据；排行榜按收益率计算，后台充值及贷款不计为盈利。时间为北京时间。', 'Quotes are real public exchange data; balances and execution are simulated. Summary covers returned filtered records. Ranking uses trading returns; top-ups and loans are not profit. Times are Asia/Shanghai.')}</Typography.Paragraph>
+    <Typography.Paragraph type="secondary">{label('使用 Binance 真实公开行情，资金与撮合为模拟。以下仅展示当前筛选的 BN 资源；其他来源历史的资金承诺保留。排行榜只采用完整、可核验的收益，充值及贷款不计为盈利。时间为北京时间。', 'Quotes are real Binance public data; balances and execution are simulated. These lists show filtered Binance resources; commitments from other historical venues remain. Ranking uses complete, verifiable returns; top-ups and loans are not profit. Times are Asia/Shanghai.')}</Typography.Paragraph>
+    {(incompleteAccounts > 0 || filteredResources > 0) && <Alert type="info" showIcon title={label(`本页已过滤 ${filteredResources} 项历史资源；${incompleteAccounts} 个账户估值不完整，缺项显示为 —。`, `${filteredResources} historical resources filtered on this page; ${incompleteAccounts} accounts have incomplete valuations, shown as —.`)} style={{ marginBottom: 12 }} />}
+    {(data?.scan_complete === false || data?.status === 'partial') && <Alert type="info" title={label('当前扫描未完成，列表和摘要不代表完整数据集合。', 'This scan is incomplete; the lists and summary do not represent the complete data set.')} style={{ marginBottom: 12 }} />}
+    {(data?.scan_complete === false || Object.values(data?.next_cursor || {}).some(value => value != null)) && <Button style={{ marginBottom: 12 }} loading={loading} onClick={() => load(undefined, {
+      account_cursor: data?.next_cursor?.accounts ?? cursor.account_cursor ?? 0,
+      order_cursor: data?.next_cursor?.orders ?? cursor.order_cursor ?? 0,
+      event_cursor: data?.next_cursor?.events ?? cursor.event_cursor ?? 0,
+      namespace_cursor: data?.next_cursor?.namespaces ?? cursor.namespace_cursor ?? '',
+    })}>{label('继续扫描下一页', 'Continue to next page')}</Button>}
+    {data?.unranked_count > 0 && <Typography.Paragraph type="secondary">{label('未参加当前收益排名的账户', 'Accounts excluded from the current return ranking')}: {data.unranked_count}</Typography.Paragraph>}
     {summary && <Space wrap style={{ marginBottom: 12 }}><Tag>{label('账户', 'Accounts')}: {data.account_total}</Tag><Tag>{label('现金', 'Cash')}: {format(summary.cash)}</Tag><Tag>{label('负债', 'Debt')}: {format(summary.debt)}</Tag><Tag>{label('净资产', 'Net equity')}: {format(summary.net_equity)}</Tag><Tag>{label('待成交', 'Open orders')}: {summary.open_orders}</Tag></Space>}
     <Tabs items={[
-      { key: 'positions', label: label('持仓', 'Positions'), children: <Table size="small" loading={loading} rowKey={(r) => `${r.user_id}:${r.exchange}:${r.symbol}:${r.side}`} dataSource={positions} pagination={{ pageSize: 8 }} scroll={{ x: 1000 }} columns={[
+      { key: 'positions', label: label('持仓', 'Positions'), children: <Table size="small" loading={loading} rowKey={(r) => `${r.user_id}:${r.resource_id || r.episode_id || `${r.exchange}:${r.symbol}:${r.side}`}`} dataSource={positions} pagination={{ pageSize: 8 }} scroll={{ x: 1000 }} columns={[
         { title: label('账户', 'Account'), dataIndex: 'user_id', render: (v, r) => <Space><Typography.Text>{v}</Typography.Text>{r.account_type === 'bot' && <Tag color="blue">Bot</Tag>}</Space> },
         { title: label('标的 / 来源', 'Symbol / source'), render: (_, r) => <Space direction="vertical" size={0}><Typography.Text>{r.symbol}</Typography.Text><Typography.Text type="secondary">{r.exchange} · {r.market_type}</Typography.Text></Space> },
         { title: label('方向', 'Side'), dataIndex: 'side' }, { title: label('数量（基础币）', 'Base quantity'), dataIndex: 'amount', render: format },

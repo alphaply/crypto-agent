@@ -27,18 +27,23 @@ def test_schema_metrics_are_actual_advertised_contracts(ledger, monkeypatch):
         cfg = {'mode': mode, 'exit_mode': exit_mode}
         public = [convert_to_openai_tool(tool) for tool in get_trade_tools_for_mode(mode, cfg)]
         compatibility = [convert_to_openai_tool(tool) for tool in get_trade_tools_for_mode(mode, cfg, include_legacy=True)]
-        assert len(public) == 2
+        assert [tool['function']['name'] for tool in public] == ['execute_trade_actions']
+        assert not {'get_trade_operation', 'get_operation', 'get_paper_operation'} & {
+            tool['function']['name'] for tool in compatibility}
         result[f'{mode}/{exit_mode}'] = {'default_tools': len(public), 'default_bytes': size(public),
                                        'compatibility_tools': len(compatibility), 'compatibility_bytes': size(compatibility)}
     public = [tool.model_dump(exclude_none=True) for tool in asyncio.run(server.list_tools())]
-    assert len(public) == 11
+    core_names = {'get_trading_context', 'search_symbols', 'get_market', 'get_news',
+                  'get_account_state', 'get_trade_records', 'execute_trade_actions'}
+    assert {tool['name'] for tool in public} == core_names | {
+        'paper_bank', 'configure_paper_account', 'get_paper_leaderboard'}
     result['MCP/paper'] = {'default_tools': len(public), 'default_bytes': size(public)}
     live = {'id': 'live:test', 'key_type': 'live', 'scopes': ['read', 'trade', 'cancel'], 'profile_ids': ['fixture']}
     monkeypatch.setattr(service, 'principal', lambda: live)
     monkeypatch.setattr(service, 'list_profiles', lambda who: [{'profile_id': 'fixture'}])
     monkeypatch.setattr(settings, 'get_runtime_profile', lambda identity: {'mode': 'REAL', 'exit_mode': 'independent_exits'})
     public = [tool.model_dump(exclude_none=True) for tool in asyncio.run(server.list_tools())]
-    assert len(public) == 8
+    assert {tool['name'] for tool in public} == core_names
     result['MCP/live'] = {'default_tools': len(public), 'default_bytes': size(public)}
     print('SCHEMA_METRICS=' + json.dumps(result, ensure_ascii=False, separators=(',', ':')))
 
@@ -55,6 +60,7 @@ def test_actual_twenty_step_receipt_has_one_optional_summary_and_full_audit(ledg
     blocks = asyncio.run(server.call_tool('execute_trade_actions', {'user_id': '123456', 'operation_id': 'measure-20-steps',
                            'contract_version': 3, 'actions': actions, 'include': ['account']}))
     result = json.loads(blocks[0].text)
+    assert len(blocks[0].text.encode('utf-8')) <= 32768
     assert len(result['results']) == 20 and result['status'] == 'completed'
     assert 'account_summary' in result
     assert all('account' not in step and 'account_summary' not in step for step in result['results'])

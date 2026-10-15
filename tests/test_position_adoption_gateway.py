@@ -13,6 +13,7 @@ from backend.config import config
 from backend.database_schema import initialize_schema
 from backend.mcp import service, settings as cfg, store
 from backend.utils import market_data
+from backend.utils.independent_exits import IndependentExits
 
 
 SYMBOL = 'ETH/USDT:USDT'
@@ -30,6 +31,8 @@ class AdoptionExchange:
         self.writes = []
         self.now = int(time.time() * 1000)
         self.trades = [self.trade('manual-before', 'manual-order', 37, 'sell', self.now - 500)]
+        self.markets = {SYMBOL: self.market(SYMBOL)}
+        self.currencies = {}
 
     @staticmethod
     def trade(trade_id, order_id, amount, side, timestamp):
@@ -38,7 +41,7 @@ class AdoptionExchange:
                 'info': {'positionSide': 'SHORT'}, 'fee': {'currency': 'USDT', 'cost': 0}}
 
     def load_markets(self):
-        return {SYMBOL: self.market(SYMBOL)}
+        return self.markets
 
     def market(self, symbol):
         assert symbol in {SYMBOL, 'ETH/USDT'}
@@ -208,6 +211,9 @@ def test_gateway_adopts_manual_position_then_sets_stop_and_closes(gateway):
     close = execute(gateway, 'close_position_real', close_arguments('market'), 'close-manual-0001')
     assert close['status'] == 'completed', close
     assert gateway.exchange.quantity == 0
+    # The financial ACK returns first; the existing maintenance worker later
+    # observes the flat position and cleans the original protection orders.
+    IndependentExits(gateway.market_tool('mcp:manual')).reconcile_all()
     assert current_plan('mcp:manual')['state'] == 'DONE'
     assert gateway.exchange.orders[stop_order['id']]['status'] == 'canceled'
     assert [write[0] for write in gateway.exchange.writes] == ['create', 'create', 'cancel']
@@ -262,7 +268,7 @@ def test_gateway_amount_mismatch_does_not_adopt_or_write(gateway):
     assert not gateway.exchange.writes
 
 
-@pytest.mark.parametrize('entrypoint', ['get_operation', 'execute'])
+@pytest.mark.parametrize('entrypoint', ['background', 'execute'])
 @pytest.mark.parametrize('lifecycle', ['ACTIVE', 'DONE', 'REPLACED'])
 def test_crashed_gateway_receipt_recovers_from_adoption_evidence_without_exchange(gateway, entrypoint, lifecycle):
     operation_id = 'adopt-crash-0001'
@@ -272,6 +278,7 @@ def test_crashed_gateway_receipt_recovers_from_adoption_evidence_without_exchang
     if lifecycle != 'ACTIVE':
         closed = execute(gateway, 'close_position_real', close_arguments('market'), 'close-before-crash-0001')
         assert closed['status'] == 'completed', closed
+        IndependentExits(gateway.market_tool('mcp:manual')).reconcile_all()
         assert current_plan('mcp:manual')['state'] == 'DONE'
     if lifecycle == 'REPLACED':
         exchange = gateway.exchange
@@ -290,15 +297,20 @@ def test_crashed_gateway_receipt_recovers_from_adoption_evidence_without_exchang
                      (json.dumps({'status': 'unknown', 'error': 'simulated lost receipt'}), 'mcp:manual', stable_id))
         conn.commit()
     reads, writes = deepcopy(gateway.exchange.reads), deepcopy(gateway.exchange.writes)
-    if entrypoint == 'get_operation':
-        inspected = service.operation(gateway.caller, 'manual', operation_id)
-        assert inspected['state'] == 'completed', inspected
-        recovered = inspected['result']
+    if entrypoint == 'background':
+        from backend.utils.background_receipts import reconcile_mcp
+        reconcile_mcp(limit=100, cap=1048576, deadline=time.monotonic()+2)
+        with store.connection() as conn:
+            row = conn.execute('SELECT state,result FROM mcp_operations WHERE profile_id=? AND operation_id=?',
+                               ('manual', operation_id)).fetchone()
+        assert row['state'] == 'completed'
+        recovered = json.loads(row['result'])
     else:
         recovered = execute(gateway, 'adopt_position_real', ADOPTION, operation_id)
     assert recovered['status'] == 'completed', recovered
     assert recovered['result']['episode_id'] == original_episode
-    assert recovered['result']['amount'] == 0.37
+    from backend.utils.trade_summary import compact_trade_receipt
+    assert compact_trade_receipt(recovered)['result']['requested_amount'] == 0.37
     assert gateway.exchange.reads == reads
     assert gateway.exchange.writes == writes
     with store.connection() as conn:

@@ -47,7 +47,7 @@ def test_same_round_rejection_does_not_block_valid_independent_action(real_short
     assert len(attempts) == 2 and len(exchange.calls) == 2
 
 
-def test_chat_user_rejection_still_stops_writes_but_allows_read(real_short, monkeypatch):
+def test_chat_user_rejection_stops_later_calls_including_cached_retired_tools(real_short, monkeypatch):
     from backend.agent import chat_graph
     _, exchange = real_short
     calls = stop_calls() + [{'id': 'read', 'name': 'get_trade_operation', 'args': {'target_operation_id': 'absent'}}]
@@ -57,11 +57,11 @@ def test_chat_user_rejection_still_stops_writes_but_allows_read(real_short, monk
     output = chat_graph.tools_node({'messages': [AIMessage(content='', tool_calls=calls)]}, {'configurable': {'config_id': 'cfg'}})['messages']
     assert output[0].content == 'Rejected by user.'
     assert json.loads(output[1].content)['status'] == 'not_executed'
-    assert json.loads(output[2].content)['query']['status'] == 'failed'
+    assert json.loads(output[2].content)['status'] == 'not_executed'
     assert len(approvals) == 1 and len(exchange.calls) == 1
 
 
-def test_agent_rejected_stop_query_and_corrected_stop_in_one_round(real_short):
+def test_agent_cached_removed_query_is_rejected_without_running_the_next_write(real_short):
     from backend.agent.agent_graph import tools_node, AgentState
     _, exchange = real_short
     attempts = rejected_then_valid(exchange)
@@ -70,9 +70,9 @@ def test_agent_rejected_stop_query_and_corrected_stop_in_one_round(real_short):
     state = AgentState(symbol='ETH/USDT', market_context={}, account_context={}, messages=[AIMessage(content='', tool_calls=calls)])
     output = tools_node(state, {'configurable': {'config_id': 'cfg'}})
     results = [json.loads(m.content) for m in output.messages if isinstance(m, ToolMessage)]
-    assert [r['status'] for r in results] == ['failed', 'failed', 'submitted']
-    assert results[1]['query']['status'] == 'completed'
-    assert len(attempts) == 2 and len(exchange.calls) == 2
+    assert [r['status'] for r in results] == ['failed', 'failed', 'not_executed']
+    assert results[1]['error_code'] == 'tool_removed'
+    assert len(attempts) == 1 and len(exchange.calls) == 1
 
 
 def test_independent_batch_continues_and_replay_never_sends_again(real_short):

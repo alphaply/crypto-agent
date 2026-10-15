@@ -23,6 +23,7 @@ class Exchange:
         self.contract_size = 1
         self.visibility_delays = {}
         self.status_delays = {}
+        self.markets = {'ETH/USDT:USDT': self.market('ETH/USDT:USDT')}
 
     def load_markets(self):
         pass

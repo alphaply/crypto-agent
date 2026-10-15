@@ -65,14 +65,23 @@ def test_market_symbol_catalogue_is_cached_and_filtered(monkeypatch):
     calls = []
 
     class FakeExchange:
+        id = 'binance'
+        urls = {'api': {'public': 'https://temporary-chat.fixture.invalid'}}
         def __init__(self, options):
             calls.append(options)
+            self.options = options['options']
+            self.markets = self.currencies = None
 
         def load_markets(self):
-            return {
+            self.markets = {
                 base: {"symbol": f"{base}/USDT:USDT", "base": base, "quote": "USDT", "swap": True, "active": True}
                 for base in ["BTC", "ETH"]
             }
+            self.currencies = {}
+            return self.markets
+
+        def set_markets(self, markets, currencies):
+            self.markets, self.currencies = markets, currencies
 
     monkeypatch.setattr(market_catalog_service, "load_management_snapshot", _runtime_snapshot)
     monkeypatch.setattr(market_catalog_service.ccxt, "binance", FakeExchange)

@@ -1,0 +1,2349 @@
+{
+  "run_id": "20261015T012903Z-2550137c",
+  "profile_sha256": "594457812fa1ec08dbcc027454758d9d685040cb5ef8a8b35239aa0117c86426",
+  "mode": "calibration",
+  "image_id": "sha256:482704ecd9c58d42c754c4ed29f6fe3473515afd420cf5e41277941c90dfab1f",
+  "source_revision": "working-1d41f20-v7",
+  "containers": {
+    "web": {
+      "container_id": "070aea7302c4aef9d78426f55d3b5c19232056a32eaa6c91fc763dca667ffa6a",
+      "effective_limits": {
+        "memory_bytes": 1073741824,
+        "memory_swap_total_bytes": 1207959552,
+        "cpu_cpus": 1.0
+      },
+      "phases": {
+        "cold": {
+          "elapsed_seconds": 2.2021817670029122,
+          "sample_count": 6,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 24,
+          "accepted_requests": 12,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 275427328,
+          "rss_peak_bytes": 308408320,
+          "host_min_available_bytes": 31122657280,
+          "rss_before_bytes": 266604544,
+          "rss_after_bytes": 308408320,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 3,
+              "queued": 0,
+              "bytes": 67633152
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027751.950977,
+                "expired": false,
+                "retained_bytes": 7971176
+              },
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              }
+            ]
+          }
+        },
+        "idle": {
+          "elapsed_seconds": 2.219977510001627,
+          "sample_count": 10,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 0,
+          "accepted_requests": 0,
+          "critical_receipts_updated": 0,
+          "memory_peak_bytes": 287776768,
+          "rss_peak_bytes": 308670464,
+          "host_min_available_bytes": 31121682432,
+          "rss_before_bytes": 308670464,
+          "rss_after_bytes": 308670464,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 3,
+              "queued": 0,
+              "bytes": 67633152
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027751.950977,
+                "expired": false,
+                "retained_bytes": 7971176
+              },
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              }
+            ]
+          }
+        },
+        "typical": {
+          "elapsed_seconds": 2.1037570600019535,
+          "sample_count": 6,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 24,
+          "accepted_requests": 12,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 287776768,
+          "rss_peak_bytes": 309608448,
+          "host_min_available_bytes": 31119618048,
+          "rss_before_bytes": 308670464,
+          "rss_after_bytes": 309608448,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 3,
+              "queued": 0,
+              "bytes": 67633152
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027756.7853272,
+                "expired": false,
+                "retained_bytes": 7971176
+              },
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              }
+            ]
+          }
+        },
+        "concurrent_refresh": {
+          "elapsed_seconds": 2.503631432991824,
+          "sample_count": 4,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 96,
+          "accepted_requests": 16,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 326766592,
+          "rss_peak_bytes": 347492352,
+          "host_min_available_bytes": 31045984256,
+          "rss_before_bytes": 309608448,
+          "rss_after_bytes": 347492352,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 5,
+              "queued": 16,
+              "bytes": 76136808
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 12
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 12
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 12
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 1
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 16
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 16
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              },
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027761.0288117,
+                "expired": false,
+                "retained_bytes": 7971176
+              }
+            ]
+          }
+        },
+        "slow_dependencies": {
+          "elapsed_seconds": 2.5589139760122634,
+          "sample_count": 6,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 144,
+          "accepted_requests": 30,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 326766592,
+          "rss_peak_bytes": 330723328,
+          "host_min_available_bytes": 31079436288,
+          "rss_before_bytes": 347492352,
+          "rss_after_bytes": 330723328,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 5,
+              "queued": 16,
+              "bytes": 76136808
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 35
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 35
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 34
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 2
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 39
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 39
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              },
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027761.0288117,
+                "expired": false,
+                "retained_bytes": 7971176
+              }
+            ]
+          }
+        },
+        "key_retirement": {
+          "elapsed_seconds": 45.44808694400126,
+          "sample_count": 95,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 189,
+          "accepted_requests": 95,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 326766592,
+          "rss_peak_bytes": 336318464,
+          "host_min_available_bytes": 31031377920,
+          "rss_before_bytes": 330723328,
+          "rss_after_bytes": 336318464,
+          "retirement_mid_rss_bytes": 335446016,
+          "retired_keys_seen": 32,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 0,
+            "peaks": {
+              "active": 5,
+              "queued": 16,
+              "bytes": 76136808
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 35
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 35
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 34
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 2
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 39
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 39
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 0,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 0,
+            "bytes": 0,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": []
+          }
+        },
+        "restart": {
+          "elapsed_seconds": 2.101566274999641,
+          "sample_count": 9,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 0,
+          "accepted_requests": 0,
+          "critical_receipts_updated": 0,
+          "memory_peak_bytes": 245403648,
+          "rss_peak_bytes": 266706944,
+          "host_min_available_bytes": 31145160704,
+          "rss_before_bytes": 266444800,
+          "rss_after_bytes": 266706944,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 0,
+            "peaks": {
+              "active": 1,
+              "queued": 0,
+              "bytes": 0
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 0,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 0,
+            "bytes": 0,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 0,
+            "scope": "process",
+            "observations": []
+          }
+        }
+      },
+      "aggregate_limits_held": true,
+      "critical_progress": true,
+      "retirement_growth_bytes": 5595136,
+      "retired_objects_reclaimed": true,
+      "retirement_steady_growth_bytes": 872448,
+      "retired_keys_seen": 32,
+      "restart_continuity": true,
+      "financial_writes_replayed": 0,
+      "unattempted_tail_executed": 0,
+      "busy_requests": 314,
+      "oom_kill_delta": 0,
+      "final_resources": {
+        "cgroup_version": 2,
+        "memory": {
+          "current_bytes": 231231488,
+          "peak_bytes": 245403648,
+          "limit_bytes": 1073741824,
+          "limit_status": "finite",
+          "swap_current_bytes": 0,
+          "swap_limit_bytes": 134217728,
+          "swap_limit_status": "finite",
+          "events": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          }
+        },
+        "cpu": {
+          "quota_us": 100000,
+          "period_us": 100000,
+          "quota_cpus": 1.0,
+          "limit_status": "finite",
+          "statistics": {
+            "usage_usec": 5366043,
+            "user_usec": 4911582,
+            "system_usec": 454461,
+            "nr_periods": 104,
+            "nr_throttled": 6,
+            "throttled_usec": 4129181,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "affinity_cpus": 32,
+          "effective_cpus": 1.0
+        },
+        "process": {
+          "pid": 1,
+          "rss_bytes": 266969088
+        },
+        "host": {
+          "memory_total_bytes": 33651011584,
+          "memory_available_bytes": 31155101696,
+          "swap_total_bytes": 17179869184,
+          "swap_free_bytes": 17179869184,
+          "oom_kill_counter": 0
+        },
+        "availability": {
+          "cgroup": "available",
+          "host": "available"
+        }
+      },
+      "docker_state": {
+        "Status": "running",
+        "Running": true,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 540350,
+        "ExitCode": 0,
+        "Error": "",
+        "StartedAt": "2026-10-15T01:30:10.865965004Z",
+        "FinishedAt": "2026-10-15T01:30:10.372043388Z",
+        "Health": {
+          "Status": "healthy",
+          "FailingStreak": 0,
+          "Log": [
+            {
+              "Start": "2026-10-15T01:29:10.056012772Z",
+              "End": "2026-10-15T01:29:10.245092396Z",
+              "ExitCode": 1,
+              "Output": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1348, in do_open\n    h.request(req.get_method(), req.selector, req.data, headers,\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1351, in request\n    self._send_request(method, url, body, headers, encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1397, in _send_request\n    self.endheaders(body, encode_chunked=encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1346, in endheaders\n    self._send_output(message_body, encode_chunked=encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1106, in _send_output\n    self.send(msg)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1044, in send\n    self.connect()\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1010, in connect\n    self.sock = self._create_connection(\n                ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/socket.py\", line 863, in create_connection\n    raise exceptions[0]\n  File \"/usr/local/lib/python3.11/socket.py\", line 848, in create_connection\n    sock.connect(sa)\nConnectionRefusedError: [Errno 111] Connection refused\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 519, in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 536, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 496, in _call_chain\n    result = func(*args)\n             ^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1377, in http_open\n    return self.do_open(http.client.HTTPConnection, req)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1351, in do_open\n    raise URLError(err)\nurllib.error.URLError: <urlopen error [Errno 111] Connection refused>\n"
+            },
+            {
+              "Start": "2026-10-15T01:29:15.244799115Z",
+              "End": "2026-10-15T01:29:15.396200241Z",
+              "ExitCode": 0,
+              "Output": ""
+            },
+            {
+              "Start": "2026-10-15T01:29:45.395747605Z",
+              "End": "2026-10-15T01:29:45.69331673Z",
+              "ExitCode": 0,
+              "Output": ""
+            },
+            {
+              "Start": "2026-10-15T01:30:16.012921195Z",
+              "End": "2026-10-15T01:30:16.214933296Z",
+              "ExitCode": 1,
+              "Output": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1348, in do_open\n    h.request(req.get_method(), req.selector, req.data, headers,\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1351, in request\n    self._send_request(method, url, body, headers, encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1397, in _send_request\n    self.endheaders(body, encode_chunked=encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1346, in endheaders\n    self._send_output(message_body, encode_chunked=encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1106, in _send_output\n    self.send(msg)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1044, in send\n    self.connect()\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1010, in connect\n    self.sock = self._create_connection(\n                ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/socket.py\", line 863, in create_connection\n    raise exceptions[0]\n  File \"/usr/local/lib/python3.11/socket.py\", line 848, in create_connection\n    sock.connect(sa)\nConnectionRefusedError: [Errno 111] Connection refused\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 519, in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 536, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 496, in _call_chain\n    result = func(*args)\n             ^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1377, in http_open\n    return self.do_open(http.client.HTTPConnection, req)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1351, in do_open\n    raise URLError(err)\nurllib.error.URLError: <urlopen error [Errno 111] Connection refused>\n"
+            },
+            {
+              "Start": "2026-10-15T01:30:21.215972621Z",
+              "End": "2026-10-15T01:30:21.395913586Z",
+              "ExitCode": 0,
+              "Output": ""
+            }
+          ]
+        }
+      }
+    },
+    "scheduler": {
+      "container_id": "88a1f653ddbf9311179dcc1bb87639e22a6456422efe5c39c8e54ce283901bfd",
+      "effective_limits": {
+        "memory_bytes": 1073741824,
+        "memory_swap_total_bytes": 1207959552,
+        "cpu_cpus": 1.0
+      },
+      "phases": {
+        "cold": {
+          "elapsed_seconds": 2.1701602270040894,
+          "sample_count": 6,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 24,
+          "accepted_requests": 12,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 278106112,
+          "rss_peak_bytes": 309944320,
+          "host_min_available_bytes": 31122653184,
+          "rss_before_bytes": 259518464,
+          "rss_after_bytes": 309944320,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 3,
+              "queued": 0,
+              "bytes": 67633152
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027751.9273918,
+                "expired": false,
+                "retained_bytes": 7971176
+              },
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              }
+            ]
+          }
+        },
+        "idle": {
+          "elapsed_seconds": 2.196638441993855,
+          "sample_count": 10,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 0,
+          "accepted_requests": 0,
+          "critical_receipts_updated": 0,
+          "memory_peak_bytes": 278106112,
+          "rss_peak_bytes": 309944320,
+          "host_min_available_bytes": 31117049856,
+          "rss_before_bytes": 309944320,
+          "rss_after_bytes": 309944320,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 3,
+              "queued": 0,
+              "bytes": 67633152
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027751.9273918,
+                "expired": false,
+                "retained_bytes": 7971176
+              },
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              }
+            ]
+          }
+        },
+        "typical": {
+          "elapsed_seconds": 2.200167347997194,
+          "sample_count": 7,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 26,
+          "accepted_requests": 13,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 290017280,
+          "rss_peak_bytes": 311390208,
+          "host_min_available_bytes": 31120302080,
+          "rss_before_bytes": 309944320,
+          "rss_after_bytes": 311390208,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 3,
+              "queued": 0,
+              "bytes": 67633152
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027756.7847078,
+                "expired": false,
+                "retained_bytes": 7971176
+              },
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              }
+            ]
+          }
+        },
+        "concurrent_refresh": {
+          "elapsed_seconds": 2.461351382997236,
+          "sample_count": 4,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 96,
+          "accepted_requests": 16,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 327979008,
+          "rss_peak_bytes": 347578368,
+          "host_min_available_bytes": 31045984256,
+          "rss_before_bytes": 311390208,
+          "rss_after_bytes": 347578368,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 5,
+              "queued": 16,
+              "bytes": 76136808
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 12
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 12
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 12
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 1
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 16
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 16
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              },
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027760.9928002,
+                "expired": false,
+                "retained_bytes": 7971176
+              }
+            ]
+          }
+        },
+        "slow_dependencies": {
+          "elapsed_seconds": 2.5116908060008427,
+          "sample_count": 5,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 120,
+          "accepted_requests": 29,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 327979008,
+          "rss_peak_bytes": 330485760,
+          "host_min_available_bytes": 31079436288,
+          "rss_before_bytes": 329961472,
+          "rss_after_bytes": 330485760,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 7971176,
+            "peaks": {
+              "active": 5,
+              "queued": 16,
+              "bytes": 76136808
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 29
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 30
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 29
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 2
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 35
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 36
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 7971176,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 2,
+            "bytes": 7971176,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": [
+              {
+                "source": "binance",
+                "market_type": "swap",
+                "observed_at": null,
+                "expired": true,
+                "retained_bytes": 0
+              },
+              {
+                "source": "binance",
+                "market_type": "spot",
+                "observed_at": 1792027760.9928002,
+                "expired": false,
+                "retained_bytes": 7971176
+              }
+            ]
+          }
+        },
+        "key_retirement": {
+          "elapsed_seconds": 45.388267253001686,
+          "sample_count": 96,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 191,
+          "accepted_requests": 96,
+          "critical_receipts_updated": 1,
+          "memory_peak_bytes": 327979008,
+          "rss_peak_bytes": 334712832,
+          "host_min_available_bytes": 31023181824,
+          "rss_before_bytes": 330485760,
+          "rss_after_bytes": 334622720,
+          "retirement_mid_rss_bytes": 334159872,
+          "retired_keys_seen": 32,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 0,
+            "peaks": {
+              "active": 5,
+              "queued": 16,
+              "bytes": 76136808
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 29
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 30
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 29
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 2
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 35
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 36
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 0,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 0,
+            "bytes": 0,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 67108864,
+            "scope": "process",
+            "observations": []
+          }
+        },
+        "restart": {
+          "elapsed_seconds": 2.246286280991626,
+          "sample_count": 10,
+          "workload_completed": true,
+          "errors": [],
+          "completed_requests": 0,
+          "accepted_requests": 0,
+          "critical_receipts_updated": 0,
+          "memory_peak_bytes": 245002240,
+          "rss_peak_bytes": 268255232,
+          "host_min_available_bytes": 31155101696,
+          "rss_before_bytes": 260390912,
+          "rss_after_bytes": 268255232,
+          "retirement_mid_rss_bytes": null,
+          "retired_keys_seen": 0,
+          "capacity": {
+            "settings": {
+              "total_workers": 6,
+              "reserved_workers": 2,
+              "queue_limit": 16,
+              "queue_seconds": 0.25,
+              "byte_limit": 134217728,
+              "role_limits": {
+                "agent": 2,
+                "mcp_read": 4,
+                "mcp_execute": 2,
+                "mcp_auth": 2,
+                "maintenance": 2,
+                "recovery": 2,
+                "memory": 2,
+                "news": 4,
+                "metadata": 2,
+                "stream": 2,
+                "paper": 2
+              }
+            },
+            "active": 0,
+            "running": 0,
+            "queued": 0,
+            "bytes": 0,
+            "peaks": {
+              "active": 1,
+              "queued": 0,
+              "bytes": 11528
+            },
+            "pressure": false,
+            "pressure_reason": null,
+            "roles": {
+              "agent": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_read": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_execute": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "mcp_auth": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "maintenance": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "recovery": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "memory": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "news": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "metadata": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "stream": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              },
+              "paper": {
+                "active": 0,
+                "running": 0,
+                "queued": 0,
+                "rejected": 0
+              }
+            },
+            "byte_classes": {
+              "catalogue": 0,
+              "client": 0,
+              "coordinator": 0,
+              "news": 0,
+              "other": 0,
+              "paper_payload": 0,
+              "parse": 0,
+              "quotes": 0,
+              "stream": 0
+            }
+          },
+          "catalogue": {
+            "entries": 0,
+            "bytes": 0,
+            "users": 0,
+            "clients": 0,
+            "client_bytes": 0,
+            "refresh_peak_reserved_bytes": 0,
+            "scope": "process",
+            "observations": []
+          }
+        }
+      },
+      "aggregate_limits_held": true,
+      "critical_progress": true,
+      "retirement_growth_bytes": 4136960,
+      "retired_objects_reclaimed": true,
+      "retirement_steady_growth_bytes": 462848,
+      "retired_keys_seen": 32,
+      "restart_continuity": true,
+      "financial_writes_replayed": 0,
+      "unattempted_tail_executed": 0,
+      "busy_requests": 293,
+      "oom_kill_delta": 0,
+      "final_resources": {
+        "cgroup_version": 2,
+        "memory": {
+          "current_bytes": 233955328,
+          "peak_bytes": 245002240,
+          "limit_bytes": 1073741824,
+          "limit_status": "finite",
+          "swap_current_bytes": 0,
+          "swap_limit_bytes": 134217728,
+          "swap_limit_status": "finite",
+          "events": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          }
+        },
+        "cpu": {
+          "quota_us": 100000,
+          "period_us": 100000,
+          "quota_cpus": 1.0,
+          "limit_status": "finite",
+          "statistics": {
+            "usage_usec": 5226592,
+            "user_usec": 4828188,
+            "system_usec": 398404,
+            "nr_periods": 78,
+            "nr_throttled": 5,
+            "throttled_usec": 3513851,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "affinity_cpus": 32,
+          "effective_cpus": 1.0
+        },
+        "process": {
+          "pid": 1,
+          "rss_bytes": 268255232
+        },
+        "host": {
+          "memory_total_bytes": 33651011584,
+          "memory_available_bytes": 31155101696,
+          "swap_total_bytes": 17179869184,
+          "swap_free_bytes": 17179869184,
+          "oom_kill_counter": 0
+        },
+        "availability": {
+          "cgroup": "available",
+          "host": "available"
+        }
+      },
+      "docker_state": {
+        "Status": "running",
+        "Running": true,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 540551,
+        "ExitCode": 0,
+        "Error": "",
+        "StartedAt": "2026-10-15T01:30:17.391953696Z",
+        "FinishedAt": "2026-10-15T01:30:16.959360719Z",
+        "Health": {
+          "Status": "starting",
+          "FailingStreak": 0,
+          "Log": [
+            {
+              "Start": "2026-10-15T01:29:10.631255268Z",
+              "End": "2026-10-15T01:29:10.814451745Z",
+              "ExitCode": 1,
+              "Output": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1348, in do_open\n    h.request(req.get_method(), req.selector, req.data, headers,\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1351, in request\n    self._send_request(method, url, body, headers, encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1397, in _send_request\n    self.endheaders(body, encode_chunked=encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1346, in endheaders\n    self._send_output(message_body, encode_chunked=encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1106, in _send_output\n    self.send(msg)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1044, in send\n    self.connect()\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1010, in connect\n    self.sock = self._create_connection(\n                ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/socket.py\", line 863, in create_connection\n    raise exceptions[0]\n  File \"/usr/local/lib/python3.11/socket.py\", line 848, in create_connection\n    sock.connect(sa)\nConnectionRefusedError: [Errno 111] Connection refused\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 519, in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 536, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 496, in _call_chain\n    result = func(*args)\n             ^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1377, in http_open\n    return self.do_open(http.client.HTTPConnection, req)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1351, in do_open\n    raise URLError(err)\nurllib.error.URLError: <urlopen error [Errno 111] Connection refused>\n"
+            },
+            {
+              "Start": "2026-10-15T01:29:15.813689754Z",
+              "End": "2026-10-15T01:29:15.97973542Z",
+              "ExitCode": 0,
+              "Output": ""
+            },
+            {
+              "Start": "2026-10-15T01:29:45.980013587Z",
+              "End": "2026-10-15T01:29:46.280386941Z",
+              "ExitCode": 0,
+              "Output": ""
+            },
+            {
+              "Start": "2026-10-15T01:30:16.280092201Z",
+              "End": "2026-10-15T01:30:16.468416331Z",
+              "ExitCode": 0,
+              "Output": ""
+            },
+            {
+              "Start": "2026-10-15T01:30:22.538984512Z",
+              "End": "2026-10-15T01:30:22.72350141Z",
+              "ExitCode": 1,
+              "Output": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1348, in do_open\n    h.request(req.get_method(), req.selector, req.data, headers,\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1351, in request\n    self._send_request(method, url, body, headers, encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1397, in _send_request\n    self.endheaders(body, encode_chunked=encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1346, in endheaders\n    self._send_output(message_body, encode_chunked=encode_chunked)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1106, in _send_output\n    self.send(msg)\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1044, in send\n    self.connect()\n  File \"/usr/local/lib/python3.11/http/client.py\", line 1010, in connect\n    self.sock = self._create_connection(\n                ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/socket.py\", line 863, in create_connection\n    raise exceptions[0]\n  File \"/usr/local/lib/python3.11/socket.py\", line 848, in create_connection\n    sock.connect(sa)\nConnectionRefusedError: [Errno 111] Connection refused\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 519, in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 536, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 496, in _call_chain\n    result = func(*args)\n             ^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1377, in http_open\n    return self.do_open(http.client.HTTPConnection, req)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/urllib/request.py\", line 1351, in do_open\n    raise URLError(err)\nurllib.error.URLError: <urlopen error [Errno 111] Connection refused>\n"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "production_verified": false,
+  "host_oom_kill_delta": 0,
+  "web_latency": {
+    "samples": 208,
+    "errors": 0,
+    "p95_ms": 99.53869998571463,
+    "max_ms": 159.408200008329
+  },
+  "host_min_available_bytes": 31023181824,
+  "verdict": "calibrated",
+  "failures": [],
+  "finished_at_utc": "2026-10-15T01:30:27.781974+00:00"
+}

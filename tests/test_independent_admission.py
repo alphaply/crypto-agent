@@ -5,7 +5,7 @@ import ccxt
 import pytest
 
 from backend.utils.independent_admission import assess_admission, continuation_for
-from test_trade_tool_integration import simulation, real_short, call
+from test_trade_tool_integration import simulation, real_short, call, recover, native_order_id
 
 
 def clean_plan():
@@ -33,11 +33,11 @@ def test_owned_limit_price_edit_ignores_unrelated_unknown_order(real_short, quan
     result = call('edit', args, 'edit-owned-tp')
     if quantity_change:
         assert result['admission']['decision'] == 'deny'
-        assert exchange.orders[target['id']]['price'] == 90
+        assert exchange.orders[native_order_id(target)]['price'] == 90
     else:
         assert result['status'] == 'completed'
         assert result['admission']['allowed']
-        assert exchange.orders[target['id']]['price'] == 85
+        assert exchange.orders[native_order_id(target)]['price'] == 85
     assert len(exchange.calls) == 2  # Original entry and TP only; no duplicate submit.
 
 
@@ -104,7 +104,7 @@ def test_corrected_stop_after_definite_rejection_needs_no_unlock(real_short, que
     assert first['status'] == 'failed'
     exchange.create_order = create
     if query_first:
-        query = call('get_trade_operation', {'target_operation_id': 'rejected-stop'}, 'read-rejected')
+        query = recover('rejected-stop')
         assert query['status'] == 'failed'
         assert query['query']['status'] == 'completed'
         assert 'close' not in query['continuation']['blocked_actions']
@@ -163,12 +163,13 @@ def test_target_cancel_survives_position_read_failure_and_no_prewrite_maintenanc
     maintenance = []
     original = service._reconcile
     def reconcile(plan, **kwargs):
-        maintenance.append(exchange.orders[stop['id']]['status'])
+        maintenance.append(exchange.orders[native_order_id(stop)]['status'])
         return original(plan, **kwargs)
     monkeypatch.setattr(service, '_reconcile', reconcile)
     result = call('cancel', {'order_id': stop['order_id'], 'reason': 'remove'}, 'cancel-stop')
     assert result['status'] == 'completed'
-    assert maintenance == ['canceled']
+    assert maintenance == []
+    assert exchange.orders[native_order_id(stop)]['status']=='canceled'
     assert result['admission']['allowed']
     assert len(exchange.calls) == 2
 
@@ -182,7 +183,7 @@ def test_direct_edit_refreshes_its_old_query_error_in_same_call(real_short):
     result = call('edit', dict(order_id=pending['order_id'], remaining_amount=.3, price=121, reason='adjust'), 'edit')
     assert result['status'] == 'completed'
     assert result['admission']['allowed']
-    assert exchange.orders[pending['id']]['amount'] == .3
+    assert exchange.orders[native_order_id(pending)]['amount'] == .3
 
 
 def test_pre_submit_generation_conflict_refreshes_once_without_resending(real_short, monkeypatch):

@@ -49,7 +49,6 @@ TOOL_CATALOG = [
         ('update_perpetual_protection', 'trade', 'Change owned perpetual TP/SL protection'),
         ('cancel_order', 'cancel', 'Cancel one order owned by this profile'),
         ('execute_trade', 'trade / cancel', 'Legacy tool dispatcher with persistent operation IDs'),
-        ('get_operation', 'read', 'Read a persisted operation receipt without replaying it'),
     ]
 ]
 
@@ -103,6 +102,15 @@ def _register(server, function, *, scope='read'):
         name: getattr(registered.fn_metadata, name) for name in FuncMetadata.model_fields
     })
     registered.parameters = model.model_json_schema(by_alias=True)
+    if not read:
+        original = registered.fn
+        async def compact_financial_return(**kwargs):
+            result = await original(**kwargs)
+            from backend.agent.unified_trading import compact_trade_receipt
+            return compact_trade_receipt(result)
+        # Metadata continues to validate the original exact input signature.
+        # Only the final model response is projected, after durable raw storage.
+        registered.fn = compact_financial_return
 
 
 def register_tools(server):
@@ -163,7 +171,7 @@ def register_tools(server):
 
     async def buy_spot(profile_id: ProfileId, symbol: Symbol, amount: Amount, entry_price: Price,
                        reason: Reason, operation_id: OperationId) -> dict:
-        """Place ONE spot limit buy. All fields are top-level, not under orders/arguments. amount is base quantity; amount*entry_price uses the profile's per-call quote allowance. Example: {"profile_id":"spot","symbol":"BTC/USDT","amount":0.001,"entry_price":50000,"reason":"approved entry","operation_id":"buy-btc-0001"}. A submitted order is not a fill. Unknown results require get_operation/get_orders, never a new ID."""
+        """Place ONE spot limit buy. All fields are top-level, not under orders/arguments. amount is base quantity; amount*entry_price uses the profile's per-call quote allowance. Example: {"profile_id":"spot","symbol":"BTC/USDT","amount":0.001,"entry_price":50000,"reason":"approved entry","operation_id":"buy-btc-0001"}. A submitted order is not a fill. The system verifies the original order automatically; never resubmit an unknown result with a new ID."""
         return await execute(profile_id, symbol, 'open_position_spot_dca', {
             'orders': [{'action': 'BUY_LIMIT', 'amount': amount, 'entry_price': entry_price, 'reason': reason}],
         }, operation_id)
@@ -273,17 +281,13 @@ def register_tools(server):
         """Legacy dispatcher; prefer flat trade tools. arguments must match get_trading_tools for tool_name. JSON-encoded objects/arrays and bounded args wrappers are accepted. Duplicate symbol/profile/operation fields must match the gateway exactly; conflicting or unknown fields fail rather than being dropped. Example: {"profile_id":"spot","symbol":"BTC/USDT","tool_name":"open_position_spot_dca","arguments":{"orders":[{"action":"BUY_LIMIT","amount":0.001,"entry_price":50000,"reason":"approved entry"}]},"operation_id":"buy-btc-0001"}. Every financial write keeps caller-supplied operation_id; unknown outcomes are never blindly retried."""
         return await execute(profile_id, symbol, tool_name, arguments, operation_id)
 
-    async def get_operation(profile_id: ProfileId, operation_id: OperationId) -> dict:
-        """Read this caller's persisted operation result without submitting any trade again."""
-        return await run('read', partial(service.operation, service.principal(), profile_id, operation_id), label='get_operation')
-
     functions = {function.__name__: function for function in (
         list_profiles, list_symbols, get_news, get_market, get_balance, get_positions, get_orders,
         get_order, get_trade_history,
         get_spot_inventory, get_trading_tools, buy_spot, create_spot_exit, cancel_spot_exit,
         open, close, edit, cancel, execute_trade_actions,
         open_perpetual, adopt_perpetual_position, close_perpetual, amend_perpetual_entry, update_perpetual_protection,
-        cancel_order, execute_trade, get_operation,
+        cancel_order, execute_trade,
     )}
     for item in TOOL_CATALOG:
         _register(server, functions[item['name']], scope=item['scope'])

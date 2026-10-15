@@ -9,6 +9,7 @@ from backend.utils.execution_ledger import ExecutionLedger
 
 class Exchange:
     id = 'okx'
+    markets = {'ETH/USDT:USDT': {'symbol': 'ETH/USDT:USDT', 'contract': True, 'swap': True, 'linear': True}}
     apiKey = 'bounded-progress-test'
 
     def __init__(self, count=1001):

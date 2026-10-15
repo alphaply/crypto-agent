@@ -10,32 +10,42 @@ from . import paper, store
 from .paper_market import canonical
 
 
-def exposure(account, kind, symbol, side=None, exchange_name=None):
+def exposure(account, kind, symbol, side=None, exchange_name=None, *, include_excluded=False):
+    from .paper_policy import visible
     collection = account['spot' if kind == 'spot' else 'positions']
     matches = [(key, p) for key, p in collection.items()
                if p.get('symbol', key) == symbol and (side is None or p.get('side') == side)
-               and (exchange_name is None or p.get('exchange') == exchange_name)]
+               and (exchange_name is None or p.get('exchange') == exchange_name)
+               and (include_excluded or visible(p, account=account, kind='spot' if kind == 'spot' else 'positions', key=key))]
     if len(matches) > 1:
         raise ValueError('Multiple exchanges hold this instrument; specify exchange')
     return matches[0] if matches else (None, None)
 
 
 def rows(conn, namespace, user_id=None, state='open'):
-    query, params = 'SELECT payload FROM paper_orders WHERE namespace=?', [namespace]
+    from .paper_storage import decode, history_limit, max_payload, PaperPayloadLimit, blob_size, read_blob
+    query, params = 'SELECT rowid FROM paper_orders WHERE namespace=?', [namespace]
     if user_id is not None:
         query += ' AND user_id=?'
         params.append(user_id)
     if state is not None:
         query += ' AND state=?'
         params.append(state)
-    query += ' ORDER BY created_at,order_id'
-    return [json.loads(r[0]) for r in conn.execute(query, params)]
+    query += ' ORDER BY created_at,order_id LIMIT ?'
+    metadata = conn.execute(query, [*params, history_limit() + 1]).fetchall()
+    if len(metadata) > history_limit() or any(blob_size(conn, 'paper_orders', 'payload', row['rowid']) > max_payload() for row in metadata):
+        raise PaperPayloadLimit('paper_payload_limit: complete order commitments exceed the financial work budget; raw orders retained')
+    return [decode(read_blob(conn, 'paper_orders', 'payload', row['rowid']), identity='paper order') for row in metadata]
 
 
 def save(conn, order):
+    from .paper_storage import max_payload, PaperPayloadLimit
     order['updated_at'] = time.time()
+    encoded = json.dumps(order, allow_nan=False)
+    if len(encoded.encode('utf-8')) > max_payload():
+        raise PaperPayloadLimit('paper_payload_limit: complete order exceeds financial write budget')
     conn.execute('INSERT INTO paper_orders VALUES(?,?,?,?,?,?,?) ON CONFLICT(namespace,user_id,order_id) DO UPDATE SET state=excluded.state,payload=excluded.payload,updated_at=excluded.updated_at',
-                 (order['namespace'], order['user_id'], order['order_id'], order['state'], json.dumps(order, allow_nan=False), order['created_at'], order['updated_at']))
+                 (order['namespace'], order['user_id'], order['order_id'], order['state'], encoded, order['created_at'], order['updated_at']))
 
 
 def refresh_reservations(conn, account):
@@ -43,9 +53,18 @@ def refresh_reservations(conn, account):
     for order in rows(conn, account['namespace'], account['user_id']):
         cash += paper.number(order.get('reserved_cash', 0))
         if order.get('reserved_spot'):
-            key, holding = exposure(account, 'spot', order['symbol'], exchange_name=order['exchange'])
-            if holding:
+            matches = [(key, item) for key, item in account['spot'].items()
+                       if item.get('symbol', key) == order['symbol']
+                       and item.get('exchange') == order.get('exchange')
+                       and (not order.get('cycle_id') or item.get('cycle_id') == order['cycle_id'])]
+            if len(matches) == 1:
+                key, _ = matches[0]
                 spot[key] = float(paper.number(spot.get(key, 0)) + paper.number(order['reserved_spot']))
+            else:
+                # Unknown historical attribution cannot free an earlier lock or
+                # attach that lock to a newly created same-symbol BN resource.
+                for key, amount in account.get('reserved_spot', {}).items():
+                    spot[key] = max(spot.get(key, 0), amount)
     account.update(reserved_cash=paper.money(cash), reserved_spot=spot)
 
 
@@ -57,7 +76,10 @@ def finish(conn, account, order, state, reason):
 
 
 def cleanup_orders(conn, account):
+    from .paper_policy import visible
     for order in rows(conn, account['namespace'], account['user_id']):
+        if not visible(order, account=account, conn=conn):
+            continue
         if order['action'] in {'buy', 'open_long', 'open_short'}:
             continue
         side = 'LONG' if order['action'] == 'close_long' else 'SHORT' if order['action'] == 'close_short' else None
@@ -113,19 +135,32 @@ def quantity(account, kind, symbol, action, reference, exchange_name, *, amount=
 
 def existing_receipt(caller, user_id, operation_id, request):
     namespace = paper.require(caller, 'trade')
+    paper.require(caller, 'read')
     paper.identity(user_id)
     with store.connection() as conn:
-        return paper._receipt(conn, namespace, user_id, operation_id, request)[1]
+        original = paper._receipt(conn, namespace, user_id, operation_id, request)[1]
+        if original is None:
+            return None
+        from .paper_storage import one
+        revision = conn.execute('SELECT revision FROM paper_receipt_revisions WHERE namespace=? AND user_id=? AND operation_id=? ORDER BY revision DESC LIMIT 1',
+                                (namespace, user_id, operation_id)).fetchone()
+        return one(conn, 'paper_receipt_revisions', 'payload', 'namespace=? AND user_id=? AND operation_id=? AND revision=?',
+                   (namespace, user_id, operation_id, revision[0]), identity='latest original paper receipt') if revision else original
 
 
 def get_quote(symbol, kind, exchange_name=None):
-    if exchange_name is None:
-        return paper.market(symbol, kind, candles=False)
-    return paper.market(symbol, kind, candles=False, exchange_name=exchange_name)
+    from .paper_policy import venue
+    selected = venue(exchange_name)
+    result = paper.market(symbol, kind, candles=False, exchange_name=selected)
+    venue(result['exchange'])
+    return result
 
 
 def cancel_exits(conn, account, kind, symbol, exchange_name, side=None, *, only_protection=False):
+    from .paper_policy import visible
     for order in rows(conn, account['namespace'], account['user_id']):
+        if not visible(order, account=account, conn=conn):
+            continue
         if (order['market_type'], order['symbol'], order['exchange']) != (kind, symbol, exchange_name):
             continue
         if order['action'] not in ({'sell'} if kind == 'spot' else {'close_' + side.lower()} if side else {'close_long', 'close_short'}):
@@ -137,12 +172,13 @@ def cancel_exits(conn, account, kind, symbol, exchange_name, side=None, *, only_
 
 
 def add_protection(conn, account, kind, symbol, exchange_name, side, stop_loss, take_profit, amount=None, close_all=True, *, reference=None):
+    from .paper_policy import stamp, visible
     _, p = exposure(account, kind, symbol, side if kind == 'swap' else None, exchange_name)
     if not p:
         raise ValueError('No matching exposure for protection')
     if amount is not None and paper.number(amount, positive=True) > paper.number(p['amount']):
         raise ValueError('Protection quantity exceeds exposure')
-    old = [o for o in rows(conn, account['namespace'], account['user_id']) if o.get('oco_group') and o['symbol'] == symbol and o['exchange'] == exchange_name and o['market_type'] == kind and o.get('position_side') == side]
+    old = [o for o in rows(conn, account['namespace'], account['user_id']) if visible(o, account=account, conn=conn) and o.get('oco_group') and o['symbol'] == symbol and o['exchange'] == exchange_name and o['market_type'] == kind and o.get('position_side') == side]
     stop_loss = stop_loss if stop_loss is not None else next((o['trigger_price'] for o in old if o['order_type'] == 'stop_loss'), None)
     take_profit = take_profit if take_profit is not None else next((o['trigger_price'] for o in old if o['order_type'] == 'take_profit'), None)
     if stop_loss is None and take_profit is None:
@@ -167,13 +203,13 @@ def add_protection(conn, account, kind, symbol, exchange_name, side, stop_loss, 
                  'amount': float(paper.number(amount)) if amount is not None else p['amount'], 'close_all': close_all,
                  'position_side': side, 'cycle_id': p.get('cycle_id'), 'oco_group': group,
                  'reserved_cash': 0, 'reserved_spot': 0, 'created_at': time.time(), 'execution_mode': 'paper'}
+        stamp(order)
         save(conn, order)
         result.append(order)
     return result
 
 
 def execute_market(caller, user_id, kind, symbol, action, operation_id, *, amount=None, quote_amount=None, margin_amount=None, close_all=False, leverage=None, exchange_name=None, stop_loss=None, take_profit=None):
-    validate(kind, action, amount, quote_amount, margin_amount, close_all, leverage)
     wanted = canonical(symbol, kind)
     if (stop_loss is not None or take_profit is not None) and action not in {'buy', 'open_long', 'open_short'}:
         raise ValueError('Attached protection is only accepted on entries')
@@ -183,6 +219,9 @@ def execute_market(caller, user_id, kind, symbol, action, operation_id, *, amoun
     previous = existing_receipt(caller, user_id, operation_id, request)
     if previous is not None:
         return previous
+    validate(kind, action, amount, quote_amount, margin_amount, close_all, leverage)
+    if action in {'sell', 'close_long', 'close_short'}:
+        _require_exposure(caller, user_id, kind, wanted, 'LONG' if action == 'close_long' else 'SHORT' if action == 'close_short' else None)
     quote = get_quote(wanted, kind, exchange_name)
     cfg = paper.settings()
     def change(account, conn):
@@ -201,6 +240,7 @@ def execute_market(caller, user_id, kind, symbol, action, operation_id, *, amoun
 
 
 def prepare_order(conn, account, kind, symbol, action, order_type, quote, *, amount=None, quote_amount=None, margin_amount=None, close_all=False, leverage=None, price=None, trigger_price=None, stop_loss=None, take_profit=None, order_id=None):
+    from .paper_policy import stamp
     validate(kind, action, amount, quote_amount, margin_amount, close_all, leverage)
     if not account['enabled'] or kind not in account['markets']:
         raise ValueError('Paper account or requested market is disabled')
@@ -248,14 +288,14 @@ def prepare_order(conn, account, kind, symbol, action, order_type, quote, *, amo
             below = role == 'stop_loss' if side == 'LONG' else role == 'take_profit'
             if below and value >= reference or not below and value <= reference:
                 raise ValueError('Attached protection is on the wrong side of the limit entry price')
-    return {'namespace': account['namespace'], 'user_id': account['user_id'], 'order_id': order_id or uuid.uuid4().hex,
+    return stamp({'namespace': account['namespace'], 'user_id': account['user_id'], 'order_id': order_id or uuid.uuid4().hex,
             'state': 'open', 'market_type': kind, 'symbol': symbol, 'exchange': quote['exchange'], 'action': action,
             'order_type': order_type, 'price': paper.money(reference) if order_type == 'limit' else None,
             'trigger_price': paper.money(paper.number(trigger_price)) if trigger_price is not None else None,
             'amount': float(qty), 'close_all': close_all, 'leverage': leverage, 'position_side': side,
             'cycle_id': p.get('cycle_id') if p and action in {'sell', 'close_long', 'close_short'} else None,
             'stop_loss': stop_loss, 'take_profit': take_profit, 'reserved_cash': paper.money(reserve),
-            'reserved_spot': float(spot_reserve), 'created_at': time.time(), 'execution_mode': 'paper'}
+            'reserved_spot': float(spot_reserve), 'created_at': time.time(), 'execution_mode': 'paper'})
 
 
 def place(caller, user_id, kind, symbol, action, order_type, operation_id, **kwargs):
@@ -266,6 +306,8 @@ def place(caller, user_id, kind, symbol, action, order_type, operation_id, **kwa
     previous = existing_receipt(caller, user_id, operation_id, request)
     if previous is not None:
         return previous
+    if action in {'sell', 'close_long', 'close_short'}:
+        _require_exposure(caller, user_id, kind, wanted, 'LONG' if action == 'close_long' else 'SHORT' if action == 'close_short' else None)
     quote = get_quote(wanted, kind, exchange_name)
     def change(account, conn):
         order = prepare_order(conn, account, kind, wanted, action, order_type, quote, **kwargs)
@@ -275,21 +317,52 @@ def place(caller, user_id, kind, symbol, action, order_type, operation_id, **kwa
 
 
 def get_orders(caller, user_id, state='open', limit=100):
+    result = records_page(caller, user_id, state=state, limit=limit)
+    return {'orders': result['items'], 'total': len(result['items']) if result['scan_complete'] else None,
+            **{key: value for key, value in result.items() if key != 'items'}}
+
+
+def records_page(caller, user_id, state='open', limit=100, offset=0, *, cursor=0, symbol=None, order_id=None, detail=False):
     namespace = paper.require(caller)
     paper.identity(user_id)
     if state not in {'open', 'filled', 'cancelled', 'rejected', 'all'} or type(limit) is not int or not 1 <= limit <= 200:
         raise ValueError('Invalid state or limit')
+    from .paper_storage import one, payload_page
+    from .paper_policy import visible
     with store.connection() as conn:
-        paper._get(conn, namespace, user_id)
-        result = rows(conn, namespace, user_id, None if state == 'all' else state)
-    return {'orders': result[-limit:], 'total': len(result), 'execution_mode': 'paper'}
+        account = {'namespace': namespace, 'user_id': user_id}
+        if not conn.execute('SELECT 1 FROM paper_accounts WHERE namespace=? AND user_id=?', (namespace, user_id)).fetchone():
+            raise ValueError('Paper account does not exist')
+        if order_id is not None:
+            # Exact historical identities are an authorized passive audit path.
+            order = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?',
+                        (namespace, user_id, order_id), identity='paper order audit')
+            if order is None:
+                raise ValueError('Order not found in this account')
+            return {'order': order, 'execution_mode': 'paper'}
+        where, params = 'namespace=? AND user_id=?', [namespace, user_id]
+        if state != 'all':
+            where += ' AND state=?'
+            params.append(state)
+        if offset:
+            selected = conn.execute('SELECT rowid FROM paper_orders WHERE ' + where + ' ORDER BY rowid LIMIT 1 OFFSET ?',
+                                    (*params, offset - 1)).fetchone()
+            cursor = selected[0] if selected else conn.execute('SELECT COALESCE(MAX(rowid),0) FROM paper_orders').fetchone()[0]
+        found, page = payload_page(conn, 'paper_orders', where, params, cursor=cursor, count=limit)
+        items = [row['payload'] for row in found if visible(row['payload'], account=account, conn=conn)
+                 and (not symbol or row['payload'].get('symbol') == symbol)]
+        conn.commit()
+    return {'items': items, **page, 'filtered_count': len(found) - len(items), 'execution_mode': 'paper'}
 
 
 def cancel(caller, user_id, order_id, operation_id):
+    from .paper_policy import require_target
     def change(account, conn):
-        found = next((o for o in rows(conn, account['namespace'], user_id, None) if o['order_id'] == order_id), None)
+        from .paper_storage import one
+        found = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?', (account['namespace'], user_id, order_id))
         if not found:
             raise ValueError('Order not found in this account')
+        require_target(found, account=account, conn=conn)
         if found['state'] != 'open':
             return {'order': found, 'changed': False}
         finish(conn, account, found, 'cancelled', 'Requested by account owner')
@@ -303,14 +376,18 @@ def edit(caller, user_id, order_id, operation_id, price=None, trigger_price=None
     if previous is not None:
         return previous
     namespace = paper.require(caller, 'trade')
+    from .paper_storage import one
     with store.connection() as conn:
-        order = next((o for o in rows(conn, namespace, user_id) if o['order_id'] == order_id), None)
-    if not order:
+        order = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?', (namespace, user_id, order_id))
+    if not order or order['state'] != 'open':
         raise ValueError('Only an open order in this account can be edited')
+    from .paper_policy import require_target
+    with store.connection() as conn:
+        require_target(order, account=paper._get(conn, namespace, user_id), conn=conn)
     quote = get_quote(order['symbol'], order['market_type'], order['exchange'])
     def change(account, conn):
-        current = next((o for o in rows(conn, namespace, user_id) if o['order_id'] == order_id), None)
-        if not current or current.get('updated_at') != order.get('updated_at'):
+        current = one(conn, 'paper_orders', 'payload', 'namespace=? AND user_id=? AND order_id=?', (namespace, user_id, order_id))
+        if not current or current['state'] != 'open' or current.get('updated_at') != order.get('updated_at'):
             raise ValueError('Order changed during edit; inspect its current state')
         current['state'] = 'editing'
         save(conn, current)
@@ -321,7 +398,9 @@ def edit(caller, user_id, order_id, operation_id, price=None, trigger_price=None
                                 leverage=current.get('leverage'), price=price if price is not None else current.get('price'),
                                 trigger_price=trigger_price if trigger_price is not None else current.get('trigger_price'),
                                 stop_loss=current.get('stop_loss'), take_profit=current.get('take_profit'), order_id=order_id)
-        updated.update(created_at=current['created_at'], oco_group=current.get('oco_group'), revision=current.get('revision', 0) + 1)
+        updated.update(created_at=current['created_at'], oco_group=current.get('oco_group'),
+                       resource_id=current.get('resource_id', updated['resource_id']),
+                       revision=current.get('revision', 0) + 1)
         save(conn, updated)
         return {'order': updated}
     return paper._write(caller, user_id, operation_id, request, change)
@@ -338,6 +417,7 @@ def protection(caller, user_id, kind, symbol, side, operation_id, stop_loss=None
     previous = existing_receipt(caller, user_id, operation_id, request)
     if previous is not None:
         return previous
+    _require_exposure(caller, user_id, kind, wanted, side if kind == 'swap' else None)
     quote = get_quote(wanted, kind, exchange_name)
     def change(account, conn):
         result = add_protection(conn, account, kind, wanted, quote['exchange'], side, stop_loss, take_profit, amount, close_all, reference=quote['price'])
@@ -366,8 +446,11 @@ def triggered(order, quote):
 
 
 def match(conn, account, kind, symbol, quote, cfg):
+    from .paper_policy import visible
     cleanup_orders(conn, account)
     for order in rows(conn, account['namespace'], account['user_id']):
+        if not visible(order, account=account, conn=conn):
+            continue
         current = conn.execute('SELECT state FROM paper_orders WHERE namespace=? AND user_id=? AND order_id=?',
                                (account['namespace'], account['user_id'], order['order_id'])).fetchone()
         if not current or current[0] != 'open':
@@ -409,10 +492,34 @@ def match(conn, account, kind, symbol, quote, cfg):
         refresh_reservations(conn, account)
 
 
-def admin_orders(namespace=None, user_id=None, state='open', limit=100):
+def _require_exposure(caller, user_id, kind, symbol, side):
+    namespace = paper.require(caller, 'trade')
+    with store.connection() as conn:
+        account = paper._get(conn, namespace, user_id)
+        _, target = exposure(account, kind, symbol, side)
+        if target is None:
+            raise ValueError('paper_origin_unverified: no eligible Binance exposure; raw commitments retained')
+
+
+def admin_orders(namespace=None, user_id=None, state='open', limit=100, *, cursor=0):
     if state not in {'open', 'filled', 'cancelled', 'rejected', 'all'} or not 1 <= limit <= 200:
         raise ValueError('Invalid state or limit')
     with store.connection() as conn:
-        namespaces = [namespace] if namespace else [r[0] for r in conn.execute('SELECT DISTINCT namespace FROM paper_orders')]
-        result = [o for ns in namespaces for o in rows(conn, ns, user_id, None if state == 'all' else state)]
-    return {'orders': sorted(result, key=lambda o: o['updated_at'], reverse=True)[:limit], 'total': len(result)}
+        from .paper_storage import payload_page
+        from .paper_policy import visible
+        clauses, params = [], []
+        for column, value in [('namespace', namespace), ('user_id', user_id), ('state', state if state != 'all' else None)]:
+            if value:
+                clauses.append(column + '=?')
+                params.append(value)
+        where = ' AND '.join(clauses) or '1=1'
+        count = conn.execute('SELECT COUNT(*) FROM paper_orders WHERE ' + where, params).fetchone()[0]
+        records, progress = payload_page(conn, 'paper_orders', where, params, cursor=cursor, count=limit)
+        result = [row['payload'] for row in records if visible(row['payload'], conn=conn, account={'namespace': row['namespace'], 'user_id': row['user_id']})]
+        conn.commit()
+    return {'orders': result, 'total': count, 'filtered_count': len(records) - len(result), **progress}
+
+
+from .paper_storage import bounded as _bounded
+for _name in ('existing_receipt', 'execute_market', 'place', 'cancel', 'edit', 'protection', 'edit_remaining', 'records_page', 'admin_orders'):
+    globals()[_name] = _bounded(globals()[_name])

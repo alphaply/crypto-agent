@@ -350,6 +350,7 @@ def test_waiting_trigger_keeps_disabled_config_scheduled_for_maintenance(store,m
         calls.append(cfg)
         return concurrent.futures.Future()
     monkeypatch.setattr(scheduler,'_protection_executor',SimpleNamespace(submit=submit))
+    monkeypatch.setattr(scheduler,'submit_capacity',lambda executor,role,fn,*args,**kwargs:executor.submit(fn,*args))
     monkeypatch.setattr(scheduler,'_protection_futures',{})
     monkeypatch.setattr(scheduler,'_disabled_mock_maintenance_at',{})
     monkeypatch.setattr(scheduler.global_config,'get_all_symbol_configs',lambda:[config])

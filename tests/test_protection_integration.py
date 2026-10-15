@@ -65,7 +65,7 @@ def test_protection_monitor_runs_disabled_config_without_scheduling_duplicate_jo
         calls.append(cfg)
         return concurrent.futures.Future()
     cfg = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'REAL', 'enabled': False}
-    with patch.object(scheduler, '_protection_executor', SimpleNamespace(submit=submit)), patch.object(scheduler, '_protection_futures', {}), patch.object(scheduler.global_config, 'get_all_symbol_configs', return_value=[cfg]):
+    with patch.object(scheduler, 'submit_capacity', lambda executor, role, fn, *args, **kwargs: executor.submit(fn, *args)), patch.object(scheduler, '_protection_executor', SimpleNamespace(submit=submit)), patch.object(scheduler, '_protection_futures', {}), patch.object(scheduler.global_config, 'get_all_symbol_configs', return_value=[cfg]):
         scheduler.protection_tick()
         scheduler.protection_tick()
     assert calls == [cfg]

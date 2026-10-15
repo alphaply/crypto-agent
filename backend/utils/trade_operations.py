@@ -9,6 +9,12 @@ import time
 import uuid
 
 current_operation_id: ContextVar[str | None] = ContextVar("trade_operation_id", default=None)
+financial_ack_only: ContextVar[bool] = ContextVar('financial_ack_only', default=False)
+
+
+def reconcile_background_receipts(*, limit=32, after_cursor=None):
+    from backend.utils.background_receipts import reconcile
+    return reconcile(limit=limit, after_cursor=after_cursor)
 
 
 def _operation_matches(candidate: str | None, operation_id: str) -> bool:
@@ -226,15 +232,17 @@ def _reconciled_receipt(conn, row):
     return result
 
 
-def reconcile_pending_trade_operations(config_id: str) -> int:
+def reconcile_pending_trade_operations(config_id: str, *, operation_id: str | None = None) -> int:
     """Refresh uncertain receipts from local evidence; never call an exchange or tool."""
     from backend import database
+    filter_sql = ' AND r.operation_id=?' if operation_id else ''
+    filters = (config_id, operation_id) if operation_id else (config_id,)
     with database.get_db_conn() as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
             return 0
         versioned = conn.execute('SELECT r.operation_id,r.symbol,r.result,r.status FROM trade_action_runs r '
                                  'JOIN trade_operation_requests q ON q.config_id=r.config_id AND q.operation_id=r.operation_id '
-                                 'WHERE r.config_id=? AND json_extract(q.request_json,\'$.contract_version\')=3', (config_id,)).fetchall() if conn.execute(
+                                 'WHERE r.config_id=? AND json_extract(q.request_json,\'$.contract_version\')=3' + filter_sql + ' LIMIT 128', filters).fetchall() if conn.execute(
                                      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_operation_requests'").fetchone() else []
     v3_ids = {row['operation_id'] for row in versioned}
     versioned_count = 0
@@ -245,7 +253,7 @@ def reconcile_pending_trade_operations(config_id: str) -> int:
             versioned_count += result != _decode_receipt(row['result'])
     if is_independent_real(config_id):
         with database.get_db_conn() as conn:
-            rows = conn.execute('SELECT operation_id,symbol,result FROM trade_action_runs WHERE config_id=?', (config_id,)).fetchall()
+            rows = conn.execute('SELECT r.operation_id,r.symbol,r.result FROM trade_action_runs r WHERE r.config_id=?' + filter_sql + ' LIMIT 128', filters).fetchall()
         count = versioned_count
         for row in rows:
             if row['operation_id'] in v3_ids:
@@ -266,7 +274,7 @@ def reconcile_pending_trade_operations(config_id: str) -> int:
     with database.get_db_conn() as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
             return 0
-        rows = conn.execute("SELECT * FROM trade_action_runs WHERE config_id=? AND status IN ('running','unknown','pending')", (config_id,)).fetchall()
+        rows = conn.execute("SELECT r.* FROM trade_action_runs r WHERE r.config_id=? AND r.status IN ('running','unknown','pending')" + filter_sql + ' LIMIT 128', filters).fetchall()
         for row in rows:
             if row['operation_id'] in v3_ids:
                 continue
@@ -388,12 +396,14 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
             'status': 'unknown', 'operation_id': operation_id,
             'error': '上次操作未确认，需核验实际订单；不会重复提交'}
     token = current_operation_id.set(operation_id)
+    ack_token = financial_ack_only.set(True)
     try:
         result = callback()
     except Exception as exc:
         # Once execution starts, exceptions may occur after the exchange accepted a write.
         result = {"status": "unknown", "operation_id": operation_id, "error": str(exc)}
     finally:
+        financial_ack_only.reset(ack_token)
         current_operation_id.reset(token)
     status = tool_result_status(result)
     with database.get_db_conn() as conn:
@@ -459,4 +469,4 @@ def refresh_operation_receipt(config_id: str, symbol: str, operation_id: str, pr
         return {'status': 'unknown', 'operation_id': operation_id, 'error': str(exc),
                 'query': {'status': 'failed', 'errors': [str(exc)], 'queried_at': time.time(),
                           'observed_at': None, 'source': 'exchange_read' if read_exchange else 'local_projection'},
-                'recovery': {'tool': 'get_trade_operation', 'target_operation_id': operation_id}}
+                      'recovery': {'state': 'background', 'target_operation_id': operation_id}}

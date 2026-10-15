@@ -69,6 +69,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                     symbol TEXT NOT NULL,
                     payload TEXT NOT NULL
                 )''')
+    from backend.utils.protection_scan import initialize_schema as initialize_protection_scan
+    initialize_protection_scan(cursor)
+    from backend.utils.execution_plan_index import initialize_schema as initialize_execution_plan_index
+    initialize_execution_plan_index(cursor)
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS summaries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

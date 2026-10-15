@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 from backend.agent.agent_tools import (
@@ -65,28 +66,24 @@ _TOOL_BY_NAME.update({tool.name: tool for tool in CANONICAL_TOOLS})
 
 
 def get_trade_tools_for_mode(mode: str | None, config: dict | None = None, *, include_legacy: bool = False):
+    if (config or {}).get('read_only'):
+        return []
     trade_mode = str(mode or "STRATEGY").upper()
     if not include_legacy:
         from backend.agent.unified_trading import unified_schema_for_config
         cfg = {**(config or {}), 'mode': trade_mode}
-        query = next(tool for tool in CANONICAL_TOOLS if tool.name == 'get_trade_operation')
         return [execute_trade_actions.model_copy(update={
             'args_schema': unified_schema_for_config(cfg),
             'description': '一次按顺序执行1–20项交易动作。contract_version=3；单笔用一项数组。'
                            '动作与参数按当前模式提供，数量是基础币；edit.remaining_amount为目标未成交量。'
                            '默认失败/待核验/未知停止；depends_on要求显式independent且此前项completed。'
-                           '不等待限价成交，不回滚已执行项；未知原写入核验原operation_id，不能换ID重发。'
+                           '权威受理后及时返回，不等待限价成交，不回滚已执行项；系统后台核验原身份，不能换ID重发。'
                            '合法动作内部核验并自动纳管授权目标，无需先adopt。include=["account"]末尾可选一次账户摘要。',
-        }), query.model_copy(update={'args_schema': {
-            'type': 'object', 'properties': {'target_operation_id': {'type': 'string', 'minLength': 1,
-                'description': '原回执的 operation_id；不是订单 ID'}},
-            'required': ['target_operation_id'], 'additionalProperties': False}, 'description':
-            '只读核验原操作target_operation_id；不重发、不撤改单、不续跑未执行尾项。'
-            'query.status是读取结果，status是原操作结果。正常交易无需先查询解锁。'})]
+        })]
     tools = list(_TOOLS_BY_MODE.get(trade_mode, _TOOLS_BY_MODE["STRATEGY"]))
     if config is None or trade_mode == 'SPOT_DCA':
         if include_legacy:
-            tools.extend(tool for tool in [execute_trade_actions, *CANONICAL_TOOLS[-1:]] if tool.name not in {item.name for item in tools})
+            tools.extend(tool for tool in [execute_trade_actions] if tool.name not in {item.name for item in tools})
         return tools
     from backend.utils.exit_policy import effective_exit_mode
     if effective_exit_mode(config) == 'independent_exits':
@@ -95,9 +92,6 @@ def get_trade_tools_for_mode(mode: str | None, config: dict | None = None, *, in
             preferred.extend(tool for tool in tools if tool.name not in {item.name for item in preferred}
                              and not tool.name.startswith('update_position_protection_'))
         tools = preferred
-    query = next(tool for tool in CANONICAL_TOOLS if tool.name == 'get_trade_operation')
-    if query.name not in {tool.name for tool in tools}:
-        tools.append(query)
     from backend.agent.tool_interfaces import specialize_trade_tool
     return [specialized for tool in tools
             if (specialized := specialize_trade_tool(tool, {**config, 'mode': trade_mode})) is not None]
@@ -148,10 +142,15 @@ def _summarize_result(result: Any, limit: int = 300) -> str:
 
 
 def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, operation_id: str | None = None,
-                   cycle_id: str | None = None, expected_spot_fingerprint: str | None = None) -> str:
+                   cycle_id: str | None = None, expected_spot_fingerprint: str | None = None,
+                   *, project_result: bool = True) -> str:
     tool_name = canonical_tool_name(tool_name)
+    if tool_name in {'get_trade_operation', 'get_operation', 'get_paper_operation'}:
+        return json.dumps({'status': 'failed', 'error_code': 'tool_removed',
+                           'error': 'Operation query tools have been removed; the system updates original execution evidence automatically.'}, ensure_ascii=False)
     if tool_name == 'manage_trading_rules':
         return 'Error: Trading rule changes belong to the memory review agent; not allowed in trading or chat.'
+    operation_id = operation_id or current_operation_id.get() or uuid.uuid4().hex
     from backend.config import config as runtime_config
     from backend.utils.spot_config_guard import spot_config_lock, spot_execution_fingerprint
     with spot_config_lock:
@@ -159,12 +158,12 @@ def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, opera
         if expected_spot_fingerprint is not None and expected_spot_fingerprint != spot_execution_fingerprint(config):
             return json.dumps({'status': 'failed', 'error': '现货任务配置已变更，请重新分析后执行'}, ensure_ascii=False)
         if str(config.get('mode') or '').upper() == 'SPOT_DCA':
-            return _run_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id)
-    return _run_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id)
+            return _run_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id, project_result=project_result)
+    return _run_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id, project_result=project_result)
 
 
 def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, operation_id: str | None = None,
-                    cycle_id: str | None = None) -> str:
+                    cycle_id: str | None = None, *, project_result: bool = True) -> str:
     from backend.config import config as runtime_config
     config = runtime_config.get_config_by_id(config_id)
     if config and tool_name not in {tool.name for tool in get_trade_tools_for_mode(config.get('mode'), config, include_legacy=True)}:
@@ -176,6 +175,8 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
 
     legacy_order_ids = _legacy_cancel_order_ids(tool_name, args)
     if legacy_order_ids is not None:
+        if not 1 <= len(legacy_order_ids) <= 20:
+            raise ValueError('Legacy cancellation arrays must contain 1–20 orders')
         logger.info(
             "Expanding legacy cancel tool args: name=%s config_id=%s symbol=%s count=%s",
             tool_name,
@@ -187,16 +188,23 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
         stopped = False
         for index, order_id in enumerate(legacy_order_ids):
             if stopped:
-                results.append(json.dumps({'order_id': order_id, 'status': 'not_executed'}))
+                results.append({'index': index, 'action': 'cancel', 'order_id': order_id,
+                                'status': 'not_executed', 'operation_id': f'{operation_id}:{index}'})
                 continue
             cancel_args = {"order_id": order_id, "reason": (args.get('reason') if isinstance(args, dict) else None) or DEFAULT_CANCEL_REASON}
             if isinstance(args, dict) and args.get('symbol'):
                 cancel_args['symbol'] = args['symbol']
             result = run_trade_tool(tool_name, cancel_args, config_id, symbol,
-                                    operation_id=f"{operation_id}:{index}" if operation_id else None, cycle_id=cycle_id)
-            results.append(result)
+                                    operation_id=f"{operation_id}:{index}", cycle_id=cycle_id, project_result=False)
+            from backend.utils.trade_operations import _decode_receipt
+            results.append({'index': index, 'action': 'cancel', 'operation_id': f'{operation_id}:{index}',
+                            'order_id': order_id, 'status': tool_result_status(result), 'result': _decode_receipt(result)})
             stopped = tool_result_status(result) in {'failed', 'unknown', 'pending'}
-        return "\n".join(results)
+        from backend.utils.trade_summary import compact_trade_receipt
+        status = next((state for state in ('unknown', 'pending', 'failed', 'submitted')
+                       if any(row['status'] == state for row in results)), 'completed')
+        batch = {'operation_id': operation_id, 'status': status, 'results': results}
+        return json.dumps(compact_trade_receipt(batch) if project_result else batch, ensure_ascii=False)
 
     call_args = _normalize_tool_args(tool_name, args)
     is_v3 = tool_name == 'execute_trade_actions' and call_args.get('contract_version') == 3
@@ -249,16 +257,9 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
     from backend.utils.spot_execution import current_spot_cycle_id
     cycle_token = current_spot_cycle_id.set(cycle_id) if is_spot else None
     try:
-        if tool_name == 'get_trade_operation':
-            from backend.agent.unified_trading import query_unified_operation
-            raw = query_unified_operation(config_id, symbol, call_args['target_operation_id'])
-            if raw is None:
-                raw = tool_obj.func(**call_args)
-        elif is_v3:
+        if is_v3:
             # v3 owns its parent reservation. Legacy callbacks/hashes above stay unchanged.
             raw = tool_obj.func(**call_args)
-            from backend.agent.unified_trading import compact_trade_receipt
-            raw = compact_trade_receipt(raw)
         elif operation_id and tool_name not in READ_ONLY_TRADE_TOOLS:
             request = {'tool': tool_name, 'args': call_args}
             if tool_name in {'open', 'close', 'edit', 'cancel'} or call_args.get('contract_version') == 2:
@@ -267,6 +268,9 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
                            lambda: tool_obj.func(**call_args))
         else:
             raw = tool_obj.func(**call_args)
+        if project_result:
+            from backend.agent.unified_trading import compact_trade_receipt
+            raw = compact_trade_receipt(raw)
         result = json.dumps(raw, ensure_ascii=False) if isinstance(raw, dict) else str(raw)
     finally:
         if cycle_token is not None:

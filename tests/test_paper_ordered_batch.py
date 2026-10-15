@@ -19,7 +19,7 @@ def _paper_process_worker(db_path, entered, release, output):
         if not release.wait(10):
             raise ValueError('Fixture release timed out')
         return {'symbol': symbol, 'market_type': market_type, 'price': 100, 'bid': 100, 'ask': 100,
-                'exchange': 'public-fixture', 'observed_at': time.time()}
+                'exchange': 'binance', 'observed_at': time.time()}
     paper.market = quote
     caller = {'id': 'key:paper', 'key_type': 'paper', 'paper_namespace': 'qqbot', 'profile_ids': [], 'scopes': ['read', 'trade']}
     output.put(batch(caller, [opening()]))
@@ -156,7 +156,9 @@ def test_paper_protection_and_cycle_reopen_remain_independent(ledger):
     protection = {'action': 'protect', 'market_type': 'swap', 'symbol': close['symbol'], 'side': 'LONG',
                   'stop_loss': 90, 'reason': 'single stop'}
     result = batch(caller, [opening(), protection, close, opening(amount=2)])
-    assert result['status'] == 'completed'
+    assert result['status'] == 'submitted'
+    assert result['results'][1]['status'] == 'submitted'
+    assert result['results'][1]['order_status'] == 'waiting_trigger'
     assert paper.get_account(caller, '123456')['positions'][0]['amount'] == 2
     assert paper_orders.get_orders(caller, '123456')['orders'] == []
 
@@ -377,69 +379,67 @@ def _open_venue(caller, market, venue):
         amount=1, exchange_name=venue)
 
 
-@pytest.mark.parametrize('market,action', [('spot', 'close'), ('spot', 'protect'),
-                                        ('swap', 'close'), ('swap', 'protect')])
-def test_multi_venue_exit_requires_explicit_target_and_replays_without_financial_effect(ledger, monkeypatch, market, action):
+def _seed_foreign(caller, market):
+    from test_paper_binance_scope import raw_account
+    account = raw_account(caller)
+    symbol = 'BTC/USDT' if market == 'spot' else 'BTC/USDT:USDT'
+    key = 'legacy-bitget'
+    item = {'symbol': symbol, 'exchange': 'bitget', 'cycle_id': 'legacy-bitget-cycle',
+            'amount': 1, 'entry_price': 100, 'mark_price': 100, 'marked_at': 1}
+    if market == 'swap':
+        item.update(side='LONG', margin=100, leverage=1)
+    account['spot' if market == 'spot' else 'positions'][key] = item
+    with store.connection() as conn:
+        conn.execute('UPDATE paper_accounts SET payload=? WHERE namespace=? AND user_id=?',
+                     (json.dumps(account), caller['paper_namespace'], '123456'))
+        conn.commit()
+    return item
+
+
+@pytest.mark.parametrize('market,action', [('spot', 'close'), ('spot', 'protect'), ('swap', 'close'), ('swap', 'protect')])
+def test_foreign_explicit_batch_target_rejects_before_any_financial_step(ledger, monkeypatch, market, action):
     caller, _, _ = ledger
     create(caller)
     quotes = _venue_quote_fixture(monkeypatch)
-    for venue in ('binance', 'bitget'):
-        _open_venue(caller, market, venue)
-    symbol = 'BTC/USDT' if market == 'spot' else 'BTC/USDT:USDT'
-    requested = {'action': action, 'market_type': market, 'symbol': symbol, 'side': 'LONG',
-                 'amount': .5, 'reason': 'manage the requested holding',
+    _open_venue(caller, market, 'binance')
+    foreign = _seed_foreign(caller, market)
+    from test_paper_binance_scope import raw_account
+    before = raw_account(caller)
+    symbol = foreign['symbol']
+    requested = {'action': action, 'market_type': market, 'symbol': symbol, 'exchange': 'bitget',
+                 'side': 'LONG', 'amount': .5, 'reason': 'requested historical target',
                  **({'order_type': 'market'} if action == 'close' else {'stop_loss': 90})}
-    before, quote_count, events = paper.get_account(caller, '123456'), len(quotes), len(paper.history(caller, '123456'))
-    refused = batch(caller, [requested], operation_id='ambiguous-venue-parent')
-    assert refused['results'][0]['status'] == 'failed'
-    assert 'Multiple exchanges' in refused['results'][0]['error']
-    assert refused['results'][0]['submission'] == 'not_submitted'
-    assert paper.get_account(caller, '123456') == before
-    assert len(paper.history(caller, '123456')) == events and len(quotes) == quote_count
-    assert batch(caller, [requested], operation_id='ambiguous-venue-parent') == refused
-    assert len(quotes) == quote_count
-    accepted = batch(caller, [{**requested, 'exchange': 'bitget'}], operation_id='explicit-venue-parent')
-    assert accepted['results'][0]['status'] == 'completed'
-    holdings = paper.get_account(caller, '123456')['spot' if market == 'spot' else 'positions']
-    assert next(row for row in holdings if row['exchange'] == 'binance')['amount'] == 1
-    assert next(row for row in holdings if row['exchange'] == 'bitget')['amount'] == (.5 if action == 'close' else 1)
-    if action == 'protect':
-        assert {order['exchange'] for order in accepted['results'][0]['orders']} == {'bitget'}
-    else:
-        assert accepted['results'][0]['fill']['exchange'] == 'bitget'
+    count = len(quotes)
+    result = batch(caller, [opening(market, amount=.1), requested])
+    assert result['status'] == 'failed' and not any(item['attempted'] for item in result['results'])
+    assert raw_account(caller) == before and len(quotes) == count
+    assert batch(caller, [opening(market, amount=.1), requested]) == result
 
 
 @pytest.mark.parametrize('market', ['spot', 'swap'])
-def test_single_nondefault_venue_exit_resolves_the_existing_holding(ledger, monkeypatch, market):
+def test_historical_foreign_only_exit_is_not_repriced_at_binance(ledger, monkeypatch, market):
     caller, _, _ = ledger
     create(caller)
     quotes = _venue_quote_fixture(monkeypatch)
-    _open_venue(caller, market, 'bitget')
-    symbol = 'BTC/USDT' if market == 'spot' else 'BTC/USDT:USDT'
-    closed = batch(caller, [{'action': 'close', 'market_type': market, 'symbol': symbol, 'side': 'LONG',
-                            'order_type': 'market', 'close_all': True, 'reason': 'close the uniquely known venue'}])
-    assert closed['status'] == 'completed'
-    assert closed['results'][0]['fill']['exchange'] == 'bitget'
-    assert quotes[-1] == (symbol, market, 'bitget')
-    assert paper.get_account(caller, '123456')['spot' if market == 'spot' else 'positions'] == []
+    foreign = _seed_foreign(caller, market)
+    result = batch(caller, [{'action': 'close', 'market_type': market, 'symbol': foreign['symbol'], 'side': 'LONG',
+                            'order_type': 'market', 'close_all': True, 'reason': 'requested original holding'}])
+    assert result['status'] == 'failed' and not any(item['attempted'] for item in result['results'])
+    assert quotes == []
 
 
 @pytest.mark.parametrize('market', ['spot', 'swap'])
-def test_multi_venue_holdings_do_not_block_known_order_cancel_or_default_entry(ledger, monkeypatch, market):
+def test_binance_default_entry_does_not_merge_foreign_same_symbol(ledger, monkeypatch, market):
     caller, _, _ = ledger
     create(caller)
     _venue_quote_fixture(monkeypatch)
-    for venue in ('binance', 'bitget'):
-        _open_venue(caller, market, venue)
-    symbol = 'BTC/USDT' if market == 'spot' else 'BTC/USDT:USDT'
-    queued = paper_orders.place(caller, '123456', market, symbol,
-        'sell' if market == 'spot' else 'close_long', 'limit', 'venue-known-queued',
-        amount=.2, price=110, exchange_name='bitget')['order']
-    result = batch(caller, [{'action': 'cancel', 'order_id': queued['order_id'], 'reason': 'cancel the exact venue order'},
-                           opening(market, amount=.1)])
-    assert [row['status'] for row in result['results']] == ['completed', 'completed']
-    assert result['results'][0]['order']['exchange'] == 'bitget'
-    assert result['results'][1]['fill']['exchange'] == 'binance'
+    foreign = _seed_foreign(caller, market)
+    result = batch(caller, [opening(market, amount=.1)])
+    assert result['status'] == 'completed'
+    from test_paper_binance_scope import raw_account
+    resources = raw_account(caller)['spot' if market == 'spot' else 'positions']
+    assert resources['legacy-bitget'] == foreign
+    assert [p['amount'] for p in paper.get_account(caller, '123456')['spot' if market == 'spot' else 'positions']] == [.1]
 
 
 @pytest.mark.parametrize('previously_committed', [False, True])
@@ -472,7 +472,7 @@ def test_sdk_intent_storage_error_keeps_original_id_and_does_not_claim_prior_fai
     assert result['error_code'] == 'intent_storage_unavailable'
     assert result['phase'] == 'persist_intent' and result['submission_state'] == 'not_submitted'
     assert result['submitted'] is False and result['query']['status'] == 'failed'
-    assert result['recovery']['operation_id'] == parent
+    assert result['verification'] == {'state': 'background', 'operation_id': parent}
     assert paper.get_account(caller, '123456') == before and len(quotes) == quote_count
     if previously_committed:
         recovered = paper_batch.operation(caller, '123456', parent)

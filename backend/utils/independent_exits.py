@@ -351,9 +351,9 @@ class IndependentExits(PositionProtection):
                       resolved_amount=record.get('resolved_amount'),
                       trigger_basis=record.get('trigger_basis', plan.get('trigger_basis', 'last')),
                       side=plan['side'], pos_side=plan['side'])
-        if record.get('replacement') or record.get('replaces'):
+        if record.get('replacement') or record.get('replaces') or record.get('unattempted_replacement'):
             result['edit_method'] = 'cancel_replace'
-            result['previous_order_id'] = record.get('replaces_reference') or record.get('replaces')
+            result['previous_order_id'] = record.get('replaces_reference') or record.get('replaces') or order_reference(record)
         if record.get('amendment'):
             result['edit_method'] = 'native'
             result['amendment_state'] = record['amendment']['state']
@@ -363,7 +363,10 @@ class IndependentExits(PositionProtection):
                                 'pending' if pending else 'completed' if record.get('status') in TERMINAL
                                 or record.get('amendment', {}).get('state') == 'confirmed' else 'submitted')
         if record.get('replacement_error'):
-            result.update(error=record['replacement_error'], error_code='quantity_conflict')
+            result.update(error=record['replacement_error'], error_code=(
+                'replacement_not_submitted' if record.get('unattempted_replacement') else 'quantity_conflict'))
+            if record.get('unattempted_replacement'):
+                result.update(phase='replacement', replacement_status='not_executed')
         if record.get('contract_version', 1) >= 2 or current_attempt.get() is not None:
             attempt = current_attempt.get()
             action = attempt.action if attempt else 'close' if record.get('exit_type') else 'open'
@@ -440,6 +443,11 @@ class IndependentExits(PositionProtection):
 
     def _maintain_after(self, plan):
         """Maintenance failures cannot rewrite this operation's known execution."""
+        from backend.utils.trade_operations import financial_ack_only
+        if financial_ack_only.get():
+            plan['verification_pending'] = True
+            self._save(plan)
+            return
         try:
             self._reconcile(plan)
         except Exception as exc:
@@ -504,6 +512,7 @@ class IndependentExits(PositionProtection):
         record['submission_state'] = 'unknown'
         if attempt:
             attempt.submission_state = 'unknown'
+        record['submitted_at'] = time.time()
         try:
             order = self.ex.create_order(plan["symbol"], order_type, side,
                                          record.get('submission_amount', record["amount"]), record.get("price"), params)
@@ -532,10 +541,10 @@ class IndependentExits(PositionProtection):
             raise RuntimeError('Submission outcome unknown; reconcile by client ID')
         previous_filled = float(record.get('filled', 0))
         record.update(id=str(order['id']), exchange_order_id=str(order['id']),
-                      status=order.get('status') or 'open', submission_state='submitted')
+                      status=order.get('status') or 'open', submission_state='submitted', acknowledged_at=time.time())
         if attempt:
             attempt.phase, attempt.submission_state = 'verify', 'submitted'
-        if is_conditional(record) and order.get('filled') is None:
+        if order.get('filled') is None and record.get('status') not in TERMINAL:
             record['fill_verified'] = False
         else:
             self._record_fill(record, order, previous_filled)
@@ -711,6 +720,11 @@ class IndependentExits(PositionProtection):
                     budget = verify_budget or {'deadline': time.monotonic() + 2, 'calls': 0}
                     return self._cancel(record, plan, allow_child=allow_child, verify_budget=budget)
                 if conditional and str(info.get('algoStatus') or '').upper() in {'TRIGGERED', 'TRIGGERING', 'FINISHED'}:
+                    from backend.utils.trade_operations import financial_ack_only
+                    if financial_ack_only.get():
+                        record['verification_pending'] = True
+                        self._save(plan)
+                        raise RuntimeError('Conditional cancellation raced triggering; background verification pending')
                     budget = verify_budget or {'deadline': time.monotonic() + 2, 'calls': 0}
                     self._query(record, plan['symbol'], budget=budget)
                     return self._cancel(record, plan, allow_child=allow_child, verify_budget=budget)
@@ -727,6 +741,15 @@ class IndependentExits(PositionProtection):
                     else:
                         self._save(plan)
                         return
+        from backend.utils.trade_operations import financial_ack_only
+        if financial_ack_only.get():
+            # The raw cancellation ACK was already saved above. Missing fill
+            # evidence keeps its reservation; background reads never recancel.
+            record['next_retry_at'] = time.time() + 2
+            self._save(plan)
+            if record.get('cancel_confirmed_at'):
+                return
+            raise RuntimeError('Cancellation acknowledgement incomplete; background verification pending')
         budget = verify_budget or {'deadline': time.monotonic() + 2, 'calls': 0}
         for delay in (0, .15, .35):
             if time.monotonic() + delay >= budget['deadline']:
@@ -824,8 +847,8 @@ class IndependentExits(PositionProtection):
             if not pos:
                 raise RuntimeError("Position absent during exit replacement; awaiting reconciliation")
         except Exception:
-            # The cancellation may be final, but a single read cannot abandon
-            # the replacement. Maintenance resumes this exact persisted intent.
+            # Keep cancellation and the unattempted replacement distinct. A
+            # later observation can resolve the original edit, never submit it.
             plan["error"] = "Exit replacement pending position verification; do not repeat the order"
             self._save(plan)
             raise
@@ -866,6 +889,8 @@ class IndependentExits(PositionProtection):
             existing = self._existing_operation(plan, operation_id)
             if existing:
                 return self._result(plan, existing)
+            if operation_id and record.get('last_operation_id') == operation_id and record.get('unattempted_replacement'):
+                return {**self._result(plan, record), 'status': 'failed', 'action': 'edit', 'operation_id': operation_id}
             self._admit(plan, 'edit', target=record)
             if not record.get("exit_type") or record["exit_type"] == "market" or record.get("status") in TERMINAL:
                 raise ValueError("Only an open independent TP/SL exit can be amended")
@@ -999,7 +1024,7 @@ class IndependentExits(PositionProtection):
             if attempt:
                 attempt.submission_state = 'unknown'
             try:
-                self.ex.edit_order(target, plan['symbol'], 'limit', side, total, new_price)
+                acknowledgement = self.ex.edit_order(target, plan['symbol'], 'limit', side, total, new_price)
             except (ccxt.InvalidOrder, ccxt.InsufficientFunds, ccxt.AuthenticationError, ccxt.PermissionDenied) as exc:
                 proof = rejection_evidence(exc)
                 if proof is None:
@@ -1019,7 +1044,19 @@ class IndependentExits(PositionProtection):
                 raise
             if attempt:
                 attempt.submission_state = 'submitted'
-            self._query(record, plan['symbol'])
+            from backend.utils.trade_operations import financial_ack_only
+            if financial_ack_only.get():
+                if isinstance(acknowledgement, dict) and str(acknowledgement.get('id')) == str(target):
+                    self._record_fill(record, acknowledgement, float(record.get('filled', 0)))
+                    if acknowledgement.get('status'):
+                        record['status'] = acknowledgement['status']
+                    if (acknowledgement.get('amount') is not None and acknowledgement.get('price') is not None
+                            and float(acknowledgement['amount']) == total and float(acknowledgement['price']) == new_price):
+                        record.update(amount=total, price=new_price)
+                        record['amendment']['state'] = 'confirmed'
+                record['verification_pending'] = True
+            else:
+                self._query(record, plan['symbol'])
             self._save(plan)
             self._maintain_after(plan)
             return self._v2_result(plan, record)
@@ -1132,13 +1169,9 @@ class IndependentExits(PositionProtection):
             plan["state"] = "ACTIVE"
             from backend.utils.execution_metrics import observe
             observe(self,plan,pos)
-            # Resume cancel/replace intent after restart; a submitting successor is
-            # queried above and is never recreated merely because an ACK was lost.
-            replacements = [record for record in plan['exits'] if record.get('replacement')]
-            for record in replacements:
-                self._replace(plan, record, record["replacement"]["remaining"])
-            # Quantity conflicts are observable facts, never an automatic
-            # allocation policy. Only pre-existing persisted replacements resume.
+            self._retire_unattempted_replacements(plan)
+            # An interrupted cancel/replace never authorizes a background create.
+            # Submitted successors are observed by their already saved identity.
             plan["verified_at"] = time.time()
             self._save(plan)
         except Exception as exc:
@@ -1192,6 +1225,7 @@ class IndependentExits(PositionProtection):
     def collect_readonly(self, plan):
         """Refresh evidence without reconciliation, cleanup, replacement or adoption."""
         errors = self._collect_order_evidence(plan)
+        self._retire_unattempted_replacements(plan)
         try:
             pos = self._position(plan)
             plan.pop('position_error', None)
@@ -1204,6 +1238,14 @@ class IndependentExits(PositionProtection):
         plan['read_errors'] = errors
         plan['verified_at'] = time.time()
         return plan
+
+    @staticmethod
+    def _retire_unattempted_replacements(plan):
+        for record in plan.get('exits', []):
+            if (record.get('replacement') and record.get('status') in TERMINAL
+                    and record.get('fill_verified') and not record.get('fill_pending')):
+                record['unattempted_replacement'] = {**record.pop('replacement'), 'status': 'not_executed'}
+                record['replacement_error'] = 'Replacement was not submitted; a new explicit trading intent is required'
 
     def snapshot(self, symbol):
         symbol = self._market(symbol)["symbol"]

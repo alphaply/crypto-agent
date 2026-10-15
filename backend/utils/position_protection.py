@@ -41,7 +41,9 @@ class PositionProtection:
     def _market(self, symbol):
         if getattr(self.mt, 'market_type', None) == 'spot':
             raise ValueError('Spot accounts cannot enter the perpetual protection lifecycle')
-        self.ex.load_markets()
+        if not getattr(self.ex, 'markets', None):
+            from backend.utils.public_catalogue import load_public_catalogue
+            load_public_catalogue(self.ex, market_type='swap')
         market = self.ex.market(symbol)
         if not market.get("contract"):
             market = self.ex.market(f"{symbol}:USDT")
@@ -329,7 +331,12 @@ class PositionProtection:
                 order = self.ex.create_order(symbol, "limit", "buy" if side == "LONG" else "sell", amount, price, params)
                 if not order or not order.get("id"):
                     raise RuntimeError("Entry submission outcome unknown")
-                entry.update(id=str(order["id"]), status=order.get("status", "open"))
+                entry.update(id=str(order["id"]), status=order.get("status", "open"),
+                             submission_state='submitted', acknowledgement=order)
+                if order.get('filled') is not None:
+                    entry.update(filled=float(order['filled']), fill_verified=True, fill_observed_at=time.time())
+                else:
+                    entry['fill_verified'] = False
                 self._save(plan)
             except ccxt.ExchangeError as exc:
                 entry["status"] = "rejected"
@@ -345,7 +352,12 @@ class PositionProtection:
                     raise RuntimeError(f'整仓保护已更新（SL={sl}, TP={tp}），加仓结果待核验，不可重复提交: {exc}') from exc
                 raise
             try:
-                self._reconcile(plan)
+                from backend.utils.trade_operations import financial_ack_only
+                if financial_ack_only.get():
+                    plan['verification_pending'] = True
+                    self._save(plan)
+                else:
+                    self._reconcile(plan)
             except Exception as exc:
                 plan["error"] = str(exc)
                 self._save(plan)
@@ -412,7 +424,7 @@ class PositionProtection:
             entry['last_amended_at'] = entry['amendment']['requested_at']
             self._save(plan)  # Persist intent before the exchange write, including timeouts.
             try:
-                self.ex.edit_order(str(order_id), symbol, 'limit',
+                acknowledgement = self.ex.edit_order(str(order_id), symbol, 'limit',
                                    'buy' if plan['side'] == 'LONG' else 'sell', new_amount, new_price)
             except ccxt.ExchangeError:
                 entry['amendment']['state'] = 'rejected'
@@ -422,10 +434,25 @@ class PositionProtection:
                 plan['error'] = f'Amendment outcome unresolved: {exc}'
                 self._save(plan)
                 raise
-            self._query(entry, symbol)
+            from backend.utils.trade_operations import financial_ack_only
+            if financial_ack_only.get():
+                if isinstance(acknowledgement, dict) and str(acknowledgement.get('id')) == str(order_id):
+                    if acknowledgement.get('status'):
+                        entry['status'] = acknowledgement['status']
+                    if acknowledgement.get('filled') is not None:
+                        entry['filled'] = float(acknowledgement['filled'])
+                        entry['fill_verified'] = True
+                    if (acknowledgement.get('amount') is not None and acknowledgement.get('price') is not None
+                            and float(acknowledgement['amount']) == new_amount and float(acknowledgement['price']) == new_price):
+                        entry.update(amount=new_amount, price=new_price)
+                        entry['amendment']['state'] = 'confirmed'
+                entry['verification_pending'] = True
+            else:
+                self._query(entry, symbol)
             entry['last_amended_at'] = time.time()
             self._save(plan)
-            self._reconcile(plan)
+            if not financial_ack_only.get():
+                self._reconcile(plan)
             return {'id': str(order_id), 'amendment_state': entry['amendment']['state'],
                     'order_status': entry.get('status'),
                     'price': entry['price'], 'total_base_amount': entry['amount'] * contract_size,
@@ -527,10 +554,18 @@ class PositionProtection:
                     if not self._record_cancel_fill(record, result):
                         plan['error'] = 'Cancellation confirmed but cumulative fill is unverified; reconcile the existing order ID'
                         self._save(plan)
+                        from backend.utils.trade_operations import financial_ack_only
+                        if financial_ack_only.get():
+                            return
                         raise RuntimeError(plan['error'])
                     self._save(plan)
                     return
-        # Exchange reads may lag a successful cancel. Finish confirmation in this call.
+        from backend.utils.trade_operations import financial_ack_only
+        if financial_ack_only.get():
+            record['verification_pending'] = True
+            self._save(plan)
+            raise RuntimeError('Cancellation acknowledgement incomplete; background verification pending')
+        # Exchange reads may lag a successful cancel during maintenance.
         # A filled order is terminal too; callers must handle an exit racing replacement.
         for delay in (0, 0.15, 0.35, 0.75, 1.5, 2, 2, 2, 3, 3):
             if delay:
@@ -723,7 +758,13 @@ class PositionProtection:
         if not order or not order.get("id"):
             raise RuntimeError("Protection submission outcome unknown")
         leg.update(id=str(order["id"]), status=order.get("status") or "open")
+        leg['acknowledgement'] = order
         self._save(plan)
+        from backend.utils.trade_operations import financial_ack_only
+        if financial_ack_only.get():
+            leg['verification_pending'] = True
+            self._save(plan)
+            return leg
         confirmed = self._confirm_visible(leg, symbol, True, 'open')
         if not confirmed or leg["status"] != "open":
             raise RuntimeError("Protection submitted but not yet visible; maintenance will keep querying it without resubmission")
@@ -822,12 +863,46 @@ class PositionProtection:
             raise
 
     def reconcile_all(self, *, respect_backoff=False):
+        from backend.utils.runtime_capacity import positive_setting
+        page = self.reconcile_plan_page(limit=positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32),
+                                        after_cursor=getattr(self, '_reconcile_cursor', 0),
+                                        respect_backoff=respect_backoff)
+        self._reconcile_cursor = page['next_cursor']
+        results = page['results']
+        if not page['complete']:
+            results.append({'state': 'pending', 'error': 'Plan scan continues in the next bounded page',
+                            'next_cursor': page['next_cursor']})
+        return results
+
+    def reconcile_plan_page(self, *, limit=32, after_cursor=0, respect_backoff=False):
+        """Inspect lengths before fetching JSON; preserve a stable continuation."""
+        from backend.utils.runtime_capacity import positive_setting, reserve_bytes
+        if type(limit) is not int or limit < 1:
+            raise ValueError('Plan scan limit must be a positive integer')
+        maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES', 4 * 1024 * 1024)
         with _lock(self.account_scope):
             with get_db_conn() as conn:
-                rows = conn.execute("SELECT payload FROM real_protection_plans WHERE config_id=?", (self.config_id,)).fetchall()
+                from backend.utils.protection_scan import active_plan_page, activity_scan_complete
+                rows = active_plan_page(conn, config_id=self.config_id,
+                                        after_cursor=after_cursor or 0, limit=limit)
+                indexed = activity_scan_complete(conn)
+                conn.commit()
             results = []
             for row in rows:
-                plan = json.loads(row["payload"])
+                if row['payload_bytes'] > maximum:
+                    results.append({'symbol': row['symbol'], 'side': row['side'], 'state': 'unknown',
+                                    'error': 'Plan payload over resource budget; original evidence retained'})
+                    continue
+                with reserve_bytes('parse', row['payload_bytes'] * 4):
+                    with get_db_conn() as conn:
+                        from backend.utils.sqlite_blob import bounded_text
+                        try:
+                            with bounded_text(conn, 'real_protection_plans', 'payload', row['rowid'], limit=maximum) as raw:
+                                plan = json.loads(raw)
+                        except (ValueError, TypeError):
+                            results.append({'symbol': row['symbol'], 'side': row['side'], 'state': 'unknown',
+                                            'error': 'Plan JSON invalid or over resource budget; original evidence retained'})
+                            continue
                 if plan['state'] != 'DONE' and plan.get('account_scope') != self.account_scope:
                     results.append({'symbol': plan['symbol'], 'side': plan['side'], 'state': plan['state'],
                                     'error': 'Exchange credentials changed; protection plan requires its original account'})
@@ -852,4 +927,6 @@ class PositionProtection:
                 except Exception:
                     pass  # Persisted and returned as an actionable maintenance error.
                 results.append({"symbol": plan["symbol"], "side": plan["side"], "state": plan["state"], "error": plan.get("error")})
-            return results
+            return {'results': results, 'processed': len(rows), 'complete': indexed and len(rows) < limit,
+                    'index_complete': indexed,
+                    'next_cursor': rows[-1]['rowid'] if len(rows) == limit else 0}

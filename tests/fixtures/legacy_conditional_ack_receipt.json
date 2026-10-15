@@ -1,0 +1,683 @@
+{
+  "current": {
+    "receipt_version": 1,
+    "contract_version": 2,
+    "status": "submitted",
+    "operation_id": "offline-close-v2-0001",
+    "action": "close",
+    "execution": {
+      "phase": "verify",
+      "submission_state": "submitted",
+      "fill_status": "verified"
+    },
+    "position": {
+      "side": "SHORT",
+      "amount": 0.06,
+      "status": "verified",
+      "observed_at": 1791991925.1267793
+    },
+    "cleanup": {
+      "status": "not_required",
+      "orders": [],
+      "error": null
+    },
+    "continuation": {
+      "blocked_actions": [],
+      "rules": [],
+      "assessment_state": "needs_refresh",
+      "reason_code": null,
+      "side": "SHORT",
+      "blocker_order_ids": [],
+      "assessed_at": 1791991925.1316562,
+      "advisory": true,
+      "requires_action_assessment": true,
+      "scope": {
+        "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol": "ETH/USDT:USDT",
+        "side": "SHORT",
+        "episode_id": "offline-cycle-v2"
+      },
+      "evidence_versions": {
+        "cycle": 1789,
+        "scope": 10365
+      },
+      "previous_assessment": {
+        "blocked_actions": [],
+        "rules": [],
+        "assessment_state": "verified",
+        "reason_code": null,
+        "side": "SHORT",
+        "blocker_order_ids": [],
+        "assessed_at": 1791991925.1316562,
+        "advisory": true,
+        "requires_action_assessment": true,
+        "scope": {
+          "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "symbol": "ETH/USDT:USDT",
+          "side": "SHORT",
+          "episode_id": "offline-cycle-v2"
+        },
+        "evidence_versions": {
+          "cycle": 1789,
+          "scope": 10365
+        }
+      }
+    },
+    "recovery": {
+      "tool": "get_trade_operation",
+      "target_operation_id": "offline-close-v2-0001",
+      "blocker_operation_ids": [],
+      "last_error": null,
+      "last_attempt_at": 1791991923.1330132,
+      "next_retry_at": null,
+      "attempt_count": 3
+    },
+    "episode_id": "offline-cycle-v2",
+    "pending": false,
+    "filled_amount": 0,
+    "remaining_amount": 0.03,
+    "actual_remaining": 0.03,
+    "last_known_filled_amount": 0,
+    "last_known_fill_at": 1791991923.2112978,
+    "id": "offline-algo-0001",
+    "client_id": "cai-offline-original-client",
+    "order_id": "algo:offline-algo-0001",
+    "order_status": "waiting_trigger",
+    "order_type": "take_profit_market",
+    "quantity_mode": "fixed",
+    "side": "SHORT",
+    "exchange_order_id": "offline-algo-0001",
+    "exchange_channel": "algo",
+    "parent_order_id": null,
+    "requested_amount": 0.03,
+    "resolved_amount": null,
+    "admission": {
+      "version": 1,
+      "decision": "allow",
+      "allowed": true,
+      "reason_code": null,
+      "side": "SHORT",
+      "intent": {
+        "action": "close",
+        "side": "SHORT",
+        "target": null,
+        "effect": "conditional_protection",
+        "quantity_mode": "fixed",
+        "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol": "ETH/USDT:USDT",
+        "changed_fields": [
+          "trigger_price"
+        ]
+      },
+      "scope": {
+        "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol": "ETH/USDT:USDT",
+        "side": "SHORT",
+        "episode_id": "offline-cycle-v2"
+      },
+      "blocked_action": null,
+      "blockers": [],
+      "warnings": [],
+      "evidence_versions": {
+        "cycle": 1784,
+        "scope": 10360
+      },
+      "assessed_at": 1791991910.7436519,
+      "refresh": {
+        "performed": true,
+        "read_errors": []
+      }
+    },
+    "verified_at": 1791991925.1316562,
+    "current_scope": {
+      "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "ETH/USDT:USDT",
+      "side": "SHORT",
+      "episode_id": "offline-cycle-v2"
+    },
+    "current_position": {
+      "side": "SHORT",
+      "amount": 0.06,
+      "status": "verified",
+      "observed_at": 1791991925.1267793
+    },
+    "projected_at": 1791991925.9607234,
+    "evidence_source": "local_projection",
+    "query": {
+      "status": "not_requested",
+      "source": "local_projection",
+      "observed_at": 1791991925.1316562
+    },
+    "receipt_updated_at": 1791991925.9727216
+  },
+  "original": {
+    "receipt_version": 1,
+    "contract_version": 2,
+    "status": "submitted",
+    "operation_id": "offline-close-v2-0001",
+    "action": "close",
+    "execution": {
+      "phase": "verify",
+      "submission_state": "submitted",
+      "fill_status": "verified"
+    },
+    "position": {
+      "side": "SHORT",
+      "amount": null,
+      "status": "stale",
+      "observed_at": 1791991912.3196115,
+      "last_known_amount": 0.06
+    },
+    "cleanup": {
+      "status": "pending",
+      "orders": [
+        {
+          "order_id": "algo:offline-algo-0001",
+          "client_id": "cai-offline-original-client",
+          "operation_id": "offline-close-v2-0001",
+          "order_status": "open",
+          "side": "SHORT",
+          "kind": "exit",
+          "reason_code": "order_unresolved",
+          "last_error": "Order outcome unresolved: cai-offline-original-client",
+          "last_attempt_at": 1791991914.6157913,
+          "next_retry_at": 1791991916.6933436,
+          "attempt_count": 1
+        }
+      ],
+      "error": "Order outcome unresolved: cai-offline-original-client"
+    },
+    "continuation": {
+      "blocked_actions": [],
+      "rules": [],
+      "assessment_state": "needs_refresh",
+      "reason_code": "order_evidence_unverified",
+      "side": "SHORT",
+      "blocker_order_ids": [
+        "algo:offline-algo-0001"
+      ],
+      "assessed_at": 1791991910.7436519,
+      "advisory": true,
+      "requires_action_assessment": true,
+      "scope": {
+        "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol": "ETH/USDT:USDT",
+        "side": "SHORT",
+        "episode_id": "offline-cycle-v2"
+      },
+      "evidence_versions": {
+        "cycle": 1787,
+        "scope": 10363
+      },
+      "previous_assessment": {
+        "blocked_actions": [
+          "open",
+          "close"
+        ],
+        "rules": [
+          {
+            "action": "open",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "increase_exposure",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ]
+          },
+          {
+            "action": "close",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "reduce_position",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ]
+          },
+          {
+            "action": "edit",
+            "target": "regular:8389766295627503612",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_entry",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          },
+          {
+            "action": "edit",
+            "target": "algo:1000002620754826",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_exit",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          },
+          {
+            "action": "edit",
+            "target": "regular:8389766295666585413",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_exit",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          },
+          {
+            "action": "edit",
+            "target": "algo:1000002620755386",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_exit",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          },
+          {
+            "action": "edit",
+            "target": "regular:8389766295691196861",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_exit",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          },
+          {
+            "action": "edit",
+            "target": "algo:1000002621038111",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_exit",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          },
+          {
+            "action": "edit",
+            "target": "algo:1000002621104466",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_exit",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          },
+          {
+            "action": "edit",
+            "target": "algo:1000002621104764",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_exit",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          },
+          {
+            "action": "edit",
+            "target": "algo:offline-algo-0001",
+            "scope": {
+              "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "symbol": "ETH/USDT:USDT",
+              "side": "SHORT",
+              "episode_id": "offline-cycle-v2"
+            },
+            "reason_code": "order_evidence_unverified",
+            "blockers": [
+              {
+                "order_id": "algo:offline-algo-0001",
+                "client_id": "cai-offline-original-client",
+                "operation_id": "offline-close-v2-0001",
+                "order_status": "open",
+                "side": "SHORT",
+                "kind": "exit",
+                "reason_code": "order_unresolved",
+                "last_error": "Order outcome unresolved: cai-offline-original-client",
+                "last_attempt_at": 1791991914.6157913,
+                "next_retry_at": 1791991916.6933436,
+                "attempt_count": 1,
+                "recovery": {
+                  "tool": "get_trade_operation",
+                  "target_operation_id": "offline-close-v2-0001"
+                },
+                "affected_effect": "modify_exit",
+                "missing_evidence": "verified_execution_outcome"
+              }
+            ],
+            "requires_argument_assessment": true
+          }
+        ],
+        "assessment_state": "needs_refresh",
+        "reason_code": "order_evidence_unverified",
+        "side": "SHORT",
+        "blocker_order_ids": [
+          "algo:offline-algo-0001"
+        ],
+        "assessed_at": 1791991910.7436519,
+        "advisory": true,
+        "requires_action_assessment": true,
+        "scope": {
+          "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "symbol": "ETH/USDT:USDT",
+          "side": "SHORT",
+          "episode_id": "offline-cycle-v2"
+        },
+        "evidence_versions": {
+          "cycle": 1787,
+          "scope": 10363
+        }
+      }
+    },
+    "recovery": {
+      "tool": "get_trade_operation",
+      "target_operation_id": "offline-close-v2-0001",
+      "blocker_operation_ids": [
+        "offline-close-v2-0001"
+      ],
+      "last_error": "Order outcome unresolved: cai-offline-original-client",
+      "last_attempt_at": 1791991914.6157913,
+      "next_retry_at": 1791991916.6933436,
+      "attempt_count": 1
+    },
+    "id": "offline-algo-0001",
+    "client_id": "cai-offline-original-client",
+    "episode_id": "offline-cycle-v2",
+    "amount": 0.03,
+    "remaining": 0.03,
+    "exit_type": "take_profit_market",
+    "price": null,
+    "trigger_price": 2380,
+    "protection_state": "ACTIVE",
+    "pending": false,
+    "order_id": "algo:offline-algo-0001",
+    "order_status": "open",
+    "source": "agent",
+    "managed": true,
+    "supported_actions": [
+      "edit",
+      "cancel"
+    ],
+    "observed_at": 1791991913.9769752,
+    "last_change_source": null,
+    "parent_order_id": null,
+    "exchange_order_id": "offline-algo-0001",
+    "exchange_channel": "algo",
+    "order_type": "take_profit_market",
+    "quantity_mode": "fixed",
+    "filled_amount": 0,
+    "remaining_amount": 0.03,
+    "actual_remaining": 0.03,
+    "requested_amount": 0.03,
+    "resolved_amount": null,
+    "trigger_basis": "last",
+    "side": "SHORT",
+    "pos_side": "SHORT",
+    "last_known_filled_amount": 0,
+    "last_known_fill_at": 1791991913.9769752,
+    "admission": {
+      "version": 1,
+      "decision": "allow",
+      "allowed": true,
+      "reason_code": null,
+      "side": "SHORT",
+      "intent": {
+        "action": "close",
+        "side": "SHORT",
+        "target": null,
+        "effect": "conditional_protection",
+        "quantity_mode": "fixed",
+        "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol": "ETH/USDT:USDT",
+        "changed_fields": [
+          "trigger_price"
+        ]
+      },
+      "scope": {
+        "account_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol": "ETH/USDT:USDT",
+        "side": "SHORT",
+        "episode_id": "offline-cycle-v2"
+      },
+      "blocked_action": null,
+      "blockers": [],
+      "warnings": [],
+      "evidence_versions": {
+        "cycle": 1784,
+        "scope": 10360
+      },
+      "assessed_at": 1791991910.7436519,
+      "refresh": {
+        "performed": true,
+        "read_errors": []
+      }
+    }
+  }
+}

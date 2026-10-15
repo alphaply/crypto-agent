@@ -91,7 +91,7 @@ def assess_admission(plan: dict, action: str | ActionIntent, *, hedged: bool,
                      'missing_evidence': 'current_ownership' if plan.get('ownership_error') else 'current_position_or_cycle',
                      'last_error': plan.get('ownership_error') or plan.get('position_error'), 'order_id': None}]
     for blocker in blockers:
-        blocker['recovery'] = {'tool': 'get_trade_operation', 'target_operation_id': blocker.get('operation_id')}
+        blocker['recovery'] = {'state': 'background', 'target_operation_id': blocker.get('operation_id')}
         blocker['affected_effect'] = intent.effect
         blocker['missing_evidence'] = blocker.get('missing_evidence') or 'verified_execution_outcome'
     not_evaluated = (intent.action in {'edit', 'cancel'} and target is None)

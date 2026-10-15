@@ -13,7 +13,7 @@ from .tools import OperationId, _register
 from backend.utils.spot_config_guard import serialized_spot_execution
 
 CORE_NAMES = ('get_trading_context', 'search_symbols', 'get_market', 'get_news',
-              'get_account_state', 'get_trade_records', 'execute_trade_actions', 'get_operation')
+              'get_account_state', 'get_trade_records', 'execute_trade_actions')
 PAPER_NAMES = ('paper_bank', 'configure_paper_account', 'get_paper_leaderboard')
 
 # Private exchange/raw metadata and repeated account snapshots are opt-in;
@@ -133,7 +133,8 @@ def context(caller, user_id=None):
         return {'execution_mode': 'paper', 'namespace': namespace, 'settings': config,
                 'bot_user_id': config['bot_user_id'], 'contract_version': 3,
                 'capabilities': capabilities, 'allowed_actions': _permitted_actions(capabilities, caller),
-                'account_capabilities': account_capabilities, 'scopes': caller['scopes'], 'recovery_tool': 'get_operation'}
+                'account_capabilities': account_capabilities, 'scopes': caller['scopes'],
+                'execution_updates': 'Original execution identities are verified automatically in the background.'}
     if user_id is not None:
         raise ValueError('Live context does not accept user_id')
     profiles = service.list_profiles(caller)
@@ -143,7 +144,7 @@ def context(caller, user_id=None):
         capabilities = capabilities_for_config(get_runtime_profile('mcp:' + row['profile_id']))
         rows.append({**row, 'capabilities': capabilities, 'allowed_actions': _permitted_actions(capabilities, caller)})
     return {'execution_mode': 'live', 'contract_version': 3, 'scopes': caller['scopes'],
-            'profiles': rows, 'recovery_tool': 'get_operation'}
+            'profiles': rows, 'execution_updates': 'Original execution identities are verified automatically in the background.'}
 
 
 def _scope(caller, profile_id, user_id):
@@ -168,6 +169,8 @@ def account_state(caller, profile_id=None, user_id=None, symbol=None, include=No
     result = {'execution_mode': 'paper' if is_paper else 'live', 'profile_id': profile_id} if not is_paper else {'execution_mode': 'paper', 'user_id': user_id}
     if is_paper:
         view = paper.get_account(caller, user_id)
+        result.update(filter=view['filter'], completeness=view['completeness'],
+                      valuation_status=view['valuation_status'], oldest_mark_at=view['oldest_mark_at'])
         if 'balances' in facets:
             result['balances'] = {key: view[key] for key in ('cash', 'available_cash', 'reserved_cash', 'debt', 'equity', 'net_equity', 'used_margin')}
         if 'positions' in facets:
@@ -195,30 +198,18 @@ def records(caller, record_type, profile_id=None, user_id=None, symbol=None, ord
     is_paper = _scope(caller, profile_id, user_id)
     if is_paper:
         if record_type in {'orders', 'order'}:
-            namespace = paper.require(caller)
-            with store.connection() as conn:
-                paper._get(conn, namespace, user_id)
-                rows = paper_orders.rows(conn, namespace, user_id, None if record_type == 'order' or state == 'all' else state)
+            if record_type == 'order' and not order_id:
+                raise ValueError('order_id is required')
+            page = paper_orders.records_page(caller, user_id, state=state, limit=limit,
+                                              offset=offset, symbol=symbol,
+                                              order_id=order_id if record_type == 'order' else None)
             if record_type == 'order':
-                if not order_id:
-                    raise ValueError('order_id is required')
-                found = next((row for row in rows if row['order_id'] == order_id), None)
-                if found is None:
-                    raise ValueError('Order not found in this account')
-                return {'record_type': record_type, 'order': found if detail else _compact_record(found)}
+                return {'record_type': record_type, 'order': page['order'] if detail else _compact_record(page['order'])}
         else:
-            namespace = paper.require(caller)
-            with store.connection() as conn:
-                paper._get(conn, namespace, user_id)
-                rows = [{**dict(row), 'payload': json.loads(row['payload'])} for row in conn.execute(
-                    'SELECT * FROM paper_events WHERE namespace=? AND user_id=? ORDER BY id DESC', (namespace, user_id))]
-            if record_type == 'fills':
-                rows = [row for row in rows if row['payload'].get('fill')]
-        if symbol:
-            rows = [row for row in rows if row.get('symbol') == symbol or row.get('payload', {}).get('fill', {}).get('symbol') == symbol]
-        selected = rows[offset:offset+limit]
-        return {'record_type': record_type, 'items': selected if detail else [_compact_record(row) for row in selected],
-                'has_more': offset+limit < len(rows)}
+            page = paper.history_page(caller, user_id, limit=limit, offset=offset,
+                                      record_type=record_type, symbol=symbol)
+        return {**page, 'record_type': record_type,
+                'items': page['items'] if detail else [_compact_record(row) for row in page['items']]}
     resource = {'orders': 'orders', 'order': 'order', 'fills': 'trade_history', 'history': 'trade_history'}[record_type]
     if record_type == 'orders' and state != 'open':
         raise ValueError('Live order lists support state=open; query an exact order_id or actual fills for ended orders')
@@ -267,7 +258,7 @@ def execute_live(caller, profile_id, symbol, request, operation_id):
     stable_id = 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
     try:
         with runtime_symbols(cfg_id, symbols):
-            raw = run_trade_tool('execute_trade_actions', normalized, cfg_id, primary, operation_id=stable_id, cycle_id=stable_id if profile['market_type'] == 'spot' else None)
+            raw = run_trade_tool('execute_trade_actions', normalized, cfg_id, primary, operation_id=stable_id, cycle_id=stable_id if profile['market_type'] == 'spot' else None, project_result=False)
         payload = json.loads(raw) if isinstance(raw, str) else raw
         result = {'operation_id': operation_id, 'status': payload.get('status', 'unknown'),
                   'result': service._external_operation_receipt(payload, stable_id, operation_id, profile_id, principal=caller['id'])}
@@ -357,7 +348,7 @@ def register(server):
                                     profile_id: str | None = None, user_id: str | None = None, symbol: str | None = None,
                                     execution_policy: Literal['stop_on_error', 'independent'] | None = None,
                                     include: list[Literal['account']] | None = None) -> dict:
-        """Execute 1–20 typed v3 actions in order. A submitted entry is not a fill. Never replay skipped tail; query original operation after uncertainty. v2 remains a compatibility input."""
+        """Execute 1–20 typed v3 actions in order and return factual acknowledgement. A submitted entry is not a fill. The system verifies original identities in the background; skipped tails never resume. v2 remains a compatibility input."""
         caller = service.principal()
         is_paper = _scope(caller, profile_id, user_id)
         request = {'contract_version': contract_version, 'actions': actions}
@@ -381,20 +372,6 @@ def register(server):
         from backend.agent.unified_trading import compact_trade_receipt
         return {**compact_trade_receipt(raw), **({'persistence_pending': True} if raw.get('persistence_pending') else {})}
 
-    async def get_operation(operation_id: OperationId, profile_id: str | None = None, user_id: str | None = None,
-                            detail: StrictBool = False) -> dict:
-        """Read/recover the original operation; never execute a skipped tail. detail returns persisted evidence."""
-        def query(caller):
-            is_paper = _scope(caller, profile_id, user_id)
-            result = (paper_batch.operation(caller, user_id, operation_id) or paper.operation(caller, user_id, operation_id)) if is_paper else service.operation(caller, profile_id, operation_id)
-            if detail:
-                return {**result, 'query': {'status': 'completed'}}
-            from backend.agent.unified_trading import compact_trade_receipt
-            metadata = {key: value for key, value in result.items() if key in {
-                'state', 'found', 'error_code', 'message', 'created_at', 'updated_at'}}
-            return {**compact_trade_receipt(result), **metadata, 'query': {'status': 'completed'}}
-        return await invoke(query)
-
     async def configure_paper_account(user_id: str, operation_id: OperationId, action: Literal['create', 'update'],
                                       name: Annotated[str, Field(min_length=1, max_length=100)] | None = None,
                                       leverage: Annotated[StrictInt, Field(ge=1, le=125)] | None = None,
@@ -404,7 +381,7 @@ def register(server):
         return await invoke(configure, user_id, operation_id, action, name, leverage, leaderboard_visible, notifications_enabled, write=True)
 
     for function in (get_trading_context, search_symbols, get_market, get_account_state, get_trade_records,
-                     execute_trade_actions, get_operation, configure_paper_account):
+                     execute_trade_actions, configure_paper_account):
         if server._tool_manager.get_tool(function.__name__):
             server._tool_manager.remove_tool(function.__name__)
         _register(server, function, scope='trade / cancel' if function.__name__ == 'execute_trade_actions' else 'trade' if function.__name__ == 'configure_paper_account' else 'read')
@@ -419,6 +396,8 @@ def register(server):
             properties = schema.get('properties', {})
             if is_paper:
                 properties.pop('profile_id', None)
+                if 'exchange' in properties:
+                    properties['exchange'] = {'anyOf': [{'type': 'string', 'const': 'binance'}, {'type': 'null'}], 'default': None}
             else:
                 for key in ('user_id', 'exchange', 'market_type'):
                     properties.pop(key, None)
@@ -430,6 +409,8 @@ def register(server):
                 if is_paper:
                     envelope = unified_schema_for_config({'mode': 'PAPER', 'markets': ['spot', 'swap']}, engine='paper')
                     for definition in envelope.get('$defs', {}).values():
+                        if 'exchange' in definition.get('properties', {}):
+                            definition['properties']['exchange'] = {'anyOf': [{'type': 'string', 'const': 'binance'}, {'type': 'null'}], 'default': None}
                         action = definition.get('properties', {}).get('action', {}).get('const')
                         if action in {'open', 'close', 'protect'}:
                             definition.setdefault('required', []).extend(['market_type', 'symbol'])
@@ -462,7 +443,7 @@ def register(server):
                 properties['state'] = {'type': 'string', 'const': 'open', 'default': 'open'}
             if properties.get('profile_id') is not None:
                 schema.setdefault('required', []).append('profile_id')
-            if is_paper and properties.get('user_id') is not None and tool.name in {'execute_trade_actions', 'get_account_state', 'get_trade_records', 'get_operation'}:
+            if is_paper and properties.get('user_id') is not None and tool.name in {'execute_trade_actions', 'get_account_state', 'get_trade_records'}:
                 schema.setdefault('required', []).append('user_id')
             schema['required'] = list(dict.fromkeys(schema.get('required', [])))
             tool.inputSchema = schema

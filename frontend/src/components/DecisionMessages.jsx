@@ -2,6 +2,7 @@ import { Alert, Space, Tag, Typography } from 'antd';
 import MarkdownBlock from './MarkdownBlock';
 import ReasoningBlock from './ReasoningBlock';
 import { splitThinkingContent } from '../lib/thinking';
+import AuditDisclosure from './AuditDisclosure';
 
 const colors = { failed: 'error', unknown: 'warning', pending: 'warning', partial: 'warning', completed: 'success', submitted: 'processing', running: 'processing' };
 const labels = { failed: '失败', unknown: '待核验', pending: '待确认', partial: '部分返回', submitted: '已提交', completed: '已返回', not_executed: '未执行', skipped: '未执行', planned: '已规划', running: '执行中' };
@@ -41,6 +42,8 @@ export function ToolReceipt({ item, zh }) {
         <Tag color={colors[receipt.status]}>{filled ? (zh ? '本次已成交' : 'Execution filled') : (zh ? labels[receipt.status] || receipt.status : receipt.status)}</Tag>
         {cleanupPending && <Tag color="warning">{zh ? '清理待核验' : 'Cleanup pending'}</Tag>}
       </Space>
+      {receipt.order_status && <p>{zh ? '订单状态' : 'Order state'}: {receipt.order_status} · {zh ? '请求数量' : 'Requested amount'}: {receipt.requested_amount ?? receipt.amount ?? '—'} · {zh ? '已确认成交量' : 'Verified filled amount'}: {receipt.filled_amount ?? '—'}</p>}
+      {(receipt.order_id || receipt.client_id) && <p>{zh ? '订单身份' : 'Order identity'}: {receipt.order_id || receipt.client_id}</p>}
       {isQuery && receipt.order_status === 'rejected' && <p>{zh ? '原交易已拒绝；查询返回不代表交易成功。' : 'Original trade rejected; a successful query is not a successful trade.'}</p>}
       {scope && <p>{zh ? '当前作用范围' : 'Current scope'}：{scope.symbol || '—'} · {scope.side || '—'}</p>}
       {continuation && <p>{continuation.assessment_state === 'needs_refresh'
@@ -49,7 +52,7 @@ export function ToolReceipt({ item, zh }) {
       {(continuation?.assessment_state === 'needs_refresh' ? [] : continuation?.rules || []).map((rule, index) => <Alert key={index} type="warning" showIcon style={{ marginBottom: 8 }}
         title={`${rule.action} · ${rule.target || rule.scope?.side || ''}`}
         description={<>{zh ? reasons[rule.reason_code] || rule.reason_code : rule.reason_code}{(rule.blockers || []).map((blocker, i) => <div key={i}>{blocker.order_id || blocker.client_id || blocker.missing_evidence} · {zh ? reasons[blocker.reason_code] || blocker.reason_code : blocker.reason_code}</div>)}
-          <div>{zh ? '系统继续核验相关事实；可查询原操作查看进展，无关动作单独判断。' : 'Related evidence is being verified; query the original operation for progress. Unrelated actions are assessed separately.'}</div></>} />)}
+          <div>{zh ? '系统在后台更新相关事实，无关动作单独判断。' : 'The system updates related evidence in the background. Unrelated actions are assessed separately.'}</div></>} />)}
       {(receipt.admission?.warnings || []).length > 0 && <p>{zh ? '历史告警：' : 'Historical warnings: '}{receipt.admission.warnings.map(w => zh ? reasons[w.reason_code] || w.reason_code : w.reason_code).join(' · ')}</p>}
       {receipt.query?.errors?.length > 0 && <Alert type="warning" title={zh ? '部分证据未返回' : 'Evidence unavailable'} description={receipt.query.errors.join(' · ')} />}
       {filled && <p>{zh ? '已成交数量' : 'Filled amount'}：{receipt.filled_amount ?? '—'} · {zh ? '当前方向仓位' : 'Current position'}：{receipt.position?.status === 'verified' ? receipt.position?.amount : (zh ? '待核验' : 'Unverified')}</p>}
@@ -58,9 +61,9 @@ export function ToolReceipt({ item, zh }) {
         {receipt.cleanup.error && <div>{receipt.cleanup.error}</div>}
       </>} />}
       {observed && <Typography.Text type="secondary">{zh ? '核验时间' : 'Verified at'}：{new Date(observed * 1000).toLocaleString()}</Typography.Text>}
-      {item.current_receipt && <details className="content-disclosure"><summary>{zh ? '最新结构化回执' : 'Latest receipt'}</summary><pre>{formatResult(receipt)}</pre></details>}
     </div>}
-    <details className="content-disclosure"><summary>{item.current_receipt ? (zh ? `原始工具回执（${labels[item.status] || item.status}）` : `Original receipt (${item.status})`) : (zh ? '工具回执' : 'Tool result')}</summary><pre>{formatResult(item.result) || (zh ? '未返回内容' : 'No output')}</pre></details>
+    <details className="content-disclosure"><summary>{zh ? '执行摘要' : 'Execution summary'}</summary><pre>{formatResult(receipt) || (zh ? '未返回内容' : 'No output')}</pre></details>
+    {item.audit?.url && <AuditDisclosure url={item.audit.url} zh={zh} />}
   </div>;
 }
 

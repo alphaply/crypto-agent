@@ -148,6 +148,7 @@ class Exchange:
         self.calls=[]
         self.timeout_next=False
         self.hide=False
+        self.markets={'ETH/USDT:USDT':self.market('ETH/USDT:USDT')}
 
     def load_markets(self):
         pass
@@ -316,11 +317,9 @@ def test_real_cancel_cannot_silently_restore_pending_replacement(live_service):
         svc.cancel('ETH/USDT',stop['id'])
     assert len(ex.calls)==count and ex.orders[stop['id']]['status']=='open'
     svc.reconcile_all()
-    successor=svc.snapshot('ETH/USDT')['exits'][0]
-    with pytest.raises(ValueError,match='successor'):
+    assert len(ex.calls)==count and ex.orders[stop['id']]['status']=='open'
+    with pytest.raises(ValueError,match='replacement'):
         svc.cancel('ETH/USDT',stop['id'])
-    svc.cancel('ETH/USDT',successor['id'])
-    assert svc.snapshot('ETH/USDT')['exits']==[]
 
 
 @pytest.mark.parametrize('filled', [.4, 1.0])
@@ -419,7 +418,7 @@ def test_query_keeps_last_verified_fill_until_consistent_response(local_db, unve
 
 
 @pytest.mark.parametrize('position_failure', ['empty', 'timeout'])
-def test_stop_replacement_survives_position_read_failure_and_restart(live_service, position_failure):
+def test_unattempted_replacement_never_submits_after_position_failure_or_restart(live_service, position_failure):
     svc, ex = live_service
     stop = svc.close('ETH/USDT', 'LONG', 1, 'stop_market', trigger_price=90)
     original_cancel, original_positions = ex.cancel_order, ex.fetch_positions
@@ -440,7 +439,6 @@ def test_stop_replacement_survives_position_read_failure_and_restart(live_servic
     plan = svc._load('ETH/USDT:USDT', 'LONG')
     old_stop = plan['exits'][0]
     assert old_stop['status'] == 'canceled' and old_stop['replacement']['operation_id'] == 'amend-stop'
-    replacement_client_id = old_stop['replacement']['client_id']
     assert plan['error'] and len(ex.calls) == 2
     if position_failure == 'empty':
         assert svc.snapshot('ETH/USDT')['pending']
@@ -449,15 +447,16 @@ def test_stop_replacement_survives_position_read_failure_and_restart(live_servic
     restarted = IndependentExits(svc.mt)
     restarted.reconcile_all()
     snapshot = restarted.snapshot('ETH/USDT')
-    assert not snapshot['pending'] and snapshot['uncovered']['LONG'] == 0
-    assert len(snapshot['exits']) == 1
-    successor = snapshot['exits'][0]
-    assert successor['client_id'] == replacement_client_id and successor['trigger_price'] == 95
-    assert successor['id'] != stop['id'] and len(ex.calls) == 3
+    assert not snapshot['pending'] and snapshot['uncovered']['LONG'] == 1
+    assert snapshot['exits'] == [] and len(ex.calls) == 2
+    recovered = restarted._load('ETH/USDT:USDT','LONG')['exits'][0]
+    assert recovered['unattempted_replacement']['operation_id'] == 'amend-stop'
+    assert recovered['unattempted_replacement']['status'] == 'not_executed'
     replay = restarted.amend_exit('ETH/USDT', stop['id'], trigger_price=95, operation_id='amend-stop')
-    assert replay['id'] == successor['id']
+    assert replay['id'] == stop['id']
+    assert replay['status'] == 'failed'
     restarted.reconcile_all()
-    assert len(ex.calls) == 3
+    assert len(ex.calls) == 2
 
 
 def test_unobserved_entry_fill_stops_tool_batch_before_second_order(local_db, monkeypatch):
@@ -773,9 +772,9 @@ def test_cancel_ack_without_fill_keeps_terminal_status_through_stale_open_read(l
     ex.fetch_order = original_query
     restarted.reconcile_all()
     snapshot = restarted.snapshot('ETH/USDT')
-    assert not snapshot['pending'] and snapshot['uncovered']['LONG'] == 0
-    assert snapshot['exits'][0]['trigger_price'] == 95
-    assert len(ex.calls) == 3 and cancellations == [stop['id']]
+    assert not snapshot['pending'] and snapshot['uncovered']['LONG'] == 1
+    assert snapshot['exits'] == []
+    assert len(ex.calls) == 2 and cancellations == [stop['id']]
 
 
 def test_unmanaged_order_cancellation_in_independent_exits(live_service):

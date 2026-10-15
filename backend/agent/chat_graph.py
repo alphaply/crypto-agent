@@ -377,8 +377,9 @@ def _context_compaction_cutoff(history: list, cursor: int, force: bool = False) 
 
 
 def _format_messages_for_compaction(messages: list) -> str:
+    from backend.agent.model_trade_history import project_trade_messages
     chunks = []
-    for message in messages:
+    for message in project_trade_messages(messages):
         text = _message_context_text(message).strip()
         if not text:
             continue
@@ -530,7 +531,8 @@ def _trim_chat_messages(
 ):
     cursor = max(0, min(int(summary_cursor or 0), len(history)))
     recent_history = history[cursor:]
-    memory = str(conversation_summary or "").strip()
+    from backend.agent.model_trade_history import project_generated_text, project_trade_messages
+    memory = project_generated_text(str(conversation_summary or "").strip())
     if memory:
         system_prompt = (
             f"{system_prompt}\n\n## Rolling conversation memory\n"
@@ -541,7 +543,7 @@ def _trim_chat_messages(
     # Only a successful memory compaction may replace old messages. A separate
     # token/count trim could drop unsummarized facts, or even a long latest user
     # request, after compaction fails. Preserve all complete remaining turns.
-    recent_history = _sanitize_tool_sequences(recent_history)
+    recent_history = _sanitize_tool_sequences(project_trade_messages(recent_history))
     if str(system_prompt_role or "system").lower() == "user" and recent_history and isinstance(recent_history[0], HumanMessage):
         first_message = recent_history[0]
         merged_instruction = HumanMessage(content=f"{system_prompt}\n\n## User request\n{_message_context_text(first_message)}")
@@ -720,6 +722,8 @@ def model_node(state: ChatState, config: RunnableConfig):
         summary_cursor,
         cfg.get("system_prompt_role", "system"),
     )
+    from backend.agent.model_trade_history import project_trade_messages
+    trimmed = project_trade_messages(trimmed, config_id)
     
     logger.info(
         f"[Chat] start session={configurable.get('thread_id')} config_id={config_id} "
@@ -904,7 +908,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
     for call in tool_calls:
         tool_name = call["name"]
         tool_args = call.get("args", {})
-        if stopped and tool_name != 'get_trade_operation':
+        if stopped:
             outputs.append(ToolMessage(tool_call_id=call['id'], content=json.dumps({
                 'status': 'not_executed', 'reason': '前序工具被拒绝、失败或待核验，后续操作未执行。'
             }, ensure_ascii=False)))
@@ -940,7 +944,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
                 batch_approvals[action_index] = accepted
                 if not accepted:
                     break
-        approval = True if tool_name == 'get_trade_operation' or is_v3_batch else interrupt(
+        approval = True if is_v3_batch else interrupt(
             {
                 "type": "tool_approval",
                 "tool_call_id": call["id"],
@@ -980,7 +984,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
                 except (ValueError, TypeError, AttributeError):
                     pass
             from backend.agent.tool_registry import uses_scoped_admission
-            stopped = stopped or (tool_name != 'get_trade_operation' and tool_result_status(result) in {'failed', 'unknown', 'pending'}
+            stopped = stopped or (tool_result_status(result) in {'failed', 'unknown', 'pending'}
                                   and not uses_scoped_admission(tool_name, config_id, tool_args))
         except Exception as exc:
             logger.error(f"Tool error ({tool_name}): {exc}")

@@ -21,7 +21,7 @@ Money = Decimal
 ZERO = Money('0')
 
 
-class PaperSettings(BaseModel):
+class StoredPaperSettings(BaseModel):
     model_config = ConfigDict(extra='forbid')
     enabled: bool = True
     initial_balance: float = Field(10000, ge=0, le=1e12, allow_inf_nan=False)
@@ -32,6 +32,11 @@ class PaperSettings(BaseModel):
     exchange: Literal['binance', 'okx', 'bitget', 'bybit'] = 'binance'
     bot_user_id: str = Field('bot:xiaojin-mengzhizi', pattern=r'^bot:[a-zA-Z0-9_.-]{1,80}$')
     bot_name: str = Field('小金萌智子', min_length=1, max_length=100)
+    venue_policy_version: Literal[1] = 1
+
+
+class PaperSettings(StoredPaperSettings):
+    exchange: Literal['binance'] = 'binance'
 
 
 class AccountUpdate(BaseModel):
@@ -54,7 +59,8 @@ class AccountUpdate(BaseModel):
 
 
 def settings() -> dict:
-    return PaperSettings.model_validate(store.get('paper_settings', 'global') or {}).model_dump()
+    raw = StoredPaperSettings.model_validate(store.get('paper_settings', 'global') or {}).model_dump()
+    return PaperSettings.model_validate({**raw, 'exchange': 'binance'}).model_dump()
 
 
 def identity(value: str, label='user_id') -> str:
@@ -93,61 +99,62 @@ def money(value) -> float:
 
 
 def _get(conn, namespace, user_id):
-    row = conn.execute('SELECT payload FROM paper_accounts WHERE namespace=? AND user_id=?', (namespace, user_id)).fetchone()
-    if not row:
+    from .paper_storage import one
+    account = one(conn, 'paper_accounts', 'payload', 'namespace=? AND user_id=?', (namespace, user_id), identity='paper account')
+    if account is None:
         raise ValueError('Paper account does not exist; call create_paper_account first')
-    return upgrade_account(conn, json.loads(row[0]))
+    return upgrade_account(conn, account)
 
 
 def _save(conn, account):
+    from .paper_storage import max_payload, PaperPayloadLimit
     account['updated_at'] = time.time()
+    encoded = json.dumps({k: v for k, v in account.items() if not k.startswith('_')}, allow_nan=False)
+    if len(encoded.encode('utf-8')) > max_payload():
+        raise PaperPayloadLimit('paper_payload_limit: complete account exceeds the financial write budget')
     conn.execute('INSERT INTO paper_accounts VALUES(?,?,?) ON CONFLICT(namespace,user_id) DO UPDATE SET payload=excluded.payload',
-                 (account['namespace'], account['user_id'], json.dumps(account, allow_nan=False)))
+                 (account['namespace'], account['user_id'], encoded))
 
 
 def upgrade_account(conn, account):
     if 'initial_capital' not in account:
-        row = conn.execute('SELECT result FROM paper_operations WHERE namespace=? AND user_id=? ORDER BY rowid LIMIT 1',
+        from .paper_storage import one, payload_page, history_limit
+        row = conn.execute('SELECT operation_id FROM paper_operations WHERE namespace=? AND user_id=? ORDER BY rowid LIMIT 1',
                            (account['namespace'], account['user_id'])).fetchone()
-        original = json.loads(row[0]).get('account', {}) if row else {}
-        account['initial_capital'] = original.get('cash', settings()['initial_balance'])
+        original = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+                       (account['namespace'], account['user_id'], row[0]), identity='initial capital evidence') if row else None
+        account['initial_capital'] = (original or {}).get('account', {}).get('cash')
         # Historical admin adjustments are funding, not trading performance.
-        capital = Money(str(account['initial_capital']))
+        capital = Money(str(account['initial_capital'])) if account['initial_capital'] is not None else None
         old_cash, old_debt = account['initial_capital'], 0
-        for event in conn.execute('SELECT kind,payload,operation_id FROM paper_events WHERE namespace=? AND user_id=? ORDER BY id', (account['namespace'], account['user_id'])):
-            data = json.loads(event['payload'])
-            if event['kind'] == 'admin_adjustment':
+        events, progress = payload_page(conn, 'paper_events', 'namespace=? AND user_id=?',
+                                        (account['namespace'], account['user_id']), count=history_limit())
+        for event in events:
+            data = event['payload']
+            if event['kind'] == 'admin_adjustment' and capital is not None and old_cash is not None:
                 capital += Money(str(data.get('cash', old_cash))) - Money(str(old_cash))
                 capital -= Money(str(data.get('debt', old_debt))) - Money(str(old_debt))
             # New events contain cash/debt after each mutation for future audits.
             old_cash, old_debt = data.get('cash_after', data.get('cash', old_cash)), data.get('debt_after', data.get('debt', old_debt))
             if event['operation_id']:
-                receipt = conn.execute('SELECT result FROM paper_operations WHERE namespace=? AND user_id=? AND operation_id=?',
-                                       (account['namespace'], account['user_id'], event['operation_id'])).fetchone()
+                receipt = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+                              (account['namespace'], account['user_id'], event['operation_id']), identity='capital receipt')
                 if receipt:
-                    recorded = json.loads(receipt[0]).get('account', {})
+                    recorded = receipt.get('account', {})
                     old_cash, old_debt = recorded.get('cash', old_cash), recorded.get('debt', old_debt)
-        account['competition_capital'] = money(capital)
+        account['competition_capital'] = money(capital) if capital is not None and progress['status'] == 'complete' else None
     account.setdefault('competition_capital', account['initial_capital'])
     account.setdefault('account_type', 'bot' if account['user_id'].startswith('bot:') else 'user')
     account.setdefault('leaderboard_visible', True)
     account.setdefault('notifications_enabled', True)
     account.setdefault('reserved_cash', 0)
-    missing_source = any('exchange' not in p for p in [*account['spot'].values(), *account['positions'].values()])
-    default_exchange = settings()['exchange'] if missing_source else None
-    sources = {}
-    if missing_source:
-        for row in conn.execute('SELECT payload FROM paper_events WHERE namespace=? AND user_id=? ORDER BY id', (account['namespace'], account['user_id'])):
-            fill = json.loads(row[0]).get('fill', {})
-            if fill.get('exchange') and fill.get('symbol'):
-                sources[(fill.get('market_type'), fill['symbol'])] = fill['exchange']
-    for key, holding in account['spot'].items():
-        holding.setdefault('symbol', key)
-        holding.setdefault('exchange', sources.get(('spot', holding['symbol']), default_exchange))
-        holding.setdefault('cycle_id', store.digest(account['namespace'] + ':' + account['user_id'] + ':' + key + ':' + str(account['created_at']))[:24])
-    for position in account['positions'].values():
-        position.setdefault('exchange', sources.get(('swap', position['symbol']), default_exchange))
-        position.setdefault('cycle_id', store.digest(account['namespace'] + ':' + account['user_id'] + ':' + position['symbol'] + ':' + position['side'] + ':' + str(account['created_at']))[:24])
+    # Source proof is additive and separate from legacy fields, which may have
+    # been filled by a previous upgrade. Never infer a venue or cycle here.
+    from .paper_policy import account_facts, persist_origin
+    facts = account_facts(account, conn)
+    account['_venue_origins'] = {kind + ':' + key: fact for (kind, key), fact in facts.items()}
+    for (kind, key), fact in facts.items():
+        persist_origin(conn, account, kind, key, account[kind][key], fact)
     return account
 
 
@@ -161,7 +168,7 @@ def _receipt(conn, namespace, user_id, operation_id, request):
     if not re.fullmatch(r'[a-zA-Z0-9_.:-]{8,160}', operation_id):
         raise ValueError('operation_id must be a stable 8–160 character identifier')
     fingerprint = store.digest(json.dumps(request, sort_keys=True, separators=(',', ':'), allow_nan=False))
-    row = conn.execute('SELECT fingerprint,result FROM paper_operations WHERE namespace=? AND user_id=? AND operation_id=?',
+    row = conn.execute('SELECT fingerprint FROM paper_operations WHERE namespace=? AND user_id=? AND operation_id=?',
                        (namespace, user_id, operation_id)).fetchone()
     if row and row['fingerprint'] != fingerprint:
         raise ValueError('operation_id was already used for a different paper request')
@@ -178,11 +185,15 @@ def _receipt(conn, namespace, user_id, operation_id, request):
             current = _step.get()
             if current is None or current[:4] != (namespace, user_id, reserved['parent_operation_id'], reserved['action_index']):
                 raise ValueError('operation_id belongs to a reserved paper batch child')
-    return fingerprint, json.loads(row['result']) if row else None
+    from .paper_storage import one
+    previous = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+                   (namespace, user_id, operation_id), identity='original paper receipt') if row else None
+    return fingerprint, previous
 
 
 def _write(caller, user_id, operation_id, request, change):
     namespace = require(caller, 'trade')
+    require(caller, 'read')
     identity(user_id)
     with store.connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -195,10 +206,20 @@ def _write(caller, user_id, operation_id, request, change):
         details = change(account, conn)
         refresh_reservations(conn, account)
         _save(conn, account)
-        result = {'status': 'completed', 'paper': True, 'operation_id': operation_id,
-                  'account': snapshot(account), **details}
+        accepted_orders = ([details['order']] if details.get('order') else details.get('orders', []))
+        accepted = request['action'] in {'place_order', 'set_protection'} and any(order.get('state') == 'open' for order in accepted_orders)
+        result = {'status': 'submitted' if accepted else 'completed', 'paper': True, 'operation_id': operation_id,
+                  'account': snapshot(account, project=False), **details}
+        if accepted and any(order.get('order_type') in {'stop_loss', 'take_profit'} for order in accepted_orders):
+            result.update(order_status='waiting_trigger', filled_amount=0)
+        from .paper_storage import max_payload, PaperPayloadLimit
+        encoded = json.dumps(result, allow_nan=False)
+        if len(encoded.encode('utf-8')) > max_payload():
+            raise PaperPayloadLimit('paper_payload_limit: complete receipt exceeds the financial write budget')
         conn.execute('INSERT INTO paper_operations VALUES(?,?,?,?,?,?)',
-                     (namespace, user_id, operation_id, fingerprint, caller['id'], json.dumps(result, allow_nan=False)))
+                     (namespace, user_id, operation_id, fingerprint, caller['id'], encoded))
+        from .paper_storage import receipt_revision
+        receipt_revision(conn, namespace, user_id, operation_id, encoded)
         _event(conn, account, request['action'], details, operation_id)
         # A batch child and its parent progress share this account commit.
         from .paper_batch import record_child_commit
@@ -209,6 +230,7 @@ def _write(caller, user_id, operation_id, request, change):
 
 def create_account(caller, user_id: str, operation_id: str, name: str = '') -> dict:
     namespace = require(caller, 'trade')
+    require(caller, 'read')
     identity(user_id)
     if len(name) > 100:
         raise ValueError('Name is too long')
@@ -219,8 +241,9 @@ def create_account(caller, user_id: str, operation_id: str, name: str = '') -> d
         fingerprint, previous = _receipt(conn, namespace, user_id, operation_id, request)
         if previous is not None:
             return previous
-        row = conn.execute('SELECT payload FROM paper_accounts WHERE namespace=? AND user_id=?', (namespace, user_id)).fetchone()
-        account = json.loads(row[0]) if row else {
+        from .paper_storage import one
+        existing = one(conn, 'paper_accounts', 'payload', 'namespace=? AND user_id=?', (namespace, user_id), identity='paper account')
+        account = existing if existing is not None else {
             'namespace': namespace, 'user_id': user_id, 'name': name or user_id,
             'cash': money(cfg['initial_balance']), 'debt': 0, 'loan_limit': money(cfg['loan_limit']), 'leverage': 1,
             'markets': ['spot', 'swap'], 'enabled': True, 'spot': {}, 'positions': {},
@@ -231,15 +254,15 @@ def create_account(caller, user_id: str, operation_id: str, name: str = '') -> d
         }
         upgrade_account(conn, account)
         _save(conn, account)
-        result = {'status': 'completed', 'paper': True, 'created': not bool(row), 'operation_id': operation_id, 'account': snapshot(account)}
+        result = {'status': 'completed', 'paper': True, 'created': existing is None, 'operation_id': operation_id, 'account': snapshot(account, project=False)}
         conn.execute('INSERT INTO paper_operations VALUES(?,?,?,?,?,?)',
                      (namespace, user_id, operation_id, fingerprint, caller['id'], json.dumps(result, allow_nan=False)))
-        _event(conn, account, 'create', {'created': not bool(row)}, operation_id)
+        _event(conn, account, 'create', {'created': existing is None}, operation_id)
         conn.commit()
     return result
 
 
-def snapshot(account: dict) -> dict:
+def snapshot(account: dict, *, project=True, conn=None) -> dict:
     used = sum((number(p['margin']) for p in account['positions'].values()), ZERO)
     pnl = ZERO
     positions = []
@@ -256,44 +279,121 @@ def snapshot(account: dict) -> dict:
         spot.append({'symbol': holding.get('symbol', symbol), **holding, 'market_value': money(value)})
     equity = number(account['cash']) + used + pnl + spot_value
     observed = [p.get('marked_at') for p in [*positions, *spot]]
-    return {**account, 'spot': spot, 'positions': positions, 'currency': 'USDT', 'paper': True,
+    result = {**{k: v for k, v in account.items() if not k.startswith('_')}, 'spot': spot, 'positions': positions, 'currency': 'USDT', 'paper': True,
             'used_margin': money(used), 'unrealized_pnl': money(pnl), 'equity': money(equity),
             'net_equity': money(equity - number(account['debt'])),
             'available_cash': money(max(number(account['cash']) - number(account.get('reserved_cash', 0)), ZERO)),
             'execution_mode': 'paper', 'market_data_mode': 'live_public',
-            'performance_pnl': money(equity - number(account['debt']) - Money(str(account.get('competition_capital', account.get('initial_capital', 0))))),
+            'performance_pnl': money(equity - number(account['debt']) - Money(str(account['competition_capital']))) if account.get('competition_capital') is not None else None,
             'valuation_status': 'last_observed' if all(observed) else 'entry_prices',
             'oldest_mark_at': min(observed) if observed and all(observed) else None}
+    if not project:
+        return result
+    from .paper_policy import account_facts, classify
+    facts = account_facts(account, conn)
+    excluded = dict(spot=0, positions=0, orders=0)
+    unresolved = dict(spot=0, positions=0, orders=0)
+    retained_margin, retained_cash = ZERO, ZERO
+    reasons = set()
+    if account.get('competition_capital') is None:
+        reasons.add('paper_capital_unverified')
+    for (kind, key), fact in facts.items():
+        state = fact['classification']
+        if state == 'binance':
+            continue
+        (excluded if state == 'excluded_venue' else unresolved)[kind] += 1
+        reasons.add(state)
+        if kind == 'positions':
+            retained_margin += number(account[kind][key]['margin'])
+    result['spot'] = [item for key, item in zip(account['spot'], spot) if facts[('spot', key)]['classification'] == 'binance']
+    result['positions'] = [item for key, item in zip(account['positions'], positions) if facts[('positions', key)]['classification'] == 'binance']
+    if conn is not None:
+        from .paper_orders import rows
+        for order in rows(conn, account['namespace'], account['user_id']):
+            fact = classify(order, account=account, conn=conn)
+            if fact['classification'] != 'binance':
+                (excluded if fact['classification'] == 'excluded_venue' else unresolved)['orders'] += 1
+                retained_cash += number(order.get('reserved_cash', 0))
+                reasons.add(fact['classification'])
+        from .paper_policy import performance_complete
+        complete, reason = performance_complete(conn, account)
+        if not complete:
+            reasons.add(reason)
+    result['filter'] = {'exchange': 'binance', 'excluded_resources': excluded, 'unresolved_resources': unresolved,
+                        'retained_reserved_cash': money(retained_cash), 'retained_margin': money(retained_margin)}
+    result['completeness'] = {'ledger': 'complete', 'valuation': 'incomplete' if reasons else 'complete',
+                              'reason_codes': sorted(reasons)}
+    if reasons:
+        result.update(equity=None, net_equity=None, unrealized_pnl=None, performance_pnl=None, valuation_status='incomplete')
+    return result
 
 
 def get_account(caller, user_id):
     namespace = require(caller)
     identity(user_id)
     with store.connection() as conn:
-        return snapshot(_get(conn, namespace, user_id))
+        result = snapshot(_get(conn, namespace, user_id), conn=conn)
+        conn.commit()  # Only additive policy/evidence projections were written.
+        return result
 
 
 def history(caller, user_id, limit=50):
+    return history_page(caller, user_id, limit=limit)['items']
+
+
+def history_page(caller, user_id, limit=50, offset=0, *, cursor=None, record_type='history', symbol=None, detail=False):
     namespace = require(caller)
     identity(user_id)
-    if isinstance(limit, bool) or not 1 <= limit <= 200:
-        raise ValueError('limit must be 1–200')
+    if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
+        raise ValueError('Invalid history page')
+    from .paper_storage import decode, history_limit, max_payload, blob_size, read_blob
+    from .paper_policy import event_visible
+    clauses, params = ['namespace=?', 'user_id=?'], [namespace, user_id]
+    if cursor is not None:
+        if type(cursor) is not int or cursor < 0:
+            raise ValueError('Invalid history cursor')
+        clauses.append('id<?')
+        params.append(cursor)
+    count = min(limit, history_limit())
     with store.connection() as conn:
-        _get(conn, namespace, user_id)
-        rows = conn.execute('SELECT * FROM paper_events WHERE namespace=? AND user_id=? ORDER BY id DESC LIMIT ?',
-                            (namespace, user_id, limit)).fetchall()
-    return [{**dict(r), 'payload': json.loads(r['payload'])} for r in rows]
+        if not conn.execute('SELECT 1 FROM paper_accounts WHERE namespace=? AND user_id=?', (namespace, user_id)).fetchone():
+            raise ValueError('Paper account does not exist')
+        metadata = conn.execute('SELECT id FROM paper_events WHERE ' +
+                                ' AND '.join(clauses) + ' ORDER BY id DESC LIMIT ? OFFSET ?', (*params, count + 1, offset)).fetchall()
+        items, omitted = [], 0
+        for row in metadata[:count]:
+            if blob_size(conn, 'paper_events', 'payload', row['id']) > max_payload():
+                omitted += 1
+                continue
+            event = dict(conn.execute('SELECT id,namespace,user_id,timestamp,kind,operation_id FROM paper_events WHERE id=?', (row['id'],)).fetchone())
+            event['payload'] = decode(read_blob(conn, 'paper_events', 'payload', row['id']), identity='paper history event')
+            if not event_visible(event, conn=conn, account={'namespace': namespace, 'user_id': user_id}):
+                omitted += 1
+                continue
+            payload = event['payload']
+            if record_type == 'fills' and not payload.get('fill'):
+                continue
+            if symbol and payload.get('symbol') != symbol and (payload.get('fill') or {}).get('symbol') != symbol:
+                continue
+            items.append(event)
+        conn.commit()
+    scanned = min(len(metadata), count)
+    return {'items': items, 'record_type': record_type, 'has_more': len(metadata) > count,
+            'next_cursor': metadata[scanned - 1]['id'] if scanned else cursor,
+            'next_offset': offset + scanned, 'filtered_count': omitted, 'scan_complete': len(metadata) <= count,
+            'status': 'partial' if len(metadata) > count or omitted else 'complete', 'execution_mode': 'paper'}
 
 
 def operation(caller, user_id, operation_id):
     namespace = require(caller)
     identity(user_id)
     with store.connection() as conn:
-        row = conn.execute('SELECT result FROM paper_operations WHERE namespace=? AND user_id=? AND operation_id=?',
-                           (namespace, user_id, operation_id)).fetchone()
-    if not row:
+        from .paper_storage import one
+        result = one(conn, 'paper_operations', 'result', 'namespace=? AND user_id=? AND operation_id=?',
+                     (namespace, user_id, operation_id), identity='original paper audit')
+    if result is None:
         raise ValueError('Paper operation not found')
-    return json.loads(row[0])
+    return result
 
 
 def bank(caller, user_id, action, amount, operation_id):
@@ -337,17 +437,23 @@ def set_leverage(caller, user_id, leverage, operation_id):
 
 def market(symbol: str, market_type='swap', timeframe='1h', limit=120, *, candles=True, exchange_name=None) -> dict:
     from .paper_market import quote
-    return quote(symbol, market_type, timeframe, limit, candles=candles, exchange_name=exchange_name)
+    from .paper_policy import venue
+    return quote(symbol, market_type, timeframe, limit, candles=candles, exchange_name=venue(exchange_name))
 
 
 def _mark(account, quotes, conn, cfg):
+    from .paper_policy import visible
     for symbol, holding in account['spot'].items():
+        if not visible(holding, account=account, kind='spot', key=symbol, conn=conn):
+            continue
         quote = quotes.get(('spot', holding.get('symbol', symbol)))
         if quote and holding.get('exchange') and quote.get('exchange') != holding['exchange']:
             continue
         if quote:
             holding.update(mark_price=quote['price'], marked_at=quote['observed_at'])
     for key, p in list(account['positions'].items()):
+        if not visible(p, account=account, kind='positions', key=key, conn=conn):
+            continue
         quote = quotes.get(('swap', p['symbol']))
         if quote and p.get('exchange') and quote.get('exchange') != p['exchange']:
             continue
@@ -369,10 +475,13 @@ def _mark(account, quotes, conn, cfg):
             account['realized_pnl'] = money(Money(str(account['realized_pnl'])) + realized)
             del account['positions'][key]
             _event(conn, account, 'liquidation', {'symbol': p['symbol'], 'exchange': p.get('exchange'), 'side': p['side'], 'amount': p['amount'],
+                                               'origin_version': 1, 'resource_id': p.get('resource_id'), 'cycle_id': p.get('cycle_id'),
                                                'price': money(mark), 'realized_pnl': money(realized), 'fee': money(fee)})
 
 
 def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, leverage=None):
+    from .paper_policy import stamp, venue
+    venue(quote['exchange'])
     if action in {'buy', 'open_long', 'open_short'} and (not account['enabled'] or market_type not in account['markets']):
         raise ValueError('Paper account or requested market is disabled')
     if time.time() - quote['observed_at'] > 15:
@@ -387,10 +496,11 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
     cash = number(account['cash'])
     available = cash - number(account.get('reserved_cash', 0))
     realized = ZERO
+    resource_identity = {}
     if market_type == 'spot':
         from .paper_orders import exposure
         holding_key, holding = exposure(account, 'spot', canonical, None, quote['exchange'])
-        holding_key = holding_key or (canonical if canonical not in account['spot'] else quote['exchange'] + '|' + canonical)
+        holding_key = holding_key or (canonical if canonical not in account['spot'] else 'binance|' + canonical + '|' + uuid.uuid4().hex)
         old_amount = number(holding['amount']) if holding else ZERO
         if action == 'buy':
             if notional + fee > available:
@@ -400,8 +510,12 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
                                           'cycle_id': holding.get('cycle_id') if holding else uuid.uuid4().hex,
                                           'amount': float(old_amount + amount), 'entry_price': money(cost / (old_amount + amount)),
                                           'mark_price': quote['price'], 'marked_at': quote['observed_at']}
+            stamp(account['spot'][holding_key], operation_id=(holding or {}).get('origin_operation_id'),
+                  resource_id=(holding or {}).get('resource_id'))
+            resource_identity = account['spot'][holding_key]
             cash -= notional + fee
         else:
+            resource_identity = dict(holding or {})
             if amount > old_amount - number(account.get('reserved_spot', {}).get(holding_key, 0)):
                 raise ValueError('Insufficient paper spot holdings')
             realized = (price - number(holding['entry_price'])) * amount - fee
@@ -414,7 +528,9 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
         side = 'LONG' if action.endswith('long') else 'SHORT'
         from .paper_orders import exposure
         key, p = exposure(account, 'swap', canonical, side, quote['exchange'])
-        key = key or quote['exchange'] + '|' + canonical + '|' + side
+        if key is None:
+            candidate = 'binance|' + canonical + '|' + side
+            key = candidate if candidate not in account['positions'] else candidate + '|' + uuid.uuid4().hex
         if action.startswith('open'):
             lev = leverage if leverage is not None else account['leverage']
             if lev > cfg['max_leverage']:
@@ -432,8 +548,12 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
                                          'cycle_id': p.get('cycle_id') if p else uuid.uuid4().hex, 'amount': float(old_amount + amount),
                                          'entry_price': money(entry), 'margin': money((number(p['margin']) if p else ZERO) + margin),
                                          'leverage': lev, 'mark_price': quote['price'], 'marked_at': quote['observed_at']}
+            stamp(account['positions'][key], operation_id=(p or {}).get('origin_operation_id'),
+                  resource_id=(p or {}).get('resource_id'))
+            resource_identity = account['positions'][key]
             cash -= margin + fee
         else:
+            resource_identity = dict(p or {})
             if not p or amount > number(p['amount']):
                 raise ValueError('Paper close exceeds the open position (it may have liquidated)')
             old_amount = number(p['amount'])
@@ -453,7 +573,8 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
     cleanup_orders(conn, account)
     return {'fill': {'market_type': market_type, 'symbol': canonical, 'action': action, 'amount': float(amount),
                      'price': money(price), 'fee': money(fee), 'realized_pnl': money(realized),
-                     'observed_at': quote['observed_at'], 'exchange': quote['exchange']}}
+                     'observed_at': quote['observed_at'], 'exchange': quote['exchange'], 'origin_version': 1,
+                     'cycle_id': resource_identity.get('cycle_id'), 'resource_id': resource_identity.get('resource_id')}}
 
 
 def trade(caller, user_id, market_type, symbol, action, amount, operation_id, leverage=None,
@@ -464,7 +585,7 @@ def trade(caller, user_id, market_type, symbol, action, amount, operation_id, le
                           stop_loss=stop_loss, take_profit=take_profit)
 
 
-def admin_accounts(namespace=None, user_id=None, limit=100, offset=0):
+def admin_accounts(namespace=None, user_id=None, limit=100, offset=0, *, cursor=None):
     if not 1 <= limit <= 200 or offset < 0:
         raise ValueError('Invalid pagination')
     clauses, params = [], []
@@ -472,11 +593,23 @@ def admin_accounts(namespace=None, user_id=None, limit=100, offset=0):
         if value:
             clauses.append(column + '=?')
             params.append(identity(value, column))
-    where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+    where = ' AND '.join(clauses) if clauses else '1=1'
     with store.connection() as conn:
-        count = conn.execute('SELECT COUNT(*) FROM paper_accounts' + where, params).fetchone()[0]
-        rows = conn.execute('SELECT payload FROM paper_accounts' + where + ' ORDER BY namespace,user_id LIMIT ? OFFSET ?', [*params, limit, offset]).fetchall()
-    return {'items': [snapshot(json.loads(r[0])) for r in rows], 'total': count, 'limit': limit, 'offset': offset}
+        from .paper_storage import payload_page, PaperPayloadLimit
+        count = conn.execute('SELECT COUNT(*) FROM paper_accounts WHERE ' + where, params).fetchone()[0]
+        if cursor is None and offset:
+            prior = conn.execute('SELECT rowid FROM paper_accounts WHERE ' + where + ' ORDER BY namespace,user_id LIMIT 1 OFFSET ?', [*params, offset - 1]).fetchone()
+            cursor = prior[0] if prior else conn.execute('SELECT COALESCE(MAX(rowid),0) FROM paper_accounts').fetchone()[0]
+        records, progress = payload_page(conn, 'paper_accounts', where, params, cursor=cursor or 0, count=limit, order_by=('namespace', 'user_id'))
+        items = []
+        for row in records:
+            try:
+                items.append(snapshot(upgrade_account(conn, row['payload']), conn=conn))
+            except PaperPayloadLimit:
+                progress['skipped_records'].append({'scan_id': row['scan_id'], 'reason_code': 'paper_payload_limit'})
+                progress['status'] = 'partial'
+        conn.commit()
+    return {'items': items, 'total': count, 'limit': limit, 'offset': offset, **progress}
 
 
 def admin_update(namespace, user_id, payload: AccountUpdate):
@@ -493,70 +626,166 @@ def admin_update(namespace, user_id, payload: AccountUpdate):
         account = _get(conn, namespace, user_id)
         funding = Money(str(updates.get('cash', account['cash']))) - Money(str(account['cash']))
         funding -= Money(str(updates.get('debt', account['debt']))) - Money(str(account['debt']))
-        account['competition_capital'] = money(Money(str(account['competition_capital'])) + funding)
+        if account['competition_capital'] is not None:
+            account['competition_capital'] = money(Money(str(account['competition_capital'])) + funding)
         account.update(updates)
         _save(conn, account)
         _event(conn, account, 'admin_adjustment', updates)
         conn.commit()
-    return snapshot(account)
+    with store.connection() as conn:
+        return snapshot(account, conn=conn)
+
+
+def maintenance_plan(*, max_items=None, max_accounts=None):
+    """Stable cursor includes position within a large account's instrument set."""
+    from .paper_storage import batch_size, max_payload, decode, PaperPayloadLimit, blob_size, read_blob
+    from .paper_policy import visible
+    from .paper_orders import rows
+    item_limit = min(batch_size(), max_items if max_items is not None else batch_size())
+    account_limit = min(batch_size(), max_accounts if max_accounts is not None else batch_size())
+    if type(item_limit) is not int or type(account_limit) is not int or min(item_limit, account_limit) < 1:
+        raise ValueError('Paper maintenance page limits must be positive integers')
+    if not settings()['enabled']:
+        return {'items': [], 'scan_complete': True, 'next_cursor': None}
+    with store.connection() as conn:
+        saved = conn.execute("SELECT cursor,payload FROM paper_scan_progress WHERE worker='maintenance'").fetchone()
+        cursor, offset = (saved['cursor'], json.loads(saved['payload']).get('offset', 0)) if saved else (0, 0)
+        metadata = conn.execute('SELECT rowid,namespace,user_id FROM paper_accounts WHERE rowid>=? ORDER BY rowid LIMIT ?',
+                                (cursor or 1, account_limit + 1)).fetchall()
+        plan, scanned, skipped = [], 0, []
+        for row in metadata[:account_limit]:
+            if blob_size(conn, 'paper_accounts', 'payload', row['rowid']) > max_payload():
+                skipped.append(row['rowid'])
+                cursor, offset = row['rowid'] + 1, 0
+                scanned += 1
+                continue
+            try:
+                account = upgrade_account(conn, decode(read_blob(conn, 'paper_accounts', 'payload', row['rowid'])))
+                targets = {('spot' if kind == 'spot' else 'swap', item.get('symbol', key), 'binance')
+                           for kind in ('spot', 'positions') for key, item in account[kind].items()
+                           if visible(item, account=account, kind=kind, key=key, conn=conn)}
+                targets |= {(order['market_type'], order['symbol'], 'binance') for order in rows(conn, account['namespace'], account['user_id'])
+                            if visible(order, account=account, conn=conn)}
+            except PaperPayloadLimit:
+                skipped.append(row['rowid'])
+                cursor, offset = row['rowid'] + 1, 0
+                scanned += 1
+                continue
+            targets = sorted(targets)
+            start = offset if row['rowid'] == cursor else 0
+            selected = targets[start:start + item_limit - len(plan)]
+            plan.extend({'namespace': row['namespace'], 'user_id': row['user_id'], 'market_type': item[0], 'symbol': item[1], 'exchange': 'binance'} for item in selected)
+            consumed = start + len(selected)
+            cursor, offset = (row['rowid'], consumed) if consumed < len(targets) else (row['rowid'] + 1, 0)
+            scanned += 1
+            if len(plan) >= item_limit:
+                break
+        last = conn.execute('SELECT COALESCE(MAX(rowid),0) FROM paper_accounts').fetchone()[0]
+        complete = cursor > last or not metadata
+        next_cursor = None if complete else {'account_rowid': cursor, 'instrument_offset': offset}
+        conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor,payload=excluded.payload',
+                     ('maintenance', 0 if complete else cursor, json.dumps({'offset': 0 if complete else offset})))
+        conn.commit()
+    return {'items': plan, 'scan_complete': complete, 'next_cursor': next_cursor, 'skipped_records': skipped,
+            'scanned_accounts': scanned, 'status': 'partial' if not complete or skipped else 'complete'}
 
 
 def instruments():
     cfg = settings()
     if not cfg['enabled']:
         return []
-    with store.connection() as conn:
-        accounts = [json.loads(r[0]) for r in conn.execute('SELECT payload FROM paper_accounts')]
-    result = {('spot', h.get('symbol', symbol), h.get('exchange', cfg['exchange'])) for a in accounts for symbol, h in a['spot'].items()}
-    result |= {('swap', p['symbol'], p.get('exchange', cfg['exchange'])) for a in accounts for p in a['positions'].values()}
-    with store.connection() as conn:
-        for row in conn.execute("SELECT payload FROM paper_orders WHERE state='open'"):
-            order = json.loads(row[0])
-            result.add((order['market_type'], order['symbol'], order['exchange']))
-    return sorted(result)
+    return sorted({(item['market_type'], item['symbol'], item['exchange']) for item in maintenance_plan()['items']})
 
 
-def reconcile_instrument(market_type, symbol, exchange_name=None):
+def reconcile_instrument(market_type, symbol, exchange_name=None, *, namespace=None, user_id=None, cursor=0):
     if not settings()['enabled']:
         return
     from .paper_orders import get_quote, match
-    quote = get_quote(symbol, market_type, exchange_name)
+    from .paper_policy import venue
+    quote = get_quote(symbol, market_type, venue(exchange_name))
     cfg = settings()
     with store.connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        accounts = [upgrade_account(conn, json.loads(r[0])) for r in conn.execute('SELECT payload FROM paper_accounts')]
-        for account in accounts:
+        from .paper_storage import payload_page
+        where, params = ('namespace=? AND user_id=?', (namespace, user_id)) if namespace is not None else ('1=1', ())
+        accounts, progress = payload_page(conn, 'paper_accounts', where, params, cursor=cursor)
+        for record in accounts:
+            account = upgrade_account(conn, record['payload'])
             _mark(account, {(market_type, symbol): quote}, conn, cfg)
             match(conn, account, market_type, symbol, quote, cfg)
             _save(conn, account)
         conn.commit()
+    return progress
 
 
 def reconcile():
     """Synchronous maintenance entry point for isolated validation and operations."""
-    for market_type, symbol, exchange_name in instruments():
+    from .paper_storage import batch_size, limit
+    from .resilience import Budget, current_budget
+    deadline = time.monotonic() + limit('PAPER_MAINTENANCE_SECONDS', 30)
+    parent = current_budget.get()
+    if parent is not None:
+        deadline = min(deadline, parent.deadline)
+    token = current_budget.set(Budget(deadline, uuid.uuid4().hex, 'execute'))
+    scanned, processed = 0, 0
+    try:
+        while time.monotonic() < deadline and scanned < batch_size() and processed < batch_size():
+            plan = maintenance_plan(max_items=1, max_accounts=batch_size() - scanned)
+            scanned += plan.get('scanned_accounts', 0)
+            if not plan['items']:
+                break
+            item = plan['items'][0]
+            try:
+                reconcile_instrument(item['market_type'], item['symbol'], item['exchange'], namespace=item['namespace'], user_id=item['user_id'])
+            except Exception as exc:
+                logger.warning('paper_mark_failed market=%s symbol=%s type=%s', item['market_type'], item['symbol'], type(exc).__name__)
+            processed += 1
+            if plan['scan_complete']:
+                break
+    finally:
+        current_budget.reset(token)
+
+
+async def maintenance_round(stop: asyncio.Event):
+    """Every planned item advances durable progress; no unattempted page tail."""
+    from .paper_storage import recover_receipts, batch_size, limit
+    from .paper_batch import recover_pending
+    deadline = time.monotonic() + limit('PAPER_MAINTENANCE_SECONDS', 30)
+    await run('recovery', recover_receipts, label='paper_receipt_updates', deadline=deadline)
+    await run('recovery', recover_pending, label='paper_recovery', deadline=deadline)
+    scanned, processed = 0, 0
+    while not stop.is_set() and time.monotonic() < deadline and scanned < batch_size() and processed < batch_size():
+        plan = await run('read', partial(maintenance_plan, max_items=1, max_accounts=batch_size() - scanned),
+                         label='paper_instruments', deadline=deadline)
+        scanned += plan.get('scanned_accounts', 0)
+        if not plan['items']:
+            break
+        item = plan['items'][0]
         try:
-            reconcile_instrument(market_type, symbol, exchange_name)
+            await run('execute', partial(reconcile_instrument, item['market_type'], item['symbol'], item['exchange'],
+                                         namespace=item['namespace'], user_id=item['user_id']),
+                      label='paper_maintenance', deadline=deadline)
         except Exception as exc:
-            logger.warning('paper_mark_failed market=%s symbol=%s type=%s', market_type, symbol, type(exc).__name__)
+            logger.warning('paper_mark_failed market=%s symbol=%s type=%s', item['market_type'], item['symbol'], type(exc).__name__)
+        processed += 1
+        if plan['scan_complete']:
+            break
+    return {'processed_instruments': processed, 'scanned_accounts': scanned}
 
 
 async def maintenance(stop: asyncio.Event):
     while not stop.is_set():
         try:
-            symbols = await run('read', instruments, label='paper_instruments')
-            for market_type, symbol, exchange_name in symbols:
-                if stop.is_set():
-                    break
-                try:
-                    # Each instrument has a fresh bounded budget, so an outage on
-                    # one market cannot starve liquidation checks on later ones.
-                    await run('execute', partial(reconcile_instrument, market_type, symbol, exchange_name), label='paper_maintenance')
-                except Exception as exc:
-                    logger.warning('paper_mark_failed market=%s symbol=%s type=%s', market_type, symbol, type(exc).__name__)
+            await maintenance_round(stop)
         except Exception as exc:
             logger.warning('paper_maintenance_failed type=%s', type(exc).__name__)
         try:
             await asyncio.wait_for(stop.wait(), timeout=15)
         except asyncio.TimeoutError:
             pass
+
+
+from .paper_storage import bounded as _bounded
+for _name in ('_write', 'create_account', 'get_account', 'history_page', 'admin_accounts', 'admin_update', 'maintenance_plan', 'reconcile_instrument'):
+    globals()[_name] = _bounded(globals()[_name])
+operation = _bounded(operation, critical=True)

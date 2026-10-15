@@ -114,7 +114,7 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [] }) {
       </div>)}{!data.keys?.length && <Empty description={label('尚未创建 API Key', 'No API keys yet')} />}</div>
     </Card>
 
-    <Card className="panel-card" title={label('可用工具', 'Available tools')}><Space wrap>{(data.tools || []).map((tool) => <Tag key={tool.name}>{tool.name} · {tool.scope}</Tag>)}</Space><Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>{label('交易请求必须携带稳定 operation_id；同一请求重试返回原回执。查询不会执行交易。结果未知时请先核验订单。', 'Trade requests require a stable operation_id; retries return the original receipt. Queries never trade. Inspect orders after an unknown outcome.')}</Paragraph></Card>
+    <Card className="panel-card" title={label('可用工具', 'Available tools')}><Space wrap>{(data.tools || []).map((tool) => <Tag key={tool.name}>{tool.name} · {tool.scope}</Tag>)}</Space><Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>{label('交易请求必须携带稳定 operation_id；同一请求重试返回原回执。已受理或结果未知的原订单由系统后台核验并更新状态。', 'Trade requests require a stable operation_id; retries return the original receipt. The system verifies accepted or unresolved original orders in the background and updates their status.')}</Paragraph></Card>
     <Card className="panel-card" title={label('最近调用', 'Recent calls')}><Table size="small" rowKey="id" dataSource={data.audit || []} pagination={{ pageSize: 8 }} scroll={{ x: 680 }} columns={[
       { title: label('时间', 'Time'), dataIndex: 'timestamp', render: (value) => new Date(value * 1000).toLocaleString() },
       { title: label('工具', 'Tool'), dataIndex: 'tool' }, { title: label('配置', 'Profile'), dataIndex: 'profile_id' },

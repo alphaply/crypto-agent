@@ -223,82 +223,51 @@
 - **WHEN** 普通 LIMIT 改单被交易所明确拒绝
 - **THEN** edit 返回 failed 和拒绝原因，同时保留原订单的已知状态；不把原单视作撤销或把该拒绝标为未知
 
-### Requirement: Callers can query an original operation without trading writes
-内置 Agent 和聊天 SHALL 提供按原操作 ID 查询的工具，MCP SHALL 提供相同行为的操作查询。查询 SHALL 检查任务、账户、标的及调用者归属，可刷新交易所只读证据和本地回执；不得新建、撤销、修改订单或恢复撤建写入。前序交易失败或待核验 SHALL 不阻止合法恢复查询，查询失败不得覆盖已有执行事实。查询不存在或不属于当前调用者的操作 ID 时，系统 SHALL 返回结构化的未找到结果，不得抛出未捕获异常或协议错误。查询 SHALL 分别表达此次读取的成功/部分成功/失败与原操作的执行结果，并标识当前准入建议的证据范围和新鲜度。查询或本地投影生成时间 SHALL 与实际证据观察时间区分；仅重组本地缓存不得宣称已刷新交易所证据。原操作查询是按需能力，SHALL NOT 成为每轮决策的必经步骤。
-
-#### Scenario: Agent checks the original close
-- **WHEN** Agent 收到待核验回执后以其原操作 ID 发起查询
-- **THEN** 返回本次平仓、阻塞订单、持仓和清理的最新可核验结果，不要求发起第二个 close，也不要求生成新的交易操作 ID
-
-#### Scenario: Query after a failed tool in one model turn
-- **WHEN** 同一轮先发生交易失败或待核验，之后调用只读操作查询
-- **THEN** 查询仍可执行；被中止的交易项不会因此自动重放
-
-#### Scenario: Read permission does not resume replacement
-- **WHEN** 只具备 read 权限的 MCP 调用者查询一个正在撤建的 edit
-- **THEN** 返回原单和替代意图的证据，但不提交替代单、不撤单，其他调用者的操作仍不可见
-
-#### Scenario: Query for non-existent or unowned operation returns structured not found
-- **WHEN** 调用者查询一个不存在的 operation_id 或属于其他调用者的操作
-- **THEN** 系统返回包含 operation_id、state="not_found"、status="failed" 及友好原因的结构化字典，不抛出工具执行异常或 INVALID_ARGUMENT 协议错误
-
-#### Scenario: Successful query of a rejected operation
-- **WHEN** 原止损确实失败，此次查询成功读取其拒绝证据和当前作用范围
-- **THEN** 展示查询成功与原止损失败两个事实，不将查询成功改写为止损成功，也不将原止损失败误报为读取失败
-
-#### Scenario: Query cannot refresh current scope
-- **WHEN** 旧操作可读取，但当前周期、账户或仓位依赖不能重新核验
-- **THEN** 保留原操作结果，标识查询部分成功或失败及缺项；当前可用性为待刷新，不能复用旧周期的允许或禁止建议
-
-#### Scenario: Local regeneration is not an exchange observation
-- **WHEN** 后台只根据已保存证据重组原操作回执，未读取交易所
-- **THEN** 回执标识证据来源和原观察时间；本地生成成功不表示仓位、订单或当前准入已经在生成时刻重新核验
-
 ### Requirement: Reconciled evidence reaches all receipt consumers
-已核验的操作证据 SHALL 同步到原操作回执、当前 Agent/聊天状态视图、记忆证据和 MCP 操作查询/同 ID 重放。现货买入与退出操作查询 SHALL 支持只读核验交易所订单事实，在确认成交后将原 submitted 回执刷新为 FILLED/PARTIAL/CANCELLED，并附带成交时间戳与均价。默认决策输入 SHALL 使用当前事实及相关异常的投影，完整历史回执按需读取，不要求各消费者逐轮注入同一份原始 JSON。恢复 SHALL 以原请求意图判断完成，保留首次回执及后续核验记录；新周期替换活跃周期后仍须能查询历史操作。确认成交不得因其他订单清理未知退回成交未知，旧快照不得覆盖较新的已确认事实。记忆消费 SHALL 对相同身份采用最新结果，保留原结果作为历史，不将未执行批次项推定为已执行。
+已核验操作证据 SHALL 自动关联到原操作、当前 Agent/聊天状态、界面、记忆证据及同 ID 重放，不依赖模型操作查询。现货买入与退出 SHALL 后台只读核验订单，在确认后更新 FILLED/PARTIAL/CANCELLED、均价及成交时间。默认输入 SHALL 使用当前相关投影，用户按需通过授权 HTTP/UI 读取完整历史。恢复 SHALL 按原请求意图与原身份判断，原请求、首次回执和原始 JSON 保留，后续证据增量关联。新周期不丢失历史身份；其他清理未知不能覆盖已确认成交，旧快照不能覆盖新事实。记忆关联 SHALL 使用最新证据但不写入执行诊断，不将未执行项推定为已执行。
 
 #### Scenario: Background reconciliation resolves a close
 - **WHEN** 后台核验到原平仓已成交且清理完成
-- **THEN** 内置 Agent 下一次默认状态不再显示该旧限制，记忆证据取得解决结果；MCP get_operation/同 ID 重放仍返回恢复后的完整回执，不停留在首次 unknown，也不再次提交订单
+- **THEN** Agent/聊天下一次默认状态和界面自动更新，程序记忆证据关联解决结果；同 ID 重放返回已核验事实而不再次提交，授权 HTTP/UI 可查原回执，无需 get_operation
 
 #### Scenario: Spot order fill reconciles submitted receipt
-- **WHEN** 现货买单已在交易所撮合成交，调用者通过 MCP get_operation 查询该操作
-- **THEN** 系统只读核验交易所订单状态，将回执更新为 FILLED，附带成交数量、成交均价及成交时间戳，不再停留在 submitted
+- **WHEN** 已返回 submitted 的现货买单随后在交易所成交
+- **THEN** 后台按原订单/客户端身份只读核验并自动更新 FILLED、成交数量、均价及时间，模型不发起第二次操作查询
 
 #### Scenario: Canceled source does not prove successful replacement
 - **WHEN** edit 的旧单撤销已确认，但替代单被拒绝或结果未明
-- **THEN** edit 按替代阶段返回 failed 或 unknown/pending，不能仅凭旧单 canceled 宣告 edit 成功
+- **THEN** edit 按替代阶段返回 failed 或 unknown/pending，不能仅凭旧单 canceled 宣告 edit 成功；后续事实由后台核验，不要求模型查询或重发
 
 #### Scenario: Completed cycle is replaced
-- **WHEN** 新周期创建后查询旧周期某次待核验或已完成操作
-- **THEN** 仍按旧操作及其订单证据返回结果，不错误关联新周期或丢失查询身份；该历史查询不使旧持仓或旧准入建议进入下一轮默认状态
+- **WHEN** 新周期创建后用户通过授权 HTTP/UI 查看旧周期某次待核验或已完成操作
+- **THEN** 按旧身份返回原事实及增量证据，不关联新周期或丢失历史；旧持仓与旧准入建议不进入当前默认状态，详情读取不产生交易写入
 
 #### Scenario: Memory gets the reconciled result rather than only a display overlay
-- **WHEN** 原始工具回执为 unknown，当前同身份回执为 completed，记忆通过摘要记录消费执行证据
-- **THEN** 实际传入记忆整理的证据包含最新结果及与原始结果的关联，不只在历史消息展示字段中补充当前回执
+- **WHEN** 原始回执为 unknown，后台已将同身份核验为 completed，记忆程序消费关联证据
+- **THEN** 程序取得最新事实与原回执关联，既更新当前视图也保留完整审计；纯策略记忆正文不复制操作 ID、恢复步骤或执行诊断
 
 #### Scenario: An unresolved item is older than the recent receipt page
-- **WHEN** 记忆或当前异常引用的操作未出现在最新一页回执，或属于已离开摘要窗口的批次子项
-- **THEN** 消费者按原身份在授权范围内读取关联证据，不因最近记录条数限制丢失真实未决问题或其解决结果
+- **WHEN** 当前异常引用的原操作不在最近回执页内或属于旧批次子项
+- **THEN** 后台在原授权范围按身份读取和核验，不因分页丢失真实未决问题，不要求模型查旧 ID；原审计仍可通过受权 HTTP/UI 查看
 
 ### Requirement: Admission receipts provide scoped decisions and recovery instructions
-规范交易和查询 SHALL 提供版本化的准入说明，区分本次请求的允许、带告警允许、拒绝及未评估；包含动作/目标范围、证据版本与时间、阻塞项、告警和恢复建议。查询中的建议不是新交易授权，执行 SHALL 重新核验。兼容 blocked_actions SHALL 不扩大目标级限制为全局禁止，空列表 SHALL 不代表已获全面准入；所有入口对相同动作及证据 SHALL 使用一致结论。
+交易回执及后台状态 SHALL 提供版本化准入事实，区分允许、带告警允许、拒绝与未评估，保留动作/目标范围、证据时间、具体阻塞及简短告警。后台关联 SHALL 使用调用者可访问的原身份，默认结果说明系统核验状态，不提供模型操作查询入口；用户审计走授权 HTTP/UI。建议不授予新交易权，执行仍重新核验。blocked_actions SHALL 不把目标限制扩大为全局禁止，空列表不表示全面允许，相同动作和证据使用一致结论。
 
 #### Scenario: Diagnostic error is only a warning
 - **WHEN** 旧提交已确认失败且无执行影响，新请求全部实际依赖满足
-- **THEN** 新请求获得允许或带告警允许，回执保留旧拒绝原因但不返回 trade_recovery_required
+- **THEN** 新请求允许或带告警允许，保留旧拒绝原因但不返回 trade_recovery_required，不要求模型先查询解锁
 
 #### Scenario: A missing order ID still has a usable recovery identity
-- **WHEN** 真正未知的提交尚无交易所 ID
-- **THEN** 阻塞项保留原 operation_id 和客户端身份，并提供当前入口可用的查询方式，不只返回空订单 ID
+- **WHEN** 真正未知提交尚无交易所 ID
+- **THEN** 保留原 operation_id、客户端身份、具体缺项及系统后台核验状态，不只返回空订单 ID，也不输出二次操作查询指令
 
 #### Scenario: MCP recovery identity is accessible to the caller
 - **WHEN** MCP 回执引用阻塞的其他操作
-- **THEN** 仅返回当前 principal/profile 授权可访问的外部操作身份及查询入口；内部身份不得泄露或误映射为当前请求 ID，无法映射时明确给出授权范围内的恢复说明
+- **THEN** 只返回当前 principal/profile 可访问的外部身份和具体后台核验状态，不泄露内部身份或误映射到当前 ID；映射不可得时说明缺项，不提供模型查询入口，用户可按原权限查看 HTTP/UI 审计
 
 #### Scenario: Admission changes between query and write
-- **WHEN** 查询后发生新成交、其他写入或归属变化
-- **THEN** 执行基于新证据重新判断，若拒绝则指出变化的证据及限制，而不是信任缓存允许标记
+- **WHEN** 后台观察或正常记录读取后发生新成交、其他写入或归属变化
+- **THEN** 新金融调用基于当前证据重新判断，拒绝时指出变化及相关限制，不相信缓存允许标记，也不要求另一个模型查询步骤
 
 ### Requirement: Canonical tool turns continue only independently admissible intent
 保留的独立退出规范单项兼容调用 SHALL 继续原 Agent/Chat 工具轮次行为：按顺序逐项核验，不仅依据前项 failed/pending/unknown 停止全部调用。满足自身必要条件的已请求动作 SHALL 继续；仅未满足的明确前置依赖、具体硬约束或本次必需但仍未核实的执行事实可以阻止对应项，不得猜测业务顺序而停止。默认 v3 批次 SHALL 遵守其显式批次策略，省略策略采用 stop_on_error，不继承兼容多工具轮次的隐含 independent 行为。聊天金融写入 SHALL 保留逐项审批；用户拒绝审批 SHALL 停止该轮后续金融写入。非独立模式及旧工具的停止语义 SHALL 保持兼容。
@@ -554,19 +523,27 @@ v3 SHALL 在一次有界调用中逐项执行已声明动作，默认失败、pe
 - **THEN** 恢复仅核验原已提交身份和事实，保留未执行项；新的管理意图须有明确新请求，不能由后台恢复自动续跑尾部
 
 ### Requirement: Compact model receipts retain actionable execution evidence
-默认模型回执 SHALL 返回精简逐项投影，保留父子操作身份、动作索引、status 与 order_status、当前/旧订单及客户端身份、数量模式、请求/已知成交/剩余数量、修改方式、错误码、失败阶段、具体依赖阻塞和可访问恢复路径。完整原始回执及后续核验证据 SHALL 持久化且可按原身份查询；投影 SHALL NOT 把 submitted 当成交、隐藏部分成功或泄露其他 principal 的操作身份。
+新旧金融入口的默认模型回执 SHALL 保留父子身份、动作索引、status/order_status、有效及必要旧订单/客户端身份、数量模式、请求/已知成交/剩余数量、edit_method、错误码、失败阶段与具体依赖阻塞。单项 SHALL 不超过4096字节、最多20项的整批不超过32768字节，按序列化 UTF-8 计量；去除重复别名、previous_assessment 树及重复规则/blocker，不输出操作查询指令。必要身份不得截断，准入须保证结果可在预算内表达。完整原始回执及后续证据 SHALL 保留于授权 HTTP/UI 审计；不把 submitted 当成交、隐藏部分成功或泄露其他 principal 身份。
 
 #### Scenario: Compact timeout retains a recovery target
 - **WHEN** v3 子项提交后超时且已有客户端身份、尚无交易所订单 ID
-- **THEN** 精简回执保留父子 operation_id、客户端身份、unknown/pending 的真实区别及可用操作查询路径，不只返回一个失败字符串或空 order_id
+- **THEN** 精简回执保留父子 operation_id、客户端身份、unknown/pending 区别及系统后台核验状态，不给 get_trade_operation/get_operation 指令、不只返回失败字符串或空身份
 
 #### Scenario: Compact edit keeps replacement outcomes separate
 - **WHEN** edit 已确认撤旧，但替代单被拒绝
-- **THEN** 精简回执保留旧身份、当前有效身份或替代客户端身份、edit_method、明确替代失败及其错误码，不因旧单 canceled 宣告 edit completed
+- **THEN** 精简回执保留旧身份、当前有效或替代客户端身份、edit_method、明确替代失败及错误码，不因旧单 canceled 宣告 edit completed
 
 #### Scenario: Full evidence remains accessible after projection
-- **WHEN** Agent 或授权 MCP 调用者按原操作身份请求详细核验
-- **THEN** 返回授权范围内的完整持久化回执及最新证据和原观察时间；精简投影不删除原请求、成交事实、失败阶段或历史恢复身份
+- **WHEN** 用户在现有权限范围通过 HTTP/UI 请求原操作完整详情
+- **THEN** 返回完整原始回执、增量证据及真实观察时间；默认投影不删除请求、成交、失败阶段或身份，详情不是模型/MCP 工具且不恢复金融写入
+
+#### Scenario: A legacy conditional close has a compact factual acknowledgement
+- **WHEN** 旧 v2 close 回执包含 repeated previous_assessment、规则 blocker 且条件单已受理尚未触发
+- **THEN** 默认单项 UTF-8 不超过4096字节，原始回执保持完整；展示 submitted、waiting_trigger 和有证据的 filled_amount=0，不写 completed 或指示二次模型查询
+
+#### Scenario: A full batch respects the aggregate result budget
+- **WHEN** 最多二十项动作返回订单身份、异常和一次可选账户摘要
+- **THEN** 整个默认序列化 UTF-8 结果不超过32768字节，保留每项真实状态与必要身份且不逐项复制账户、规则或 blocker；不能靠截断原身份或伪造成功满足上限
 
 ### Requirement: Batch account summaries are optional and non-repetitive
 默认逐项回执 SHALL NOT 在每个结果重复完整余额、仓位、挂单或账户快照。请求需要账户摘要时，批次 SHALL 在结尾最多附一次当前可取得的摘要，标明账户、标的范围、观察时间和读取完整性。摘要读取失败 SHALL 保留各项金融执行结果并单独报告，不能将已确认成交降级为未知，也不能声称汇总时间就是所有证据的新观察时间。
@@ -589,3 +566,45 @@ v3 SHALL 在一次有界调用中逐项执行已声明动作，默认失败、pe
 #### Scenario: A former owner retries after ownership changes
 - **WHEN** A 的旧客户端重放已交接的原操作，或旧 worker 返回迟到 ACK
 - **THEN** 只保留或核验原已开始执行事实，不获得新提交权、不改变历史身份，也不重发原交易或批次尾项
+
+### Requirement: Financial calls return authoritative acknowledgements without secondary model queries
+所有模式及新旧兼容金融入口 SHALL 在一次调用内完成必要的前置权限、目标、仓位、管理及动态准入并执行 open/close/edit/cancel/protect。获得权威受理 ACK 后 SHALL 及时返回 submitted，不为取得返回许可再次 GET 订单/仓位或等待未来成交。ACK 已证明本次动作完成时可报告 completed；已确认成交直接保留，缺证据不能填假零。未确认写入保留 pending/unknown 和原身份。正常后续意图 SHALL 在自身调用内核验所需依赖，不强制模型二次取证。
+
+#### Scenario: An accepted limit entry returns before filling
+- **WHEN** open 的限价入场获得有效订单 ACK 且尚未成交
+- **THEN** 原调用直接返回 submitted 与订单身份，不追加成交轮询或为返回再次 GET 订单/仓位，模型不调用操作查询
+
+#### Scenario: Conditional protection is accepted but waiting
+- **WHEN** close/protect 的条件退出获得权威受理 ACK，订单仍为 waiting_trigger 且确认未成交
+- **THEN** 返回 submitted、waiting_trigger、filled_amount=0 及必要身份，不因受理报告 completed，也不等待触发或要求模型补查
+
+#### Scenario: A new intent requires current position evidence
+- **WHEN** 新的 close/edit/cancel 请求在提交前依赖最新仓位、目标或相关原提交事实
+- **THEN** 执行层在本次调用内按预算完成必要只读核验，满足条件才提交；该前置核验不能被误当作禁止的 ACK 后二次取证
+
+#### Scenario: The acknowledgement already proves the requested outcome
+- **WHEN** 本次 ACK 本身可靠证明实际成交或指定 edit/cancel 动作已完成
+- **THEN** 直接报告相应已确认事实与真实状态，无需为了返回再次 GET；清理或累计成交仍未知时单独表达，不虚构完成范围
+
+#### Scenario: A removed operation-query adapter is called directly
+- **WHEN** 调用者尝试 get_trade_operation/get_operation 或其旧兼容工具入口
+- **THEN** 注册和可直调适配器均不再提供该能力，入口明确不支持且不读取交易所或产生金融效果；后台内部核验服务及授权 HTTP/UI 审计仍可用
+
+### Requirement: Background verification advances only original attempted actions
+系统 SHALL 在后台按可信任务/profile、账户、标的及原父子操作/订单/客户端身份只读核验已尝试项，自动更新上下文、界面和增量证据，不要求模型调用操作查询。账户作用域不能替代 config_id；后台与受权审计须保留 caller/principal 和接收方已接受的有限恢复边界。核验 SHALL NOT 重发原金融写入、提交撤建替代、续跑未尝试尾项或新增策略。明确拒绝和未执行项不伪造为未知提交；取证失败保留已有已确认事实及具体缺项。
+
+#### Scenario: A submitted order fills after the model call returns
+- **WHEN** 已返回的原订单后续成交且后台取得同账户、同原身份的可靠证据
+- **THEN** 当前上下文和界面自动更新成交数量、价格及时间，首次原始回执保留；模型无需第二次查询，核验不新增订单
+
+#### Scenario: A lost acknowledgement is recovered by its original identity
+- **WHEN** 原提交结果未知但交易所存在匹配原客户端身份的订单
+- **THEN** 后台恢复同一操作证据并更新状态，不换 ID 重发、不登记为另一笔外部操作，不用 account_scope 充当 config_id
+
+#### Scenario: An earlier accepted action has an unattempted tail
+- **WHEN** 顺序批次因失败/待核验/未知停止，前项已尝试而尾项 not_executed
+- **THEN** 后台只核验原已尝试项；前项完成不会自动提交尾项，同 ID 重放保留原逐项事实和停止语义
+
+#### Scenario: A background read fails after a confirmed fill
+- **WHEN** 原成交已核验但后续读取某清理目标失败
+- **THEN** 保留已确认成交、来源和时间，单列读取缺项或清理待核验，不退回成交未知或要求模型再平仓/查询

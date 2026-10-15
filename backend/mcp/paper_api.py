@@ -40,3 +40,36 @@ async def leaderboard(limit: int = 20, metric: str = 'return_pct', caller: dict 
         return await run('read', partial(paper_competition.leaderboard, caller, limit, metric), label='paper_leaderboard_http')
     except (ValueError, PermissionError) as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.get('/operations/{user_id}/{operation_id}/audit')
+async def operation_audit(user_id: str, operation_id: str, offset: int = 0, length: int = 16384,
+                          version: str | None = None, view: str = 'original', encoding: str = 'base64-utf8', caller: dict = Depends(paper_caller)):
+    """Passive account-scoped raw evidence pages, never a model tool or a write."""
+    def read():
+        from . import paper, paper_storage, store
+        namespace = paper.require(caller)
+        paper.identity(user_id)
+        with store.connection(recovery=True) as conn:
+            return paper_storage.audit_chunk(conn, namespace, user_id, operation_id,
+                                             offset=offset, length=length, version=version, view=view, encoding=encoding)
+    try:
+        return await run('read', read, label='paper_audit_http')
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get('/ledger/{user_id}/{record_type}/{record_id}/audit')
+async def ledger_audit(user_id: str, record_type: str, record_id: str, offset: int = 0, length: int = 16384,
+                       version: str | None = None, encoding: str = 'base64-utf8', caller: dict = Depends(paper_caller)):
+    def read():
+        from . import paper, paper_storage, store
+        namespace = paper.require(caller)
+        paper.identity(user_id)
+        with store.connection(recovery=True) as conn:
+            return paper_storage.raw_audit_chunk(conn, namespace, user_id, record_type, record_id,
+                                                 offset=offset, length=length, version=version, encoding=encoding)
+    try:
+        return await run('read', read, label='paper_ledger_audit_http')
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(400, str(exc)) from exc

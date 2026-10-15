@@ -205,7 +205,7 @@ def test_canonical_edit_guards_classify_the_owned_target(gateway, monkeypatch):
 def test_foreign_and_untracked_positions_fail_closed_but_owned_reduction_allowed(gateway, monkeypatch):
     from backend.mcp.guard import assert_position_owner, preflight_tool
     from backend.utils.execution_ledger import account_scope
-    from backend.utils.market_data import MarketTool
+    from backend.utils import market_data
     exchange = SimpleNamespace(id='binanceusdm', apiKey='fake',
         market=lambda symbol: {'symbol': 'ETH/USDT:USDT', 'contract': True, 'linear': True},
         fetch_positions=lambda symbols: [{'side': 'long', 'contracts': 2, 'leverage': 20}],
@@ -222,7 +222,7 @@ def test_foreign_and_untracked_positions_fail_closed_but_owned_reduction_allowed
         conn.execute('INSERT INTO real_protection_plans VALUES(?,?,?,?)', ('mcp:test', plan['symbol'], 'LONG', json.dumps(plan)))
         conn.commit()
     assert_position_owner(mt, 'ETH/USDT')
-    monkeypatch.setattr(MarketTool, '__new__', lambda cls, **kwargs: mt)
+    monkeypatch.setattr(market_data, 'MarketTool', lambda **kwargs: mt)
     preflight_tool('close_position_real', {}, mt.config_id, 'ETH/USDT')
     exchange.fetch_my_trades = lambda *args, **kwargs: [{'id': 'fill-1', 'order': 'entry-1', 'amount': 1}, {'id': 'foreign', 'order': 'manual-1', 'amount': 1}]
     with pytest.raises(ValueError, match='foreign fills'):

@@ -113,15 +113,24 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
     if result.get('status') in {'skipped', 'not_executed'}:
         status = result['status']
     blockers = unresolved_orders(plan)
+    full_close_unobserved = bool(action == 'close' and record.get('quantity_mode') == 'all'
+                                and native in {'filled','closed'} and verified
+                                and plan.get('verification_pending') and plan.get('state') != 'DONE')
+    if full_close_unobserved:
+        existing = {item.get('order_id') for item in blockers}
+        for other in plan.get('entries',[]) + plan.get('exits',[]):
+            if other is not record and other.get('status') not in TERMINAL and order_reference(other) not in existing:
+                blockers.append({'order_id':order_reference(other),'client_id':other.get('client_id'),
+                                 'operation_id':other.get('operation_id'),'reason_code':'cleanup_not_observed'})
     cleanup_pending = bool(plan.get('state') == 'EXITING' or plan.get('cleanup_fill_unseen')
                            or plan.get('unobserved_entry_fills')
                            or (plan.get('residual_verified') and (plan.get('position_observation') or {}).get('amount'))
-                           or (blockers and status in {'completed', 'submitted'}))
+                           or (blockers and status in {'completed', 'submitted'}) or full_close_unobserved)
     cleanup_status = 'pending' if cleanup_pending else 'completed' if plan.get('state') == 'DONE' else 'not_required'
     position = dict(plan.get('position_observation') or {
         'side': plan.get('side'), 'amount': None, 'status': 'unknown', 'observed_at': None})
     write_times = [float(r.get(key) or 0) for r in plan.get('entries', []) + plan.get('exits', [])
-                   for key in ('created_at', 'cancel_requested_at')]
+                   for key in ('created_at', 'cancel_requested_at', 'submitted_at', 'acknowledged_at')]
     write_times += [float((r.get('amendment') or {}).get('requested_at') or 0)
                     for r in plan.get('entries', []) + plan.get('exits', [])]
     if max(write_times, default=0) > float(position.get('observed_at') or 0):
@@ -144,7 +153,7 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
                   cleanup={'status': cleanup_status, 'orders': blockers,
                            'error': plan.get('error') if cleanup_pending else None},
                   continuation=continuation,
-                  recovery={'tool': 'get_trade_operation',
+                  recovery={'state': 'background',
                             'target_operation_id': operation_id if record else next((r['operation_id'] for r in blockers if r.get('operation_id')), operation_id),
                             'blocker_operation_ids': list(dict.fromkeys(r['operation_id'] for r in blockers if r.get('operation_id'))),
                             'last_error': record.get('query_error'),

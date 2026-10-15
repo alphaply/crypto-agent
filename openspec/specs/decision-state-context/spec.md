@@ -75,15 +75,23 @@ REAL、STRATEGY、SPOT_DCA 的默认决策和绑定任务聊天 SHALL 使用同�
 - **THEN** 对相关范围显示证据不一致，已确认订单事实保留，不拼出貌似一致且已核验的仓位结论
 
 ### Requirement: Execution owns verification and recovery
-默认上下文 SHALL 将核验及恢复表示为执行层负责的工作，不要求决策模型例行查询每笔历史操作或先获得恢复许可。模型可直接表达新的交易意图，工具在本次调用内按既有预算和依赖核验；背景恢复 SHALL 继续原已授权意图，不自动重放未知写入、旧未执行项或新增交易策略。
+默认上下文 SHALL 将核验及恢复交给执行层，Agent、聊天和 MCP 不再提供或引导调用原操作查询工具。模型可直接表达新的意图，金融调用在前置阶段按预算核验实际依赖，权威受理 ACK 后及时返回，不以二次 GET 订单/仓位取得返回许可。后续状态 SHALL 由后台按可信范围和原身份核验并自动更新上下文与界面；核验不重发金融写入、提交未尝试替代或续跑旧尾项，不新增策略。当前限制须按真实依赖表达，不能靠历史诊断要求模型查询解锁。
 
 #### Scenario: Direct management after an old rejection
 - **WHEN** 旧止损明确未被接受，Agent 根据当前仓位直接请求有效新止损
-- **THEN** 系统在该工具调用内核验并处理，不要求 Agent 先查询旧操作解锁
+- **THEN** 系统在本次金融调用的前置阶段核验并处理，不要求 Agent 查询旧操作解锁；新请求获得权威 ACK 后及时返回，后台推进后续事实
 
 #### Scenario: Unknown submission still prevents a duplicate
 - **WHEN** 同方向平仓结果仍未知，新请求依赖该剩余数量
-- **THEN** 执行层保留具体限制并继续按原身份恢复，移除默认历史回执不导致重复平仓
+- **THEN** 执行层在本次前置核验内保留具体限制并后台按原身份核验，默认上下文不指示 get_trade_operation/get_operation，不通过重复平仓或续跑尾项解除未知
+
+#### Scenario: Accepted conditional protection updates without a second tool
+- **WHEN** 原 close/protect 已返回 submitted、waiting_trigger 和有证据的 filled_amount=0
+- **THEN** 上下文和界面准确说明已受理未成交，后续触发和成交由后台自动更新；模型不二次取验，不因受理显示 completed
+
+#### Scenario: Missing post-submission evidence is an execution responsibility
+- **WHEN** 权威提交 ACK 已保存但后续订单或仓位事实尚未读取
+- **THEN** 原调用仍按 ACK 返回事实，后台处理缺项并记录真实观察时间，不因等待额外 GET 延迟返回或把缺项变成模型手动恢复清单
 
 ### Requirement: Memory resolves execution concerns by identity and evidence
 每轮、滚动及历史记忆整理 SHALL 取得被引用操作的最新可用证据，按账户、任务、标的、方向、周期和订单/操作身份对应。旧疑虑被较新证据解决后 SHALL 从决策可见的当前异常及记忆执行引用中退出，即使原事件已在摘要窗口外。无匹配、证据不完整或查询失败不得推定解决；原始记忆和回执保留可追溯。
@@ -350,15 +358,19 @@ REAL、STRATEGY、SPOT_DCA 的默认决策和绑定任务聊天 SHALL 使用同�
 - **THEN** 各指标简短标明口径和截至时间，不统一冠以 Agent 独立收益或将快照回撤宣称为逐笔盘中最大回撤
 
 ### Requirement: Detailed ledgers and diagnostics are available on demand
-详细成交、费用、归属缺项、完整周期、同步覆盖和原操作回执 SHALL 在明确的详情入口按需查看，保留来源与真实观察时间。默认记忆、收益摘要和例行决策输入 SHALL NOT 自动附加上述完整资料；详情与摘要 SHALL 使用相同证据口径和时间，不重复计算盈亏。
+详细成交、费用、归属缺项、周期、同步覆盖及原操作回执 SHALL 通过用户主动访问且受现有任务、账户、namespace/principal 权限约束的 HTTP/UI 详情提供，保留原来源与真实观察时间。详情 SHALL NOT 注册为模型/MCP 工具或成为交易后的必调用步骤，读取不得恢复金融写入。默认记忆、收益摘要与例行决策输入 SHALL 不附完整资料；详情与摘要使用同一证据口径和时间，不重复计算盈亏，不改写历史 raw 记录。
 
 #### Scenario: Expand performance details
-- **WHEN** 用户主动打开收益或账本详情
-- **THEN** 可查看已保留的成交、费用、归属、周期及同步证据；默认收益区保持三类指标，详情不自动复制到下一次记忆正文
+- **WHEN** 用户主动打开收益或账本的授权 HTTP/UI 详情
+- **THEN** 可查看原成交、费用、归属、周期和同步证据，默认收益区保持三类指标；详情不自动复制到下一次记忆正文，也不构成模型操作查询工具
 
 #### Scenario: Historical snapshot is expanded
-- **WHEN** 用户查看旧记忆关联的历史快照
-- **THEN** 标明其历史时间，保留原证据，不把它替换为实时账户状态或用其覆盖当前持仓
+- **WHEN** 用户通过授权 HTTP/UI 查看旧记忆关联历史快照
+- **THEN** 标明历史时间并保留原证据，不替换为实时账户状态或覆盖当前持仓，不因打开详情提交、撤销、修改订单
+
+#### Scenario: Audit access cannot disclose another principal
+- **WHEN** 用户请求不在其任务、账户或原 namespace/principal 授权范围的操作原文
+- **THEN** 现有权限边界拒绝访问，精简回执及详情不泄露其他主体身份；移除操作查询工具不扩大 HTTP/UI 审计权限
 
 ### Requirement: Availability separates capability authority and execution evidence
 Agent、MCP 和前端 SHALL 分别表达资源是否在可见范围内、管理权是否可认领或已持有、调用者权限、目标原生能力和本次动作依赖的证据状态。可自动认领 SHALL 不要求模型先调用接管工具；只读调用者 SHALL 不因可见而获得写入权限。支持动作是能力说明，实际提交前仍重新核验。
@@ -372,16 +384,20 @@ Agent、MCP 和前端 SHALL 分别表达资源是否在可见范围内、管理�
 - **THEN** 状态指出 A 的具体限制，B 仍展示按目标执行核验的能力，不用全局 cancel/edit 禁令替代实际依赖
 
 ### Requirement: Default tool results preserve compact actionable facts
-默认模型工具结果 SHALL 返回精简的逐项动作事实，保留动作索引、操作/订单身份、操作状态与订单状态、数量模式和已知成交、具体失败或依赖阻塞及按需查询指引。整批账户摘要 SHALL 最多出现一次且只含请求的当前信息；完整原始证据 SHALL 继续可按授权查询，不逐项重复嵌入。
+新旧默认模型工具结果 SHALL 精简逐项事实，保留索引、父子操作/订单及必要客户端身份、操作/订单状态、数量模式与已知成交、具体失败阶段或依赖阻塞，不输出操作查询指引。单项 SHALL 不超过4096字节、最多20项整批不超过32768字节，以序列化 UTF-8 计量；不重复 previous_assessment、规则或 blocker 树。整批账户摘要 SHALL 最多一次且只含请求的当前信息。完整原始 JSON 和后续证据 SHALL 保留于授权 HTTP/UI 详情，不逐项嵌入或删除原事实。
 
 #### Scenario: A twenty action paper batch
 - **WHEN** 二十项 paper 动作都有已保存回执，调用者请求账户摘要
-- **THEN** 默认结果包含二十项精简真实结果和一份末尾摘要，不出现二十份账户全量快照；未知字段和必要核验信息不被省略成成功
+- **THEN** 默认整批 UTF-8 不超过32768字节，包含二十项精简真实结果与一份末尾摘要，不出现二十份账户快照或重复评估树；必要身份和未知事实不被省略成成功
 
 #### Scenario: Failed and unexecuted steps remain distinguishable
 - **WHEN** 第一步撤单待核验，默认停止策略使后续开仓未执行
-- **THEN** 模型结果准确区分撤单 pending 与开仓 not_executed，保留原操作查询身份，不把整批写成全部失败或全部已提交
+- **THEN** 模型结果区分 cancel pending 与 open not_executed，保留原身份并说明系统后台核验，不把整批写成全部失败/已提交，不要求操作查询
 
 #### Scenario: Complete evidence requested explicitly
-- **WHEN** 有权限的调用者明确请求原操作完整详情
-- **THEN** 返回持久化完整回执及实际证据时间，默认投影的精简不删除原始事实，也不因详情查询恢复任何交易写入
+- **WHEN** 用户在现有权限下通过 HTTP/UI 明确请求原操作完整详情
+- **THEN** 返回持久化原始回执及增量证据和真实观察时间，不恢复金融写入；该详情不是另一个模型/MCP 工具，不自动进入默认模型结果
+
+#### Scenario: A noisy legacy receipt is projected within the item budget
+- **WHEN** 旧金融回执包含重复 previous_assessment、blocked_actions、规则及相同 blocker
+- **THEN** 默认单项 UTF-8 不超过4096字节，只保留当前有影响的去重限制、真实状态和必要身份；原始 JSON 不改写，默认结果不附 get_trade_operation/get_operation 调用步骤

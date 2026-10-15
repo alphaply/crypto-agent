@@ -81,8 +81,49 @@ def operation_evidence(config_id: str, symbol: str, operation_ids, *, account_sc
 
 
 def _stale_advice(continuation):
-    return {**continuation, 'assessment_state': 'needs_refresh', 'rules': [], 'blocked_actions': [],
-            'requires_action_assessment': True, 'previous_assessment': continuation}
+    return {**{k: v for k, v in continuation.items() if k != 'previous_assessment'}, 'assessment_state': 'needs_refresh', 'rules': [], 'blocked_actions': [],
+            'requires_action_assessment': True}
+
+
+def current_receipt_projection(config_id, operation_id, original):
+    """Exact local current evidence for model history, within the trusted task."""
+    from backend.database import get_db_conn
+    from backend.utils.runtime_capacity import positive_setting
+    from backend.utils.trade_summary import compact_trade_receipt
+    from backend.utils.trade_evidence import configured_account_scope
+    from backend.utils.sqlite_blob import bounded_text
+
+    def historical():
+        value = _decode_receipt(original)
+        if not isinstance(value, dict):
+            return compact_trade_receipt(original)
+        return compact_trade_receipt({**value, 'evidence_source': 'historical_cached',
+                                      'current_evidence_status': 'unavailable'})
+
+    if not config_id or not operation_id:
+        return historical()
+    cap = positive_setting('RUNTIME_FINANCIAL_PAYLOAD_BYTES', 1048576)
+    try:
+        with get_db_conn() as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'trade_action_runs' not in tables:
+                return historical()
+            row = conn.execute('SELECT rowid,updated_at FROM trade_action_runs WHERE config_id=? AND operation_id=?',
+                               (config_id, operation_id)).fetchone()
+            if row is None:
+                return historical()
+            if 'trade_operation_evidence' in tables:
+                scopes = [r[0] for r in conn.execute('SELECT DISTINCT account_scope FROM trade_operation_evidence '
+                    'WHERE config_id=? AND operation_id=? LIMIT 2', (config_id, operation_id))]
+                if scopes and any(scope != configured_account_scope(config_id) for scope in scopes):
+                    return historical()
+            with bounded_text(conn, 'trade_action_runs', 'result', row['rowid'], limit=cap) as payload:
+                value = _decode_receipt(payload)
+                return compact_trade_receipt({**value, 'receipt_updated_at': row['updated_at'],
+                                              'evidence_source': 'local_execution_evidence',
+                                              'current_evidence_status': 'available'}) if isinstance(value, dict) else historical()
+    except Exception:
+        return historical()
 
 
 def latest_operation_receipts(config_id: str, symbol: str = '', limit: int = 20) -> dict:
@@ -93,8 +134,11 @@ def latest_operation_receipts(config_id: str, symbol: str = '', limit: int = 20)
     with get_db_conn() as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
             return {}
-        rows = conn.execute('SELECT operation_id,symbol,result,updated_at FROM trade_action_runs WHERE config_id=? '
-                            'AND result IS NOT NULL ORDER BY updated_at DESC LIMIT ?', (config_id, limit)).fetchall()
+        from backend.utils.runtime_capacity import positive_setting
+        cap = positive_setting('RUNTIME_FINANCIAL_PAYLOAD_BYTES', 1048576)
+        rows = conn.execute('SELECT operation_id,symbol,CASE WHEN length(CAST(result AS BLOB))<=? THEN result END AS result,updated_at '
+                            'FROM trade_action_runs WHERE config_id=? AND result IS NOT NULL ORDER BY updated_at DESC LIMIT ?',
+                            (cap, config_id, min(max(1, limit), 100))).fetchall()
     result = {}
     for row in rows:
         value = _decode_receipt(row['result'])

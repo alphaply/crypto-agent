@@ -99,7 +99,9 @@ class ExecutionLedger:
     def __init__(self, exchange, config_id: str, symbol: str):
         self.exchange = exchange
         self.config_id = config_id
-        exchange.load_markets()
+        if not getattr(exchange, 'markets', None):
+            from backend.utils.public_catalogue import load_public_catalogue
+            load_public_catalogue(exchange, market_type='swap')
         market = exchange.market(symbol)
         if not market.get('contract'):
             market = exchange.market(f'{symbol}:USDT')
@@ -111,7 +113,7 @@ class ExecutionLedger:
             self.lock = _locks.setdefault(f'{self.scope}:{self.symbol}', threading.Lock())
         self.index_saved_plans()
 
-    def _retire_legacy_algo_aliases(self, plans, legacy_rows):
+    def _retire_legacy_algo_aliases(self, plans, legacy_rows, *, conditional_ids=None, regular_ids=None):
         """Quarantine old bare algo IDs without deleting any execution evidence.
 
         Trades report regular order IDs. Before channel-qualified identities,
@@ -120,7 +122,8 @@ class ExecutionLedger:
         genuine regular order can prove that the same numeric ID is also valid.
         """
         from backend.utils.exit_orders import is_conditional, parse_order_reference
-        conditional_ids, regular_ids = set(), set()
+        conditional_ids = set() if conditional_ids is None else conditional_ids
+        regular_ids = set() if regular_ids is None else regular_ids
 
         def identity(owner, value):
             return (owner, parse_order_reference(value)[1]) if value is not None else None
@@ -145,13 +148,21 @@ class ExecutionLedger:
         affected = set()
         with get_db_conn() as conn:
             conn.execute('BEGIN IMMEDIATE')
+            if hasattr(regular_ids, 'connection'):
+                regular_ids.connection = conn
             for owner, raw_id in conditional_ids:
-                link = conn.execute('SELECT * FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+                link = conn.execute('SELECT rowid,config_id,role FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
                                     (self.scope, self.symbol, raw_id)).fetchone()
                 if not link or link['config_id'] != owner:
                     continue
+                from backend.utils.sqlite_blob import bounded_text
+                from backend.utils.runtime_capacity import positive_setting, CapacityBusy
+                maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES', 4 * 1024 * 1024)
                 try:
-                    metadata = json.loads(link['payload'])
+                    with bounded_text(conn, 'execution_order_links', 'payload', link['rowid'], limit=maximum) as raw:
+                        metadata = json.loads(raw)
+                except CapacityBusy:
+                    raise
                 except (TypeError, ValueError):
                     metadata = {}
                 # An entry, an explicitly indexed regular order, or an actual
@@ -160,11 +171,14 @@ class ExecutionLedger:
                     regular_ids.add((owner, raw_id))
                     continue
                 canonical = 'algo:' + raw_id
-                parent = conn.execute('SELECT config_id,payload FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
+                parent = conn.execute('SELECT rowid,config_id FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
                                       (self.scope, self.symbol, canonical)).fetchone()
                 if parent and parent['config_id'] != owner:
                     raise ValueError('Order ownership conflict')
-                parent_metadata = json.loads(parent['payload']) if parent else {}
+                parent_metadata = {}
+                if parent:
+                    with bounded_text(conn, 'execution_order_links', 'payload', parent['rowid'], limit=maximum) as raw:
+                        parent_metadata = json.loads(raw)
                 parent_metadata.update(exchange_channel='algo', legacy_alias_retired=raw_id,
                                        legacy_alias_role=link['role'], legacy_alias_metadata=metadata)
                 conn.execute('INSERT INTO execution_order_links VALUES(?,?,?,?,?,?) ON CONFLICT(account_scope,symbol,order_id) '
@@ -178,155 +192,127 @@ class ExecutionLedger:
                              (self.scope, self.symbol, raw_id, owner))
                 affected.add(owner)
             conn.commit()
+        if hasattr(regular_ids, 'connection'):
+            regular_ids.connection = None
         return conditional_ids, regular_ids, affected
 
     def index_saved_plans(self):
-        """Recover ownership after restart without assigning arbitrary account trades."""
-        with get_db_conn() as conn:
-            rows = conn.execute(
-                'SELECT config_id,payload FROM real_protection_plans WHERE symbol=?',
-                (self.symbol,),
-            ).fetchall()
-            event_rows = conn.execute(
-                'SELECT config_id,payload FROM real_protection_events WHERE symbol=? ORDER BY id',
-                (self.symbol,),
-            ).fetchall()
-            legacy_rows = conn.execute(
-                "SELECT order_id,config_id,side,entry_price,take_profit,stop_loss,reason,event_type "
-                "FROM orders WHERE config_id=? AND trade_mode='REAL' "
-                "AND (symbol=? OR symbol=?) ORDER BY id",
-                (self.config_id, self.symbol, self.symbol.split(':')[0]),
-            ).fetchall()
-        plans = []
-        for row in [*event_rows, *rows]:
-            try:
-                plan = json.loads(row['payload'])
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if not isinstance(plan, dict):
-                continue
-            scope = plan.get('account_scope')
-            if scope and scope != self.scope:
-                continue
-            if not scope and row['config_id'] != self.config_id:
-                continue
-            plans.append((row['config_id'], plan))
-        conditional_ids, regular_ids, affected = self._retire_legacy_algo_aliases(plans, legacy_rows)
+        """Advance durable ownership migration without materializing history."""
+        from backend.utils.execution_plan_index import advance_index
+        with self.lock:
+            self.index_state = advance_index(self)
+        return self.index_state
+
+    def _index_plan(self, owner, plan):
         indexed = False
-        for owner, plan in plans:
-            if any(item.get('id') or item.get('execution_order_id') for item in
-                   [*plan.get('entries', []), *plan.get('legs', []), *plan.get('exits', [])]) or (plan.get('exit_order') or {}).get('id'):
-                affected.add(owner)
-            common = {
-                'side': plan.get('side'),
-                'episode_id': plan.get('episode_id'),
-                'stop_loss': plan.get('stop_loss'),
-                'take_profit': plan.get('take_profit'),
-            }
-            for item in plan.get('entries', []):
+        common = {
+            'side': plan.get('side'),
+            'episode_id': plan.get('episode_id'),
+            'stop_loss': plan.get('stop_loss'),
+            'take_profit': plan.get('take_profit'),
+        }
+        for item in plan.get('entries', []):
+            register_order(
+                self.scope,
+                self.symbol,
+                item.get('id'),
+                owner,
+                'entry',
+                refresh=False,
+                planned_entry=item.get('price'),
+                exchange_channel='regular',
+                **common,
+            )
+            indexed |= bool(item.get('id'))
+
+        for item in [*plan.get('legs', []), *plan.get('exits', [])]:
+            from backend.utils.exit_orders import is_conditional, exit_group, order_reference
+            independent = plan.get('execution_mode') == 'independent_exits'
+            # Algo IDs must not claim regular fills with the same numeric ID.
+            parent_id = order_reference(item, current=False) if independent and is_conditional(item) else item.get('id')
+            order_id = item.get('execution_order_id') or parent_id
+            group = exit_group(item) if independent else None
+            role = ('stop_loss' if group == 'stop_loss' or item.get('kind') == 'sl' else
+                    'agent_exit' if group in {'limit', 'market'} else 'take_profit')
+            register_order(
+                self.scope,
+                self.symbol,
+                order_id,
+                owner,
+                role,
+                refresh=False,
+                trigger_price=item.get('trigger_price'),
+                exchange_channel=('algo' if str(order_id).startswith('algo:') else 'regular') if independent else None,
+                **common,
+            )
+            indexed |= bool(order_id)
+
+            if item.get('execution_order_id') and parent_id and item['execution_order_id'] != parent_id:
                 register_order(
                     self.scope,
                     self.symbol,
-                    item.get('id'),
-                    owner,
-                    'entry',
-                    refresh=False,
-                    planned_entry=item.get('price'),
-                    exchange_channel='regular',
-                    **common,
-                )
-                indexed = indexed or bool(item.get('id'))
-            for item in [*plan.get('legs', []), *plan.get('exits', [])]:
-                from backend.utils.exit_orders import is_conditional, exit_group, order_reference
-                independent = plan.get('execution_mode') == 'independent_exits'
-                # Algo IDs must not claim regular fills with the same numeric ID.
-                parent_id = order_reference(item, current=False) if independent and is_conditional(item) else item.get('id')
-                order_id = item.get('execution_order_id') or parent_id
-                group = exit_group(item) if independent else None
-                role = ('stop_loss' if group == 'stop_loss' or item.get('kind') == 'sl' else
-                        'agent_exit' if group in {'limit', 'market'} else 'take_profit')
-                register_order(
-                    self.scope,
-                    self.symbol,
-                    order_id,
+                    parent_id,
                     owner,
                     role,
                     refresh=False,
                     trigger_price=item.get('trigger_price'),
-                    exchange_channel=('algo' if str(order_id).startswith('algo:') else 'regular') if independent else None,
+                    exchange_channel=('algo' if str(parent_id).startswith('algo:') else 'regular') if independent else None,
                     **common,
                 )
-                indexed = indexed or bool(order_id)
-                if item.get('execution_order_id') and parent_id and item['execution_order_id'] != parent_id:
-                    register_order(
-                        self.scope,
-                        self.symbol,
-                        parent_id,
-                        owner,
-                        role,
-                        refresh=False,
-                        trigger_price=item.get('trigger_price'),
-                        exchange_channel=('algo' if str(parent_id).startswith('algo:') else 'regular') if independent else None,
-                        **common,
-                    )
-            if plan.get('exit_order'):
-                order_id = plan['exit_order'].get('id')
-                register_order(
-                    self.scope,
-                    self.symbol,
-                    order_id,
-                    owner,
-                    plan.get('exit_reason', 'emergency_exit'),
-                    refresh=False,
-                    exchange_channel='regular',
-                    **common,
-                )
-                indexed = indexed or bool(order_id)
-
-        # Older versions recorded agent entry/exit IDs in orders but had no execution links.
-        # This migration only claims orders already scoped to this exact configuration.
-        for row in legacy_rows:
-            from backend.utils.exit_orders import parse_order_reference
-            identity = (row['config_id'], parse_order_reference(row['order_id'])[1])
-            if identity in conditional_ids and identity not in regular_ids:
-                # An old CLOSE_ORDER_CREATED event cannot disambiguate an algo
-                # parent from an identically numbered regular execution.
-                continue
-            raw_side = str(row['side'] or '').upper()
-            event_type = str(row['event_type'] or '').upper()
-            if raw_side.startswith('CLOSE_'):
-                role = 'agent_exit'
-                side = raw_side.removeprefix('CLOSE_')
-            elif event_type == 'CLOSE_ORDER_CREATED':
-                role = 'agent_exit'
-                side = 'LONG' if 'LONG' in raw_side else ('SHORT' if 'SHORT' in raw_side else None)
-            elif raw_side in {'BUY', 'SELL'} and event_type == 'ORDER_CREATED':
-                role = 'entry'
-                side = 'LONG' if raw_side == 'BUY' else 'SHORT'
-            else:
-                continue
-            if side not in {'LONG', 'SHORT'}:
-                continue
+        if plan.get('exit_order'):
+            order_id = plan['exit_order'].get('id')
             register_order(
                 self.scope,
                 self.symbol,
-                row['order_id'],
-                row['config_id'],
-                role,
+                order_id,
+                owner,
+                plan.get('exit_reason', 'emergency_exit'),
                 refresh=False,
-                side=side,
-                planned_entry=row['entry_price'],
-                take_profit=row['take_profit'],
-                stop_loss=row['stop_loss'],
-                reason=row['reason'],
                 exchange_channel='regular',
+                **common,
             )
-            indexed = indexed or bool(row['order_id'])
+            indexed |= bool(order_id)
+        return indexed
 
-        if indexed:
-            affected.add(self.config_id)
-        for owner in affected:
-            rebuild_execution_position_history(owner, self.scope, self.symbol)
+
+    def _index_legacy_row(self, row, conditional_ids, regular_ids):
+        from backend.utils.exit_orders import parse_order_reference
+        identity = (row['config_id'], parse_order_reference(row['order_id'])[1])
+        if identity in conditional_ids and identity not in regular_ids:
+            # An old CLOSE_ORDER_CREATED event cannot disambiguate an algo
+            # parent from an identically numbered regular execution.
+            return
+        raw_side = str(row['side'] or '').upper()
+        event_type = str(row['event_type'] or '').upper()
+        if raw_side.startswith('CLOSE_'):
+            role = 'agent_exit'
+            side = raw_side.removeprefix('CLOSE_')
+        elif event_type == 'CLOSE_ORDER_CREATED':
+            role = 'agent_exit'
+            side = 'LONG' if 'LONG' in raw_side else ('SHORT' if 'SHORT' in raw_side else None)
+        elif raw_side in {'BUY', 'SELL'} and event_type == 'ORDER_CREATED':
+            role = 'entry'
+            side = 'LONG' if raw_side == 'BUY' else 'SHORT'
+        else:
+            return
+        if side not in {'LONG', 'SHORT'}:
+            return
+        register_order(
+            self.scope,
+            self.symbol,
+            row['order_id'],
+            row['config_id'],
+            role,
+            refresh=False,
+            side=side,
+            planned_entry=row['entry_price'],
+            take_profit=row['take_profit'],
+            stop_loss=row['stop_loss'],
+            reason=row['reason'],
+            exchange_channel='regular',
+        )
+        return bool(row['order_id'])
+
 
     def status(self):
         with get_db_conn() as conn:
@@ -361,6 +347,10 @@ class ExecutionLedger:
                     payload = {k: value if value is not None else old.get(k) for k, value in payload.items()}
                 owner = conn.execute('SELECT config_id FROM execution_order_links WHERE account_scope=? AND symbol=? AND order_id=?',
                                      (self.scope, self.symbol, order_id)).fetchone()
+                if not self.index_state.get('complete'):
+                    # Raw fills remain durable, but a partially published
+                    # historical ownership migration cannot assign new facts.
+                    owner = None
                 if owner:
                     owners.add(owner['config_id'])
                 conn.execute('INSERT INTO execution_fills VALUES(?,?,?,?,?,?,?) '
@@ -379,6 +369,11 @@ class ExecutionLedger:
                 rebuild_execution_position_history(owner_config_id, self.scope, self.symbol)
 
     def sync(self, now_ms=None, start_ms=None, min_interval=30, max_calls=100):
+        if not self.index_state.get('complete'):
+            self.index_saved_plans()
+            if not self.index_state.get('complete'):
+                return {**self.status(), 'complete': False, 'ownership_index': self.index_state,
+                        'error': 'Ownership evidence indexing incomplete; exchange synchronization deferred'}
         actual_now = int(time.time() * 1000)
         now_ms = min(int(now_ms), actual_now) if now_ms is not None else actual_now
         with self.lock:
@@ -574,6 +569,9 @@ def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None
         if scope:
             scopes = {scope}
         sync = []
+        index_complete = conn.execute("SELECT 1 FROM execution_plan_index_runs WHERE config_id=? AND phase!='complete' "
+                                      'AND (? IS NULL OR account_scope=?) AND (? IS NULL OR symbol=?) LIMIT 1',
+                                      (config_id, scope, scope, symbol, symbol)).fetchone() is None
         unknown_count = 0
         income_rows = []
         for key in scopes - {None}:
@@ -625,10 +623,11 @@ def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None
         value = number(item.get('income'))
         if value is not None:
             income_totals[key] = income_totals.get(key, 0) + value
-    window_complete = bool(sync) and all(any(left <= start_ms and right >= end_ms - 1
+    window_complete = index_complete and bool(sync) and all(any(left <= start_ms and right >= end_ms - 1
                                              for left, right in state.get('covered_intervals', [])) for state in sync)
     payload = {'window_hours': hours, 'from_ms': start_ms, 'through_ms': end_ms, 'sync': sync,
-               'window_complete': window_complete, 'unknown_owner_fill_count': unknown_count,
+               'window_complete': window_complete, 'ownership_index_complete': index_complete,
+               'unknown_owner_fill_count': unknown_count,
                'account_income_by_type_asset_not_agent_pnl': income_totals,
                'fill_count': len(rows), 'omitted_details': len(rows) - len(facts), 'recent_fills': facts,
                'known_realized_pnl_before_fees': pnl, 'missing_pnl_count': missing_pnl,
@@ -660,204 +659,43 @@ def recent_activity_summary(config_id: str, symbol: str, now=None) -> str:
     return f"最近7天已实现盈亏（已归属成交、扣同币种费用）：{value}。"
 
 
-def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
-    """Reconstruct every owned entry-to-flat cycle without inventing missing fills."""
-    with get_db_conn() as conn:
-        rows = conn.execute('SELECT f.*,l.role,l.payload AS link_metadata FROM execution_fills f '
-                            'LEFT JOIN execution_order_links l ON f.account_scope=l.account_scope AND f.symbol=l.symbol '
-                            'AND f.order_id=l.order_id WHERE EXISTS (SELECT 1 FROM execution_order_links own '
-                            'WHERE own.config_id=? AND own.account_scope=f.account_scope AND own.symbol=f.symbol) '
-                            'AND f.timestamp_ms<? '
-                            'AND (? IS NULL OR f.account_scope=?) AND (? IS NULL OR f.symbol=?) '
-                            'ORDER BY f.timestamp_ms, LENGTH(f.trade_id), f.trade_id',
-                            (config_id, end_ms, scope, scope, symbol, symbol)).fetchall()
-    current = {}
-    completed = []
-    excluded = []
-    unmatched = 0
-    for row in rows:
-        fill = json.loads(row['payload'])
-        metadata = json.loads(row['link_metadata'] or '{}')
-        side = str(fill.get('position_side') or metadata.get('side') or '').upper()
-        if side == 'BOTH':
-            side = metadata.get('side')
-        if side not in {'LONG', 'SHORT'}:
-            unmatched += 1
-            for key in list(current):
-                if key[:2] == (row['account_scope'], row['symbol']):
-                    current[key]['incomplete'] = True
-            continue
-        role = row['role']
-        if not role:
-            # Direction establishes increase/decrease, never the reason for an exit.
-            action = str(fill.get('side') or '').lower()
-            if action not in {'buy', 'sell'}:
-                unmatched += 1
-                continue
-            role = 'entry' if (action == 'buy') == (side == 'LONG') else 'external_unknown_exit'
-        key = (row['account_scope'], row['symbol'], side)
-        quantity = number(fill.get('base_amount', fill.get('amount')))
-        price = number(fill.get('price'))
-        if not quantity or not price:
-            unmatched += 1
-            continue
-        cycle = current.get(key)
-        if role == 'entry':
-            if not cycle:
-                cycle = {
-                    'account_scope': row['account_scope'],
-                    'config_id': config_id,
-                    'symbol': row['symbol'],
-                    'side': side,
-                    'episode_id': metadata.get('episode_id'),
-                    'opened_at_ms': row['timestamp_ms'],
-                    'remaining_base': 0,
-                    'entered_base': 0,
-                    'exited_base': 0,
-                    'entry_cost': 0,
-                    'exit_cost': 0,
-                    'realized_pnl_before_fees': 0,
-                    'missing_pnl': False,
-                    'missing_fees': False,
-                    'fees_by_currency': {},
-                    'entry_trade_ids': [],
-                    'exit_trade_ids': [],
-                    'entry_order_ids': [],
-                    'exit_order_ids': [],
-                    'exit_reasons': [],
-                    'events': [],
-                    'incomplete': False,
-                    'foreign_entry': False,
-                    'owned_entry': False,
-                    'take_profit': number(metadata.get('take_profit')),
-                    'stop_loss': number(metadata.get('stop_loss')),
-                }
-                current[key] = cycle
-            cycle['owned_entry'] |= row['config_id'] == config_id
-            cycle['foreign_entry'] |= row['config_id'] != config_id
-            cycle['episode_id'] = cycle.get('episode_id') or metadata.get('episode_id')
-            cycle['take_profit'] = number(metadata.get('take_profit')) or cycle.get('take_profit')
-            cycle['stop_loss'] = number(metadata.get('stop_loss')) or cycle.get('stop_loss')
-            cycle['remaining_base'] += quantity
-            cycle['entered_base'] += quantity
-            cycle['entry_cost'] += quantity * price
-            cycle['entry_trade_ids'].append(row['trade_id'])
-            if row['order_id'] and row['order_id'] not in cycle['entry_order_ids']:
-                cycle['entry_order_ids'].append(row['order_id'])
-        else:
-            if not cycle or quantity > cycle['remaining_base'] + 1e-10:
-                unmatched += 1
-                current.pop(key, None)
-                continue
-            cycle['remaining_base'] = max(0, cycle['remaining_base'] - quantity)
-            cycle['exited_base'] += quantity
-            cycle['exit_cost'] += quantity * price
-            if role not in cycle['exit_reasons']:
-                cycle['exit_reasons'].append(role)
-            cycle['exit_trade_ids'].append(row['trade_id'])
-            if row['order_id'] and row['order_id'] not in cycle['exit_order_ids']:
-                cycle['exit_order_ids'].append(row['order_id'])
-            if role == 'take_profit':
-                cycle['take_profit'] = number(metadata.get('trigger_price')) or cycle.get('take_profit')
-            elif role == 'stop_loss':
-                cycle['stop_loss'] = number(metadata.get('trigger_price')) or cycle.get('stop_loss')
-        cycle['events'].append({'trade_id': row['trade_id'], 'order_id': row['order_id'],
-                                'timestamp_ms': row['timestamp_ms'], 'role': role,
-                                'quantity': quantity, 'price': price,
-                                'remaining_base': cycle['remaining_base'],
-                                'owner_known': row['config_id'] == config_id})
-        pnl = fill.get('realized_pnl')
-        if role != 'entry' and pnl is None:
-            cycle['missing_pnl'] = True
-        elif pnl is not None:
-            cycle['realized_pnl_before_fees'] += pnl
-        fee_items = fill.get('fees') or ([fill['fee']] if fill.get('fee') else [])
-        if not fee_items:
-            cycle['missing_fees'] = True
-        for fee in fee_items:
-            cost = number(fee.get('cost'))
-            currency = fee.get('currency')
-            if cost is None or not currency:
-                cycle['missing_fees'] = True
-            else:
-                cycle['fees_by_currency'][currency] = cycle['fees_by_currency'].get(currency, 0) + cost
-        if cycle['remaining_base'] <= 1e-10:
-            cycle['remaining_base'] = 0
-            cycle['closed_at_ms'] = row['timestamp_ms']
-            cycle['entry_vwap'] = cycle['entry_cost'] / cycle['entered_base']
-            cycle['exit_vwap'] = cycle['exit_cost'] / cycle['exited_base']
-            cycle['holding_seconds'] = (cycle['closed_at_ms'] - cycle['opened_at_ms']) / 1000
-            cycle['plan_episode_id'] = cycle.get('episode_id')
-            identity = f"{row['account_scope']}:{row['symbol']}:{side}:{cycle['entry_trade_ids'][0]}"
-            cycle['episode_id'] = hashlib.sha256(identity.encode()).hexdigest()
-            cycle['add_count'] = max(0, len(cycle['entry_order_ids']) - 1)
-            cycle['exit_count'] = len(cycle['exit_order_ids'])
-            cycle['final_exit_reason'] = role
-            cycle['settlement_currency'] = row['symbol'].split(':')[-1] if ':' in row['symbol'] else row['symbol'].split('/')[-1]
-            if cycle['missing_pnl']:
-                cycle['realized_pnl_before_fees'] = None
-            if cycle['closed_at_ms'] >= start_ms:
-                if cycle['owned_entry'] and not cycle['foreign_entry'] and not cycle['incomplete']:
-                    completed.append(cycle)
-                elif cycle['owned_entry'] or row['config_id'] == config_id:
-                    excluded.append(cycle)
-            current.pop(key, None)
-    # Audit snapshots carry the effective prices at each revision, including clears.
-    with get_db_conn() as conn:
-        audit_rows = conn.execute('SELECT timestamp,payload FROM real_protection_events '
-                                  'WHERE config_id=? ORDER BY id', (config_id,)).fetchall()
-    for cycle in completed:
-        revisions = {}
-        for audit in audit_rows:
-            plan = json.loads(audit['payload'])
-            if (plan.get('account_scope'), plan.get('symbol'), plan.get('side')) != (
-                    cycle['account_scope'], cycle['symbol'], cycle['side']):
-                continue
-            if cycle.get('plan_episode_id') and plan.get('episode_id') != cycle['plan_episode_id']:
-                continue
-            ts = int(TZ_CN.localize(datetime.fromisoformat(audit['timestamp'])).timestamp() * 1000)
-            if ts > cycle['closed_at_ms']:
-                continue
-            revision = plan.get('revision', 0)
-            revisions.setdefault(revision, {'timestamp_ms': ts, 'revision': revision,
-                                            'stop_loss': plan.get('stop_loss'), 'take_profit': plan.get('take_profit')})
-        timeline = sorted(revisions.values(), key=lambda x: x['timestamp_ms'])
-        before = [x for x in timeline if x['timestamp_ms'] <= cycle['opened_at_ms']]
-        cycle['protection_history'] = before[-1:] + [x for x in timeline if x['timestamp_ms'] > cycle['opened_at_ms']]
-        if cycle['protection_history']:
-            final = cycle['protection_history'][-1]
-            cycle.update(stop_loss=final['stop_loss'], take_profit=final['take_profit'])
-    return {
-        'completed': completed,
-        'unmatched_fill_count': unmatched,
-        'excluded_cycles': excluded,
-        'open_cycles': [c for c in current.values() if c['owned_entry']],
-    }
+def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None,
+                                 *, cycle_sink=None, read_conn=None):
+    """Reconstruct ordered facts with a bounded work set; incomplete never means zero."""
+    from backend.utils.execution_cycles import reconstruct_cycles
+    from backend.utils.runtime_capacity import positive_setting,reserve_bytes
+    maximum=positive_setting('RUNTIME_MAX_RECORD_BYTES',4*1024*1024)
+    with reserve_bytes('parse',maximum*4):
+        if read_conn is not None:
+            return reconstruct_cycles(config_id,start_ms,end_ms,scope,symbol,
+                                      cycle_sink=cycle_sink,read_conn=read_conn)
+        with get_db_conn() as conn:
+            conn.execute('BEGIN')
+            return reconstruct_cycles(config_id,start_ms,end_ms,scope,symbol,
+                                      cycle_sink=cycle_sink,read_conn=conn)
 
 
 def rebuild_execution_position_history(config_id: str, scope: str, symbol: str):
-    """Materialize closed trading cycles as the canonical local history table."""
+    """Stage complete cycles on disk; publish only a full, unchanged source snapshot."""
     with get_db_conn() as conn:
-        # Prevent a stale reconstruction from replacing a newer stream/scheduler result.
-        conn.execute('BEGIN IMMEDIATE')
-        newest = conn.execute(
-            'SELECT MAX(timestamp_ms) FROM execution_fills '
-            'WHERE account_scope=? AND symbol=?',
-            (scope, symbol),
-        ).fetchone()[0]
-        end_ms = int(newest or 0) + 1
-        rebuilt = _reconstruct_position_cycles(config_id, 0, end_ms, scope, symbol)
-        updated_at_ms = int(time.time() * 1000)
-        conn.execute(
-            'DELETE FROM execution_position_history '
-            'WHERE account_scope=? AND config_id=? AND symbol=?',
-            (scope, config_id, symbol),
-        )
-        for cycle in rebuilt['completed']:
+        # SQLite TEMP tables live on disk; keep the page cache finite. A source
+        # read snapshot permits concurrent financial writers in WAL mode.
+        conn.execute('PRAGMA temp_store=FILE')
+        conn.execute('PRAGMA temp.cache_size=-1024')
+        conn.execute('CREATE TEMP TABLE execution_history_stage AS '
+                     'SELECT * FROM main.execution_position_history WHERE 0')
+        conn.commit()
+        version=conn.execute('PRAGMA data_version').fetchone()[0]
+        conn.execute('BEGIN')
+        newest=conn.execute('SELECT MAX(timestamp_ms) FROM execution_fills '
+                            'WHERE account_scope=? AND symbol=?',(scope,symbol)).fetchone()[0]
+        end_ms=int(newest or 0)+1
+        updated_at_ms=int(time.time()*1000)
+        def stage(cycle):
             realized_pnl = None if cycle['missing_pnl'] else cycle['realized_pnl_before_fees']
             exit_reason = ','.join(cycle['exit_reasons'])
             conn.execute(
-                '''INSERT INTO execution_position_history(
+                '''INSERT INTO execution_history_stage(
                        position_id,account_scope,config_id,symbol,side,opened_at_ms,closed_at_ms,
                        entry_price,close_price,amount,take_profit,stop_loss,realized_pnl,
                        fees_json,exit_reason,updated_at_ms,payload
@@ -882,8 +720,23 @@ def rebuild_execution_position_history(config_id: str, scope: str, symbol: str):
                     json.dumps(cycle, ensure_ascii=False, default=str),
                 ),
             )
+        rebuilt=_reconstruct_position_cycles(config_id,0,end_ms,scope,symbol,
+                                              cycle_sink=stage,read_conn=conn)
         conn.commit()
-    return rebuilt
+        if not rebuilt['scan_complete']:
+            return {**rebuilt,'published':False,'retained_previous':True}
+        # Acquire the write lock only for the final compare-and-publish. If any
+        # other connection changed the source snapshot, keep the old full view.
+        conn.execute('BEGIN IMMEDIATE')
+        if conn.execute('PRAGMA data_version').fetchone()[0]!=version:
+            conn.rollback()
+            return {**rebuilt,'scan_complete':False,'published':False,
+                    'retained_previous':True,'reason_code':'cycle_source_changed'}
+        conn.execute('DELETE FROM execution_position_history '
+                     'WHERE account_scope=? AND config_id=? AND symbol=?',(scope,config_id,symbol))
+        conn.execute('INSERT INTO main.execution_position_history SELECT * FROM temp.execution_history_stage')
+        conn.commit()
+        return {**rebuilt,'published':True,'retained_previous':False}
 
 
 def position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
@@ -891,11 +744,15 @@ def position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
     rebuilt = _reconstruct_position_cycles(config_id, start_ms, end_ms, scope, symbol)
     completed = rebuilt['completed']
     return {
-        'completed_count': len(completed),
+        'completed_count': rebuilt['completed_count'],
         'completed': completed,
-        'omitted_completed': 0,
+        'omitted_completed': rebuilt['omitted_completed'],
         'unmatched_fill_count': rebuilt['unmatched_fill_count'],
-        'excluded_cycle_count': len(rebuilt['excluded_cycles']),
+        'excluded_cycle_count': rebuilt['excluded_cycle_count'],
         'open_cycles': rebuilt['open_cycles'],
+        'scan_complete': rebuilt['scan_complete'],
+        'projection_complete': rebuilt['projection_complete'],
+        'reason_code': rebuilt['reason_code'],
+        'next_cursor': rebuilt['next_cursor'],
         'limits': '按账户同方向成交归零划分；外部退出仅注明未知原因。混合归属入场不计入本策略战绩。实际持仓以交易所快照为准；周期盈亏与窗口内成交盈亏口径不同，不能相加。',
     }

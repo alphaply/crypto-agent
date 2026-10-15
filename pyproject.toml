@@ -3,7 +3,7 @@ name = "crypto-agent"
 version = "0.2.0rc4"
 description = "Crypto trading agent with FastAPI backend and React frontend"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "ccxt>=4.5.34",
     "cryptography>=46.0.3",

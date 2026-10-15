@@ -22,7 +22,8 @@ def test_sdk_directory_bootstrap_cancel_first_and_read_only_recovery(ledger, mon
     register_tools(server)
     register_paper_tools(server)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
-    assert len(names) == 11 and 'paper_trade' not in names and 'adopt_perpetual_position' not in names
+    assert len(names) == 10 and 'paper_trade' not in names and 'adopt_perpetual_position' not in names
+    assert server._tool_manager.get_tool('get_operation') is None
     context = call(server, 'get_trading_context', {})
     assert context['contract_version'] == 3
     with store.connection() as conn:
@@ -37,15 +38,17 @@ def test_sdk_directory_bootstrap_cancel_first_and_read_only_recovery(ledger, mon
                             'amount': 9, 'stop_loss': 90, 'reason': 'protect current holding'}]}
     first = call(server, 'execute_trade_actions', request)
     assert [row['index'] for row in first['results']] == [0, 1, 2]
-    assert [row['status'] for row in first['results']] == ['completed', 'completed', 'completed']
+    assert [row['status'] for row in first['results']] == ['completed', 'completed', 'submitted']
     assert all('account' not in row for row in first['results'])
     balance = paper.get_account(caller, '123456')['cash']
     fills_before = len(paper.history(caller, '123456'))
     assert call(server, 'execute_trade_actions', request) == first
-    default = call(server, 'get_operation', {'user_id': '123456', 'operation_id': request['operation_id']})
-    detailed = call(server, 'get_operation', {'user_id': '123456', 'operation_id': request['operation_id'], 'detail': True})
-    assert default['query']['status'] == detailed['query']['status'] == 'completed'
-    assert 'account' in detailed['results'][1] and 'account' not in default['results'][1]
+    from backend.mcp import paper_batch
+    from backend.utils.trade_summary import compact_trade_receipt
+    detailed = paper_batch.operation(caller,'123456',request['operation_id'])
+    default = compact_trade_receipt(detailed)
+    child_original=paper.operation(caller,'123456',detailed['results'][1]['operation_id'])
+    assert 'account' in child_original and 'account' not in default['results'][1]
     view = call(server, 'get_account_state', {'user_id': '123456', 'include': ['positions']})
     assert 'balances' not in view and 'orders' not in view
     assert paper.get_account(caller, '123456')['cash'] == balance

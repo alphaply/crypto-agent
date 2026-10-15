@@ -1,0 +1,25 @@
+{
+  "source": "sanitized_user_conditional_close",
+  "canonical_receipt_sha256": {
+    "current": "51e50bec0c8c083b06452b9099ade5ef735aa1e416c7fb8a313bb12454be765c",
+    "original": "0b97334329474ea3ab66ebd664d18f2cfbcc216e7f4609160b814e098f06ea59"
+  },
+  "old_query_failure": {
+    "name": "get_trade_operation",
+    "arguments": {
+      "target_operation_id": "offline-close-v2-0001",
+      "config_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "ETH/USDT:USDT"
+    },
+    "error": "Error: Conflicting trusted context: config_id"
+  },
+  "facts": {
+    "side": "SHORT",
+    "order_status": "waiting_trigger",
+    "requested_amount": 0.03,
+    "filled_amount": 0,
+    "last_known_position_amount": 0.06,
+    "repeated_blocker_rules": 11,
+    "quantity_unit": "base"
+  }
+}

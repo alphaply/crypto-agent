@@ -27,17 +27,17 @@ def ensure_bot_namespace(namespace):
 
 
 def bootstrap():
+    from .paper_storage import payload_page
     with store.connection() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        accounts = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM paper_accounts')]
-        for account in accounts:
-            paper.upgrade_account(conn, account)
-            paper._save(conn, account)
-        namespaces = {json.loads(r[0])['paper_namespace'] for r in conn.execute("SELECT payload FROM mcp_records WHERE kind='key'")
-                      if json.loads(r[0]).get('key_type') == 'paper'}
+        saved = conn.execute("SELECT cursor FROM paper_scan_progress WHERE worker='bootstrap'").fetchone()
+        keys, progress = payload_page(conn, 'mcp_records', "kind='key'", (), cursor=saved[0] if saved else 0)
+        namespaces = {row['payload']['paper_namespace'] for row in keys if row['payload'].get('key_type') == 'paper' and not row['payload'].get('revoked')}
+        conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor,payload=excluded.payload',
+                     ('bootstrap', progress['next_cursor'] if progress['has_more'] else 0, '{}'))
         conn.commit()
     for namespace in namespaces:
         ensure_bot_namespace(namespace)
+    return progress
 
 
 def bot_account(caller):
@@ -50,32 +50,75 @@ def ensure_bot(caller, operation_id):
 
 
 def leaderboard(caller, limit=20, metric='return_pct', user_id=None, *, administrator=False):
+    import uuid
+    from .paper_storage import payload_page, batch_size, PaperPayloadLimit
     namespace = paper.identity(caller['paper_namespace'], 'namespace') if administrator else paper.require(caller)
     if metric not in {'return_pct', 'pnl'} or type(limit) is not int or not 1 <= limit <= 200:
         raise ValueError('metric must be return_pct or pnl; limit must be 1–200')
     if user_id is not None:
         paper.identity(user_id)
+    worker = 'ranking:' + namespace
     with store.connection() as conn:
-        accounts = [paper.upgrade_account(conn, json.loads(r[0])) for r in conn.execute('SELECT payload FROM paper_accounts WHERE namespace=?', (namespace,))]
-    items = []
-    for account in accounts:
-        if not account.get('leaderboard_visible', True):
-            continue
-        view = paper.snapshot(account)
-        capital = Decimal(str(account['competition_capital']))
-        pct = paper.money(Decimal(str(view['performance_pnl'])) / capital * 100) if capital > 0 else None
-        items.append({'participant_id': store.digest(namespace + ':' + account['user_id'])[:16], 'name': account['name'],
-                      'account_type': account['account_type'], 'pnl': view['performance_pnl'], 'return_pct': pct,
-                      'valuation_status': view['valuation_status'], 'oldest_mark_at': view['oldest_mark_at'],
-                      'is_self': account['user_id'] == user_id, 'user_id': account['user_id'] if account['user_id'] == user_id or account['account_type'] == 'bot' else None})
-    eligible = [r for r in items if metric == 'pnl' or r['return_pct'] is not None]
-    eligible.sort(key=lambda r: (-(r['return_pct'] if metric == 'return_pct' else r['pnl']), r['participant_id']))
-    for rank, row in enumerate(eligible, 1):
-        row['rank'] = rank
-    return {'items': eligible[:limit], 'total': len(eligible), 'metric': metric, 'namespace': namespace,
-            'self': next((r for r in eligible if r['is_self']), None), 'bot': next((r for r in eligible if r['account_type'] == 'bot'), None),
-            'unranked_count': len(items) - len(eligible), 'execution_mode': 'paper', 'observed_at': time.time(),
-            'scoring': 'Net equity minus initial and administrator-adjusted capital; loans do not increase performance.'}
+        conn.execute('BEGIN IMMEDIATE')
+        saved = conn.execute('SELECT cursor,payload FROM paper_scan_progress WHERE worker=?', (worker,)).fetchone()
+        state = json.loads(saved['payload']) if saved else {'generation': uuid.uuid4().hex, 'started_at': time.time(), 'skipped': 0}
+        generation = state['generation']
+        records, progress = payload_page(conn, 'paper_accounts', 'namespace=?', (namespace,), cursor=saved['cursor'] if saved else 0, count=batch_size())
+        state['skipped'] += len(progress['skipped_records'])
+        for record in records:
+            try:
+                account = paper.upgrade_account(conn, record['payload'])
+                if not account.get('leaderboard_visible', True):
+                    continue
+                view = paper.snapshot(account, conn=conn)
+            except PaperPayloadLimit:
+                state['skipped'] += 1
+                continue
+            capital = Decimal(str(account['competition_capital'])) if account['competition_capital'] is not None else None
+            pct = paper.money(Decimal(str(view['performance_pnl'])) / capital * 100) if capital is not None and capital > 0 and view['performance_pnl'] is not None else None
+            item = {'participant_id': store.digest(namespace + ':' + account['user_id'])[:16], 'name': account['name'],
+                    'account_type': account['account_type'], 'pnl': view['performance_pnl'], 'return_pct': pct,
+                    'valuation_status': view['valuation_status'], 'oldest_mark_at': view['oldest_mark_at']}
+            conn.execute('INSERT INTO paper_ranking_projection VALUES(?,?,?,?,?,?,?) ON CONFLICT(namespace,generation,user_id) DO UPDATE SET eligible=excluded.eligible,pnl=excluded.pnl,return_pct=excluded.return_pct,payload=excluded.payload',
+                         (namespace, generation, account['user_id'], int(view['performance_pnl'] is not None), view['performance_pnl'], pct, json.dumps(item, allow_nan=False)))
+        if progress['has_more']:
+            conn.execute('INSERT INTO paper_scan_progress VALUES(?,?,?) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor,payload=excluded.payload',
+                         (worker, progress['next_cursor'], json.dumps(state)))
+            conn.commit()
+            return {'items': [], 'self': None, 'bot': None, 'total': None, 'unranked_count': None, 'incomplete_count': state['skipped'],
+                    'status': 'partial', 'scan_complete': False, 'next_cursor': progress['next_cursor'], 'metric': metric,
+                    'namespace': namespace, 'execution_mode': 'paper', 'observed_at': None, 'scan_started_at': state['started_at']}
+        field = 'pnl' if metric == 'pnl' else 'return_pct'
+        where = 'namespace=? AND generation=? AND eligible=1 AND ' + field + ' IS NOT NULL'
+        total = conn.execute('SELECT COUNT(*) FROM paper_ranking_projection WHERE ' + where, (namespace, generation)).fetchone()[0]
+        all_count = conn.execute('SELECT COUNT(*) FROM paper_ranking_projection WHERE namespace=? AND generation=?', (namespace, generation)).fetchone()[0]
+        def render(row, rank=None):
+            data = json.loads(row['payload'])
+            if rank is None:
+                rank = conn.execute('SELECT COUNT(*)+1 FROM paper_ranking_projection WHERE ' + where +
+                                    ' AND (' + field + '>? OR (' + field + "=? AND json_extract(payload,'$.participant_id')<?))",
+                                    (namespace, generation, row[field], row[field], data['participant_id'])).fetchone()[0]
+            data.update(rank=rank, is_self=row['user_id'] == user_id,
+                        user_id=row['user_id'] if row['user_id'] == user_id or data['account_type'] == 'bot' else None)
+            return data
+        ranked = 'SELECT * FROM paper_ranking_projection WHERE ' + where
+        ordering = ' ORDER BY ' + field + " DESC,json_extract(payload,'$.participant_id')"
+        items = [render(row, index + 1) for index, row in enumerate(conn.execute(ranked + ordering + ' LIMIT ?', (namespace, generation, limit)))] if not state['skipped'] else []
+        personal = conn.execute(ranked + ' AND user_id=?', (namespace, generation, user_id)).fetchone() if user_id and not state['skipped'] else None
+        bot = conn.execute(ranked + " AND json_extract(payload,'$.account_type')='bot'" + ordering + ' LIMIT 1', (namespace, generation)).fetchone() if not state['skipped'] else None
+        personal = render(personal) if personal else None
+        bot = render(bot) if bot else None
+        incomplete = conn.execute('SELECT COUNT(*) FROM paper_ranking_projection WHERE namespace=? AND generation=? AND eligible=0', (namespace, generation)).fetchone()[0]
+        conn.execute('DELETE FROM paper_scan_progress WHERE worker=?', (worker,))
+        conn.execute('DELETE FROM paper_ranking_projection WHERE namespace=? AND generation<>?', (namespace, generation))
+        conn.commit()
+    return {'items': items, 'total': total if not state['skipped'] else None, 'metric': metric, 'namespace': namespace,
+            'self': personal, 'bot': bot,
+            'unranked_count': all_count - total + state['skipped'], 'incomplete_count': incomplete + state['skipped'],
+            'status': 'partial' if state['skipped'] else 'complete', 'scan_complete': True, 'next_cursor': None,
+            'execution_mode': 'paper', 'observed_at': time.time() if not state['skipped'] else None,
+            'scan_started_at': state['started_at'],
+            'scoring': 'Complete Binance valuation minus initial and administrator-adjusted capital; loans do not increase performance.'}
 
 
 def preferences(caller, user_id, operation_id, leaderboard_visible=None, notifications_enabled=None, name=None):
@@ -92,43 +135,66 @@ def preferences(caller, user_id, operation_id, leaderboard_visible=None, notific
 
 
 def scan(caller, after_id=0, limit=100, user_id=None, notifications_only=True):
+    from .paper_storage import payload_page, one, PaperPayloadLimit
+    from .paper_policy import event_visible
     namespace = paper.require(caller)
     if type(after_id) is not int or after_id < 0 or type(limit) is not int or not 1 <= limit <= 200:
         raise ValueError('after_id must be nonnegative and limit must be 1–200')
-    query, params = 'SELECT * FROM paper_events WHERE namespace=? AND id>?', [namespace, after_id]
+    where, params = 'namespace=?', [namespace]
     if user_id is not None:
-        query += ' AND user_id=?'
+        where += ' AND user_id=?'
         params.append(paper.identity(user_id))
     with store.connection() as conn:
-        events = conn.execute(query + ' ORDER BY id LIMIT ?', [*params, limit + 1]).fetchall()
-        has_more = len(events) > limit
-        events = events[:limit]
-        items = []
+        events, progress = payload_page(conn, 'paper_events', where, params, cursor=after_id, count=limit)
+        items, omitted = [], len(progress['skipped_records'])
         for event in events:
-            account = paper._get(conn, namespace, event['user_id'])
-            if notifications_only and (event['kind'] not in {'order_filled', 'liquidation', 'order_rejected'} or not account.get('notifications_enabled', True)):
-                continue
-            payload = json.loads(event['payload'])
-            items.append({**dict(event), 'payload': payload, 'account_name': account['name'], 'account_type': account['account_type'],
-                          'recipient_user_id': event['user_id'], 'delivery_key': f'paper:{namespace}:{event["id"]}',
-                          'execution_mode': 'paper', 'display_timezone': 'Asia/Shanghai'})
-    return {'events': items, 'next_cursor': events[-1]['id'] if events else after_id, 'has_more': has_more,
-            'namespace': namespace, 'delivery_semantics': 'at_least_once',
-            'note': 'Deliver or durably enqueue returned events before persisting next_cursor; deduplicate by delivery_key. This endpoint does not send QQ messages.'}
+            try:
+                account = one(conn, 'paper_accounts', 'payload', 'namespace=? AND user_id=?', (namespace, event['user_id']), identity='notification preferences')
+                if not account or not event_visible(event, conn=conn, account=account):
+                    omitted += 1
+                    continue
+                if notifications_only and (event['kind'] not in {'order_filled', 'liquidation', 'order_rejected'} or not account.get('notifications_enabled', True)):
+                    continue
+                items.append({**{k: v for k, v in event.items() if k != 'scan_id'}, 'account_name': account['name'],
+                              'account_type': account.get('account_type', 'bot' if account['user_id'].startswith('bot:') else 'user'),
+                              'recipient_user_id': event['user_id'], 'delivery_key': f'paper:{namespace}:{event["id"]}',
+                              'execution_mode': 'paper', 'display_timezone': 'Asia/Shanghai'})
+            except PaperPayloadLimit:
+                omitted += 1
+        conn.commit()
+    return {'events': items, **progress, 'filtered_count': omitted, 'namespace': namespace, 'delivery_semantics': 'at_least_once',
+            'note': 'Deliver or durably enqueue returned events before persisting next_cursor; empty filtered pages still advance. Deduplicate by delivery_key. This endpoint does not send QQ messages.'}
 
 
-def admin_data(namespace=None, user_id=None, limit=100):
+def admin_data(namespace=None, user_id=None, limit=100, *, cursor=0, namespace_cursor=''):
+    from .paper_storage import payload_page, batch_size
+    from .paper_policy import event_visible
+    clauses, params = [], []
+    for name, value in [('namespace', namespace), ('user_id', user_id)]:
+        if value:
+            clauses.append(name + '=?')
+            params.append(paper.identity(value, name))
+    where = ' AND '.join(clauses) or '1=1'
     with store.connection() as conn:
-        spaces = [namespace] if namespace else [r[0] for r in conn.execute('SELECT DISTINCT namespace FROM paper_accounts')]
-    rankings, events = [], []
-    for space in spaces:
-        caller = {'key_type': 'paper', 'paper_namespace': space, 'scopes': ['read'], 'id': 'admin'}
-        # Administrator reads stay usable while paper matching is disabled.
-        with store.connection() as conn:
-            query, params = 'SELECT * FROM paper_events WHERE namespace=?', [space]
-            if user_id:
-                query += ' AND user_id=?'
-                params.append(user_id)
-            events.extend({**dict(r), 'payload': json.loads(r['payload'])} for r in conn.execute(query + ' ORDER BY id DESC LIMIT ?', [*params, limit]))
-        rankings.extend(leaderboard(caller, min(limit, 200), administrator=True)['items'])
-    return {'leaderboard': rankings, 'events': sorted(events, key=lambda r: r['id'], reverse=True)[:limit]}
+        records, progress = payload_page(conn, 'paper_events', where, params, cursor=cursor, count=limit)
+        events = [record for record in records if event_visible(record, conn=conn, account={'namespace': record['namespace'], 'user_id': record['user_id']})]
+        spaces = [namespace] if namespace else [row[0] for row in conn.execute('SELECT DISTINCT namespace FROM paper_accounts WHERE namespace>? ORDER BY namespace LIMIT ?',
+                                                                             (namespace_cursor, batch_size() + 1))]
+        conn.commit()
+    rankings, ranking_states = [], []
+    for space in spaces[:batch_size()]:
+        value = leaderboard({'paper_namespace': space}, min(limit, 200), administrator=True)
+        rankings.extend(value['items'])
+        ranking_states.append({'namespace': space, 'status': value['status'], 'scan_complete': value['scan_complete'], 'next_cursor': value['next_cursor'],
+                               'incomplete_count': value['incomplete_count'], 'unranked_count': value['unranked_count']})
+    partial = len(spaces) > batch_size() or progress['status'] == 'partial' or any(row['status'] != 'complete' for row in ranking_states)
+    return {'leaderboard': rankings[:limit], 'rankings': ranking_states, 'events': events, **progress,
+            'status': 'partial' if partial else 'complete', 'filtered_count': len(records) - len(events),
+            'namespaces': {'has_more': len(spaces) > batch_size(), 'scan_complete': len(spaces) <= batch_size(),
+                           'status': 'partial' if len(spaces) > batch_size() else 'complete',
+                           'next_cursor': spaces[batch_size() - 1] if len(spaces) > batch_size() else None}}
+
+
+from .paper_storage import bounded as _bounded
+for _name in ('ensure_bot_namespace', 'bootstrap', 'leaderboard', 'scan', 'admin_data'):
+    globals()[_name] = _bounded(globals()[_name])

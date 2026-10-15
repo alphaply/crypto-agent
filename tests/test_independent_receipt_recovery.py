@@ -7,7 +7,7 @@ from backend import database
 from backend.database_schema import initialize_schema
 from backend.agent import tool_registry
 from backend.utils.trade_operations import reconcile_pending_trade_operations, run_once
-from test_trade_tool_integration import simulation, real_short, call
+from test_trade_tool_integration import simulation, real_short, call, recover, native_order_id
 
 
 def close_args():
@@ -21,7 +21,7 @@ def test_identity_reader_has_no_page_limit_and_preserves_batch_tail(real_short):
     first = call('execute_trade_actions', {'contract_version': 2, 'actions': [
         {'action': 'close', **close_args()},
         {'action': 'open', 'side': 'SHORT', 'amount': 1, 'price': 120, 'reason': 'later'}]}, 'old-batch')
-    current = call('get_trade_operation', {'target_operation_id': 'old-batch'}, 'read-batch')
+    current = recover('old-batch')
     with database.get_db_conn() as conn:
         for index in range(25):
             conn.execute('INSERT INTO trade_action_runs VALUES(?,?,?,?,?,?,?,?)',
@@ -77,7 +77,7 @@ def test_query_reloads_concurrent_evidence_without_exchange_writes(real_short, m
     monkeypatch.setattr(service, 'collect_readonly', concurrent_collect)
     for name in ('create_order', 'cancel_order', 'edit_order'):
         monkeypatch.setattr(exchange, name, lambda *a, **k: pytest.fail('query submitted a financial write'))
-    result = call('get_trade_operation', {'target_operation_id': 'concurrent-stop'}, 'query-conflict')
+    result = recover('concurrent-stop')
     assert result['status'] == stop['status']
     assert len(reads) == (3 if persistent else 2)
     assert service._load('ETH/USDT:USDT', 'SHORT')['concurrent_marker'] == (3 if persistent else 1)
@@ -120,7 +120,7 @@ def test_lost_ack_query_is_read_only_and_same_id_never_replays(real_short, monke
     writes = len(exchange.calls)
     for name in ['create_order', 'cancel_order', 'edit_order']:
         monkeypatch.setattr(exchange, name, lambda *a, **k: pytest.fail('read recovery wrote to exchange'))
-    current = call('get_trade_operation', {'target_operation_id': 'lost-close'}, 'query-1')
+    current = recover('lost-close')
     assert current['status'] == 'completed'
     assert current['filled_amount'] == 1
     replay = call('close', close_args(), 'lost-close')
@@ -138,18 +138,19 @@ def test_close_cleanup_recovery_then_explicit_new_entry_once(real_short):
     exchange.missing_cancel_fill = True
     original = agent_call('close', close_args(), 'close-1')
     assert original['status'] == 'completed' and original['cleanup']['status'] == 'pending'
+    service.reconcile_all()  # Independent maintenance continues after the ACK returned.
     pending = service.snapshot('ETH/USDT')
     assert [r['order_id'] for r in pending['unresolved_orders']] == [stop['order_id']]
     assert pending['exits'] == []
     blocked = call('open', dict(side='SHORT', amount=1, price=100, reason='new cycle'), 'blocked-entry')
     assert blocked['status'] == 'failed'
-    exchange.orders[stop['id']]['filled'] = 0
-    query = agent_call('get_trade_operation', {'target_operation_id': 'close-1'}, 'query-2')
+    exchange.orders[native_order_id(stop)]['filled'] = 0
+    query = recover('close-1')
     assert query['status'] == 'completed'
     assert len(exchange.calls) == 3  # entry, protective stop, one market close
     service.reconcile_all()
     reconcile_pending_trade_operations('cfg')
-    query = call('get_trade_operation', {'target_operation_id': 'close-1'}, 'query-3')
+    query = recover('close-1')
     assert query['cleanup']['status'] == 'completed'
     entry_args = dict(side='SHORT', amount=1, price=100, reason='explicit new cycle')
     opened = agent_call('open', entry_args, 'new-entry')
@@ -157,7 +158,7 @@ def test_close_cleanup_recovery_then_explicit_new_entry_once(real_short):
     assert opened['episode_id'] != original['episode_id']
     assert call('open', entry_args, 'new-entry')['status'] == 'submitted'
     assert len(exchange.calls) == 4
-    historical = call('get_trade_operation', {'target_operation_id': 'close-1'}, 'query-old-cycle')
+    historical = recover('close-1')
     assert historical['episode_id'] == original['episode_id']
     assert historical['status'] == 'completed'
     assert historical['current_scope']['episode_id'] == opened['episode_id']
@@ -172,13 +173,13 @@ def test_read_failure_does_not_prevent_other_order_evidence(real_short):
     second = call('close', dict(side='SHORT', order_type='limit', amount=.3, price=80, reason='TP2'), 'tp-2')
     fetch = exchange.fetch_order
     def query(oid, *args, **kwargs):
-        if str(oid) == first['id']:
+        if str(oid) == native_order_id(first):
             raise TimeoutError('first read unavailable')
         return fetch(oid, *args, **kwargs)
     exchange.fetch_order = query
-    exchange.orders[second['id']].update(status='closed', filled=.3)
+    exchange.orders[native_order_id(second)].update(status='closed', filled=.3)
     exchange.quantity = .7
-    result = call('get_trade_operation', {'target_operation_id': 'tp-2'}, 'query-independent')
+    result = recover('tp-2')
     assert result['status'] == 'completed'
     assert result['filled_amount'] == .3
     assert result['position']['amount'] == .7
@@ -186,9 +187,11 @@ def test_read_failure_does_not_prevent_other_order_evidence(real_short):
 
 
 def test_read_tool_trusted_context_and_unknown_id(real_short):
-    assert call('get_trade_operation', {'target_operation_id': 'someone-else'}, 'query-missing')['error_code'] == 'operation_not_found'
-    with pytest.raises(ValueError, match='trusted context'):
-        tool_registry.run_trade_tool('get_trade_operation', {'target_operation_id': 'any', 'config_id': 'other'}, 'cfg', 'ETH/USDT')
+    assert recover('someone-else')['error_code'] == 'operation_not_found'
+    removed=json.loads(tool_registry.run_trade_tool('get_trade_operation', {'target_operation_id':'any','config_id':'other'},'cfg','ETH/USDT'))
+    assert removed['error_code']=='tool_removed'
+    with pytest.raises(ValueError,match='trusted context'):
+        call('close',{**close_args(),'config_id':'other'},'conflicting-close')
 
 
 def test_failed_query_preserves_confirmed_execution_and_marks_advice_stale(real_short, monkeypatch):
@@ -196,7 +199,7 @@ def test_failed_query_preserves_confirmed_execution_and_marks_advice_stale(real_
     result = call('close', close_args(), 'confirmed-close')
     assert result['status'] == 'completed'
     monkeypatch.setattr(trade_recovery, 'recover_operation', Mock(side_effect=RuntimeError('read cache conflict')))
-    query = call('get_trade_operation', {'target_operation_id': 'confirmed-close'}, 'query-failed')
+    query = recover('confirmed-close')
     assert query['status'] == 'completed' and query['filled_amount'] == result['filled_amount']
     assert query['query']['status'] == 'failed'
     assert query['continuation']['assessment_state'] == 'needs_refresh'
@@ -208,21 +211,21 @@ def test_cancel_waits_for_own_terminal_fill_and_edit_for_successor(real_short):
     exchange.missing_cancel_fill = True
     canceled = call('cancel', dict(order_id=stop['order_id'], reason='cancel'), 'cancel-op')
     assert canceled['status'] == 'pending'
-    assert call('get_trade_operation', {'target_operation_id': 'cancel-op'}, 'cancel-query')['status'] == 'pending'
-    exchange.orders[stop['id']]['filled'] = 0
-    assert call('get_trade_operation', {'target_operation_id': 'cancel-op'}, 'cancel-query-2')['status'] == 'completed'
+    assert recover('cancel-op')['status'] == 'pending'
+    exchange.orders[native_order_id(stop)]['filled'] = 0
+    assert recover('cancel-op')['status'] == 'completed'
     service.reconcile_all()
     exchange.missing_cancel_fill = False
     stop = call('close', dict(side='SHORT', order_type='stop_market', amount=1, trigger_price=110, reason='protect'), 'stop-edit')
     exchange.timeout_next = True
     edited = call('edit', dict(order_id=stop['order_id'], trigger_price=115, reason='replace'), 'edit-op')
     assert edited['status'] == 'unknown'
-    assert exchange.orders[stop['id']]['status'] == 'canceled'
+    assert exchange.orders[native_order_id(stop)]['status'] == 'canceled'
     writes = len(exchange.calls)
     exchange.hide = True
-    assert call('get_trade_operation', {'target_operation_id': 'edit-op'}, 'edit-query')['status'] == 'unknown'
+    assert recover('edit-op')['status'] == 'unknown'
     exchange.hide = False
-    recovered = call('get_trade_operation', {'target_operation_id': 'edit-op'}, 'edit-query-2')
+    recovered = recover('edit-op')
     assert recovered['status'] == 'completed'
     assert recovered['order_id'] != stop['order_id']
     assert len(exchange.calls) == writes
@@ -236,7 +239,7 @@ def test_batch_query_keeps_unexecuted_tail_and_hash(real_short):
         {'action': 'open', 'side': 'SHORT', 'amount': 1, 'price': 120, 'reason': 'later'}]}
     first = call('execute_trade_actions', args, 'recovery-batch')
     assert [item['status'] for item in first['results']] == ['unknown', 'not_executed']
-    result = call('get_trade_operation', {'target_operation_id': 'recovery-batch'}, 'batch-query')
+    result = recover('recovery-batch')
     assert result['results'][0]['status'] == 'completed'
     assert result['results'][1] == first['results'][1]
     replay = call('execute_trade_actions', args, 'recovery-batch')
@@ -251,7 +254,7 @@ def test_missing_cycle_query_diagnoses_but_does_not_restore(real_short):
         conn.execute("DELETE FROM real_protection_plans WHERE config_id='cfg'")
         conn.commit()
     before = len(exchange.calls)
-    result = call('get_trade_operation', {'target_operation_id': 'partial-close'}, 'missing-cycle-query')
+    result = recover('partial-close')
     assert result['cycle_diagnosis']['restorable'] is True
     with database.get_db_conn() as conn:
         assert not conn.execute("SELECT 1 FROM real_protection_plans WHERE config_id='cfg'").fetchone()
@@ -305,9 +308,9 @@ def test_native_edit_refusal_or_lost_ack_preserves_original_order(real_short, fa
     assert result['status'] == ('failed' if failure == 'rejection' else 'unknown')
     assert result['order_id'] == opening['order_id']
     assert result['execution']['phase'] == 'amend'
-    current = call('get_trade_operation', {'target_operation_id': 'native-edit'}, 'native-edit-query')
+    current = recover('native-edit')
     assert current['status'] == ('failed' if failure == 'rejection' else 'completed')
-    assert count == [opening['id']] and len(exchange.calls) == 2
+    assert count == [native_order_id(opening)] and len(exchange.calls) == 2
 
 
 def test_changed_account_cannot_reuse_original_evidence(real_short, monkeypatch):
@@ -320,7 +323,7 @@ def test_changed_account_cannot_reuse_original_evidence(real_short, monkeypatch)
     exchange.apiKey = 'different-offline-account'
     replacement = IndependentExits(SimpleNamespace(exchange=exchange, config_id='cfg'))
     monkeypatch.setattr(agent_tools, '_independent_service', lambda *_: (replacement, True))
-    result = call('get_trade_operation', {'target_operation_id': 'old-account-close'}, 'changed-account-query')
+    result = recover('old-account-close')
     assert result['error_code'] == 'account_scope_mismatch' and result['status'] == 'unknown'
     assert len(exchange.calls) == 2
 
@@ -345,12 +348,16 @@ def test_late_verified_residual_can_be_explicitly_managed(real_short):
     opening = call('open', dict(side='SHORT', amount=.3, price=120, reason='add'), 'residual-add')
     cancel = exchange.cancel_order
     def late(oid, *args, **kwargs):
-        if str(oid) == opening['id']:
+        if str(oid) == native_order_id(opening):
             exchange.orders[str(oid)]['filled'] = .3
             exchange.quantity += .3
         return cancel(oid, *args, **kwargs)
     exchange.cancel_order = late
-    assert call('close', close_args(), 'residual-first-close')['position']['amount'] == pytest.approx(.3)
+    acknowledgement=call('close',close_args(),'residual-first-close')
+    assert acknowledgement['position']['amount'] is None
+    assert acknowledgement['position']['status']=='stale'
+    service.reconcile_all()
+    assert recover('residual-first-close')['position']['amount']==pytest.approx(.3)
     stop = call('close', dict(side='SHORT', order_type='stop_market', amount=.3, trigger_price=110, reason='protect residual'), 'residual-protect')
     assert stop['status'] == 'submitted'
     final = call('close', close_args(), 'residual-explicit-close')
@@ -400,7 +407,7 @@ def test_persistent_unknown_blocks_dependent_writes_after_read_query(real_short)
     exchange.hide = True
     before = len(exchange.calls)
     for _ in range(2):
-        receipt = call('get_trade_operation', {'target_operation_id': 'still-unknown'}, 'readonly')
+        receipt = recover('still-unknown')
         assert receipt['status'] == 'unknown'
         assert receipt['recovery']['last_error']
         assert receipt['continuation']['assessment_state'] == 'needs_refresh'

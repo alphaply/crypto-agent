@@ -26,7 +26,7 @@ def ledger(tmp_path, monkeypatch):
         conn.commit()
     store.put('settings', 'global', {'enabled': True, 'public_url': 'http://localhost:7860'})
     store.put('paper_settings', 'global', {'initial_balance': 1000, 'loan_limit': 5000, 'fee_rate': .001})
-    ticker = {'price': 100, 'bid': 100, 'ask': 100, 'exchange': 'public-fixture'}
+    ticker = {'price': 100, 'bid': 100, 'ask': 100, 'exchange': 'binance'}
     calls = []
 
     def quote(symbol, market_type='swap', *args, **kwargs):
@@ -173,7 +173,15 @@ def test_duplicate_concurrent_loans_are_atomic(ledger):
     caller, _, _ = ledger
     create(caller)
     with ThreadPoolExecutor(max_workers=6) as pool:
-        results = list(pool.map(lambda _: paper.bank(caller, '123456', 'borrow', 100, 'same-loan-message'), range(12)))
+        def invoke(_):
+            from backend.utils.runtime_capacity import CapacityBusy
+            try:
+                return paper.bank(caller, '123456', 'borrow', 100, 'same-loan-message')
+            except CapacityBusy:
+                return None
+        results = list(pool.map(invoke, range(12)))
+    results = [row for row in results if row is not None]
+    results.append(paper.bank(caller, '123456', 'borrow', 100, 'same-loan-message'))
     assert all(r == results[0] for r in results)
     assert paper.get_account(caller, '123456')['debt'] == 100
 

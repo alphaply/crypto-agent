@@ -10,7 +10,7 @@ from backend.agent.decision_context import load_decision_memory
 from backend.agent.memory_workflow import memory_review_lease, get_review_result
 from backend.database_schema import initialize_schema
 from backend.utils.trade_context import project_trade_state, render_orders
-from test_trade_tool_integration import simulation, real_short, call
+from test_trade_tool_integration import simulation, real_short, call, recover
 
 
 CFG = dict(config_id='cfg', symbol='ETH/USDT', mode='STRATEGY', exit_mode='independent_exits', model='offline')
@@ -195,24 +195,28 @@ def test_projection_restart_after_result_saved_reuses_same_model_result(sources,
 def test_existing_worker_queues_projection_without_new_summary_job(sources, monkeypatch):
     from backend.config import config
     submit = Mock(return_value=Mock(done=lambda: False))
+    process = Mock(return_value=True)
+    monkeypatch.setattr(projections, 'process_projection_updates', process)
     monkeypatch.setattr(memory_updates, '_executor', Mock(submit=submit))
     monkeypatch.setattr(memory_updates, '_active', {})
     monkeypatch.setattr(config, 'get_all_symbol_configs', lambda: [CFG])
     memory_updates.tick_memory_updates()
     assert submit.call_count == 1
-    assert submit.call_args.args == (projections.process_projection_updates, 'cfg', CFG)
+    queued_function, *queued_args = submit.call_args.args
+    queued_function(*queued_args)
+    process.assert_called_once_with('cfg', CFG)
     memory_updates.tick_memory_updates()
     assert submit.call_count == 1
 
 
-def test_old_identity_from_memory_is_refreshed_outside_window_and_failed_query_is_explicit(real_short, monkeypatch):
+def test_old_identity_from_memory_uses_background_evidence_and_explicit_unavailable_state(real_short, monkeypatch):
     from backend.utils.decision_record import append_execution_receipts
     service, exchange = real_short
     exchange.timeout_next = True
     original = call('close', dict(side='SHORT', close_all=True, order_type='market', reason='exit'), 'old-close')
     record = {'messages': [], 'execution_results': [{'tool': 'close', 'tool_call_id': 'old-close', 'result': json.dumps(original)}]}
     summary = dict(config_id='cfg', symbol='ETH/USDT', decision_json=json.dumps(record))
-    call('get_trade_operation', {'target_operation_id': 'old-close'}, 'read-now')
+    recover('old-close')
     text = append_execution_receipts('旧摘要', summary)
     from backend.utils.decision_record import memory_execution_evidence
     evidence = memory_execution_evidence(summary)[0]

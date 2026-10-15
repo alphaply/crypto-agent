@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from copy import deepcopy
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -93,10 +93,15 @@ MODE_SORT_ORDER = {
 }
 
 
-def _get_conn() -> sqlite3.Connection:
+@contextmanager
+def _get_conn():
     conn = sqlite3.connect(DB_NAME, timeout=30)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _now() -> str:

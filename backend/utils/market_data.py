@@ -178,8 +178,8 @@ class MarketTool:
         else:
             self.exchange = ccxt.binanceusdm(config)
 
-        # MCP uses fresh mutable clients, with shared immutable metadata and
-        # account pacing. Other runtime paths retain their existing behavior.
+        # All callers use process-local bounded public metadata. Mutable
+        # clients/account transports remain independent of that public key.
         from backend.mcp.resilience import current_budget
         mcp_budget = current_budget.get()
         if mcp_budget:
@@ -187,24 +187,21 @@ class MarketTool:
             self.mcp_account_key = account_key(exchange_name, requested_market_type,
                                                [api_key, secret, passphrase, proxy_port])
             install_transport(self.exchange, self.mcp_account_key)
+        else:
+            from backend.mcp.exchange_runtime import account_key, install_transport
+            install_transport(self.exchange, account_key(exchange_name, requested_market_type,
+                                                         [api_key, secret, passphrase, proxy_port]))
         try:
-            if mcp_budget:
-                self.market_observed_at = load_catalogue(self.exchange, self.mcp_account_key)
-            else:
-                self.exchange.load_markets()
+            from backend.mcp.exchange_runtime import load_catalogue
+            self.market_observed_at = load_catalogue(self.exchange, market_type=requested_market_type)
             logger.info(
                 f"✅ 交易所连接成功 [exchange={exchange_name}, market={requested_market_type}, "
                 f"config_id={config_id}, symbol={self.symbol}]"
             )
         except Exception as e:
-            if mcp_budget:
-                # Missing metadata is not an initialized client, and signed
-                # request URLs/credentials must not appear in warning logs.
-                raise
-            logger.warning(
-                f"⚠️ 初始化加载市场失败 [exchange={exchange_name}, market={requested_market_type}, "
-                f"config_id={config_id}, symbol={self.symbol}]: {e}"
-            )
+            # Missing or over-budget metadata is not an initialized client.
+            # Do not expose signed URLs or admit writes with partial metadata.
+            raise
 
     def list_symbols(self, market_type: str | None = None):
         """Return active exchange symbols for an autocomplete catalogue without exposing credentials."""
@@ -212,7 +209,8 @@ class MarketTool:
         if requested_market_type not in {'spot', 'swap'}:
             raise ValueError(f"暂不支持市场类型: {requested_market_type}")
         if not self.exchange.markets:
-            self.exchange.load_markets()
+            from backend.mcp.exchange_runtime import load_catalogue
+            load_catalogue(self.exchange, market_type=requested_market_type)
 
         records = []
         for market in self.exchange.markets.values():
@@ -239,6 +237,18 @@ class MarketTool:
         preferred_quotes = {'USDT': 0, 'USDC': 1, 'FDUSD': 2, 'USD': 3}
         records.sort(key=lambda item: (preferred_quotes.get(item['quote'], 9), item['symbol']))
         return records
+
+    def close(self):
+        from backend.mcp.exchange_runtime import close_runtime_client
+        exchange = getattr(self, 'exchange', None)
+        return close_runtime_client(exchange) if exchange is not None else True
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            # Interpreter shutdown can already have removed module globals.
+            pass
 
     # ==========================================
     # 0. 基础工具 (衍生数据获取)
@@ -1218,7 +1228,9 @@ class MarketTool:
     # ==========================================
     def place_real_order(self, symbol, action, order_params, agent_name=None):
         try:
-            if not self.exchange.markets: self.exchange.load_markets()
+            if not self.exchange.markets:
+                from backend.mcp.exchange_runtime import load_catalogue
+                load_catalogue(self.exchange, market_type=self.market_type)
             symbol = str(symbol)
             
             # --- 日志：收到指令 ---

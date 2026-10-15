@@ -91,7 +91,7 @@ def test_dependency_indices_cannot_be_ambiguous(dependencies):
 def test_published_mode_schema_and_default_catalog(mode, exit_mode, protect):
     cfg = {'mode': mode, 'exit_mode': exit_mode, 'symbol': 'ETH/USDT'}
     tools = tool_registry.get_trade_tools_for_mode(mode, cfg)
-    assert [tool.name for tool in tools] == ['execute_trade_actions', 'get_trade_operation']
+    assert [tool.name for tool in tools] == ['execute_trade_actions']
     schema = tools[0].args_schema
     mapping = schema['properties']['actions']['items']['discriminator']['mapping']
     assert set(mapping) == {'open', 'close', 'edit', 'cancel'} | ({'protect'} if protect else set())
@@ -275,7 +275,7 @@ def test_compact_projection_keeps_unknown_identity_quantity_and_cleanup_truth():
                'recovery': {'target_operation_id': 'parent:0'}, 'account': {'balance': 123}}},
                        {'index': 1, 'action': 'open', 'status': 'not_executed', 'blocked_by_indices': [0]}]}
     compact = unified.compact_trade_receipt(raw)
-    assert compact['results'][0]['result']['status'] == 'unknown'
+    assert compact['results'][0]['status'] == 'unknown'
     assert compact['results'][0]['result']['order_status'] == 'filled'
     assert compact['results'][0]['result']['cleanup']['blocking_order_ids'] == ['algo:old']
     assert compact['results'][1]['blocked_by_indices'] == [0]
@@ -361,7 +361,7 @@ def test_v3_strategy_close_keeps_original_fill_after_outer_receipt_loss(ledger, 
     assert json.loads(tool_registry.run_trade_tool('execute_trade_actions', payload, 'cfg', 'ETH/USDT', 'close')) == result
 
 
-def test_bound_chat_v3_approves_each_action_and_reject_stops_tail_but_query_available(ledger, monkeypatch):
+def test_bound_chat_v3_approves_each_action_and_reject_stops_all_later_calls(ledger, monkeypatch):
     monkeypatch.setattr(chat_graph, '_resolve_chat_config', lambda _: CFG)
     approvals = Mock(side_effect=[True, False])
     monkeypatch.setattr(chat_graph, 'interrupt', approvals)
@@ -373,7 +373,7 @@ def test_bound_chat_v3_approves_each_action_and_reject_stops_tail_but_query_avai
     result = chat_graph.tools_node({'messages': [AIMessage(content='', tool_calls=calls)]}, {'configurable': {'config_id': 'cfg'}})
     receipt = json.loads(result['messages'][0].content)
     assert [row['status'] for row in receipt['results']] == ['completed', 'not_executed', 'not_executed']
-    assert json.loads(result['messages'][1].content)['query']['status'] == 'completed'
+    assert json.loads(result['messages'][1].content)['status'] == 'not_executed'
     assert approvals.call_count == 2 and dispatched.call_count == 1
     assert [call.args[0]['action_index'] for call in approvals.call_args_list] == [0, 1]
 
@@ -408,13 +408,15 @@ def test_saved_legacy_fingerprints_receipts_and_tail_replay_are_unchanged(ledger
         monkeypatch.setattr(trade_batch, '_dispatch', dispatch)
     name = fixture.get('tool', 'execute_trade_actions')
     first = json.loads(tool_registry.run_trade_tool(name, fixture['payload'], 'fixture-task', 'ETH/USDT', fixture['name']))
-    assert first == fixture['receipt']
+    assert first == unified.compact_trade_receipt(fixture['receipt'])
     assert json.loads(tool_registry.run_trade_tool(name, fixture['payload'], 'fixture-task', 'ETH/USDT', fixture['name'])) == first
     assert dispatch.call_count == (1 if fixture.get('tool') else 2)
     with database.get_db_conn() as conn:
         rows = {row['operation_id']: dict(row) for row in conn.execute('SELECT * FROM trade_action_runs')}
         intents = {row['operation_id']: json.loads(row['request_json']) for row in conn.execute('SELECT * FROM trade_operation_requests')}
     assert rows[fixture['name']]['request_hash'] == fixture['fingerprint']
+    from backend.utils.trade_operations import _decode_receipt
+    assert _decode_receipt(rows[fixture['name']]['result']) == fixture['receipt']
     assert intents[fixture['name']] == fixture['parent_request']
     for child in fixture.get('children', []):
         assert rows[child['operation_id']]['request_hash'] == child['fingerprint']
@@ -426,7 +428,7 @@ def test_saved_legacy_fingerprints_receipts_and_tail_replay_are_unchanged(ledger
 @pytest.mark.parametrize('node_name', ['agent_node', 'small_agent_node'])
 @pytest.mark.parametrize('mode,exit_mode', [('REAL', 'independent_exits'), ('REAL', 'attached_required'),
                                            ('STRATEGY', 'attached_optional'), ('SPOT_DCA', 'independent_exits')])
-def test_actual_main_and_small_bind_exactly_two_tools(ledger, monkeypatch, node_name, mode, exit_mode):
+def test_actual_main_and_small_bind_only_the_ordered_executor(ledger, monkeypatch, node_name, mode, exit_mode):
     from backend.agent import agent_graph
     from backend.agent.agent_models import AgentState
     from langchain_core.messages import HumanMessage, AIMessageChunk
@@ -443,7 +445,7 @@ def test_actual_main_and_small_bind_exactly_two_tools(ledger, monkeypatch, node_
     state = AgentState(symbol='ETH/USDT', market_context={}, account_context={}, messages=[HumanMessage(content='analyze')])
     result = getattr(agent_graph, node_name)(state, {'configurable': {'config_id': 'cfg', 'agent_config': {
         'model': 'offline-fixture', 'mode': mode, 'exit_mode': exit_mode}}})
-    assert [tool.name for tool in model.tools] == ['execute_trade_actions', 'get_trade_operation']
+    assert [tool.name for tool in model.tools] == ['execute_trade_actions']
     assert model.tools[0].args_schema['properties']['contract_version']['const'] == 3
     assert result.messages[-1].content == 'observed'
 
@@ -558,7 +560,7 @@ def test_foreign_worker_lock_keeps_unattempted_children_pending(ledger):
     assert [row['status'] for row in finished['results']] == ['not_executed', 'not_executed']
 
 
-def test_attached_strategy_readonly_query_observes_fill_without_claim_or_reexecution(ledger, monkeypatch):
+def test_attached_strategy_background_helper_observes_fill_without_claim_or_reexecution(ledger, monkeypatch):
     cfg = {**CFG, 'exit_mode': 'attached_optional'}
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: cfg)
     opened = json.loads(tool_registry.run_trade_tool('execute_trade_actions', batch(opening()), 'cfg', 'ETH/USDT', 'fill-query'))
@@ -566,7 +568,7 @@ def test_attached_strategy_readonly_query_observes_fill_without_claim_or_reexecu
     with database.get_db_conn() as conn:
         conn.execute('UPDATE mock_orders SET is_filled=1')
         conn.commit()
-    query = json.loads(tool_registry.run_trade_tool('get_trade_operation', {'target_operation_id': 'fill-query'}, 'cfg', 'ETH/USDT'))
+    query = unified.query_unified_operation('cfg', 'ETH/USDT', 'fill-query')
     assert query['results'][0]['status'] == 'completed'
     assert query['results'][0]['result']['order_status'] == 'filled'
     assert query['results'][0]['result']['filled_amount'] == .2

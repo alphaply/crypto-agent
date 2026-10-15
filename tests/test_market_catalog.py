@@ -4,6 +4,24 @@ from unittest.mock import Mock
 import pytest
 
 from backend.app.services import market_catalog_service as service
+from backend.utils import public_catalogue
+
+
+class PublicExchange:
+    id = 'binance'
+    options = {}
+    urls = {'api': {'public': 'https://catalogue.fixture.invalid'}}
+    def __init__(self, loader):
+        self.load_markets = loader
+        self.markets = self.currencies = None
+    def set_markets(self, markets, currencies):
+        self.markets, self.currencies = markets, currencies
+
+
+def offline_loader(client, market_type=None):
+    # Unit tests for the HTTP service inject its common metadata boundary.
+    client.markets = client.load_markets()
+    return 1
 
 
 def market(symbol, *, active=True, spot=True):
@@ -12,14 +30,15 @@ def market(symbol, *, active=True, spot=True):
 
 
 @pytest.fixture(autouse=True)
-def clean_catalog_cache():
+def clean_catalog_cache(monkeypatch):
     service._market_symbol_cache.clear()
+    monkeypatch.setattr(service, 'load_public_catalogue', offline_loader)
     yield
     service._market_symbol_cache.clear()
 
 
 def fake_exchange(monkeypatch, markets):
-    factory = Mock(return_value=SimpleNamespace(load_markets=Mock(return_value={str(i): item for i, item in enumerate(markets)})))
+    factory = Mock(return_value=PublicExchange(Mock(return_value={str(i): item for i, item in enumerate(markets)})))
     monkeypatch.setattr(service.ccxt, "binance", factory)
     return factory
 
@@ -55,7 +74,7 @@ def test_pagination_search_quote_and_selected_validation_are_independent(monkeyp
 
 
 def test_catalog_failure_not_cached_and_transport_details_not_exposed(monkeypatch):
-    client = SimpleNamespace(load_markets=Mock(side_effect=RuntimeError("sensitive transport details")))
+    client = PublicExchange(Mock(side_effect=RuntimeError("sensitive transport details")))
     monkeypatch.setattr(service, "_public_exchange", lambda *_: client)
     with pytest.raises(service.MarketCatalogUnavailable) as error:
         service.get_market_catalog("okx")

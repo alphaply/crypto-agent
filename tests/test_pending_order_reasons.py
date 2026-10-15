@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -65,7 +66,7 @@ class PendingOrderReasonTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_fetch_real_open_orders_backfills_reason_from_local_order_log(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
                 "INSERT INTO orders (order_id, config_id, reason) VALUES (?, ?, ?)",
                 ("limit-1", "cfg-a", "entry retest"),

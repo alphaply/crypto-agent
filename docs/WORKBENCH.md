@@ -75,7 +75,7 @@ Agent 页短期记忆中的「成交事实快照」对应该条记忆保存的�
 
 已核验当前方向无仓时，返回跳过，不创建订单。有仓但缺少当前周期时，v3 有效交易请求会核验授权范围、当前 owner 和真实资源，自动建立管理基线。人工建立的仓位和挂单可在原请求中管理；其他任务已占用的资源返回局部管理冲突。
 
-主 Agent、小模型和绑定任务聊天默认只绑定 `execute_trade_actions` 与 `get_trade_operation`。单笔请求也是一项 actions 数组；例如 cancel、edit、open 可放在同一个 `contract_version=3` 请求里按顺序执行。整批静态授权通过后，逐项刷新动态准入，合法 cancel 不因后续 open 的余额或数量问题提前被拒绝。默认失败停止，不等待限价单成交，不自动回滚已完成项或续跑未执行尾部。
+主 Agent、小模型和绑定任务聊天默认只绑定 `execute_trade_actions`。单笔请求也是一项 actions 数组；例如 cancel、edit、open 可放在同一个 `contract_version=3` 请求里按顺序执行。整批静态授权通过后，逐项刷新动态准入，合法 cancel 不因后续 open 的余额或数量问题提前被拒绝。默认失败停止，不等待限价单成交，不自动回滚已完成项或续跑未执行尾部。
 
 手动仓使用独立管理基线，不生成虚假的 Agent 入场、历史成交或完整周期收益。后台对账人工加减仓、改价、撤单及条件母子身份。来源、管理者、可用能力和证据新鲜度分别展示；当前可见数量不会因旧周期缺失变成空仓。旧 `adopt_position_real` / `adopt_perpetual_position` 仅保留直接调用兼容，不进入默认目录。
 
@@ -89,7 +89,7 @@ Agent 页短期记忆中的「成交事实快照」对应该条记忆保存的�
 
 跨轮允许先 open，核验成交后在本轮或后续轮次 close。fixed 档保持指定量；数量冲突由 quantity_conflict 单独报告，Agent 可 edit/cancel。市价 all 固定提交前核验量，条件市价 all 保持动态至触发，覆盖整个账户该品种该方向。归零清理仍包括本周期未成交入场，撤销期间迟到成交作为残仓继续管理，不自动追平。
 
-edit 普通 LIMIT 返回 native，条件退出返回 cancel_replace 及旧新 ID。例如查询返回 algo:456 及其 regular:789 子单时：edit(algo:456) 提示 order_already_triggered；后续 edit(regular:789, remaining_amount=0.2, price=...) 修改活跃子单，不再传 trigger_price。cancel(algo:456) 通过已核验链路撤子单；关联缺失时保留待核验，不能宣布已全部撤掉。替代单超时后使用原 operation_id 查询恢复，禁止换 ID 盲目重复提交。
+edit 普通 LIMIT 返回 native，条件退出返回 cancel_replace 及旧新 ID。例如查询返回 algo:456 及其 regular:789 子单时：edit(algo:456) 提示 order_already_triggered；后续 edit(regular:789, remaining_amount=0.2, price=...) 修改活跃子单，不再传 trigger_price。cancel(algo:456) 通过已核验链路撤子单；关联缺失时保留待核验，不能宣布已全部撤掉。替代单超时后由系统按原 operation_id/客户端身份后台核验，禁止换 ID 盲目重复提交；未尝试的替代单不会在后台自动提交。
 
 模拟使用行情区间，不能证明真实逐笔成交顺序；同根 SL 优先、条件 LIMIT 不回填触发前成交，超额固定档只记录实际退出量及未执行余量。验证记录见本变更的 [归档验证记录](../openspec/changes/archive/2026-10-11-refine-independent-trading-tools/verification.md)；全部使用隔离数据库和拦截式交易所，未向真实账户下单。
 

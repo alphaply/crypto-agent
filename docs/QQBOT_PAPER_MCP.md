@@ -1,130 +1,70 @@
 # QQBot Paper MCP
 
-## 默认十一工具与顺序交易
+Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货和线性永续。模拟的是资金、订单和成交；不会连接其他交易所或在 Binance 失败时跨场所回退。陌生名称须由当前 Binance 目录核验；空结果或来源失败不能证明标的全球不存在。
 
-新连接重新 tools/list 后只看到 `get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`、`get_operation`、`paper_bank`、`configure_paper_account`、`get_paper_leaderboard`。read-only Key 隐藏执行、银行及配置，保留八项读取能力。旧 paper_* 适配器仍可按原请求直接调用，下面旧示例属于兼容入口。
+## 连接、身份与目录
 
-开始时调用 get_trading_context 读取规则和自己的 bot_user_id；需要用户开户时显式 `configure_paper_account(action="create", user_id, operation_id, name?)`，已有账户不重置。update 只修改后续默认 leverage 或 name/leaderboard_visible/notifications_enabled。user_id 必须来自可信 QQ 发送者或已返回的 Bot 身份；不要从用户消息正文切换账户。
-
-交易统一使用 contract_version=3；一次父请求只属于一个 namespace/user。市场和 exchange 在动作中明确，执行引擎及 namespace 来自 Key，不能由参数选择真实交易。例：用 USDT 保证金市价开多后设置单腿止损：
+后台 → MCP → QQBot 模拟交易，创建 `key_type=paper`、`scopes=["read","trade"]`、`profile_ids=[]` 的 Key。它管理自己的 `paper_namespace`；不得分发给 QQ 用户。不同 namespace 隔离，同 namespace 的 Key 轮换保留账户。
 
 ```json
-{"user_id":"123456789","operation_id":"qq-event-v3-0001","contract_version":3,"include":["account"],"actions":[{"action":"open","market_type":"swap","exchange":"binance","symbol":"BTC/USDT:USDT","side":"LONG","order_type":"market","margin_amount":100,"leverage":5,"reason":"用户开多"},{"action":"protect","market_type":"swap","exchange":"binance","symbol":"BTC/USDT:USDT","side":"LONG","close_all":true,"stop_loss":58000,"reason":"用户止损"}]}
+{"mcpServers":{"crypto-agent-paper":{"url":"https://你的域名/mcp","headers":{"Authorization":"Bearer <Paper Key>"}}}}
 ```
 
-amount 为基础币数量；quote_amount 为 USDT 名义金额（现货买入含手续费预算）；margin_amount 为合约入场保证金且手续费另计。入场三选一，退出选择 amount 或 close_all；现货仅 LONG 买卖，无杠杆。限价需要 price，只返回接受状态，不等于成交。保护允许单腿、成对及部分量；省略已有腿保留，OCO 一腿成交同时取消另一腿。close_all 只跟随当前 Paper 周期，不平掉后来重开的新周期。
+可信 QQ 消息元数据提供字符串 `user_id`，不要从消息正文切换账户。Bot 参赛使用 `get_trading_context` 返回的 `bot_user_id`。Paper Key 不能选择真实执行引擎、live profile 或其他 namespace。
 
-每个父请求 1–20 项，默认失败/待核验/未知后停止。先 cancel 后 open 会先提交撤单并释放预留，下一项按新余额核验。independent 只继续符合实际条件的项；depends_on 仅引用已 completed 的此前索引，submitted 不满足依赖。整批非原子，单项账户、订单、预留、事件、子回执及父进度原子提交，公开网络报价在事务外读取。
+新连接重新 `tools/list` 后，Paper 可写目录为十项：`get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`、`paper_bank`、`configure_paper_account`、`get_paper_leaderboard`。只读 Key 保留七项。live 目录为 7/6 项，内置交易 Agent 只绑定 `execute_trade_actions`，只读角色零交易工具。
 
-同父 ID 相同意图只恢复原结果，改变顺序、策略、依赖或金额须为新的明确请求。崩溃或断线后 `get_operation(user_id, operation_id, detail=true)` 可读取完整父子证据；已提交子项不重复成交，未尝试尾部不自动续跑。默认回执精简，include=["account"] 只在末尾返回一次账户摘要。
+旧单项金融适配器继续接受原参数和稳定 ID，但不在默认目录；新请求同样受 BN 策略约束。操作查询工具已彻底移除，缓存旧名称的客户端须更新；没有改名查询、operation facet 或 query 动作替代。旧配置默认场所仍兼容读取，新保存或导入只接受 Binance。
 
-账户按需读取 `get_account_state(user_id, include=["positions"])` 或 balances/inventory/orders；订单、单 ID、成交和事件历史分别用 get_trade_records 的 orders/order/fills/history。银行、排行榜和配置仍是独立能力。机器人事件轮询继续用 `/api/paper/events`，不属于对话模型目录，不由事件读取发送消息。
+## 一次顺序交易
 
-## 连接与旧客户端兼容
+开户显式使用 `configure_paper_account(action="create",user_id,operation_id,name?)`；重复创建不追加资金或重置债务。`action="update"` 修改后续默认杠杆、昵称、排行榜或通知偏好，不重设已有逐仓保证金。
 
-后台 → MCP → **QQBot 模拟交易 · Paper**，点击「创建 Paper Key」。默认命名空间 `qqbot`，权限 `read` + `trade`。复制该 key，使用已有 MCP HTTP 地址（网站根地址加 `/mcp`）：
+交易调用 `execute_trade_actions(user_id,operation_id,contract_version=3,actions,execution_policy?,include?)`，一次 1–20 项，有类型的 `open/close/edit/cancel/protect` 按数组顺序执行。父请求只属于一个 namespace/user。
 
 ```json
-{
-  "mcpServers": {
-    "crypto-agent-paper": {
-      "url": "https://你的域名/mcp",
-      "headers": { "Authorization": "Bearer <后台创建的 Paper Key>" }
-    }
-  }
-}
+{"user_id":"123456789","operation_id":"qq-event-v3-0001","contract_version":3,"include":["account"],"actions":[{"action":"cancel","order_id":"原真实订单ID","reason":"撤销旧计划"},{"action":"open","market_type":"spot","exchange":"binance","symbol":"BTC/USDT","side":"LONG","order_type":"limit","quote_amount":100,"price":50000,"reason":"用户的新计划"}]}
 ```
 
-Paper key 无需绑定真实交易所账户，不能访问真实账户或真实下单工具。可读取公开行情以及 `get_news` 共享评分情报。实际交易全部写入独立模拟账本，持久化在现有数据卷的 SQLite 中。
+入场在基础币 `amount`、USDT 名义金额 `quote_amount`、合约保证金 `margin_amount` 中选一种；保证金手续费另计，现货买入名义预算包含手续费。退出使用 `amount` 或 `close_all`。现货只支持 LONG 买卖、无杠杆；合约杠杆须为上限内整数。限价传 `price`，条件退出传对应触发价格。保护可单腿、成对或部分量；省略已有腿保留，OCO 一腿成交取消另一腿。
 
-## 按用户 ID 使用
+整批结构、权限、场所和已知目标来源在首项金融变化前验证。后项引用历史非 BN 目标会令首项也不执行。每项重新检查完整资金承诺；先取消 BN 原挂单后，可以使用已确认释放的资金执行下一项。默认 `stop_on_error` 在 failed/pending/unknown 后停止；`independent` 仅继续自身及依赖满足的项。`depends_on` 只引用此前已 `completed` 的索引，`submitted` 不满足依赖。后项失败不回滚前项。
 
-QQBot 必须从可信消息事件取得发送者 ID，作为**字符串**传给所有账户工具；不要让模型从消息正文选择其他用户的 ID。此 key 是 bot 服务凭据，能够管理其命名空间内所有用户；不要分发给 QQ 用户。同命名空间的 keys 共享账户，轮换 key 不会重置资金；不同命名空间互相隔离。一个用户的现货和合约共享 USDT 现金。
+金融入口当次返回权威受理或成交事实，不追加模型核验调用，不等待未来触发或成交。`submitted` 只表示受理，不能汇报为已平仓；有实际成交证据才报告成交。后台自动核验原订单并更新状态。断线不代表回滚，不得换 ID 盲重发。相同 ID 及意图只恢复原事实，未尝试尾项不续跑；剩余意图须为新的明确请求和稳定父 ID。
 
-旧客户端兼容调用顺序（新模型使用开头的 v3 入口）：
+默认回执单项至多 4096、整批至多 32768 UTF-8 字节，保留索引、身份、状态和已知数量；`include=["account"]` 最多一次账户摘要。完整证据由授权 HTTP/UI 展开。
 
-1. `get_paper_config` 查看默认资金、杠杆上限、借款上限和手续费。
-2. `create_paper_account` 传 `user_id`、稳定 `operation_id`，可选 `name`。重复创建返回原账户，不充值或重置。
-3. `get_paper_market` 查看 `symbol`、`market_type: spot|swap`、可选 `timeframe` / `limit`。
-4. `paper_trade` 传 `user_id`、`market_type`、`symbol`、`action`、`amount`、`operation_id`，合约开仓可传 `leverage`。
-5. `get_paper_account` / `get_paper_history` 查资金、负债、仓位及历史；`get_paper_operation` 查原回执。
+## 历史过滤与完整资金
 
-```json
-{"user_id":"123456789","name":"QQ 用户","operation_id":"qq-event-0001-create"}
-```
+历史非 BN、缺失/冲突来源、以及曾回填 Binance 但无原资源/周期证据的资源，从默认账户、订单、历史、事件和撮合集合逻辑过滤。原行、场所、数量、成本、订单状态、周期、回执和指纹保留；不会自动平仓、撤单、改价或释放保证金及预留。新 BN 同名同方向资源使用独立身份、存储 key 和周期，不合并旧库存、不由新成交追认旧来源。
 
-现货买入示例（`paper_trade`）：
+`get_account_state` 按需读取 balances/positions/inventory/orders，始终携带 `filter`、`completeness` 和估值状态。现金、债务和可用现金保留完整账本含义。混合估值或收益证据缺项时权益、净权益及收益为 null，界面显示 —；不按假零值排名。借还款、初始资金和后台充值不成为交易盈利。
 
-```json
-{"user_id":"123456789","market_type":"spot","symbol":"BTC/USDT","action":"buy","amount":0.001,"operation_id":"qq-event-0002-buy"}
-```
+`get_trade_records(record_type=orders|order|fills|history)` 读取正常记录；默认列表仅显示可信 BN，精确 `order_id` 在原 namespace/user 权限内保留原订单事实。历史页按已检查原记录推进 `next_offset/next_cursor`，过滤空页仍可能 `has_more=true`。账户或回执超过完整读取预算时明确未处理，不用部分预留继续准入。
 
-合约开多示例（`paper_trade`）：
+## 银行、维护与排行榜
 
-```json
-{"user_id":"123456789","market_type":"swap","symbol":"BTC/USDT:USDT","action":"open_long","amount":0.001,"leverage":10,"operation_id":"qq-event-0003-long"}
-```
+`paper_bank(action=borrow|repay,amount,user_id,operation_id)` 的金额为 USDT。借款同时增加现金和债务、零利息；还款不超过债务与扣除全部预留后的可用现金。债务在爆仓后保留，后台调整的是账本现金。
 
-`amount` 始终是基础币数量（例：BTC 数量），不是 USDT 金额或张数。现货 `buy` / `sell`；合约 `open_long` / `open_short` / `close_long` / `close_short`，支持部分平仓。市价交易按真实公开 ask/bid 模拟撮合并计入手续费。支持 USDT 现货和线性永续，现已支持限价委托与 OCO 止盈止损；暂不模拟资金费。行情为交易所生产环境的真实公开数据，只有资金和成交账本为 Paper。
+Web 独立运行 Paper 维护，按持久账户/标的游标分批推进，再等待约 15 秒；实际间隔包含行情耗时。每轮账户访问、标的数分别不超过 `PAPER_SCAN_BATCH_SIZE`，并共享 `PAPER_MAINTENANCE_SECONDS`（默认 30 秒）的绝对截止时间；每次只规划一个标的，耗尽后下一轮继续持久游标。只处理可信 BN 资源，被排除仓位和挂单不进入报价/撮合。逐仓爆仓损失最多为原保证金，其他仓位和债务保留。公开网络读取位于金融事务外。
 
-每个消息动作必须用独立且稳定的 `operation_id`，推荐基于 QQ 事件 ID 加动作序号生成（8–160 字符，字母数字和 `_.:-`）。成功操作重复请求返回首次价格与回执，行情断网也可重试；同 ID 不同请求报错。交易、借还款、账户创建与回执在同一个 SQLite 事务完成。请求超时先查 `get_paper_operation`，不要换 ID 盲重试。
+`get_paper_leaderboard(user_id?,metric=return_pct|pnl)` 仅排名完整可核验收益。大集合先返回 `status=partial/scan_complete=false`，后续调用继续服务端扫描，完成后才发布排名。`unranked_count/incomplete_count` 表达未排名与缺项。管理员看板提供组件进度与返回页范围，不把部分扫描称为全量总额。
 
-## 杠杆、爆仓与银行
+## HTTP 事件与审计
 
-`set_paper_leverage(user_id, leverage, operation_id)` 修改后续合约开仓默认杠杆，上限由后台控制（最多 125×）。逐仓仓位的杠杆与保证金在该仓位周期保持固定；变更同一仓位杠杆需先平仓。
+`GET /api/paper/events?after_id=<cursor>&limit=100` 使用 Paper Bearer。按 `delivery_key` 去重，交付或持久入队后才保存 `next_cursor`；可信 `recipient_user_id` 决定路由。空过滤页也推进游标并继续 `has_more`。通知偏好生效，接口不发送消息，Bot 内部 ID 不作为真实 QQ 号。`GET /api/paper/leaderboard` 使用相同凭据。
 
-Web 服务启动独立模拟维护任务，不依赖真实策略 scheduler。每轮扫描各有仓位的标的并等待约 15 秒；请求行情的时间也计入实际检查间隔。每个标的有独立超时预算，行情失败保留上次估值，不假造报价。`get_paper_account` 是只读，返回最后观察价与 `oldest_mark_at`，应检查时间后再描述净资产。
+Paper Bearer 回执：`GET /api/paper/operations/{user_id}/{operation_id}/audit?view=original|latest`；原账本：`GET /api/paper/ledger/{user_id}/{account|order|event}/{record_id}/audit`。后台追加独立最新观察，原子子回执及指纹不变。管理员 JWT 对应路径如下：
 
-当逐仓保证金加未实现盈亏不高于维护保证金（当前价格 × 数量 × 维护比例），仓位爆仓并写入历史。亏损最多为该仓保证金，剩余保证金扣手续费后归还现金；其他仓位、现货和自由现金不参与该仓爆仓。借款负债保留。
+- `GET /api/mcp/paper/accounts/{namespace}/{user_id}/audit`：原账户。
+- `GET /api/mcp/paper/ledger/{namespace}/{user_id}/{order|event}/{record_id}/audit`：原订单/事件。
+- `GET /api/mcp/paper/receipts/{namespace}/{user_id}/{operation_id}?view=original|latest`：原/最新回执。
+- `GET /api/mcp/paper/accounts`、`GET /api/mcp/paper/dashboard`：业务投影及分页进度。
+- `PUT /api/mcp/paper/settings`：资金、费率、杠杆等配置，`exchange` 仅 `binance`。
+- `POST/PATCH /api/mcp/paper/accounts/{namespace}/{user_id}`：保留身份的开户/管理调整。
 
-`paper_bank` 使用 `action: borrow|repay`、`amount`（USDT，最多 8 位小数）、`user_id` 和 `operation_id`。借款增加等额现金和债务，不增加净资产；零利息。还款不能超过可用现金或负债。爆仓后可以继续申请额度内的贷款。
+详情默认 base64 字节片段，length 为 1–65536；`encoding=text&length=2048` 每页至多 2048 个完整 Unicode 字符，避免中文拆字。两种编码的 `offset/next_offset` 都是字节游标，text 明确返回 `offset_unit=bytes`，客户端透传返回的游标。通过 SQLite 增量 blob IO 只读取有界片段，不用会在 SQL VM 加载整个大值的 CAST/substring 表达式。响应有 `version/next_offset/has_more/total_bytes`。续读必须携带 version；可变原账本变化返回 `audit_version_changed`，重新展开；不可变回执 revision 可继续读取。以上路径均受原权限保护、禁止缓存，不进行金融写入或交易所联网。
 
-后台可按命名空间和完整用户 ID 创建/检索账户，修改名称、可用现金、负债、借款上限、后续开仓杠杆、允许市场和启用状态。调整写入账户历史。初始资金与默认借款上限仅影响新账户。暂停账户禁止新交易和借款，仍可还款，后台仍会维护已有仓位。`realized_pnl` 记录退出净收益；开仓/买入手续费另外累计在 `fees` 并已从现金扣除。
+`PAPER_MAX_PAYLOAD_BYTES`（默认 262144）、`PAPER_SCAN_BATCH_SIZE`（64）、`PAPER_HISTORY_SCAN_LIMIT`（256）为有限校准值，非法值报错。先查大小再解析；不能完整核验资金时拒绝金融请求，原行仍可分块审计。后台保存扫描游标，重启继续；已结束回执不持续进入活跃订单解析集合。原资源来源核验有固定扫描 horizon，后来的新成交不会追认旧资源。
 
-## 后台 API
-
-以下路径使用管理员 JWT，不接受 MCP key；响应禁止缓存。
-
-- `PUT /api/mcp/paper/settings`：修改 `enabled`、`initial_balance`、`max_leverage`、`loan_limit`、`fee_rate`、`maintenance_margin_rate`、`exchange`（`binance` / `okx`）。
-- `GET /api/mcp/paper/accounts?namespace=qqbot&user_id=123456789&limit=20&offset=0`：分页查询。
-- `POST /api/mcp/paper/accounts/{namespace}/{user_id}`：创建账户。
-- `PATCH /api/mcp/paper/accounts/{namespace}/{user_id}`：修改 `cash`、`debt`、`loan_limit`、`leverage`、`markets`、`enabled`、`name`。
-- `POST /api/mcp/keys`：`{"name":"QQBot Paper","key_type":"paper","paper_namespace":"qqbot","scopes":["read","trade"],"profile_ids":[]}`。
-
-现有完整配置导入导出保留 paper key 类型、命名空间及全局设置；账户、回执和历史属于运行数据，随数据库卷持久化，不在配置导出中。
-
-
-## V2：真实行情、挂单、PK 与通知
-
-`get_paper_market` 明确返回 `market_data_mode: live_public`、`market_data_is_simulated: false`、`source_environment: production`；不要把真实报价称为模拟价格。公开行情源支持 Binance、OKX、Bitget、Bybit，工具可显式传 `exchange`，持仓与委托固定记录行情场所。未指定交易所的标的搜索并行查询四个场所；只读查价在默认场所失败时可解析到已确认的其他场所，并明确返回实际来源。金融写入不会静默切换交易所。
-
-陌生标的先使用 `search_paper_symbols(keyword, market_type?, exchange?)` 查询真实目录。MUB 与 MU、美光科技的映射来自 Binance 官方 bStocks 披露，只有目录确认的标的才可交易。部分查询失败会返回 `partial` / `missing_sources`；一个场所的空结果不能证明全球不存在。
-
-- `get_paper_positions`：持仓与基础币数量适配视图。
-- `paper_open_position`：明确 LONG/SHORT，数量、USDT 名义金额、USDT 保证金三选一，支持市价/限价及附加止盈止损。
-- `paper_close_position`：部分/全部平仓，支持市价/限价；不反向开仓。
-- `paper_place_order`：现货/合约限价委托或触发退出单。限价传 `price`，触发单传 `trigger_price`。
-- `get_paper_orders`、`paper_cancel_order`、`paper_edit_order`：查看、撤销和修改委托；限价单预留现金、保证金或现货数量。
-- `paper_set_protection`：设置/更新互斥 OCO 止盈止损，支持动态本周期全部或固定部分数量。平仓和爆仓会取消旧周期退出单。
-- `get_paper_bot_account` / `ensure_paper_bot_account`：bot 独立账户，默认 ID `bot:xiaojin-mengzhizi`。每个 Paper Key 命名空间自动创建，升级启动时为旧 keys 补建；bot 使用普通 Paper 工具交易。
-- `get_paper_leaderboard`：用户与 bot 排行、发件人 self/bot 比较。分数扣除负债和后台资金调整；隐藏其他用户私人账户字段。
-- `set_paper_preferences`：公开昵称、排行榜可见性及通知偏好。
-- `scan_paper_events(after_id, limit, user_id?)`：自动成交、爆仓与委托失败的分页事件。
-
-### 定时扫描接口
-
-`GET /api/paper/events?after_id=0&limit=100` 使用 Paper Bearer Key，不使用管理员 JWT。返回 `events`、`next_cursor`、`has_more`；事件包含接收者 `recipient_user_id` 与去重键 `delivery_key`。同样提供 `GET /api/paper/leaderboard`。
-
-QQBot 的定时任务应每约15–30秒调用接口，按可信账号到 QQ 会话的路由将事件可靠入队或投递，再保存游标。失败不丢弃未入队事件，按 delivery_key 去重。扫描只读，不自动发送消息；用户关闭通知后，事件不会出现在通知流。bot 自己的事件由集成路由到配置的比赛频道，不把内部 bot ID 当成真实 QQ 号。
-
-撮合是离散行情观察：限价单在真实观察的 ask/bid 满足价格后模拟成交，TP/SL 到触发条件后用观察到的买卖价成交。不会回放两次扫描间每一笔成交，不保证触发价成交，也不模拟全部盘口深度。新附加保护可能在后续扫描触发。
-
-后台 MCP 页面新增持仓、挂单/止盈止损、排行榜、成交/爆仓事件视图。管理员数据接口为 `GET /api/mcp/paper/dashboard?namespace=qqbot&user_id=...`；MCP key 无权访问管理员页面。
-
-完整可部署人格和 skill：
-- [人格 prompt](qqbot/人格prompt.txt)
-- [QQBot Paper skill](qqbot/qqbot-paper-trading/SKILL.md)
-
-人格核心性格参考 [作品官方角色资料](https://fxkurumi-info.com/)；MUB 映射参考 [Binance 官方公告](https://www.binance.com/en/square/post/340313977073537)。粉爪银行和模拟比赛为同人追加设定。
-
-腾讯 `TENCENT/USDT:USDT` 已经实际查询 Bitget 目录与报价验证；中文“腾讯”可匹配。若默认 Binance 永续请求因网络或地区可用性失败，结果保留 missing_sources，不解释为不存在。后续交易使用搜索返回的 exchange（例如 bitget）。
+配置导入导出保留 Paper Key、namespace 和有效 BN 设置；运行账本随数据库卷持久化，不在配置导出中。人格和集成 skill 见 [人格 prompt](qqbot/人格prompt.txt)、[QQBot Paper skill](qqbot/qqbot-paper-trading/SKILL.md)。

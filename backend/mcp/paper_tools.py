@@ -25,7 +25,6 @@ PAPER_TOOL_CATALOG = [
         ('set_paper_leverage', 'trade', 'Set user default leverage for new isolated entries'),
         ('paper_bank', 'trade', 'Borrow simulated USDT or repay debt for a user'),
         ('get_paper_history', 'read', 'Read user trades, borrowing, liquidation and admin adjustment history'),
-        ('get_paper_operation', 'read', 'Read a saved paper receipt without replaying a write'),
     ]
 ]
 
@@ -87,12 +86,8 @@ def register_paper_tools(server):
         """Read the user's latest paper events, including fills, loans, liquidation and admin adjustments."""
         return await invoke(paper.history, user_id, limit)
 
-    async def get_paper_operation(user_id: UserId, operation_id: OperationId) -> dict:
-        """Read a saved paper operation receipt without submitting a trade or loan again."""
-        return await invoke(paper.operation, user_id, operation_id)
-
     functions = {f.__name__: f for f in [get_paper_config, create_paper_account, get_paper_account, get_paper_market,
-                                        paper_trade, set_paper_leverage, paper_bank, get_paper_history, get_paper_operation]}
+                                        paper_trade, set_paper_leverage, paper_bank, get_paper_history]}
     for item in PAPER_TOOL_CATALOG:
         _register(server, functions[item['name']], scope=item['scope'])
     from .paper_advanced_tools import register

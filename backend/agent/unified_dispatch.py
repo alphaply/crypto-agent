@@ -155,7 +155,7 @@ def _attached_close(action, config_id, symbol, operation_id, mt, service):
         rejected = isinstance(exc, (ccxt.InvalidOrder, ccxt.InsufficientFunds, ccxt.AuthenticationError, ccxt.PermissionDenied, ccxt.NotSupported))
         result = {'status': 'failed' if rejected else 'unknown', 'error': str(exc), 'error_code': type(exc).__name__,
                   'client_id': client_id, 'phase': 'submit', 'submission_state': 'rejected' if rejected else 'unknown',
-                  'recovery': {'tool': 'get_trade_operation', 'target_operation_id': operation_id}}
+                  'recovery': {'state': 'background', 'target_operation_id': operation_id}}
     result = {**result, 'client_id': client_id}
     if str(result.get('status')).lower() in {'closed', 'filled'} and result.get('filled') is None:
         result.update(status='pending', order_status='filled', error_code='fill_unverified')
@@ -490,7 +490,7 @@ def _attached_real(action, config_id, symbol, cfg, operation_id, mt):
                     'error': str(exc), 'error_code': type(exc).__name__, 'side': action.side,
                     'protection_state': plan.get('state'), 'stop_loss': plan.get('stop_loss'), 'take_profit': plan.get('take_profit'),
                     'protection_error': plan.get('error'),
-                    'recovery': {'tool': 'get_trade_operation', 'target_operation_id': operation_id}}
+                    'recovery': {'state': 'background', 'target_operation_id': operation_id}}
         return _native_receipt(result, action, operation_id, symbol, contract_size=size)
     if action.action == 'protect':
         from backend import database
@@ -504,10 +504,16 @@ def _attached_real(action, config_id, symbol, cfg, operation_id, mt):
                          (config_id, operation_id, symbol, service.account_scope, '', json.dumps(intent)))
             conn.commit()
         plan = service.adjust(symbol, action.side, sl=action.stop_loss, tp=action.take_profit, expected_revision=expected)
+        from backend.utils.trade_operations import financial_ack_only
+        live_legs = [item for item in plan.get('legs', []) if item.get('id') and item.get('status') not in TERMINAL]
         result = {'contract_version': 3, 'receipt_version': 1, 'operation_id': operation_id, 'action': 'protect',
-                'status': 'pending' if plan.get('error') else 'completed', 'side': action.side,
+                'status': 'pending' if plan.get('error') else 'submitted' if financial_ack_only.get() and live_legs else 'completed', 'side': action.side,
                 'protection_state': plan['state'], 'stop_loss': plan['stop_loss'], 'take_profit': plan['take_profit'],
-                'order_ids': ['algo:' + str(item['id']) for item in plan.get('legs', []) if item.get('id') and item.get('status') not in TERMINAL],
+                'order_ids': ['algo:' + str(item['id']) for item in live_legs],
+                **({'order_status': 'waiting_trigger', 'quantity_mode': 'all',
+                    'filled_amount': 0 if all(type((item.get('acknowledgement') or {}).get('filled')) in {int, float}
+                                              and item['acknowledgement']['filled'] == 0 for item in live_legs) else None}
+                   if financial_ack_only.get() and live_legs else {}),
                 **({'error': plan['error']} if plan.get('error') else {})}
         with database.get_db_conn() as conn:
             conn.execute('UPDATE unified_native_intents SET result=? WHERE config_id=? AND operation_id=?',
@@ -602,7 +608,7 @@ def dispatch_live_action(action, config_id, symbol, config, operation_id):
                 'submission_state': 'unknown' if attempted else 'not_submitted',
                 'submitted': None if attempted else False,
                 'error_code': getattr(exc, 'code', 'admission_rejected'), 'error': str(exc),
-                **({'recovery': {'tool': 'get_trade_operation', 'target_operation_id': operation_id}} if attempted else {})}
+                **({'recovery': {'state': 'background', 'target_operation_id': operation_id}} if attempted else {})}
 
 
 def _attached_write_started(config_id, operation_id):

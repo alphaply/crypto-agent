@@ -170,17 +170,5 @@ def cancel_trade(order_id: str, reason: str, config_id: str, symbol: str):
     return execute_action('cancel', dict(order_id=order_id, reason=reason), config_id, symbol)
 
 
-@tool('get_trade_operation')
-def get_trade_operation(target_operation_id: str, config_id: str, symbol: str):
-    """只读核验原交易操作。传原回执 recovery.target_operation_id（不是订单 ID）。
-    不重发、不撤改单；保留已确认成交，返回当前仓位、清理阻塞单及核验时间。
-    query.status表示本次查询是否完成，顶层status保留原交易结果。
-    普通交易会自行核验依赖，不要求先调用本工具。查询失败或needs_refresh不代表禁止交易，
-    不得据此宣布open/close/edit不可用；有新管理意图时直接调用对应工具，由其核验实际依赖。
-    unknown/pending可查询原操作；不得为重发同一笔未知写入而换ID。"""
-    from backend.utils.trade_operations import refresh_operation_receipt
-    return json.dumps(refresh_operation_receipt(config_id, symbol, target_operation_id), ensure_ascii=False)
-
-
-READ_ONLY_TRADE_TOOLS = {'get_trade_operation'}
-CANONICAL_TOOLS = [open_trade, close_trade, edit_trade, cancel_trade, get_trade_operation]
+READ_ONLY_TRADE_TOOLS = set()
+CANONICAL_TOOLS = [open_trade, close_trade, edit_trade, cancel_trade]

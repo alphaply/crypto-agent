@@ -10,6 +10,7 @@ import time
 from backend import database
 from backend.agent.memory_workflow import memory_review_lease
 from backend.utils.logger import setup_logger
+from backend.utils.runtime_capacity import CapacityBusy, submit_capacity, positive_setting
 
 logger = setup_logger('RunMemory')
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='run-memory')
@@ -144,7 +145,12 @@ def tick_memory_updates():
                     logger.warning('Cannot recover memory contract failure for %s: %s', cid, exc)
         with database.get_db_conn() as conn:
             _initialize(conn)
-            rows = conn.execute("SELECT * FROM memory_update_jobs WHERE status='pending' ORDER BY summary_id").fetchall()
+            active_ids = list(_active)
+            exclusion = ' AND config_id NOT IN (' + ','.join('?' for _ in active_ids) + ')' if active_ids else ''
+            rows = conn.execute("SELECT j.* FROM memory_update_jobs j WHERE j.status='pending'" + exclusion +
+                " AND NOT EXISTS (SELECT 1 FROM memory_update_jobs older WHERE older.config_id=j.config_id "
+                "AND older.status='pending' AND older.summary_id<j.summary_id) ORDER BY j.summary_id LIMIT ?",
+                (*active_ids, positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32))).fetchall()
         selected = set()
         for row in rows:
             cid = row['config_id']
@@ -155,7 +161,10 @@ def tick_memory_updates():
                 continue
             cfg = config.get_config_by_id(cid)
             if cfg:
-                _active[cid] = _executor.submit(process_memory_update, cid, row['run_id'], dict(cfg))
+                try:
+                    _active[cid] = submit_capacity(_executor, 'memory', process_memory_update, cid, row['run_id'], dict(cfg))
+                except CapacityBusy:
+                    break
         # Reuse this executor and the same per-task lease. Projection conversion
         # also progresses on quiet tasks with no new strategy summary.
         from backend.agent.context_projections import enabled, ensure_sources, process_projection_updates
@@ -166,6 +175,8 @@ def tick_memory_updates():
             try:
                 sources = ensure_sources(cid)
                 if any(s['projection']['status'] == 'pending' and s['projection']['next_attempt'] <= time.time() for s in sources):
-                    _active[cid] = _executor.submit(process_projection_updates, cid, dict(cfg))
+                    _active[cid] = submit_capacity(_executor, 'memory', process_projection_updates, cid, dict(cfg))
+            except CapacityBusy:
+                break
             except Exception as exc:
                 logger.warning('Cannot queue strategy projection for %s: %s', cid, exc)

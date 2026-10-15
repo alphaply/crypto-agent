@@ -13,7 +13,7 @@ def _tool_names(tools):
 
 
 def test_trade_tools_for_real_mode_include_cancel_real():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL")) == ["execute_trade_actions", "get_trade_operation"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL")) == ["execute_trade_actions"]
     assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL", include_legacy=True)) == [
         "open_position_real",
         "close_position_real",
@@ -23,22 +23,20 @@ def test_trade_tools_for_real_mode_include_cancel_real():
         "update_entry_order_real",
         "update_exit_order",
         "execute_trade_actions",
-        "get_trade_operation",
     ]
 
 
 def test_trade_tools_for_spot_dca_mode_include_cancel_real():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA")) == ["execute_trade_actions", "get_trade_operation"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA")) == ["execute_trade_actions"]
     assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA", include_legacy=True)) == [
         "open_position_spot_dca",
         "cancel_orders_real",
         "execute_trade_actions",
-        "get_trade_operation",
     ]
 
 
 def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY")) == ["execute_trade_actions", "get_trade_operation"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY")) == ["execute_trade_actions"]
     assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY", include_legacy=True)) == [
         "open_position_strategy",
         "cancel_orders_strategy",
@@ -47,12 +45,11 @@ def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
         "update_entry_order_strategy",
         "update_exit_order",
         "execute_trade_actions",
-        "get_trade_operation",
     ]
 
 
 def test_chat_tools_for_real_mode_include_cancel_real():
-    assert _tool_names(chat_graph._get_chat_tools({"mode": "REAL"})) == ["execute_trade_actions", "get_trade_operation"]
+    assert _tool_names(chat_graph._get_chat_tools({"mode": "REAL"})) == ["execute_trade_actions"]
 
 
 def test_spot_cannot_dispatch_futures_amendment(monkeypatch):
@@ -101,7 +98,7 @@ def test_run_trade_tool_injects_config_and_symbol(monkeypatch):
         symbol="ETH/USDT",
     )
 
-    assert result == "ok"
+    assert json.loads(result)["message"] == "ok"
     assert calls == [
         {
             "order_id": "order-1",
@@ -137,7 +134,7 @@ def test_run_trade_tool_decodes_json_encoded_orders(monkeypatch):
         symbol="ETH/USDT",
     )
 
-    assert result == "ok"
+    assert json.loads(result)["message"] == "ok"
     assert isinstance(calls[0]["orders"], list)
     assert calls[0]["orders"][0]["pos_side"] == "SHORT"
 
@@ -196,7 +193,7 @@ def test_run_trade_tool_expands_legacy_cancel_list_args(monkeypatch, tool_name):
 
     result = tool_registry.run_trade_tool(tool_name, ["order-1", "order-2"], "cfg", "BTC/USDT")
 
-    assert result == "cancelled\ncancelled"
+    assert [row["result"]["message"] for row in json.loads(result)["results"]] == ["cancelled", "cancelled"]
     assert [call["order_id"] for call in calls] == ["order-1", "order-2"]
     assert [call["reason"] for call in calls] == ["未提供撤单原因", "未提供撤单原因"]
 
@@ -221,7 +218,7 @@ def test_run_trade_tool_expands_legacy_cancel_order_ids_dict(monkeypatch):
         "BTC/USDT",
     )
 
-    assert result == "order-1\norder-2"
+    assert [row["order_id"] for row in json.loads(result)["results"]] == ["order-1", "order-2"]
     assert [call["order_id"] for call in calls] == ["order-1", "order-2"]
     assert [call["reason"] for call in calls] == ["未提供撤单原因", "未提供撤单原因"]
 
@@ -241,7 +238,7 @@ def test_run_trade_tool_adds_default_cancel_reason_for_legacy_string(monkeypatch
 
     result = tool_registry.run_trade_tool("cancel_orders_real", "order-1", "cfg", "BTC/USDT")
 
-    assert result == "ok"
+    assert json.loads(result)["message"] == "ok"
     assert calls[0]["order_id"] == "order-1"
     assert calls[0]["reason"] == "未提供撤单原因"
 

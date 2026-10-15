@@ -2,13 +2,11 @@
 from __future__ import annotations
 
 import math
-import contextvars
-from concurrent.futures import ThreadPoolExecutor
 import re
 import time
 from contextlib import contextmanager
 
-EXCHANGES = ('binance', 'okx', 'bitget', 'bybit')
+EXCHANGES = ('binance',)
 # Discovery hints verified against issuer/exchange announcements. They never
 # create tradable markets: a live exchange catalogue must confirm every symbol.
 ASSETS = {
@@ -20,20 +18,17 @@ ASSETS = {
     'CRCLB': {'name': 'Circle bStocks', 'underlying_symbol': 'CRCL', 'asset_type': 'tokenized_stock', 'aliases': ['CRCL', 'CIRCLE']},
     'SNDKB': {'name': 'Sandisk bStocks', 'underlying_symbol': 'SNDK', 'asset_type': 'tokenized_stock', 'aliases': ['SNDK', 'SANDISK', '闪迪']},
 }
-VENUE_ASSETS = {
-    ('bitget', 'swap', 'MU'): {'name': 'Micron Technology stock perpetual', 'underlying_symbol': 'MU', 'asset_type': 'equity_perpetual',
-                             'aliases': ['MICRON', '美光', '美光科技'], 'reference': 'https://www.bitget.com/zh-TC/news/detail/12560605034698'},
-    ('bitget', 'swap', 'TENCENT'): {'name': 'Tencent Holdings stock perpetual', 'underlying_symbol': '0700.HK', 'asset_type': 'equity_perpetual',
-                                  'aliases': ['腾讯', '腾讯控股', '0700'], 'reference': 'https://www.bitget.com/zh-CN/support/articles/12560603887840'},
-}
+VENUE_ASSETS = {}
 
 
 @contextmanager
 def client(name, market_type):
+    from .paper_policy import venue
+    name = venue(name)
     if name not in EXCHANGES or market_type not in {'spot', 'swap'}:
         raise ValueError('Unsupported public exchange or market type')
     import ccxt
-    from .exchange_runtime import account_key, install_transport, load_catalogue
+    from .exchange_runtime import account_key, install_transport, load_catalogue, close_runtime_client
     cls = ccxt.binanceusdm if name == 'binance' and market_type == 'swap' else getattr(ccxt, name)
     options = {'defaultType': market_type, 'fetchCurrencies': False}
     if name == 'binance':
@@ -49,7 +44,7 @@ def client(name, market_type):
         load_catalogue(exchange, key)
         yield exchange
     finally:
-        exchange.session.close()
+        close_runtime_client(exchange)
 
 
 def supported(item, market_type):
@@ -81,13 +76,14 @@ def search(keyword='', market_type=None, exchange_name=None, limit=50, offset=0)
         raise ValueError('Invalid symbol search or pagination')
     if market_type not in {None, 'spot', 'swap'}:
         raise ValueError('market_type must be spot or swap')
-    preferred = settings()['exchange']
-    names = [exchange_name] if exchange_name else [preferred, *[n for n in EXCHANGES if n != preferred]]
+    from .paper_policy import venue
+    preferred = venue(settings()['exchange'])
+    names = [venue(exchange_name)]
     if any(name not in EXCHANGES for name in names):
         raise ValueError('Unsupported public exchange')
     needle = keyword.strip().upper()
 
-    def venue(name):
+    def fetch_venue(name):
         matches, missing = [], []
         for kind in ([market_type] if market_type else ['spot', 'swap']):
             try:
@@ -107,14 +103,10 @@ def search(keyword='', market_type=None, exchange_name=None, limit=50, offset=0)
         return matches, missing
 
     matches, missing = [], []
-    # Separate venues are independent public reads. Each inherits the same MCP
-    # deadline, so this fan-out stays inside the caller's bounded read budget.
-    with ThreadPoolExecutor(max_workers=min(4, len(names)), thread_name_prefix='paper-symbols') as executor:
-        futures = [executor.submit(contextvars.copy_context().run, venue, name) for name in names]
-        for future in futures:
-            found, failed = future.result()
-            matches.extend(found)
-            missing.extend(failed)
+    for name in names:
+        found, failed = fetch_venue(name)
+        matches.extend(found)
+        missing.extend(failed)
     matches.sort(key=lambda r: (r['base'] != needle, r['exchange'] != preferred, r['market_type'], r['symbol'], r['exchange']))
     hints = [{**details, 'base': base, 'catalogue_verified': False, 'hint_only': True}
              for base, details in ASSETS.items() if needle and any(needle in str(value).upper() for value in [base, details['name'], details.get('underlying_symbol', ''), *details.get('aliases', [])])]
@@ -129,7 +121,8 @@ def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True
     from .paper import money, number, settings
     if timeframe not in {'1m', '5m', '15m', '1h', '4h', '1d', '1w'} or type(limit) is not int or not 1 <= limit <= 200:
         raise ValueError('Unsupported timeframe or candle limit')
-    name = exchange_name or settings()['exchange']
+    from .paper_policy import venue
+    name = venue(exchange_name)
     wanted = canonical(symbol, market_type)
     with client(name, market_type) as exchange:
         try:
@@ -167,20 +160,7 @@ def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True
 
 
 def resolve_quote(symbol, market_type='swap', timeframe='1h', limit=120, exchange_name=None):
-    """Read-only venue resolution; financial writes never silently switch venues."""
-    wanted = canonical(symbol, market_type)
-    if exchange_name is not None:
-        return quote(wanted, market_type, timeframe, limit, exchange_name=exchange_name)
-    try:
-        return quote(wanted, market_type, timeframe, limit)
-    except Exception as exc:
-        default_error = type(exc).__name__
-    found = search(wanted, market_type)
-    matches = [r for r in found['symbols'] if r['symbol'] == wanted]
-    if not matches:
-        raise ValueError('Default venue could not supply this quote and no alternative was confirmed. Discovery may be incomplete; this does not prove the instrument does not exist')
-    result = quote(wanted, market_type, timeframe, limit, exchange_name=matches[0]['exchange'])
-    result.update(venue_resolution='alternative_public_venue', default_source_error=default_error,
-                  discovery_missing_sources=found['missing_sources'],
-                  note='Real public quote from the returned exchange. Use that exchange explicitly for any subsequent paper order; no trade was placed.')
-    return result
+    """The trusted Paper policy permits no implicit or explicit venue fallback."""
+    from .paper_policy import venue
+    selected = venue(exchange_name)
+    return quote(canonical(symbol, market_type), market_type, timeframe, limit, exchange_name=selected)

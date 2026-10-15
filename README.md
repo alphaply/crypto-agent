@@ -12,7 +12,7 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 - 现货计划支持每日/每周多个时点，每个计划时槽获得一份跨标的组合额度；同一时槽的重试、审批恢复和重启不会重置额度，另受任务总预算约束；单标的初始持仓数量及成本与本任务后续成交合并统计。
 - 合约开仓、加仓、按数量减仓和批量顺序操作；退出方式可选必填 TP/SL、可选 TP/SL 或独立退出单，实盘与模拟均支持（[流程说明](docs/TRADING_WORKFLOW.md)）。
 - 当前账户授权可见的仓位与挂单自动纳管，先到先得；人工操作持续对账，管理权随任务保留。模型无需先 adopt，释放或交接在配置页明确执行（[管理说明](docs/exclusive-position-management.md)）。
-- 独立交易按每笔动作实际依赖准入，工具内自动取证，无需先查询解锁；历史明确拒绝不阻止有效新单。查询状态与原交易结果分开显示。v2 批次可选 `execution_policy=independent`，用 `depends_on` 表达显式依赖；省略策略保留失败停止，未执行项不自动补发（[回执与批次示例](docs/TRADE_RECEIPTS_AND_RECOVERY.md)）。
+- 独立交易按每笔动作实际依赖准入，工具内自动取证，无需先查询解锁；历史明确拒绝不阻止有效新单。后台最新状态与原始受理结果分开保存。v2 批次可选 `execution_policy=independent`，用 `depends_on` 表达显式依赖；省略策略保留失败停止，未执行项不自动补发（[回执与批次示例](docs/TRADE_RECEIPTS_AND_RECOVERY.md)）。
 - 交易 Agent 专注决策与执行，不再注入长期规则；短期记忆 Agent 在每轮摘要落库后，结合本轮摘要、该任务前 4 小时摘要和当前记忆更新，仅维护短期动态 memory，暂停自动 rule 维护。后台记忆中心支持人工编辑、锁定和版本记录。决策上下文与记忆写入已拆分，旧 Daily Memory 空区块和旧日报/四小时补跑路径已清理（[代码职责](docs/PROMPT_DESIGN.md#记忆代码职责)）。
 - 每轮由配置的摘要模型（如 DeepSeek）按策略 Prompt 压缩完整决策与工具执行记录，完整保存返回的策略摘要，原始分析另行保留。独立退出模式的决策默认读取行情、消息、精简后的当前持仓/挂单、相关执行异常，以及已发布短期记忆和最近三条已发布策略摘要；整理、失败和重试期间继续使用有效内容及真实截至时间。历史回执按需查询，旧执行限制随同身份最新证据退出，长期规则不再自动注入。记忆只整理策略判断、关键价位与有效教训；收益、盈亏与回撤由程序确定性计算，详细账本按需查看。原文完整保存，不按字符数截断（[提示词边界](docs/PROMPT_DESIGN.md#独立退出模式的当前状态与策略投影)、[三单精简示例](docs/DECISION_CONTEXT_EXAMPLE.md)、[指标口径](docs/agent-performance-context.md)）。
 - 后台「Agent 运行」可查看实际模型输入、工具定义、输出、状态和 token 数；从升级后开始记录，无需依赖 LangSmith 查看拼接后的 Prompt（[设计说明](docs/PROMPT_DESIGN.md)）。
@@ -23,8 +23,8 @@ Crypto Agent 是一个基于 FastAPI、React 和 LangGraph 的加密货币交易
 - 聊天每次成功压缩上下文后自动总结会话标题，支持 reasoning 模型；标题生成失败保留原名。后台可直接删除现货任务及本地关联记录，交易所持仓和挂单需自行处理（[操作说明](docs/WORKBENCH.md#聊天标题与任务删除)）。
 - 模型按渠道独立计价，支持 models.dev 每 6 小时同步、人工覆盖、缓存费用和长期用量记录；未定价不显示为免费。
 - 添加或编辑模型时，填写供应商地址、协议和 Key 后自动读取可用模型，支持按 ID / 名称搜索和手动别名；无需先保存，兼容 OpenAI、DeepSeek、Anthropic 与 Jev，列表读取不发起推理或修改价格（[操作与接口说明](docs/WORKBENCH.md#添加模型与供应商目录)）。
-- 交易 Agent 默认两个工具：`execute_trade_actions` 顺序执行 1–20 项动作，`get_trade_operation` 核验原操作；主 Agent、小模型和绑定任务聊天一致，只读聊天与记忆/摘要零工具。旧单项工具保留直接调用兼容，不进入默认模型目录。
-- `/mcp` Streamable HTTP 服务为 WorkBuddy / ChatGPT 提供聚合查询及统一顺序交易：live 默认 8 个工具（只读 7），paper 默认 11 个（只读 8），保留现货与原生 TP/SL/OCO、权限和持久回执；标的可指定或明确设置为不限制（[工具与接入说明](docs/MCP.md)）。
+- 交易 Agent 只绑定 `execute_trade_actions`，一次调用顺序执行 1–20 项动作；主 Agent、小模型和绑定任务聊天一致，只读聊天与记忆/摘要零工具。操作查询工具已移除，权威受理结果当次返回，后续状态由后台自动更新。兼容金融工具不进入默认目录，历史详情通过授权 HTTP/UI 查阅。
+- `/mcp` Streamable HTTP 服务为 WorkBuddy / ChatGPT 提供聚合查询及统一顺序交易：live 默认 7 个工具（只读 6），paper 默认 10 个（只读 7），保留现货与原生 TP/SL/OCO、权限和持久回执；标的可指定或明确设置为不限制（[工具与接入说明](docs/MCP.md)）。
 - 全局消息支持独立抓取与摘要间隔，抓取最短 1 分钟：宏观与加密来源、Polymarket、律动官方 JSON API、币安官方公告连接。评分可关闭、使用 Jev 或普通 LLM 批量评分；普通模型生成滚动摘要，输入未变化时复用快照。消息触发可为各任务指定独立模型、来源/关键词/类别、冷却与每日次数。后台提供本地处理明细及可选 LangSmith 追踪，各 Agent、Chat、Dashboard 与 MCP 共享摘要（[消息流水线与配置](docs/NEWS_PIPELINE.md)）。
 - SQLite 本地状态存储
 - Docker 部署，Web 服务和调度器分容器运行
@@ -48,7 +48,7 @@ docs/                     部署和产品文档
 
 ### 环境要求
 
-- Python 3.10+
+- Python 3.11+（SQLite 增量读取大账本所需；Docker 已使用 3.11）
 - Node.js 20+
 - uv
 - npm
@@ -142,12 +142,18 @@ TIMEZONE=Asia/Shanghai
 ### 启动服务
 
 ```bash
+# 先按目标主机通过的 capacity profile 设置六个变量，并校验双容器合计及主机余量。
+# 本地 profile 的结果仅适用于隔离环境；变量未设置时不得启动。
+: "${WEB_MEMORY_BYTES:?capacity profile required}" "${WEB_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${WEB_CPUS:?capacity profile required}"
+: "${SCHEDULER_MEMORY_BYTES:?capacity profile required}" "${SCHEDULER_MEMORY_SWAP_TOTAL_BYTES:?capacity profile required}" "${SCHEDULER_CPUS:?capacity profile required}"
 docker pull alphaply712/crypto-agent:latest
 docker run -d --name crypto-agent --restart unless-stopped \
+  --memory "$WEB_MEMORY_BYTES" --memory-swap "$WEB_MEMORY_SWAP_TOTAL_BYTES" --cpus "$WEB_CPUS" \
   --env-file .env -e RUN_SCHEDULER_IN_WEB=false \
   -p 31421:7860 -v crypto_agent_data:/app/data \
   alphaply712/crypto-agent:latest
 docker run -d --name crypto-agent-scheduler --restart unless-stopped --no-healthcheck \
+  --memory "$SCHEDULER_MEMORY_BYTES" --memory-swap "$SCHEDULER_MEMORY_SWAP_TOTAL_BYTES" --cpus "$SCHEDULER_CPUS" \
   --env-file .env -e RUN_SCHEDULER_IN_WEB=false \
   -v crypto_agent_data:/app/data \
   alphaply712/crypto-agent:latest uv run --no-sync python -m backend.app.core.scheduler
@@ -205,7 +211,7 @@ docker push alphaply712/crypto-agent:latest
 宝塔容器或已有 Compose 服务须使用完整镜像名 `alphaply712/crypto-agent:latest`，拉取新镜像后重新创建容器才会生效。更新时保留原有端口、环境变量、数据卷和 `CONFIG_MASTER_KEY`；只执行 `docker push` 不会更新运行中的容器。
 
 ```bash
-docker run --rm -p 31421:7860 \
+docker run --rm --memory 1g --memory-swap 1152m --cpus 1 -p 31421:7860 \
   -e ADMIN_PASSWORD=local-password \
   -e JWT_SECRET=local-jwt-secret \
   -e CONFIG_MASTER_KEY=local-config-master-key \
@@ -310,6 +316,8 @@ Dashboard 专注数据总览；独立 Agents 页承载任务运行计划与实�
 
 ### QQBot Paper MCP
 
-后台 MCP 页面可创建独立 Paper Key，为 QQBot 按用户 ID 管理模拟账户，执行 USDT 现货/合约交易、设置杠杆、借还款，并共享行情与情报。后台可调整现金、负债与额度。详见 [接入文档](docs/QQBOT_PAPER_MCP.md)。
+后台 MCP 页面可创建独立 Paper Key，为 QQBot 按用户 ID 管理模拟账户，仅交易 Binance 上现有引擎支持的 USDT 现货与线性永续、设置杠杆和借还款。历史非 BN 或来源不能证明的资源从默认查询和维护过滤，原账本、全部预留/保证金及授权审计保留；混合估值不完整时不按假零值排名。后台可调整现金、负债与额度。详见 [接入文档](docs/QQBOT_PAPER_MCP.md)。
 
 Paper MCP 现已支持真实公开行情标注与标的搜索、bot 自有账户、用户 PK 排行、限价委托、OCO 止盈止损及分页成交/爆仓事件扫描；后台可查看持仓、委托和事件。完整人格与 skill 见 [QQBot 接入文档](docs/QQBOT_PAPER_MCP.md)。
+
+资源准入、限额与隔离验收见 [运行容量](docs/RUNTIME_CAPACITY.md)、[容量验证与回退](docs/CAPACITY_VERIFICATION.md) 和 [资源诊断](docs/RESOURCE_DIAGNOSTICS.md)。本地报告不代表生产已部署。

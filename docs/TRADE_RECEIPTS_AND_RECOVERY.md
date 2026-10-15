@@ -7,11 +7,13 @@
 
 整批静态检查通过后、首次金融影响前持久化父意图和全部子项映射。子 ID 在可容纳时为 parent:index；最长外部 ID 使用含可信 owner 的有界哈希，并保存 index→child 映射。v3 具有独立请求版本，相同 ID 的不同意图拒绝，v1/v2 原哈希与原始首次回执保持。
 
-默认回执保留父/子 operation_id、index/action、订单/客户端及母子身份、status/order_status、成交量与 fixed/all 数量模式、错误码、依赖阻塞和恢复提示。完整原始回执和后续证据仍持久可查。`include=["account"]` 只在整批末尾附一份账户摘要；读取错误位于 account_summary，不改变已知交易结果。
+默认回执保留父/子 operation_id、index/action、订单/客户端及母子身份、status/order_status、成交量与 fixed/all 数量模式、错误码、失败阶段和具体依赖阻塞。单项不超过4096 UTF-8字节，最多20项整批不超过32768字节；不截断身份或JSON，不复制 previous_assessment 和重复规则。完整原始回执和后续证据通过授权 HTTP/UI 按需、有界读取。`include=["account"]` 只在整批末尾附一份账户摘要；读取错误位于 account_summary，不改变已知交易结果。
 
-断线、进程中断或父响应丢失后，查询按原映射核验已尝试项，不发出 create/edit/cancel，也不自动纳管、补平、换 ID 或继续未尝试尾部。未知项保留 unknown/pending，可靠成交结果与旧单 cleanup 告警分别保存。父查询的 query.status 表示此次读取；status 表示原执行，成功读取不等于交易 completed。附带模式、STRATEGY 和现货也可使用 get_trade_operation。MCP get_operation 按可信 live/paper 域路由，详情可查询完整持久回执。
+所有模式和旧金融入口先完成必要准入并保存意图，获得权威 ACK 后直接按证据返回，不为了返回再次读取订单/仓位或等待未来成交。只证明受理时是 submitted，已经证明动作完成时才是 completed；缺少成交数量时返回 null，不假定为零。后续新意图依赖当前订单、数量或仓位时，在该新金融调用内完成必要前置核验。
 
-内部任务授权由运行上下文提供。live MCP 混合批次先检查全部 trade/cancel 权限，cancel-only 无权在后项放 open；合法权限下动态余额/杠杆只逐项检查。paper 写入仍按 read+trade 的既有权限边界，cancel 属于 paper trade。绑定聊天逐项审批，一个拒绝终止其后金融动作，查询仍可用。
+断线、进程中断或父响应丢失后，系统后台按原映射核验已尝试项，不发出 create/edit/cancel，不补平、换 ID、提交未尝试替代或继续批次尾部。未知项保留 unknown/pending，可靠成交结果与旧单 cleanup 告警分别保存。Agent 默认只绑定 execute_trade_actions；get_trade_operation、get_operation 及旧查询适配器已移除，没有替代查询工具或隐藏查询动作。后台观察自动更新当前上下文、界面和记忆证据。用户审计只通过授权 HTTP/UI；账户作用域哈希不能充当 config_id。
+
+内部任务授权由运行上下文提供。live MCP 混合批次先检查全部 trade/cancel 权限，cancel-only 无权在后项放 open；合法权限下动态余额/杠杆只逐项检查。paper 写入仍按 read+trade 的既有权限边界，cancel 属于 paper trade。绑定聊天逐项审批，一个拒绝终止其后金融动作。
 
 任务配置已删除或不可用时，新 v3 金融意图返回 `configuration_unavailable` / `not_submitted`，不回退为模拟交易。原 v3 意图重放须匹配已保存参数、标的和可信引擎，仅核验原记录；交接恢复继续使用获准的接收方账户上下文。
 
@@ -25,7 +27,7 @@ v3 父与子映射保存在 `unified_trade_batches / unified_trade_children`，�
 | --- | --- | --- |
 | completed | 本次动作已核实完成；不等于当前仓位为空 | 检查 position、cleanup；下一次交易重新准入 |
 | submitted | 订单已接受，仍挂单或等待触发 | 不把挂单描述为成交 |
-| pending | 本次动作已有进展，但缺少完成证据 | 查询原 operation_id |
+| pending | 本次动作已有进展，但缺少完成证据 | 系统后台核验原身份 |
 | unknown | 请求可能到达，尚不能确认提交结果 | 按原 client ID 核验，不换 ID 重发 |
 | failed | 本次请求明确未执行或被拒绝 | 依据阶段和原因修正新请求 |
 | skipped | 已可靠确认无需执行 | 例如目标方向为空仓 |
@@ -53,15 +55,13 @@ v3 父与子映射保存在 `unified_trade_batches / unified_trade_children`，�
   "position": {"side": "SHORT", "amount": 0, "status": "verified", "observed_at": 123},
   "cleanup": {"status": "pending", "orders": [{"order_id": "algo:example-stop", "reason_code": "fill_unverified"}]},
   "continuation": {"blocked_actions": ["open", "close"], "side": "SHORT", "assessment_state": "needs_refresh", "advisory": true, "requires_action_assessment": true},
-  "recovery": {"tool": "get_trade_operation", "target_operation_id": "example-close-1"}
+  "recovery": {"state": "background", "target_operation_id": "example-close-1"}
 }
 ```
 
 1. Agent 读取本次成交结果和具体清理单，不把 cleanup.pending 解释为市价订单未知。
-2. 调用 `get_trade_operation(target_operation_id)`；任务、账户和标的由运行环境注入。
-   该工具只查询订单与仓位并保存观察，不 create/edit/cancel，也不恢复仓位归属。
-3. REAL 维护任务继续处理已有清理意图，刷新原操作投影。撤销 ACK 缺成交量时最多补查
-   3 次、总预算 2 秒；单次请求 timeout 限制为剩余预算。持续不明时保留退避时间和 blocker。
+2. 原调用及时返回，后台自动读取原订单/客户端身份并保存观察，不重放原金融写入。
+3. 已有独立维护职责与只读回执核验分别运行；回执核验不执行撤建或未尝试尾项。撤销 ACK 缺成交量时保留真实缺项，后台遵守容量保留额度和退避，不拖住已获得 ACK 的工具返回。
 4. 相关订单、数量及周期状态核实后，Agent 可以显式提出新的交易。旧批次中
    not_executed 的动作始终保留未执行，不自动补发。
 
@@ -71,9 +71,7 @@ Hedge 的方向隔离需要当前证据支持；One-way 的共享净仓不能依
 
 ## MCP 与持久化
 
-MCP 使用已有 `get_operation(profile_id, operation_id)`。外层 principal/profile/operation ID
-映射到内部 stable ID；不同调用方不能查询或重放对方的操作。普通交易查询与同 ID 重放
-刷新同一份证据，read 权限不产生金融写入。
+MCP 外层 principal/profile/operation ID 映射到内部 stable ID；不同调用方不能读取或重放对方的操作。后台恢复和同 ID 重放使用相同证据，原 ID 重放不会产生第二次金融提交。授权 HTTP/UI 详情保留原始/最新版本与观察时间，以固定版本分页；read 权限不产生金融写入。
 
 新增表 `trade_cycle_evidence`、`trade_operation_evidence` 和 `trade_receipt_revisions`
 保存跨周期证据及原始/后续回执；MCP 外层有对应 links/revisions 表。迁移为添加式，
@@ -100,21 +98,21 @@ MCP 使用已有 `get_operation(profile_id, operation_id)`。外层 principal/pr
 
 | 流程 / 故障 | 回执与恢复入口 | 限制 / 离线覆盖 |
 | --- | --- | --- |
-| 市价全平、部分平仓后清理失败 | completed + cleanup.pending；查询原操作 | 平仓只提交一次；残仓不自动补平；integration、receipt_recovery |
+| 市价全平、部分平仓后清理失败 | completed + cleanup.pending；后台核验 | 平仓只提交一次；残仓不自动补平；integration、receipt_recovery |
 | open/加仓提交超时、落库失败 | unknown 保留 client ID；已知成交保留 completed | 不换 ID 重发；仓位未同步阻止后续写；integration、independent_exits |
 | fixed/all 条件 TP/SL | 等待触发 submitted；母子身份与实际量分开 | 六种类型、LONG/SHORT、Hedge/One-way、数量与通道；real_v2、binance_v2 |
 | 普通 LIMIT edit 拒绝/超时 | 明确拒绝 failed；超时 unknown；按原单查证 | 原单保留、最多一次 edit；receipt_recovery |
 | 条件 cancel_replace | 旧单 canceled 不代表 edit completed | 替代成功才完成；耗尽/拒绝/超时及重启无重复替代；real_v2 |
-| cancel ACK 缺成交、倒退或旧 open | pending；有界补查后保存 blocker | 母子总补查 ≤3 次 / 2 秒；后台遵守退避；主动查询可立即读取 |
+| cancel ACK 缺成交、倒退或旧 open | pending；保留 blocker 后及时返回 | 后台按原身份核验，遵守总额度和退避，不重发撤单 |
 | batch / legacy aliases | 已执行项刷新，尾部 not_executed | 默认停止；显式 independent 继续无依赖项；batch、scoped_trade_rounds |
-| Agent / Chat v3 批次 | 两工具目录，逐项动态准入 | 默认失败/未知即停止尾部；绑定 Chat 逐项审批，拒绝停止后续写入；unified_trading |
+| Agent / Chat v3 批次 | 一个执行工具，逐项动态准入 | 默认失败/未知即停止尾部；绑定 Chat 逐项审批，拒绝停止后续写入；unified_trading |
 | 旧 Agent / Chat 多工具轮次 | 兼容独立单工具逐项准入 | 原轮次规则不因前项拒绝全局停止；Chat 用户拒绝仍停止后续写入；scoped_trade_rounds |
-| MCP get_operation / 重放 | 外部 ID 关联内部 stable ID，回执同步修订 | principal/profile 隔离，read 零金融写入；mcp_trade_recovery、gateway |
+| MCP 后台核验 / 同 ID 重放 | 外部 ID 关联内部 stable ID，回执同步修订 | principal/profile 隔离，读取零金融写入；mcp_trade_recovery、gateway |
 | mock / 旧 all / 其他交易模式 | 共用扩展结构，legacy 保守解析 | mock 账本、旧 all 实际量、现货预算、附带保护均跑全量回归 |
 | 缺失周期 | 只读诊断，授权路径恢复完整原周期 | 缺历史、数量矛盾、跨账户/任务或后继周期拒绝；receipt_recovery |
 
 真实未知、旧 all 未核实、读接口持续失败和成交矛盾仍阻止依赖它们的写入。
-后台退避只影响自动轮询；人工/模型只读查询可以提前查证，但不产生金融写入。
+后台核验使用有限额度和退避；用户可通过授权 HTTP/UI 查看现有审计，不触发交易写入。
 测试文件完整路径及桌面/移动证据见本次变更的 `verification.md`。
 
 ## 证据边界
@@ -126,7 +124,7 @@ MCP 使用已有 `get_operation(profile_id, operation_id)`。外层 principal/pr
 
 普通 open/close/edit/cancel 在同一次调用内读取必要证据、分类旧失败并评估本次动作。
 明确拒绝的止损保留 failed，但不会阻止有效的新止损；没有新增预检令牌、手工解锁或额外模型轮次。
-真正未知的金融请求不能通过更换 ID 重发。后台继续取证，模型也可主动查询原操作。
+真正未知的金融请求不能通过更换 ID 重发。后台自动继续取证，模型无需第二次调用。
 
 | 证据分类 | 判断依据 | 是否限制依赖动作 |
 | --- | --- | --- |
@@ -168,7 +166,7 @@ continuation 是未来建议，包含 rules、作用 scope、evidence_versions�
  "execution":{"phase":"submit","submission_state":"not_submitted","fill_status":"unverified"},
  "position":{"side":"LONG","amount":1,"status":"verified","observed_at":123},
  "cleanup":{"status":"not_required","orders":[]},
- "recovery":{"tool":"get_trade_operation","target_operation_id":"rejected-stop"},
+ "recovery":{"state":"background","target_operation_id":"rejected-stop"},
  "query":{"status":"completed","errors":[],"observed_at":123},
  "admission":{"version":1,"decision":"allow","allowed":true},
  "continuation":{"blocked_actions":[],"rules":[],"assessment_state":"verified","advisory":true,"requires_action_assessment":true}}
@@ -176,7 +174,7 @@ continuation 是未来建议，包含 rules、作用 scope、evidence_versions�
 
 query.status=completed 表示此次取证完成；partial 表示部分事实未返回；failed 表示查询不能完成。
 原交易失败保持 failed。无 query 的旧回执不推断查询成功。Agent 运行节点及 UI 分别显示两种状态。
-MCP 的每个 blocker 都按当前 principal/profile 单独映射到外部操作，get_operation 指向对应父操作；
+MCP 的每个 blocker 都按当前 principal/profile 单独映射到可访问的外部原身份；
 无法映射时身份留空并标记 unavailable_in_caller_scope，不暴露内部操作或借用当前操作 ID。
 
 ## 独立批次与显式依赖
@@ -247,7 +245,7 @@ needs_refresh 表示尚未评估，既不代表全面允许，也不代表禁止
 跨账户、不存在或不可读分别返回范围不符、未关联、不可用，不用相近数量或空仓推断解决。
 
 `position.observed_at`、`fill_observed_at`、`verified_at` 是实际观察时间；`query.queried_at`
-是显式查询时间；`projected_at` 和 `receipt_updated_at` 是本地生成时间。后台本地投影返回
+是后台取证时间；`projected_at` 和 `receipt_updated_at` 是本地生成时间。后台本地投影返回
 `query.status=not_requested`、`source=local_projection`，不构造交易所客户端。
 查询部分失败、本地投影或无当前周期时，旧建议仅在 `previous_assessment` 保留，当前
 `rules`/`blocked_actions` 为空且 `assessment_state=needs_refresh`；已确认执行事实保留。

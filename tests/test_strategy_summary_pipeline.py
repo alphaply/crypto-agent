@@ -282,8 +282,17 @@ def test_decision_summary_memory_order_and_dashboard_evidence(local_db, monkeypa
     assert agent['strategy_logic'] == 'Keep waiting; the existing order is unverified.'
     assert [entry['role'] for entry in agent['decision']['messages']] == ['assistant', 'tool', 'assistant']
     assert agent['decision']['execution_results'][0]['status'] == 'unknown'
-    assert json.loads(agent['decision']['execution_results'][0]['result']) == {
-        'status': 'unknown', 'detail': 'verify existing order'}
+    receipt = agent['decision']['execution_results'][0]['result']
+    assert receipt['status'] == 'unknown'
+    assert receipt['verification']['state'] == 'background'
+    assert receipt['details_omitted'] is True
+    assert 'detail' not in receipt
+    assert agent['decision']['messages'][1]['result'] == receipt
+    # Dashboard projection is compact; the original decision evidence stays intact.
+    stored = json.loads(saved_summary()['decision_json'])
+    original = '{"status":"unknown","detail":"verify existing order"}'
+    assert stored['execution_results'][0]['result'] == original
+    assert stored['messages'][1]['result'] == original
     assert agent['memory_update']['status'] == 'completed'
     assert 'report' not in agent and 'report_json' not in agent
     assert database.get_short_memories('cfg', 1)[0]['run_id'] == 'ordered-run'

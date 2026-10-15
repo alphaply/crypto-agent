@@ -26,9 +26,11 @@ class ReadOnlyExchange:
         self.orders = {False: [], True: []}
         self.reads = []
         self.writes = []
+        self.markets = {'ETH/USDT:USDT': self.market('ETH/USDT:USDT')}
+        self.currencies = {}
 
     def load_markets(self):
-        pass
+        return self.markets
 
     def market(self, symbol):
         return {'symbol': symbol if ':' in symbol else symbol + ':USDT',

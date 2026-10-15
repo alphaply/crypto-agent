@@ -171,6 +171,8 @@ def rebuild_history() -> dict:
         for row in targets:
             result = rebuild_execution_position_history(row['config_id'], row['account_scope'], row['symbol'])
             results.append({'config_id': row['config_id'], 'symbol': row['symbol'],
-                            'completed': len(result['completed']), 'excluded': len(result['excluded_cycles']),
+                            'completed': result.get('completed_count'), 'excluded': result.get('excluded_cycle_count'),
+                            'scan_complete': result.get('scan_complete'), 'published': result.get('published'),
+                            'reason_code': result.get('reason_code'),
                             'unmatched': result['unmatched_fill_count']})
         return {'backup': backup, 'results': results}

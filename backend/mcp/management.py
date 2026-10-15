@@ -135,15 +135,16 @@ def update_paper_settings(payload: paper.PaperSettings):
 
 
 @router.get('/paper/accounts')
-def list_paper_accounts(namespace: str | None = None, user_id: str | None = None, limit: int = 100, offset: int = 0):
+def list_paper_accounts(namespace: str | None = None, user_id: str | None = None, limit: int = 100, offset: int = 0, cursor: int | None = None):
     try:
-        return {'success': True, **paper.admin_accounts(namespace, user_id, limit, offset)}
+        return {'success': True, **paper.admin_accounts(namespace, user_id, limit, offset, cursor=cursor)}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @router.get('/paper/dashboard')
-def paper_dashboard(namespace: str | None = None, user_id: str | None = None, limit: int = 100):
+def paper_dashboard(namespace: str | None = None, user_id: str | None = None, limit: int = 100,
+                    account_cursor: int = 0, order_cursor: int = 0, event_cursor: int = 0, namespace_cursor: str = ''):
     from .paper_competition import admin_data
     from .paper_orders import admin_orders
     try:
@@ -153,14 +154,63 @@ def paper_dashboard(namespace: str | None = None, user_id: str | None = None, li
             paper.identity(namespace, 'namespace')
         if user_id:
             paper.identity(user_id)
-        accounts = paper.admin_accounts(namespace, user_id, limit)
-        data = admin_data(namespace, user_id, limit)
-        orders = admin_orders(namespace, user_id, 'all', limit)
+        accounts = paper.admin_accounts(namespace, user_id, limit, cursor=account_cursor)
+        data = admin_data(namespace, user_id, limit, cursor=event_cursor, namespace_cursor=namespace_cursor)
+        orders = admin_orders(namespace, user_id, 'all', limit, cursor=order_cursor)
+        components = {'accounts': {key: accounts[key] for key in ('status', 'scan_complete', 'next_cursor', 'skipped_records')},
+                      'orders': {key: orders[key] for key in ('status', 'scan_complete', 'next_cursor', 'skipped_records')},
+                      'events': {key: data[key] for key in ('status', 'scan_complete', 'next_cursor', 'skipped_records')},
+                      'namespaces': data['namespaces'], 'rankings': data['rankings']}
+        scan_complete = all(row['scan_complete'] for row in components.values() if isinstance(row, dict)) and all(row['scan_complete'] for row in data['rankings'])
+        partial = any(row['status'] != 'complete' for row in components.values() if isinstance(row, dict)) or any(row['status'] != 'complete' for row in data['rankings'])
+        complete_equity = accounts['status'] == 'complete' and all(a['net_equity'] is not None for a in accounts['items'])
         return {'success': True, **data, **orders, 'accounts': accounts['items'], 'account_total': accounts['total'],
+                'status': 'partial' if partial else 'complete', 'scan_complete': scan_complete, 'pages': components,
+                'next_cursor': {'accounts': accounts['next_cursor'] if accounts['has_more'] else None,
+                                'orders': orders['next_cursor'] if orders['has_more'] else None,
+                                 'events': data['next_cursor'] if data['has_more'] else None,
+                                 'namespaces': data['namespaces']['next_cursor']},
                 'summary': {'cash': sum(a['cash'] for a in accounts['items']), 'debt': sum(a['debt'] for a in accounts['items']),
-                            'net_equity': sum(a['net_equity'] for a in accounts['items']), 'open_orders': sum(o['state'] == 'open' for o in orders['orders']),
+                            'reserved_cash': sum(a.get('reserved_cash', 0) for a in accounts['items']),
+                            'used_margin': sum(a.get('used_margin', 0) for a in accounts['items']),
+                            'available_cash': sum(a['available_cash'] for a in accounts['items']),
+                            'net_equity': sum(a['net_equity'] for a in accounts['items']) if complete_equity else None,
+                            'valuation_status': 'complete' if complete_equity else 'incomplete',
+                            'open_orders': sum(o['state'] == 'open' for o in orders['orders']),
                             'summary_scope': 'returned_accounts_and_orders', 'account_count': len(accounts['items'])}}
     except (ValueError, PermissionError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get('/paper/receipts/{namespace}/{user_id}/{operation_id}')
+def paper_receipt_audit(namespace: str, user_id: str, operation_id: str, offset: int = 0, length: int = 16384, version: str | None = None, view: str = 'original', encoding: str = 'base64-utf8'):
+    """JWT administrator audit; binary chunks preserve immutable original bytes."""
+    from .paper_storage import audit_chunk
+    try:
+        paper.identity(namespace, 'namespace')
+        paper.identity(user_id)
+        with store.connection() as conn:
+            return {'success': True, **audit_chunk(conn, namespace, user_id, operation_id, offset=offset, length=length, version=version, view=view, encoding=encoding)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get('/paper/accounts/{namespace}/{user_id}/audit')
+def paper_account_audit(namespace: str, user_id: str, offset: int = 0, length: int = 16384, version: str | None = None, encoding: str = 'base64-utf8'):
+    return paper_ledger_audit(namespace, user_id, 'account', user_id, offset, length, version, encoding)
+
+
+@router.get('/paper/ledger/{namespace}/{user_id}/{record_type}/{record_id}/audit')
+def paper_ledger_audit(namespace: str, user_id: str, record_type: str, record_id: str,
+                       offset: int = 0, length: int = 16384, version: str | None = None, encoding: str = 'base64-utf8'):
+    from .paper_storage import raw_audit_chunk
+    try:
+        paper.identity(namespace, 'namespace')
+        paper.identity(user_id)
+        with store.connection(recovery=True) as conn:
+            return {'success': True, **raw_audit_chunk(conn, namespace, user_id, record_type, record_id,
+                                                      offset=offset, length=length, version=version, encoding=encoding)}
+    except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 

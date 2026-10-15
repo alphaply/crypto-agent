@@ -100,6 +100,10 @@ def test_scheduler_process_reservation_and_slow_mcp_keep_web_responsive(tmp_path
         outcomes = await asyncio.gather(*active, return_exceptions=True)
         assert all(isinstance(outcome, resilience.BudgetExceeded) for outcome in outcomes)
         assert time.monotonic() - started < .5
+        # Returning the caller timeout must not free a physically running worker.
+        assert pool.snapshot()['active'] == 2
+        while pool.snapshot()['active']:
+            await asyncio.sleep(.001)
         assert pool.snapshot()['active'] == pool.snapshot()['queued'] == 0
     process.start()
     try:

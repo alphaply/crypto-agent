@@ -1,0 +1,814 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-15",
+  "scope": "Finite native-fault diagnostics only; none of these runs is capacity acceptance or production verification.",
+  "original_v10": {
+    "report": {
+      "path": "data/capacity-reports/20261015T013044Z-82dbc1c6/report.json",
+      "sha256": "24cd1048515dc92d8520b7665e3faecd0c051c192df5bb94700a2ed7a203a362"
+    },
+    "manifest": {
+      "path": "data/capacity-reports/20261015T013044Z-82dbc1c6/manifest.json",
+      "sha256": "4fdf7fc527f3d6a2407faa93e5c49c74f9888fc5bff7513b1d9bcdb063ee8a05"
+    },
+    "fatal_log": {
+      "path": "data/capacity-reports/20261015T013044Z-82dbc1c6/web-container.log",
+      "sha256": "429480b7eb20d7f11a9aa3b4af7758c2fef3299159efed8bae300700235900fd"
+    },
+    "docker_state": {
+      "path": "data/capacity-reports/20261015T013044Z-82dbc1c6/web-docker-state.json",
+      "sha256": "53394f9b62918da345194ade0486f12a454e83af5db355e7221b259b9dc9857b"
+    },
+    "verdict": "failed",
+    "exit_code": 139,
+    "oom_killed": false,
+    "phase": "cold",
+    "root_cause_established": false,
+    "source_identity": {
+      "image_id": "sha256:482704ecd9c58d42c754c4ed29f6fe3473515afd420cf5e41277941c90dfab1f",
+      "frozen_worker_sha256": "6639d0945187808dc0996e4610e3d6b789c05d294bb3f3fb01b36d6879535686",
+      "read_only_comparison": "All 200 backend Python source files matched the v7 image byte-for-byte; worker matched the frozen manifest when checked."
+    }
+  },
+  "gdb": {
+    "source_report": {
+      "path": "data/native-diagnostics/gdb-20261015/diagnostic-report.json",
+      "sha256": "716272e89c16faf45e1323d0b9f1a976df415eabb72d0c0004a188ee0f4b306a"
+    },
+    "process_count": 5,
+    "base_image_id": "sha256:482704ecd9c58d42c754c4ed29f6fe3473515afd420cf5e41277941c90dfab1f",
+    "diagnostic_image_id": "sha256:ab3b3dc2675ab00ea111ef4bce05cb9defca7d4e511bee5dc36c9e4c52dd0593",
+    "original_native_fault_c_stack_captured": false,
+    "runs": [
+      {
+        "name": "crypto-capacity-native-gdb-v1",
+        "directory": "data/native-diagnostics/gdb-20261015/run-v1",
+        "allocator": "default",
+        "aslr": "gdb default disabled",
+        "gc_thresholds": "default",
+        "native_fault_observed": false,
+        "oom_killed": false,
+        "phase_coverage": {
+          "cold": {
+            "CompletedRequests": 104,
+            "ElapsedSeconds": 10.24806245000218,
+            "Errors": [],
+            "RSSPeakBytes": 338092032,
+            "AcceptedRequests": 92
+          },
+          "typical": {
+            "CompletedRequests": 310,
+            "ElapsedSeconds": 30.25517523099552,
+            "Errors": [],
+            "RSSPeakBytes": 340189184,
+            "AcceptedRequests": 298
+          },
+          "concurrent_refresh": {
+            "CompletedRequests": 1800,
+            "ElapsedSeconds": 45.56852937200165,
+            "Errors": [],
+            "RSSPeakBytes": 379129856,
+            "AcceptedRequests": 293
+          },
+          "key_retirement": {
+            "CompletedRequests": 493,
+            "ElapsedSeconds": 120.43434424699808,
+            "Errors": [],
+            "RSSPeakBytes": 378990592,
+            "AcceptedRequests": 247
+          }
+        },
+        "state_before_intentional_stop": "exited",
+        "native_log": {
+          "path": "data/native-diagnostics/gdb-20261015/run-v1/native-gdb.log",
+          "sha256": "508ceec16dad61e462b376a6a4ea137f5b12e894365069d7dcb1a8c69dd634a2"
+        },
+        "phase_evidence": {
+          "path": "data/native-diagnostics/gdb-20261015/run-v1/verification-state.json",
+          "sha256": "1ea2f1dde9c4667b6ecfbb33b61fd681274e3d355155a892208a6deae47ac522"
+        }
+      },
+      {
+        "name": "crypto-capacity-native-gdb-debug-v1",
+        "directory": "data/native-diagnostics/gdb-20261015/run-debug-v1",
+        "allocator": "debug",
+        "aslr": "gdb default disabled",
+        "gc_thresholds": "default",
+        "native_fault_observed": false,
+        "oom_killed": false,
+        "phase_coverage": {
+          "cold": {
+            "CompletedRequests": 86,
+            "ElapsedSeconds": 10.224043009002344,
+            "Errors": [],
+            "RSSPeakBytes": 383025152,
+            "AcceptedRequests": 76
+          },
+          "typical": {
+            "CompletedRequests": 262,
+            "ElapsedSeconds": 30.26312366600905,
+            "Errors": [],
+            "RSSPeakBytes": 383324160,
+            "AcceptedRequests": 262
+          },
+          "concurrent_refresh": {
+            "CompletedRequests": 1632,
+            "ElapsedSeconds": 45.49275088000286,
+            "Errors": [],
+            "RSSPeakBytes": 427560960,
+            "AcceptedRequests": 134
+          },
+          "key_retirement": {
+            "CompletedRequests": 375,
+            "ElapsedSeconds": 120.6915270749887,
+            "Errors": [],
+            "RSSPeakBytes": 383848448,
+            "AcceptedRequests": 189
+          }
+        },
+        "state_before_intentional_stop": "running",
+        "native_log": {
+          "path": "data/native-diagnostics/gdb-20261015/run-debug-v1/native-gdb.log",
+          "sha256": "32e5bc76bcf8c005f37e4358506d03e1005791349ac6178bb502bfa0c7a2d07c"
+        },
+        "phase_evidence": {
+          "path": "data/native-diagnostics/gdb-20261015/run-debug-v1/verification-state.json",
+          "sha256": "568f99554c67431cd7a21928d358ffd18e10b431412c7e345b1e87b80fc30920"
+        }
+      },
+      {
+        "name": "crypto-capacity-native-aslr-normal-v1",
+        "directory": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-aslr-normal-v1",
+        "allocator": "default",
+        "aslr": "enabled",
+        "gc_thresholds": "default",
+        "native_fault_observed": false,
+        "oom_killed": false,
+        "phase_coverage": {
+          "cold": {
+            "CompletedRequests": 104,
+            "ElapsedSeconds": 10.175453008996556,
+            "Errors": [],
+            "RSSPeakBytes": 338288640,
+            "AcceptedRequests": 92
+          }
+        },
+        "state_before_intentional_stop": "running",
+        "native_log": {
+          "path": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-aslr-normal-v1/native-gdb.log",
+          "sha256": "0b30e4b0fc3becd167e588cfc0f7e1470ccec684ec2ba773f8cc4d3b40c1affb"
+        },
+        "phase_evidence": {
+          "path": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-aslr-normal-v1/verification-state.json",
+          "sha256": "d15298b557140406997d4b21c0faf3a1df2e00c623cac74a41c4fa819c1ebf8f"
+        }
+      },
+      {
+        "name": "crypto-capacity-native-aslr-debug-v1",
+        "directory": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-aslr-debug-v1",
+        "allocator": "debug",
+        "aslr": "enabled",
+        "gc_thresholds": "default",
+        "native_fault_observed": false,
+        "oom_killed": false,
+        "phase_coverage": {
+          "cold": {
+            "CompletedRequests": 88,
+            "ElapsedSeconds": 10.239165457009221,
+            "Errors": [],
+            "RSSPeakBytes": 383696896,
+            "AcceptedRequests": 78
+          }
+        },
+        "state_before_intentional_stop": "running",
+        "native_log": {
+          "path": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-aslr-debug-v1/native-gdb.log",
+          "sha256": "7d7dd0509a1fa33b3f0f3b7291b34b9f0046d72f6f5a56d1b2ef351fa3fca742"
+        },
+        "phase_evidence": {
+          "path": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-aslr-debug-v1/verification-state.json",
+          "sha256": "abf4bfcd2f5cc26b53c8b64e134fa8b7e6de501dfabb6d6f21839a465ffbd20f"
+        }
+      },
+      {
+        "name": "crypto-capacity-native-gc-threshold-v1",
+        "directory": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-gc-threshold-v1",
+        "allocator": "default",
+        "aslr": "enabled",
+        "gc_thresholds": [
+          20,
+          2,
+          2
+        ],
+        "native_fault_observed": false,
+        "oom_killed": false,
+        "phase_coverage": {
+          "concurrent_refresh": {
+            "CompletedRequests": 1752,
+            "ElapsedSeconds": 45.32001312599459,
+            "RSSPeakBytes": 376197120,
+            "AcceptedRequests": 235,
+            "Errors": []
+          },
+          "cold": {
+            "CompletedRequests": 94,
+            "ElapsedSeconds": 10.13906438399863,
+            "RSSPeakBytes": 320466944,
+            "AcceptedRequests": 83,
+            "Errors": []
+          }
+        },
+        "state_before_intentional_stop": "running",
+        "native_log": {
+          "path": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-gc-threshold-v1/native-gdb.log",
+          "sha256": "268fd7c5f689bdd5ed46a6f99aede9ba8d36fd1e9ba6a9f581b0e04efd110c92"
+        },
+        "phase_evidence": {
+          "path": "data/native-diagnostics/gdb-20261015/crypto-capacity-native-gc-threshold-v1/verification-state.json",
+          "sha256": "3f33c98cfa7eb7ab378ddf6c5eb3b1f45e07715fc7d820ea902a01c33a07e692"
+        }
+      }
+    ],
+    "conclusion": "Five finite instrumented diagnostic processes completed without SIGSEGV, allocator diagnostic or OOM. The last diagnostic alone used GC thresholds (20,2,2); original worker/profile were unchanged. Original v10 exit139 remains unexplained; no native fault C stack or root cause was captured. These are native diagnostics, not acceptance runs. All task-created diagnostic containers intentionally stopped and removed after evidence capture."
+  },
+  "normal_stop_on_fault": {
+    "source_report": {
+      "path": "data/native-stopper-20261015/paired-cold-report.json",
+      "sha256": "2db6001dc431a6fbbab626fba85a674ea64cccd966ba3c7f9190663c54565e60"
+    },
+    "process_count": 8,
+    "pairs": 4,
+    "image_id": "sha256:bb71773efe46da4f2e72af6246096c1876e6b95571bae6ff60a2b8f56fb89979",
+    "worker_sha256": "6639d0945187808dc0996e4610e3d6b789c05d294bb3f3fb01b36d6879535686",
+    "profile_sha256": "2a96ca6befea4eac4f8d49e36d177f57e3be4fcbaf37b32562df35f53bad7f77",
+    "instrumentation_changes": [
+      "LD_PRELOAD async-signal-safe stopper",
+      "Docker init parent to permit self SIGSTOP"
+    ],
+    "unchanged": [
+      "original frozen worker",
+      "original profile",
+      "GC thresholds",
+      "PYTHONMALLOC default",
+      "ASLR enabled",
+      "memory/CPU budgets",
+      "original cold10s workload"
+    ],
+    "runs": [
+      {
+        "name": "crypto-native-stop-pair01-web",
+        "role": "web",
+        "pair": 1,
+        "native_fault_observed": false,
+        "driver_exit_code": 0,
+        "watcher_exit_code": 0,
+        "cold": {
+          "elapsed_seconds": 10.164741123997374,
+          "completed_requests": 102,
+          "accepted_requests": 90,
+          "critical_receipts_updated": 1,
+          "rss_peak_bytes": 339513344,
+          "errors": []
+        },
+        "state_before_cleanup": {
+          "Running": true,
+          "OOMKilled": false,
+          "ExitCode": 0
+        },
+        "summary": {
+          "path": "data/native-stopper-20261015/crypto-native-stop-pair01-web/summary.json",
+          "sha256": "1adf48e2ff8e0101fc5bb095721b00486460d29e8b2821638bddc203eeee0519"
+        }
+      },
+      {
+        "name": "crypto-native-stop-pair01-scheduler",
+        "role": "scheduler",
+        "pair": 1,
+        "native_fault_observed": false,
+        "driver_exit_code": 0,
+        "watcher_exit_code": 0,
+        "cold": {
+          "elapsed_seconds": 10.100236281999969,
+          "completed_requests": 102,
+          "accepted_requests": 90,
+          "critical_receipts_updated": 1,
+          "rss_peak_bytes": 341598208,
+          "errors": []
+        },
+        "state_before_cleanup": {
+          "Running": true,
+          "OOMKilled": false,
+          "ExitCode": 0
+        },
+        "summary": {
+          "path": "data/native-stopper-20261015/crypto-native-stop-pair01-scheduler/summary.json",
+          "sha256": "212cd47b862055be8020c2363e7dcd8f59d44410b9f20e4b541bb86b47e6cf34"
+        }
+      },
+      {
+        "name": "crypto-native-stop-pair02-web",
+        "role": "web",
+        "pair": 2,
+        "native_fault_observed": false,
+        "driver_exit_code": 0,
+        "watcher_exit_code": 0,
+        "cold": {
+          "elapsed_seconds": 10.227214244005154,
+          "completed_requests": 102,
+          "accepted_requests": 90,
+          "critical_receipts_updated": 1,
+          "rss_peak_bytes": 338825216,
+          "errors": []
+        },
+        "state_before_cleanup": {
+          "Running": true,
+          "OOMKilled": false,
+          "ExitCode": 0
+        },
+        "summary": {
+          "path": "data/native-stopper-20261015/crypto-native-stop-pair02-web/summary.json",
+          "sha256": "67c4db7ebf93012fdb116e7f41d5945bfd083dae577b87d2e83f9a84057ca46f"
+        }
+      },
+      {
+        "name": "crypto-native-stop-pair02-scheduler",
+        "role": "scheduler",
+        "pair": 2,
+        "native_fault_observed": false,
+        "driver_exit_code": 0,
+        "watcher_exit_code": 0,
+        "cold": {
+          "elapsed_seconds": 10.233052448005765,
+          "completed_requests": 100,
+          "accepted_requests": 88,
+          "critical_receipts_updated": 1,
+          "rss_peak_bytes": 341123072,
+          "errors": []
+        },
+        "state_before_cleanup": {
+          "Running": true,
+          "OOMKilled": false,
+          "ExitCode": 0
+        },
+        "summary": {
+          "path": "data/native-stopper-20261015/crypto-native-stop-pair02-scheduler/summary.json",
+          "sha256": "d31c738215ae4c21ab09631ddc14ab9a5b9858bb1bc9c7f4e1e8412e6cd12dba"
+        }
+      },
+      {
+        "name": "crypto-native-stop-pair03-web",
+        "role": "web",
+        "pair": 3,
+        "native_fault_observed": false,
+        "driver_exit_code": 0,
+        "watcher_exit_code": 0,
+        "cold": {
+          "elapsed_seconds": 10.311774301997502,
+          "completed_requests": 104,
+          "accepted_requests": 92,
+          "critical_receipts_updated": 1,
+          "rss_peak_bytes": 339292160,
+          "errors": []
+        },
+        "state_before_cleanup": {
+          "Running": true,
+          "OOMKilled": false,
+          "ExitCode": 0
+        },
+        "summary": {
+          "path": "data/native-stopper-20261015/crypto-native-stop-pair03-web/summary.json",
+          "sha256": "e981f61ece4e52e6bb8f04f026311f56335a6fa5432e40b19f9a3573d83d7187"
+        }
+      },
+      {
+        "name": "crypto-native-stop-pair03-scheduler",
+        "role": "scheduler",
+        "pair": 3,
+        "native_fault_observed": false,
+        "driver_exit_code": 0,
+        "watcher_exit_code": 0,
+        "cold": {
+          "elapsed_seconds": 10.124044330004836,
+          "completed_requests": 104,
+          "accepted_requests": 92,
+          "critical_receipts_updated": 1,
+          "rss_peak_bytes": 337702912,
+          "errors": []
+        },
+        "state_before_cleanup": {
+          "Running": true,
+          "OOMKilled": false,
+          "ExitCode": 0
+        },
+        "summary": {
+          "path": "data/native-stopper-20261015/crypto-native-stop-pair03-scheduler/summary.json",
+          "sha256": "b19f1fb73e793bc3e0392cf5dd864b2180feca60ec5e3b66d524b391adc950fd"
+        }
+      },
+      {
+        "name": "crypto-native-stop-pair04-web",
+        "role": "web",
+        "pair": 4,
+        "native_fault_observed": false,
+        "driver_exit_code": 0,
+        "watcher_exit_code": 0,
+        "cold": {
+          "elapsed_seconds": 10.248859707004158,
+          "completed_requests": 102,
+          "accepted_requests": 90,
+          "critical_receipts_updated": 1,
+          "rss_peak_bytes": 338456576,
+          "errors": []
+        },
+        "state_before_cleanup": {
+          "Running": true,
+          "OOMKilled": false,
+          "ExitCode": 0
+        },
+        "summary": {
+          "path": "data/native-stopper-20261015/crypto-native-stop-pair04-web/summary.json",
+          "sha256": "59936536a2148ae9798a866402c61584ccff343011e2327dc036bf79ad124929"
+        }
+      },
+      {
+        "name": "crypto-native-stop-pair04-scheduler",
+        "role": "scheduler",
+        "pair": 4,
+        "native_fault_observed": false,
+        "driver_exit_code": 0,
+        "watcher_exit_code": 0,
+        "cold": {
+          "elapsed_seconds": 10.184439994991408,
+          "completed_requests": 102,
+          "accepted_requests": 90,
+          "critical_receipts_updated": 1,
+          "rss_peak_bytes": 340037632,
+          "errors": []
+        },
+        "state_before_cleanup": {
+          "Running": true,
+          "OOMKilled": false,
+          "ExitCode": 0
+        },
+        "summary": {
+          "path": "data/native-stopper-20261015/crypto-native-stop-pair04-scheduler/summary.json",
+          "sha256": "6ce37e4153f9aa08b4fdac3ffeec243f0428794725d7b461a8a5c24af06e56d8"
+        }
+      }
+    ],
+    "synthetic_chain_validation": {
+      "result": "passed",
+      "scope": "Synthetic ctypes.string_at(0) verifies the stop/attach/handler chain only; it is not reproduction of v10.",
+      "native_stack": {
+        "path": "data/native-stopper-20261015/synthetic-chain/native-attach.log",
+        "sha256": "514dadadbc33b9a1d58f5ae77490737903ed0852517d439b69c59c5a85525866"
+      },
+      "python_traceback": {
+        "path": "data/native-stopper-20261015/synthetic-chain/container.log",
+        "sha256": "0d1e3d7f11b6ef49b6022c36e2fb82766b087224f8f070570a6fe79f042c0548"
+      }
+    },
+    "conclusion": "Eight finite original cold10s processes in four web/scheduler pairs completed without native fault or OOM. GDB was never attached to these original application processes; synthetic crasher separately proved that the chained handler preserves the original native fault and Python traceback. Original v10 exit139 remains unexplained. Diagnostic pipeline only; no acceptance or repair claim."
+  },
+  "stdlib_sqlite_deepcopy": {
+    "process_count": 4,
+    "declared_seconds_each": 20,
+    "sqlite_connection_threads": 2,
+    "deepcopy_threads": 2,
+    "dict_items_per_copy": 4096,
+    "limits": {
+      "memory_bytes": 536870912,
+      "memory_swap_total_bytes": 536870912,
+      "cpu_cpus": 1,
+      "network": "none"
+    },
+    "runs": [
+      {
+        "mode": "plain",
+        "description": "SQLite connect/read/close on container filesystem",
+        "log": {
+          "path": "data/sqlite-gc-probe-results/plain.log",
+          "sha256": "2c5377649043f5c2c377800a914eafa02c913f392552126201538ebb826c6350"
+        },
+        "docker_state": {
+          "path": "data/sqlite-gc-probe-results/plain-state.json",
+          "sha256": "c2b418a0190b4a5e34081d59c5086d3ec135fa1a06fa7824f54df10514fe1936"
+        },
+        "python": "3.11.16 (main, Sep 19 2026, 01:05:51) [GCC 12.2.0]",
+        "sqlite": "3.40.1",
+        "threadsafety": 3,
+        "connection_iterations": [
+          278,
+          271
+        ],
+        "deepcopy_iterations": [
+          564,
+          563
+        ],
+        "gc": [
+          {
+            "collections": 35559,
+            "collected": 435,
+            "uncollectable": 0
+          },
+          {
+            "collections": 3232,
+            "collected": 5,
+            "uncollectable": 0
+          },
+          {
+            "collections": 293,
+            "collected": 0,
+            "uncollectable": 0
+          }
+        ],
+        "exit_code": 0,
+        "oom_killed": false
+      },
+      {
+        "mode": "blob",
+        "description": "SQLite connect/blobopen/read/blob.close/connection.close on container filesystem",
+        "log": {
+          "path": "data/sqlite-gc-probe-results/blob.log",
+          "sha256": "368e66a55405634028576a3b38eaa41dab39f9e17237c870d68b9caef070c3ea"
+        },
+        "docker_state": {
+          "path": "data/sqlite-gc-probe-results/blob-state.json",
+          "sha256": "2f2f724554961a920c46460b30a1b09884dbd10f6e154c602d85f8a6b603fcd0"
+        },
+        "python": "3.11.16 (main, Sep 19 2026, 01:05:51) [GCC 12.2.0]",
+        "sqlite": "3.40.1",
+        "threadsafety": 3,
+        "connection_iterations": [
+          457,
+          454
+        ],
+        "deepcopy_iterations": [
+          570,
+          555
+        ],
+        "gc": [
+          {
+            "collections": 35494,
+            "collected": 435,
+            "uncollectable": 0
+          },
+          {
+            "collections": 3226,
+            "collected": 5,
+            "uncollectable": 0
+          },
+          {
+            "collections": 293,
+            "collected": 0,
+            "uncollectable": 0
+          }
+        ],
+        "exit_code": 0,
+        "oom_killed": false
+      },
+      {
+        "mode": "bind",
+        "description": "Blob read using a Windows bind-mounted database",
+        "log": {
+          "path": "data/sqlite-gc-probe-results/bind.log",
+          "sha256": "17f7e97263246a5e290b0c2cbedef56567f40960960806b998ffb9befc9ba965"
+        },
+        "docker_state": {
+          "path": "data/sqlite-gc-probe-results/bind-state.json",
+          "sha256": "78df97b950b5c3bf2caa1f8ed881e0cd1e785db76578ea0acc8ffd4211fe5bf4"
+        },
+        "python": "3.11.16 (main, Sep 19 2026, 01:05:51) [GCC 12.2.0]",
+        "sqlite": "3.40.1",
+        "threadsafety": 3,
+        "connection_iterations": [
+          359,
+          362
+        ],
+        "deepcopy_iterations": [
+          570,
+          571
+        ],
+        "gc": [
+          {
+            "collections": 35965,
+            "collected": 435,
+            "uncollectable": 0
+          },
+          {
+            "collections": 3269,
+            "collected": 5,
+            "uncollectable": 0
+          },
+          {
+            "collections": 297,
+            "collected": 0,
+            "uncollectable": 0
+          }
+        ],
+        "exit_code": 0,
+        "oom_killed": false
+      },
+      {
+        "mode": "deferred",
+        "description": "Closed Blob remains in a suspended generator across connection.close until ExitStack exits",
+        "log": {
+          "path": "data/sqlite-gc-probe-results/deferred.log",
+          "sha256": "fd2f49b7882aa0cec08861e195edc0b67f9509e80a32973f3e952e1b84499b4b"
+        },
+        "docker_state": {
+          "path": "data/sqlite-gc-probe-results/deferred-state.json",
+          "sha256": "c06d9973c5666f8030d944f87edd0ec86633b2e95ce862868f75cbda08220476"
+        },
+        "python": "3.11.16 (main, Sep 19 2026, 01:05:51) [GCC 12.2.0]",
+        "sqlite": "3.40.1",
+        "threadsafety": 3,
+        "connection_iterations": [
+          357,
+          350
+        ],
+        "deepcopy_iterations": [
+          556,
+          559
+        ],
+        "gc": [
+          {
+            "collections": 35178,
+            "collected": 441,
+            "uncollectable": 0
+          },
+          {
+            "collections": 3198,
+            "collected": 0,
+            "uncollectable": 0
+          },
+          {
+            "collections": 290,
+            "collected": 0,
+            "uncollectable": 0
+          }
+        ],
+        "exit_code": 0,
+        "oom_killed": false
+      }
+    ],
+    "conclusion": "No fault reproduced in these four finite stdlib-only runs. Their negative results neither exclude SQLite/GC involvement nor explain or fix v10."
+  },
+  "public_catalogue_differentials": {
+    "source_report": {
+      "path": "data/public-catalogue-gc-results.json",
+      "sha256": "0c82a3b306fd50a1ea661d2d4f68d9a953cf553edfa4a7b4bb2ffcd63aaa7114"
+    },
+    "script_snapshot": {
+      "path": "data/public-catalogue-gc-repro.py",
+      "sha256": "551e47a8b03b62e9d6b6b6e52afee56b94390789d779fb8d7bfaf91b682f6d5a"
+    },
+    "process_count": 3,
+    "image_id": "sha256:482704ecd9c58d42c754c4ed29f6fe3473515afd420cf5e41277941c90dfab1f",
+    "limits": {
+      "memory_bytes": 1073741824,
+      "memory_swap_bytes": 1207959552,
+      "cpus": 1,
+      "network": "none",
+      "catalogue_symbols_per_key": 4096,
+      "catalogue_worker_threads": 2,
+      "admission_bytes": 134217728,
+      "refresh_bytes": 67108864
+    },
+    "gc": "default thresholds (700,10,10); no explicit collect or disabled collection",
+    "runs": [
+      {
+        "mode": "public-only",
+        "declared_seconds": 30,
+        "exit_code": 0,
+        "successful_calls_per_key": [
+          319,
+          292
+        ],
+        "gc_collections": [
+          29486,
+          2680,
+          235
+        ],
+        "retained_bytes": 15942352,
+        "client_bytes_after": 0
+      },
+      {
+        "mode": "app-import",
+        "declared_seconds": 30,
+        "exit_code": 0,
+        "successful_calls_per_key": [
+          304,
+          258
+        ],
+        "gc_collections": [
+          28006,
+          2546,
+          94
+        ],
+        "retained_bytes": 15942352,
+        "client_bytes_after": 0
+      },
+      {
+        "mode": "app-init-db-real-reconcile",
+        "declared_seconds": 30,
+        "exit_code": 0,
+        "successful_calls_per_key": [
+          301,
+          261
+        ],
+        "reconcile_rounds": 33,
+        "seeded_original_receipt": "unknown -> completed",
+        "gc_collections": [
+          28017,
+          2547,
+          93
+        ],
+        "retained_bytes": 15942352,
+        "client_bytes_after": 0
+      }
+    ],
+    "conclusion": "These samples did not reproduce the v10 crash. They do not establish or fix its root cause. No production code was changed. Native full-lifespan diagnosis is still required."
+  },
+  "valgrind": {
+    "source_report": {
+      "path": "data/native-diagnostics/valgrind-20261015/diagnostic-report.json",
+      "sha256": "bb0b5ee3f3482a6f38a5f5fc6b8e625ba5c605a4e7d9c10b542ff024f232119b"
+    },
+    "native_log": {
+      "path": "data/native-diagnostics/valgrind-20261015/run-v1/valgrind.log",
+      "sha256": "6c295d9dee1f41f1e1e1b9ac96b383bc698c243587192524d6fde4b4a0826eb0"
+    },
+    "driver_outcome": {
+      "path": "data/native-diagnostics/valgrind-20261015/run-v1/driver-outcome.txt",
+      "sha256": "83ed4889521ae9ee26826be03000365acb30308513c84663059f96669953bdb9"
+    },
+    "image_id": "sha256:6b08764de49a1a1b18440039718a05d7b60bf6cbf27b4b1a837bbc418e9f3149",
+    "coverage": {
+      "Description": "Failed during imports before lifecycle; no negative result about the original cold-workload crash",
+      "RealReconciliations": 0,
+      "SuccessfulCatalogueCalls": 0,
+      "ColdStarted": false,
+      "HealthReady": false
+    },
+    "exit_code": 1,
+    "oom_killed": false,
+    "limits": {
+      "MemoryBytes": 2147483648,
+      "Pids": 160,
+      "MemorySwapTotalBytes": 2147483648,
+      "NanoCpus": 2000000000,
+      "Network": "none"
+    },
+    "memory_check_summary": {
+      "InvalidFrees": 0,
+      "Version": "3.19.0",
+      "TrackOrigins": true,
+      "InvalidWrites": 0,
+      "ErrorSummary": "106 errors from 8 contexts; suppressed 0",
+      "ErrorLimit": true,
+      "PythonAllocator": "malloc",
+      "NumCallers": 32
+    },
+    "contexts": [
+      "2 uninitialised-value contexts in _PyLong_FromByteArray; unclassified, retained unsuppressed",
+      "4 invalid-read contexts in glibc dynamic loader strncmp/is_dst/_dl_dst_count/_dl_dst_substitute while importing native modules; no application allocation frame",
+      "2 invalid-read contexts in _Py_DumpTracebackThreads after a diagnostic SIGUSR1 delivered on an OpenBLAS native thread; freed 72-byte PyUnicode_Concat allocation and corrupted code/frame pointer; this signal path caused SIGSEGV"
+    ],
+    "independent_diagnostic_signal_fault": {
+      "observed": true,
+      "trigger": "Second diagnostic SIGUSR1 delivered while startup was still importing native modules.",
+      "frames": "_Py_DumpTracebackThreads / faulthandler invalid reads on an OpenBLAS native thread",
+      "relation_to_v10": "A separately observed diagnostic fault; not established as the cause of the earlier v10 cold-stage crash.",
+      "official_issue": "https://github.com/python/cpython/issues/116008"
+    },
+    "conclusion": "Instrumented startup observation failed in diagnostic signal handling. The original v10 cold/GC crash remains unexplained. This is not a passing memory check and not evidence of a fixed application."
+  },
+  "diagnostic_fix": {
+    "scope": "Proactive diagnostic SIGUSR1 and phase-watchdog stack dumps only; not a claim to repair v10.",
+    "official_issue": "https://github.com/python/cpython/issues/116008",
+    "implementation_snapshot": {
+      "path": "scripts/capacity/worker.py",
+      "sha256": "151e9800482fe022c93777d178febe1de9c2548771a4593532246a2e67aec19f"
+    },
+    "regression_source_snapshot": {
+      "path": "tests/test_capacity_worker.py",
+      "sha256": "4c257baf1d903f0e9f95622d07226c1d051353c7e9f189b92d406cf5f758be2c"
+    },
+    "behavior": [
+      "SIGUSR1 uses a Python signal callback which holds the GIL before faulthandler.dump_traceback.",
+      "Phase watchdog uses a daemon threading.Timer Python callback instead of faulthandler.dump_traceback_later.",
+      "Watchdogs are cancelled and bounded-joined at phase exit, including exceptional exit."
+    ],
+    "limits": "Automatic fatal-error faulthandler capture remains enabled; this change does not establish the original v10 cause."
+  },
+  "overall": {
+    "diagnostic_process_count": 21,
+    "synthetic_pipeline_validation_count": 1,
+    "original_v10_root_cause_established": false,
+    "original_v10_repair_proven": false,
+    "capacity_acceptance_completed_by_these_diagnostics": false,
+    "production_verified": false,
+    "required_next_evidence": "Execute a new calibration after the diagnostic fix, then freeze a separate full-duration profile and pass full isolated acceptance, including the rebuilt commit image. Keep v10 failed and unclassified."
+  }
+}

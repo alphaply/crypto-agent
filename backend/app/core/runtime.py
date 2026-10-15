@@ -34,6 +34,8 @@ def _run_scheduler_once() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    from backend.utils.resource_diagnostics import start_resource_collector, stop_resource_collector
+    start_resource_collector('web')
     if os.getenv("RUN_SCHEDULER_IN_WEB", "true").lower() == "true":
         _run_scheduler_once()
     try:
@@ -42,3 +44,4 @@ async def lifespan(_: FastAPI):
     finally:
         from backend.utils.binance_announcements import stop_worker
         stop_worker()
+        stop_resource_collector()

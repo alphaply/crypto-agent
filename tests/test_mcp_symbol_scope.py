@@ -263,6 +263,8 @@ def test_real_spot_dispatch_uses_dynamic_symbols_and_preserves_cancel_ownership(
 
         def place_real_order(self, symbol, action, arguments, **kwargs):
             writes.append((symbol, action))
+            if action == 'CANCEL':
+                return {'id': arguments['cancel_order_id'], 'status': 'canceled', 'filled': 0}
             return {'id': 'exchange-' + str(len(writes))}
 
     monkeypatch.setattr(agent_tools, 'MarketTool', Market)

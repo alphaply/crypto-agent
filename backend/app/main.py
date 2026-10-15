@@ -9,6 +9,10 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.app.api import auth, chat, config, dashboard, history, public, setup, stats, database_admin, trading_rules, agent_runs, news, pricing
 from backend.app.api import management
+from backend.app.api import resources
+from backend.app.api import trade_audit
+from backend.mcp import audit_api
+from backend.app.api import trade_audit
 from backend.mcp.server import install_mcp
 from backend.app.core.runtime import lifespan
 
@@ -36,6 +40,10 @@ app.include_router(database_admin.router)
 app.include_router(news.router)
 app.include_router(pricing.router)
 app.include_router(management.router)
+app.include_router(resources.router)
+app.include_router(trade_audit.router)
+app.include_router(audit_api.router)
+app.include_router(trade_audit.router)
 install_mcp(app)
 
 

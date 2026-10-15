@@ -206,34 +206,31 @@ def test_symbol_discovery_queries_catalogue_and_maps_mub(ledger, monkeypatch):
     assert paper_market.search('not-listed', 'spot', 'binance')['total'] == 0
 
 
-def test_symbol_search_finds_tencent_on_other_venue_after_default_failure(ledger, monkeypatch):
+def test_symbol_search_does_not_expand_other_venues_after_binance_failure(ledger, monkeypatch):
+    calls = []
     @contextmanager
     def catalogue(name, kind):
-        if name == 'binance':
-            raise ValueError('Default venue unreachable')
-        yield SimpleNamespace(markets={'TENCENT/USDT:USDT': {'symbol': 'TENCENT/USDT:USDT', 'base': 'TENCENT', 'quote': 'USDT', 'swap': True, 'linear': True, 'active': True}} if name == 'bitget' else {})
+        calls.append((name, kind))
+        raise ValueError('Binance unreachable')
+        yield
     monkeypatch.setattr(paper_market, 'client', catalogue)
     found = paper_market.search('TENCENT', 'swap')
-    assert found['status'] == 'partial' and found['total'] == 1
-    assert found['symbols'][0]['exchange'] == 'bitget'
-    assert found['symbols'][0]['symbol'] == 'TENCENT/USDT:USDT'
-    assert len(found['queried_exchanges']) == 4
+    assert found['status'] == 'partial' and found['total'] == 0
+    assert found['queried_exchanges'] == ['binance'] and calls == [('binance', 'swap')]
 
 
-def test_read_quote_resolves_tencent_without_switching_explicit_exchange(ledger, monkeypatch):
+def test_read_quote_has_no_other_venue_resolution(ledger, monkeypatch):
     calls = []
     def quote(symbol, kind, timeframe, limit, exchange_name=None):
         calls.append(exchange_name)
-        if exchange_name != 'bitget':
-            raise ValueError('Default market source unavailable')
-        return {'symbol': symbol, 'exchange': 'bitget', 'price': 54, 'market_data_mode': 'live_public', 'market_data_is_simulated': False}
+        raise ValueError('Binance market source unavailable')
     monkeypatch.setattr(paper_market, 'quote', quote)
-    monkeypatch.setattr(paper_market, 'search', lambda *a: {'symbols': [{'symbol': 'TENCENT/USDT:USDT', 'exchange': 'bitget'}], 'missing_sources': ['binance']})
-    result = paper_market.resolve_quote('tencent/usdt:usdt')
-    assert result['exchange'] == 'bitget' and result['venue_resolution'] == 'alternative_public_venue'
-    with pytest.raises(ValueError):
-        paper_market.resolve_quote('TENCENT', exchange_name='binance')
-    assert calls == [None, 'bitget', 'binance']
+    monkeypatch.setattr(paper_market, 'search', lambda *a: pytest.fail('No fallback search is permitted'))
+    with pytest.raises(ValueError, match='unavailable'):
+        paper_market.resolve_quote('tencent/usdt:usdt')
+    with pytest.raises(ValueError, match='only supports Binance'):
+        paper_market.resolve_quote('TENCENT', exchange_name='bitget')
+    assert calls == ['binance']
 
 
 def test_full_spot_stop_releases_conflicting_limit_exit(ledger):
@@ -254,7 +251,14 @@ def test_concurrent_matchers_do_not_double_fill(ledger):
     limit(caller)
     ticker.update(price=80, bid=80, ask=80)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(lambda _: paper.reconcile(), range(8)))
+        def reconcile(_):
+            from backend.utils.runtime_capacity import CapacityBusy
+            try:
+                paper.reconcile()
+            except CapacityBusy:
+                pass
+        list(pool.map(reconcile, range(8)))
+    paper.reconcile()
     assert paper.get_account(caller, '123456')['spot'][0]['amount'] == 1
     assert len(competition.scan(caller)['events']) == 1
 
@@ -287,12 +291,14 @@ def test_http_polling_sdk_adapters_and_admin_dashboard(ledger, monkeypatch):
             assert not result.get('isError'), result
             return json.loads(result['content'][0]['text'])
         placed = rpc('paper_place_order', {'user_id': '123456', 'market_type': 'swap', 'symbol': 'ETH', 'action': 'open_short', 'order_type': 'limit', 'price': 110, 'margin_amount': 20, 'leverage': 5, 'stop_loss': 115, 'take_profit': 100, 'operation_id': 'sdk-limit-short'})
-        assert placed['order']['state'] == 'open'
-        edited = rpc('paper_edit_order', {'user_id': '123456', 'order_id': placed['order']['order_id'], 'price': 109, 'operation_id': 'sdk-edit-short'})
-        assert edited['order']['price'] == 109
-        assert rpc('paper_cancel_order', {'user_id': '123456', 'order_id': placed['order']['order_id'], 'operation_id': 'sdk-cancel-short'})['order']['state'] == 'cancelled'
+        assert placed['status'] == 'submitted' and placed['order_status'] == 'open'
+        assert placed['order_id'] and placed['quantity_unit'] == 'base'
+        edited = rpc('paper_edit_order', {'user_id': '123456', 'order_id': placed['order_id'], 'price': 109, 'operation_id': 'sdk-edit-short'})
+        assert edited['price'] == 109 and edited['order_id'] == placed['order_id']
+        assert rpc('paper_cancel_order', {'user_id': '123456', 'order_id': placed['order_id'], 'operation_id': 'sdk-cancel-short'})['order_status'] == 'cancelled'
         protected = rpc('paper_set_protection', {'user_id': '123456', 'market_type': 'swap', 'symbol': 'BTC', 'side': 'LONG', 'stop_loss': 96, 'operation_id': 'sdk-change-stop'})
-        assert len(protected['orders']) == 2
+        assert protected['status'] == 'submitted' and protected['order_status'] == 'waiting_trigger'
+        assert len(protected['orders']) == 2 and all(order['order_id'] for order in protected['orders'])
         data = client.get('/api/mcp/paper/dashboard', headers=admin).json()
         assert data['account_total'] == 2 and len([o for o in data['orders'] if o['state'] == 'open']) == 2 and data['events']
         assert client.get('/api/mcp/paper/dashboard', headers=hdr).status_code == 401

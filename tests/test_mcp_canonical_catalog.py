@@ -23,12 +23,12 @@ def test_paper_catalog_counts_scopes_and_hidden_compatibility(ledger, monkeypatc
     server = server_for(caller, monkeypatch)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
     assert names == set(canonical_tools.CORE_NAMES + canonical_tools.PAPER_NAMES)
-    assert len(names) == 11
+    assert len(names) == 10
     assert server._tool_manager.get_tool('paper_trade') is not None
     readonly = {**caller, 'scopes': ['read']}
     monkeypatch.setattr(service, 'principal', lambda: readonly)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
-    assert len(names) == 8
+    assert len(names) == 7
     assert not names & {'execute_trade_actions', 'paper_bank', 'configure_paper_account'}
 
 
@@ -129,9 +129,9 @@ def test_live_key_does_not_receive_paper_catalog_and_cancel_only_keeps_executor(
     server = server_for(live, monkeypatch)
     monkeypatch.setattr(service, 'list_profiles', lambda who: [{'profile_id': 'a'}, {'profile_id': 'b'}])
     names = [tool.name for tool in asyncio.run(server.list_tools())]
-    assert set(names) == set(canonical_tools.CORE_NAMES) and len(names) == 8
+    assert set(names) == set(canonical_tools.CORE_NAMES) and len(names) == 7
     monkeypatch.setattr(service, 'principal', lambda: {**live, 'scopes': ['read']})
-    assert len(asyncio.run(server.list_tools())) == 7
+    assert len(asyncio.run(server.list_tools())) == 6
 
 
 def test_paper_sdk_batch_and_recovery_compact_vs_detail(ledger, monkeypatch):
@@ -143,10 +143,12 @@ def test_paper_sdk_batch_and_recovery_compact_vs_detail(ledger, monkeypatch):
                               'order_type': 'market', 'amount': 1, 'reason': 'requested buy'}]}
     result = asyncio.run(server._tool_manager.call_tool('execute_trade_actions', arguments))
     assert result['status'] == 'completed' and 'account' not in result['results'][0]
-    original = asyncio.run(server._tool_manager.call_tool('get_operation', {
-        'user_id': '123456', 'operation_id': arguments['operation_id'], 'detail': True}))
-    assert original['results'][0]['account']['spot'][0]['amount'] == 1
-    assert original['query']['status'] == 'completed'
+    from backend.mcp import paper_batch
+    assert server._tool_manager.get_tool('get_operation') is None
+    original = paper_batch.operation(caller,'123456',arguments['operation_id'])
+    child_original=paper.operation(caller,'123456',original['results'][0]['operation_id'])
+    assert child_original['account']['spot'][0]['amount'] == 1
+    assert original['status'] == 'completed'
 
 
 def test_sdk_facade_does_not_coerce_v3_float_before_strict_parser(ledger, monkeypatch):
@@ -181,8 +183,8 @@ def test_all_scope_live_v3_explicit_symbol_and_private_child_recovery(contracts,
     assert first['status'] == 'completed' and len(effects) == 1
     child_id = first['result']['results'][0]['operation_id']
     assert child_id.startswith('mcp-step:')
-    recovered = asyncio.run(server._tool_manager.call_tool('get_operation', {
-        'profile_id': 'swap', 'operation_id': child_id, 'detail': True}))
+    assert server._tool_manager.get_tool('get_operation') is None
+    recovered = canonical_tools.query_child(caller,'swap',child_id)
     assert recovered['parent_operation_id'] == request['operation_id']
     assert recovered['status'] == 'completed'
     assert asyncio.run(server._tool_manager.call_tool('execute_trade_actions', request))['status'] == 'completed'

@@ -185,6 +185,7 @@ def visible_inventory(mt, symbol, *, claim=None):
 def execute_spot_action(config_id, symbol, action, operation_id):
     from backend.mcp.spot_orders import _tool, _create, _cancel, _managed_rows, _TERMINAL, _number, SpotExitRequest
     from backend.utils.position_management import management_action
+    from backend.utils.trade_operations import financial_ack_only
     mt, market = _tool(config_id, symbol)
     with management_action(mt, symbol, 'BASE', operation_id, order_id=action.get('order_id')):
         active = _active_management.get()
@@ -254,11 +255,16 @@ def execute_spot_action(config_id, symbol, action, operation_id):
                 link_resource(claim, target, None, kind='external_spot_cancel', source='external',
                               symbol=symbol, side='sell',reserved_quantity=reserve, state='pending', operation_id=operation_id)
                 claim['outcome_status']='unknown'
+                acknowledgement = None
                 try:
-                    mt.exchange.privateDeleteOrderList({'symbol': market['id'], 'orderListId': native_id})
+                    acknowledgement = mt.exchange.privateDeleteOrderList({'symbol': market['id'], 'orderListId': native_id})
                 except Exception:
                     pass  # Query the original group; a lost acknowledgement is never resubmitted.
-                result = recover_spot_action(mt,config_id,symbol,operation_id,action,{'status':'unknown'})
+                result = ({'status':'pending' if acknowledgement is not None else 'unknown','action':'cancel',
+                           'operation_id':operation_id,'order_id':target,'symbol':symbol,'filled_amount':None,
+                           'submission_state':'submitted' if acknowledgement is not None else 'unknown',
+                           'acknowledgement':acknowledgement} if financial_ack_only.get() else
+                          recover_spot_action(mt,config_id,symbol,operation_id,action,{'status':'unknown'}))
             else:
                 target = target.removeprefix('regular:')
                 old = mt.exchange.fetch_order(target, symbol)
@@ -270,11 +276,21 @@ def execute_spot_action(config_id, symbol, action, operation_id):
                 link_resource(claim,'order:'+target,None,kind='external_spot_cancel',source='external',symbol=symbol,
                               side=old['side'],reserved_quantity=reserve,state='pending',operation_id=operation_id)
                 claim['outcome_status']='unknown'
+                acknowledgement = None
                 try:
-                    mt.exchange.cancel_order(target, symbol)
+                    acknowledgement = mt.exchange.cancel_order(target, symbol)
                 except Exception:
                     pass
-                result = recover_spot_action(mt,config_id,symbol,operation_id,action,{'status':'unknown'})
+                if financial_ack_only.get():
+                    same = isinstance(acknowledgement,dict) and str(acknowledgement.get('id')) == target
+                    ended = same and acknowledgement.get('status') in {'canceled','cancelled','closed','filled','expired'}
+                    known_fill = ended and acknowledgement.get('filled') is not None
+                    result={'status':'completed' if known_fill else 'pending' if acknowledgement is not None else 'unknown',
+                            'action':'cancel','operation_id':operation_id,'order_id':'regular:'+target,'symbol':symbol,
+                            'order_status':acknowledgement.get('status') if same else None,
+                            'filled_amount':acknowledgement.get('filled') if same else None,'acknowledgement':acknowledgement}
+                else:
+                    result = recover_spot_action(mt,config_id,symbol,operation_id,action,{'status':'unknown'})
         elif name == 'edit':
             target = str(action['order_id']).removeprefix('regular:')
             order = mt.exchange.fetch_order(target, symbol)
@@ -298,8 +314,9 @@ def execute_spot_action(config_id, symbol, action, operation_id):
                 reserve_spot_edit(config_id,mt.runtime_config,operation_id,symbol,order,amount,price,mt.exchange.fetch_balance())
             _intent(config_id,symbol,operation_id,target,'edit',{'side':order['side'],'expected_amount':amount,'expected_price':price})
             active['outcome_status']='unknown'
+            acknowledgement = None
             try:
-                mt.exchange.edit_order(target, symbol, 'limit', order['side'], amount, price)
+                acknowledgement = mt.exchange.edit_order(target, symbol, 'limit', order['side'], amount, price)
             except Exception as exc:
                 import ccxt
                 if isinstance(exc,(ccxt.InvalidOrder,ccxt.InsufficientFunds,ccxt.AuthenticationError,ccxt.PermissionDenied,ccxt.NotSupported)):
@@ -316,7 +333,18 @@ def execute_spot_action(config_id, symbol, action, operation_id):
                     active['outcome_status']='failed'
                     return result
                 # An uncertain amend is queried using the recorded expectation.
-            result = recover_spot_action(mt,config_id,symbol,operation_id,action,{'status':'unknown'})
+            if financial_ack_only.get():
+                matches = (isinstance(acknowledgement,dict) and str(acknowledgement.get('id'))==target
+                           and acknowledgement.get('amount') is not None and acknowledgement.get('price') is not None
+                           and float(acknowledgement['amount'])==amount and float(acknowledgement['price'])==price)
+                result={'status':'completed' if matches else 'pending' if acknowledgement is not None else 'unknown',
+                        'action':'edit','operation_id':operation_id,'order_id':'regular:'+target,'symbol':symbol,
+                        'order_status':acknowledgement.get('status') if matches else None,
+                        'filled_amount':acknowledgement.get('filled') if matches else None,
+                        'remaining_amount':acknowledgement.get('remaining') if matches else None,
+                        'price':price,'edit_method':'native','acknowledgement':acknowledgement}
+            else:
+                result = recover_spot_action(mt,config_id,symbol,operation_id,action,{'status':'unknown'})
         else:
             raise ValueError('Unsupported spot action')
         from backend.utils.trade_operations import tool_result_status

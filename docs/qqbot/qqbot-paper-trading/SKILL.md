@@ -10,7 +10,7 @@ description: 通过 Crypto Agent 精简 MCP 目录查询真实公开行情，按
 ## 上下文与标的
 
 - 首先 get_trading_context：规则、费用、杠杆上限、支持市场、稳定 bot_user_id。只有 Paper 账本和成交模拟，行情是真实生产公开数据。
-- 陌生简称、股票代币、MU/MUB/美光、腾讯/TENCENT 先 search_symbols。未指定场所会搜索支持交易所；保留返回的规范 symbol、market_type、exchange。部分结果或某一场所失败不能证明标的不存在。
+- 陌生简称、股票代币、MU/MUB/美光先 search_symbols；只核验 Binance 现有 USDT 现货和线性永续目录，保留返回的规范 symbol、market_type、exchange。来源失败不跨场所回退，空结果不能证明标的全球不存在。
 - get_market 查询 ticker 和 K 线；get_news 读取共享新闻。价格来源、观察时间和 token/股票永续资产类型要说明，不能称作 NASDAQ 股票现货报价。
 - 自己参赛使用上下文返回的 bot_user_id，替用户交易使用可信发送者 ID。Bot 账户由服务维护，不能重置或挪用用户账户参赛。
 
@@ -20,7 +20,7 @@ description: 通过 Crypto Agent 精简 MCP 目录查询真实公开行情，按
 
 get_account_state 按 include=["balances"|"positions"|"inventory"|"orders"] 请求所需 facet。净权益和估值依据最后观察价格，陈旧时间不能说成实时权益。
 
-get_trade_records 的 record_type=orders/order/fills/history 分别读取挂单、一个指定 order_id、真实模拟成交和事件历史。订单接受不等于成交；order_id 是本地 Paper 订单身份，不能传给真实交易所工具。操作核验使用 get_operation(user_id, operation_id, detail?)，不是 order_id。
+get_trade_records 的 record_type=orders/order/fills/history 分别读取挂单、一个指定 order_id、真实模拟成交和事件历史。订单接受不等于成交；order_id 是本地 Paper 订单身份，不能传给真实交易所工具。金融入口当次返回权威事实，后续状态由后台自动更新，不追加模型执行核验调用。
 
 ## 一次调用顺序交易
 
@@ -40,9 +40,11 @@ amount 是基础币数量；quote_amount 是 USDT 名义金额（现货买入为
 
 ## 幂等与恢复
 
-父 operation_id 来自 QQ 事件的稳定身份，8–160 字符，字母数字与 _.:-。同 ID 只能对应完全相同的意图，包括动作顺序、策略和依赖。超时或断线先查询 get_operation；禁止换 ID 盲重试。
+父 operation_id 来自 QQ 事件的稳定身份，8–160 字符，字母数字与 _.:-。同 ID 只能对应完全相同的意图，包括动作顺序、策略和依赖。超时或断线保留原身份与真实未知状态，由后台核验原订单；禁止换 ID 盲重试。
 
-父子意图先落盘，每项账户、订单、预留、事件和回执原子提交。重放只核验已尝试项，已提交项不再成交，not_executed 尾项绝不自动续跑。需要处理剩余项时，以新明确意图及新稳定父 ID 提交。默认结果是精简逐项回执，include=["account"] 最多返回一次末尾账户摘要，detail=true 可查完整证据。
+父子意图先落盘，每项账户、订单、预留、事件和回执原子提交。重放只核验已尝试项，已提交项不再成交，not_executed 尾项绝不自动续跑。需要处理剩余项时，以新明确意图及新稳定父 ID 提交。默认结果是精简逐项回执，include=["account"] 最多返回一次末尾账户摘要；完整原/最新证据由授权 HTTP/UI 展开。
+
+历史非 BN 和不能证明来源的资源只从默认列表及维护过滤，原账本和全部预留/保证金保留。新 BN 同名资源使用独立周期，不动用被排除库存。账户 facet 的 filter/completeness 表示范围及估值缺项；null 不能解释为零，混合不完整收益不参加排名。过滤空页依然按 next_offset/next_cursor 和 has_more 继续读取。
 
 ## 银行、竞赛和事件
 

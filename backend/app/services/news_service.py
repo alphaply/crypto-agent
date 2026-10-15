@@ -18,6 +18,7 @@ from backend.utils.news_tracing import news_span, pipeline_run_id, trace_identit
 from backend.app.services.news_progress import NewsProgress, current_progress
 from backend.app.services.news_models import article_data, fingerprint, model_identity, score_batch, generate
 from backend.utils.news_tracing import news_trace_mode
+from backend.utils.runtime_capacity import CapacityBusy, submit_capacity, capacity_scope, get_capacity_manager
 
 logger = setup_logger('SharedNews')
 
@@ -89,8 +90,15 @@ def collect_candidates(settings: NewsSettings, now: datetime, snapshot: dict | N
             if span:
                 span.end(outputs={'status': result.get('status'), 'item_count': len(result.get('items', []))})
             return result
-    futures = {pool.submit(copy_context().run, fetch, source): source for source in active}
     items, health = [], {}
+    futures = {}
+    for source in active:
+        try:
+            futures[submit_capacity(pool, 'news', fetch, source, timeout=.05)] = source
+        except CapacityBusy:
+            health[source.id] = {'name': source.name, 'status': 'busy', 'item_count': 0, 'error': 'Runtime capacity unavailable'}
+            if progress:
+                progress.source(source.id, health[source.id], 0)
     completed = set()
     try:
         for future in as_completed(futures, timeout=15):
@@ -252,7 +260,13 @@ def _process_refresh(owner: str, snapshot: dict, progress: NewsProgress) -> None
                 return result
             return score_news(item, scorer, instructions=settings.scorer_instructions, criteria=settings.scorer_criteria)
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix='jev-score') as pool:
-            futures = {pool.submit(copy_context().run, score, index, item): (index, item) for index, item in enumerate(candidates)}
+            futures = {}
+            for index, item in enumerate(candidates):
+                try:
+                    futures[submit_capacity(pool, 'news', score, index, item, timeout=.05)] = (index, item)
+                except CapacityBusy as exc:
+                    failed += 1
+                    progress.item(index, status='failed', error=exc)
             for future in as_completed(futures):
                 index, item = futures[future]
                 try:
@@ -328,9 +342,33 @@ def refresh_news(*, force: bool = True, background: bool = True) -> dict:
     if not owner:
         return {**get_news_status(), 'started': False}
     if background:
-        threading.Thread(target=_run_refresh, args=(owner, snapshot), name='hourly-news', daemon=True).start()
+        try:
+            lease = get_capacity_manager().acquire('news', timeout=0)
+        except CapacityBusy:
+            database_news.update_state('news', {'status': 'busy'}, owner=owner, release=True)
+            return {**get_news_status(), 'started': False}
+        def work():
+            from backend.utils.runtime_capacity import current_capacity
+            lease.mark_started()
+            token = current_capacity.set(lease)
+            try:
+                _run_refresh(owner, snapshot)
+            finally:
+                current_capacity.reset(token)
+                lease.release()
+        try:
+            threading.Thread(target=work, name='hourly-news', daemon=True).start()
+        except BaseException:
+            lease.release()
+            database_news.update_state('news', {'status': 'busy'}, owner=owner, release=True)
+            raise
     else:
-        _run_refresh(owner, snapshot)
+        try:
+            with capacity_scope('news', timeout=0):
+                _run_refresh(owner, snapshot)
+        except CapacityBusy:
+            database_news.update_state('news', {'status': 'busy'}, owner=owner, release=True)
+            return {**get_news_status(), 'started': False}
     return {**get_news_status(), 'started': True}
 
 

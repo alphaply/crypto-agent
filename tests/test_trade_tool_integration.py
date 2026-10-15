@@ -27,6 +27,20 @@ def call(name, args, operation_id):
     return json.loads(tool_registry.run_trade_tool(name, args, 'cfg', 'ETH/USDT', operation_id=operation_id))
 
 
+def native_order_id(receipt):
+    return str(receipt.get('order_id') or receipt.get('id')).split(':',1)[-1]
+
+
+def recover(operation_id):
+    """Pure backend recovery coverage; no model query tool is registered or invoked."""
+    from backend.utils.trade_operations import refresh_operation_receipt, _decode_receipt
+    with database.get_db_conn() as conn:
+        row=conn.execute('SELECT result FROM trade_action_runs WHERE config_id=? AND operation_id=?',('cfg',operation_id)).fetchone()
+    if row is None:
+        return {'status':'failed','error_code':'operation_not_found'}
+    return refresh_operation_receipt('cfg','ETH/USDT',operation_id,_decode_receipt(row['result']))
+
+
 @pytest.fixture
 def real_short(simulation, monkeypatch):
     """Public dispatch against a deterministic exchange, never a live account."""
@@ -54,7 +68,7 @@ def real_short(simulation, monkeypatch):
     opening = entry()
     opening.action = 'SELL_LIMIT'
     first = service.open('ETH/USDT', opening, operation_id='short-entry', contract_version=2)
-    exchange.orders[first['id']].update(status='closed', filled=1)
+    exchange.orders[native_order_id(first)].update(status='closed', filled=1)
     exchange.quantity = 1
     service.reconcile_all()
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: {
@@ -76,7 +90,7 @@ def test_market_short_close_keeps_fill_when_cleanup_ack_has_no_fill(real_short):
     assert result['operation_id'] == 'market-close-short'
     assert result['cleanup']['status'] == 'pending'
     assert stop['order_id'] in [item['order_id'] for item in result['cleanup']['orders']]
-    assert result['recovery']['target_operation_id'] == 'market-close-short'
+    assert result['verification']['operation_id'] == 'market-close-short'
     assert sum(row['type'] == 'market' and 'stopLossPrice' not in row['params']
                for row in exchange.calls) == 1
 
@@ -101,7 +115,7 @@ def test_market_close_lost_ack_retains_original_query_identity(real_short):
     assert result['execution']['submission_state'] == 'unknown'
     assert result['client_id']
     assert result['filled_amount'] is None
-    assert result['recovery']['target_operation_id'] == 'timeout-close'
+    assert result['verification']['operation_id'] == 'timeout-close'
 
 
 def test_confirmed_close_with_late_entry_keeps_residual_separate(real_short):
@@ -109,14 +123,16 @@ def test_confirmed_close_with_late_entry_keeps_residual_separate(real_short):
     add = call('open', dict(side='SHORT', amount=.3, price=120, reason='add'), 'late-add')
     cancel = exchange.cancel_order
     def late_fill(oid, symbol, params):
-        if str(oid) == add['id']:
+        if str(oid) == native_order_id(add):
             exchange.orders[str(oid)]['filled'] = .3
             exchange.quantity += .3
         return cancel(oid, symbol, params)
     exchange.cancel_order = late_fill
     result = call('close', dict(side='SHORT', order_type='market', close_all=True, reason='exit'), 'residual-close')
     assert result['status'] == 'completed' and result['filled_amount'] == 1
-    assert result['position']['amount'] == pytest.approx(.3)
+    assert result['position']['amount'] is None and result['position']['status']=='stale'
+    service.reconcile_all()
+    assert recover('residual-close')['position']['amount']==pytest.approx(.3)
     assert result['cleanup']['status'] == 'pending'
     assert len(exchange.calls) == 3
 
@@ -151,9 +167,9 @@ def test_accepted_close_survives_post_submission_persistence_failure(real_short,
     monkeypatch.setattr(service, '_save', fail_after_accept)
     result = call('close', dict(side='SHORT', order_type='market', close_all=True, reason='exit'), 'save-failed')
     assert result['status'] == 'completed' and result['filled_amount'] == 1
-    assert result['client_id'] and result['exchange_order_id']
+    assert result['client_id'] and result['order_id']
     monkeypatch.setattr(service, '_save', save)
-    recovered = call('get_trade_operation', {'target_operation_id': 'save-failed'}, 'read-after-save-failure')
+    recovered = recover('save-failed')
     assert recovered['status'] == 'completed'
     assert len(exchange.calls) == 2
 
@@ -185,7 +201,7 @@ def test_amend_exit_dispatch_and_cancel(simulation):
     call('close_position_strategy', {'orders': [{'pos_side': 'LONG', 'exit_type': 'stop_market', 'trigger_price': 90, 'amount': 1, 'reason': 'test'}]}, 'exit')
     order_id = simulation.snapshot()['exits'][0]['order_id']
     updated = call('update_exit_order', {'order_id': order_id, 'trigger_price': 95, 'amount': .5, 'reason': 'revise'}, 'amend')
-    assert updated['trigger_price'] == 95 and updated['remaining'] == .5
+    assert updated['trigger_price'] == 95 and updated['remaining_amount'] == .5
     call('cancel_orders_strategy', {'order_id': updated['order_id'], 'reason': 'cancel'}, 'cancel')
     assert simulation.snapshot()['exits'] == []
 
@@ -216,7 +232,7 @@ def test_canonical_cross_round_stages_all_edit_and_cancel(simulation):
     outcomes = [row['result'] for row in receipt['results']]
     assert [row['quantity_mode'] for row in outcomes] == ['fixed', 'fixed', 'all', 'all']
     assert outcomes[2]['order_status'] == 'waiting_trigger'
-    assert outcomes[2]['requested_amount'] is None
+    assert outcomes[2].get('requested_amount') is None
     assert call('execute_trade_actions', payload, 'v2-stage-exits') == receipt
     changed = call('edit', {'order_id': outcomes[2]['order_id'], 'trigger_price': 145, 'reason': 'new final target'}, 'v2-edit-final')
     assert changed['quantity_mode'] == 'all' and changed['edit_method'] == 'cancel_replace'
@@ -308,7 +324,7 @@ def test_real_close_skips_confirmed_empty_side_and_continues_batch(simulation, m
         assert [row['status'] for row in result['results']] == ['skipped', 'filled']
         assert result['results'][0]['reason'] == 'no_position'
     else:
-        first = json.loads(result['results'][0]['result'])
+        first = result['results'][0]['result']
         assert first['results'][0]['status'] == 'skipped'
         assert first['results'][0]['reason'] == 'no_position'
     assert calls == [('ETH/USDT', 'LONG'), ('ETH/USDT', 'SHORT')]
@@ -355,13 +371,13 @@ def test_real_close_preserves_diagnostic_and_blocks_following_items(simulation, 
     assert result['results'][1]['blocked_by_index'] == 0
     first = result['results'][0]
     if tool_name == 'execute_trade_actions':
-        first = json.loads(first['result'])['results'][0]
+        first = first['result']['results'][0]
     if uncertain:
         assert first['error'] == 'Position query unavailable'
         assert 'error_code' not in first
     else:
         assert first['error_code'] == 'independent_position_cycle_missing'
-        assert first['details'] == details
+        assert first['details'] == {key:value for key,value in details.items() if key!='next_action'}
     assert calls == [('ETH/USDT', 'LONG')]
     assert call(tool_name, payload, 'blocked-close') == result
     assert len(calls) == 1

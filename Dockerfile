@@ -27,6 +27,9 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 RUN mkdir -p /app/data
 
+ARG IMAGE_REVISION=unverified
+ENV IMAGE_REVISION=${IMAGE_REVISION}
+
 EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

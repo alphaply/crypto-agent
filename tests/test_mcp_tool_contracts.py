@@ -441,6 +441,19 @@ def test_invalid_exit_prices_fail_before_exit_dispatch(contracts, monkeypatch):
     exits.assert_not_called()
 
 
+def test_legacy_spot_exit_gateway_uses_ack_only_context(contracts,monkeypatch):
+    from backend.utils.trade_operations import financial_ack_only
+    _,_,_,server=contracts
+    def execute(*args):
+        assert financial_ack_only.get() is True
+        return {'status':'open','exit_id':'original-exit','filled':None}
+    monkeypatch.setattr(spot_orders,'execute',execute)
+    result=call(server,'create_spot_exit',{'profile_id':'spot','symbol':'BTC/USDT','amount':1,
+                'exit_type':'market','reason':'requested','operation_id':'legacy-ack-once'})
+    assert result['status']=='submitted'
+    assert financial_ack_only.get() is False
+
+
 def test_sdk_does_not_erase_duplicate_json_money_fields_before_gateway_validation(contracts):
     _, _, dispatch, server = contracts
     result = call(server, 'execute_trade', {
@@ -470,6 +483,8 @@ def test_flat_cancel_uses_real_spot_dispatcher_and_rejects_foreign_orders(contra
 
         def place_real_order(self, symbol, action, arguments, **kwargs):
             writes.append((symbol, action))
+            if action == 'CANCEL':
+                return {'id':arguments['cancel_order_id'],'status':'canceled','filled':0}
             return {'id': 'exchange-' + str(len(writes))}
 
     monkeypatch.setattr(agent_tools, 'MarketTool', Market)
@@ -486,9 +501,12 @@ def test_flat_cancel_uses_real_spot_dispatcher_and_rejects_foreign_orders(contra
     assert writes == [('ETH/USDT', 'BUY_LIMIT'), ('ETH/USDT', 'CANCEL')]
 
 
-def test_mcp_get_operation_returns_structured_not_found_without_raising(contracts):
-    _, _, _, server = contracts
-    result = call(server, 'get_operation', {'profile_id': 'spot', 'operation_id': 'non-existent-op-0001'})
+def test_cached_mcp_get_operation_is_unregistered_and_internal_reader_is_scoped(contracts):
+    from mcp.server.fastmcp.exceptions import ToolError
+    caller, _, _, server = contracts
+    with pytest.raises(ToolError,match='Unknown tool'):
+        call(server, 'get_operation', {'profile_id':'spot','operation_id':'non-existent-op-0001'})
+    result = service.operation(caller,'spot','non-existent-op-0001')
     assert result['state'] == 'not_found'
     assert result['found'] is False
     assert result['error_code'] == 'operation_not_found'

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from backend import database_news
+from backend.utils.runtime_capacity import get_capacity_manager, reserve_bytes, CapacityBusy, current_capacity
 
 _lock = threading.Lock()
 _worker = None
@@ -97,9 +98,35 @@ def ensure_worker(settings, snapshot: dict) -> None:
         owner = database_news.acquire_lease('binance-stream', seconds=120)
         if not owner:
             return
+        try:
+            lease = get_capacity_manager().acquire('stream', timeout=0)
+            try:
+                retained = reserve_bytes('stream', 8 * 1024 * 1024)
+            except BaseException:
+                lease.release()
+                raise
+        except CapacityBusy:
+            database_news.update_state('binance-stream', {'status': 'busy'}, owner=owner, release=True)
+            return
         _stop = threading.Event()
-        _worker = threading.Thread(target=_run, args=(key, secret, _stop, owner), name='binance-announcements', daemon=True)
-        _worker.start()
+        stop = _stop
+        def work():
+            lease.mark_started()
+            token = current_capacity.set(lease)
+            try:
+                _run(key, secret, stop, owner)
+            finally:
+                current_capacity.reset(token)
+                retained.release()
+                lease.release()
+        _worker = threading.Thread(target=work, name='binance-announcements', daemon=True)
+        try:
+            _worker.start()
+        except BaseException:
+            retained.release()
+            lease.release()
+            database_news.update_state('binance-stream', {'status': 'stopped'}, owner=owner, release=True)
+            raise
 
 
 def stop_worker() -> None:

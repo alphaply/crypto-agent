@@ -99,7 +99,10 @@ def list_symbols(profile, exchange, *, keyword='', quote='', limit=50, offset=0)
         raise ValueError('limit must be 1–200 and offset must be nonnegative')
     if len(str(keyword)) > 100 or len(str(quote)) > 30:
         raise ValueError('Search keyword or quote currency is too long')
-    markets = getattr(exchange, 'markets', None) or exchange.load_markets()
+    if not getattr(exchange, 'markets', None):
+        from backend.utils.public_catalogue import load_public_catalogue
+        load_public_catalogue(exchange, market_type=profile['market_type'])
+    markets = exchange.markets
     records = {}
     needle = str(keyword or '').strip().upper()
     wanted_quote = str(quote or '').strip().upper()
@@ -396,7 +399,7 @@ def trading_tools(profile_id):
             if item['name'] in {'open', 'close', 'edit', 'cancel', 'execute_trade_actions'}:
                 item['capabilities'] = {'contract_version': 2, 'receipt_version': 1, 'admission_version': 1,
                                         'scoped_admission': True, 'query_required_before_action': False,
-                                        'recovery_tool': 'get_operation', 'query_status_separate': True}
+                                        'verification': 'automatic_background', 'query_status_separate': True}
                 if item['name'] == 'execute_trade_actions':
                     item['capabilities']['execution_policies'] = ['stop_on_error', 'independent']
             if item['name'] not in {'open', 'close', 'edit', 'cancel', 'execute_trade_actions', 'adopt_position_real'}:
@@ -570,8 +573,9 @@ def _external_operation_receipt(value, stable_id, operation_id, profile_id, *, p
     if 'blocker_operation_ids' in value:
         result['blocker_operation_ids'] = list(dict.fromkeys(filter(None, (
             external(identity, target=True) for identity in value['blocker_operation_ids']))))
-    if result.get('tool') == 'get_trade_operation':
-        result.update(tool='get_operation', profile_id=profile_id)
+    if result.get('tool') in {'get_trade_operation', 'get_operation', 'get_paper_operation'}:
+        result.pop('tool', None)
+        result.update(state='background')
     return result
 
 
@@ -819,10 +823,15 @@ def execute(caller, profile_id, symbol, tool_name, arguments, operation_id):
             remaining('dispatch')
             if tool_name in {'create_spot_exit', 'cancel_spot_exit'}:
                 from .spot_orders import execute as execute_spot_exit
-                raw = execute_spot_exit(tool_name, validated, cfg_id, symbol, stable_id)
+                from backend.utils.trade_operations import financial_ack_only
+                acknowledgement_token = financial_ack_only.set(True)
+                try:
+                    raw = execute_spot_exit(tool_name, validated, cfg_id, symbol, stable_id)
+                finally:
+                    financial_ack_only.reset(acknowledgement_token)
             else:
                 from backend.agent.tool_registry import run_trade_tool
-                raw = run_trade_tool(tool_name, dispatch_args, cfg_id, symbol, operation_id=stable_id, cycle_id=cycle_id)
+                raw = run_trade_tool(tool_name, dispatch_args, cfg_id, symbol, operation_id=stable_id, cycle_id=cycle_id, project_result=False)
         from backend.utils.trade_operations import tool_result_status
         try:
             payload = json.loads(raw) if isinstance(raw, str) else raw

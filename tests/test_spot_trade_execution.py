@@ -44,6 +44,8 @@ def spot_runtime(tmp_path, monkeypatch):
                 if isinstance(response, Exception):
                     raise response
                 return response
+            if action == 'CANCEL':
+                return {**verified, 'id': str(params['cancel_order_id'])}
             return {'id': f'order-{len(calls)}', 'status': 'open'}
 
     monkeypatch.setattr(agent_tools, 'MarketTool', FakeMarket)
@@ -196,6 +198,7 @@ def test_cancellation_retains_partial_fill_cost_and_releases_remaining_budget(sp
     cancelled = json.loads(tool_registry.run_trade_tool('cancel_orders_real',
         {'order_id': 'order-1', 'symbol': 'ETH/USDT', 'reason': 'cancel'}, 'spot', 'BTC/USDT'))
     assert cancelled['status'] == 'completed'
+    assert cancelled['filled_amount'] == 2 and cancelled['filled_cost'] == 20
     assert buy([order(cost=80)], operation='new', cycle='cycle-2')['status'] == 'submitted'
     assert buy([order(cost=1)], operation='over', cycle='cycle-3')['status'] == 'failed'
 

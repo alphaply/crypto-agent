@@ -200,6 +200,7 @@ def test_seven_day_memory_keeps_all_fills_cycles_and_observations(memory_db):
     end_ms = int(now.timestamp() * 1000)
     exchange = SimpleNamespace(
         id='offline', apiKey='offline-test', load_markets=lambda: None,
+        markets={'ETH/USDT:USDT': {'symbol':'ETH/USDT:USDT','contract':True,'swap':True,'linear':True}},
         market=lambda _: {'symbol': 'ETH/USDT:USDT', 'contract': True, 'swap': True, 'linear': True},
     )
     ledger = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')

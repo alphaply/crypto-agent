@@ -122,7 +122,7 @@ def test_mcp_read_and_replay_refresh_same_internal_operation_without_writes(cont
     exchange.timeout_next = True
     first = service.execute(caller, 'swap', 'ETH/USDT:USDT', 'close', args, 'mcp-close-recover')
     assert first['status'] == 'unknown'
-    assert first['result']['recovery']['tool'] == 'get_operation'
+    assert first['result']['recovery']['state'] == 'background'
     assert first['result']['recovery']['target_operation_id'] == 'mcp-close-recover'
     for name in ['create_order', 'cancel_order', 'edit_order']:
         monkeypatch.setattr(exchange, name, lambda *a, **k: pytest.fail('read/replay wrote financially'))

@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError
@@ -17,6 +18,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from backend.utils.logger import setup_logger
+from backend.utils.runtime_capacity import CapacityBusy, submit_capacity, reserve_bytes, positive_setting
 
 
 logger = setup_logger("NewsContext")
@@ -131,9 +133,53 @@ def _read_url(url: str, timeout: float = 4.0, headers: dict | None = None) -> by
             return data
 
 
-def _source_lock(source_key: str) -> threading.Lock:
+@contextmanager
+def _source_lock(source_key: str):
     with _cache_lock:
-        return _source_locks.setdefault(source_key, threading.Lock())
+        if source_key not in _source_locks:
+            if len(_source_locks) >= positive_setting('RUNTIME_NEWS_CACHE_ENTRIES', 64):
+                raise CapacityBusy('news', 'source_coordinators')
+            _source_locks[source_key] = [threading.Lock(), 0]
+        entry = _source_locks[source_key]
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _cache_lock:
+            entry[1] -= 1
+            if not entry[1]:
+                _source_locks.pop(source_key, None)
+
+
+class _CachedValue(dict):
+    def __init__(self, value, lease):
+        super().__init__(value)
+        self.lease = lease
+
+    def __del__(self):
+        self.lease.release()
+
+
+def _cache_put(cache, key, value):
+    from backend.utils.public_catalogue import resident_size
+    cap = positive_setting('RUNTIME_NEWS_CACHE_BYTES', 16 * 1024 * 1024)
+    try:
+        size = resident_size(value, cap) * 2
+        maps = (_memory_cache, _failure_cache, _digest_cache)
+        cache.pop(key, None)
+        while len(cache) >= positive_setting('RUNTIME_NEWS_CACHE_ENTRIES', 64):
+            cache.pop(next(iter(cache)))
+        while sum(item.lease.amount for mapping in maps for item in mapping.values() if isinstance(item, _CachedValue)) + size > cap:
+            oldest = next((mapping for mapping in maps if mapping), None)
+            if oldest is None:
+                return
+            oldest.pop(next(iter(oldest)))
+        cache[key] = _CachedValue(value, reserve_bytes('news', size))
+    except CapacityBusy:
+        # Durable cache and current facts remain available without retaining
+        # another process copy when the global byte commitment is exhausted.
+        return
 
 
 def _load_persistent_cache(source_key: str) -> dict[str, Any] | None:
@@ -181,13 +227,14 @@ def _fetch_cached(
         if persisted_at and now - persisted_at <= ttl:
             payload = persisted.get("payload") or []
             with _cache_lock:
-                _memory_cache[source_key] = {"fetched_at": persisted_at, "payload": payload}
+                _cache_put(_memory_cache, source_key, {"fetched_at": persisted_at, "payload": payload})
             return {"items": payload, "status": "ok", "stale": False, "fetched_at": _iso(persisted_at)}
         try:
-            payload = fetcher()
+            with reserve_bytes('news', positive_setting('RUNTIME_NEWS_WORK_BYTES', 32 * 1024 * 1024)):
+                payload = fetcher()
             fetched_at = now
             with _cache_lock:
-                _memory_cache[source_key] = {"fetched_at": fetched_at, "payload": payload}
+                _cache_put(_memory_cache, source_key, {"fetched_at": fetched_at, "payload": payload})
                 _failure_cache.pop(source_key, None)
             _save_persistent_cache(source_key, fetched_at, payload)
             return {"items": payload, "status": "ok", "stale": False, "fetched_at": _iso(fetched_at)}
@@ -211,7 +258,7 @@ def _fetch_cached(
             else:
                 result = {"items": [], "status": "unavailable", "stale": False, "error": str(exc)}
             with _cache_lock:
-                _failure_cache[source_key] = {"failed_at": now, "result": result}
+                _cache_put(_failure_cache, source_key, {"failed_at": now, "result": result})
             return result
 
 
@@ -670,7 +717,7 @@ def _news_digest(items: list[dict[str, Any]], symbol: str) -> str:
             ]
             for key in expired:
                 _digest_cache.pop(key, None)
-            _digest_cache[fingerprint] = {"created_at": now, "digest": digest}
+            _cache_put(_digest_cache, fingerprint, {"created_at": now, "digest": digest})
         try:
             usage = response.response_metadata.get("token_usage", {})
             if usage:
@@ -763,12 +810,14 @@ def _fetch_legacy_news_risk_context(symbol: str, limit: int = 10, timeout: float
 
     worker_count = max(1, min(16, int(os.getenv("NEWS_SOURCE_WORKERS", "16")), len(source_specs)))
     executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="news-intel")
-    futures = {
-        executor.submit(_fetch_cached, key, spec[0], ttl=spec[1], stale_ttl=spec[2], now=now): key
-        for key, spec in source_specs.items()
-    }
+    futures, rejected = {}, {}
+    for key, spec in source_specs.items():
+        try:
+            futures[submit_capacity(executor, 'news', _fetch_cached, key, spec[0], ttl=spec[1], stale_ttl=spec[2], now=now)] = key
+        except CapacityBusy:
+            rejected[key] = {'items': [], 'status': 'busy', 'stale': False, 'error': 'Runtime capacity unavailable'}
     done, pending = wait(futures, timeout=float(os.getenv("NEWS_TOTAL_TIMEOUT_SECONDS", "10")))
-    results: dict[str, dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = rejected
     for future in done:
         key = futures[future]
         try:

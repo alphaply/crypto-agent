@@ -4,6 +4,7 @@ import os
 import sqlite3
 import time
 import threading
+import math
 from datetime import datetime, timedelta
 
 import pytz
@@ -16,6 +17,8 @@ from backend.utils.logger import setup_logger
 from backend.utils.llm_utils import sync_langsmith_environment
 from backend.utils.market_data import MarketTool
 from backend.utils.run_schedule import normalize_dca_freq, parse_dca_time, latest_dca_slot, dca_cycle_id
+from backend.utils.runtime_capacity import (CapacityBusy, get_capacity_manager,
+                                           positive_setting, submit_capacity, reserve_bytes)
 
 
 load_dotenv()
@@ -41,30 +44,26 @@ _execution_sync_executor = None
 _execution_sync_last = {}
 _exclusive_maintenance_retry = {}
 _maintenance_run_locks = {}
+_plan_scan_cursor = 0
+_recent_plan_scan_cursor = (0, 0)
+_protection_scan_progress = {}
+_background_receipt_future = None
+_background_receipt_cursor = None
+_dispatch_cursor = 0
 
 AGENT_JOB_TYPE = "agent"
 MAINTENANCE_JOB_TYPE = "maintenance"
 
 
 def _scheduler_max_workers() -> int:
-    raw_value = str(os.getenv("SCHEDULER_MAX_WORKERS", "")).strip()
-    if raw_value:
-        try:
-            return max(1, int(raw_value))
-        except ValueError:
-            logger.warning(f"Invalid SCHEDULER_MAX_WORKERS={raw_value!r}, falling back to CPU-based default")
-
-    cpu_count = os.cpu_count() or 1
-    return max(1, min(5, cpu_count))
+    configured = positive_setting('SCHEDULER_MAX_WORKERS', get_capacity_manager().role_limits['agent'])
+    from backend.utils.resource_diagnostics import read_effective_resources
+    available = read_effective_resources()['cpu']['effective_cpus']
+    return min(configured, max(1, math.ceil(available))) if available is not None else configured
 
 
 def _maintenance_max_workers() -> int:
-    raw_value = str(os.getenv("SCHEDULER_MAINTENANCE_WORKERS", "2")).strip()
-    try:
-        return max(1, int(raw_value))
-    except ValueError:
-        logger.warning(f"Invalid SCHEDULER_MAINTENANCE_WORKERS={raw_value!r}, falling back to 2")
-        return 2
+    return positive_setting('SCHEDULER_MAINTENANCE_WORKERS', get_capacity_manager().role_limits['maintenance'])
 
 
 def _get_agent_executor():
@@ -133,11 +132,11 @@ def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status
 
     now_str = _timestamp()
     started_at_sql = ", started_at = COALESCE(started_at, ?)" if status == "RUNNING" else ""
-    finished_at_sql = ", finished_at = ?" if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING"} else ""
+    finished_at_sql = ", finished_at = ?" if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING", "SKIPPED_CAPACITY"} else ""
     params = [status]
     if status == "RUNNING":
         params.append(now_str)
-    if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING"}:
+    if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING", "SKIPPED_CAPACITY"}:
         params.append(now_str)
     params.extend([error, now_str, str(config_id), str(job_type), str(scheduled_at)])
 
@@ -415,13 +414,19 @@ def _run_config_maintenance(config):
             fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
             cached = _protection_clients.get(config_id)
             if not cached or cached[0] != fingerprint or time.monotonic() - cached[1] > 300:
+                if cached:
+                    cached[2].mt.close()
                 cached = (fingerprint, time.monotonic(), PositionProtection(MarketTool(config_id=config_id)))
                 _protection_clients[config_id] = cached
             if config.get('position_management_policy') in {'exclusive_scope', 'visible_first_claim'}:
                 from backend.utils.independent_exits import IndependentExits
                 manager = IndependentExits(cached[2].mt)
                 _run_exclusive_maintenance(manager, config)
-            results = cached[2].reconcile_all(respect_backoff=True)
+            page = cached[2].reconcile_plan_page(
+                limit=positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32),
+                after_cursor=_protection_scan_progress.get(config_id, 0), respect_backoff=True)
+            _protection_scan_progress[config_id] = page['next_cursor']
+            results = page['results']
             from backend.utils.trade_operations import reconcile_pending_trade_operations
             reconcile_pending_trade_operations(config_id)
             for result in results:
@@ -517,7 +522,11 @@ def _submit_maintenance(config) -> bool:
         if existing and not existing.done():
             logger.debug(f"[{config_id}] maintenance skip_due_to_running")
             return False
-        future = _get_maintenance_executor().submit(run_config_maintenance, config)
+        try:
+            future = submit_capacity(_get_maintenance_executor(), 'maintenance', run_config_maintenance,
+                                     config, critical=True)
+        except CapacityBusy:
+            return False
         _running_maintenance_futures[config_id] = future
     logger.debug(f"[{config_id}] maintenance queued")
     return True
@@ -538,7 +547,11 @@ def _submit_execution_sync(config):
         _execution_sync_last[cid] = time.monotonic()
         if _execution_sync_executor is None:
             _execution_sync_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix='execution-sync')
-        _execution_sync_futures[cid] = _execution_sync_executor.submit(_sync_execution, dict(config))
+        try:
+            _execution_sync_futures[cid] = submit_capacity(
+                _execution_sync_executor, 'recovery', _sync_execution, dict(config), critical=True)
+        except CapacityBusy:
+            return
 
 
 def _sync_execution(config):
@@ -590,7 +603,10 @@ def _submit_agent(config, scheduled_at: str) -> bool:
         f"[{config_id}] queued scheduled agent job ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
     )
     try:
-        future = _get_agent_executor().submit(run_config_agent, config, scheduled_at)
+        future = submit_capacity(_get_agent_executor(), 'agent', run_config_agent, config, scheduled_at)
+    except CapacityBusy as exc:
+        _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, 'SKIPPED_CAPACITY', error=exc.reason)
+        return False
     except Exception as exc:
         _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FAILED", error=str(exc))
         logger.error(f"[{config_id}] failed to submit scheduled agent job scheduled_at={scheduled_at}: {exc}")
@@ -609,7 +625,7 @@ def wait_until_next_minute():
 
 
 def job(now: datetime | None = None):
-    global _last_heartbeat_key
+    global _last_heartbeat_key, _dispatch_cursor
     now = now or datetime.now(TZ_CN)
     scheduled_at = _scheduled_at(now)
 
@@ -617,9 +633,14 @@ def job(now: datetime | None = None):
     sync_langsmith_environment()
     configs = global_config.get_all_symbol_configs()
     active_configs = [c for c in configs if c.get("enabled", True)]
+    if active_configs:
+        index = _dispatch_cursor % len(active_configs)
+        active_configs = active_configs[index:] + active_configs[:index]
+        _dispatch_cursor += 1
 
     _drop_finished_futures(_running_agent_futures, "agent")
     _drop_finished_futures(_running_maintenance_futures, "maintenance")
+    _drop_finished_futures(_execution_sync_futures, 'execution-sync')
 
     if not active_configs:
         return {"active": 0, "maintenance_queued": 0, "agent_queued": 0, "agent_due": 0}
@@ -689,6 +710,8 @@ def tick_shared_services():
 
 
 def run_scheduler_forever():
+    from backend.utils.resource_diagnostics import start_resource_collector
+    start_resource_collector('scheduler')
     logger.info(f"[System] scheduler loop started (max_workers={_scheduler_max_workers()})")
 
     try:
@@ -728,10 +751,18 @@ def scheduler_should_run() -> bool:
 
 def protection_tick():
     """Only persisted live plans need exchange polling; disabled agents still get protection."""
-    global _protection_executor
+    global _protection_executor, _plan_scan_cursor, _recent_plan_scan_cursor
     from backend.database import get_db_conn
     with get_db_conn() as conn:
-        rows = conn.execute('SELECT config_id,payload FROM real_protection_plans').fetchall()
+        page_size = positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32)
+        from backend.utils.protection_scan import active_plan_page, recent_completed_page
+        references = active_plan_page(conn, after_cursor=_plan_scan_cursor, limit=page_size)
+        conn.commit()
+        _plan_scan_cursor = references[-1]['rowid'] if len(references) == page_size else 0
+        rows = references
+        completed = recent_completed_page(conn, since=time.time() - 86400,
+                                          after_cursor=_recent_plan_scan_cursor, limit=page_size)
+        _recent_plan_scan_cursor = (completed[-1]['updated_at'], completed[-1]['plan_rowid']) if len(completed) == page_size else (0, 0)
         mock_ids = {r[0] for r in conn.execute("SELECT DISTINCT config_id FROM mock_orders WHERE status='OPEN'")}
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'mock_positions' in tables:
@@ -740,7 +771,7 @@ def protection_tick():
             mock_ids.update(r[0] for r in conn.execute(
                 "SELECT DISTINCT config_id FROM mock_exit_orders "
                 "WHERE status IN ('OPEN','WAITING_TRIGGER','PENDING','UNKNOWN')"))
-    ids = {row['config_id'] for row in rows if json.loads(row['payload'])['state'] != 'DONE'}
+    ids = {row['config_id'] for row in rows if row['state'] != 'DONE'}
     from backend.mcp.settings import maintenance_profiles
     try:
         external_configs = maintenance_profiles()
@@ -761,7 +792,8 @@ def protection_tick():
                or cfg.get('position_management_policy') == 'visible_first_claim' and (cfg.get('enabled', True) or management_status(cid)['scopes']))
     # Data accounting continues for recently active plans even when decision making
     # is disabled, including fills that arrive after protective cleanup.
-    recent = {row['config_id'] for row in rows if json.loads(row['payload']).get('updated_at', 0) > time.time() - 86400}
+    recent = {row['config_id'] for row in completed}
+    recent.update(row['config_id'] for row in rows if (row['updated_at'] or 0) > time.time() - 86400)
     for cfg in configs.values():
         if cfg.get('mode', '').upper() == 'REAL' and (cfg.get('enabled', True) or cfg['config_id'] in ids | recent):
             _submit_execution_sync(cfg)
@@ -777,7 +809,11 @@ def protection_tick():
         if not cfg or cfg.get('mode', '').upper() != 'REAL':
             logger.error(f'[PositionProtection] {config_id}: live plan has no REAL exchange configuration; manual attention required')
             continue
-        _protection_futures[config_id] = _protection_executor.submit(run_config_maintenance, cfg)
+        try:
+            _protection_futures[config_id] = submit_capacity(
+                _protection_executor, 'maintenance', run_config_maintenance, cfg, critical=True)
+        except CapacityBusy:
+            continue
     # Decision scheduling may be disabled while a simulated position still needs
     # entry/exit reconciliation. Reuse the same in-flight guard as live plans.
     for config_id in mock_ids:
@@ -787,7 +823,58 @@ def protection_tick():
         if (cfg and cfg.get('mode', '').upper() == 'STRATEGY' and not cfg.get('enabled', True)
                 and time.monotonic() - _disabled_mock_maintenance_at.get(config_id, -60) >= 60):
             _disabled_mock_maintenance_at[config_id] = time.monotonic()
-            _protection_futures[config_id] = _protection_executor.submit(run_config_maintenance, cfg)
+            try:
+                _protection_futures[config_id] = submit_capacity(
+                    _protection_executor, 'maintenance', run_config_maintenance, cfg, critical=True)
+            except CapacityBusy:
+                continue
+    _retire_scheduler_clients(configs)
+    _tick_background_receipts()
+
+
+def _retire_scheduler_clients(configs):
+    from backend.mcp.exchange_runtime import retire_runtime_caches
+    for cid, cached in list(_protection_clients.items()):
+        if cid not in configs:
+            lock = _maintenance_run_locks.setdefault(cid, threading.Lock())
+            if lock.acquire(blocking=False):
+                try:
+                    if cached[2].mt.close():
+                        _protection_clients.pop(cid, None)
+                finally:
+                    lock.release()
+    retire_runtime_caches()
+    for mapping in (_maintenance_run_locks, _protection_scan_progress, _execution_sync_last,
+                    _disabled_mock_maintenance_at, _mcp_spot_maintenance_at, _last_run_times):
+        for cid in set(mapping) - set(configs):
+            lock = _maintenance_run_locks.get(cid)
+            if cid not in _protection_clients and (not lock or not lock.locked()):
+                mapping.pop(cid, None)
+    _drop_finished_futures(_execution_sync_futures, 'execution-sync')
+    for key in list(_exclusive_maintenance_retry):
+        if key[0] not in configs:
+            _exclusive_maintenance_retry.pop(key, None)
+
+
+def _tick_background_receipts():
+    global _background_receipt_future, _background_receipt_cursor
+    if _background_receipt_future is not None:
+        if not _background_receipt_future.done():
+            return
+        try:
+            _background_receipt_cursor = _background_receipt_future.result().get('next_cursor')
+        except Exception as exc:
+            logger.warning('Background receipt verification failed: %s', type(exc).__name__)
+    from backend.utils import trade_operations
+    callback = getattr(trade_operations, 'reconcile_background_receipts', None)
+    if callback is None:
+        return
+    try:
+        _background_receipt_future = submit_capacity(
+            _get_maintenance_executor(), 'recovery', callback, critical=True,
+            limit=positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32), after_cursor=_background_receipt_cursor)
+    except CapacityBusy:
+        _background_receipt_future = None
 
 
 def _start_protection_monitor():

@@ -138,7 +138,7 @@ def test_scheduler_and_chat_stop_multi_tool_calls_after_failed_or_uncertain_resu
     assert run.call_count == 2 and approve.call_count == 1
 
 
-def test_failed_write_allows_read_recovery_without_chat_approval(monkeypatch):
+def test_failed_write_does_not_invoke_retired_recovery_or_later_trade(monkeypatch):
     message = AIMessage(content='', tool_calls=[
         {'name': 'close', 'args': {}, 'id': 'close-1'},
         {'name': 'get_trade_operation', 'args': {'target_operation_id': 'close-1'}, 'id': 'read-1'},
@@ -149,11 +149,11 @@ def test_failed_write_allows_read_recovery_without_chat_approval(monkeypatch):
     monkeypatch.setattr(agent_graph, 'run_trade_tool', run)
     state = AgentState(symbol='ETH/USDT', messages=[message], market_context={}, account_context={})
     outputs = agent_graph.tools_node(state, {'configurable': {'config_id': 'cfg'}}).messages[1:]
-    assert run.call_count == 2 and 'not_executed' in outputs[-1].content
+    assert run.call_count == 1 and 'not_executed' in outputs[-1].content
     approve = Mock(return_value=True)
     monkeypatch.setattr(chat_graph, '_resolve_chat_config', lambda _: {'symbol': 'ETH/USDT'})
     monkeypatch.setattr(chat_graph, '_run_tool', run)
     monkeypatch.setattr(chat_graph, 'interrupt', approve)
     outputs = chat_graph.tools_node({'messages': [message]}, {'configurable': {'config_id': 'cfg'}})['messages']
-    assert run.call_count == 4 and 'not_executed' in outputs[-1].content
+    assert run.call_count == 2 and 'not_executed' in outputs[-1].content
     assert approve.call_count == 1

@@ -738,8 +738,11 @@ def refresh_decision_context(state: AgentState, config: RunnableConfig) -> Agent
     return refreshed.model_copy(update={"messages": refreshed.messages + history + [notice]})
 
 
-def adapt_messages_for_prompt_role(messages: list[BaseMessage], system_prompt_role: str | None) -> list[BaseMessage]:
+def adapt_messages_for_prompt_role(messages: list[BaseMessage], system_prompt_role: str | None,
+                                   config_id: str | None = None) -> list[BaseMessage]:
     """Adapt instruction message class (SystemMessage vs HumanMessage) if target provider requires user role."""
+    from backend.agent.model_trade_history import project_trade_messages
+    messages = project_trade_messages(messages, config_id)
     target_role = str(system_prompt_role or "system").strip().lower()
     if not messages:
         return messages
@@ -869,7 +872,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             f"[Chain {chain_idx + 1}/{total_models}, Mode: {trade_mode}] ---"
         )
 
-        turn_messages = adapt_messages_for_prompt_role(state.messages, current_cfg.get("system_prompt_role"))
+        turn_messages = adapt_messages_for_prompt_role(state.messages, current_cfg.get("system_prompt_role"), config_id)
 
         _emit_task_progress(
             configurable,
@@ -907,7 +910,7 @@ def agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 if request_attempts:
                     state = refresh_decision_context(state, config)
                 request_attempts += 1
-                turn_messages = adapt_messages_for_prompt_role(state.messages, current_cfg.get("system_prompt_role"))
+                turn_messages = adapt_messages_for_prompt_role(state.messages, current_cfg.get("system_prompt_role"), config_id)
                 return audited_invoke(
                     lambda: _stream_agent_turn(llm, turn_messages, configurable=configurable, run_config=config),
                     config_id=config_id, purpose='decision', model=current_model,
@@ -1052,7 +1055,8 @@ def small_agent_node(state: AgentState, config: RunnableConfig) -> AgentState:
             if request_attempts:
                 state = refresh_decision_context(state, config)
             request_attempts += 1
-            messages = state.messages
+            from backend.agent.model_trade_history import project_trade_messages
+            messages = project_trade_messages(state.messages, config_id)
             return audited_invoke(
                 lambda: _stream_agent_turn(llm, messages, configurable=configurable, run_config=config),
                 config_id=config_id, purpose='decision', model=model_name, messages=messages, tools=tools,
@@ -1259,7 +1263,7 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
         args = tool_call.get("args", {})
-        if stopped and tool_name != 'get_trade_operation':
+        if stopped:
             tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=json.dumps({
                 'status': 'not_executed', 'reason': '前序工具失败或结果待核验，本轮后续操作已停止。'
             }, ensure_ascii=False)))
@@ -1294,18 +1298,12 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
             result = run_trade_tool(tool_name, args, config_id, symbol, operation_id=tool_call['id'], **extra)
             tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=result))
             status = tool_result_status(result)
-            if tool_name == 'get_trade_operation':
-                try:
-                    payload = json.loads(result) if isinstance(result, str) else result
-                    status = payload.get('query', {}).get('status', status)
-                except (TypeError, ValueError, AttributeError):
-                    pass
         except Exception as e:
             logger.error("Error executing tool %s: %s", tool_name, e)
             tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=f"Error: {str(e)}"))
             status = "failed"
         from backend.agent.tool_registry import uses_scoped_admission
-        stopped = stopped or (tool_name != 'get_trade_operation' and status in {'failed', 'unknown', 'pending'}
+        stopped = stopped or (status in {'failed', 'unknown', 'pending'}
                               and not uses_scoped_admission(tool_name, config_id, args))
         for item in progress_calls:
             if item["id"] == str(tool_call.get("id") or ""):

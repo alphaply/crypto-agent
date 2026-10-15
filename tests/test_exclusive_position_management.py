@@ -30,6 +30,7 @@ class ExclusiveExchange:
         self.fail_book = None
         self.fail_trades = False
         self.timeout_create = False
+        self.markets = self.load_markets()
 
     def load_markets(self):
         return {SYMBOL: self.market(SYMBOL)}

@@ -29,9 +29,11 @@ class Exchange:
         self.hidden = False
         self.before_cancel = None
         self.before_edit = None
+        self.markets = {SYMBOL: self.market(SYMBOL)}
+        self.currencies = {}
 
     def load_markets(self):
-        pass
+        return self.markets
 
     def market(self, symbol):
         return dict(symbol=SYMBOL, contract=True, swap=True, linear=True, contractSize=self.contract_size,
@@ -309,7 +311,7 @@ def test_unknown_child_never_reports_fill_or_resubmits(service):
     assert observed['amount'] is None and observed['actual_remaining'] is None
 
 
-def test_legacy_pending_resize_resumes_once_without_new_resize(service):
+def test_legacy_unattempted_resize_never_submits_during_recovery(service):
     svc, ex = service
     stop = svc.close(SYMBOL, 'LONG', .7, 'stop_market', trigger_price=90)
     plan, record = svc._find_order(SYMBOL, stop['order_id'])
@@ -317,12 +319,14 @@ def test_legacy_pending_resize_resumes_once_without_new_resize(service):
                                  reason='position reduced; proportional quantity correction',
                                  operation_id='old-resize', client_id=svc._client_id('old-resize'))
     svc._save(plan)
+    count = len(ex.calls)
     restarted = IndependentExits(svc.mt)
     restarted.reconcile_all()
-    count = len(ex.calls)
     restarted.reconcile_all()
     assert len(ex.calls) == count
-    assert restarted.snapshot(SYMBOL)['exits'][0]['remaining'] == .4
+    assert len(ex.algo) == 1
+    assert restarted.snapshot(SYMBOL)['exits'][0]['remaining'] == .7
+    assert restarted._find_order(SYMBOL, stop['order_id'])[1]['replacement']['operation_id'] == 'old-resize'
 
 
 def test_all_is_directional_and_contract_size_results_are_base_units(service):
@@ -369,13 +373,12 @@ def test_all_fill_reconciles_child_ownership_before_cleaning_other_all(service):
 def test_legacy_resize_successor_lost_ack_recovers_by_client_id(service):
     svc, ex = service
     stop = svc.close(SYMBOL, 'LONG', .7, 'stop_market', trigger_price=90)
-    plan, record = svc._find_order(SYMBOL, stop['order_id'])
-    record['replacement'] = dict(remaining=.4, original_filled=0, price=None, trigger_price=90,
-                                 reason='position reduced; proportional quantity correction',
-                                 operation_id='old-resize-lost', client_id=svc._client_id('old-resize-lost'))
-    svc._save(plan)
     ex.timeout_next = True
-    assert IndependentExits(svc.mt).reconcile_all()[0]['error']
+    with pytest.raises(ccxt.RequestTimeout, match='lost ACK'):
+        svc.amend_exit(SYMBOL, stop['order_id'], amount=.4, operation_id='old-resize-lost')
+    # The successor really was attempted before the response was lost. Recovery
+    # may observe its persisted client ID but cannot create an unattempted one.
+    assert len(ex.algo) == 2
     count = len(ex.calls)
     restarted = IndependentExits(svc.mt)
     restarted.reconcile_all()
