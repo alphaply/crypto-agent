@@ -25,6 +25,14 @@ BYTE_KINDS = frozenset({'catalogue', 'client', 'quotes', 'coordinator', 'parse',
 current_capacity = contextvars.ContextVar('runtime_capacity_lease', default=None)
 
 
+def capacity_limits_enabled() -> bool:
+    """Opt-in observation mode leaves lifecycle accounting active."""
+    raw = os.getenv('RUNTIME_CAPACITY_ENABLED', 'true').strip().lower()
+    if raw not in {'true', 'false', '1', '0'}:
+        raise ValueError('RUNTIME_CAPACITY_ENABLED must be true or false')
+    return raw in {'true', '1'}
+
+
 class CapacityBusy(ValueError):
     """This invocation did not start; it says nothing about an old operation."""
     def __init__(self, stage='capacity', reason='busy'):
@@ -124,18 +132,20 @@ class ByteLease:
 
 class CapacityManager:
     def __init__(self, *, total=8, reserved=2, queue_limit=16, wait_seconds=2.0,
-                 role_limits=None, byte_limit=512 * 1024 * 1024):
+                 role_limits=None, byte_limit=512 * 1024 * 1024, limits_enabled=True):
         if (not isinstance(total, int) or not isinstance(reserved, int)
                 or total < 1 or reserved < 0 or reserved >= total
                 or not isinstance(queue_limit, int) or queue_limit < 0
                 or not math.isfinite(wait_seconds) or wait_seconds < 0
-                or not isinstance(byte_limit, int) or byte_limit < 1):
+                or not isinstance(byte_limit, int) or byte_limit < 1
+                or type(limits_enabled) is not bool):
             raise ValueError('Invalid runtime capacity configuration')
         limits = {**ROLE_DEFAULTS, **(role_limits or {})}
         if set(limits) != set(ROLE_DEFAULTS) or any(type(v) is not int or v < 1 for v in limits.values()):
             raise ValueError('Role limits must use fixed runtime roles and positive integers')
         self.total, self.reserved, self.queue_limit = total, reserved, queue_limit
         self.wait_seconds, self.role_limits, self.byte_limit = wait_seconds, limits, byte_limit
+        self.limits_enabled = limits_enabled
         self.condition = threading.Condition(threading.RLock())
         self.tickets = []
         self.active, self.running, self.bytes = Counter(), Counter(), Counter()
@@ -154,17 +164,18 @@ class CapacityManager:
                    reserved=positive_setting('RUNTIME_CAPACITY_RESERVED_WORKERS', 2, minimum=0),
                    queue_limit=positive_setting('RUNTIME_CAPACITY_QUEUE_LIMIT', 16, minimum=0),
                    wait_seconds=positive_setting('RUNTIME_CAPACITY_QUEUE_SECONDS', 2.0, minimum=0),
-                   role_limits=limits, byte_limit=positive_setting('RUNTIME_CAPACITY_BYTES', 512 * 1024 * 1024))
+                   role_limits=limits, byte_limit=positive_setting('RUNTIME_CAPACITY_BYTES', 512 * 1024 * 1024),
+                   limits_enabled=capacity_limits_enabled())
 
     def _can_start(self, role, critical):
-        return (sum(self.active.values()) < self.total and self.active[role] < self.role_limits[role]
+        return not self.limits_enabled or (sum(self.active.values()) < self.total and self.active[role] < self.role_limits[role]
                 and (critical or not self.pressure and self.ordinary < self.total - self.reserved))
 
     def enqueue(self, role, *, critical=False):
         if role not in self.role_limits:
             raise ValueError(f'Unknown runtime role: {role}')
         with self.condition:
-            if len(self.tickets) >= self.queue_limit:
+            if self.limits_enabled and len(self.tickets) >= self.queue_limit:
                 self.rejected[role] += 1
                 raise CapacityBusy(role, 'queue_full')
             ticket = CapacityTicket(self, role, critical, time.monotonic())
@@ -223,7 +234,7 @@ class CapacityManager:
             raise ValueError('Invalid byte commitment kind or amount')
         deadline = time.monotonic() + max(0, timeout)
         with self.condition:
-            while sum(self.bytes.values()) + amount > self.byte_limit:
+            while self.limits_enabled and sum(self.bytes.values()) + amount > self.byte_limit:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise CapacityBusy(kind, 'byte_budget')
@@ -242,7 +253,9 @@ class CapacityManager:
         with self.condition:
             return {'settings': {'total_workers': self.total, 'reserved_workers': self.reserved,
                                  'queue_limit': self.queue_limit, 'queue_seconds': self.wait_seconds,
-                                 'byte_limit': self.byte_limit, 'role_limits': dict(self.role_limits)},
+                                 'byte_limit': self.byte_limit, 'role_limits': dict(self.role_limits),
+                                 'limits_enabled': self.limits_enabled,
+                                 'mode': 'enforced' if self.limits_enabled else 'observe_only'},
                     'active': sum(self.active.values()), 'running': sum(self.running.values()),
                     'queued': len(self.tickets), 'bytes': sum(self.bytes.values()),
                     'peaks': {'active': self.peak_active, 'queued': self.peak_queued, 'bytes': self.peak_bytes},

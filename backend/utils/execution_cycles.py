@@ -5,7 +5,7 @@ import hashlib
 import json
 
 from backend.database import get_db_conn, TZ_CN
-from backend.utils.runtime_capacity import positive_setting, CapacityBusy
+from backend.utils.runtime_capacity import positive_setting, CapacityBusy, capacity_limits_enabled
 from backend.utils.sqlite_blob import bounded_text
 
 
@@ -39,6 +39,7 @@ def _rows(config_id, end_ms, scope, symbol, maximum, read_conn):
 
 
 def _protection(cycle, config_id, maximum, read_conn):
+    limits_enabled = capacity_limits_enabled()
     revisions, used = {}, 0
     with (nullcontext(read_conn) if read_conn is not None else get_db_conn()) as conn:
         rows=conn.execute('SELECT rowid AS audit_rowid,timestamp FROM real_protection_events WHERE config_id=? ORDER BY id', (config_id,))
@@ -62,7 +63,7 @@ def _protection(cycle, config_id, maximum, read_conn):
             if revision not in revisions:
                 item={'timestamp_ms':ts,'revision':revision,'stop_loss':plan.get('stop_loss'),'take_profit':plan.get('take_profit')}
                 used+=len(json.dumps(item).encode('utf-8'))+128
-                if used>maximum:
+                if limits_enabled and used>maximum:
                     return False
                 revisions[revision]=item
     timeline=sorted(revisions.values(),key=lambda item:item['timestamp_ms'])
@@ -77,6 +78,7 @@ def _protection(cycle, config_id, maximum, read_conn):
 def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_sink=None,read_conn=None):
     from backend.utils.execution_ledger import number
     maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES',4*1024*1024)
+    limits_enabled = capacity_limits_enabled()
     rows = _rows(config_id,end_ms,scope,symbol,maximum,read_conn)
     current = {}
     work_sizes, current_bytes, output_bytes = {}, 0, 0
@@ -88,7 +90,7 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
     unmatched = 0
     for row in rows:
         last_cursor={'timestamp_ms':row['timestamp_ms'],'trade_id':row['trade_id']}
-        if row['payload'] is None or (row['metadata_bytes'] or 0)>maximum:
+        if row['payload'] is None or limits_enabled and (row['metadata_bytes'] or 0)>maximum:
             scan_complete,reason_code=False,'cycle_record_budget'
             break
         fill = json.loads(row['payload'])
@@ -118,7 +120,7 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
             continue
         row_work=(row['payload_bytes'] or 0)+(row['metadata_bytes'] or 0)+512
         previous_work=work_sizes.get(key,0)
-        if current_bytes+row_work>maximum:
+        if limits_enabled and current_bytes+row_work>maximum:
             scan_complete,reason_code=False,'cycle_working_set_budget'
             break
         work_sizes[key]=previous_work+row_work
@@ -225,13 +227,13 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
                         scan_complete,reason_code=False,'cycle_protection_budget'
                         break
                     encoded_size=len(json.dumps(cycle,ensure_ascii=False,default=str).encode('utf-8'))
-                    if encoded_size>maximum:
+                    if limits_enabled and encoded_size>maximum:
                         scan_complete,reason_code=False,'cycle_record_budget'
                         break
                     completed_count+=1
                     if cycle_sink is not None:
                         cycle_sink(cycle)
-                    if output_bytes+encoded_size<=maximum:
+                    if not limits_enabled or output_bytes+encoded_size<=maximum:
                         completed.append(cycle)
                         output_bytes+=encoded_size
                     else:
@@ -239,7 +241,7 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
                 elif cycle['owned_entry'] or row['config_id'] == config_id:
                     excluded_count+=1
                     encoded_size=len(json.dumps(cycle,ensure_ascii=False,default=str).encode('utf-8'))
-                    if output_bytes+encoded_size<=maximum:
+                    if not limits_enabled or output_bytes+encoded_size<=maximum:
                         excluded.append(cycle)
                         output_bytes+=encoded_size
                     else:

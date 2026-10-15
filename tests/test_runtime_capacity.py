@@ -144,3 +144,73 @@ def test_refresh_space_transfers_to_retained_cache_without_temporary_oversubscri
     assert manager.snapshot()['bytes'] == 30
     retained.release()
     assert manager.snapshot()['bytes'] == 0
+
+
+@pytest.mark.parametrize('raw,expected', [('true', True), ('false', False), ('1', True), ('0', False)])
+def test_capacity_mode_is_explicit_and_visible(monkeypatch, raw, expected):
+    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', raw)
+    value = capacity.CapacityManager.from_environment()
+    assert value.limits_enabled is expected
+    assert value.snapshot()['settings']['limits_enabled'] is expected
+    assert value.snapshot()['settings']['mode'] == ('enforced' if expected else 'observe_only')
+
+
+def test_invalid_capacity_mode_is_rejected(monkeypatch):
+    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'maybe')
+    with pytest.raises(ValueError, match='RUNTIME_CAPACITY_ENABLED'):
+        capacity.CapacityManager.from_environment()
+
+
+def test_observation_mode_counts_resources_without_capacity_rejections():
+    value = capacity.CapacityManager(total=2, reserved=1, queue_limit=0,
+                                     byte_limit=1, limits_enabled=False)
+    value.set_pressure(True, 'observed_memory_pressure')
+    workers = [value.acquire('agent', timeout=0) for _ in range(5)]
+    for worker in workers:
+        worker.mark_started()
+    retained = value.reserve_bytes('catalogue', 100)
+    transient = value.reserve_bytes('parse', 200)
+    assert value.snapshot()['active'] == value.snapshot()['running'] == 5
+    assert value.snapshot()['bytes'] == value.snapshot()['peaks']['bytes'] == 300
+    assert all(row['rejected'] == 0 for row in value.snapshot()['roles'].values())
+    for lease in [*workers, retained, transient]:
+        lease.release()
+    assert value.snapshot()['active'] == value.snapshot()['running'] == value.snapshot()['bytes'] == 0
+
+
+def test_observation_mode_reads_full_storage_record_above_resource_cap(monkeypatch):
+    import sqlite3
+    from backend.utils.sqlite_blob import bounded_text
+    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'false')
+    value = capacity.CapacityManager(limits_enabled=False, byte_limit=1)
+    monkeypatch.setattr(capacity, '_manager', value)
+    with sqlite3.connect(':memory:') as conn:
+        conn.execute('CREATE TABLE records(payload TEXT)')
+        payload = 'complete observation' * 100
+        conn.execute('INSERT INTO records VALUES(?)', (payload,))
+        with bounded_text(conn, 'records', 'payload', 1, limit=1) as observed:
+            assert observed == payload
+            assert value.snapshot()['bytes'] >= len(payload) * 8
+        assert value.snapshot()['bytes'] == 0
+
+
+def test_observation_mode_ingests_entire_stream_batch_above_resource_cap(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from backend.utils.execution_stream import consume
+    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'false')
+    monkeypatch.setenv('RUNTIME_STREAM_ITEMS', '1')
+    stop = threading.Event()
+    trades = [{'id': 'one'}, {'id': 'two'}]
+    ingested = []
+    class Client:
+        closed = False
+        async def watch_my_trades(self, symbol):
+            stop.set()
+            return trades
+        async def close(self):
+            self.closed = True
+    client = Client()
+    asyncio.run(consume(client, SimpleNamespace(symbol='ETH/USDT:USDT', ingest=ingested.extend), stop))
+    assert ingested == trades
+    assert client.closed

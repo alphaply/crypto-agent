@@ -1,4 +1,4 @@
-"""Bounded MCP workers and deadlines independent of the Web thread pool.
+"""MCP worker ownership and deadlines independent of the Web thread pool.
 
 Capacity belongs to the physical worker, not the HTTP request. A disconnect
 therefore cannot release capacity while an exchange write is still running.
@@ -15,7 +15,7 @@ import os
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -120,7 +120,28 @@ class WorkerPool:
 
     def snapshot(self):
         with self.lock:
-            return dict(active=self.active, queued=self.queued, capacity=self.capacity, queue_limit=self.queue_limit)
+            return dict(active=self.active, queued=self.queued, capacity=self.capacity,
+                        queue_limit=self.queue_limit, limits_enabled=get_capacity_manager().limits_enabled)
+
+    def _submit_monitor_only(self, function):
+        """Start a physical worker without an executor concurrency/queue gate."""
+        future = Future()
+
+        def invoke():
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                result = function()
+            except BaseException as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+        # A non-daemon thread keeps the same process-exit ownership as executor
+        # workers. The request's cancellation cannot terminate or resubmit it.
+        thread = threading.Thread(target=invoke, name='mcp-' + self.kind, daemon=False)
+        thread.start()
+        return future
 
     async def run(self, function, *, label=None, deadline=None):
         start = time.monotonic()
@@ -136,10 +157,15 @@ class WorkerPool:
         budget.remaining('queue')
         queue_until = min(budget.deadline, start + setting('QUEUE_SECONDS', 2))
         manager = get_capacity_manager()
+        limits_enabled = manager.limits_enabled
         acquired = False
         lease = ticket = None
         with self.lock:
-            if self.active < self.capacity:
+            if not limits_enabled:
+                lease = manager.acquire(capacity_role(self.kind), critical=self.kind == 'recovery', timeout=0)
+                self.active += 1
+                acquired = True
+            elif self.active < self.capacity:
                 try:
                     lease = manager.acquire(capacity_role(self.kind), critical=self.kind == 'recovery', timeout=0)
                 except CapacityBusy:
@@ -203,7 +229,10 @@ class WorkerPool:
                             (time.monotonic() - start) * 1000, self.snapshot()['active'], self.snapshot()['queued'])
 
         try:
-            future = self.executor.submit(context.run, worker)
+            if limits_enabled:
+                future = self.executor.submit(context.run, worker)
+            else:
+                future = self._submit_monitor_only(functools.partial(context.run, worker))
         except BaseException:
             lease.release()
             with self.lock:

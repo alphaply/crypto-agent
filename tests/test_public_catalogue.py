@@ -540,3 +540,52 @@ def test_production_sized_catalogue_cold_and_warm_consumer_overlap(local_capacit
         catalogues.release_catalogue_client(second)
         catalogues.retire_catalogues(all_idle=True)
     assert manager.snapshot()['bytes'] == 0
+
+
+def test_observation_mode_loads_full_catalogues_above_all_configured_caps(local_capacity, monkeypatch):
+    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'false')
+    for name in ('RUNTIME_CAPACITY_BYTES', 'RUNTIME_CATALOGUE_BYTES',
+                 'RUNTIME_CATALOGUE_REFRESH_BYTES', 'RUNTIME_CATALOGUE_ENTRIES',
+                 'RUNTIME_CLIENT_ENTRIES'):
+        monkeypatch.setenv(name, '1')
+    manager = capacity.CapacityManager.from_environment()
+    monkeypatch.setattr(capacity, '_manager', manager)
+    clients = [OfflineExchange(), OfflineExchange(market_type='swap')]
+    try:
+        for client in clients:
+            catalogues.load_public_catalogue(client)
+            assert client.markets['ETH/USDT']['info']['ocoAllowed'] is True
+        diagnostics = catalogues.catalogue_diagnostics()
+        assert diagnostics['entries'] == diagnostics['clients'] == 2
+        assert diagnostics['bytes'] > 1 and manager.snapshot()['bytes'] > 1
+    finally:
+        for client in clients:
+            catalogues.release_catalogue_client(client)
+        catalogues.retire_catalogues(all_idle=True)
+    assert manager.snapshot()['bytes'] == 0
+
+
+def test_observation_mode_reads_entire_response_above_configured_cap(local_capacity, monkeypatch):
+    import requests
+    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'false')
+    monkeypatch.setenv('RUNTIME_HTTP_RESPONSE_BYTES', '8')
+    manager = capacity.CapacityManager(limits_enabled=False, byte_limit=1)
+    monkeypatch.setattr(capacity, '_manager', manager)
+    response = requests.Response()
+    response.status_code = 200
+    response.headers['Content-Length'] = '17'
+    response.iter_content = lambda chunk_size: iter([b'12345678', b'901234567'])
+    response.close = lambda: None
+    class Session:
+        def request(self, *args, **kwargs):
+            assert kwargs['stream'] is True
+            return response
+    client = OfflineExchange()
+    client.session = Session()
+    catalogues.install_bounded_http(client)
+    observed = client.session.request('GET', 'https://fixture.invalid/exchangeInfo')
+    assert observed.content == b'12345678901234567'
+    assert manager.snapshot()['byte_classes']['parse'] == 17 * 4
+    del observed, response
+    gc.collect()
+    assert manager.snapshot()['byte_classes']['parse'] == 0

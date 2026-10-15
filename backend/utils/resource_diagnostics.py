@@ -276,7 +276,8 @@ class ResourceCollector:
                      'cpu_cpus':resources['cpu'].get('quota_cpus')}
         comparison = {key: 'undeclared' if value is None else 'unavailable' if effective[key] is None else 'matched' if value == effective[key] else 'mismatched'
                       for key,value in intended.items()}
-        byte_budget_exceeds_limit = maximum is not None and capacity['settings']['byte_limit'] >= maximum
+        byte_budget_exceeds_limit = (capacity['settings'].get('limits_enabled', True)
+                                     and maximum is not None and capacity['settings']['byte_limit'] >= maximum)
         configured['container_limits'] = intended
         threshold = _finite_environment('RESOURCE_PRESSURE_FRACTION', 0.85, 0.01)
         if threshold > 1:

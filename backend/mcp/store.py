@@ -24,15 +24,29 @@ def storage_diagnostics():
 @contextmanager
 def storage_slot(recovery=False):
     from .resilience import current_budget, remaining, setting
+    from backend.utils.runtime_capacity import capacity_limits_enabled
     global _storage_gate, _storage_capacity, _storage_active, _storage_queued
     if current_budget.get() is None:
         yield
         return
+    limits_enabled = capacity_limits_enabled()
     with _storage_lock:
         if _storage_gate is None:
             _storage_capacity = int(setting('STORAGE_CONCURRENCY', 2, 1, 32))
             _storage_gate = threading.BoundedSemaphore(_storage_capacity)
-        _storage_queued += 1
+        if limits_enabled:
+            _storage_queued += 1
+        else:
+            _storage_active += 1
+    if not limits_enabled:
+        try:
+            if not recovery:
+                remaining('storage_queue')
+            yield
+        finally:
+            with _storage_lock:
+                _storage_active -= 1
+        return
     acquired = False
     try:
         wait = min(setting('DB_WAIT_SECONDS', .25), 1 if recovery else remaining('storage_queue'))

@@ -134,11 +134,14 @@ def latest_operation_receipts(config_id: str, symbol: str = '', limit: int = 20)
     with get_db_conn() as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_action_runs'").fetchone():
             return {}
-        from backend.utils.runtime_capacity import positive_setting
+        from backend.utils.runtime_capacity import positive_setting, capacity_limits_enabled
         cap = positive_setting('RUNTIME_FINANCIAL_PAYLOAD_BYTES', 1048576)
-        rows = conn.execute('SELECT operation_id,symbol,CASE WHEN length(CAST(result AS BLOB))<=? THEN result END AS result,updated_at '
+        limits_enabled = capacity_limits_enabled()
+        projection = 'CASE WHEN length(CAST(result AS BLOB))<=? THEN result END' if limits_enabled else 'result'
+        parameters = (cap,) if limits_enabled else ()
+        rows = conn.execute(f'SELECT operation_id,symbol,{projection} AS result,updated_at '
                             'FROM trade_action_runs WHERE config_id=? AND result IS NOT NULL ORDER BY updated_at DESC LIMIT ?',
-                            (cap, config_id, min(max(1, limit), 100))).fetchall()
+                            (*parameters, config_id, min(max(1, limit), 100))).fetchall()
     result = {}
     for row in rows:
         value = _decode_receipt(row['result'])

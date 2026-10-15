@@ -16,7 +16,8 @@ from collections import OrderedDict
 from contextlib import contextmanager
 
 from backend.utils.runtime_capacity import (CapacityBusy, capacity_scope,
-                                           positive_setting, reserve_bytes)
+                                           positive_setting, reserve_bytes,
+                                           capacity_limits_enabled)
 
 _lock = threading.RLock()
 _catalogues = OrderedDict()
@@ -32,6 +33,8 @@ _native_fields = frozenset({'orderTypes', 'ocoAllowed', 'filters', 'permissions'
 
 def resident_size(value, limit=None):
     """Bounded traversal without serializing/copying an entire large object."""
+    if not capacity_limits_enabled():
+        limit = None
     total, seen, stack = 0, set(), [iter((value,))]
     while stack:
         try:
@@ -75,23 +78,27 @@ def install_bounded_http(exchange):
     original = session.request
 
     def request(*args, **kwargs):
-        cap = positive_setting('RUNTIME_HTTP_RESPONSE_BYTES', 8 * 1024 * 1024)
+        cap = (positive_setting('RUNTIME_HTTP_RESPONSE_BYTES', 8 * 1024 * 1024)
+               if capacity_limits_enabled() else None)
         # Account for decoded text/JSON amplification before network or parse.
-        lease = reserve_bytes('parse', cap * 4)
+        lease = reserve_bytes('parse', cap * 4 if cap is not None else 0)
         response = None
         try:
             kwargs['stream'] = True
             response = original(*args, **kwargs)
             declared = response.headers.get('Content-Length')
-            if declared and declared.isdigit() and int(declared) > cap:
+            if cap is not None and declared and declared.isdigit() and int(declared) > cap:
                 raise CapacityBusy('exchange', 'response_bytes')
             body = bytearray()
-            for chunk in response.iter_content(chunk_size=min(cap + 1, 65536)):
-                if len(body) + len(chunk) > cap:
+            for chunk in response.iter_content(chunk_size=min(cap + 1, 65536) if cap is not None else 65536):
+                if cap is not None and len(body) + len(chunk) > cap:
                     raise CapacityBusy('exchange', 'response_bytes')
                 body.extend(chunk)
             response._content = bytes(body)
             response._content_consumed = True
+            if cap is None:
+                lease.release()
+                lease = reserve_bytes('parse', len(body) * 4)
             # Keep parse space until CCXT releases its Response, not just until
             # the socket completes. The enclosing refresh has extra peak space.
             weakref.finalize(response, lease.release)
@@ -112,6 +119,8 @@ def install_bounded_http(exchange):
 
 
 def _compact(mapping, *, limit=None):
+    if not capacity_limits_enabled():
+        limit = None
     result = {}
     used = sys.getsizeof(result)
     for key, row in (mapping or {}).items():
@@ -187,6 +196,10 @@ def retire_catalogues(*, now=None, all_idle=False):
 
 
 def _reserve_catalogue(amount, *, keep, admitted=None):
+    if not capacity_limits_enabled():
+        if admitted is not None and amount <= admitted.amount:
+            return admitted.transfer('catalogue', amount)
+        return reserve_bytes('catalogue', amount)
     max_bytes = positive_setting('RUNTIME_CATALOGUE_BYTES', 64 * 1024 * 1024)
     with _lock:
         for key, item in list(_catalogues.items()):
@@ -224,7 +237,7 @@ def _pin_client_slot(exchange):
     with _lock:
         if exchange in _client_slots:
             return
-        if len(_client_slots) >= positive_setting('RUNTIME_CLIENT_ENTRIES', 32):
+        if capacity_limits_enabled() and len(_client_slots) >= positive_setting('RUNTIME_CLIENT_ENTRIES', 32):
             raise CapacityBusy('metadata', 'client_entries')
         lease = reserve_bytes('client', positive_setting('RUNTIME_CLIENT_BASE_BYTES', 262144))
         try:
@@ -252,13 +265,13 @@ def _load_public_catalogue(exchange, legacy_key=None, *, market_type=None, timeo
     retire_catalogues()
     with _lock:
         if key not in _catalogues:
-            cap = positive_setting('RUNTIME_CATALOGUE_ENTRIES', 32)
+            cap = positive_setting('RUNTIME_CATALOGUE_ENTRIES', 32) if capacity_limits_enabled() else None
             for old_key, old in list(_catalogues.items()):
-                if len(_catalogues) < cap:
+                if cap is None or len(_catalogues) < cap:
                     break
                 if not old['users'] and not old['lock'].locked():
                     _drop(old_key)
-            if len(_catalogues) >= cap:
+            if cap is not None and len(_catalogues) >= cap:
                 raise CapacityBusy('metadata', 'catalogue_entries')
             _catalogues[key] = {'lock': threading.Lock(), 'users': 0, 'value': None, 'bytes': 0,
                                 'lease': None, 'observed_at': None, 'expires_at': 0,
@@ -303,7 +316,7 @@ def _load_public_catalogue(exchange, legacy_key=None, *, market_type=None, timeo
                     markets = _compact(loader.markets, limit=max_bytes)
                     snapshot = (markets, _compact(loader.currencies, limit=max_bytes - resident_size(markets)))
                     size = resident_size(snapshot, max_bytes)
-                    if raw_size + size > peak:
+                    if capacity_limits_enabled() and raw_size + size > peak:
                         raise CapacityBusy('metadata', 'refresh_bytes')
                     retained = _reserve_catalogue(size, keep=key, admitted=refresh_space)
                     old_lease = entry['lease']

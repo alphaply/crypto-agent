@@ -5,7 +5,7 @@ import json
 import time
 from contextlib import ExitStack
 
-from backend.utils.runtime_capacity import capacity_scope, positive_setting, CapacityBusy
+from backend.utils.runtime_capacity import capacity_scope, positive_setting, CapacityBusy, capacity_limits_enabled
 
 
 def initialize(conn):
@@ -121,7 +121,7 @@ def _observe(row, cap, deadline):
             current_budget.reset(token)
         if isinstance(latest, dict) and latest != previous:
             encoded = json.dumps(latest, ensure_ascii=False, allow_nan=False, default=str)
-            if len(encoded.encode('utf-8')) > cap:
+            if capacity_limits_enabled() and len(encoded.encode('utf-8')) > cap:
                 raise CapacityBusy('recovery', 'receipt_bytes')
             with get_db_conn() as conn:
                 conn.execute('BEGIN IMMEDIATE')

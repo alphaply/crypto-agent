@@ -10,7 +10,7 @@ import json
 import time
 
 from backend.database import get_db_conn
-from backend.utils.runtime_capacity import positive_setting, reserve_bytes
+from backend.utils.runtime_capacity import positive_setting, reserve_bytes, capacity_limits_enabled
 
 
 def initialize_schema(cursor):
@@ -162,6 +162,7 @@ def _advance_index(ledger):
     index_id = hashlib.sha256(json.dumps([ledger.scope, ledger.symbol, ledger.config_id]).encode()).hexdigest()
     batch = positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32)
     maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES', 4 * 1024 * 1024)
+    limits_enabled = capacity_limits_enabled()
     deadline = time.monotonic() + positive_setting('RUNTIME_INDEX_SCAN_SECONDS', .25, minimum=.001)
     with get_db_conn() as conn:
         conn.execute("INSERT OR IGNORE INTO execution_plan_index_runs(index_id,account_scope,symbol,config_id,phase,cursor) "
@@ -177,7 +178,7 @@ def _advance_index(ledger):
             if phase in {'events', 'plans', 'legacy'}:
                 references = _source(ledger, phase, cursor, batch - processed)
                 for reference in references:
-                    if reference['payload_bytes'] > maximum:
+                    if limits_enabled and reference['payload_bytes'] > maximum:
                         raise ValueError('Ownership source exceeds resource budget; original evidence retained')
                     owner, value, fingerprint, raw = _load(phase, reference['source_id'])
                     relevant = phase == 'legacy' or (value.get('account_scope') == ledger.scope or

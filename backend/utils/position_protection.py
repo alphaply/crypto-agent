@@ -876,10 +876,11 @@ class PositionProtection:
 
     def reconcile_plan_page(self, *, limit=32, after_cursor=0, respect_backoff=False):
         """Inspect lengths before fetching JSON; preserve a stable continuation."""
-        from backend.utils.runtime_capacity import positive_setting, reserve_bytes
+        from backend.utils.runtime_capacity import positive_setting, reserve_bytes, capacity_limits_enabled
         if type(limit) is not int or limit < 1:
             raise ValueError('Plan scan limit must be a positive integer')
         maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES', 4 * 1024 * 1024)
+        limits_enabled = capacity_limits_enabled()
         with _lock(self.account_scope):
             with get_db_conn() as conn:
                 from backend.utils.protection_scan import active_plan_page, activity_scan_complete
@@ -889,7 +890,7 @@ class PositionProtection:
                 conn.commit()
             results = []
             for row in rows:
-                if row['payload_bytes'] > maximum:
+                if limits_enabled and row['payload_bytes'] > maximum:
                     results.append({'symbol': row['symbol'], 'side': row['side'], 'state': 'unknown',
                                     'error': 'Plan payload over resource budget; original evidence retained'})
                     continue

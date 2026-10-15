@@ -17,6 +17,15 @@ from backend.mcp import resilience as runtime
 from backend.mcp import exchange_runtime as exchange_runtime
 
 
+def _capacity_mode(monkeypatch, *, enabled):
+    from backend.utils import runtime_capacity
+
+    manager = runtime_capacity.CapacityManager(total=2, reserved=1, queue_limit=0,
+                                               limits_enabled=enabled)
+    monkeypatch.setattr(runtime_capacity, '_manager', manager)
+    return manager
+
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'mcp.db'))
@@ -93,6 +102,109 @@ def test_disconnect_does_not_release_running_worker_or_repeat_submission(monkeyp
         assert submissions == ['original']
         pool.executor.shutdown()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('kind', ['read', 'execute', 'auth', 'recovery'])
+def test_monitor_only_pool_starts_all_workers_without_capacity_or_queue_gate(monkeypatch, kind):
+    manager = _capacity_mode(monkeypatch, enabled=False)
+    manager.set_pressure(True, 'test-pressure')
+    pool = runtime.WorkerPool(kind, 1, 0)
+    release = threading.Event()
+    entered = []
+    lock = threading.Lock()
+
+    def work(index):
+        budget = runtime.current_budget.get()
+        lease = runtime.current_capacity.get()
+        assert budget.kind == kind and lease.manager is manager
+        with lock:
+            entered.append((index, threading.current_thread().daemon))
+        release.wait(2)
+        return index
+
+    async def exercise():
+        tasks = [asyncio.create_task(pool.run(partial(work, index))) for index in range(5)]
+        try:
+            async def all_started():
+                while len(entered) < 5:
+                    await asyncio.sleep(.001)
+            await asyncio.wait_for(all_started(), 1)
+            snapshot = pool.snapshot()
+            assert snapshot['active'] == 5 and snapshot['queued'] == 0
+            assert snapshot['limits_enabled'] is False
+            assert all(not daemon for _, daemon in entered)
+            assert manager.snapshot()['active'] == manager.snapshot()['running'] == 5
+            release.set()
+            assert await asyncio.gather(*tasks) == list(range(5))
+            assert pool.snapshot()['active'] == manager.snapshot()['active'] == 0
+            assert manager.snapshot()['running'] == 0
+        finally:
+            release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            pool.executor.shutdown()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('ending', ['cancel', 'deadline'])
+def test_monitor_only_disconnected_or_expired_request_keeps_physical_write_owned(monkeypatch, ending):
+    manager = _capacity_mode(monkeypatch, enabled=False)
+    if ending == 'deadline':
+        monkeypatch.setenv('MCP_EXECUTE_BUDGET_SECONDS', '.03')
+    pool = runtime.WorkerPool('execute', 1, 0)
+    release, entered = threading.Event(), threading.Event()
+    submissions = []
+
+    def write():
+        submissions.append('original')
+        entered.set()
+        release.wait(2)
+        return 'ack'
+
+    async def exercise():
+        task = asyncio.create_task(pool.run(write))
+        try:
+            async def started():
+                while not entered.is_set():
+                    await asyncio.sleep(.001)
+            await asyncio.wait_for(started(), 1)
+            if ending == 'cancel':
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                with pytest.raises(runtime.BudgetExceeded, match='retains capacity'):
+                    await task
+            assert pool.snapshot()['active'] == manager.snapshot()['active'] == 1
+            assert manager.snapshot()['running'] == 1
+            assert submissions == ['original']
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            async def finished():
+                while pool.snapshot()['active']:
+                    await asyncio.sleep(.001)
+            await asyncio.wait_for(finished(), 1)
+            pool.executor.shutdown()
+        assert manager.snapshot()['active'] == manager.snapshot()['running'] == 0
+        assert submissions == ['original']
+    asyncio.run(exercise())
+
+
+def test_monitor_only_thread_start_failure_releases_unstarted_ownership(monkeypatch):
+    manager = _capacity_mode(monkeypatch, enabled=False)
+    pool = runtime.WorkerPool('read', 1, 0)
+    calls = []
+
+    def fail_start(_thread):
+        raise RuntimeError('thread start failed')
+
+    monkeypatch.setattr(runtime.threading.Thread, 'start', fail_start)
+    with pytest.raises(RuntimeError, match='thread start failed'):
+        asyncio.run(pool.run(lambda: calls.append('executed')))
+    pool.executor.shutdown()
+    assert not calls
+    assert pool.snapshot()['active'] == pool.snapshot()['queued'] == 0
+    assert manager.snapshot()['active'] == manager.snapshot()['running'] == 0
 
 
 def test_queue_wait_is_in_total_budget_and_cancelled_queue_recovers(monkeypatch):
@@ -284,8 +396,10 @@ def _financial_gateway(monkeypatch):
     return caller, args
 
 
-def test_lost_ack_and_expired_budget_keep_original_identity_and_only_one_write(db, monkeypatch):
+@pytest.mark.parametrize('limits_enabled', [True, False])
+def test_lost_ack_and_expired_budget_keep_original_identity_and_only_one_write(db, monkeypatch, limits_enabled):
     import backend.agent.tool_registry as registry
+    _capacity_mode(monkeypatch, enabled=limits_enabled)
     caller, args = _financial_gateway(monkeypatch)
     submissions = []
     def lost_ack(*args, **kwargs):
@@ -305,8 +419,10 @@ def test_lost_ack_and_expired_budget_keep_original_identity_and_only_one_write(d
     assert observed['state'] == 'unknown' and observed['result']['operation_id'] == args[-1]
 
 
-def test_expired_budget_after_confirmed_ack_preserves_ack_and_audit_failure(db, monkeypatch):
+@pytest.mark.parametrize('limits_enabled', [True, False])
+def test_expired_budget_after_confirmed_ack_preserves_ack_and_audit_failure(db, monkeypatch, limits_enabled):
     import backend.agent.tool_registry as registry
+    _capacity_mode(monkeypatch, enabled=limits_enabled)
     caller, args = _financial_gateway(monkeypatch)
     def ack(*args, **kwargs):
         budget = runtime.current_budget.get()
@@ -320,8 +436,10 @@ def test_expired_budget_after_confirmed_ack_preserves_ack_and_audit_failure(db, 
     assert service.operation(caller, 'test', args[-1])['state'] == 'submitted'
 
 
-def test_budget_exhausted_before_dispatch_is_explicitly_not_submitted(db, monkeypatch):
+@pytest.mark.parametrize('limits_enabled', [True, False])
+def test_budget_exhausted_before_dispatch_is_explicitly_not_submitted(db, monkeypatch, limits_enabled):
     import backend.agent.tool_registry as registry
+    _capacity_mode(monkeypatch, enabled=limits_enabled)
     caller, args = _financial_gateway(monkeypatch)
     calls = []
     monkeypatch.setattr(registry, 'run_trade_tool', lambda *args, **kwargs: calls.append(args))

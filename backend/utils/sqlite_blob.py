@@ -1,14 +1,14 @@
 """Incremental SQLite reads: inspect blob length before allocating its value."""
 from contextlib import contextmanager
 
-from backend.utils.runtime_capacity import CapacityBusy, reserve_bytes
+from backend.utils.runtime_capacity import CapacityBusy, reserve_bytes, capacity_limits_enabled
 
 
 @contextmanager
 def bounded_text(conn, table, column, rowid, *, limit, kind='parse'):
     with conn.blobopen(table, column, int(rowid), readonly=True) as blob:
         size = len(blob)
-        if size > limit:
+        if capacity_limits_enabled() and size > limit:
             raise CapacityBusy('storage', 'record_bytes')
         lease = reserve_bytes(kind, max(4096, size * 8))
         try:

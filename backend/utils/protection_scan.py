@@ -3,11 +3,12 @@
 The original JSON stays authoritative. This small projection makes DONE history
 absent from the polling work set; malformed or oversized plans remain unresolved.
 """
-from backend.utils.runtime_capacity import positive_setting
+from backend.utils.runtime_capacity import positive_setting, capacity_limits_enabled
 
 
 def initialize_schema(cursor):
     maximum = positive_setting('RUNTIME_MAX_RECORD_BYTES', 4 * 1024 * 1024)
+    limits_enabled = capacity_limits_enabled()
     cursor.execute('''CREATE TABLE IF NOT EXISTS protection_plan_activity (
         plan_rowid INTEGER PRIMARY KEY, config_id TEXT NOT NULL,
         state TEXT NOT NULL, updated_at REAL, payload_bytes INTEGER NOT NULL)''')
@@ -20,10 +21,20 @@ def initialize_schema(cursor):
     cursor.execute('''CREATE TABLE IF NOT EXISTS protection_plan_scan_progress (
         id INTEGER PRIMARY KEY CHECK(id=1), cursor INTEGER NOT NULL, complete INTEGER NOT NULL)''')
     cursor.execute('INSERT OR IGNORE INTO protection_plan_scan_progress VALUES(1,0,0)')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS protection_plan_scan_mode (
+        id INTEGER PRIMARY KEY CHECK(id=1), limits_enabled INTEGER NOT NULL)''')
+    previous = cursor.execute('SELECT limits_enabled FROM protection_plan_scan_mode WHERE id=1').fetchone()
+    if (previous is None and not limits_enabled) or (previous is not None and bool(previous[0]) != limits_enabled):
+        # Old oversized rows may have been projected as UNKNOWN. Revisit only
+        # this derived index, using the same durable pages as legacy migration.
+        cursor.execute('UPDATE protection_plan_scan_progress SET cursor=0,complete=0 WHERE id=1')
+    cursor.execute('INSERT INTO protection_plan_scan_mode VALUES(1,?) '
+                   'ON CONFLICT(id) DO UPDATE SET limits_enabled=excluded.limits_enabled',
+                   (int(limits_enabled),))
     def expressions(prefix):
         payload = prefix + 'payload'
         length = f'length(CAST({payload} AS BLOB))'
-        valid = f'{length}<={maximum} AND json_valid({payload})'
+        valid = (f'{length}<={maximum} AND ' if limits_enabled else '') + f'json_valid({payload})'
         state = f"CASE WHEN {valid} THEN coalesce(json_extract({payload},'$.state'),'UNKNOWN') ELSE 'UNKNOWN' END"
         updated = f"CASE WHEN {valid} THEN json_extract({payload},'$.updated_at') END"
         return state, updated, length
@@ -59,7 +70,7 @@ def migrate_activity_page(cursor):
         with connection.blobopen('real_protection_plans', 'payload', reference[0], readonly=True) as blob:
             size = len(blob)
         state, updated = 'UNKNOWN', None
-        if size <= maximum:
+        if not capacity_limits_enabled() or size <= maximum:
             try:
                 with bounded_text(connection, 'real_protection_plans', 'payload', reference[0], limit=maximum) as raw:
                     parsed = json.loads(raw)
@@ -69,7 +80,9 @@ def migrate_activity_page(cursor):
                     updated = value if isinstance(value, (int, float)) else None
             except (ValueError, TypeError, AttributeError):
                 pass
-        cursor.execute('INSERT OR IGNORE INTO protection_plan_activity VALUES(?,?,?,?,?)',
+        cursor.execute('INSERT INTO protection_plan_activity VALUES(?,?,?,?,?) '
+                       'ON CONFLICT(plan_rowid) DO UPDATE SET config_id=excluded.config_id,state=excluded.state,'
+                       'updated_at=excluded.updated_at,payload_bytes=excluded.payload_bytes',
                        (reference[0], reference[1], state, updated, size))
     complete = len(rows) < batch
     cursor.execute('UPDATE protection_plan_scan_progress SET cursor=?,complete=? WHERE id=1',

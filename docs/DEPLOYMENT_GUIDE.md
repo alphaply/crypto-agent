@@ -230,3 +230,11 @@ docker image inspect alphaply712/crypto-agent:latest --format '{{json .RepoDiges
 任一步失败都停止后续步骤，并报告已推送的阶段。修复后可对同一归档重新运行入口；不能将“目录已归档”当成“发布成功”。该流程由归档 Agent 按项目规则调用，直接运行裸 `openspec archive` 命令不会触发 Git 或 Docker 钩子。生产容器更新继续使用上面的部署流程，在用户请求部署时执行。
 
 双容器 profile、预先声明的校准/acceptance、memory+swap 总量与安全回退见 [容量验证](CAPACITY_VERIFICATION.md)。目标主机需分别设置预期memory/swap/CPU环境并核验实际cgroup；本地 Docker Desktop 报告不代表生产验收。
+
+## 用户指定的无容量门槛主机测试
+
+当用户明确要求测试整台主机的实际承载能力时，Web 和 scheduler 同时设置 `RUNTIME_CAPACITY_ENABLED=false` 并重建。这会关闭应用资源准入门槛，保留真实资源采集和交易正确性校验；具体范围见 [运行容量](RUNTIME_CAPACITY.md#explicit-observation-mode)。原有数值预算可以保留作为参考，诊断会标记 `observe_only`，不能称它们仍在限额。
+
+Docker Compose 同时移除这两个服务的 `mem_limit`、`memswap_limit`、`cpus` 和 `deploy.resources.limits`；清除旧的 `RESOURCE_EXPECTED_MEMORY_BYTES`、`RESOURCE_EXPECTED_MEMORY_SWAP_TOTAL_BYTES`、`RESOURCE_EXPECTED_CPU_CPUS` 及 `CAPACITY_PROFILE_SHA256` 环境声明。不使用巨大哨兵数值冒充无限额。保留原凭据、数据卷、端口、账户锁、请求超时和唯一 scheduler。通过 `docker inspect` 和进程内 cgroup 读取确认配额确实未设置。
+
+这种测试不再以固定1GiB容器或RSS平台阈值作为部署门槛。旧的失败/中断验收报告原样保留；发布仍须完成回归、前端构建、隔离空数据烟测、Git提交推送及带revision的不可变镜像发布。生产验收只调用账户、订单及行情等只读工具，记录并发量、耗时、进程RSS峰值、主机可用内存、swap和OOM证据，结论限定于实际验证的负载。

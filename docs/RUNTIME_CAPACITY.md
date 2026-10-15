@@ -139,6 +139,14 @@ The actual CCXT raw maps occupied 34,819,893 resident bytes and the retained com
 
 Use the frozen `scripts/capacity/metadata-fix-v13.json` for local resource acceptance and `scripts/capacity/production-metadata-fix-v1.json` for the upgraded target host. Historical v12 reports and profiles remain unchanged.
 
+## Explicit observation mode
+
+`RUNTIME_CAPACITY_ENABLED=false` disables application resource admission for a user-requested host sizing test. Worker/queue/role and aggregate byte commitments remain observable but do not reject work; MCP calls start physical workers without its configured pool/queue admission caps. HTTP decoded-body, public catalogue/client/coordinator, quote/news cache and runtime record-size gates are bypassed. Idle retirement, cache TTL, actual account mutexes/rate limiting, request deadlines, SQLite transactions, payload contracts and trading ownership/idempotency remain active. This is an explicit restart-required environment setting; the default remains `true`. Invalid boolean values fail clearly. Existing non-admission executor topology and product result/page sizes are unchanged.
+
+Diagnostics expose `capacity.settings.limits_enabled=false` and `mode=observe_only`, so configured numeric budgets are not mistaken for enforced ceilings. Resource leases still follow the physical worker after caller cancellation or timeout. Process RSS and host/cgroup measurements remain the evidence for actual memory consumption. Do not interpret estimated byte commitments as measured RSS.
+
+For the 8GiB server test, production also omits Docker memory/swap/CPU quotas and `RESOURCE_EXPECTED_*` declarations; the source/image, telemetry, read-only query outcomes, swap/OOM and host available memory are recorded separately. An interrupted or failed bounded acceptance is never relabelled as an accepted unbounded workload.
+
 ## Settings
 
 All values below are finite **calibration defaults**, not verified production
@@ -147,6 +155,7 @@ values. Invalid numeric/role configuration raises a clear error.
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
+| `RUNTIME_CAPACITY_ENABLED` | true | Enforce capacity gates; false keeps observation and lifecycle tracking only |
 | `RUNTIME_CAPACITY_TOTAL_WORKERS` | 8 | Process-wide committed workers |
 | `RUNTIME_CAPACITY_RESERVED_WORKERS` | 2 | Critical reserve included in total; must be smaller than total |
 | `RUNTIME_CAPACITY_QUEUE_LIMIT` | 16 | Process-wide waiting tickets; 0 allows immediate admission only |
