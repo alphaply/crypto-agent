@@ -67,6 +67,7 @@ function Mock-Command {
         }
         if ($Values[0] -eq 'inspect') {
             if ($scenario -eq 'inspect_limits_failure') { '{"Memory":0,"MemorySwap":0,"NanoCpus":0}' }
+            elseif ($scenario -eq 'default_profile') { '{"Memory":1073741824,"MemorySwap":1207959552,"NanoCpus":1000000000}' }
             else { '{"Memory":2147483648,"MemorySwap":2415919104,"NanoCpus":1000000000}' }
         }
         if ($Values[0] -eq 'push' -and $Values[1] -like '*:git-*' -and $scenario -eq 'commit_image_failure') {
@@ -86,7 +87,10 @@ function openspec { Mock-Command openspec $args }
 function uv { Mock-Command uv $args }
 function Start-Sleep {}
 $failed = $false
-try { & '__SCRIPT__' -ArchiveName '2026-10-13-example' -CapacityProfile '__PROFILE__' }
+try {
+    if ($scenario -eq 'default_profile') { & '__SCRIPT__' -ArchiveName '2026-10-13-example' }
+    else { & '__SCRIPT__' -ArchiveName '2026-10-13-example' -CapacityProfile '__PROFILE__' }
+}
 catch { $failed = $true }
 Write-Output ('TEST_RESULT=' + (@{failed=$failed; commands=$global:commands} | ConvertTo-Json -Compress))
 """.replace("__SCRIPT__", script_path)
@@ -138,6 +142,19 @@ def test_release_checks_build_and_smoke_before_publishing(scenario):
     )
     if scenario == "startup_retry":
         assert starts.count(["docker", "exec"]) == 3
+
+
+def test_release_resolves_default_profile_after_parameter_binding():
+    result = run_release('default_profile')
+    assert not result['failed']
+    commands = result['commands']
+    acceptance = next(command for command in commands
+                      if command.startswith('uv ') and 'verify-runtime-capacity.py' in command)
+    assert 'local-verified-v12.json' in acceptance
+    smoke = next(command for command in commands
+                 if command.startswith('docker run') and 'RUN_SCHEDULER_IN_WEB=false' in command)
+    assert '--memory 1073741824' in smoke and '--memory-swap 1207959552' in smoke
+    assert any(command.startswith('git push') for command in commands)
 
 
 @pytest.mark.parametrize(

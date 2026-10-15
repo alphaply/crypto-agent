@@ -2,13 +2,17 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*$')]
     [string]$ArchiveName,
-    [string]$CapacityProfile = (Join-Path $PSScriptRoot 'capacity/local-verified-v12.json'),
+    [string]$CapacityProfile = '',
     [switch]$IsolatedCheckout
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path $PSScriptRoot -Parent
+if ([string]::IsNullOrWhiteSpace($CapacityProfile)) {
+    # Windows PowerShell 5.1 resolves param defaults before PSScriptRoot is set.
+    $CapacityProfile = Join-Path $PSScriptRoot 'capacity/local-verified-v12.json'
+}
 $imageRepository = 'alphaply712/crypto-agent'
 $stage = 'preflight'
 $smokeCreated = $false
