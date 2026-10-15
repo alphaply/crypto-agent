@@ -94,3 +94,13 @@ Windows host contract smoke (pure Python pytest dependencies are mounted read-on
 ```powershell
 powershell -NoProfile -File scripts/verify-container-contracts.ps1 -Image crypto-agent-capacity:calibration-v7 -CapacityProfile scripts/capacity/local-verified-v12.json
 ```
+
+## 2026-10-15 生产机元数据修复验收与采样校正
+
+应用修复镜像为 `git-8790a1a`，digest 为 `sha256:efc9ebdf5da7f5ff42f617077cc56de0f4c8591e491bec691cba40a4e57dfc88`。本机 `metadata-fix-v13` 完整验收 `20261015T025936Z-82c61278` 为 accepted：736 次 Web 请求、0 错误，p95=256.4ms、最大525.3ms，宿主 OOM 增量0。两个容器分别限制1GiB内存、1152MiB内存与swap合计、CPU=1。真实 Binance 解压响应与目录内存测量见 [运行容量](RUNTIME_CAPACITY.md#binance-spot-metadata-response-sizing)。
+
+生产机 `production-metadata-fix-v1` 首次完整验收 `20261015T030720Z-f6343d58` 保留为 failed，唯一失败项为 `scheduler:retirement_plateau_or_key_coverage`：后半段RSS差值28,274,688字节超过16MiB。32个退休key全部成功覆盖，资源承诺、目录及消费者最终为0，795次Web请求全部成功，OOM增量0。不能将该轮改写为通过。
+
+已确认验证器时点错配：报告的结束RSS=378,691,584字节来自03:11:47–49UTC的缓存采样，当时有两个目录用户，解析承诺268,435,456字节或尚存64,375,552字节目录与客户端承诺；报告中的目录/消费者0却在之后实时读取。03:11:58UTC的采样RSS已经回落到344,879,104字节且承诺为0。该错配会把刷新中的峰值误用于回收后的平台比较。
+
+当前worker改为在批次完成、目录退休与GC后实时读取中点RSS，在线程池关闭、GC及退休完成后实时读取结束RSS，并记录测量来源、时间戳和生命周期。后台采样仍参与峰值统计，不缩小负载、阶段时长、覆盖要求或阈值。相关组合回归60passed、1个POSIX用例在Windows跳过。修正后的实测结果须另行记录；此次诊断本身不替代重新验收。

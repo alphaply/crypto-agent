@@ -47,7 +47,8 @@ from backend.utils.capacity_profile import load_profile
 from backend.utils.public_catalogue import (load_public_catalogue, release_catalogue_client,
     retire_catalogues, catalogue_diagnostics)
 from backend.utils.runtime_capacity import CapacityBusy, capacity_scope, get_capacity_manager
-from backend.utils.resource_diagnostics import resource_snapshot, start_resource_collector
+from backend.utils.resource_diagnostics import (read_effective_resources, resource_snapshot,
+                                              start_resource_collector)
 from fastapi import HTTPException
 import uvicorn
 
@@ -239,14 +240,25 @@ def financial_fixture():
         pass
 
 
+def fresh_resource_observation():
+    """Read now; the collector's cached sample may describe an active refresh."""
+    started = time.time()
+    resources = read_effective_resources()
+    return {'resources': resources, 'measurement_source': 'read_effective_resources',
+            'measurement_started_at_unix_seconds': started,
+            'measurement_completed_at_unix_seconds': time.time()}
+
+
 def drive(phase):
     begin = time.monotonic()
     samples, completed, accepted, errors = deque(maxlen=3600), 0, 0, []
+    collector_samples = deque(maxlen=3600)
     next_sample = begin
-    retirement_mid_rss = None
+    retirement_mid_observation = after_observation = None
     iteration = 0
     critical_before = state['critical']
-    before = resource_snapshot().get('resources', {}).get('process', {}).get('rss_bytes')
+    before_observation = fresh_resource_observation()
+    before = before_observation['resources']['process'].get('rss_bytes')
     watchdog = start_phase_watchdog(max(0, begin + PROFILE.phase_seconds[phase] + 10 - time.monotonic()))
     try:
         if phase == 'restart':
@@ -278,36 +290,60 @@ def drive(phase):
                     retire_catalogues(all_idle=True)
                     gc.collect()
                 if time.monotonic() >= next_sample:
-                    observation = resource_snapshot()
-                    if 'resources' in observation:
-                        samples.append(observation)
-                        if phase == 'key_retirement' and retirement_mid_rss is None and time.monotonic() - begin >= PROFILE.phase_seconds[phase] / 2:
-                            retirement_mid_rss = observation['resources']['process'].get('rss_bytes')
+                    # Retain asynchronously sampled busy peaks, but do not use
+                    # their RSS as evidence of a later retirement boundary.
+                    cached = resource_snapshot()
+                    if 'resources' in cached:
+                        collector_samples.append(cached)
+                    observation = fresh_resource_observation()
+                    samples.append(observation)
+                    if phase == 'key_retirement' and retirement_mid_observation is None and time.monotonic() - begin >= PROFILE.phase_seconds[phase] / 2:
+                        retirement_mid_observation = observation
                     next_sample = time.monotonic() + .2
         if phase == 'slow_dependencies':
             financial_fixture()
-        gc.collect()
-        if phase == 'key_retirement':
-            retire_catalogues(all_idle=True)
     except Exception as exc:
         traceback.print_exc()
         errors.append(f'{type(exc).__name__}: {str(exc)[:240]}')
     finally:
-        if not stop_phase_watchdog(watchdog):
-            errors.append('Diagnostic watchdog cleanup exceeded 1 second')
-    memory = [sample['resources']['memory'].get(key) for sample in samples
+        try:
+            # The executor context has joined all phase workers, including on
+            # an exception. Match final RSS to the live post-retirement counts.
+            if phase == 'key_retirement':
+                retire_catalogues(all_idle=True)
+            gc.collect()
+            after_observation = fresh_resource_observation()
+        except Exception as exc:
+            traceback.print_exc()
+            errors.append(f'Final resource measurement {type(exc).__name__}: {str(exc)[:240]}')
+        finally:
+            if not stop_phase_watchdog(watchdog):
+                errors.append('Diagnostic watchdog cleanup exceeded 1 second')
+    observations = list(samples) + list(collector_samples) + [before_observation]
+    if after_observation is not None:
+        observations.append(after_observation)
+    memory = [sample['resources']['memory'].get(key) for sample in observations
               for key in ('current_bytes', 'peak_bytes')]
-    rss = [sample['resources']['process'].get('rss_bytes') for sample in samples]
-    host = [sample['resources']['host'].get('memory_available_bytes') for sample in samples]
+    rss = [sample['resources']['process'].get('rss_bytes') for sample in observations]
+    host = [sample['resources']['host'].get('memory_available_bytes') for sample in observations]
     result = {'elapsed_seconds': time.monotonic() - begin, 'sample_count': len(samples),
+        'collector_sample_count': len(collector_samples),
         'workload_completed': not errors and (phase in {'idle', 'restart'} or accepted > 0),
         'errors': errors, 'completed_requests': completed, 'accepted_requests': accepted,
         'critical_receipts_updated': state['critical'] - critical_before,
         'memory_peak_bytes': max((n for n in memory if n is not None), default=None),
         'rss_peak_bytes': max((n for n in rss if n is not None), default=None),
         'host_min_available_bytes': min((n for n in host if n is not None), default=None),
-        'rss_before_bytes': before, 'rss_after_bytes': rss[-1] if rss else None,
-        'retirement_mid_rss_bytes': retirement_mid_rss, 'retired_keys_seen': len(retired_keys_seen),
+        'rss_before_bytes': before,
+        'rss_after_bytes': after_observation['resources']['process'].get('rss_bytes') if after_observation else None,
+        'retirement_mid_rss_bytes': retirement_mid_observation['resources']['process'].get('rss_bytes') if retirement_mid_observation else None,
+        'rss_measurement_source': 'fresh_read_effective_resources',
+        'rss_before_measured_at_unix_seconds': before_observation['measurement_completed_at_unix_seconds'],
+        'retirement_mid_measured_at_unix_seconds': retirement_mid_observation['measurement_completed_at_unix_seconds'] if retirement_mid_observation else None,
+        'rss_after_measured_at_unix_seconds': after_observation['measurement_completed_at_unix_seconds'] if after_observation else None,
+        'retirement_mid_lifecycle': 'iteration_workers_completed_catalogues_retired_gc_completed' if retirement_mid_observation else None,
+        'rss_after_lifecycle': 'phase_pool_shutdown_catalogues_retired_gc_completed' if phase == 'key_retirement' else 'phase_pool_shutdown_gc_completed',
+        'retired_keys_seen': len(retired_keys_seen),
         'capacity': get_capacity_manager().snapshot(), 'catalogue': catalogue_diagnostics()}
     with state_lock:
         state['phases'][phase] = result

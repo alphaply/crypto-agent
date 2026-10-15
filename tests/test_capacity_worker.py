@@ -152,15 +152,18 @@ def test_probe_preserves_fatal_handler_without_native_async_diagnostic_dumps():
 
 
 def test_drive_cancels_phase_watchdog_when_recovery_seed_fails(tmp_path):
-    names = {'drive', 'dump_probe_threads', 'start_phase_watchdog', 'stop_phase_watchdog'}
+    names = {'drive', 'fresh_resource_observation', 'dump_probe_threads',
+             'start_phase_watchdog', 'stop_phase_watchdog'}
     tree = ast.parse(WORKER.read_text(encoding='utf-8'))
     definitions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {'time': time, 'threading': threading, 'traceback': traceback,
+                 'gc': SimpleNamespace(collect=lambda: None),
                  'PROFILE': SimpleNamespace(phase_seconds={'cold': .01}),
                  'state': {'critical': 0, 'running': True, 'phases': {}}, 'state_lock': threading.Lock(),
                  'retired_keys_seen': set(),
                  'ROOT': tmp_path, 'json': json,
                  'resource_snapshot': lambda: {'resources': {'process': {'rss_bytes': 1}}},
+                 'read_effective_resources': lambda: _resource_counters(1),
                  'get_capacity_manager': lambda: SimpleNamespace(snapshot=lambda: {}),
                  'catalogue_diagnostics': lambda: {},
                  'seed_recovery': lambda _: (_ for _ in ()).throw(RuntimeError('seed failed'))}
@@ -180,6 +183,136 @@ def test_drive_cancels_phase_watchdog_when_recovery_seed_fails(tmp_path):
     assert namespace['state']['phases']['cold']['errors'] == ['RuntimeError: seed failed']
     assert not namespace['state']['phases']['cold']['workload_completed']
     assert json.loads((tmp_path / 'verification-state.json').read_text())['running'] is False
+
+
+def _resource_counters(rss, *, peak=None):
+    return {'process': {'rss_bytes': rss},
+            'memory': {'current_bytes': rss, 'peak_bytes': rss if peak is None else peak},
+            'host': {'memory_available_bytes': 10_000}}
+
+
+def _run_retirement_probe(tmp_path, *, cached_rss, final_read_fails=False, worker_fails=False):
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    tree = ast.parse(WORKER.read_text(encoding='utf-8'))
+    definitions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                   and node.name in {'drive', 'fresh_resource_observation'}]
+    lifecycle = {'pool_shutdown': False, 'active_workers': 0, 'retired': False,
+                 'collected': False, 'reads': [], 'watchdogs_stopped': 0}
+    lock = threading.Lock()
+    keys = set()
+
+    class Pool(ThreadPoolExecutor):
+        def __exit__(self, *args):
+            result = super().__exit__(*args)
+            lifecycle['pool_shutdown'] = True
+            return result
+
+    def work(index, _phase):
+        with lock:
+            lifecycle['active_workers'] += 1
+            lifecycle['retired'] = lifecycle['collected'] = False
+        try:
+            time.sleep(.03)
+            if worker_fails and index == 0:
+                raise RuntimeError('phase worker failed')
+            with lock:
+                keys.add(index)
+            return True
+        finally:
+            with lock:
+                lifecycle['active_workers'] -= 1
+
+    def retire(**kwargs):
+        assert kwargs == {'all_idle': True}
+        assert lifecycle['active_workers'] == 0
+        lifecycle['retired'], lifecycle['collected'] = True, False
+
+    def collect():
+        assert lifecycle['retired']
+        lifecycle['collected'] = True
+
+    def read():
+        if not lifecycle['reads']:
+            lifecycle['reads'].append('before')
+            return _resource_counters(100)
+        assert lifecycle['active_workers'] == 0
+        assert lifecycle['retired'] and lifecycle['collected']
+        if lifecycle['pool_shutdown']:
+            lifecycle['reads'].append('after_pool_shutdown_retirement_gc')
+            if final_read_fails:
+                raise OSError('final counters unavailable')
+            return _resource_counters(120)
+        lifecycle['reads'].append('after_iteration_retirement_gc')
+        return _resource_counters(110)
+
+    def stop(_watchdog):
+        lifecycle['watchdogs_stopped'] += 1
+        return True
+
+    namespace = {
+        'time': time, 'traceback': traceback, 'json': json, 'deque': deque,
+        'gc': SimpleNamespace(collect=collect), 'ThreadPoolExecutor': Pool,
+        'PROFILE': SimpleNamespace(phase_seconds={'key_retirement': .24},
+                                   concurrent_requests=2, retired_keys=2),
+        'state': {'critical': 0, 'running': True, 'phases': {}},
+        'state_lock': lock, 'retired_keys_seen': keys, 'ROOT': tmp_path,
+        'read_effective_resources': read,
+        # This stale asynchronous observation represents a different lifecycle.
+        'resource_snapshot': lambda: {'resources': _resource_counters(cached_rss, peak=2000)},
+        'get_capacity_manager': lambda: SimpleNamespace(snapshot=lambda: {'bytes': 0}),
+        'catalogue_diagnostics': lambda: {'entries': 0, 'clients': 0, 'bytes': 0},
+        'seed_recovery': lambda _: None, 'background_recovery_progress': lambda: None,
+        'start_phase_watchdog': lambda _: object(), 'stop_phase_watchdog': stop,
+        'retire_catalogues': retire, 'work': work,
+    }
+    exec(compile(ast.Module(body=definitions, type_ignores=[]), str(WORKER), 'exec'), namespace)
+    namespace['drive']('key_retirement')
+    result = namespace['state']['phases']['key_retirement']
+    assert lifecycle['watchdogs_stopped'] == 1 and lifecycle['pool_shutdown']
+    assert json.loads((tmp_path / 'verification-state.json').read_text())['running'] is False
+    return result, lifecycle
+
+
+@pytest.mark.parametrize('cached_rss', [1, 1000])
+def test_retirement_rss_uses_fresh_quiescent_boundaries_and_keeps_busy_peaks(tmp_path, cached_rss):
+    result, lifecycle = _run_retirement_probe(tmp_path, cached_rss=cached_rss)
+    assert result['errors'] == [] and result['workload_completed']
+    assert result['sample_count'] >= 2
+    assert result['collector_sample_count'] == result['sample_count']
+    assert result['retired_keys_seen'] == 2
+    assert result['rss_before_bytes'] == 100
+    assert result['retirement_mid_rss_bytes'] == 110
+    assert result['rss_after_bytes'] == 120
+    assert result['rss_peak_bytes'] == max(cached_rss, 120)
+    assert result['memory_peak_bytes'] == 2000
+    assert result['rss_measurement_source'] == 'fresh_read_effective_resources'
+    assert (result['rss_before_measured_at_unix_seconds']
+            <= result['retirement_mid_measured_at_unix_seconds']
+            <= result['rss_after_measured_at_unix_seconds'])
+    assert result['retirement_mid_lifecycle'] == 'iteration_workers_completed_catalogues_retired_gc_completed'
+    assert result['rss_after_lifecycle'] == 'phase_pool_shutdown_catalogues_retired_gc_completed'
+    assert lifecycle['reads'][0] == 'before'
+    assert lifecycle['reads'][-1] == 'after_pool_shutdown_retirement_gc'
+
+
+def test_retirement_final_counter_failure_cancels_watchdog_without_cached_fallback(tmp_path):
+    result, _ = _run_retirement_probe(tmp_path, cached_rss=1000, final_read_fails=True)
+    assert result['errors'] == ['Final resource measurement OSError: final counters unavailable']
+    assert result['workload_completed'] is False
+    assert result['rss_after_bytes'] is None
+    assert result['rss_after_measured_at_unix_seconds'] is None
+    assert result['rss_peak_bytes'] == 1000
+
+
+def test_retirement_worker_failure_joins_workers_before_final_measurement(tmp_path):
+    result, lifecycle = _run_retirement_probe(tmp_path, cached_rss=1000, worker_fails=True)
+    assert result['errors'] == ['RuntimeError: phase worker failed']
+    assert result['workload_completed'] is False
+    assert result['rss_after_bytes'] == 120
+    assert result['retirement_mid_rss_bytes'] is None
+    assert lifecycle['active_workers'] == 0
 
 
 @pytest.fixture
