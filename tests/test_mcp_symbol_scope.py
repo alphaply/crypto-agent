@@ -160,6 +160,73 @@ def test_legacy_execute_holds_the_market_client_across_symbol_validation(tool_ow
     assert dispatched == ['BTC/USDT']
 
 
+@pytest.mark.parametrize('amount,expected', [
+    (4, ['submitted', 'submitted']), (6, ['submitted', 'failed']),
+])
+def test_v3_spot_registers_shared_allowance_and_replays_without_rebuy(unrestricted, monkeypatch, amount, expected):
+    from backend.agent import unified_dispatch
+    from backend.mcp import canonical_tools
+    from backend.utils.spot_execution import current_spot_cycle_id, reserve_spot_batch
+
+    caller, _ = unrestricted
+    dispatched = []
+
+    def dispatch(action, config_id, symbol, config, operation_id):
+        try:
+            reserve_spot_batch(config_id, config, operation_id, [SimpleNamespace(
+                symbol=symbol, amount=action.amount, entry_price=action.price)])
+        except ValueError as exc:
+            return {'status': 'failed', 'submitted': False, 'error': str(exc)}
+        dispatched.append(symbol)
+        with database.get_db_conn() as conn:
+            conn.execute("UPDATE spot_budget_reservations SET status='submitted' WHERE config_id=%s AND operation_id=%s",
+                         (config_id, operation_id + ':0'))
+            conn.commit()
+        return {'status': 'submitted', 'order_id': 'order-' + str(len(dispatched))}
+
+    monkeypatch.setattr(unified_dispatch, 'dispatch_live_action', dispatch)
+    request = {'contract_version': 3, 'actions': [
+        {'action': 'open', 'symbol': symbol, 'side': 'LONG', 'order_type': 'limit',
+         'amount': amount, 'price': 10, 'reason': 'shared allowance'}
+        for symbol in ('BTC/USDT', 'ETH/USDT')]}
+    operation_id = 'v3-shared-allowance'
+    result = canonical_tools.execute_live(caller, 'spot', None, request, operation_id)
+    rows = result['result']['results']
+    assert [row['status'] for row in rows] == expected, result
+    if expected[-1] == 'failed':
+        assert '预算' in rows[-1]['result']['error']
+    with database.get_db_conn() as conn:
+        cycles = conn.execute('SELECT cycle_id,budget FROM spot_budget_cycles WHERE config_id=%s', ('mcp:spot',)).fetchall()
+        assert len(cycles) == 1
+        assert cycles[0]['cycle_id'] == 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
+        assert cycles[0]['budget'] == 100
+        assert conn.execute('SELECT COUNT(DISTINCT cycle_id) FROM spot_budget_reservations').fetchone()[0] == 1
+        # Saved operation evidence must not require or recreate a live cycle.
+        conn.execute('DELETE FROM spot_budget_cycles WHERE config_id=%s', ('mcp:spot',))
+        conn.commit()
+    assert canonical_tools.execute_live(caller, 'spot', None, request, operation_id) == result
+    assert len(dispatched) == expected.count('submitted')
+    assert current_spot_cycle_id.get() is None
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM spot_budget_cycles').fetchone()[0] == 0
+
+
+def test_v3_spot_cancel_does_not_allocate_buy_allowance(unrestricted, monkeypatch):
+    from backend.agent import unified_dispatch
+    from backend.mcp import canonical_tools
+
+    caller, _ = unrestricted
+    monkeypatch.setattr(unified_dispatch, 'dispatch_live_action',
+                        lambda *args: {'status': 'completed'})
+    result = canonical_tools.execute_live(caller, 'spot', None, {
+        'contract_version': 3, 'actions': [
+            {'action': 'cancel', 'symbol': 'BTC/USDT', 'order_id': 'old-order', 'reason': 'cancel'}]},
+        'v3-cancel-no-allowance')
+    assert result['status'] == 'completed', result
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM spot_budget_cycles').fetchone()[0] == 0
+
+
 def test_selected_aliases_stay_restricted_and_perpetual_queries_filter_other_markets(unrestricted):
     caller, exchange = unrestricted
     profile = {'symbol_scope': 'selected', 'symbols': ['ETH/USDT'], 'market_type': 'swap'}

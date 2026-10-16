@@ -269,7 +269,9 @@ def execute_live(caller, profile_id, symbol, request, operation_id):
     stable_id = 'mcp:' + store.digest(caller['id'] + ':' + operation_id)
     try:
         with runtime_symbols(cfg_id, symbols):
-            raw = run_trade_tool('execute_trade_actions', normalized, cfg_id, primary, operation_id=stable_id, cycle_id=stable_id if profile['market_type'] == 'spot' else None, project_result=False)
+            # v3 registers its parent allowance lazily at the first spot open.
+            # Passing an unregistered cycle would mark it as already allocated.
+            raw = run_trade_tool('execute_trade_actions', normalized, cfg_id, primary, operation_id=stable_id, project_result=False)
         payload = json.loads(raw) if isinstance(raw, str) else raw
         result = {'operation_id': operation_id, 'status': payload.get('status', 'unknown'),
                   'result': service._external_operation_receipt(payload, stable_id, operation_id, profile_id, principal=caller['id'])}
