@@ -62,6 +62,23 @@ def wait_ready(url, seconds=90):
     raise RuntimeError('Isolated application did not become healthy')
 
 
+def aggregate_limits_held(phases):
+    for item in phases:
+        capacity = item['capacity']
+        settings, peaks = capacity['settings'], capacity['peaks']
+        if peaks['active'] > settings['total_workers'] or peaks['queued'] > settings['queue_limit']:
+            return False
+        limit = settings.get('byte_limit')
+        if settings.get('memory_limits_enabled') is False:
+            # The runtime explicitly observes bytes without an admission cap.
+            # RSS, container limits and OOM evidence remain separate checks.
+            if limit is not None or not isinstance(peaks['bytes'], int) or peaks['bytes'] < 0:
+                return False
+        elif not isinstance(limit, int) or limit <= 0 or peaks['bytes'] > limit:
+            return False
+    return True
+
+
 def database_observation(name):
     """Read Linux cgroup v2 and connection evidence inside the isolated DB."""
     query = """SELECT json_build_object(
@@ -259,9 +276,7 @@ def main():
                 if mem['swap_limit_bytes'] is None or mem['swap_limit_bytes'] + mem['limit_bytes'] != inspect['MemorySwap']:
                     raise ValueError('Effective Docker memory+swap total does not match intended limits')
                 phases = result['phases']
-                aggregate = all(item['capacity']['peaks']['active'] <= item['capacity']['settings']['total_workers']
-                    and item['capacity']['peaks']['queued'] <= item['capacity']['settings']['queue_limit']
-                    and item['capacity']['peaks']['bytes'] <= item['capacity']['settings']['byte_limit'] for item in phases.values())
+                aggregate = aggregate_limits_held(phases.values())
                 retirement = phases['key_retirement']
                 growth = max(0, retirement['rss_after_bytes'] - retirement['rss_before_bytes'])
                 before_oom, after_oom = first_counters[role], mem['events'].get('oom_kill')
