@@ -33,7 +33,7 @@
    curl --fail http://127.0.0.1:31421/health
    ```
 
-   `/health` 必须有 `"success": true`。迁移失败停止后续步骤，修复后重跑迁移；不要绕过结构检查。运行期不自动建表。`scheduler` 是显式 profile，以上命令不会启动它。部署暂停也阻止交易工具和 Paper 后台维护，不修改导入任务的 enabled 值。
+   `/health` 必须有 `"success": true`。迁移失败停止后续步骤，修复后重跑迁移；不要绕过结构检查。Docker 镜像启动 Web/scheduler 前会先执行待应用迁移，迁移失败则不启动服务；使用现有数据库锁串行执行。仍建议通过更新脚本先停应用、备份并显式迁移，便于在升级前保存恢复点。应用运行期只检查结构。`scheduler` 是显式 profile，以上命令不会启动它。部署暂停也阻止交易工具和 Paper 后台维护，不修改导入任务的 enabled 值。
 7. 登录 `/console/config`，导入旧配置 JSON，**关闭“写入 .env”**（API 为 `write_env=false`）。旧包的明文密钥会使用目标 `CONFIG_MASTER_KEY` 重新加密；无密钥包需补填 Key。检查任务 ID、模型/交易所引用、自定义 Prompt、计价和 MCP `public_url`。导入不会创建历史成交。
 8. 保持暂停，重启 Web，让 OAuth 发行地址和内存配置使用导入结果：
 
