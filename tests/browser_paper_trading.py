@@ -14,8 +14,8 @@ def exercise(browser, width, locale):
     page = browser.new_page(viewport={'width': width, 'height': 1000}, reduced_motion='reduce')
     errors, writes = [], []
     page.on('pageerror', lambda error: errors.append(str(error)))
-    cfg = {'enabled': True, 'initial_balance': 10000, 'max_leverage': 125, 'loan_limit': 1000000, 'fee_rate': .001, 'maintenance_margin_rate': .005, 'exchange': 'binance'}
-    account = {'namespace': 'qqbot', 'user_id': '123456', 'name': 'QQ user', 'cash': 9999, 'debt': 100, 'loan_limit': 5000, 'leverage': 10, 'markets': ['spot', 'swap'], 'enabled': True, 'used_margin': 100, 'net_equity': 9999, 'spot': [], 'positions': [], 'fees': 1}
+    cfg = {'enabled': True, 'initial_balance': 10000, 'max_leverage': 125, 'loan_limit': 1000000, 'fee_rate': .001, 'maintenance_margin_rate': .005, 'exchange': 'binance', 'bank_enabled': True, 'daily_interest_rate': .001}
+    account = {'namespace': 'qqbot', 'user_id': '123456', 'account_status': 'bankrupt', 'account_epoch': 2, 'reset_count': 2, 'name': 'QQ user', 'cash': 9999, 'debt': 100, 'loan_limit': 5000, 'leverage': 10, 'markets': ['spot', 'swap'], 'enabled': True, 'used_margin': 100, 'net_equity': 9999, 'spot': [], 'positions': [], 'fees': 1}
     keys = []
     def reply(route, value):
         route.fulfill(content_type='application/json', body=json.dumps(value))
@@ -29,7 +29,7 @@ def exercise(browser, width, locale):
             open_order = {'order_id': 'fixture-limit', 'user_id': account['user_id'], 'symbol': 'BTC/USDT:USDT', 'exchange': 'binance', 'action': 'open_long', 'order_type': 'limit', 'price': 79000, 'amount': .01, 'state': 'open', 'reserved_cash': 158.79}
             tp_order = {**open_order, 'order_id': 'fixture-tp', 'action': 'close_long', 'order_type': 'take_profit', 'price': None, 'trigger_price': 85000, 'close_all': True, 'oco_group': 'fixture-oco', 'reserved_cash': 0}
             events = [{'id': 101, 'timestamp': 1791968157, 'user_id': account['user_id'], 'kind': 'order_filled', 'payload': {'fill': {'symbol': 'BTC/USDT:USDT', 'price': 80000}}}, {'id': 102, 'timestamp': 1791968158, 'user_id': account['user_id'], 'kind': 'liquidation', 'payload': {'symbol': 'ETH/USDT:USDT', 'price': 2000, 'debt_after': 500}}]
-            return reply(route, {'accounts': [{**account, 'positions': [position]}], 'account_total': 2, 'summary': {'cash': account['cash'], 'debt': account['debt'], 'net_equity': account['net_equity'], 'open_orders': 2}, 'orders': [open_order, tp_order], 'events': events, 'leaderboard': [{'participant_id': 'bot', 'rank': 1, 'name': '小金萌智子', 'account_type': 'bot', 'pnl': 200, 'return_pct': 2}, {'participant_id': 'user', 'rank': 2, 'name': 'QQ user', 'account_type': 'user', 'pnl': 100, 'return_pct': 1}]})
+            return reply(route, {'accounts': [{**account, 'positions': [position]}], 'account_total': 2, 'summary': {'cash': account['cash'], 'debt': account['debt'], 'net_equity': account['net_equity'], 'open_orders': 2}, 'orders': [open_order, tp_order], 'events': events, 'reset_leaderboard': [{'participant_id': 'resets-user', 'name': 'QQ user', 'rank': 1, 'reset_count': 2}], 'leaderboard': [{'participant_id': 'bot', 'rank': 1, 'name': '小金萌智子', 'account_type': 'bot', 'pnl': 200, 'return_pct': 2}, {'participant_id': 'user', 'rank': 2, 'name': 'QQ user', 'account_type': 'user', 'pnl': 100, 'return_pct': 1}]})
         if method in {'PUT', 'PATCH', 'POST'}:
             body = route.request.post_data_json
             writes.append((method, url.path, body))
@@ -77,14 +77,16 @@ def exercise(browser, width, locale):
     expect(panel).not_to_be_visible()
     page.get_by_role('tab', name='QQBot · Paper', exact=True).click()
     expect(field.get_by_role('spinbutton')).to_have_value('2000')
-    output = Path('docs/screenshots')
+    output = Path('docs/screenshots/account-lifecycle')
     output.mkdir(parents=True, exist_ok=True)
     data_panel = panel.locator('.ant-card').filter(has=page.get_by_text('模拟盘数据 · 持仓 / 委托 / 排行 / 事件' if zh else 'Paper data · positions / orders / ranking / events', exact=True))
     expect(data_panel.get_by_text('BTC/USDT:USDT', exact=True).first).to_be_visible()
     data_panel.screenshot(path=str(output / f'paper-v2-positions-{width}-{locale}.png'))
-    for key, tab, expected_text in [('orders', '挂单 / 止盈止损' if zh else 'Orders / TP / SL', 'take_profit'), ('ranking', '用户与 Bot 排行榜' if zh else 'Users and bot ranking', '小金萌智子'), ('events', '成交 / 爆仓事件' if zh else 'Fill / liquidation events', '爆仓' if zh else 'Liquidation')]:
-        data_panel.get_by_role('tab', name=tab, exact=True).click()
-        expect(data_panel.get_by_text(expected_text, exact=False).first).to_be_visible()
+    for key, tab, expected_text in [('orders', '挂单 / 止盈止损' if zh else 'Orders / TP / SL', 'take_profit'), ('ranking', '交易收益率榜' if zh else 'Trading return ranking', '小金萌智子'), ('resets', '下海排行榜' if zh else 'Reset ranking', 'QQ user'), ('events', '成交 / 爆仓事件' if zh else 'Fill / liquidation events', '爆仓' if zh else 'Liquidation')]:
+        target = data_panel.get_by_role('tab', name=tab, exact=True, include_hidden=True)
+        target.dispatch_event('click')
+        expect(target).to_have_attribute('aria-selected', 'true')
+        expect(data_panel.locator('.ant-tabs-tabpane-active').get_by_text(expected_text, exact=False).first).to_be_visible()
         data_panel.screenshot(path=str(output / f'paper-v2-{key}-{width}-{locale}.png'))
     panel.screenshot(path=str(output / f'paper-trading-{width}-{locale}.png'))
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Page overflows viewport'

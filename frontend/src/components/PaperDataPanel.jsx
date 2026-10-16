@@ -29,7 +29,7 @@ export default function PaperDataPanel({ namespace, userId, revision, zh }) {
     ...(a.spot || []).map((p) => ({ ...p, user_id: a.user_id, account_type: a.account_type, market_type: 'spot', side: 'LONG' })),
   ]);
   const state = { open: label('待成交', 'Open'), filled: label('已成交', 'Filled'), cancelled: label('已撤销', 'Cancelled'), rejected: label('失败', 'Rejected') };
-  const kinds = { order_filled: label('自动成交', 'Automatic fill'), liquidation: label('爆仓', 'Liquidation'), order_rejected: label('委托失败', 'Rejected order'), admin_adjustment: label('后台调整', 'Admin adjustment'), bot_created: label('Bot 开户', 'Bot created'), place_order: label('挂单', 'Order placed'), set_protection: label('设置止盈止损', 'Protection set'), borrow: label('借款', 'Borrow'), repay: label('还款', 'Repay') };
+  const kinds = { interest: label('扣息', 'Interest'), bankruptcy: label('破产', 'Bankruptcy'), reset: label('下海', 'Reset'), transfer_in: label('转入', 'Transfer in'), transfer_out: label('转出', 'Transfer out'), order_filled: label('自动成交', 'Automatic fill'), liquidation: label('爆仓', 'Liquidation'), order_rejected: label('委托失败', 'Rejected order'), admin_adjustment: label('后台调整', 'Admin adjustment'), bot_created: label('Bot 开户', 'Bot created'), place_order: label('挂单', 'Order placed'), set_protection: label('设置止盈止损', 'Protection set'), borrow: label('借款', 'Borrow'), repay: label('还款', 'Repay') };
   const summary = data?.summary;
   const incompleteAccounts = (data?.accounts || []).filter(paperValuationIncomplete).length;
   const filteredResources = (data?.accounts || []).reduce((sum, account) => sum + (paperFilterCount(account.filter) || 0), 0);
@@ -64,11 +64,12 @@ export default function PaperDataPanel({ namespace, userId, revision, zh }) {
         { title: label('状态', 'State'), dataIndex: 'state', render: (v) => <Tag color={v === 'filled' ? 'green' : v === 'rejected' ? 'red' : v === 'open' ? 'blue' : 'default'}>{state[v] || v}</Tag> },
         { title: label('实际成交价', 'Fill price'), render: (_, r) => format(r.fill?.price) },
       ]} expandable={{ expandedRowRender: (r) => <Typography.Paragraph style={{ overflowWrap: 'anywhere' }}>{label('委托 ID', 'Order ID')}: {r.order_id} · OCO: {r.oco_group || '—'} · {r.reason || ''}</Typography.Paragraph> }} /> },
-      { key: 'ranking', label: label('用户与 Bot 排行榜', 'Users and bot ranking'), children: <Table size="small" rowKey="participant_id" loading={loading} dataSource={data?.leaderboard || []} pagination={{ pageSize: 8 }} scroll={{ x: 620 }} columns={[
+      { key: 'ranking', label: label('交易收益率榜', 'Trading return ranking'), children: <Table size="small" rowKey="participant_id" loading={loading} dataSource={data?.leaderboard || []} pagination={{ pageSize: 8 }} scroll={{ x: 620 }} columns={[
         { title: label('排名', 'Rank'), dataIndex: 'rank' }, { title: label('名称', 'Name'), dataIndex: 'name', render: (v, r) => <Space>{v}{r.account_type === 'bot' && <Tag color="blue">Bot</Tag>}</Space> },
         { title: label('交易盈亏', 'Trading PnL'), dataIndex: 'pnl', render: format }, { title: label('收益率', 'Return'), dataIndex: 'return_pct', render: (v) => v == null ? '—' : `${format(v)}%` },
         { title: label('最早观察价时间', 'Oldest mark'), dataIndex: 'oldest_mark_at', render: time },
       ]} /> },
+      { key: 'resets', label: label('下海排行榜', 'Reset ranking'), children: <Table size="small" rowKey="participant_id" loading={loading} dataSource={data?.reset_leaderboard || []} pagination={{ pageSize: 8 }} columns={[{ title: label('排名', 'Rank'), dataIndex: 'rank' }, { title: label('名称', 'Name'), dataIndex: 'name' }, { title: label('下海次数', 'Resets'), dataIndex: 'reset_count' }]} /> },
       { key: 'events', label: label('成交 / 爆仓事件', 'Fill / liquidation events'), children: <Table size="small" rowKey="id" loading={loading} dataSource={data?.events || []} pagination={{ pageSize: 8 }} scroll={{ x: 780 }} columns={[
         { title: 'ID', dataIndex: 'id' }, { title: label('时间', 'Time'), dataIndex: 'timestamp', render: time }, { title: label('用户', 'User'), dataIndex: 'user_id' },
         { title: label('事件', 'Event'), dataIndex: 'kind', render: (v) => <Tag color={v === 'liquidation' ? 'red' : v === 'order_filled' ? 'green' : 'default'}>{kinds[v] || v}</Tag> },

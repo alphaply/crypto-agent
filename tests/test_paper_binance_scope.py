@@ -336,7 +336,7 @@ def test_paper_sdk_schemas_offer_only_binance(ledger, monkeypatch):
     register_tools(server)
     register_paper_tools(server)
     offered = asyncio.run(server.list_tools())
-    assert len(offered) == 10
+    assert len(offered) == 11
     for tool in offered:
         schemas = [tool.inputSchema, *tool.inputSchema.get('$defs', {}).values()]
         for schema in schemas:
@@ -407,7 +407,8 @@ def test_admin_namespace_page_can_reach_later_spaces(ledger, monkeypatch):
     first = paper_competition.admin_data()
     assert first['namespaces']['has_more'] and first['namespaces']['next_cursor'] == 'bbb'
     second = paper_competition.admin_data(namespace_cursor=first['namespaces']['next_cursor'])
-    assert [row['namespace'] for row in second['rankings']] == ['ccc']
+    assert {row['namespace'] for row in second['rankings']} == {'ccc'}
+    assert {row['metric'] for row in second['rankings']} == {'return_pct', 'reset_count'}
     assert second['namespaces']['scan_complete']
 
 

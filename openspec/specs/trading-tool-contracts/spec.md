@@ -82,7 +82,7 @@
 - **THEN** 系统按真实入场目标执行修改，不要求先 adopt，也不因该订单没有 Agent 创建记录而拒绝
 
 ### Requirement: Cancel uses owned order identity
-`cancel` SHALL 撤销由当前管理者管理的指定入场或退出挂单，不将撤单报告为平仓。默认管理规则 SHALL 允许金融调用在可见授权范围内原子取得管理权并核验人工或外部目标，无需额外 adopt；来源本身不扩大授权范围，也不允许抢占其他管理者。系统 SHALL 根据已核验订单身份识别普通/条件单，向调用方返回当前有效 order_id；旧裸 ID 若存在歧义 SHALL 拒绝并要求使用查询返回的明确身份。
+`cancel` SHALL 撤销当前可信账户与标的授权范围内已核验的指定入场或退出挂单，不将撤单报告为平仓。调用方 SHALL 具备 cancel 权限，无需先取得长期独占管理权或 adopt；订单由另一已授权连接、Agent、人工或外部来源创建 SHALL 不单独阻止撤销，来源不扩大账户权限。系统 SHALL 根据已核验订单身份识别普通/条件单，向调用方返回当前有效 order_id；旧裸 ID 若存在歧义 SHALL 拒绝并要求使用查询返回的明确身份。
 
 #### Scenario: Cancel conditional exit
 - **WHEN** 调用方将查询回执中的条件单 order_id 传给 cancel
@@ -93,16 +93,16 @@
 - **THEN** 系统在核实归属和关联后取消该子单未成交部分，返回当前身份与实际成交；关联不明时返回待核验，不能仅凭母单终态声称整个退出已取消
 
 #### Scenario: Cancel a human-created order in an exclusive scope
-- **WHEN** 有 cancel 权限的管理者请求撤销独占范围内一张已核验外部单
+- **WHEN** 有 cancel 权限的管理者请求撤销授权范围内一张已核验外部单
 - **THEN** 原调用完成本地纳管、目标核验及撤单，保存阶段和结果，不因不在原 Agent 开单记录中而直接拒绝
 
 #### Scenario: First financial use can cancel a manual order
-- **WHEN** 有 cancel 权限的 live MCP 首次请求撤销可见授权范围内的人工挂单，该范围尚无管理者且目标证据完整
-- **THEN** 系统原子取得该范围管理权后撤销已核验目标，保留人工来源和真实成交证据，不额外要求 trade 权限、先 adopt 或先查询解锁
+- **WHEN** 有 cancel 权限的 live MCP 首次请求撤销可见授权范围内的人工挂单，即使该范围已有其他连接管理记录，且目标证据完整
+- **THEN** 系统按共享资源协调并撤销已核验目标，保留人工来源和真实成交证据，不额外要求 trade 权限、先 adopt 或先查询解锁
 
 #### Scenario: Visibility does not defeat an existing manager
 - **WHEN** 调用方可以查询一笔订单，但其管理范围已有另一任务或 profile 的有效管理者
-- **THEN** cancel 返回具体管理竞争原因和未执行状态，不因目录中的可见身份而抢占管理权或撤销目标
+- **THEN** 具备目标 cancel 权限时可按最新事实撤销；仅可查询而无 cancel 权限仍拒绝，不因其他 owner 拒绝或因可见性扩大权限
 
 ### Requirement: Ordered batch uses the same action contracts
 `execute_trade_actions` SHALL 以 contract_version=3 提供默认统一批次，以 contract_version=2 保留独立退出规范批次，均使用 action 判别的平铺动作、每批 1 至 20 项。无版本批次 SHALL 按旧契约解析；混合格式在写入前拒绝。整批静态、权限及已知模式检查 SHALL 在首次提交前完成，执行 SHALL 按顺序逐项重新准入，已执行结果不回滚。省略 execution_policy 或指定 stop_on_error 时，failed、pending、unknown 或被阻塞项 SHALL 停止后续交易项并标为 not_executed。支持的显式 independent 策略 SHALL 只跳过依赖未满足或准入失败的项，继续评估其他项；依赖和策略 SHALL 持久化为请求意图。提交入场不等于等待成交；已确认操作附带清理告警不得代替下一动作的实际准入。
@@ -194,7 +194,7 @@
 - **THEN** 回执保留原操作 ID 和预先保存的客户端 ID，已知交易所 ID 也保留，并明确当前提交结果未知、不得换 ID 重发
 
 ### Requirement: Descriptions match mode and execution capability
-工具说明 SHALL 按用途、必填与互斥参数、方向及数量单位、示例、回执解释提供紧凑说明，并与当前身份和模式的实际 schema 一致。默认说明 SHALL 使用 execute_trade_actions 的单项或多项示例；独立退出说明 SHALL 包含多次开仓、分批止盈、分批止损、最后全平及 edit 示例。未支持的参数不得被静默忽略；整仓附带保护规则不得混入独立模式说明。默认自动纳管说明 SHALL 区分管理范围和真实管理竞争，不要求先 adopt，也不以人工来源统一宣告不可管理。
+工具说明 SHALL 按用途、必填与互斥参数、方向及数量单位、示例、回执解释提供紧凑说明，并与当前身份和模式的实际 schema 一致。默认说明 SHALL 使用 execute_trade_actions 的单项或多项示例；独立退出说明 SHALL 包含多次开仓、分批止盈、分批止损、最后全平及 edit 示例。未支持的参数不得被静默忽略；整仓附带保护规则不得混入独立模式说明。默认自动纳管说明 SHALL 区分可信授权范围、实际并发协调和证据限制，并说明不同连接可共管，不要求先 adopt，也不以人工来源统一宣告不可管理。
 
 #### Scenario: Example and schema agreement
 - **WHEN** 使用工具说明提供的独立退出示例验证请求
@@ -206,7 +206,7 @@
 
 #### Scenario: Automatic management does not ask for adoption first
 - **WHEN** 默认 Agent 或 MCP 目录描述可见授权范围内的人工持仓和挂单管理
-- **THEN** 说明允许直接提交金融动作并在执行前核验及认领，删除无条件先 adopt 的指导；有其他管理者、目标事实变化或未决依赖时返回对应具体原因
+- **THEN** 说明允许直接提交金融动作并在执行前核验并协调共享资源，删除无条件先 adopt 的指导；不因其他管理者拒绝；权限不足、目标事实变化或未决依赖时返回对应具体原因
 
 ### Requirement: Operation states preserve certainty and execution phase
 结构化回执 SHALL 区分明确未执行或拒绝的 failed、可追踪的待完成 pending、是否执行无法确认的 unknown、已接受未完成的 submitted、请求动作已确认的 completed、已核实无需操作的 skipped，以及因前项阻塞而未尝试的 not_executed。状态 SHALL 由执行证据与阶段决定，不由错误字符串猜测；旧回执缺少证据时仍保守处理。
@@ -319,7 +319,7 @@ Agent 和绑定任务聊天的 open、close、edit、cancel 工具执行入口 S
 - **THEN** 系统明确拒绝或能力协商表明不支持，不静默按不同执行策略下单
 
 ### Requirement: Valid actions do not require a preliminary recovery call
-Agent SHALL 能直接调用规范交易工具，系统 SHALL 在该次调用内部完成必要的有界只读取证与可自动完成的证据刷新，不新增必填预检、恢复令牌或手工解锁。内部刷新后条件满足 SHALL 在原调用中继续该次尚未提交的请求；仍未满足才返回具体限制。该行为不得重发原未知交易，也不得为通过准入隐式撤改其他订单。独占授权下的仓位和订单纳管 SHALL 可在同次请求内完成本地记录，不能要求调用者先执行手工 adopt；取证及纳管本身不得产生交易所写入。
+Agent SHALL 能直接调用规范交易工具，系统 SHALL 在该次调用内部完成必要的有界只读取证与可自动完成的证据刷新，不新增必填预检、恢复令牌或手工解锁。内部刷新后条件满足 SHALL 在原调用中继续该次尚未提交的请求；仍未满足才返回具体限制。该行为不得重发原未知交易，也不得为通过准入隐式撤改其他订单。共享交易授权下的仓位和订单纳管 SHALL 可在同次请求内完成本地记录，不能要求调用者先执行手工 adopt；取证及纳管本身不得产生交易所写入。
 
 #### Scenario: Corrected stop works without querying first
 - **WHEN** 原止损已确认无执行影响，Agent 直接请求新的有效止损且必要证据可以取得
@@ -334,7 +334,7 @@ Agent SHALL 能直接调用规范交易工具，系统 SHALL 在该次调用内�
 - **THEN** 一次返回其身份、缺失证据和恢复路径，后台按既有机制推进，不无限占用本次调用、不重复原写入，也不阻断无关工具
 
 #### Scenario: First close enrolls startup exposure
-- **WHEN** 管理者直接对独占范围内已有外部仓位请求有效 close，事实可在预算内核验
+- **WHEN** 管理者直接对授权范围内已有外部仓位请求有效 close，事实可在预算内核验
 - **THEN** 本地建立真实管理基线后执行原请求，不返回缺周期错误要求再次调用接管和 close
 
 ### Requirement: Batch dependency guidance matches validation
@@ -371,7 +371,7 @@ MCP 服务 SHALL 提供只读的 `get_order`（按交易所 order_id 查询单�
 已核验纳管的外部订单 SHALL 使用现有 edit 语义，按真实作用判断入场/退出和所需权限。remaining_amount SHALL 仍为目标未成交基础币数量；省略字段保留最新核验值，不能恢复被人工修改前的缓存参数。方向、类型和 fixed/all SHALL 不被猜测或静默改变。不支持的原生订单组合 SHALL 明确报告能力限制。
 
 #### Scenario: Edit a partially filled external entry
-- **WHEN** 独占范围内外部限价入场已部分成交，管理者指定 remaining_amount 与新价格
+- **WHEN** 授权范围内外部限价入场已部分成交，管理者指定 remaining_amount 与新价格
 - **THEN** 按核验累计成交量和目标未成交量执行修改，保留原单或必要撤建的关联及阶段
 
 #### Scenario: Human changes omitted fields
@@ -474,19 +474,19 @@ v3 SHALL 在首项金融提交前校验整批结构、版本、权限、标的�
 - **THEN** 系统按真实撤单目标和管理权核验后处理，不因无关开仓条件要求 trade 权限、改杠杆或新增预检调用
 
 ### Requirement: Financial actions establish management without a preliminary adoption tool
-默认金融动作 SHALL 在当前可见交易授权范围内核验目标管理权，并在无管理者时按原子先到先得规则取得管理权；绑定任务聊天及同 profile principal SHALL 沿用同一管理者身份。人工或外部来源和尚无交易周期 SHALL NOT 单独阻止已获权管理；来源与真实基线 SHALL 保留。只读查询 SHALL NOT 认领或抢占范围，读权限 SHALL NOT 获得金融权限。
+默认金融动作 SHALL 在当前可信账户、市场、标的及动作权限范围内核验目标和协调共享资源，不要求先到先得的长期独占管理权。不同已授权 MCP profile、principal 和内置 Agent SHALL 可共同管理相同真实资源；原提交者身份仅用于来源、权限及审计。人工或外部来源和尚无交易周期 SHALL NOT 单独阻止已获交易授权的管理；来源与真实基线 SHALL 保留。只读查询 SHALL NOT 创建金融写入或独占范围，读权限 SHALL NOT 获得金融权限。
 
 #### Scenario: Visible manual position is managed in the same action
-- **WHEN** 获授权任务直接请求 close 范围内人工已有仓位，管理权可取得且执行前事实和数量完整
+- **WHEN** 获授权任务直接请求 close 范围内人工已有仓位，目标获授权且执行前事实和数量完整
 - **THEN** 系统在本次调用内登记管理基线并执行合法退出，不要求模型先 adopt 或下一轮重试；人工仓位不被写成 Agent 入场成交
 
 #### Scenario: Read-only discovery does not win ownership
 - **WHEN** read principal 查询尚无管理者的可见人工仓位或订单
-- **THEN** 查询只返回观察事实与管理状态，不登记管理者、不提交金融动作，也不使后续合法金融调用被该读者占用阻止
+- **THEN** 查询只返回观察事实与共享管理状态，不登记独占管理者、不提交金融动作，也不使后续合法金融调用被该读者占用阻止
 
 #### Scenario: Same profile principals share management but not private receipts
 - **WHEN** 两个已授权 principal 通过同一 profile 对其管理范围提交金融动作
-- **THEN** 管理者身份为该 profile，动作按共享账户资源协调；各 principal 仍遵守原权限及操作回执访问范围，不因同管理者而公开另一调用者的私有操作身份
+- **THEN** 管理者身份为该 profile，动作按共享账户资源协调；各 principal 仍遵守原权限及操作回执访问范围，不因共享账户管理而公开另一调用者的私有操作身份
 
 ### Requirement: Third-version identities are stable and version-specific
 v3 SHALL 在金融提交前持久化父操作和各子项的原始版本化意图、策略、依赖与稳定身份。同身份同意图重放 SHALL 返回或核验原结果而不重复写入；不同意图、上下文、版本、策略或依赖复用身份 SHALL 拒绝。v1、无版本旧请求及 v2 的既有哈希和省略字段 SHALL 保持不变；入口隐藏或别名 SHALL NOT 伪造等价请求、生成新操作或改变已确认解释。
@@ -557,7 +557,7 @@ v3 SHALL 在一次有界调用中逐项执行已声明动作，默认失败、pe
 - **THEN** 退出仍保留 completed、实际成交量和订单身份，摘要单独标识失败或缺项，并提供按需核验方式
 
 ### Requirement: Explicit handoff grants only resource-scoped recovery access
-经明确交接并原子接受的未决资源 SHALL 向接收管理者提供仅用于这些资源的只读恢复授权与可访问查询身份。原请求、actor、操作 ID 和证据 SHALL 保留；非交接资源及原 principal 的其他私有回执 SHALL 不因管理权转移公开。查询 SHALL 只核验原操作，不能在接收方身份下重发、恢复未执行尾项或提交新交易。
+共享管理 SHALL 不要求先交接独占管理权。确有私有未决资源恢复授权需要交接时，经明确接受的资源 SHALL 仅提供这些资源所需的只读恢复授权与查询身份。原请求、actor、操作 ID 和证据 SHALL 保留；非交接资源及原 principal 的其他私有回执 SHALL 不因共享管理公开。查询 SHALL 只核验原操作，不能在接收方身份下重发、恢复未执行尾项或提交新交易。
 
 #### Scenario: The receiver inspects an accepted unresolved operation
 - **WHEN** 管理者 B 明确接受 A 的范围和已登记未决订单/操作，并在自己的授权上下文使用交接给出的恢复身份查询
@@ -565,7 +565,7 @@ v3 SHALL 在一次有界调用中逐项执行已声明动作，默认失败、pe
 
 #### Scenario: A former owner retries after ownership changes
 - **WHEN** A 的旧客户端重放已交接的原操作，或旧 worker 返回迟到 ACK
-- **THEN** 只保留或核验原已开始执行事实，不获得新提交权、不改变历史身份，也不重发原交易或批次尾项
+- **THEN** 只保留或核验原已开始执行事实，不通过旧请求重放取得新提交权、不改变历史身份，也不重发原交易或批次尾项；当前仍有金融权限的 A 可以另行提交新的明确意图
 
 ### Requirement: Financial calls return authoritative acknowledgements without secondary model queries
 所有模式及新旧兼容金融入口 SHALL 在一次调用内完成必要的前置权限、目标、仓位、管理及动态准入并执行 open/close/edit/cancel/protect。获得权威受理 ACK 后 SHALL 及时返回 submitted，不为取得返回许可再次 GET 订单/仓位或等待未来成交。ACK 已证明本次动作完成时可报告 completed；已确认成交直接保留，缺证据不能填假零。未确认写入保留 pending/unknown 和原身份。正常后续意图 SHALL 在自身调用内核验所需依赖，不强制模型二次取证。

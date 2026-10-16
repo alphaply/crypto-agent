@@ -28,6 +28,8 @@ class StoredPaperSettings(BaseModel):
     initial_balance: float = Field(10000, ge=0, le=1e12, allow_inf_nan=False)
     max_leverage: int = Field(125, ge=1, le=125)
     loan_limit: float = Field(1000000, ge=0, le=1e12, allow_inf_nan=False)
+    bank_enabled: bool = True
+    daily_interest_rate: float = Field(0, ge=0, allow_inf_nan=False)
     fee_rate: float = Field(.001, ge=0, le=.01, allow_inf_nan=False)
     maintenance_margin_rate: float = Field(.005, gt=0, le=.1, allow_inf_nan=False)
     exchange: Literal['binance', 'okx', 'bitget', 'bybit'] = 'binance'
@@ -43,7 +45,7 @@ class PaperSettings(StoredPaperSettings):
 class AccountUpdate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str | None = Field(None, max_length=100)
-    cash: float | None = Field(None, ge=0, le=1e12, allow_inf_nan=False)
+    cash: float | None = Field(None, ge=-1e12, le=1e12, allow_inf_nan=False)
     debt: float | None = Field(None, ge=0, le=1e12, allow_inf_nan=False)
     loan_limit: float | None = Field(None, ge=0, le=1e12, allow_inf_nan=False)
     leverage: int | None = Field(None, ge=1, le=125)
@@ -59,8 +61,13 @@ class AccountUpdate(BaseModel):
         return self
 
 
-def settings() -> dict:
-    raw = StoredPaperSettings.model_validate(store.get('paper_settings', 'global') or {}).model_dump()
+def settings(conn=None) -> dict:
+    if conn is None:
+        payload = store.get('paper_settings', 'global')
+    else:
+        row = conn.execute("SELECT payload FROM mcp_records WHERE kind='paper_settings' AND id='global'").fetchone()
+        payload = json.loads(row[0]) if row else {}
+    raw = StoredPaperSettings.model_validate(payload or {}).model_dump()
     return PaperSettings.model_validate({**raw, 'exchange': 'binance'}).model_dump()
 
 
@@ -92,6 +99,15 @@ def number(value, *, positive=False) -> Money:
     return result
 
 
+def signed_cash(value) -> Money:
+    if isinstance(value, bool):
+        raise ValueError('A finite cash balance is required')
+    result = Money(str(value))
+    if not result.is_finite() or abs(result) > Money('1e15'):
+        raise ValueError('Cash balance is outside the supported range')
+    return result
+
+
 def money(value) -> float:
     result = Money(str(value))
     if not result.is_finite() or abs(result) > Money('1e15'):
@@ -116,6 +132,8 @@ def _save(conn, account):
 
 
 def upgrade_account(conn, account):
+    from .paper_lifecycle import initialize
+    initialize(account, conn)
     if 'initial_capital' not in account:
         from .paper_storage import one, payload_page, history_limit
         row = conn.execute('SELECT operation_id FROM paper_operations WHERE namespace=%s AND user_id=%s ORDER BY storage_id LIMIT 1',
@@ -204,13 +222,22 @@ def _write(caller, user_id, operation_id, request, change):
         account = upgrade_account(conn, _get(conn, namespace, user_id))
         from .paper_orders import refresh_reservations
         refresh_reservations(conn, account)
+        from .paper_lifecycle import settle, refresh_status, assert_active
+        settle(conn, account)
+        refresh_status(conn, account)
+        if request['action'] != 'reset':
+            if account['account_status'] == 'bankrupt':
+                _save(conn, account)
+                conn.commit()
+            assert_active(account)
         details = change(account, conn)
+        refresh_status(conn, account)
         refresh_reservations(conn, account)
         _save(conn, account)
         accepted_orders = ([details['order']] if details.get('order') else details.get('orders', []))
         accepted = request['action'] in {'place_order', 'set_protection'} and any(order.get('state') == 'open' for order in accepted_orders)
         result = {'status': 'submitted' if accepted else 'completed', 'paper': True, 'operation_id': operation_id,
-                  'account': snapshot(account, project=False), **details}
+                  'account': snapshot(account, project=False, conn=conn), **details}
         if accepted and any(order.get('order_type') in {'stop_loss', 'take_profit'} for order in accepted_orders):
             result.update(order_status='waiting_trigger', filled_amount=0)
         from .paper_storage import max_payload, PaperPayloadLimit
@@ -255,7 +282,7 @@ def create_account(caller, user_id: str, operation_id: str, name: str = '') -> d
         }
         upgrade_account(conn, account)
         _save(conn, account)
-        result = {'status': 'completed', 'paper': True, 'created': existing is None, 'operation_id': operation_id, 'account': snapshot(account, project=False)}
+        result = {'status': 'completed', 'paper': True, 'created': existing is None, 'operation_id': operation_id, 'account': snapshot(account, project=False, conn=conn)}
         conn.execute('INSERT INTO paper_operations(namespace,user_id,operation_id,fingerprint,principal,result) VALUES(%s,%s,%s,%s,%s,%s)',
                      (namespace, user_id, operation_id, fingerprint, caller['id'], json.dumps(result, allow_nan=False)))
         _event(conn, account, 'create', {'created': existing is None}, operation_id)
@@ -278,12 +305,12 @@ def snapshot(account: dict, *, project=True, conn=None) -> dict:
         value = number(holding['amount']) * number(holding.get('mark_price', holding['entry_price']))
         spot_value += value
         spot.append({'symbol': holding.get('symbol', symbol), **holding, 'market_value': money(value)})
-    equity = number(account['cash']) + used + pnl + spot_value
+    equity = signed_cash(account['cash']) + used + pnl + spot_value
     observed = [p.get('marked_at') for p in [*positions, *spot]]
-    result = {**{k: v for k, v in account.items() if not k.startswith('_')}, 'spot': spot, 'positions': positions, 'currency': 'USDT', 'paper': True,
+    result = {**{k: v for k, v in account.items() if not k.startswith('_')}, 'spot': spot, 'positions': positions, 'currency': 'USDT', 'paper': True, 'loan_limit': settings(conn)['loan_limit'],
             'used_margin': money(used), 'unrealized_pnl': money(pnl), 'equity': money(equity),
             'net_equity': money(equity - number(account['debt'])),
-            'available_cash': money(max(number(account['cash']) - number(account.get('reserved_cash', 0)), ZERO)),
+            'available_cash': money(max(signed_cash(account['cash']) - number(account.get('reserved_cash', 0)), ZERO)),
             'execution_mode': 'paper', 'market_data_mode': 'live_public',
             'performance_pnl': money(equity - number(account['debt']) - Money(str(account['competition_capital']))) if account.get('competition_capital') is not None else None,
             'valuation_status': 'last_observed' if all(observed) else 'entry_prices',
@@ -402,11 +429,13 @@ def bank(caller, user_id, action, amount, operation_id):
         raise ValueError('Bank action must be borrow or repay')
 
     def change(account, conn):
-        cash, debt = number(account['cash']), number(account['debt'])
+        cash, debt = signed_cash(account['cash']), number(account['debt'])
         if action == 'borrow':
             if not account['enabled']:
                 raise ValueError('Paper account is disabled')
-            if debt + amount > number(account['loan_limit']):
+            if not settings(conn)['bank_enabled']:
+                raise ValueError('Bank borrowing is disabled')
+            if debt + amount > number(settings(conn)['loan_limit']):
                 raise ValueError('Paper bank loan limit exceeded; an administrator can adjust it')
             cash, debt = cash + amount, debt + amount
         else:
@@ -414,7 +443,7 @@ def bank(caller, user_id, action, amount, operation_id):
                 raise ValueError('Repayment exceeds available cash or outstanding debt')
             cash, debt = cash - amount, debt - amount
         account.update(cash=money(cash), debt=money(debt))
-        return {'bank_action': action, 'amount': money(amount), 'interest_rate': 0}
+        return {'bank_action': action, 'amount': money(amount), 'interest_rate': settings(conn)['daily_interest_rate']}
 
     return _write(caller, user_id, operation_id, {'action': action, 'amount': money(amount)}, change)
 
@@ -441,6 +470,7 @@ def market(symbol: str, market_type='swap', timeframe='1h', limit=120, *, candle
 
 def _mark(account, quotes, conn, cfg):
     from .paper_policy import visible
+    frozen = account.get('account_status') == 'bankrupt'
     for symbol, holding in account['spot'].items():
         if not visible(holding, account=account, kind='spot', key=symbol, conn=conn):
             continue
@@ -463,11 +493,11 @@ def _mark(account, quotes, conn, cfg):
         equity = number(p['margin']) + pnl
         maintenance = mark * amount * number(cfg['maintenance_margin_rate'])
         p.update(mark_price=money(mark), marked_at=quote['observed_at'])
-        if equity <= maintenance:
+        if equity <= maintenance and not frozen:
             # Isolated liquidation caps loss at posted margin; loans remain outstanding.
             fee = min(max(equity, ZERO), mark * amount * number(cfg['fee_rate']))
             payout = max(equity - fee, ZERO)
-            account['cash'] = money(number(account['cash']) + payout)
+            account['cash'] = money(signed_cash(account['cash']) + payout)
             account['fees'] = money(number(account['fees']) + fee)
             realized = payout - number(p['margin'])
             account['realized_pnl'] = money(Money(str(account['realized_pnl'])) + realized)
@@ -485,13 +515,16 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
     if time.time() - quote['observed_at'] > 15:
         raise ValueError('Paper execution quote expired; no fill recorded')
     _mark(account, {(market_type, canonical): quote}, conn, cfg)
+    from .paper_lifecycle import refresh_status, assert_active
+    refresh_status(conn, account)
+    assert_active(account)
     buy = action in {'buy', 'open_long', 'close_short'}
     price = number(quote['ask'] if buy else quote['bid'], positive=True)
     notional = price * amount
     fee = notional * number(cfg['fee_rate'])
     if money(notional) <= 0:
         raise ValueError('Paper order is below minimum ledger precision')
-    cash = number(account['cash'])
+    cash = signed_cash(account['cash'])
     available = cash - number(account.get('reserved_cash', 0))
     realized = ZERO
     resource_identity = {}
@@ -624,11 +657,16 @@ def admin_update(namespace, user_id, payload: AccountUpdate):
     with store.connection() as conn:
         lock_scope(conn, 'paper-account', namespace, user_id)
         account = _get(conn, namespace, user_id)
+        from .paper_lifecycle import settle, refresh_status
+        settle(conn, account)
+        if 'loan_limit' in updates:
+            raise ValueError('Loan limit is configured centrally in bank settings')
         funding = Money(str(updates.get('cash', account['cash']))) - Money(str(account['cash']))
         funding -= Money(str(updates.get('debt', account['debt']))) - Money(str(account['debt']))
         if account['competition_capital'] is not None:
             account['competition_capital'] = money(Money(str(account['competition_capital'])) + funding)
         account.update(updates)
+        refresh_status(conn, account)
         _save(conn, account)
         _event(conn, account, 'admin_adjustment', updates)
         conn.commit()
@@ -710,7 +748,10 @@ def reconcile_instrument(market_type, symbol, exchange_name=None, *, namespace=N
             lock_scope(conn, 'paper-account', record['namespace'], record['user_id'])
         for record in accounts:
             account = _get(conn, record['namespace'], record['user_id'])
+            from .paper_lifecycle import settle, refresh_status
+            settle(conn, account)
             _mark(account, {(market_type, symbol): quote}, conn, cfg)
+            refresh_status(conn, account)
             match(conn, account, market_type, symbol, quote, cfg)
             _save(conn, account)
         conn.commit()
@@ -722,6 +763,8 @@ def reconcile():
     from .paper_storage import batch_size, limit
     from .resilience import Budget, current_budget
     token = current_budget.set(Budget(None, uuid.uuid4().hex, 'execute'))
+    from .paper_lifecycle import maintenance_finances
+    maintenance_finances()
     scanned, processed = 0, 0
     try:
         while scanned < batch_size() and processed < batch_size():
@@ -747,6 +790,8 @@ async def maintenance_round(stop: asyncio.Event):
     from .paper_batch import recover_pending
     await run('recovery', recover_receipts, label='paper_receipt_updates')
     await run('recovery', recover_pending, label='paper_recovery')
+    from .paper_lifecycle import maintenance_finances
+    await run('execute', maintenance_finances, label='paper_daily_interest')
     scanned, processed = 0, 0
     while not stop.is_set() and scanned < batch_size() and processed < batch_size():
         plan = await run('read', partial(maintenance_plan, max_items=1, max_accounts=batch_size() - scanned),

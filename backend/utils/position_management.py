@@ -123,7 +123,11 @@ def synchronize_configuration(conn, snapshot):
     if 'mcp_records' in tables:
         candidates.extend({**json.loads(r[0]), 'config_id': 'mcp:' + json.loads(r[0])['profile_id']}
                           for r in conn.execute("SELECT payload FROM mcp_records WHERE kind='profile'"))
-    configs = {c.get('config_id'): c for c in candidates}
+    configs = {c.get('config_id'): normalize_management(c) for c in candidates}
+    if 'position_management_actions' in tables:
+        pending_owners = conn.execute("SELECT DISTINCT owner FROM position_management_actions WHERE state IN ('running','unresolved')")
+        if any(row['owner'] not in configs for row in pending_owners):
+            raise ValueError('An unresolved original operation requires its recovery configuration before removal')
     accounts = {a['profile_id']: a for a in snapshot.get('exchange_profiles') or []}
     for config in configs.values():
         account = accounts.get(config.get('exchange_profile_id'), config)
@@ -193,7 +197,7 @@ def _configuration(service):
             if active['physical_account'] != physical_account_scope(service.mt):
                 raise ValueError('Runtime account changed inside the financial management context')
             return {**config, 'position_management_policy': 'visible_first_claim', 'management_scopes': []}
-        return config
+        return normalize_management(config)
     from backend.config import config as runtime
     restored = runtime.get_config_by_id(service.config_id) or {}
     if not hasattr(service.mt, 'runtime_config'):
@@ -213,15 +217,6 @@ def _claim(service, symbol, side, hedged):
         lock_scope(conn, 'management-account', service.account_scope, symbol)
         rows = list(conn.execute('SELECT * FROM position_management_scopes WHERE account_scope=%s AND symbol=%s',
                                  (service.account_scope, symbol)))
-        for row in rows:
-            if row['owner'] != service.config_id and (not hedged or row['side'] == side):
-                raise ValueError('Another manager owns this exchange position scope')
-        for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol IN (%s,%s)',
-                                 (symbol, symbol.split(':')[0])):
-            plan = json.loads(row['payload'])
-            if (plan.get('account_scope') == service.account_scope and row['config_id'] != service.config_id
-                    and plan.get('state') != 'DONE' and (not hedged or plan.get('side') == side)):
-                raise ValueError('Another task owns an active position cycle')
         own = next((r for r in rows if r['side'] == side), None)
         payload = json.loads(own['payload']) if own else {'policy': 'exclusive_scope', 'sync_status': 'pending'}
         payload['hedged'] = hedged
@@ -594,8 +589,6 @@ def _discover(service, symbol, requested_side):
                         conn.commit()
                     continue
                 linked = links.get(str(order['id']) if order['_channel'] == 'regular' else identity)
-                if linked and linked['config_id'] not in {service.config_id, plan.get('original_owner')}:
-                    raise ValueError('External order belongs to another manager')
                 record = _external_record(order, side, role, all_close)
                 if linked:
                     previous_metadata = json.loads(linked['payload'])
@@ -603,8 +596,6 @@ def _discover(service, symbol, requested_side):
                     record['restored_from_episode_id'] = previous_metadata.get('episode_id')
                 plan['entries' if role == 'entry' else 'exits'].append(record)
             except ValueError as exc:
-                if 'another manager' in str(exc):
-                    raise
                 management.setdefault('unsupported_orders', {})[identity] = str(exc)
             with get_db_conn() as conn:
                 _facts(conn, service, symbol, 'order:' + identity, {**order, 'source': (record.get('source', 'external') if identity not in management['unsupported_orders'] else 'external'), 'observed_at': time.time()})
@@ -896,6 +887,12 @@ def managed_action(function):
             else:
                 side = None
                 target = args[0] if args else kwargs['order_id']
+            if target and ':' not in str(target):
+                try:
+                    service._find_order(symbol, target)
+                except ValueError as exc:
+                    if 'Ambiguous' in str(exc):
+                        raise
             with management_action(service.mt, symbol, side, operation_id, automatic=False, order_id=target) as claim:
                 result = function(service, symbol, *args, **kwargs)
                 if claim:
@@ -1085,4 +1082,5 @@ def _management_action(market_tool, symbol, side, operation_id, *, automatic=Tru
 
 def _legacy_scope_for_tool(market_tool):
     from backend.utils.execution_ledger import account_scope
-    return account_scope(market_tool.exchange, market_tool.config_id)
+    from backend.utils.shared_management import execution_scope
+    return execution_scope(market_tool, account_scope(market_tool.exchange, market_tool.config_id))

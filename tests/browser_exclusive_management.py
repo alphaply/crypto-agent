@@ -1,4 +1,4 @@
-"""Offline UI acceptance. Start Vite at 127.0.0.1:18972; all APIs are mocked."""
+"""Offline UI acceptance. Start Vite at 127.0.0.1:18973; all APIs are mocked."""
 import json
 import re
 from pathlib import Path
@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
-OUTPUT = Path(__file__).resolve().parents[1] / 'docs/screenshots'
+OUTPUT = Path(__file__).resolve().parents[1] / 'docs/screenshots/account-lifecycle'
 
 
 def exercise(browser, width, locale):
@@ -51,7 +51,7 @@ def exercise(browser, width, locale):
                 'selected_symbols': [{'symbol': 'ETH/USDT:USDT'}], 'invalid_symbols': [], 'total': 1})
         elif path == '/api/mcp/profiles/connection':
             writes.append(route.request.post_data_json)
-            respond(route, {'detail': {'code': 'management_scope_conflict', 'owner': 'other-manager'}}, 409)
+            respond(route, {'success': True})
         elif path == '/api/mcp':
             respond(route, {'settings': {'enabled': True, 'public_url': 'https://fixture.invalid'},
                             'connection': {'url': 'https://fixture.invalid/mcp'}, 'profiles': [profile],
@@ -60,7 +60,7 @@ def exercise(browser, width, locale):
             respond(route, {})
 
     page.route('**/api/**', handle)
-    page.goto(f'http://127.0.0.1:18972/tests/management-fixture.html?locale={locale}')
+    page.goto(f'http://127.0.0.1:18973/tests/management-fixture.html?locale={locale}')
     expect(page.get_by_text('-2.12 USDT', exact=True)).to_be_visible()
     expect(page.get_by_text('暂不可统计' if zh else 'Unavailable', exact=True)).to_be_visible()
     assert not any(path.endswith('/details') for path in calls), calls
@@ -69,7 +69,7 @@ def exercise(browser, width, locale):
     for hidden in ('operation_id', 'resolution', 'active_protection', 'execution_review', 'window_complete'):
         assert hidden not in compact_text, hidden
 
-    expect(page.get_by_text('可见范围自动管理 · 先到先得' if zh else 'Automatic visible management · First claim wins', exact=True)).to_be_visible()
+    expect(page.get_by_text('授权范围共享管理' if zh else 'Shared management within authorized scope', exact=True)).to_be_visible()
     assert page.get_by_role('combobox', name='仓位管理策略' if zh else 'Position management policy').count() == 0
     page.get_by_role('button', name='模拟人工减仓及改单' if zh else 'Simulate external reduction and edit').click()
     expect(page.get_by_text('0.01 @ 2415', exact=True)).to_be_visible()
@@ -91,11 +91,10 @@ def exercise(browser, width, locale):
 
     page.get_by_role('button', name=re.compile(r'^编\s*辑$') if zh else 'Edit', exact=not zh).click()
     dialog = page.get_by_role('dialog')
-    expect(dialog.get_by_text('可见范围自动管理 · 先到先得' if zh else 'Automatic visible management · First claim wins', exact=True)).to_be_visible()
+    expect(dialog.get_by_text('授权范围共享管理' if zh else 'Shared management within authorized scope', exact=True)).to_be_visible()
     assert dialog.get_by_role('combobox', name='仓位管理策略' if zh else 'Position management policy').count() == 0
     dialog.get_by_role('button', name='OK').click()
-    expect(dialog.get_by_text(re.compile('management_scope_conflict'))).to_be_visible()
-    expect(dialog.get_by_text('可见范围自动管理 · 先到先得' if zh else 'Automatic visible management · First claim wins', exact=True)).to_be_visible()
+    expect(dialog).not_to_be_visible()
     assert writes[-1]['symbols'] == []
     assert writes[-1]['position_management_policy'] == 'visible_first_claim'
     assert writes[-1]['management_scopes'] == []
@@ -119,18 +118,17 @@ def task_editor(browser, width, locale):
     def handle(route):
         if route.request.method == 'PUT':
             writes.append(route.request.post_data_json)
-            route.fulfill(status=409, content_type='application/json', body=json.dumps({'detail': 'Another manager owns this exchange position scope'}))
+            route.fulfill(content_type='application/json', body=json.dumps({'success': True}))
         else:
             route.fulfill(content_type='application/json', body=json.dumps(payload))
 
     page.route('**/api/**', handle)
-    page.goto(f'http://127.0.0.1:18972/tests/management-fixture.html?locale={locale}&surface=tasks')
+    page.goto(f'http://127.0.0.1:18973/tests/management-fixture.html?locale={locale}&surface=tasks')
     page.get_by_role('button', name='Edit', exact=True).click()
     dialog = page.get_by_role('dialog')
-    expect(dialog.get_by_text('可见范围自动管理 · 先到先得' if zh else 'Automatic visible management · First claim wins', exact=True)).to_be_visible()
+    expect(dialog.get_by_text('授权范围共享管理' if zh else 'Shared management within authorized scope', exact=True)).to_be_visible()
     dialog.get_by_role('button', name='save', exact=True).click()
-    expect(dialog.get_by_text(re.compile('Another manager owns'))).to_be_visible()
-    expect(dialog.get_by_text('可见范围自动管理 · 先到先得' if zh else 'Automatic visible management · First claim wins', exact=True)).to_be_visible()
+    expect(dialog).not_to_be_visible()
     assert writes[-1]['agents'][0]['position_management_policy'] == 'visible_first_claim'
     assert writes[-1]['agents'][0]['management_scopes'] == []
     assert not errors, errors
@@ -142,7 +140,7 @@ def partial_order_warning(browser, width, locale):
     page = browser.new_page(viewport={'width': width, 'height': 900}, reduced_motion='reduce')
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
-    page.goto(f'http://127.0.0.1:18972/tests/management-fixture.html?locale={locale}&surface=partial')
+    page.goto(f'http://127.0.0.1:18973/tests/management-fixture.html?locale={locale}&surface=partial')
     page.get_by_role('tab', name='行情与账户' if zh else 'Market and account').click()
     expect(page.get_by_text('部分订单通道不可用，以下只展示已读取的挂单。' if zh else 'Some order channels are unavailable. Only retrieved orders are shown.', exact=True)).to_be_visible()
     expect(page.get_by_text('挂单读取不完整，不能确认无挂单。' if zh else 'Order data is incomplete; no-orders status is unconfirmed.', exact=True)).to_be_visible()

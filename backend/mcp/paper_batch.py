@@ -295,7 +295,7 @@ def execute(caller, user_id, request, operation_id):
                           'operation_id': 'paper-child:' + store.digest('\0'.join((namespace, user_id, operation_id, str(index)))),
                           'status': 'not_executed', 'attempted': False} for index, action in enumerate(actions)]
                 payload = {'operation_id': operation_id, 'contract_version': 3, 'paper': True, 'status': 'started',
-                           'request': request, 'results': items,
+                           'request': request, 'results': items, 'account_epoch': (conn.execute("SELECT COALESCE((payload::jsonb->>'account_epoch')::bigint,0) FROM paper_accounts WHERE namespace=%s AND user_id=%s", (namespace, user_id)).fetchone() or (None,))[0],
                            'recovery': {'status': 'system_updates', 'operation_id': operation_id, 'user_id': user_id}}
                 conn.execute('INSERT INTO paper_batches(namespace,user_id,operation_id,fingerprint,payload,worker_pid,worker_token,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
                              (namespace, user_id, operation_id, fingerprint, _encode(payload), os.getpid(), token, time.time()))
@@ -330,6 +330,8 @@ def execute(caller, user_id, request, operation_id):
                     lock_scope(conn, 'paper-account', namespace, user_id)
                     _save(conn, namespace, user_id, operation_id, payload)
                     conn.commit()
+                from .paper_lifecycle import execution_epoch
+                epoch_token = execution_epoch.set(payload['account_epoch'])
                 step_token = _step.set((namespace, user_id, operation_id, index, item['action']))
                 try:
                     result = _dispatch(caller, user_id, action, item['operation_id'])
@@ -350,6 +352,7 @@ def execute(caller, user_id, request, operation_id):
                                     recovery=payload['recovery'])
                 finally:
                     _step.reset(step_token)
+                    execution_epoch.reset(epoch_token)
                 halted = policy == 'stop_on_error' and item['status'] in {'failed', 'pending', 'unknown'}
             payload['status'] = _status(items)
             if 'account' in (getattr(parsed, 'include', None) or []):

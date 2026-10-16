@@ -38,6 +38,8 @@ class PositionProtection:
         self.config_id = market_tool.config_id
         from backend.utils.execution_ledger import account_scope
         self.account_scope = account_scope(self.ex, self.config_id)
+        from backend.utils.shared_management import execution_scope
+        self.account_scope = execution_scope(self.mt, self.account_scope)
 
     def _market(self, symbol):
         if getattr(self.mt, 'market_type', None) == 'spot':
@@ -62,6 +64,9 @@ class PositionProtection:
                 (self.config_id, symbol, side),
             ).fetchone()
             plan = json.loads(row["payload"]) if row else None
+            if (getattr(self.mt, 'runtime_config', {}) or {}).get('mode', '').upper() == 'REAL':
+                from backend.utils.shared_management import shared_plan
+                plan = shared_plan(conn, self.account_scope, symbol, side) or plan
             if plan and plan.get('execution_mode') == 'independent_exits':
                 from backend.utils.trade_evidence import scope_generation
                 plan['scope_generation'] = scope_generation(conn, self.account_scope, symbol)
@@ -81,42 +86,30 @@ class PositionProtection:
         return plan
 
     def _save(self, plan):
+        storage_actor = plan.get('_storage_config_id', self.config_id)
         plan["updated_at"] = time.time()
         with get_db_conn() as conn:
             lock_scope(conn, 'protection-account', self.account_scope, plan['symbol'])
+            if (getattr(self.mt, 'runtime_config', {}) or {}).get('mode', '').upper() == 'REAL':
+                from backend.utils.shared_management import shared_plan
+                active = shared_plan(conn, self.account_scope, plan['symbol'], plan['side'])
+                if active and active.get('state') != 'DONE' and active.get('episode_id') != plan.get('episode_id'):
+                    raise ConcurrentProtectionUpdate('Shared position cycle changed; reload before submission')
             from backend.utils.visible_management import assert_current_owner
             management = plan.get('management') or {}
             if not (plan.get('transferred_to') and plan.get('state') == 'DONE'):
                 assert_current_owner(conn, self.config_id, self.account_scope, plan['symbol'], plan['side'],
                                      claim_id=management.get('claim_id'), version=management.get('claim_version'))
-            tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
-            active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
-            mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
-            has_registry = bool(active_agents or mcp_profiles)
-
-            for row in conn.execute('SELECT config_id,payload FROM real_protection_plans WHERE symbol=%s AND config_id!=%s',
-                                    (plan['symbol'], self.config_id)).fetchall():
-                if plan.get('transferred_to') and plan.get('state') == 'DONE':
-                    continue
-                other = json.loads(row['payload'])
-                if other.get('account_scope') == self.account_scope and other['state'] != 'DONE':
-                    if (plan.get('management', {}).get('hedged') is True
-                            and other.get('management', {}).get('hedged') is True
-                            and other.get('side') != plan.get('side')):
-                        continue
-                    if has_registry and row['config_id'] not in (active_agents | mcp_profiles):
-                        continue
-                    raise ValueError('Another config owns protection for this exchange account and symbol')
             plan['account_scope'] = self.account_scope
             previous_row = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s AND symbol=%s AND side=%s',
-                                        (self.config_id, plan['symbol'], plan['side'])).fetchone()
+                                        (storage_actor, plan['symbol'], plan['side'])).fetchone()
             previous = json.loads(previous_row['payload']) if previous_row else {}
             adoption = plan.get('adoption') or {}
             if adoption and adoption.get('operation_id') != (previous.get('adoption') or {}).get('operation_id'):
                 if previous and previous.get('state') != 'DONE':
                     raise ValueError('An active position cycle already exists; manual adoption cannot replace it')
                 for row in conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s AND symbol=%s AND side!=%s',
-                                        (self.config_id, plan['symbol'], plan['side'])):
+                                        (storage_actor, plan['symbol'], plan['side'])):
                     other = json.loads(row['payload'])
                     if other.get('account_scope') == self.account_scope and other.get('state') != 'DONE':
                         raise ValueError('Another active position cycle prevents manual position adoption')
@@ -138,12 +131,12 @@ class PositionProtection:
             conn.execute(
                 "INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s) "
                 "ON CONFLICT(config_id,symbol,side) DO UPDATE SET payload=excluded.payload",
-                (self.config_id, plan["symbol"], plan["side"], json.dumps(plan)),
+                (storage_actor, plan["symbol"], plan["side"], json.dumps(plan)),
             )
             if plan.get('execution_mode') == 'independent_exits':
                 from backend.utils.trade_evidence import initialize_schema, save_plan
                 initialize_schema(conn.cursor())
-                save_plan(conn, self.config_id, plan)
+                save_plan(conn, storage_actor, plan)
             conn.commit()
         from backend.utils.execution_ledger import rebuild_execution_position_history, register_order
         common_history = {
@@ -1000,15 +993,20 @@ class PositionProtection:
                             results.append({'symbol': plan['symbol'], 'side': plan['side'], 'state': plan['state'],
                                             'error': f'MCP ownership check failed; no exchange changes: {exc}'})
                             continue
-                    if plan.get('execution_mode') == 'independent_exits':
-                        from backend.utils.independent_exits import IndependentExits
-                        service = IndependentExits(self.mt)
-                        plan = service._load(plan['symbol'], plan['side'])
-                        service._reconcile(plan, respect_backoff=respect_backoff)
-                    else:
-                        self._reconcile(plan)
-                except Exception:
-                    pass  # Persisted and returned as an actionable maintenance error.
+                    from backend.utils.shared_management import resource_lock
+                    with resource_lock(self.mt, plan['symbol']):
+                        if plan.get('execution_mode') == 'independent_exits':
+                            from backend.utils.independent_exits import IndependentExits
+                            service = IndependentExits(self.mt)
+                            plan = service._load(plan['symbol'], plan['side'])
+                            service._reconcile(plan, respect_backoff=respect_backoff)
+                        else:
+                            plan = self._load(plan['symbol'], plan['side'])
+                            self._reconcile(plan)
+                except Exception as exc:
+                    # Report lock contention or changed facts without saving a
+                    # stale plan over a successful foreground update.
+                    plan = {**plan, 'error': str(exc)}
                 results.append({"symbol": plan["symbol"], "side": plan["side"], "state": plan["state"], "error": plan.get("error")})
             return {'results': results, 'processed': len(rows), 'complete': indexed and len(rows) < limit,
                     'index_complete': indexed,

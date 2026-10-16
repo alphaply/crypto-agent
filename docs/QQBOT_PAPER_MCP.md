@@ -12,7 +12,7 @@ Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货�
 
 可信 QQ 消息元数据提供字符串 `user_id`，不要从消息正文切换账户。Bot 参赛使用 `get_trading_context` 返回的 `bot_user_id`。Paper Key 不能选择真实执行引擎、live profile 或其他 namespace。
 
-新连接重新 `tools/list` 后，Paper 可写目录为十项：`get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`、`paper_bank`、`configure_paper_account`、`get_paper_leaderboard`。只读 Key 保留七项。live 目录为 7/6 项，内置交易 Agent 只绑定 `execute_trade_actions`，只读角色零交易工具。
+新连接重新 `tools/list` 后，Paper 可写目录为十一项：`get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`、`paper_bank`、`configure_paper_account`、`get_paper_leaderboard`、`paper_transfer`。只读 Key 保留七项。live 目录为 7/6 项，内置交易 Agent 只绑定 `execute_trade_actions`，只读角色零交易工具。
 
 旧单项金融适配器继续接受原参数和稳定 ID，但不在默认目录；新请求同样受 BN 策略约束。操作查询工具已彻底移除，缓存旧名称的客户端须更新；没有改名查询、operation facet 或 query 动作替代。旧配置默认场所仍兼容读取，新保存或导入只接受 Binance。
 
@@ -44,7 +44,7 @@ Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货�
 
 ## 银行、维护与排行榜
 
-`paper_bank(action=borrow|repay,amount,user_id,operation_id)` 的金额为 USDT。借款同时增加现金和债务、零利息；还款不超过债务与扣除全部预留后的可用现金。债务在爆仓后保留，后台调整的是账本现金。
+`paper_bank(action=borrow|repay,amount,user_id,operation_id)` 的金额为 USDT。借款同时增加现金和债务，后台统一配置借款开关、额度和日利率；北京时间每日 00:00 按未还本金单利扣息，首次按实际时间折算，调息不追改历史；还款不超过债务与扣除全部预留后的可用现金。债务在爆仓后保留，后台调整的是账本现金。
 
 Web 独立运行 Paper 维护，按持久账户/标的游标分批推进，再等待约 15 秒；实际间隔包含行情耗时。每轮账户访问、标的数分别不超过 `PAPER_SCAN_BATCH_SIZE`，并共享 `PAPER_MAINTENANCE_SECONDS`（默认 30 秒）的绝对截止时间；每次只规划一个标的，耗尽后下一轮继续持久游标。只处理可信 BN 资源，被排除仓位和挂单不进入报价/撮合。逐仓爆仓损失最多为原保证金，其他仓位和债务保留。公开网络读取位于金融事务外。
 
@@ -70,3 +70,13 @@ Paper Bearer 回执：`GET /api/paper/operations/{user_id}/{operation_id}/audit?
 配置导入导出保留 Paper Key、namespace 和有效 BN 设置；运行账本随数据库卷持久化，不在配置导出中。人格和集成 skill 见 [人格 prompt](qqbot/人格prompt.txt)、[QQBot Paper skill](qqbot/qqbot-paper-trading/SKILL.md)。
 
 管理入口：管理员在独立 **QQBot · Paper** tab 配置模拟账户和创建 Paper Key；MCP tab 不再内嵌 Paper 面板。权限、namespace 和保存接口不变。
+
+## 账户生命周期与外部任务更新
+
+同 namespace 的用户与 bot 账户可通过 `paper_transfer` 双向转账，借来的可用现金也可转；严格拒绝负数、零、非有限值、布尔值和超精度金额。转账不产生交易收益。
+
+扣息不足继续扣为负现金并进入破产，完整净权益不大于零也会破产。破产后已有订单不成交，金融操作冻结，仍可收款、查询和继续计息；收款不自动解冻。只有用户主动说下海才调用 `configure_paper_account(action="reset")`，bot 不主动邀请、不自动重置，也不能重置 bot 自己。新周期恢复开户资金和参数，清空旧债务、仓位与预留，累计下海次数保留；旧请求不消费新资金。
+
+`get_paper_leaderboard(metric="return_pct"|"reset_count")` 分别返回本轮收益率榜和累计下海榜，旧 `pnl` 指标明确拒绝。后台可查看状态、账户周期和累计次数。完整规则见 [账户生命周期](PAPER_ACCOUNT_LIFECYCLE.md)。
+
+将仓库人格、更新后的 skill 包和 [自主交易定时任务提示](qqbot/自主交易定时任务.txt)同步到已有机器人服务。定时任务管理 `bot_user_id` 的账户，自行决策并实际执行或给出具体观望原因；日常以交易者身份表达，直接问及资金性质/提现时按事实回答。仓库文件更新不会自动部署外部 QQBot，也不创建第二个调度器。

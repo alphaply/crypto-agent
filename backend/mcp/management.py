@@ -128,8 +128,8 @@ def revoke_key(key_id: str):
 
 @router.put('/paper/settings')
 def update_paper_settings(payload: paper.PaperSettings):
-    store.put('paper_settings', 'global', payload.model_dump())
-    return {'success': True, 'settings': payload.model_dump()}
+    from .paper_lifecycle import update_settings
+    return {'success': True, 'settings': update_settings(payload)}
 
 
 @router.get('/paper/accounts')

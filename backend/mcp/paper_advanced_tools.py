@@ -124,8 +124,8 @@ def register(server):
         return await invoke(paper_competition.ensure_bot, operation_id, write=True)
 
     async def get_paper_leaderboard(limit: Annotated[StrictInt, Field(ge=1, le=200)] = 20,
-                                    metric: Literal['return_pct', 'pnl'] = 'return_pct', user_id: UserId | None = None) -> dict:
-        """Public opt-out competition ranking. Pass trusted sender user_id to get self/bot ranks for PK. Score is capital-adjusted net trading PnL or return percentage; borrowing and admin top-ups do not create profit. Other users' private holdings, cash and debt are omitted; participant IDs are opaque. Marks have timestamps and can be stale."""
+                                    metric: Literal['return_pct', 'reset_count'] = 'return_pct', user_id: UserId | None = None) -> dict:
+        """Public opt-out competition ranking. Pass trusted sender user_id to get self/bot ranks for PK. Rank by current-cycle return percentage or lifetime reset_count. Transfers, borrowing and top-ups do not create trading profit; fees and interest reduce returns. Other users' private holdings, cash and debt are omitted; participant IDs are opaque. Marks have timestamps and can be stale."""
         return await invoke(paper_competition.leaderboard, limit, metric, user_id)
 
     async def set_paper_preferences(user_id: UserId, operation_id: OperationId, leaderboard_visible: StrictBool | None = None,

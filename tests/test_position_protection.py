@@ -438,15 +438,24 @@ def test_concurrent_stale_plan_cannot_overwrite_newer_state(service):
     assert svc._load('ETH/USDT:USDT', 'LONG')['stop_loss'] == 95
 
 
-def test_same_account_symbol_cannot_be_owned_by_two_configs(service):
+def test_same_account_symbol_uses_one_shared_plan_for_two_configs(service):
     svc, ex = service
+    ex.apiKey = 'shared-offline-account'
+    runtime = {'mode': 'REAL', 'market_type': 'swap', 'symbols': ['ETH/USDT:USDT'], 'enabled': True}
+    svc = PositionProtection(SimpleNamespace(exchange=ex, config_id='test', runtime_config=runtime))
     svc.open('ETH/USDT', entry())
-    other = PositionProtection(SimpleNamespace(exchange=ex, config_id='other'))
+    other = PositionProtection(SimpleNamespace(exchange=ex, config_id='other',
+                               runtime_config=runtime))
     other.account_scope = svc.account_scope
     calls = len(ex.calls)
-    with pytest.raises(ValueError, match='Another config'):
+    from backend.utils import visible_management as management
+    claim = management.claim_management(other.mt, 'ETH/USDT:USDT', 'LONG')
+    with management.financial_reservation(other.mt, claim, 'other-shared-entry'):
         other.open('ETH/USDT', entry())
-    assert len(ex.calls) == calls
+    assert len(ex.calls) > calls
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM real_protection_plans').fetchone()[0] == 1
 
 
 @pytest.mark.parametrize('exchange_class', [ccxt.binanceusdm, ccxt.okx])

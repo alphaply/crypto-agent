@@ -31,6 +31,8 @@ def normalize_management(config: dict) -> dict:
     policy = result.get('position_management_policy') or 'visible_first_claim'
     if policy not in {'strict_owned', 'exclusive_scope', 'visible_first_claim'}:
         raise ValueError('Unknown position management policy')
+    if policy == 'exclusive_scope':
+        policy = 'visible_first_claim'
     result['position_management_policy'] = policy
     if policy == 'visible_first_claim':
         result['management_scopes'] = []
@@ -62,6 +64,8 @@ def normalize_management(config: dict) -> dict:
 
 def exclusive(config: dict | None, symbol: str, side: str | None = None) -> bool:
     config = config or {}
+    if config.get('position_management_policy') == 'exclusive_scope':
+        config = normalize_management(config)
     from backend.utils.visible_management import _active_management
     active = _active_management.get()
     if active and active.get('owner') == config.get('config_id'):

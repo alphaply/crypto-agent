@@ -32,14 +32,18 @@ def _local_management_projection(config_id: str, symbol: str, cfg: dict, account
         if policy == 'visible_first_claim' or current.get('scopes'):
             for claim in current.get('scopes', []):
                 previous = next((s for s in projection['scopes'] if claim['side'] == 'BOTH' or s['side'] == claim['side']), {})
-                claim.update({key: value for key, value in previous.items() if key not in claim})
+                claim.update({key: value for key, value in previous.items() if key not in claim or key in {
+                    'source', 'sync_status', 'observed_at', 'baseline_contracts', 'contracts', 'changes', 'error'}})
             projection.update(current, policy='visible_first_claim')
         with get_db_conn() as conn:
             if account_scope and projection.get('policy') != 'visible_first_claim':
                 valid_sides = {row[0] for row in conn.execute('SELECT side FROM position_management_scopes WHERE owner=%s AND symbol=%s AND account_scope=%s',
                                                             (config_id, canonical, account_scope))}
                 projection['scopes'] = [scope for scope in projection['scopes'] if scope['side'] in valid_sides]
-            rows = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s', (config_id,)).fetchall()
+            if account_scope and projection.get('policy') == 'visible_first_claim':
+                rows = conn.execute("SELECT payload FROM real_protection_plans WHERE payload::jsonb->>'account_scope'=%s", (account_scope,)).fetchall()
+            else:
+                rows = conn.execute('SELECT payload FROM real_protection_plans WHERE config_id=%s', (config_id,)).fetchall()
         for row in rows:
             plan = json.loads(row['payload'])
             if (canonical_symbol(plan['symbol']) != canonical or plan.get('state') == 'DONE'
@@ -84,7 +88,7 @@ def _management_order_metadata(row: dict, records: dict, projection: dict) -> di
         return {**row, 'source': row.get('source') or 'exchange_snapshot',
                 'management': facts, 'management_state': facts.get('state'), 'visible': facts.get('visible'),
                 'eligible': facts.get('eligible'), 'can_claim': facts.get('can_claim'), 'owner': facts.get('owner'),
-                'managed': facts.get('state') == 'owned',
+                'managed': facts.get('state') in {'owned', 'shared'},
                 'supported_actions': (['cancel', 'edit'] if supported else ['cancel'] if identity and not terminal else []),
                 'management_observed_at': None}
     if entry is None:
@@ -95,7 +99,7 @@ def _management_order_metadata(row: dict, records: dict, projection: dict) -> di
     supported = canonical_order_type(record) in ORDER_TYPES
     terminal = record.get('status') in {'closed', 'canceled', 'cancelled', 'expired', 'rejected'}
     actions = ['cancel', 'edit'] if supported and not terminal and canonical_order_type(record) != 'market' else []
-    return {**row, 'source': record.get('source', 'agent'), 'managed': facts.get('state') == 'owned' if facts else True,
+    return {**row, 'source': record.get('source', 'agent'), 'managed': facts.get('state') in {'owned', 'shared'} if facts else True,
             'management': facts or management, 'management_state': facts.get('state'),
             'visible': facts.get('visible'), 'eligible': facts.get('eligible'), 'can_claim': facts.get('can_claim'),
             'owner': facts.get('owner') if facts else management.get('owner') or projection.get('owner'), 'supported_actions': actions,
@@ -118,7 +122,7 @@ def _management_position_metadata(positions: list[dict], projection: dict) -> li
             result.append({**position, 'management': facts, 'visible': facts.get('visible'),
                            'management_state': facts.get('state'), 'eligible': facts.get('eligible'),
                            'can_claim': facts.get('can_claim'), 'owner': facts.get('owner'),
-                           'managed': facts.get('state') == 'owned',
+                           'managed': facts.get('state') in {'owned', 'shared'},
                            'source': position.get('source') or (scope or {}).get('source') or 'exchange_snapshot',
                            'observed_at': position.get('observed_at') or (scope or {}).get('observed_at'), 'supported_actions': ['close']})
         elif scope is None:

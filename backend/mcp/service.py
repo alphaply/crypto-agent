@@ -233,10 +233,10 @@ def _independent_orders_view(mt, symbol, limit, caller=None, profile_id=None):
         side = row.get('pos_side') or row.get('side')
         facts = _management_facts(mt, symbol, side if side in {'LONG', 'SHORT'} else None, caller, profile_id)
         row['management'] = facts
-        row['managed'] = facts.get('state') == 'owned'
+        row['managed'] = facts.get('state') in {'shared', 'owned'}
         # Native target capability is separate from this token's authority.
         row['modifiable'] = row.get('order_status') != 'unknown' and facts.get('state') != 'conflict' and (
-            row.get('ownership') == 'owned' or facts.get('state') in {'owned', 'eligible_unclaimed'})
+            row.get('ownership') == 'owned' or facts.get('state') in {'shared', 'owned', 'eligible_unclaimed'})
         row['supported_actions'] = [action for action, scope in (('edit', 'trade'), ('cancel', 'cancel'))
                                     if row['modifiable'] and (caller is None or scope in caller.get('scopes', []))]
     return combined
@@ -300,9 +300,9 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                         managed_scope = next((item for item in management['scopes']
                                               if item['symbol'] == row.get('symbol') and item['side'] == side), None)
                         facts = _management_facts(mt, row.get('symbol') or symbol, side, caller, profile_id)
-                        position.update(management=facts, managed=facts.get('state') == 'owned',
+                        position.update(management=facts, managed=facts.get('state') in {'shared', 'owned'},
                                         source=(managed_scope or {}).get('source', 'exchange'),
-                                        supported_actions=['close'] if facts.get('state') in {'owned', 'eligible_unclaimed'} and 'trade' in caller.get('scopes', []) else [])
+                                        supported_actions=['close'] if facts.get('state') in {'shared', 'owned', 'eligible_unclaimed'} and 'trade' in caller.get('scopes', []) else [])
                         result.append(position)
                 elif resource == 'orders':
                     if not symbol:
@@ -314,9 +314,9 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                         result = [{k: v for k, v in row.items() if k != 'info'} for row in exchange.fetch_open_orders(symbol, limit=order_limit)]
                         for order in result:
                             facts = _management_facts(mt, symbol, caller=caller, profile_id=profile_id)
-                            order.update(management=facts, managed=facts.get('state') == 'owned',
+                            order.update(management=facts, managed=facts.get('state') in {'shared', 'owned'},
                                          source=order.get('source', 'exchange'),
-                                         supported_actions=['cancel'] if facts.get('state') in {'owned', 'eligible_unclaimed'} and 'cancel' in caller.get('scopes', []) else [])
+                                         supported_actions=['cancel'] if facts.get('state') in {'shared', 'owned', 'eligible_unclaimed'} and 'cancel' in caller.get('scopes', []) else [])
                 elif resource == 'order':
                     if not symbol or not order_id:
                         raise ValueError('symbol and order_id are required for order query')

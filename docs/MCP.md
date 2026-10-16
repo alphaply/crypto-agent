@@ -2,7 +2,7 @@
 
 ## 默认目录与 v3 顺序执行
 
-重新 `tools/list` 获取按当前 Key 类型、scope 和授权 profile 生成的目录。live 可写目录为 7 项，只读为 6 项；paper 可写为 10 项，只读为 7 项。多个 profile 使用同一套工具名称，上下文分别列出各 profile 能力。目录不缓存其他用户的权限；每次调用仍重新检查身份与范围。
+重新 `tools/list` 获取按当前 Key 类型、scope 和授权 profile 生成的目录。live 可写目录为 7 项，只读为 6 项；paper 可写为 11 项，只读为 7 项。多个 profile 使用同一套工具名称，上下文分别列出各 profile 能力。目录不缓存其他用户的权限；每次调用仍重新检查身份与范围。
 
 核心名称为 `get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`。paper 额外有 `paper_bank`、`configure_paper_account`、`get_paper_leaderboard`。只有 cancel 的 live Key 也可看到执行入口，但只能执行撤单；paper 撤单需要 read + trade。
 
@@ -20,7 +20,7 @@
 
 REAL/STRATEGY 入场仍限价；现货 open/close 使用 LONG 买入/卖出；独立合约不接受 protect，使用 close 创建退出单。附带保护、现货原生 OCO 和 paper 原有保护使用其支持的 protect。`edit.remaining_amount` 表示基础币未成交数量，省略字段保留；all 不隐式变为 fixed。具体组合以当前上下文与 schema 为准。
 
-可见且获交易授权的人工仓位/订单在有效管理动作中自动核验并认领，不要求先 adopt。管理者先到先得且跨空仓、暂停和重启保留；范围外、管理竞争、缺失执行证据或不支持原生目标仍明确拒绝。查询和工具发现不认领。
+可见且获交易授权的人工仓位/订单在有效管理动作中自动核验并认领，不要求先 adopt。同一资源允许多个获授权连接共享管理；范围外、实际并发冲突、缺失执行证据或不支持原生目标仍明确拒绝。查询和工具发现不认领。
 
 每个父请求保留稳定 operation_id 与子项映射。批次非原子，后项失败不回滚前项；相同 ID 重试只查询或核验已尝试项，绝不补发 not_executed 尾部。系统后台自动核验原身份。用户通过授权 HTTP/UI 按需读取原始/最新审计；操作查询工具及其旧适配器已移除。默认回执保留逐项真实状态和恢复身份，不再设置字节硬预算，`include=["account"]` 最多返回一次末尾账户摘要。
 
@@ -304,12 +304,12 @@ fixed 档不会自动重分配。`quantity_conflict` 不等于 unknown；Agent �
 - 标的范围字段为 `symbol_scope: "selected" | "all"`，省略按 `selected` 处理。指定模式必须提供非空 `symbols`；不限制模式可保存 `symbols: []`。支持现货及线性永续合约，合约目录会排除反向合约。每笔请求仍必须传入有效的 `symbol`；账户权限、现货/合约类型、杠杆、订单归属和幂等检查保持生效。
 - 现货每次调用最多涉及 10 个同计价币标的，`spot_allowance` 按该次调用的计价币计算；不限制模式可在不同调用中使用不同计价币，不会把不同币种的额度混算。从不限制改为指定标的时仍检查尚未结束的交易记录，不能排除仍需维护的标的。
 - MCP 合约杠杆上限默认 5 倍，可在连接配置修改。开仓、加仓和入场改单先读取交易所实际杠杆及已有仓位杠杆；不可确认或超过上限时拒绝。它不会替你修改交易所杠杆，也不改变内部 Agent 的杠杆策略。
-- 默认 `visible_first_claim` 自动管理授权可见且未被其他管理者占用的仓位与挂单，人工来源不要求模型先 adopt。已纳管仓位即使当前杠杆超过上限仍可合法减仓；新开仓、加仓和增加入场承诺量继续核验实际杠杆。真实证据缺项只限制依赖它的具体动作。旧显式 `strict_owned` 请求保留原归属/接管规则，旧请求 ID 与历史成交不会因管理者变化重算。
+- 默认 `visible_first_claim` 共享管理可信授权范围内的仓位与挂单，不因其他连接的历史归属拒绝，人工来源不要求模型先 adopt。已纳管仓位即使当前杠杆超过上限仍可合法减仓；新开仓、加仓和增加入场承诺量继续核验实际杠杆。真实证据缺项只限制依赖它的具体动作。旧显式 `strict_owned` 请求保留原归属/接管规则，旧请求 ID 与历史成交不会因管理者变化重算。
 - 批次在首项影响前校验所有项的结构、模式能力、目标范围及权限；余额、数量、杠杆和库存承诺量在轮到该项时动态核验。后项动态失败不提前阻止合法前置 cancel。既有委托在配置停用后仍由后台维护，停用不会自动撤销交易所订单。
 - 现货买入通过每次调用的组合共用额度周期核算，批次内所有标的共享 `spot_allowance`；同一请求重试不会新增额度。修改额度不会扩大已建立周期的上限。现货退出按已经核实的归属库存预留数量，不创建买入额度；未确认的提交或撤销仍占用预留，直到后台查证交易所终态。
 - 所有扁平写入工具和旧 `execute_trade` 共用持久操作账本。`operation_id` 为 8–160 位字母、数字、点、下划线、冒号或连字符，必须由调用者提供。同一调用者对同一配置重试相同 ID/内容返回原回执；更换参数或调用者会被拒绝。等价的扁平调用与旧工具调用也共用回执。不同交易意图使用新 ID，客户端不应在超时后自动生成新 ID 重试。
 - 超时或无法确认的结果保持 `unknown`，不会自动重放。系统后台核验原身份，用户通过授权 HTTP/UI 按需读取完整证据；`get_account_state` 与 `get_trade_records` 读取当前数量/订单/成交。网关 `submitted` 表示已受理，不能当作成交；退出回执内部 `open` 同样只是待执行。查询不重发、不撤改单、不续跑尾项。
-- 持久管理权随任务/profile 保留，暂停与历史 DONE 不释放 owner。删除、缩小授权范围或换账户前须明确核验释放，或由接收任务接受交接；活跃资源和未决提交不能静默退休。已明确退休的管理范围可保留历史再退出配置，旧显式 strict 的历史保护约束继续兼容；普通名称与同值明文保存不受影响。
+- 任务/profile 不再独占账户资源。其他已授权连接无需释放或交接即可共管；删除、缩小授权范围或更换凭证时仍须保留活跃资源与原未决提交的核验责任。历史归属保留为审计，普通名称与同值明文保存不受影响。
 
 ## 6. 导出、诊断与验证
 
@@ -327,7 +327,7 @@ uv run pytest -q tests/test_mcp_gateway.py tests/test_mcp_tool_contracts.py test
 # 原操作回执恢复
 
 所有模式的后台核验与同 ID 重放使用原身份关联证据，不重复金融提交。
-只读审计保留 principal/profile 隔离，不 create/edit/cancel。后台自动核验原回执；`get_orders` 在已显式授权的独占范围内可记录本地纳管事实，不会取消或修改交易所订单。
+只读审计保留 principal/profile 隔离，不 create/edit/cancel。后台自动核验原回执；`get_orders` 在已授权的共享范围内可读取本地纳管事实，不会取消或修改交易所订单。
 已成交 close 可同时带 `cleanup.status=pending`；具体 blocker 随摘要返回，后台自动推进；原始详情可在授权 HTTP/UI 展开。
 旧批次 `not_executed` 尾部不会因查询、后台对账或重放而执行，后续交易需要明确的新请求。
 首次回执及后续修订分别保存。完整字段和升级边界见 [交易回执与恢复](TRADE_RECEIPTS_AND_RECOVERY.md)。
@@ -336,7 +336,7 @@ uv run pytest -q tests/test_mcp_gateway.py tests/test_mcp_tool_contracts.py test
 
 默认 visible_first_claim 在可交易范围内的有效金融动作中完成有界取证及自动纳管，无需有限手填清单或预先 adopt。旧单项入口仍保留兼容输入。查询行显示原身份、来源、管理者、支持动作和观察缺项；普通与条件身份始终分别核验。未支持类型、未知方向和缺失通道返回具体缺项，不把外部来源当作全局拒绝理由。
 
-例如在 `ETH/USDT:USDT/LONG` 独占范围核验完成后，对人工未成交入场单改价：
+例如在已授权 `ETH/USDT:USDT/LONG` 范围核验完成后，对人工未成交入场单改价：
 
 ```json
 {"tool":"edit","arguments":{"profile_id":"swap","symbol":"ETH/USDT:USDT","order_id":"regular:123","price":2390,"reason":"关键支撑变化，更新入场价","operation_id":"manual-entry-edit-0001"}}
@@ -348,29 +348,21 @@ uv run pytest -q tests/test_mcp_gateway.py tests/test_mcp_tool_contracts.py test
 
 人工撤单更新同一订单的终态。人工全平后由后台核验并清理旧周期挂单；全平后重新开仓进入新周期，旧 all 单列入旧单清理队列，不能算作新仓保护。发现和只读查询不执行清理写入。无法证明成交顺序的同毫秒边界保持待核验，当前已核验仓位仍可按减仓规则管理。
 
-超时后系统按原操作 ID 自动核验证据，同 ID 回放不会再次提交。后台恢复原 Agent client ID 关联，交易所已受理但响应丢失的单不会作为第二笔人工订单登记。历史拒绝、批次未执行尾项及无关 unavailable 查询不要求 Agent 执行“解锁”；真实未知动作继续依原身份及依赖核验。独占授权不会增加 MCP scope，edit 仍需 trade，cancel 仍需 cancel，绑定聊天仍须原审批。
+超时后系统按原操作 ID 自动核验证据，同 ID 回放不会再次提交。后台恢复原 Agent client ID 关联，交易所已受理但响应丢失的单不会作为第二笔人工订单登记。历史拒绝、批次未执行尾项及无关 unavailable 查询不要求 Agent 执行“解锁”；真实未知动作继续依原身份及依赖核验。共享管理不会增加 MCP scope，edit 仍需 trade，cancel 仍需 cancel，绑定聊天仍须原审批。
 
-支持范围、启停与人工操作示例见 [独占仓位管理](exclusive-position-management.md)。
+支持范围、启停与人工操作示例见 [共享仓位管理](exclusive-position-management.md)。
 
 
-## 独占管理授权与配置生命周期
+## 共享管理授权与配置生命周期
 
-本节说明旧显式 `exclusive_scope` 配置的兼容映射；默认 `visible_first_claim` 使用前文的动态可见范围，不要求下面的额外清单。已绑定真实资源的旧 owner 会迁移并持续保留。
+真实账户内的已授权 MCP 连接和 Agent 可共管仓位、挂单及保护资源。旧 visible_first_claim / exclusive_scope 不再实行长期唯一 owner，也不要求先释放报错连接。不同 API Key 只有在保存账户中明确确认属于同一 physical_account_id 后才按同一物理账户协调，不猜测其他账户的身份。
 
-默认 `position_management_policy=visible_first_claim` 从已授权交易账户和标的产生管理资格，并在实际资源或有效交易意图上原子认领。all profile 不预占所有市场；只读查询不取得管理权。旧 strict/adopt 和有限 exclusive_scope 格式仅保留兼容解释，旧有效管理者优先保留，人工来源和缺少本地周期不单独成为拒绝原因。以下有限清单是旧显式策略的导入示例。
+Hedge 按真实方向协调，One-way 共用净仓，现货按基础资产跨报价币共享预留。执行层保留 read/trade/cancel、启停、账户/市场/标的及审批，当前数量、版本、跨进程锁和幂等继续校验。后续成功明确修改生效，旧 worker 不能恢复旧参数。未知提交按原身份核验，不能通过另一个连接重发或续跑旧批次；共享管理不公开其他 principal 的私有回执。
 
-```json
-{"position_management_policy":"exclusive_scope","management_scopes":[{"symbol":"ETH/USDT:USDT","side":"LONG"}]}
-```
-
-配置名、API Key principal 与管理者不同：同一 MCP profile 的授权调用共享 `mcp:<profile_id>` 管理者，任务使用 config_id。同一账户、品种及方向只能有一个管理者；Hedge 可分别管理方向，One-way 共用 BOTH。同凭证别名识别为同一范围；同一物理账户的多 Key 可在保存账户中明确确认相同 `physical_account_id`，身份同时包含规范化 venue，不能跨交易所误合并。不得通过别名、换 Key 或换调用 ID 绕过冲突。
-
-开启后，启动已有仓位、普通/条件挂单及后续外部加减仓和订单变化由后台及执行层核验、记录和持续纳管。纳管只是本地授权与事实关联，不会自动撤销人工订单，也不伪造成 Agent 的入场成交。经核验且类型受支持的外部订单可由现有 edit/cancel 工具管理；仍遵守 profile/principal 授权、read/trade/cancel scopes、数量单位、真实 close-only 能力与原操作幂等。
-
-停用 `enabled=false` 暂停决策，保留管理权与维护。已绑定资源的旧 scope 同样需要明确释放或接受交接，`running`/`unresolved` 不靠超时退休。仅从未绑定资源的旧配置纯预留保留旧显式退出规则。新策略已明确退休的范围可退出配置并保留原历史/actor/身份；旧 strict 的历史删除保护继续兼容。后台只读核验原未决提交，不重发或续跑尾项。
-
-任务接口的旧客户端省略或传 null 的管理字段会保留原策略；MCP profile旧客户端省略管理字段时也保留原策略；显式 strict 并清空 scopes 才表示退出。配置保存、MCP profile 保存及完整导入使用同一事务提交授权和范围，冲突或校验失败不会部分清空订单/原提交或释放旧 owner。多个进程同时申请同一范围时，只有不冲突的配置能提交。导出包含管理字段，不包含密钥的导出不替换已有密钥；不含完整交易历史的配置包不能替代数据库备份。
+原 owner、来源、基线与未决操作保留用于审计和恢复，不作为另一个合法调用者的准入禁令。改变凭证或删除仍有未决写入的配置仍须保留原执行核验责任，不能丢弃证据；这不影响其他现有授权连接共管。
 
 ## QQBot Paper 模拟交易
 
 独立 Paper Key、按外部用户 ID 的账户、现货/合约模拟交易、可调杠杆与银行负债已支持。接入步骤、工具字段和后台 API 见 [QQBot Paper MCP](QQBOT_PAPER_MCP.md)。
+
+账户转账、计息、主动下海、双榜与真实账户共管见 [账户生命周期说明](PAPER_ACCOUNT_LIFECYCLE.md)。Paper 默认目录增加 paper_transfer；configure_paper_account 增加显式 reset，排行榜 metric 为 return_pct 或 reset_count，旧 pnl 排名不再支持。

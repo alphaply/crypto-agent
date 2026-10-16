@@ -1,4 +1,9 @@
 .tool-result-content { margin-top: 12px; min-width: 0; overflow-wrap: anywhere; }
+.tool-result-card { padding: 12px 16px; border: 1px solid var(--border-soft, #8883); border-radius: 12px; background: var(--bg-subtle, #8881); }
+.tool-result-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.tool-result-card-summary { margin: 8px 0; font-size: 13px; line-height: 1.6; }
+.tool-result-disclosure > summary { cursor: pointer; font-size: 12px; color: var(--text-secondary, #888); }
+.tool-result-disclosure[open] > summary { margin-bottom: 12px; }
 .tool-result-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 8px 20px; margin: 0; }
 .tool-result-field { min-width: 0; padding: 6px 0; border-bottom: 1px solid var(--border-soft, #8883); }
 .tool-result-field dt { font-size: 12px; color: var(--text-secondary, #888); margin-bottom: 4px; }

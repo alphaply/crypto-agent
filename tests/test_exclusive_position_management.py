@@ -308,16 +308,14 @@ def test_oneway_scope_blocks_opposite_owner_before_any_writes(managed):
     service, exchange = managed
     exchange.hedged = False
     ensure_managed(service, SYMBOL)
-    with pytest.raises(ValueError, match='Another manager'):
-        ensure_managed(make_service(exchange, 'other-side', 'SHORT'), SYMBOL)
+    ensure_managed(make_service(exchange, 'other-side', 'SHORT'), SYMBOL)
     assert exchange.writes == []
 
 
 def test_same_direction_owner_cannot_be_stolen(managed):
     service, exchange = managed
     ensure_managed(service, SYMBOL)
-    with pytest.raises(ValueError, match='Another manager'):
-        ensure_managed(make_service(exchange, 'competitor'), SYMBOL)
+    ensure_managed(make_service(exchange, 'competitor'), SYMBOL)
     assert exchange.writes == []
 
 
@@ -329,13 +327,13 @@ def test_strict_mode_does_not_implicitly_claim_startup_exposure(managed):
     assert exchange.writes == [] and plan(service) is None
 
 
-def test_scope_policy_rejects_implicit_all_and_invalid_direction():
+def test_legacy_exclusive_scopes_normalize_to_shared_visibility():
     base = {'mode': 'REAL', 'market_type': 'swap', 'exit_mode': 'independent_exits',
             'position_management_policy': 'exclusive_scope', 'symbol_scope': 'all'}
-    with pytest.raises(ValueError, match='finite'):
-        normalize_management({**base, 'management_scopes': []})
-    with pytest.raises(ValueError):
-        normalize_management({**base, 'management_scopes': [{'symbol': SYMBOL, 'side': 'BOTH'}]})
+    for scopes in ([], [{'symbol': SYMBOL, 'side': 'BOTH'}]):
+        normalized = normalize_management({**base, 'management_scopes': scopes})
+        assert normalized['position_management_policy'] == 'visible_first_claim'
+        assert normalized['management_scopes'] == []
 
 
 def test_timeout_reservation_cannot_be_overwritten_even_after_long_delay(managed):
@@ -475,14 +473,13 @@ def test_unknown_hedge_direction_stays_unsupported_instead_of_guessed(managed):
     assert exchange.writes == []
 
 
-def test_orders_outside_authorized_direction_are_not_claimed_or_cancelled(managed):
+def test_legacy_exclusive_direction_does_not_block_visible_order_cancel(managed):
     service, exchange = managed
     exchange.external_order('short-order', side='SHORT', price=2300)
     ensure_managed(service, SYMBOL)
     assert plan(service)['exits'] == []
-    with pytest.raises(ValueError, match='owned'):
-        service.cancel(SYMBOL, 'regular:short-order', operation_id='wrong-direction')
-    assert exchange.writes == []
+    service.cancel(SYMBOL, 'regular:short-order', operation_id='cancel-visible-short')
+    assert exchange.orders['regular', 'short-order']['status'] == 'canceled'
 
 
 def test_external_order_linked_to_other_owner_is_never_reassigned(managed):
@@ -490,8 +487,8 @@ def test_external_order_linked_to_other_owner_is_never_reassigned(managed):
     from backend.utils.execution_ledger import register_order
     exchange.external_order('someone-else', role='entry')
     register_order(service.account_scope, SYMBOL, 'someone-else', 'another-owner', 'entry', refresh=False, side='LONG')
-    with pytest.raises(ValueError, match='another manager'):
-        ensure_managed(service, SYMBOL)
+    ensure_managed(service, SYMBOL)
+    assert any(order['id'] == 'someone-else' for order in plan(service)['entries'])
     with database.get_db_conn() as conn:
         assert conn.execute("SELECT config_id FROM execution_order_links WHERE order_id='someone-else'").fetchone()[0] == 'another-owner'
     assert exchange.writes == []
@@ -602,15 +599,15 @@ def test_unknown_action_without_visible_inventory_prevents_scope_removal(managed
             synchronize_configuration(conn, {**snapshot, 'agents': []})
 
 
-def test_same_credentials_under_account_aliases_cannot_create_competing_owner(managed):
+def test_same_credentials_under_account_aliases_allow_shared_configuration(managed):
     service, exchange = managed
     from backend.utils.position_management import synchronize_configuration
     snapshot = _configuration_snapshot(service, exchange)
     snapshot['exchange_profiles'].append({**snapshot['exchange_profiles'][0], 'profile_id': 'alias'})
     snapshot['agents'].append({**snapshot['agents'][0], 'config_id': 'alias-owner', 'exchange_profile_id': 'alias'})
     with database.get_db_conn() as conn:
-        with pytest.raises(ValueError, match='overlapping'):
-            synchronize_configuration(conn, snapshot)
+        synchronize_configuration(conn, snapshot)
+        conn.commit()
 
 
 def test_oneway_opposite_directions_share_financial_reservation(managed):
@@ -707,7 +704,7 @@ def test_stats_local_projection_exposes_sources_and_real_observations_without_di
 
     monkeypatch.setattr(position_management, '_discover', forbidden)
     payload = stats.get_position_stats_payload(service.config_id)
-    assert payload['management']['policy'] == 'exclusive_scope'
+    assert payload['management']['policy'] == 'visible_first_claim'
     assert payload['management']['scopes'][0]['owner'] == service.config_id
     assert payload['positions'][0]['amount'] == .02
     assert payload['positions'][0]['source'] == 'baseline'
@@ -748,9 +745,9 @@ def test_unenrolled_exchange_order_keeps_capability_separate_from_management(man
     monkeypatch.setattr(position_management, '_discover', lambda *args: pytest.fail('Query enrolled exposure'))
     payload = stats.get_kline_payload(service.config_id)
     assert payload['positions'][0]['amount'] == .02
-    assert payload['positions'][0]['management_state'] in {'owned', 'eligible_unclaimed'}
+    assert payload['positions'][0]['management_state'] in {'owned', 'eligible_unclaimed', 'shared'}
     assert payload['pending_orders'][0]['order_id'] == 'regular:not-enrolled'
-    assert payload['pending_orders'][0]['management_state'] in {'owned', 'eligible_unclaimed'}
+    assert payload['pending_orders'][0]['management_state'] in {'owned', 'eligible_unclaimed', 'shared'}
     assert payload['pending_orders'][0]['supported_actions'] == ['cancel', 'edit']
     assert exchange.writes == []
 
@@ -772,7 +769,7 @@ def test_agent_and_bound_chat_queries_project_resources_without_enrollment(manag
     monkeypatch.setattr(position_management, '_discover', lambda *args: pytest.fail('Query enrolled exposure'))
     account = _account_snapshot(service, exchange, monkeypatch)
     assert account['real_positions'][0]['amount'] == .02
-    assert account['real_positions'][0]['management_state'] in {'owned', 'eligible_unclaimed'}
+    assert account['real_positions'][0]['management_state'] in {'owned', 'eligible_unclaimed', 'shared'}
     assert len(account['real_open_orders']) == 3
     assert all(order['visible'] and order['source'] == 'exchange_snapshot' for order in account['real_open_orders'])
     from backend.utils.trade_context import load_trade_plans, project_trade_state, render_orders, render_positions

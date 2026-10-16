@@ -111,7 +111,7 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
         observation = plan.get('position_observation') or {}
         amount = number(p.get('amount'))
         management = p.get('management') or {}
-        owned = is_mock or management.get('state') == 'owned' or (observation.get('status') == 'verified' and observation.get('amount') == amount
+        owned = is_mock or management.get('state') in {'owned', 'shared'} or (observation.get('status') == 'verified' and observation.get('amount') == amount
                             and not plan.get('ownership_error') and not plan.get('position_error'))
         positions.append(dict(side=side, amount=None if position_failed else amount,
                               last_known_amount=amount if position_failed else None,

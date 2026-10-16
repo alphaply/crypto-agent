@@ -8,26 +8,11 @@
 
 本规范保留旧版 `exclusive_scope` 显式配置的兼容契约；其中“升级不自动开启”指该显式策略。当前默认 `visible_first_claim`、已有 owner 的迁移及持续管理权由 [visible-position-management](../visible-position-management/spec.md) 定义。
 
-### Requirement: Exclusive management is an explicit persistent configuration
-系统 SHALL 允许为 REAL 合约独立退出任务或 MCP 合约配置显式启用独占管理，指定账户、规范交易对、方向和唯一管理者。授权 SHALL 覆盖范围内已有及后续仓位、普通/条件订单和外部成交。升级 SHALL NOT 自动开启；查询授权 SHALL NOT 等同于管理授权。Hedge 模式可按方向隔离；One-way 模式 SHALL 对共享净仓建立互斥范围。
-
-#### Scenario: Enable management with an existing position
-- **WHEN** 管理员为指定任务开启独占管理，交易所已经有同范围仓位和挂单
-- **THEN** 系统接受配置并启动核验，不要求先平仓或清空挂单；核验完成后管理者可管理该范围
-
-#### Scenario: Competing owners share a range
-- **WHEN** 第二个任务或 MCP 配置申请与已分配范围重叠的独占管理
-- **THEN** 配置原子拒绝并说明冲突，不能因进程不同或某任务决策暂停而同时生效
-
-#### Scenario: One-way directions overlap
-- **WHEN** 同账户交易对使用 One-way 模式，两个管理者分别请求 LONG 和 SHORT
-- **THEN** 系统将其作为共享净仓冲突处理，不以方向标签绕过互斥
-
 ### Requirement: Verified startup exposure is enrolled without fabricated trades
 已授权管理者 SHALL 在启动或首次管理请求时核验当前仓位、普通及条件订单与接管边界。可恢复的原周期 SHALL 优先恢复；无可恢复原周期的已有仓位 SHALL 记录真实观察基线后纳管。接管 SHALL NOT 伪造入场订单、成交或历史收益，也 SHALL NOT 因存在可核验的外部挂单一概失败。
 
 #### Scenario: Existing manual position and protective orders
-- **WHEN** 启动前已有仓位及同范围止盈止损单，独占授权有效且事实可核验
+- **WHEN** 启动前已有仓位及同范围止盈止损单，共享交易授权有效且事实可核验
 - **THEN** 系统纳管仓位与支持的订单，保留原身份和参数，Agent 可在原请求内继续管理
 
 #### Scenario: Original task evidence explains residual exposure
@@ -35,7 +20,7 @@
 - **THEN** 系统恢复原周期和关联，不额外建立一份重叠接管基线
 
 ### Requirement: External fills update managed exposure continuously
-系统 SHALL 持续纳入独占范围内可核验的外部加仓、减仓、全平及其他仓位变化，按稳定成交身份去重并保持数量连续。外部成交 SHALL 保留真实来源与时间，不能仅因不由 Agent 提交而拒绝有效管理。当前数量相同 SHALL NOT 证明期间无成交；缺失或不完整证据 SHALL 限制依赖它的具体动作。
+系统 SHALL 持续纳入共享授权范围内可核验的外部加仓、减仓、全平及其他仓位变化，按稳定成交身份去重并保持数量连续。外部成交 SHALL 保留真实来源与时间，不能仅因不由 Agent 提交而拒绝有效管理。当前数量相同 SHALL NOT 证明期间无成交；缺失或不完整证据 SHALL 限制依赖它的具体动作。
 
 #### Scenario: Human increases or decreases position
 - **WHEN** 已管理仓位发生外部加仓或减仓且成交及当前仓位可核验
@@ -91,16 +76,16 @@
 - **THEN** 仅建立一个有效管理关系，旧证据不能覆盖新证据，不重复交易写入
 
 ### Requirement: Management authority survives pauses and has explicit retirement
-决策暂停 SHALL NOT 解除独占范围或停止已授权的周期维护。撤销独占管理、改变账户凭证/市场/范围或转移管理者 SHALL 明确处理活跃仓位、订单和待核验写入；未完成交接 SHALL NOT 静默释放范围。归属冲突和范围外资源 SHALL NOT 被自动抢占。
+决策暂停 SHALL NOT 停止已授权的必要周期核验维护，也 SHALL NOT 阻止其他有效授权调用者操作该资源。改变账户凭证/市场/范围或退役任务 SHALL 明确处理活跃仓位、订单和待核验写入；未决执行身份与审计 SHALL 保留，不能因退役重发。历史 owner SHALL 不阻断其他获授权调用者；范围外资源仍不可操作。
 
 #### Scenario: Pause decisions while orders remain active
 - **WHEN** 指定管理者停止定时决策但有活跃仓位和订单
-- **THEN** 原管理范围继续有效，后台对账与已授权维护继续，不让第二管理者接管
+- **THEN** 后台对账与已授权维护继续，其他具备有效权限的连接可共管；被后续成功明确修改取代的旧维护不得恢复参数
 
 #### Scenario: Remove an active management scope
 - **WHEN** 用户删除或缩小仍有活跃资源或未知写入的管理范围
-- **THEN** 系统拒绝静默变更并提供具体待处理资源，保留原归属和事实
+- **THEN** 系统保留未决身份和核验责任并提供具体待处理资源，不因旧 owner 阻断其他合法操作，不丢弃事实或自动重发
 
 #### Scenario: Resource already belongs to another manager
 - **WHEN** 范围内发现明确属于其他有效管理者的订单或周期
-- **THEN** 返回真实竞争归属，不将它标成可自动接管的外部资源
+- **THEN** 保留真实来源，但有对应权限的调用者可以共享管理，不返回仅由其他 owner 引起的归属冲突

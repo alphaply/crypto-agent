@@ -23,7 +23,7 @@ PAPER_TOOL_CATALOG = [
         ('get_paper_market', 'read', 'Read public spot/perpetual ticker and candles without exchange credentials'),
         ('paper_trade', 'trade', 'Immediately simulate a market fill at public bid/ask for a user'),
         ('set_paper_leverage', 'trade', 'Set user default leverage for new isolated entries'),
-        ('paper_bank', 'trade', 'Borrow simulated USDT or repay debt for a user'),
+        ('paper_bank', 'trade', 'Borrow USDT or repay debt for a user'),
         ('get_paper_history', 'read', 'Read user trades, borrowing, liquidation and admin adjustment history'),
     ]
 ]
@@ -34,7 +34,7 @@ def register_paper_tools(server):
         return await run('execute' if write else 'read', partial(function, service.principal(), *args, **kwargs), label=function.__name__)
 
     async def get_paper_config() -> dict:
-        """Start here with a paper key. USDT-only spot and linear perpetual paper trading. User IDs are strings scoped by the key's namespace. Shared intelligence is available through get_news. The key cannot access live profiles. Bank loans have no interest; debt remains after liquidation."""
+        """Start here with a paper key. USDT-only spot and linear perpetual paper trading. User IDs are strings scoped by the key's namespace. Shared intelligence is available through get_news. The key cannot access live profiles. Bank loans use the configured daily simple interest rate; debt remains after liquidation."""
         def config(caller):
             namespace = paper.require(caller)
             return {'paper': True, 'namespace': namespace, 'currency': 'USDT', 'settings': paper.settings(),
@@ -42,7 +42,7 @@ def register_paper_tools(server):
                     'order_types': ['market', 'limit', 'stop_loss', 'take_profit'], 'margin_mode': 'isolated', 'amount_units': 'base',
                     'market_data_mode': 'live_public', 'market_data_is_simulated': False, 'execution_mode': 'paper',
                     'bot_user_id': paper.settings()['bot_user_id'],
-                    'maintenance_interval_seconds': 15, 'interest_rate': 0}
+                    'maintenance_interval_seconds': 15, 'interest_rate': paper.settings()['daily_interest_rate']}
         return await invoke(config)
 
     async def create_paper_account(user_id: UserId, operation_id: OperationId, name: Annotated[str, Field(max_length=100)] = '') -> dict:
@@ -79,7 +79,7 @@ def register_paper_tools(server):
         return await invoke(paper.set_leverage, user_id, leverage, operation_id, write=True)
 
     async def paper_bank(user_id: UserId, action: Literal['borrow', 'repay'], amount: Amount, operation_id: OperationId) -> dict:
-        """Borrow virtual USDT or repay debt. Borrow adds equal cash and debt; it does not increase net equity. Loans have zero interest and remain after liquidation. Repayment needs enough free cash and cannot exceed debt. Administrator can edit cash, debt and loan limit."""
+        """Borrow USDT or repay debt. Borrow adds equal cash and debt; it does not increase net equity. Daily simple interest follows the central bank settings; debt remains after liquidation. Repayment needs enough free cash and cannot exceed debt. Bank limits are configured centrally."""
         return await invoke(paper.bank, user_id, action, amount, operation_id, write=True)
 
     async def get_paper_history(user_id: UserId, limit: Annotated[StrictInt, Field(ge=1, le=200)] = 50) -> list[dict]:

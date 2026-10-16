@@ -82,6 +82,9 @@ def import_settings(payload, connection=None):
                     raise ValueError('Cannot import a different account over an MCP profile with trading history')
             imported_profiles.append(('profile', profile['profile_id'], profile))
         for kind, key, value in [*records, *imported_profiles]:
+            if kind == 'paper_settings':
+                from .paper_lifecycle import record_rate_change
+                record_rate_change(conn, value)
             conn.execute('INSERT INTO mcp_records(kind,id,payload) VALUES(%s,%s,%s) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload',
                          (kind, key, json.dumps(value, ensure_ascii=False)))
         if managed_transition:

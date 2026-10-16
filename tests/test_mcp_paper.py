@@ -134,7 +134,8 @@ def test_liquidation_preserves_debt_and_borrow_allows_recovery(ledger):
     assert account['debt'] == 500
     assert account['net_equity'] == -10
     assert any(e['kind'] == 'liquidation' for e in paper.history(caller, '123456'))
-    assert paper.bank(caller, '123456', 'borrow', 200, 'bank-after-loss')['account']['cash'] == 690
+    with pytest.raises(ValueError, match='bankrupt'):
+        paper.bank(caller, '123456', 'borrow', 200, 'bank-after-loss')
     paper.reconcile()
     assert sum(e['kind'] == 'liquidation' for e in paper.history(caller, '123456')) == 1
 
@@ -143,9 +144,9 @@ def test_user_leverage_and_admin_controls_are_persistent(ledger):
     caller, _, _ = ledger
     create(caller)
     paper.set_leverage(caller, '123456', 20, 'set-leverage-20')
-    paper.admin_update('qqbot', '123456', paper.AccountUpdate(cash=3000, debt=50, loan_limit=9000, markets=['spot'], name='QQ user'))
+    paper.admin_update('qqbot', '123456', paper.AccountUpdate(cash=3000, debt=50, markets=['spot'], name='QQ user'))
     account = paper.get_account(caller, '123456')
-    assert (account['cash'], account['debt'], account['leverage'], account['loan_limit']) == (3000, 50, 20, 9000)
+    assert (account['cash'], account['debt'], account['leverage'], account['loan_limit']) == (3000, 50, 20, 5000)
     with pytest.raises(ValueError, match='disabled'):
         paper.trade(caller, '123456', 'swap', 'BTC/USDT:USDT', 'open_long', 1, 'disabled-market')
     paper.admin_update('qqbot', '123456', paper.AccountUpdate(enabled=False))

@@ -70,10 +70,9 @@ def test_query_does_not_claim_or_mutate_and_reports_competition():
     claim = management.claim_management(mt, SYMBOL, 'LONG')
     other = tool('other')
     projected = management.resource_management_status(other, SYMBOL, 'LONG')
-    assert projected['state'] == 'conflict' and projected['owner'] == 'owner'
+    assert projected['state'] == 'shared' and projected['owner'] == 'owner'
     assert projected['claim_id'] == claim['claim_id']
-    with pytest.raises(management.ManagementConflict):
-        management.claim_management(other, SYMBOL, 'LONG')
+    assert management.claim_management(other, SYMBOL, 'LONG')['claim_id'] == claim['claim_id']
 
 
 def test_hedge_unused_direction_is_not_preclaimed_but_oneway_shares_both():
@@ -81,8 +80,7 @@ def test_hedge_unused_direction_is_not_preclaimed_but_oneway_shares_both():
     management.claim_management(mt, SYMBOL, 'LONG')
     assert management.claim_management(tool('other'), SYMBOL, 'SHORT')['side'] == 'SHORT'
     mt.exchange.hedged = False
-    with pytest.raises(management.ManagementConflict):
-        management.claim_management(mt, SYMBOL, 'LONG')
+    assert management.claim_management(mt, SYMBOL, 'LONG')['side'] == 'BOTH'
 
 
 def test_visible_direct_request_manages_only_its_hedge_target():
@@ -105,9 +103,7 @@ def test_same_physical_account_multiple_keys_conflict():
     claim = management.claim_management(first, SYMBOL, 'LONG')
     second = tool('other', physical_account_id='confirmed-account')
     second.exchange.apiKey = 'other-offline-key'
-    with pytest.raises(management.ManagementConflict) as failure:
-        management.claim_management(second, SYMBOL, 'LONG')
-    assert failure.value.details['claim']['claim_id'] == claim['claim_id']
+    assert management.claim_management(second, SYMBOL, 'LONG')['claim_id'] == claim['claim_id']
 
 
 def test_same_credential_cannot_bypass_owner_with_a_conflicting_account_alias():
@@ -159,8 +155,7 @@ def test_authority_survives_flat_pause_and_explicit_release(monkeypatch):
 
 
 @pytest.mark.parametrize('bound', [False, True])
-def test_legacy_migration_only_retires_never_bound_reservations(bound):
-    from backend.utils.position_management import synchronize_configuration
+def test_legacy_migration_preserves_source_but_no_exclusivity(bound):
     account = {'profile_id': 'account', 'exchange': 'binance', 'api_key': 'offline-only-key', 'secret': 'offline'}
     cfg = {'config_id': 'owner', 'mode': 'REAL', 'symbol': SYMBOL, 'exchange_profile_id': 'account',
            'exit_mode': 'independent_exits', 'position_management_policy': 'exclusive_scope',
@@ -168,23 +163,20 @@ def test_legacy_migration_only_retires_never_bound_reservations(bound):
     snapshot = {'agents': [cfg], 'exchange_profiles': [account]}
     legacy = management._legacy_scope(tool())
     with database.get_db_conn() as conn:
-        synchronize_configuration(conn, snapshot)
+        conn.execute('INSERT INTO position_management_scopes(account_scope,symbol,side,owner,payload) VALUES(%s,%s,%s,%s,%s)',
+                     (legacy, SYMBOL, 'LONG', 'owner', json.dumps({'hedged': True})))
         if bound:
-            plan = {'account_scope': legacy, 'symbol': SYMBOL, 'side': 'LONG', 'state': 'DONE',
-                    'ever_filled': True, 'entries': [{'order_id': 'historical-owned-order', 'status': 'closed'}]}
+            plan = {'account_scope': legacy, 'symbol': SYMBOL, 'side': 'LONG', 'state': 'DONE', 'ever_filled': True,
+                    'entries': [{'order_id': 'historical-owned-order', 'status': 'closed'}]}
             conn.execute('INSERT INTO real_protection_plans(config_id,symbol,side,payload) VALUES(%s,%s,%s,%s)',
                          ('owner', SYMBOL, 'LONG', json.dumps(plan)))
         management.migrate_existing_claims(conn, snapshot)
         claim = management._decode(conn.execute('SELECT * FROM visible_management_claims').fetchone())
         assert claim['resource_bound'] is bound
-        if bound:
-            with pytest.raises(ValueError, match='explicitly release'):
-                synchronize_configuration(conn, {**snapshot, 'agents': []})
-            assert conn.execute("SELECT state FROM visible_management_claims").fetchone()[0] == 'owned'
-        else:
-            synchronize_configuration(conn, {**snapshot, 'agents': []})
-            assert conn.execute("SELECT state FROM visible_management_claims").fetchone()[0] == 'released'
         conn.commit()
+    shared = management.claim_management(tool('other'), SYMBOL, 'LONG')
+    assert shared['claim_id'] == claim['claim_id']
+    assert shared['original_owner'] == 'owner'
 
 
 def test_transfer_keeps_original_identity_and_recovery_is_narrow(monkeypatch):
@@ -532,8 +524,7 @@ def test_spot_baseline_origin_and_oco_crossquote_reservation():
     stock = visible_inventory(mt, 'ETH/USDT', claim=claim)
     assert stock['verified_owned'] == 0 and stock['managed_quantity'] == 1.2
     assert stock['reserved_quantity'] == .4 and stock['available_quantity'] == pytest.approx(.8)
-    with pytest.raises(management.ManagementConflict):
-        management.claim_management(tool('other', venue=venue), 'ETH/USDC', 'BASE')
+    assert management.claim_management(tool('other', venue=venue), 'ETH/USDC', 'BASE')['claim_id'] == claim['claim_id']
 
 
 def _race_claim(db_path, owner, output):
@@ -554,4 +545,4 @@ def test_cross_process_claim_only_one_wins():
     for process in processes:
         process.join(20)
         assert process.exitcode == 0
-    assert sorted(r[0] for r in results) == ['conflict', 'owned']
+    assert sorted(r[0] for r in results) == ['owned', 'owned']

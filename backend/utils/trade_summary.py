@@ -20,7 +20,7 @@ _FACTS = {'contract_version', 'receipt_version', 'status', 'order_status', 'orde
           'cash_after', 'debt_after', 'borrowed', 'repaid', 'bank_action', 'debt', 'cash', 'margin', 'leverage',
           'enabled', 'created', 'name', 'leaderboard_visible', 'notifications_enabled', 'markets',
           'replacement_status', 'previous_order_status', 'quantity_unit', 'filled_cost', 'avg_fill_price', 'filled_at',
-          'adopted', 'protection_created',
+          'adopted', 'protection_created', 'reset_count', 'account_epoch', 'account_status', 'interest_paid', 'sender_user_id', 'recipient_user_id',
           'receipt_updated_at', 'projected_at', 'evidence_source', 'current_evidence_status'}
 _RETIRED = ('get_trade_operation', 'get_operation', 'get_paper_operation')
 

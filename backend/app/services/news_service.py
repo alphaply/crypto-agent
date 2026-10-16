@@ -18,6 +18,7 @@ from backend.utils.news_tracing import news_span, pipeline_run_id, trace_identit
 from backend.app.services.news_progress import NewsProgress, current_progress
 from backend.app.services.news_models import article_data, fingerprint, model_identity, score_batch, generate
 from backend.utils.news_tracing import news_trace_mode
+from backend.utils.news_schedule import news_schedule_slot
 from backend.utils.runtime_capacity import CapacityBusy, submit_capacity, capacity_scope, get_capacity_manager
 
 logger = setup_logger('SharedNews')
@@ -331,13 +332,19 @@ def refresh_news(*, force: bool = True, background: bool = True) -> dict:
     settings = _settings(snapshot)
     if not settings.enabled:
         return {'started': False, 'status': 'disabled'}
-    interval = settings.refresh_seconds
-    if settings.stream_refresh_enabled:
+    now = datetime.now(timezone.utc)
+    due = None
+    if not force:
+        slot = news_schedule_slot(now, settings.refresh_seconds)
+        # The lease's cutoff is inclusive; exclude attempts exactly at the slot.
+        due = (slot - timedelta(microseconds=1)).isoformat() if slot else None
+    if not force and due is None and settings.stream_refresh_enabled:
         stream_time = database_news.read_state('binance-stream').get('last_message_at') or ''
         last_attempt = database_news.read_state('news').get('last_attempt_at') or ''
         if stream_time > last_attempt:
-            interval = min(interval, 60)
-    due = None if force else (datetime.now(timezone.utc) - timedelta(seconds=interval)).isoformat()
+            due = (now - timedelta(seconds=60)).isoformat()
+    if not force and due is None:
+        return {**get_news_status(), 'started': False}
     owner = database_news.acquire_lease('news', seconds=3600, due_before=due)
     if not owner:
         return {**get_news_status(), 'started': False}

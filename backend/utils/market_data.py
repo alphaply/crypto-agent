@@ -36,7 +36,11 @@ def _refresh_exclusive_management(tool, symbol):
     from backend.mcp.resilience import Budget, current_budget, setting
     from backend.utils.position_management import ensure_managed, management_snapshot
     from backend.utils.independent_exits import IndependentExits
-    budget = Budget(None, uuid.uuid4().hex, 'read', stage='management_discovery')
+    outer = current_budget.get()
+    deadline = time.monotonic() + setting('MANAGEMENT_DISCOVERY_BUDGET_SECONDS', 5)
+    if outer and outer.deadline is not None:
+        deadline = min(deadline, outer.deadline)
+    budget = Budget(deadline, uuid.uuid4().hex, 'read', stage='management_discovery')
     token = current_budget.set(budget)
     original_fetch = getattr(tool.exchange, 'fetch', None)
 

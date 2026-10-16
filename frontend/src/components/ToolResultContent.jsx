@@ -1,6 +1,7 @@
 import { Tag } from 'antd';
 import MarkdownBlock from './MarkdownBlock';
 import './ToolResultContent.css';
+import { receiptSummary } from '../lib/toolReceipt';
 
 const labels = {
   results: '操作结果', result: '执行详情', summary: '结果统计', status: '执行状态',
@@ -17,6 +18,7 @@ const labels = {
   unknown: '待核验', pending: '待确认', not_executed: '未执行', skipped: '已跳过',
 };
 const states = {
+  returned: ['已返回', 'default'],
   completed: ['已完成', 'success'], submitted: ['已提交', 'processing'], running: ['执行中', 'processing'],
   failed: ['失败', 'error'], rejected: ['已拒绝', 'error'], unknown: ['待核验', 'warning'],
   pending: ['待确认', 'warning'], partial: ['部分核验', 'warning'], verified: ['已核验', 'success'],
@@ -44,7 +46,7 @@ function Value({ value, field, zh, depth = 0 }) {
     const label = zh ? (key === 'status' && field === 'query' ? '核验状态' : labels[key] || key) : key.replaceAll('_', ' ');
     const nested = item !== null && typeof item === 'object' && Object.keys(item).length > 0;
     return nested ? <div className="tool-result-section" key={key}>
-      <details open={depth <= 2 && ['results', 'result', 'query', 'errors', 'account_summary', 'summary', 'balances'].includes(key)}>
+      <details>
         <summary>{label}{Array.isArray(item) ? ` (${item.length})` : ''}</summary>
         <Value value={item} field={key} zh={zh} depth={depth + 1} />
       </details>
@@ -52,16 +54,23 @@ function Value({ value, field, zh, depth = 0 }) {
   })}</dl>;
 }
 
-export default function ToolResultContent({ content, zh }) {
-  let value = content;
-  if (typeof content === 'string') {
-    try { value = JSON.parse(content); } catch { return <MarkdownBlock content={content} />; }
-  }
-  return <div className="tool-result-content">
-    <Value value={value} zh={zh} />
+export default function ToolResultContent({ content, zh, toolName, fallbackStatus }) {
+  const { value, status: resultStatus, text } = receiptSummary(content, zh);
+  const status = resultStatus || fallbackStatus || 'returned';
+  const state = states[status] || [status, 'default'];
+  return <div className="tool-result-content tool-result-card">
+    <div className="tool-result-card-header">
+      <strong>{toolName || (zh ? '工具结果' : 'Tool result')}</strong>
+      {status && <Tag color={state[1]}>{zh ? state[0] : status}</Tag>}
+    </div>
+    <p className="tool-result-card-summary">{text}</p>
+    <details className="tool-result-disclosure">
+      <summary>{zh ? '展开完整结果' : 'Show full result'}</summary>
+      {typeof value === 'string' ? <MarkdownBlock content={value} /> : <Value value={value} zh={zh} />}
     {value !== null && typeof value === 'object' && <details className="tool-result-raw">
       <summary>{zh ? '查看原始 JSON' : 'View raw JSON'}</summary>
       <pre>{JSON.stringify(value, null, 2)}</pre>
     </details>}
+    </details>
   </div>;
 }

@@ -22,6 +22,7 @@ def ensure_bot_namespace(namespace):
                        'spot': {}, 'positions': {}, 'realized_pnl': 0, 'fees': 0, 'created_at': time.time(),
                        'initial_capital': paper.money(cfg['initial_balance']), 'competition_capital': paper.money(cfg['initial_balance']),
                        'leaderboard_visible': True, 'notifications_enabled': True, 'reserved_cash': 0}
+            paper.upgrade_account(conn, account)
             paper._save(conn, account)
             paper._event(conn, account, 'bot_created', {'account_type': 'bot'})
         conn.commit()
@@ -54,11 +55,11 @@ def leaderboard(caller, limit=20, metric='return_pct', user_id=None, *, administ
     import uuid
     from .paper_storage import payload_page, batch_size, PaperPayloadLimit
     namespace = paper.identity(caller['paper_namespace'], 'namespace') if administrator else paper.require(caller)
-    if metric not in {'return_pct', 'pnl'} or type(limit) is not int or not 1 <= limit <= 200:
-        raise ValueError('metric must be return_pct or pnl; limit must be 1–200')
+    if metric not in {'return_pct', 'reset_count'} or type(limit) is not int or not 1 <= limit <= 200:
+        raise ValueError('metric must be return_pct or reset_count; limit must be 1–200')
     if user_id is not None:
         paper.identity(user_id)
-    worker = 'ranking:' + namespace
+    worker = 'ranking:' + namespace + ':' + metric
     with store.connection() as conn:
         lock_scope(conn, 'paper-ranking', namespace)
         saved = conn.execute('SELECT cursor,payload FROM paper_scan_progress WHERE worker=%s', (worker,)).fetchone()
@@ -78,10 +79,10 @@ def leaderboard(caller, limit=20, metric='return_pct', user_id=None, *, administ
             capital = Decimal(str(account['competition_capital'])) if account['competition_capital'] is not None else None
             pct = paper.money(Decimal(str(view['performance_pnl'])) / capital * 100) if capital is not None and capital > 0 and view['performance_pnl'] is not None else None
             item = {'participant_id': store.digest(namespace + ':' + account['user_id'])[:16], 'name': account['name'],
-                    'account_type': account['account_type'], 'pnl': view['performance_pnl'], 'return_pct': pct,
+                    'account_type': account['account_type'], 'reset_count': account['reset_count'], 'pnl': view['performance_pnl'], 'return_pct': pct,
                     'valuation_status': view['valuation_status'], 'oldest_mark_at': view['oldest_mark_at']}
-            conn.execute('INSERT INTO paper_ranking_projection(namespace,generation,user_id,eligible,pnl,return_pct,payload) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(namespace,generation,user_id) DO UPDATE SET eligible=excluded.eligible,pnl=excluded.pnl,return_pct=excluded.return_pct,payload=excluded.payload',
-                         (namespace, generation, account['user_id'], int(view['performance_pnl'] is not None), view['performance_pnl'], pct, json.dumps(item, allow_nan=False)))
+            conn.execute('INSERT INTO paper_ranking_projection(namespace,generation,user_id,eligible,pnl,return_pct,reset_count,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(namespace,generation,user_id) DO UPDATE SET eligible=excluded.eligible,pnl=excluded.pnl,return_pct=excluded.return_pct,reset_count=excluded.reset_count,payload=excluded.payload',
+                         (namespace, generation, account['user_id'], int(metric == 'reset_count' or view['performance_pnl'] is not None), view['performance_pnl'], pct, account['reset_count'], json.dumps(item, allow_nan=False)))
         if progress['has_more']:
             conn.execute('INSERT INTO paper_scan_progress(worker,cursor,payload) VALUES(%s,%s,%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor,payload=excluded.payload',
                          (worker, progress['next_cursor'], json.dumps(state)))
@@ -89,7 +90,7 @@ def leaderboard(caller, limit=20, metric='return_pct', user_id=None, *, administ
             return {'items': [], 'self': None, 'bot': None, 'total': None, 'unranked_count': None, 'incomplete_count': state['skipped'],
                     'status': 'partial', 'scan_complete': False, 'next_cursor': progress['next_cursor'], 'metric': metric,
                     'namespace': namespace, 'execution_mode': 'paper', 'observed_at': None, 'scan_started_at': state['started_at']}
-        field = 'pnl' if metric == 'pnl' else 'return_pct'
+        field = metric
         where = 'namespace=%s AND generation=%s AND eligible=1 AND ' + field + ' IS NOT NULL'
         total = conn.execute('SELECT COUNT(*) FROM paper_ranking_projection WHERE ' + where, (namespace, generation)).fetchone()[0]
         all_count = conn.execute('SELECT COUNT(*) FROM paper_ranking_projection WHERE namespace=%s AND generation=%s', (namespace, generation)).fetchone()[0]
@@ -111,7 +112,7 @@ def leaderboard(caller, limit=20, metric='return_pct', user_id=None, *, administ
         bot = render(bot) if bot else None
         incomplete = conn.execute('SELECT COUNT(*) FROM paper_ranking_projection WHERE namespace=%s AND generation=%s AND eligible=0', (namespace, generation)).fetchone()[0]
         conn.execute('DELETE FROM paper_scan_progress WHERE worker=%s', (worker,))
-        conn.execute('DELETE FROM paper_ranking_projection WHERE namespace=%s AND generation<>%s', (namespace, generation))
+        conn.execute("DELETE FROM paper_ranking_projection WHERE namespace=%s AND generation<>%s AND generation NOT IN (SELECT payload::jsonb->>'generation' FROM paper_scan_progress WHERE worker LIKE 'ranking:%%')", (namespace, generation))
         conn.commit()
     return {'items': items, 'total': total if not state['skipped'] else None, 'metric': metric, 'namespace': namespace,
             'self': personal, 'bot': bot,
@@ -182,14 +183,17 @@ def admin_data(namespace=None, user_id=None, limit=100, *, cursor=0, namespace_c
         spaces = [namespace] if namespace else [row[0] for row in conn.execute('SELECT DISTINCT namespace FROM paper_accounts WHERE namespace>%s ORDER BY namespace LIMIT %s',
                                                                              (namespace_cursor, batch_size() + 1))]
         conn.commit()
-    rankings, ranking_states = [], []
+    rankings, reset_rankings, ranking_states = [], [], []
     for space in spaces[:batch_size()]:
         value = leaderboard({'paper_namespace': space}, min(limit, 200), administrator=True)
         rankings.extend(value['items'])
-        ranking_states.append({'namespace': space, 'status': value['status'], 'scan_complete': value['scan_complete'], 'next_cursor': value['next_cursor'],
+        resets = leaderboard({'paper_namespace': space}, min(limit, 200), metric='reset_count', administrator=True)
+        reset_rankings.extend(resets['items'])
+        ranking_states.append({'namespace': space, 'metric': 'reset_count', 'status': resets['status'], 'scan_complete': resets['scan_complete'], 'next_cursor': resets['next_cursor'], 'incomplete_count': resets['incomplete_count'], 'unranked_count': resets['unranked_count']})
+        ranking_states.append({'namespace': space, 'metric': 'return_pct', 'status': value['status'], 'scan_complete': value['scan_complete'], 'next_cursor': value['next_cursor'],
                                'incomplete_count': value['incomplete_count'], 'unranked_count': value['unranked_count']})
     partial = len(spaces) > batch_size() or progress['status'] == 'partial' or any(row['status'] != 'complete' for row in ranking_states)
-    return {'leaderboard': rankings[:limit], 'rankings': ranking_states, 'events': events, **progress,
+    return {'leaderboard': rankings[:limit], 'reset_leaderboard': reset_rankings[:limit], 'rankings': ranking_states, 'events': events, **progress,
             'status': 'partial' if partial else 'complete', 'filtered_count': len(records) - len(events),
             'namespaces': {'has_more': len(spaces) > batch_size(), 'scan_complete': len(spaces) <= batch_size(),
                            'status': 'partial' if len(spaces) > batch_size() else 'complete',

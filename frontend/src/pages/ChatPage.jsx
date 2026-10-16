@@ -72,17 +72,8 @@ function unwrapApproval(approval) {
   return approval.value && typeof approval.value === 'object' ? approval.value : approval;
 }
 
-function ToolMessage({ content, locale }) {
-  return (
-    <Collapse
-      className="chat-tool-message"
-      items={[{
-        key: 'tool-result',
-        label: locale === 'zh' ? '工具执行结果' : 'Tool result',
-        children: <ToolResultContent content={content} zh={locale === 'zh'} />,
-      }]}
-    />
-  );
+function ToolMessage({ content, locale, toolName }) {
+  return <ToolResultContent content={content} zh={locale === 'zh'} toolName={toolName} />;
 }
 
 function MessageBranchActions({ branches, activeSessionId, onSelect, onEdit, disabled, locale }) {
@@ -116,9 +107,9 @@ function MessageBranchActions({ branches, activeSessionId, onSelect, onEdit, dis
   );
 }
 
-function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningDiagnostics, reasoningStartedAt, role, streaming, status, actions }) {
+function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningDiagnostics, reasoningStartedAt, role, streaming, status, actions, toolName }) {
   const { t, locale } = usePreferences();
-  if (role === 'tool') return <ToolMessage content={content} locale={locale} />;
+  if (role === 'tool') return <ToolMessage content={content} locale={locale} toolName={toolName} />;
   const normalized = splitThinkingContent(content || '', reasoning || '');
   const hasAnswer = Boolean(normalized.content?.trim());
   const hasReasoning = Boolean(normalized.reasoning?.trim());
@@ -551,6 +542,7 @@ export default function ChatPage({ token }) {
           reasoningDiagnostics: message.reasoning_diagnostics,
           reasoningStartedAt: message.reasoning_started_at || null,
           originalRole: message.role,
+          toolName: message.tool || message.name,
           streaming: streaming && message === messages.at(-1) && message.role === 'assistant',
           status: streamStatus,
           messageIndex,
@@ -967,7 +959,7 @@ export default function ChatPage({ token }) {
                           },
                           system: {
                             placement: 'start', variant: 'outlined', shape: 'round', rootClassName: 'x-bubble-system',
-                            contentRender: (content, info) => <MessageContent content={content} role={info?.extraInfo?.originalRole} />,
+                            contentRender: (content, info) => <MessageContent content={content} role={info?.extraInfo?.originalRole} toolName={info?.extraInfo?.toolName} />,
                           },
                         }}
                       />

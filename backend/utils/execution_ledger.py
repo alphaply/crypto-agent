@@ -28,7 +28,7 @@ def account_scope(exchange, config_id: str) -> str:
         if 'management_execution_scopes' in tables:
             kind = getattr(exchange, 'options', {}).get('defaultType') or ('spot' if getattr(exchange, 'spot', False) else 'swap')
             canonical = conn.execute('SELECT s.legacy_scope FROM management_account_aliases a '
-                                     'JOIN management_execution_scopes s ON s.physical_account=a.physical_account '
+                                     'JOIN management_shared_accounts s ON s.physical_account=a.physical_account '
                                      'WHERE a.legacy_scope=%s AND s.market_type=%s', (legacy, kind)).fetchone()
             if canonical:
                 return canonical[0]
@@ -73,7 +73,13 @@ def register_order(
             tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
             granted = False
             if 'visible_management_claims' in tables:
-                granted = conn.execute("SELECT 1 FROM visible_management_claims c JOIN management_resource_links r ON r.claim_id=c.claim_id "
+                granted = conn.execute("SELECT 1 FROM visible_management_claims c "
+                                       "JOIN management_shared_participants p ON p.claim_id=c.claim_id "
+                                       "JOIN management_account_aliases a ON a.physical_account=c.physical_account "
+                                       "WHERE p.actor=%s AND a.legacy_scope=%s AND c.market_type='swap' "
+                                       "AND c.resource=%s AND c.state='owned' LIMIT 1",
+                                       (config_id, scope, symbol)).fetchone()
+                granted = granted or conn.execute("SELECT 1 FROM visible_management_claims c JOIN management_resource_links r ON r.claim_id=c.claim_id "
                                        "WHERE c.owner=%s AND c.state='owned' AND r.identity=%s AND r.original_owner=%s LIMIT 1",
                                        (config_id, str(order_id), existing['config_id'])).fetchone()
                 if not granted:

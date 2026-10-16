@@ -27,7 +27,7 @@ export function managementLabel(resource = {}, locale = 'zh') {
   const status = resource.management_state || resource.claim_status
     || (resource.managed ? 'owned' : resource.can_claim ? 'eligible' : 'unverified');
   const labels = locale === 'zh'
-    ? { owned: '已纳管', eligible: '可自动认领', eligible_unclaimed: '可自动认领', read_only: '只读可见', needs_refresh: '证据待核验', unclaimed: '尚未认领', conflict: '其他管理者占用', released: '已释放', unverified: '待核验' }
-    : { owned: 'Managed', eligible: 'Eligible for automatic claim', eligible_unclaimed: 'Eligible for automatic claim', read_only: 'Read only', needs_refresh: 'Evidence requires refresh', unclaimed: 'Unclaimed', conflict: 'Managed elsewhere', released: 'Released', unverified: 'Unverified' };
+    ? { shared: '授权共管', owned: '已纳管', eligible: '可自动认领', eligible_unclaimed: '可自动认领', read_only: '只读可见', needs_refresh: '证据待核验', unclaimed: '尚未认领', conflict: '其他管理者占用', released: '已释放', unverified: '待核验' }
+    : { shared: 'Shared management', owned: 'Managed', eligible: 'Eligible for automatic claim', eligible_unclaimed: 'Eligible for automatic claim', read_only: 'Read only', needs_refresh: 'Evidence requires refresh', unclaimed: 'Unclaimed', conflict: 'Managed elsewhere', released: 'Released', unverified: 'Unverified' };
   return labels[status] || status;
 }

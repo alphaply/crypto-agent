@@ -119,8 +119,8 @@ def migrate_existing_claims(conn, snapshot):
         key = hashlib.sha256(json.dumps([ident, 'swap', symbol, side]).encode()).hexdigest()
         existing = _decode(conn.execute('SELECT * FROM visible_management_claims WHERE claim_id=%s', (key,)).fetchone())
         bound = _legacy_resource_bound(conn, owner, legacy, symbol, side, evidence)
-        if existing and existing['state'] == 'owned' and existing['owner'] != owner:
-            raise ManagementConflict('Existing management migration contains competing owners', {'symbol': symbol, 'side': side})
+        if existing:
+            conn.execute('INSERT INTO management_shared_participants(claim_id,actor) VALUES(%s,%s) ON CONFLICT DO NOTHING', (key, owner))
         payload = {'policy': 'visible_first_claim', 'source': 'migration', 'symbol': symbol,
                                   'legacy_scope': legacy, 'legacy_policy': (configs.get(owner) or {}).get('position_management_policy') or evidence.get('policy'),
                                   'resource_bound': bound, 'exchange_profile_id': (configs.get(owner) or {}).get('exchange_profile_id'),
@@ -163,6 +163,7 @@ def physical_account_scope(mt, *, persist=False):
                 _bind_account_alias(conn, legacy, identity)
                 kind = getattr(mt, 'market_type', cfg.get('market_type', 'swap'))
                 conn.execute('INSERT INTO management_execution_scopes(physical_account,market_type,legacy_scope) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING', (identity, kind, legacy))
+                conn.execute('INSERT INTO management_shared_accounts(physical_account,market_type,legacy_scope) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING', (identity, kind, legacy))
                 conn.commit()
     return identity
 
@@ -227,47 +228,19 @@ def claim_management(mt, symbol, side=None, operation_id=None):
     identity = hashlib.sha256(json.dumps([physical, market_type, resource, scope_side]).encode()).hexdigest()
     with database.get_db_conn() as conn:
         lock_scope(conn, 'management-resource', physical, market_type, resource)
-        existing = conn.execute('SELECT * FROM visible_management_claims WHERE claim_id=%s', (identity,)).fetchone()
-        claim = _decode(existing)
-        if _config(mt).get('enabled') is False and (not claim or claim['state'] != 'owned' or claim['owner'] != mt.config_id):
-            raise ValueError('Paused maintenance cannot claim a new resource scope')
-        # BOTH overlaps both Hedge directions across a position-mode change.
-        competing = conn.execute("SELECT * FROM visible_management_claims WHERE physical_account=%s AND market_type=%s AND resource=%s "
-                                 "AND state='owned' AND (side=%s OR side='BOTH' OR %s='BOTH') AND owner<>%s LIMIT 1",
-                                 (physical, market_type, resource, scope_side, scope_side, mt.config_id)).fetchone()
-        if competing:
-            raise ManagementConflict('Another manager owns this account resource', _decode(competing))
-        prior_owner = _existing_owner(conn, mt, canonical, scope_side) if market_type == 'swap' else None
-        if market_type == 'spot' and (not claim or claim['state'] != 'owned'):
-            tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
-            aliases = {r[0] for r in conn.execute('SELECT legacy_scope FROM management_account_aliases WHERE physical_account=%s', (physical,))}
-            aliases.add(_legacy_scope(mt))
-            existing_owners = {r['config_id'] for r in conn.execute("SELECT config_id,account_scope,symbol FROM mcp_spot_exits WHERE state NOT IN ('filled','cancelled','failed')")
-                               if r['account_scope'] in aliases and r['symbol'].split('/')[0] == resource} if 'mcp_spot_exits' in tables else set()
-            if len(existing_owners)>1:
-                raise ManagementConflict('Existing live spot resources contain competing owners', {'owners':sorted(existing_owners),'base_asset':resource})
-            prior_owner = next(iter(existing_owners),None)
-        owner = (claim or {}).get('owner') if claim and claim['state'] == 'owned' else prior_owner or mt.config_id
-        if claim is None or claim['state'] == 'released':
-            payload = {'policy': 'visible_first_claim', 'symbol': canonical, 'claimed_at': time.time(),
-                       'observed_at': None, 'source': 'configuration' if prior_owner else 'first_claim',
-                       'operation_id': operation_id, 'legacy_scope': _legacy_scope(mt)}
-            payload['exchange_profile_id'] = _config(mt).get('exchange_profile_id')
-            version = (claim or {}).get('version', 0) + 1
-            conn.execute('INSERT INTO visible_management_claims(claim_id,physical_account,market_type,resource,side,owner,state,version,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(claim_id) DO UPDATE SET owner=excluded.owner,state=excluded.state,version=excluded.version,payload=excluded.payload',
-                         (identity, physical, market_type, resource, scope_side, owner, 'owned', version, json.dumps(payload)))
-            claim = {'claim_id': identity, 'physical_account': physical, 'market_type': market_type, 'resource': resource,
-                     'side': scope_side, 'owner': owner, 'state': 'owned', 'version': version, **payload}
-        elif owner == mt.config_id and claim.get('source') == 'migration':
-            payload = {k: v for k, v in claim.items() if k not in {'claim_id','physical_account','market_type','resource','side','owner','state','version'}}
-            payload['source'] = 'first_claim'
-            payload['activated_at'] = time.time()
-            conn.execute('UPDATE visible_management_claims SET payload=%s WHERE claim_id=%s', (json.dumps(payload), identity))
-            claim.update(payload)
+        claim = _decode(conn.execute('SELECT * FROM visible_management_claims WHERE claim_id=%s', (identity,)).fetchone())
+        if _config(mt).get('enabled') is False and not _config(mt).get('_management_maintenance'):
+            raise ValueError('Disabled configuration cannot submit a financial action')
+        if not claim or claim['state'] == 'released':
+            payload = {'policy': 'shared', 'symbol': canonical, 'source': 'shared',
+                       'legacy_scope': _legacy_scope(mt), 'claimed_at': time.time(), 'operation_id': operation_id}
+            conn.execute('INSERT INTO visible_management_claims(claim_id,physical_account,market_type,resource,side,owner,state,version,payload) '
+                         "VALUES(%s,%s,%s,%s,%s,%s,'owned',%s,%s) ON CONFLICT(claim_id) DO UPDATE SET state='owned',payload=excluded.payload",
+                         (identity,physical,market_type,resource,scope_side,mt.config_id,(claim or {}).get('version',0)+1,json.dumps(payload)))
+            claim = _decode(conn.execute('SELECT * FROM visible_management_claims WHERE claim_id=%s', (identity,)).fetchone())
+        conn.execute('INSERT INTO management_shared_participants(claim_id,actor) VALUES(%s,%s) ON CONFLICT DO NOTHING', (identity,mt.config_id))
         conn.commit()
-    if owner != mt.config_id:
-        raise ManagementConflict('An existing manager retains this resource', claim)
-    return claim
+    return {**claim, 'original_owner': claim['owner'], 'owner': mt.config_id, 'policy': 'shared', 'symbol': canonical}
 
 
 def management_status(config_id, symbol=None):
@@ -275,7 +248,7 @@ def management_status(config_id, symbol=None):
         tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         if 'visible_management_claims' not in tables:
             return {'policy': 'visible_first_claim', 'owner': config_id, 'scopes': [], 'resources': []}
-        scopes = [_decode(row) for row in conn.execute("SELECT * FROM visible_management_claims WHERE owner=%s AND state='owned'", (config_id,))]
+        scopes = [_decode(row) for row in conn.execute("SELECT * FROM visible_management_claims WHERE state='owned' AND (owner=%s OR claim_id IN (SELECT claim_id FROM management_shared_participants WHERE actor=%s))", (config_id, config_id))]
         if symbol:
             scopes = [s for s in scopes if s.get('symbol', '').split(':')[0] == symbol.split(':')[0]
                       or s['market_type'] == 'spot' and s['resource'] == symbol.split('/')[0]]
@@ -321,10 +294,10 @@ def resource_management_status(mt, symbol, side=None):
     competing = next((c for c in claims if c['owner'] != getattr(mt, 'config_id', None)), None)
     own = next((c for c in claims if c['owner'] == getattr(mt, 'config_id', None)), None)
     chosen = competing or own
-    return {'visible': visible, 'eligible': eligible, 'can_claim': bool(eligible and not chosen),
-            'state': 'conflict' if competing else 'owned' if own else 'eligible_unclaimed' if eligible else 'read_only',
+    return {'visible': visible, 'eligible': eligible, 'can_claim': bool(eligible),
+            'state': 'shared' if eligible else 'read_only',
             'owner': chosen['owner'] if chosen else None, 'claim_id': chosen['claim_id'] if chosen else None,
-            'policy': 'visible_first_claim', 'scope': {'physical_account': physical, 'market_type': market_type,
+            'policy': 'shared', 'scope': {'physical_account': physical, 'market_type': market_type,
                                                      'resource': resource, 'side': scope_side}, 'claims': claims}
 
 
@@ -442,7 +415,7 @@ def release_management_scope(config_id, claim_id, *, confirmed=False):
     from backend.utils.market_data import MarketTool
     mt = MarketTool(config_id=config_id)
     claim = _claim_by_id(config_id, claim_id)
-    with scope_file_lock(claim['physical_account'], claim['resource'], claim['side']):
+    with scope_file_lock(claim['physical_account'], claim['market_type'], claim['resource']):
         resources = _resources(mt, claim)
         if any(resources[k] for k in ('positions', 'orders', 'unresolved')):
             return {'status': 'blocked', 'claim_id': claim_id, 'conflicts': ['active_or_unresolved_resources'], 'resources': resources}
@@ -474,7 +447,7 @@ def transfer_management_scope(config_id, claim_id, target_config_id, *, accepted
     _authorized(target, claim['symbol'])
     if physical_account_scope(target) != claim['physical_account']:
         raise ValueError('Management transfer requires the same trusted physical account')
-    with scope_file_lock(claim['physical_account'], claim['resource'], claim['side']):
+    with scope_file_lock(claim['physical_account'], claim['market_type'], claim['resource']):
         resources = _resources(source, claim)
         if any(a.get('state') == 'running' for a in resources['unresolved']):
             return {'status': 'blocked', 'claim_id': claim_id, 'resources': resources, 'conflicts': ['original_worker_running']}
@@ -548,11 +521,11 @@ def reconcile_visible_actions(config_id):
     from backend.utils.management_lock import ManagementLockBusy
     from backend.utils.position_protection import _lock
     with database.get_db_conn() as conn:
-        rows = [storage_record(r) for r in conn.execute("SELECT a.*,c.physical_account,c.resource,c.side,c.payload AS claim_payload,"
+        rows = [storage_record(r) for r in conn.execute("SELECT a.*,c.physical_account,c.market_type,c.resource,c.side,c.payload AS claim_payload,"
                                             "s.legacy_scope AS execution_scope FROM visible_management_actions a "
                                             "JOIN visible_management_claims c ON c.claim_id=a.claim_id "
                                             "LEFT JOIN management_execution_scopes s ON s.physical_account=c.physical_account "
-                                            "AND s.market_type=c.market_type WHERE c.owner=%s "
+                                            "AND s.market_type=c.market_type WHERE a.owner=%s "
                                             "AND a.state IN ('running','pending','unknown')", (config_id,))]
     changed = 0
     for row in rows:
@@ -560,7 +533,7 @@ def reconcile_visible_actions(config_id):
             scope = row['execution_scope'] or json.loads(row['claim_payload'])['legacy_scope']
             # The original-order recovery below takes the same account lock.
             # Acquire it before the process lock, as financial actions do.
-            with _lock(scope), scope_file_lock(row['physical_account'], row['resource'], row['side']):
+            with _lock(scope), scope_file_lock(row['physical_account'], row['market_type'], row['resource']):
                 metadata = json.loads(row['payload'])
                 if row['owner'] != config_id:
                     grant = next((r for r in management_recovery_targets(config_id) if r['operation_id'] == row['operation_id']), None)
@@ -706,7 +679,7 @@ def assert_current_owner(conn, owner, legacy_scope, symbol, side, *, claim_id=No
         alias = conn.execute('SELECT physical_account FROM management_account_aliases WHERE legacy_scope=%s', (legacy_scope,)).fetchone()
         rows = list(conn.execute("SELECT * FROM visible_management_claims WHERE physical_account=%s AND market_type='swap' AND resource=%s AND state='owned' AND side IN (%s,'BOTH')",
                                  (alias[0], symbol, side))) if alias else []
-    if any(r['owner'] != owner or r['state'] != 'owned' or version is not None and r['version'] != version for r in rows):
+    if any(r['state'] != 'owned' or version is not None and r['version'] != version for r in rows):
         raise ManagementConflict('Management version changed; this worker may only preserve original execution evidence')
 
 
@@ -720,14 +693,23 @@ def financial_reservation(mt, claim, operation_id):
             raise ValueError('A nested financial action crosses its management reservation')
         yield active
         return
-    with scope_file_lock(claim['physical_account'], claim['resource'], claim['side']):
+    with scope_file_lock(claim['physical_account'], claim['market_type'], claim['resource']):
         with database.get_db_conn() as conn:
             lock_scope(conn, 'management-resource', claim['physical_account'], claim['market_type'], claim['resource'])
             current = _decode(conn.execute('SELECT * FROM visible_management_claims WHERE claim_id=%s', (claim['claim_id'],)).fetchone())
-            if not current or current['owner'] != mt.config_id or current['version'] != claim['version'] or current['state'] != 'owned':
+            if not current or current['version'] != claim['version'] or current['state'] != 'owned':
                 raise ManagementConflict('Management changed before submission', current)
             old = conn.execute("SELECT * FROM visible_management_actions WHERE claim_id=%s AND state IN ('running','unknown','pending')", (claim['claim_id'],)).fetchone()
-            if old and old['operation_id'] != operation_id:
+            if old and (old['operation_id'] != operation_id or old['owner'] != mt.config_id):
+                raise ValueError('An original financial operation in this scope requires verification')
+            # Earlier compatibility entry points persisted their pending writes
+            # separately. Sharing a resource must not bypass those originals.
+            legacy = conn.execute("SELECT 1 FROM position_management_actions WHERE "
+                                  "account_scope IN (SELECT legacy_scope FROM management_account_aliases WHERE physical_account=%s) "
+                                  "AND symbol=%s AND (side=%s OR side='BOTH' OR %s='BOTH') "
+                                  "AND state IN ('running','unresolved') LIMIT 1",
+                                  (claim['physical_account'], claim['symbol'], claim['side'], claim['side'])).fetchone()
+            if legacy:
                 raise ValueError('An original financial operation in this scope requires verification')
             conn.execute('INSERT INTO visible_management_actions(claim_id,owner,version,operation_id,state,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(claim_id) DO UPDATE SET owner=excluded.owner,version=excluded.version,operation_id=excluded.operation_id,state=excluded.state,payload=excluded.payload',
                          (claim['claim_id'], mt.config_id, claim['version'], operation_id, 'running', json.dumps({'symbol': claim['symbol']})))

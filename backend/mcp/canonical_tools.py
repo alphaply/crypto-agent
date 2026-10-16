@@ -5,7 +5,7 @@ import json
 from functools import partial
 from typing import Annotated, Literal
 
-from pydantic import Field, StrictBool, StrictInt
+from pydantic import Field, StrictBool, StrictInt, StrictFloat
 
 from . import paper, paper_batch, paper_competition, paper_market, paper_orders, service, store
 from .resilience import run
@@ -14,7 +14,7 @@ from backend.utils.spot_config_guard import serialized_spot_execution
 
 CORE_NAMES = ('get_trading_context', 'search_symbols', 'get_market', 'get_news',
               'get_account_state', 'get_trade_records', 'execute_trade_actions')
-PAPER_NAMES = ('paper_bank', 'configure_paper_account', 'get_paper_leaderboard')
+PAPER_NAMES = ('paper_bank', 'configure_paper_account', 'get_paper_leaderboard', 'paper_transfer')
 
 # Private exchange/raw metadata and repeated account snapshots are opt-in;
 # current order evidence, quantities, fees and management facts remain visible.
@@ -38,7 +38,7 @@ _RECORD_FIELDS = {
     'quantity_conflicts', 'uncovered', 'execution_guaranteed',
     'error_code', 'reason', 'reason_code', 'created', 'enabled', 'markets', 'name',
     'leaderboard_visible', 'notifications_enabled', 'stop_loss', 'take_profit',
-    'delivery_key', 'interest', 'borrowed', 'repaid', 'debt', 'cash',
+    'delivery_key', 'interest', 'borrowed', 'repaid', 'debt', 'cash', 'reset_count', 'account_epoch', 'account_status', 'interest_paid', 'sender_user_id', 'recipient_user_id',
 }
 
 
@@ -113,7 +113,7 @@ def catalog_names(caller):
         paper.require(caller)
         names.append('get_paper_leaderboard')
         if 'trade' in scopes:
-            names.extend(('execute_trade_actions', 'paper_bank', 'configure_paper_account'))
+            names.extend(('execute_trade_actions', 'paper_bank', 'configure_paper_account', 'paper_transfer'))
     elif scopes & {'trade', 'cancel'} and service.list_profiles(caller):
         names.append('execute_trade_actions')
     return set(names)
@@ -128,9 +128,14 @@ def context(caller, user_id=None):
         account_capabilities = None
         if user_id is not None:
             account = paper.get_account(caller, user_id)
-            account_capabilities = {key: account[key] for key in ('user_id', 'enabled', 'markets', 'leverage')}
+            account_capabilities = {key: account[key] for key in ('user_id', 'enabled', 'markets', 'leverage', 'account_status', 'account_epoch', 'reset_count')}
             capabilities = capabilities_for_config({**config, **account, 'mode': 'PAPER', 'market_type': 'paper'}, engine='paper')
+            if account['account_status'] == 'bankrupt':
+                capabilities = {**capabilities, 'actions': []}
         return {'execution_mode': 'paper', 'namespace': namespace, 'settings': config,
+                'account_rules': {'transfer_currency': 'USDT', 'bankrupt_can_receive': True,
+                                  'bankrupt_can_send': False, 'interest_settlement': '00:00 Asia/Shanghai; simple on unpaid principal',
+                                  'reset': 'Only a bankrupt human explicitly requesting 下海; never automatic or for the bot'},
                 'bot_user_id': config['bot_user_id'], 'contract_version': 3,
                 'capabilities': capabilities, 'allowed_actions': _permitted_actions(capabilities, caller),
                 'account_capabilities': account_capabilities, 'scopes': caller['scopes'],
@@ -169,7 +174,8 @@ def account_state(caller, profile_id=None, user_id=None, symbol=None, include=No
     result = {'execution_mode': 'paper' if is_paper else 'live', 'profile_id': profile_id} if not is_paper else {'execution_mode': 'paper', 'user_id': user_id}
     if is_paper:
         view = paper.get_account(caller, user_id)
-        result.update(filter=view['filter'], completeness=view['completeness'],
+        result.update(account_status=view['account_status'], account_epoch=view['account_epoch'], reset_count=view['reset_count'],
+                      filter=view['filter'], completeness=view['completeness'],
                       valuation_status=view['valuation_status'], oldest_mark_at=view['oldest_mark_at'])
         if 'balances' in facets:
             result['balances'] = {key: view[key] for key in ('cash', 'available_cash', 'reserved_cash', 'debt', 'equity', 'net_equity', 'used_margin')}
@@ -280,6 +286,13 @@ def execute_live(caller, profile_id, symbol, request, operation_id):
 def configure(caller, user_id, operation_id, action, name=None, leverage=None, leaderboard_visible=None, notifications_enabled=None):
     paper.require(caller, 'read')
     paper.require(caller, 'trade')
+    if action == 'reset':
+        if any(v is not None for v in (name, leverage, leaderboard_visible, notifications_enabled)):
+            raise ValueError('Reset accepts no preference overrides')
+        from .paper_lifecycle import reset
+        return reset(caller, user_id, operation_id)
+    if action not in {'create', 'update'}:
+        raise ValueError('Unsupported account action')
     if action == 'create':
         if leverage is not None or leaderboard_visible is not None or notifications_enabled is not None:
             raise ValueError('Create accepts name only; update existing settings separately')
@@ -377,19 +390,24 @@ def register(server):
         from backend.agent.unified_trading import compact_trade_receipt
         return {**compact_trade_receipt(raw), **({'persistence_pending': True} if raw.get('persistence_pending') else {})}
 
-    async def configure_paper_account(user_id: str, operation_id: OperationId, action: Literal['create', 'update'],
+    async def configure_paper_account(user_id: str, operation_id: OperationId, action: Literal['create', 'update', 'reset'],
                                       name: Annotated[str, Field(min_length=1, max_length=100)] | None = None,
                                       leverage: Annotated[StrictInt, Field(ge=1, le=125)] | None = None,
                                       leaderboard_visible: StrictBool | None = None,
                                       notifications_enabled: StrictBool | None = None) -> dict:
-        """Explicitly create without reset, or update future leverage and display/competition/notification settings."""
+        """Create without resetting, update preferences, or reset a bankrupt user ONLY after their own explicit 下海 request. Bot accounts cannot reset."""
         return await invoke(configure, user_id, operation_id, action, name, leverage, leaderboard_visible, notifications_enabled, write=True)
 
+    async def paper_transfer(user_id: str, recipient_user_id: str, amount: Annotated[StrictFloat, Field(gt=0, allow_inf_nan=False)], operation_id: OperationId) -> dict:
+        """Transfer positive USDT from the authorized sender to a stable recipient ID in this namespace. Borrowed free funds may be sent. Bankrupt accounts may receive but cannot send. Bot aid uses only bot_user_id funds."""
+        from .paper_lifecycle import transfer
+        return await invoke(transfer, user_id, recipient_user_id, amount, operation_id, write=True)
+
     for function in (get_trading_context, search_symbols, get_market, get_account_state, get_trade_records,
-                     execute_trade_actions, configure_paper_account):
+                     execute_trade_actions, configure_paper_account, paper_transfer):
         if server._tool_manager.get_tool(function.__name__):
             server._tool_manager.remove_tool(function.__name__)
-        _register(server, function, scope='trade / cancel' if function.__name__ == 'execute_trade_actions' else 'trade' if function.__name__ == 'configure_paper_account' else 'read')
+        _register(server, function, scope='trade / cancel' if function.__name__ == 'execute_trade_actions' else 'trade' if function.__name__ in {'configure_paper_account', 'paper_transfer'} else 'read')
     original_list = server.list_tools
     async def filtered_tools():
         caller = service.principal()

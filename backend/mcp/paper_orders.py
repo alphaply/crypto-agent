@@ -263,7 +263,7 @@ def prepare_order(conn, account, kind, symbol, action, order_type, quote, *, amo
         if p and kind == 'swap' and p['leverage'] != lev:
             raise ValueError('Existing isolated position has different leverage')
         reserve = reference * qty * (paper.number(paper.settings()['fee_rate']) + paper.number(1) / lev)
-        if reserve > paper.number(account['cash']) - paper.number(account.get('reserved_cash', 0)):
+        if reserve > paper.signed_cash(account['cash']) - paper.number(account.get('reserved_cash', 0)):
             raise ValueError('Insufficient unreserved cash for the limit order')
         leverage = lev if kind == 'swap' else None
     else:
@@ -442,6 +442,8 @@ def triggered(order, quote):
 
 
 def match(conn, account, kind, symbol, quote, cfg):
+    if account.get('account_status') == 'bankrupt':
+        return
     from .paper_policy import visible
     cleanup_orders(conn, account)
     for order in rows(conn, account['namespace'], account['user_id']):
@@ -517,5 +519,8 @@ def admin_orders(namespace=None, user_id=None, state='open', limit=100, *, curso
 
 
 from .paper_storage import bounded as _bounded
+from .paper_lifecycle import capture_epoch as _capture_epoch
+for _name in ('execute_market', 'place', 'cancel', 'edit', 'protection', 'edit_remaining'):
+    globals()[_name] = _capture_epoch(globals()[_name])
 for _name in ('existing_receipt', 'execute_market', 'place', 'cancel', 'edit', 'protection', 'edit_remaining', 'records_page', 'admin_orders'):
     globals()[_name] = _bounded(globals()[_name])
