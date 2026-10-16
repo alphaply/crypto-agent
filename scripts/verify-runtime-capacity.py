@@ -53,7 +53,9 @@ def wait_ready(url, seconds=90):
         try:
             result = request(url + '/health')
             if result.get('success'):
-                return request(url + '/verification/result')
+                snapshot = request(url + '/verification/result')
+                if snapshot.get('resources', {}).get('resources'):
+                    return snapshot
         except Exception:
             pass
         time.sleep(.5)
