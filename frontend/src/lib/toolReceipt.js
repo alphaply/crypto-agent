@@ -23,9 +23,9 @@ export function receiptSummary(content, zh = false) {
   const price = detail.average_price ?? detail.fill?.price ?? detail.price;
   if (price != null) facts.push(`${zh ? '价格' : 'Price'} ${price}`);
   if (Array.isArray(rows)) facts.unshift(`${rows.length} ${zh ? '项操作' : 'actions'}`);
-  const error = reasonText(root.error || nested.error || detail.error || row.error || detail.query?.errors || detail.cleanup?.error || detail.reason_code || row.reason_code || detail.error_code || row.error_code || detail.reason);
+  const error = reasonText(root.error || nested.error || detail.error || row.error || detail.query?.errors || detail.cleanup?.error || detail.reason || row.reason || detail.message || row.message || detail.error_code || row.error_code || detail.reason_code || row.reason_code);
   if (error) facts.push(error);
-  const message = detail.message || row.message || detail.summary;
+  const message = detail.summary;
   if (typeof message === 'string') facts.push(message);
   if (!facts.filter(Boolean).length) {
     const collection = Array.isArray(value) ? value : Object.values(root).find(Array.isArray);

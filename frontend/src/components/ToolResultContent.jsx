@@ -3,18 +3,31 @@ import MarkdownBlock from './MarkdownBlock';
 import './ToolResultContent.css';
 import { receiptSummary } from '../lib/toolReceipt';
 
+// How a receipt was produced and stored, not what happened. These stay in the
+// raw JSON view so the card reads as execution facts instead of an API dump.
+const internalKeys = new Set([
+  'contract_version', 'receipt_version', 'operation_id', 'parent_operation_id',
+  'audit_reference', 'details_omitted', 'execution_policy', 'receipt_updated_at',
+  'projected_at', 'evidence_source', 'current_evidence_status',
+]);
+
+// Boolean envelope flags whose negative value tells the reader nothing.
+const silentWhenFalse = new Set(['partial_execution', 'rejected_by_user']);
+
 const labels = {
   results: '操作结果', result: '执行详情', summary: '结果统计', status: '执行状态',
   query: '核验情况', errors: '异常详情', error: '异常原因', error_code: '异常代码',
   action: '操作', symbol: '交易对', side: '方向', order_id: '订单编号', order_status: '订单状态',
   requested_amount: '请求数量', amount: '数量', filled_amount: '已确认成交量', remaining_amount: '剩余数量',
   price: '价格', trigger_price: '触发价', stop_loss: '止损价', take_profit: '止盈价',
-  operation_id: '操作编号', account_summary: '账户摘要', balances: '可用余额', positions: '持仓',
+  account_summary: '账户摘要', balances: '可用余额', positions: '持仓',
   balance: '余额', reason: '原因', message: '说明', cleanup: '清理情况', recovery: '后台恢复',
+  reason_code: '原因代码', verified: '已核验', missing_value: '缺失字段',
+  equity: '权益', cash: '现金', free: '可用', used: '占用', observed_at: '观察时间', generated_at: '生成时间',
   continuation: '后续操作提示', current_scope: '当前范围', current_position: '当前仓位',
   admission: '执行前核验', verification: '核验信息', execution: '执行过程',
-  receipt_version: '回执版本', contract_version: '协议版本', index: '操作序号',
-  partial_execution: '部分执行', submitted: '已提交', completed: '已完成', failed: '失败',
+  index: '操作序号', partial_execution: '部分执行', rejected_by_user: '用户拒绝',
+  submitted: '已提交', completed: '已完成', failed: '失败',
   unknown: '待核验', pending: '待确认', not_executed: '未执行', skipped: '已跳过',
 };
 const states = {
@@ -38,13 +51,16 @@ function Value({ value, field, zh, depth = 0 }) {
     if (typeof value === 'boolean') return <span>{zh ? (value ? '是' : '否') : String(value)}</span>;
     return <span className={field === 'error' || field === 'errors' ? 'tool-result-error' : ''}>{zh && field === 'action' ? actions[value] || value : String(value)}</span>;
   }
-  if (!Object.keys(value).length) return <span className="tool-result-muted">{zh ? '空' : 'Empty'}</span>;
-  if (Array.isArray(value)) return <ol className="tool-result-list">{value.map((item, index) => <li key={index}>
+  if (Array.isArray(value)) return value.length ? <ol className="tool-result-list">{value.map((item, index) => <li key={index}>
     <Value value={item} field={field} zh={zh} depth={depth + 1} />
-  </li>)}</ol>;
-  return <dl className="tool-result-fields">{Object.entries(value).map(([key, item]) => {
+  </li>)}</ol> : <span className="tool-result-muted">{zh ? '空' : 'Empty'}</span>;
+  const entries = Object.entries(value).filter(([key, item]) => !internalKeys.has(key)
+    && !(depth === 0 && key === 'status') && !(item === false && silentWhenFalse.has(key)));
+  if (!entries.length) return <span className="tool-result-muted">{zh ? '空' : 'Empty'}</span>;
+  return <dl className="tool-result-fields">{entries.map(([key, item]) => {
     const label = zh ? (key === 'status' && field === 'query' ? '核验状态' : labels[key] || key) : key.replaceAll('_', ' ');
-    const nested = item !== null && typeof item === 'object' && Object.keys(item).length > 0;
+    const nested = item !== null && typeof item === 'object'
+      && (Array.isArray(item) ? item.length > 0 : Object.keys(item).some((child) => !internalKeys.has(child)));
     return nested ? <div className="tool-result-section" key={key}>
       <details>
         <summary>{label}{Array.isArray(item) ? ` (${item.length})` : ''}</summary>
