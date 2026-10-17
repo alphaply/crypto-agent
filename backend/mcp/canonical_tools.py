@@ -338,17 +338,18 @@ def register(server):
 
     async def get_market(symbol: str, profile_id: str | None = None, timeframe: str = '1h', limit: int = 120,
                          market_type: Literal['spot', 'swap'] | None = None,
-                         exchange: Literal['binance', 'okx', 'bitget', 'bybit'] | None = None) -> dict:
-        """Read real ticker/candles with sources and timestamps. Paper only simulates account execution."""
+                         exchange: Literal['binance', 'okx', 'bitget', 'bybit'] | None = None,
+                         include: list[Literal['ticker', 'candles', 'analysis', 'sentiment']] | None = None) -> dict:
+        """Read real ticker/candles, multi-timeframe technical indicators, and derivatives sentiment. Paper only simulates account execution."""
         def query(caller):
             if caller.get('key_type') == 'paper':
                 paper.require(caller)
                 if profile_id is not None:
                     raise ValueError('Paper does not accept profile_id')
-                return paper_market.resolve_quote(symbol, market_type or 'swap', timeframe, limit, exchange)
+                return paper_market.resolve_quote(symbol, market_type or 'swap', timeframe, limit, exchange, include=include)
             if market_type is not None or exchange is not None:
                 raise ValueError('Live market source comes from profile')
-            return service.query(caller, 'market', profile_id=profile_id, symbol=symbol, timeframe=timeframe, limit=limit)
+            return service.query(caller, 'market', profile_id=profile_id, symbol=symbol, timeframe=timeframe, limit=limit, include=include)
         return await invoke(query)
 
     async def get_account_state(profile_id: str | None = None, user_id: str | None = None, symbol: str | None = None,

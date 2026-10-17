@@ -242,7 +242,7 @@ def _independent_orders_view(mt, symbol, limit, caller=None, profile_id=None):
     return combined
 
 
-def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=120, keyword='', quote='', offset=0, order_id=None):
+def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=120, keyword='', quote='', offset=0, order_id=None, include=None):
     bind_scope(profile_id)
     try:
         remaining('authorization')
@@ -348,14 +348,37 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                 elif resource == 'market':
                     if not symbol or timeframe not in {'15m', '1h', '4h', '1d', '1w'}:
                         raise ValueError('Provide a configured symbol and supported timeframe')
+                    facets = include if include is not None else ['ticker', 'candles', 'analysis', 'sentiment']
+                    if not facets or set(facets) - {'ticker', 'candles', 'analysis', 'sentiment'}:
+                        raise ValueError('Unsupported market facet')
                     from .exchange_runtime import observe
                     cache_key = (getattr(mt, 'mcp_account_key', profile_id), symbol, timeframe, limit)
-                    result = {'symbol': symbol, 'timeframe': timeframe, 'ticker': None, 'candles': None,
+                    result = {'symbol': symbol, 'timeframe': timeframe,
                               'status': 'complete', 'missing_sources': [], 'observed_at': {}, 'sources': {}}
-                    loaders = {
-                        'ticker': (lambda: {k: v for k, v in exchange.fetch_ticker(symbol).items() if k != 'info'}, setting('TICKER_CACHE_SECONDS', 2)),
-                        'candles': (lambda: exchange.fetch_ohlcv(symbol, timeframe, limit=max(1, min(int(limit), 500))), setting('CANDLES_CACHE_SECONDS', 15)),
-                    }
+                    timeframes_to_calc = [timeframe] + [tf for tf in ['1h', '4h', '1d'] if tf != timeframe]
+                    loaders = {}
+                    if 'ticker' in facets:
+                        loaders['ticker'] = (lambda: {k: v for k, v in exchange.fetch_ticker(symbol).items() if k != 'info'}, setting('TICKER_CACHE_SECONDS', 2))
+                    if 'candles' in facets:
+                        loaders['candles'] = (lambda: exchange.fetch_ohlcv(symbol, timeframe, limit=max(1, min(int(limit), 500))), setting('CANDLES_CACHE_SECONDS', 15))
+                    if 'analysis' in facets:
+                        def load_analysis():
+                            if hasattr(mt, 'get_market_analysis'):
+                                mode = 'SPOT_DCA' if profile.get('market_type') == 'spot' else 'STRATEGY'
+                                return mt.get_market_analysis(symbol, mode=mode, timeframes=timeframes_to_calc).get('analysis', {})
+                            elif hasattr(mt, 'process_timeframe'):
+                                return {tf: mt.process_timeframe(symbol, tf) for tf in timeframes_to_calc}
+                            return {}
+                        loaders['analysis'] = (load_analysis, setting('CANDLES_CACHE_SECONDS', 15))
+                    if 'sentiment' in facets:
+                        if profile.get('market_type') == 'spot':
+                            result['sentiment'] = {}
+                        else:
+                            def load_sentiment():
+                                if hasattr(mt, '_fetch_market_derivatives'):
+                                    return mt._fetch_market_derivatives(symbol)
+                                return {}
+                            loaders['sentiment'] = (load_sentiment, setting('DERIVATIVES_CACHE_SECONDS', 30))
                     for source, (loader, ttl) in loaders.items():
                         try:
                             remaining(source)
@@ -366,8 +389,8 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                         except Exception as exc:
                             result['missing_sources'].append(source)
                             result.setdefault('errors', {})[source] = safe_error(exc, profile_id)
-                    if len(result['missing_sources']) == 2:
-                        raise ValueError('Market observation unavailable; missing_sources=[ticker,candles]')
+                    if loaders and len(result['missing_sources']) == len(loaders):
+                        raise ValueError(f'Market observation unavailable; missing_sources={result["missing_sources"]}')
                     if result['missing_sources']:
                         result['status'] = 'partial'
                 else:

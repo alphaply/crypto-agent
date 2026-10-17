@@ -117,10 +117,13 @@ def search(keyword='', market_type=None, exchange_name=None, limit=50, offset=0)
             'note': 'Prices/listings come from real public exchange APIs. A failed venue is not evidence of nonexistence. Asset hints are not tradability proof.'}
 
 
-def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True, exchange_name=None):
+def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True, exchange_name=None, include=None):
     from .paper import money, number, settings
     if timeframe not in {'1m', '5m', '15m', '1h', '4h', '1d', '1w'} or type(limit) is not int or not 1 <= limit <= 200:
         raise ValueError('Unsupported timeframe or candle limit')
+    facets = include if include is not None else ['ticker', 'candles', 'analysis', 'sentiment']
+    if not facets or set(facets) - {'ticker', 'candles', 'analysis', 'sentiment'}:
+        raise ValueError('Unsupported market facet')
     from .paper_policy import venue
     name = venue(exchange_name)
     wanted = canonical(symbol, market_type)
@@ -148,19 +151,59 @@ def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True
         result = {'exchange': name, 'symbol': item['symbol'], 'market_type': market_type, **asset(item, name, market_type),
                   'market_data_mode': 'live_public', 'execution_mode': 'paper', 'market_data_is_simulated': False,
                   'source': f'{name} public production API', 'source_environment': 'production',
-                  'price': money(last), 'bid': bid, 'ask': ask, 'bid_ask_source': bid_ask_source,
-                  'change_percentage_24h': ticker.get('percentage'), 'quote_volume_24h': ticker.get('quoteVolume'),
                   'observed_at': time.time(), 'ticker_timestamp': stamp, 'timestamp_unit': 'milliseconds',
                   'observed_at_unit': 'seconds', 'ticker_timestamp_unit': 'milliseconds',
-                  'display_timezone': 'Asia/Shanghai',
+                  'display_timezone': 'Asia/Shanghai', 'status': 'complete', 'missing_sources': [],
                   'note': 'Prices are real exchange public quotes. Only balances, orders and execution are simulated.'}
-        if candles:
+        if 'ticker' in facets:
+            result.update(price=money(last), bid=bid, ask=ask, bid_ask_source=bid_ask_source,
+                          change_percentage_24h=ticker.get('percentage'), quote_volume_24h=ticker.get('quoteVolume'),
+                          ticker={k: v for k, v in ticker.items() if k != 'info'})
+        if 'candles' in facets and candles:
             result.update(timeframe=timeframe, candles=exchange.fetch_ohlcv(item['symbol'], timeframe, limit=limit))
+        timeframes_to_calc = [timeframe] + [tf for tf in ['1h', '4h', '1d'] if tf != timeframe]
+        if 'analysis' in facets:
+            try:
+                from backend.utils.market_data import MarketTool
+                pmt = object.__new__(MarketTool)
+                pmt.exchange = exchange
+                pmt.exchange_name = name
+                pmt.market_type = market_type
+                pmt.runtime_config = {}
+                pmt.config_id = None
+                pmt.symbol = item['symbol']
+                mode = 'SPOT_DCA' if market_type == 'spot' else 'STRATEGY'
+                analysis_data = pmt.get_market_analysis(item['symbol'], mode=mode, timeframes=timeframes_to_calc).get('analysis', {})
+                result['analysis'] = analysis_data
+            except Exception as exc:
+                result['analysis'] = {}
+                result['missing_sources'].append('analysis')
+                result.setdefault('errors', {})['analysis'] = str(exc)
+                result['status'] = 'partial'
+        if 'sentiment' in facets:
+            if market_type == 'spot':
+                result['sentiment'] = {}
+            else:
+                try:
+                    from backend.utils.market_data import MarketTool
+                    pmt = object.__new__(MarketTool)
+                    pmt.exchange = exchange
+                    pmt.exchange_name = name
+                    pmt.market_type = market_type
+                    pmt.runtime_config = {}
+                    pmt.config_id = None
+                    pmt.symbol = item['symbol']
+                    result['sentiment'] = pmt._fetch_market_derivatives(item['symbol'])
+                except Exception as exc:
+                    result['sentiment'] = {'funding_rate': 0, 'open_interest': 0, '24h_quote_vol': 0, 'error': str(exc)}
+                    result['missing_sources'].append('sentiment')
+                    result.setdefault('errors', {})['sentiment'] = str(exc)
+                    result['status'] = 'partial'
         return result
 
 
-def resolve_quote(symbol, market_type='swap', timeframe='1h', limit=120, exchange_name=None):
+def resolve_quote(symbol, market_type='swap', timeframe='1h', limit=120, exchange_name=None, include=None):
     """The trusted Paper policy permits no implicit or explicit venue fallback."""
     from .paper_policy import venue
     selected = venue(exchange_name)
-    return quote(canonical(symbol, market_type), market_type, timeframe, limit, exchange_name=selected)
+    return quote(canonical(symbol, market_type), market_type, timeframe, limit, exchange_name=selected, include=include)
