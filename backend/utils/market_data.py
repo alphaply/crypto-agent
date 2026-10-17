@@ -165,6 +165,13 @@ class MarketTool:
         if exchange_name == 'okx':
             config['password'] = passphrase
 
+        if (exchange_name == 'binance' and cfg
+                and cfg.get('mcp_symbol_scope', cfg.get('symbol_scope')) == 'all'
+                and cfg.get('position_management_policy') == 'visible_first_claim'):
+            # Account-wide discovery is already authorized by this profile.
+            # CCXT otherwise rejects the no-symbol request before sending it.
+            config['options']['warnOnFetchOpenOrdersWithoutSymbol'] = False
+
         if proxy_port:
             config['proxies'] = {
                 'http': f'http://127.0.0.1:{proxy_port}',

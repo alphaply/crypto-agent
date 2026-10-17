@@ -356,10 +356,12 @@ def test_disabled_unrestricted_profiles_keep_all_owned_perpetual_symbols_for_mai
 
     monkeypatch.setattr(scheduler, 'MarketTool', lambda **kwargs: SimpleNamespace(exchange=object()))
     monkeypatch.setattr(execution_ledger, 'ExecutionLedger', Ledger)
-    monkeypatch.setattr(execution_stream, 'ensure_stream', lambda _: None)
+    streams = []
+    monkeypatch.setattr(execution_stream, 'ensure_stream', lambda _, *, symbol: streams.append(symbol))
     monkeypatch.setattr(execution_metrics, 'update_post_exit', lambda *args: None)
     scheduler._sync_execution(runtime)
     assert seen == runtime['mcp_owned_symbols']
+    assert streams == runtime['mcp_owned_symbols']
 
 
 def test_unrestricted_import_export_and_read_cancel_scopes_remain_enforced(unrestricted, monkeypatch):

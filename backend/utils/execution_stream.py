@@ -38,11 +38,16 @@ async def consume(client, ledger, stop):
         await client.close()
 
 
-def ensure_stream(mt):
+def ensure_stream(mt, *, symbol: str | None = None):
     if mt.runtime_config.get('mode', '').upper() != 'REAL' or mt.market_type != 'swap':
         return
+    # An all-symbol account may have no owned symbols yet. A ledger always
+    # tracks one concrete market; never pass the account's None into it.
+    stream_symbol = symbol or mt.symbol
+    if not stream_symbol:
+        return False
     ex = mt.exchange
-    key = (account_scope(ex, mt.config_id), mt.symbol)
+    key = (account_scope(ex, mt.config_id), stream_symbol)
     fingerprint = hashlib.sha256(f"{ex.secret}:{getattr(ex, 'password', '')}".encode()).hexdigest()
     with _lock:
         if key in _workers and _workers[key]['thread'].is_alive() and _workers[key]['fingerprint'] == fingerprint:
@@ -73,8 +78,8 @@ def ensure_stream(mt):
                 options = {'apiKey': ex.apiKey, 'secret': ex.secret, 'password': getattr(ex, 'password', None),
                            'enableRateLimit': True, 'newUpdates': True, 'options': dict(ex.options),
                            'timeout': ex.timeout}
+                ledger = ExecutionLedger(ex, mt.config_id, stream_symbol)
                 client = getattr(pro, name)(options)
-                ledger = ExecutionLedger(ex, mt.config_id, mt.symbol)
                 await consume(client, ledger, stop)
             try:
                 asyncio.run(start())

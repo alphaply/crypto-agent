@@ -557,11 +557,11 @@ def _sync_execution(config):
     try:
         mt = MarketTool(config_id=config['config_id'])
         from backend.utils.execution_stream import ensure_stream
-        ensure_stream(mt)
         from backend.utils.execution_metrics import update_post_exit
         symbols = config.get('mcp_owned_symbols') if config.get('mcp_symbol_scope') == 'all' else [config['symbol']]
         for symbol in symbols or []:
             try:
+                ensure_stream(mt, symbol=symbol)
                 ledger = ExecutionLedger(mt.exchange, config['config_id'], symbol)
                 result = ledger.sync()
                 update_post_exit(mt.exchange, ledger.scope, ledger.symbol)
@@ -790,8 +790,11 @@ def protection_tick():
             _mcp_spot_maintenance_at[config_id] = time.monotonic()
     configs = {cfg['config_id']: cfg for cfg in [*global_config.get_all_symbol_configs(), *external_configs] if cfg}
     from backend.utils.position_management import management_status
-    ids.update(cid for cid, cfg in configs.items() if cfg.get('position_management_policy') == 'exclusive_scope'
-               or cfg.get('position_management_policy') == 'visible_first_claim' and (cfg.get('enabled', True) or management_status(cid)['scopes']))
+    ids.update(cid for cid, cfg in configs.items()
+               if cfg.get('mode', '').upper() == 'REAL'
+               and (cfg.get('position_management_policy') == 'exclusive_scope'
+                    or cfg.get('position_management_policy') == 'visible_first_claim'
+                    and (cfg.get('enabled', True) or management_status(cid)['scopes'])))
     # Data accounting continues for recently active plans even when decision making
     # is disabled, including fills that arrive after protective cleanup.
     recent = {row['config_id'] for row in completed}
