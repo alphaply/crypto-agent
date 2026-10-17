@@ -67,8 +67,12 @@ def register_order(
         return
     with get_db_conn() as conn:
         lock_scope(conn, 'execution-source', scope, symbol)
-        existing = conn.execute('SELECT config_id,payload FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s',
+        existing = conn.execute('SELECT config_id,role,payload FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                                 (scope, symbol, str(order_id))).fetchone()
+        from backend.utils.execution_history_work import historical_publication
+        if existing and historical_publication.get() and (
+                json.loads(existing['payload']).get('exchange_channel') or existing['role'] == 'entry'):
+            return  # Historical snapshots cannot overwrite a current authoritative link.
         if existing and existing['config_id'] != config_id:
             tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
             granted = False
@@ -91,15 +95,18 @@ def register_order(
             # Current management may change. Original fill provenance never does.
             return
         if existing:
-            metadata = {**json.loads(existing['payload']), **{k: v for k, v in metadata.items() if v is not None}}
+            prior = json.loads(existing['payload'])
+            metadata = {**prior, **{k: v for k, v in metadata.items() if v is not None}}
+            if prior == metadata and existing['role'] == role:
+                return
         conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,order_id) DO UPDATE SET role=excluded.role,payload=excluded.payload',
                      (scope, symbol, str(order_id), config_id, role, json.dumps(metadata, default=str)))
         # Events may arrive before the order acknowledgement; reconcile ownership later.
-        conn.execute('UPDATE execution_fills SET config_id=%s WHERE account_scope=%s AND symbol=%s AND order_id=%s',
-                     (config_id, scope, symbol, str(order_id)))
+        conn.execute('UPDATE execution_fills SET config_id=%s WHERE account_scope=%s AND symbol=%s AND order_id=%s AND config_id IS DISTINCT FROM %s',
+                     (config_id, scope, symbol, str(order_id), config_id))
+        from backend.utils.execution_history_work import request_history
+        request_history(config_id, scope, symbol, conn=conn)
         conn.commit()
-    if refresh:
-        rebuild_execution_position_history(config_id, scope, symbol)
 
 
 class ExecutionLedger:
@@ -118,7 +125,8 @@ class ExecutionLedger:
         self.scope = account_scope(exchange, config_id)
         with _guard:
             self.lock = _locks.setdefault(f'{self.scope}:{self.symbol}', threading.Lock())
-        self.index_saved_plans()
+        from backend.utils.execution_plan_index import index_status
+        self.index_state = index_status(self)
 
     def _retire_legacy_algo_aliases(self, plans, legacy_rows, *, conditional_ids=None, regular_ids=None):
         """Quarantine old bare algo IDs without deleting any execution evidence.
@@ -205,8 +213,7 @@ class ExecutionLedger:
     def index_saved_plans(self):
         """Advance durable ownership migration without materializing history."""
         from backend.utils.execution_plan_index import advance_index
-        with self.lock:
-            self.index_state = advance_index(self)
+        self.index_state = advance_index(self)
         return self.index_state
 
     def _index_plan(self, owner, plan):
@@ -369,15 +376,14 @@ class ExecutionLedger:
                 owners.update(r[0] for r in conn.execute(
                     'SELECT DISTINCT config_id FROM execution_order_links WHERE account_scope=%s AND symbol=%s',
                     (self.scope, self.symbol)))
+            from backend.utils.execution_history_work import request_history
             for owner_config_id in owners:
-                rebuild_execution_position_history(owner_config_id, self.scope, self.symbol)
+                request_history(owner_config_id, self.scope, self.symbol)
 
-    def sync(self, now_ms=None, start_ms=None, min_interval=30):
-        if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
-            self.index_saved_plans()
-            if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
-                return {**self.status(), 'complete': False, 'ownership_index': self.index_state,
-                        'error': 'Ownership evidence indexing incomplete; exchange synchronization deferred'}
+    def sync(self, now_ms=None, start_ms=None, min_interval=30, *, require_index=True):
+        if require_index and not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
+            return {**self.status(), 'complete': False, 'ownership_index': self.index_state,
+                    'error': 'Ownership evidence indexing incomplete; exchange synchronization deferred'}
         actual_now = int(time.time() * 1000)
         now_ms = min(int(now_ms), actual_now) if now_ms is not None else actual_now
         with self.lock:
@@ -504,7 +510,8 @@ class ExecutionLedger:
                                           for left, right in covered), error=None, calls=calls)
             except Exception as exc:
                 state.update(error=str(exc), calls=calls, pending_windows=list(jobs))
-            rebuild_execution_position_history(self.config_id, self.scope, self.symbol)
+            from backend.utils.execution_history_work import request_history
+            request_history(self.config_id, self.scope, self.symbol)
             self._status(state)
             return state
 

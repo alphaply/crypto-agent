@@ -17,3 +17,8 @@
 .tool-result-error { color: var(--danger, #cf4141); }
 .tool-result-raw { margin-top: 12px; border-top: 1px solid var(--border-soft, #8883); }
 .tool-result-raw pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; font-size: 12px; }
+.tool-trade-results { display: grid; gap: 8px; }
+.tool-trade-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; font-size: 13px; }
+.tool-trade-row > div { display: flex; flex-direction: column; gap: 4px; min-width: 64px; font-variant-numeric: tabular-nums; }
+.tool-trade-label { font-size: 11px; color: var(--text-secondary, #888); }
+.tool-trade-row > .ant-tag { margin-inline-start: auto; }

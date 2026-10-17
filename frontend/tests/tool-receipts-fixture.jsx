@@ -39,8 +39,8 @@ createRoot(document.getElementById('root')).render(<AccessibleConfigProvider>
     <main style={{ maxWidth: 1000, margin: 'auto', padding: 16 }}><Space orientation="vertical" style={{ width: '100%' }}>
       <Card title="工具回执 · 离线合成数据"><ToolReceipt zh={zh} item={{ tool: 'execute_trade_actions', result: receipt }} /></Card>
       <Card title="批量失败回执 · 离线合成数据"><ToolReceipt zh={zh} item={{ tool: 'execute_trade_actions', status: 'failed', result: batch }} /></Card>
-      <Card title="聊天 JSON 回执"><ToolResultContent zh={zh} content={JSON.stringify(receipt)} /></Card>
-      <Card title="历史文本回执"><ToolResultContent zh={zh} content={'**已提交挂单**，等待成交。'} /></Card>
+      <Card title="聊天工具结果"><ToolResultContent zh={zh} toolName="execute_trade_actions" content={JSON.stringify(receipt)} /></Card>
+      <Card title="历史文本回执"><ToolResultContent zh={zh} toolName="execute_trade_actions" content={'**已提交挂单**，等待成交。'} /></Card>
     </Space></main>
   </PreferencesContext.Provider>
 </AccessibleConfigProvider>);

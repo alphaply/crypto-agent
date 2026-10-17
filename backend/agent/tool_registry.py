@@ -159,8 +159,12 @@ def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, opera
         if expected_spot_fingerprint is not None and expected_spot_fingerprint != spot_execution_fingerprint(config):
             return json.dumps({'status': 'failed', 'error': '现货任务配置已变更，请重新分析后执行'}, ensure_ascii=False)
         if str(config.get('mode') or '').upper() == 'SPOT_DCA':
-            return _run_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id, project_result=project_result)
-    return _run_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id, project_result=project_result)
+            from backend.utils.execution_timing import stage
+            with stage('tool_return'):
+                return _run_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id, project_result=project_result)
+    from backend.utils.execution_timing import stage
+    with stage('tool_return'):
+        return _run_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id, project_result=project_result)
 
 
 def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, operation_id: str | None = None,

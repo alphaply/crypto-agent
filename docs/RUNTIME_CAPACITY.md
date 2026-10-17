@@ -1,6 +1,6 @@
 # 工具调用链路：并发与资源观测
 
-2026-10-15 起，工具调用链路移除内存/缓存准入门槛、CPU 配额对线程数的进一步压缩、归属索引时间片和累计执行预算。保留并发、请求/响应超时、重试、账户锁、订单归属校验和现货定投资金预算。确认范围见 [限制清单](LIMITS_REVIEW_20261015.md)。
+2026-10-15 起，工具调用链路移除内存/缓存准入门槛、CPU 配额对线程数的进一步压缩、金融同步路径的历史整理和累计执行预算门槛。后台历史工作现已恢复有界分片，避免长期占用金融锁。保留并发、请求/响应超时、重试、账户锁、订单归属校验和现货定投资金预算。确认范围见 [限制清单](LIMITS_REVIEW_20261015.md)。
 
 ## 并发与请求超时
 
@@ -14,7 +14,7 @@ MCP 响应等待默认读取 20 秒、执行 40 秒、认证 3 秒、恢复 20 �
 
 ## 完整证据与分页
 
-归属索引在一次调用里继续所有数据库页，`RUNTIME_SCAN_BATCH_SIZE` 仅控制每页读取量，不限制总记录数或执行时间。全部来源扫描完成后再处理 algo 别名冲突，保留跨页普通订单证据。真实失败后的持久游标仍可恢复。无效证据和并发身份变化如实报告。
+归属索引已移出金融调用的同步路径，由后台以 `RUNTIME_SCAN_BATCH_SIZE` 和 `RUNTIME_INDEX_SCAN_SECONDS`（默认 0.25 秒）实际分片推进，保存进度后退出。来源变更逐项增量处理，不因标的级版本变化重扫全部历史；必要来源尚未覆盖时不提前处理 algo 别名冲突。金融动作只等待其当前依赖，不等待历史整理完成。见 [耗时修复与验收](TRADE_EXECUTION_LATENCY.md)。
 
 迁移 `0005` 避免仅观察字段变化反复重置归属扫描；`0006` 删除计划大小导致 UNKNOWN 的条件，并重新推进旧活动索引。无效 JSON 仍为 UNKNOWN，原始记录保留。
 
@@ -41,7 +41,7 @@ TTL、空闲退休和显式关闭释放缓存。活动锁与用户引用保持�
 | `RUNTIME_CATALOGUE_TTL_SECONDS` | 300 | 目录有效期 |
 | `RUNTIME_CATALOGUE_RETRY_SECONDS` | 2 | 刷新失败退避 |
 
-旧 `RUNTIME_*_BYTES/ENTRIES/ITEMS`、`RUNTIME_INDEX_SCAN_SECONDS`、`RUNTIME_RECOVERY_SECONDS`、`MCP_MANAGEMENT_DISCOVERY_BUDGET_SECONDS`、`PAPER_MAX_PAYLOAD_BYTES`、`PAPER_MAINTENANCE_SECONDS` 不再设置工具门槛。无需继续增大这些环境值解决未同步。字段契约、权限、交易金额/精度与现货定投资金预算语义不变。
+旧 `RUNTIME_*_BYTES/ENTRIES/ITEMS`、`RUNTIME_RECOVERY_SECONDS`、`MCP_MANAGEMENT_DISCOVERY_BUDGET_SECONDS`、`PAPER_MAX_PAYLOAD_BYTES`、`PAPER_MAINTENANCE_SECONDS` 不再设置工具门槛。无需继续增大这些环境值解决未同步。字段契约、权限、交易金额/精度与现货定投资金预算语义不变。
 
 ## 部署与历史证据
 

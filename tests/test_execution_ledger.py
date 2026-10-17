@@ -403,6 +403,8 @@ def test_external_only_ingest_rebuilds_existing_owned_cycle(local_db):
     register_order(ledger.scope, ledger.symbol, 'entry', 'cfg', 'entry', side='LONG')
     ledger.ingest([fill(1)])
     ledger.ingest([{**fill(2), 'order': 'manual', 'side': 'sell', 'info': {'positionSide': 'LONG'}}])
+    from backend.utils.execution_history_work import drain_history
+    drain_history('cfg',ledger.scope,ledger.symbol)
     with database.get_db_conn() as conn:
         assert conn.execute('SELECT COUNT(*) FROM execution_position_history').fetchone()[0] == 1
 
@@ -440,6 +442,8 @@ def test_completed_cycle_is_materialized_with_prices_protection_and_pnl(local_db
     }
 
     ledger.ingest([entry, close])
+    from backend.utils.execution_history_work import drain_history
+    drain_history('cfg',ledger.scope,ledger.symbol)
 
     with database.get_db_conn() as conn:
         row = conn.execute('SELECT * FROM execution_position_history').fetchone()
@@ -478,6 +482,8 @@ def test_history_net_pnl_deducts_both_fees_once(local_db, currency, missing, exp
     ]
     ledger.ingest(trades)
     ledger.ingest(trades)
+    from backend.utils.execution_history_work import drain_history
+    drain_history('cfg',ledger.scope,ledger.symbol)
     rows = database.get_closed_positions_7d('cfg', 'ETH/USDT', mode='REAL')
     assert len(rows) == 1
     assert rows[0]['realized_pnl'] == -7.124

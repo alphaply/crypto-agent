@@ -137,8 +137,10 @@ class PositionProtection:
                 from backend.utils.trade_evidence import initialize_schema, save_plan
                 initialize_schema(conn.cursor())
                 save_plan(conn, storage_actor, plan)
+            from backend.utils.execution_history_work import request_history
+            request_history(self.config_id, self.account_scope, plan['symbol'], conn=conn)
             conn.commit()
-        from backend.utils.execution_ledger import rebuild_execution_position_history, register_order
+        from backend.utils.execution_ledger import register_order
         common_history = {
             'side': plan['side'],
             'episode_id': plan.get('episode_id'),
@@ -158,7 +160,6 @@ class PositionProtection:
         if plan.get('exit_order'):
             register_order(self.account_scope, plan['symbol'], plan['exit_order'].get('id'), self.config_id,
                            plan.get('exit_reason', 'emergency_exit'), refresh=False, **common_history)
-        rebuild_execution_position_history(self.config_id, self.account_scope, plan['symbol'])
 
     def _new(self, symbol, side, sl, tp):
         previous = self._load(symbol, side) or {}

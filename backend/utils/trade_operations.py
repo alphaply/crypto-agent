@@ -396,8 +396,10 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
     attempt = TradeAttempt(operation_id, request.get('action', request.get('tool', 'operation')),
                            phase='untracked', submission_state='unknown')
     attempt_token = current_attempt.set(attempt)
+    from backend.utils.execution_timing import stage
     try:
-        result = callback()
+        with stage('financial_callback'):
+            result = callback()
     except Exception as exc:
         if attempt.phase != 'untracked':
             result = project_receipt(attempt.plan, attempt.record, operation_id=operation_id,
@@ -416,7 +418,7 @@ def run_once(config_id: str, symbol: str, operation_id: str | None, request: dic
         current_operation_id.reset(token)
     status = tool_result_status(result)
     try:
-        with database.get_db_conn() as conn:
+        with stage('ack_persist'), database.get_db_conn() as conn:
             lock_scope(conn, 'trade-operation', config_id, operation_id)
             from backend.utils.trade_evidence import append_receipt
             append_receipt(conn, config_id, operation_id, result)

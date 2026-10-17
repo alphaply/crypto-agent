@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
+from time import monotonic
 
 from backend.database import get_db_conn
-from backend.utils.runtime_capacity import positive_setting, reserve_bytes
+from backend.utils.runtime_capacity import positive_setting
 
 
 def initialize_schema(cursor):
@@ -57,236 +57,231 @@ class IdentitySet:
         return iter(self.values)
 
 
-def _plan_facts(index_id, owner, plan):
+def index_id(ledger):
+    return hashlib.sha256(json.dumps([ledger.scope, ledger.symbol, ledger.config_id]).encode()).hexdigest()
+
+
+def index_status(ledger):
+    with get_db_conn() as conn:
+        row = conn.execute('SELECT phase,error,source_revision FROM execution_plan_index_runs WHERE index_id=%s',
+                           (index_id(ledger),)).fetchone()
+        revision = _revision(conn, ledger)
+        pending = bool(_pending(conn, ledger, index_id(ledger), 1)) if not row else row['source_revision'] != revision
+    complete = not pending and (not row or row['phase'] == 'complete')
+    return {'complete': complete, 'ownership_ready': complete,
+            'phase': row['phase'] if row else 'sources', 'processed': 0,
+            'error': row['error'] if row else None}
+
+
+def _pending(conn, ledger, key, limit):
+    return conn.execute("""WITH candidates AS (
+        SELECT s.*,r.owner AS prior_owner,r.relevant AS prior_relevant FROM ownership_sources s
+        LEFT JOIN execution_plan_index_records r ON r.index_id=%s
+            AND r.source=s.source AND r.source_id=s.source_id AND r.source_symbol=s.symbol
+        WHERE s.symbol IN (%s,%s) AND (r.id IS NULL OR r.source_version<>s.version)
+        ORDER BY s.source,s.source_id LIMIT %s), budgeted AS (
+        SELECT *,sum(COALESCE(octet_length(payload),0)) OVER (ORDER BY source,source_id) AS bytes,
+            row_number() OVER (ORDER BY source,source_id) AS n FROM candidates)
+        SELECT source,source_id,symbol,owner,version,deleted,prior_owner,prior_relevant,
+            CASE WHEN bytes<=4194304 THEN payload ELSE NULL END AS payload,
+            COALESCE(octet_length(payload),0) AS payload_bytes
+        FROM budgeted WHERE bytes<=4194304 OR n=1 ORDER BY source,source_id""",
+        (key, ledger.symbol, ledger.symbol.split(':')[0], limit)).fetchall()
+
+
+def _revision(conn, ledger):
+    return conn.execute('SELECT COALESCE(SUM(revision),0) FROM plan_source_revisions '
+                        'WHERE symbol IN (%s,%s)', (ledger.symbol,ledger.symbol.split(':')[0])).fetchone()[0]
+
+
+def _facts(owner, plan, source):
     from backend.utils.exit_orders import is_conditional, parse_order_reference
-    with get_db_conn() as conn:
-        def add(kind, value):
-            if value is not None:
-                raw = parse_order_reference(value)[1]
-                conn.execute(f'''INSERT INTO execution_plan_index_facts(index_id,owner,order_id,{kind})
-                    VALUES(%s,%s,%s,1) ON CONFLICT(index_id,owner,order_id)
-                    DO UPDATE SET {kind}=1,checked=0''', (index_id, owner, raw))
-        for entry in plan.get('entries', []):
-            if entry.get('id'):
-                add('regular', entry['id'])
-        if (plan.get('exit_order') or {}).get('id'):
-            add('regular', plan['exit_order']['id'])
-        for record in [*plan.get('legs', []), *plan.get('exits', [])]:
-            if record.get('id'):
-                kind = 'conditional' if plan.get('execution_mode') == 'independent_exits' and is_conditional(record) else 'regular'
-                add(kind, record['id'])
-            if record.get('execution_order_id'):
-                add('regular', record['execution_order_id'])
-        conn.commit()
+    facts = {}
+    def add(value, kind):
+        if value is not None:
+            raw = parse_order_reference(value)[1]
+            fact = facts.setdefault(raw, dict(owner=owner, order_id=raw, regular=0, conditional=0))
+            fact[kind] = 1
+    if source == 'legacy':
+        if str(plan.get('side') or '').upper() in {'BUY', 'SELL'} and plan.get('event_type') == 'ORDER_CREATED':
+            add(plan.get('order_id'), 'regular')
+    else:
+        for item in plan.get('entries', []):
+            add(item.get('id'), 'regular')
+        add((plan.get('exit_order') or {}).get('id'), 'regular')
+        for item in [*plan.get('legs', []), *plan.get('exits', [])]:
+            add(item.get('id'), 'conditional' if plan.get('execution_mode') == 'independent_exits'
+                and is_conditional(item) else 'regular')
+            add(item.get('execution_order_id'), 'regular')
+    return list(facts.values())
 
 
-def _source(ledger, source, cursor, limit):
-    with get_db_conn() as conn:
-        if source == 'legacy':
-            rows = conn.execute("SELECT id AS source_id,reason IS NULL AS no_reason "
-                                "FROM orders WHERE config_id=%s AND trade_mode='REAL' AND (symbol=%s OR symbol=%s) "
-                                'AND id>%s ORDER BY id LIMIT %s',
-                                (ledger.config_id, ledger.symbol, ledger.symbol.split(':')[0], cursor, limit)).fetchall()
-            table, column = 'orders', 'reason'
-        else:
-            table = 'real_protection_events' if source == 'events' else 'real_protection_plans'
-            column = 'payload'
-            rows = conn.execute(f'SELECT storage_id AS source_id FROM {table} '
-                                'WHERE symbol=%s AND storage_id>%s ORDER BY storage_id LIMIT %s',
-                                (ledger.symbol, cursor, limit)).fetchall()
-        results = []
-        for row in rows:
-            if source == 'legacy' and row['no_reason']:
-                size = 0
-            else:
-                from backend.utils.sqlite_blob import blob_size
-                size = blob_size(conn, table, column, row['source_id'])
-            results.append({'source_id': row['source_id'], 'payload_bytes': size + (1024 if source == 'legacy' else 0)})
-        return results
+def _collect(conn, ledger, key, item):
+    raw = item['payload']
+    if raw is None and not item['deleted']:
+        raise ValueError('Invalid ownership source')
+    value = json.loads(raw) if raw else {}
+    if not isinstance(value, dict):
+        raise ValueError('Invalid ownership source')
+    relevant = not item['deleted'] and bool(value) and (
+        item['source'] == 'legacy' and item['owner'] == ledger.config_id
+        or item['source'] != 'legacy' and (value.get('account_scope') == ledger.scope
+            or not value.get('account_scope') and item['owner'] == ledger.config_id))
+    # Same compact projection across thousands of snapshots is parsed/published once.
+    fingerprint = hashlib.sha256(json.dumps([item['owner'], item['source'] == 'legacy', value],
+                                sort_keys=True).encode()).hexdigest()
+    if relevant:
+        conn.execute("""INSERT INTO ownership_projections(index_id,fingerprint,owner,payload,facts)
+            VALUES(%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING""",
+            (key, fingerprint, item['owner'], raw, json.dumps(_facts(item['owner'], value, item['source']))))
+    from backend.utils.execution_history_work import request_history
+    if item.get('prior_relevant'):
+        request_history(item['prior_owner'],ledger.scope,ledger.symbol,conn=conn)
+    if relevant:
+        request_history(item['owner'],ledger.scope,ledger.symbol,conn=conn)
+    conn.execute("""INSERT INTO execution_plan_index_records
+        (index_id,source,source_id,owner,fingerprint,payload,source_version,relevant,source_symbol)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(index_id,source,source_id,source_symbol) DO UPDATE
+        SET owner=excluded.owner,fingerprint=excluded.fingerprint,payload=excluded.payload,
+            source_version=excluded.source_version,relevant=excluded.relevant
+        WHERE execution_plan_index_records.source_version<=excluded.source_version""",
+        (key, item['source'], item['source_id'], item['owner'], fingerprint, '{}', item['version'], relevant,item['symbol']))
 
 
-def _load(source, source_id):
-    table = {'events': 'real_protection_events', 'plans': 'real_protection_plans', 'legacy': 'orders'}[source]
-    from backend.utils.sqlite_blob import bounded_text
-    maximum = 4 * 1024 * 1024
-    with get_db_conn() as conn:
-        fields = ('order_id,config_id,side,entry_price,take_profit,stop_loss,event_type,reason IS NULL AS no_reason'
-                  if source == 'legacy' else 'config_id')
-        row = conn.execute(f'SELECT {fields} FROM {table} WHERE storage_id=%s', (source_id,)).fetchone()
-        if row is None:
-            raise ValueError('Ownership source changed during scan')
-        if source == 'legacy':
-            value = dict(row)
-            if row['no_reason']:
-                value['reason'] = None
-            else:
-                with bounded_text(conn, table, 'reason', source_id, limit=maximum) as reason:
-                    value['reason'] = reason
-            raw = json.dumps(value, sort_keys=True, default=str)
-        else:
-            with bounded_text(conn, table, 'payload', source_id, limit=maximum) as raw:
-                value = json.loads(raw)
-            if not isinstance(value, dict):
-                raise ValueError('Ownership source is not an object')
-        digest = hashlib.sha256(raw.encode()).hexdigest()
-        return row['config_id'], value, digest, raw
+def _refresh_facts(conn, key):
+    # Aggregate unique projections, not repeated raw snapshots. Retain checked on no-op.
+    conn.execute("""WITH active AS (
+        SELECT p.facts FROM ownership_projections p WHERE p.index_id=%s AND EXISTS
+        (SELECT 1 FROM execution_plan_index_records r WHERE r.index_id=p.index_id
+         AND r.fingerprint=p.fingerprint AND r.relevant)), facts AS (
+        SELECT f.owner,f.order_id,max(f.regular) AS regular,max(f.conditional) AS conditional
+        FROM active a CROSS JOIN LATERAL jsonb_to_recordset(a.facts)
+          AS f(owner text,order_id text,regular int,conditional int) GROUP BY f.owner,f.order_id)
+        INSERT INTO execution_plan_index_facts(index_id,owner,order_id,regular,conditional)
+        SELECT %s,owner,order_id,regular,conditional FROM facts
+        ON CONFLICT(index_id,owner,order_id) DO UPDATE SET regular=excluded.regular,
+          conditional=excluded.conditional,checked=0
+        WHERE execution_plan_index_facts.regular<>excluded.regular
+          OR execution_plan_index_facts.conditional<>excluded.conditional""", (key,key))
+    conn.execute("""DELETE FROM execution_plan_index_facts f WHERE f.index_id=%s AND NOT EXISTS (
+        SELECT 1 FROM ownership_projections p CROSS JOIN LATERAL jsonb_to_recordset(p.facts)
+            AS x(owner text,order_id text,regular int,conditional int)
+        WHERE p.index_id=f.index_id AND x.owner=f.owner AND x.order_id=f.order_id
+          AND EXISTS(SELECT 1 FROM execution_plan_index_records r
+            WHERE r.index_id=p.index_id AND r.fingerprint=p.fingerprint AND r.relevant))""", (key,))
+
+
+def _publication_piece(value, cursor):
+    """Publish one order, never an unbounded loop under the source-version lock."""
+    if 'event_type' in value:
+        return value, True
+    items = [(key, item) for key in ('entries','legs','exits') for item in value.get(key, [])]
+    if value.get('exit_order'):
+        items.append(('exit_order',value['exit_order']))
+    piece = {key: item for key,item in value.items() if key not in {'entries','legs','exits','exit_order'}}
+    if cursor < len(items):
+        key, item = items[cursor]
+        piece[key] = item if key == 'exit_order' else [item]
+    return piece, cursor + 1 >= len(items)
 
 
 def advance_index(ledger):
-    from backend.utils.management_lock import scope_file_lock
-    with scope_file_lock('ownership-index', ledger.scope, ledger.symbol + '\0' + ledger.config_id):
-        return _advance_index(ledger)
-
-
-def _source_revision(conn, symbol):
-    # Legacy orders also use the plain spot spelling of a perpetual symbol.
-    return conn.execute('SELECT COALESCE(SUM(revision),0) FROM plan_source_revisions WHERE symbol IN (%s,%s)',
-                        (symbol, symbol.split(':')[0])).fetchone()[0]
+    from backend.utils.management_lock import scope_file_lock, ManagementLockBusy
+    from backend.utils.execution_timing import stage
+    try:
+        with scope_file_lock('ownership-index', ledger.scope, ledger.symbol + '\0' + ledger.config_id):
+            with stage('history_index'):
+                return _advance_index(ledger)
+    except ManagementLockBusy:
+        return {'complete': False, 'ownership_ready': False, 'phase': 'busy', 'processed': 0}
 
 
 def _advance_index(ledger):
-    index_id = hashlib.sha256(json.dumps([ledger.scope, ledger.symbol, ledger.config_id]).encode()).hexdigest()
+    key = index_id(ledger)
     batch = positive_setting('RUNTIME_SCAN_BATCH_SIZE', 32)
-    maximum = 4 * 1024 * 1024
+    deadline = monotonic() + positive_setting('RUNTIME_INDEX_SCAN_SECONDS', .25, minimum=.001)
+    byte_limit = 4 * 1024 * 1024
+    processed, consumed, phase = 0, 0, 'sources'
     with get_db_conn() as conn:
-        conn.execute("INSERT INTO execution_plan_index_runs(index_id,account_scope,symbol,config_id,phase,cursor) VALUES(%s,%s,%s,%s,'events',0) ON CONFLICT DO NOTHING", (index_id, ledger.scope, ledger.symbol, ledger.config_id))
-        run = dict(conn.execute('SELECT * FROM execution_plan_index_runs WHERE index_id=%s', (index_id,)).fetchone())
-        revision = _source_revision(conn, ledger.symbol)
-        if run['source_revision'] != revision:
-            # Identity allocation order is not commit order. Revisit the same
-            # original source range after any insert/update/delete revision.
-            run.update(phase='events', cursor=0, event_cursor=0, legacy_cursor=0,
-                       error=None, source_revision=revision)
-            conn.execute('DELETE FROM execution_plan_index_records WHERE index_id=%s', (index_id,))
-            conn.execute('DELETE FROM execution_plan_index_facts WHERE index_id=%s', (index_id,))
-            conn.execute('UPDATE execution_plan_index_runs SET phase=%s,cursor=0,event_cursor=0,legacy_cursor=0,error=NULL,source_revision=%s WHERE index_id=%s',
-                         ('events', revision, index_id))
-        elif run['phase'] == 'complete':
+        conn.execute("""INSERT INTO execution_plan_index_runs
+            (index_id,account_scope,symbol,config_id,phase,cursor,incremental)
+            VALUES(%s,%s,%s,%s,'sources',0,TRUE) ON CONFLICT DO NOTHING""",
+            (key, ledger.scope, ledger.symbol, ledger.config_id))
+        run = conn.execute('SELECT incremental,phase,source_revision FROM execution_plan_index_runs WHERE index_id=%s', (key,)).fetchone()
+        if run['incremental'] and run['phase'] == 'complete' and run['source_revision'] == _revision(conn,ledger):
             return {'complete': True, 'ownership_ready': True, 'phase': 'complete', 'processed': 0, 'error': None}
+        if not run['incremental']:
+            conn.execute('DELETE FROM execution_plan_index_records WHERE index_id=%s', (key,))
+            conn.execute('DELETE FROM execution_plan_index_facts WHERE index_id=%s', (key,))
+            conn.execute('UPDATE execution_plan_index_runs SET incremental=TRUE WHERE index_id=%s', (key,))
         conn.commit()
-    processed = 0
+    error = None
     try:
-        while True:
-            with get_db_conn() as check:
-                if _source_revision(check, ledger.symbol) != run['source_revision']:
-                    return {'complete': False, 'ownership_ready': False, 'phase': 'source_changed',
-                            'processed': processed, 'error': 'Ownership source changed; rescan required'}
-            phase, cursor = run['phase'], run['cursor']
-            if phase in {'events', 'plans', 'legacy'}:
-                references = _source(ledger, phase, cursor, batch)
-                for reference in references:
-                    owner, value, fingerprint, raw = _load(phase, reference['source_id'])
-                    relevant = phase == 'legacy' or (value.get('account_scope') == ledger.scope or
-                                not value.get('account_scope') and owner == ledger.config_id)
-                    if relevant:
-                        if phase == 'legacy':
-                            if str(value.get('side') or '').upper() in {'BUY', 'SELL'} and str(value.get('event_type') or '').upper() == 'ORDER_CREATED':
-                                from backend.utils.exit_orders import parse_order_reference
-                                IdentitySet(index_id, 'regular').add((owner, parse_order_reference(value['order_id'])[1]))
-                        else:
-                            _plan_facts(index_id, owner, value)
-                        with get_db_conn() as conn:
-                            conn.execute('INSERT INTO execution_plan_index_records(index_id,source,source_id,owner,fingerprint,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING', (index_id, phase, reference['source_id'], owner, fingerprint, raw))
-                            conn.commit()
-                    del value, raw
-                    cursor = reference['source_id']
-                    run['cursor'] = cursor
-                    processed += 1
-                if len(references) < batch:
-                    if phase == 'events':
-                        run.update(event_cursor=cursor, phase='plans', cursor=0)
-                    elif phase == 'plans':
-                        run.update(phase='legacy', cursor=run['legacy_cursor'])
-                    else:
-                        run.update(legacy_cursor=cursor, phase='aliases', cursor=0)
-            elif phase == 'aliases':
-                with get_db_conn() as conn:
-                    facts = conn.execute('SELECT id,owner,order_id FROM execution_plan_index_facts '
-                                         'WHERE index_id=%s AND id>%s AND conditional=1 AND checked=0 ORDER BY id LIMIT %s',
-                                         (index_id, cursor, batch)).fetchall()
-                for fact in facts:
-                    conditional = IdentitySet(index_id, 'conditional', [(fact['owner'], fact['order_id'])])
-                    _, _, affected = ledger._retire_legacy_algo_aliases((), (), conditional_ids=conditional,
-                                                                       regular_ids=IdentitySet(index_id, 'regular'))
-                    with get_db_conn() as conn:
-                        conn.execute('UPDATE execution_plan_index_facts SET checked=1 WHERE id=%s', (fact['id'],))
-                        for owner in affected:
-                            conn.execute('INSERT INTO execution_plan_index_affected(index_id,owner) VALUES(%s,%s) ON CONFLICT DO NOTHING', (index_id, owner))
-                        conn.commit()
-                    run['cursor'] = fact['id']
-                    processed += 1
-                if len(facts) < batch:
-                    run.update(phase='publish', cursor=0)
-            elif phase == 'publish':
-                with get_db_conn() as conn:
-                    records = conn.execute('SELECT id,source,owner '
-                                           'FROM execution_plan_index_records WHERE index_id=%s AND id>%s ORDER BY id LIMIT %s',
-                                           (index_id, cursor, batch)).fetchall()
-                for record in records:
-                    with get_db_conn() as conn:
-                        from backend.utils.sqlite_blob import bounded_text
-                        with bounded_text(conn, 'execution_plan_index_records', 'payload', record['id'], limit=maximum) as raw:
-                            value = json.loads(raw)
-                    owner = record['owner']
-                    if record['source'] == 'legacy':
-                        indexed = ledger._index_legacy_row(value, IdentitySet(index_id, 'conditional'), IdentitySet(index_id, 'regular'))
-                    else:
-                        indexed = ledger._index_plan(owner, value)
-                    if indexed:
-                        with get_db_conn() as conn:
-                            conn.execute('INSERT INTO execution_plan_index_affected(index_id,owner) VALUES(%s,%s) ON CONFLICT DO NOTHING', (index_id, owner))
-                            conn.commit()
-                    del value, raw
-                    run['cursor'] = record['id']
-                    processed += 1
-                if len(records) < batch:
-                    run.update(phase='history', cursor=0)
-            else:
-                from backend.utils.execution_ledger import rebuild_execution_position_history
-                with get_db_conn() as conn:
-                    owners = conn.execute('SELECT owner FROM execution_plan_index_affected WHERE index_id=%s LIMIT %s',
-                                          (index_id, batch)).fetchall()
-                for owner in owners:
-                    result = rebuild_execution_position_history(owner[0], ledger.scope, ledger.symbol)
-                    if (result.get('complete') is False or result.get('scan_complete') is False
-                            or result.get('published') is False):
-                        return {'complete': False, 'ownership_ready': True, 'phase': 'history',
-                                'processed': processed, 'error': result.get('error') or result.get('reason_code')}
-                    with get_db_conn() as conn:
-                        conn.execute('DELETE FROM execution_plan_index_affected WHERE index_id=%s AND owner=%s', (index_id, owner[0]))
-                        conn.commit()
-                    processed += 1
-                with get_db_conn() as conn:
-                    has_more = conn.execute('SELECT 1 FROM execution_plan_index_affected WHERE index_id=%s LIMIT 1',
-                                            (index_id,)).fetchone()
-                if not has_more:
-                    with get_db_conn() as check:
-                        if _source_revision(check, ledger.symbol) != run['source_revision']:
-                            return {'complete': False, 'ownership_ready': False, 'phase': 'source_changed',
-                                    'processed': processed, 'error': 'Ownership source changed; rescan required'}
-                    run.update(phase='complete', cursor=0, error=None)
-                    with get_db_conn() as conn:
-                        conn.execute('DELETE FROM execution_plan_index_records WHERE index_id=%s', (index_id,))
-                        conn.commit()
+        with get_db_conn(timeout=max(.01, deadline-monotonic())) as conn:
+            pending = _pending(conn, ledger, key, batch)
+            for item in pending:
+                if processed and (monotonic() >= deadline or consumed + len(item['payload'] or '') > byte_limit):
                     break
-            with get_db_conn() as conn:
-                conn.execute('UPDATE execution_plan_index_runs SET phase=%s,cursor=%s,event_cursor=%s,legacy_cursor=%s,error=NULL WHERE index_id=%s',
-                             (run['phase'], run['cursor'], run['event_cursor'], run['legacy_cursor'], index_id))
-                conn.commit()
-    except (ValueError, TypeError) as exc:
-        # Only internal stable validation text is exposed; raw JSON/credentials
-        # and upstream exception representations are never included.
-        run['error'] = type(exc).__name__
-        with get_db_conn() as conn:
-            conn.execute('UPDATE execution_plan_index_runs SET phase=%s,cursor=%s,event_cursor=%s,legacy_cursor=%s,error=%s WHERE index_id=%s',
-                         (run['phase'], run['cursor'], run['event_cursor'], run['legacy_cursor'], run['error'], index_id))
+                if item['payload_bytes'] > byte_limit:
+                    raise ValueError('Ownership source exceeds work budget')
+                _collect(conn, ledger, key, item)
+                processed += 1
+                consumed += len((item['payload'] or '').encode())
+            if processed:
+                _refresh_facts(conn, key)
             conn.commit()
-        return {'complete': False, 'phase': run['phase'], 'processed': processed,
-                'error': 'Ownership source is invalid or changed during indexing; original evidence retained'}
+        # No publication while unprocessed evidence can change regular/algo identity.
+        while processed < batch and monotonic() < deadline:
+            with get_db_conn(timeout=max(.01, deadline-monotonic())) as check:
+                # Source writers take the corresponding revision row; this short
+                # shared lock protects publication against newly committed sources.
+                check.execute('SELECT revision FROM plan_source_revisions WHERE symbol IN (%s,%s) FOR SHARE',
+                              (ledger.symbol, ledger.symbol.split(':')[0])).fetchall()
+                if _pending(check, ledger, key, 1):
+                    break
+                fact = check.execute('SELECT id,owner,order_id FROM execution_plan_index_facts '
+                                     'WHERE index_id=%s AND conditional=1 AND checked=0 LIMIT 1', (key,)).fetchone()
+                if fact:
+                    phase = 'aliases'
+                    _, _, affected = ledger._retire_legacy_algo_aliases((), (),
+                        conditional_ids=IdentitySet(key, 'conditional', [(fact['owner'],fact['order_id'])]),
+                        regular_ids=IdentitySet(key, 'regular'))
+                    check.execute('UPDATE execution_plan_index_facts SET checked=1 WHERE id=%s', (fact['id'],))
+                    for owner in affected:
+                        from backend.utils.execution_history_work import request_history
+                        request_history(owner, ledger.scope, ledger.symbol, conn=check)
+                else:
+                    phase = 'publish'
+                    row = check.execute("""SELECT p.* FROM ownership_projections p WHERE p.index_id=%s
+                        AND NOT p.published AND EXISTS(SELECT 1 FROM execution_plan_index_records r
+                        WHERE r.index_id=p.index_id AND r.fingerprint=p.fingerprint AND r.relevant) LIMIT 1""", (key,)).fetchone()
+                    if not row:
+                        phase = 'complete'
+                        check.execute('UPDATE execution_plan_index_runs SET source_revision=%s WHERE index_id=%s',
+                                      (_revision(check,ledger), key))
+                        check.commit()
+                        break
+                    value, finished = _publication_piece(json.loads(row['payload']),row['publish_cursor'])
+                    # Historical replay fills absent links; never overwrites current ACKs.
+                    from backend.utils.execution_history_work import historical_publication, request_history
+                    token = historical_publication.set(True)
+                    try:
+                        if 'event_type' in value:
+                            ledger._index_legacy_row(value, IdentitySet(key,'conditional'), IdentitySet(key,'regular'))
+                        else:
+                            ledger._index_plan(row['owner'], value)
+                    finally:
+                        historical_publication.reset(token)
+                    check.execute('UPDATE ownership_projections SET published=%s,publish_cursor=publish_cursor+1 '
+                                  'WHERE index_id=%s AND fingerprint=%s', (finished,key,row['fingerprint']))
+                    request_history(row['owner'], ledger.scope, ledger.symbol, conn=check)
+                check.commit()
+            processed += 1
+    except (ValueError, TypeError) as exc:
+        error = type(exc).__name__ + ': ownership source incomplete'
     with get_db_conn() as conn:
-        conn.execute('UPDATE execution_plan_index_runs SET phase=%s,cursor=%s,event_cursor=%s,legacy_cursor=%s,error=%s WHERE index_id=%s',
-                     (run['phase'], run['cursor'], run['event_cursor'], run['legacy_cursor'], run['error'], index_id))
+        conn.execute('UPDATE execution_plan_index_runs SET phase=%s,error=%s WHERE index_id=%s', (phase,error,key))
         conn.commit()
-    return {'complete': run['phase'] == 'complete', 'ownership_ready': run['phase'] in {'history', 'complete'},
-            'phase': run['phase'], 'processed': processed,
-            'error': None if run['phase'] == 'complete' else 'Ownership history reconstruction pending'}
+    return {'complete': phase == 'complete' and error is None,
+            'ownership_ready': phase == 'complete' and error is None,
+            'phase': phase, 'processed': processed, 'error': error}

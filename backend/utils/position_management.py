@@ -23,6 +23,22 @@ _discovery_guard = threading.Lock()
 _discovery_success = {}
 
 
+@contextmanager
+def financial_lock(scope):
+    from backend.utils.position_protection import _lock
+    from backend.utils.execution_timing import stage
+    from backend.mcp.resilience import remaining
+    lock = _lock(scope)
+    with stage('financial_lock_wait'):
+        acquired = lock.acquire(timeout=min(5, remaining('financial_lock')))
+    if not acquired:
+        raise ValueError('Management observation is busy; refresh the current scope')
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def initialize_schema(conn):
     """Schema is installed by the explicit PostgreSQL migration command."""
     return None
@@ -357,7 +373,117 @@ def ensure_managed(service, symbol, side=None):
         lock.release()
 
 
+def _observe_current(service, symbol, requested_side):
+    """Observe only the current financial dependencies; history advances separately."""
+    from backend.database import get_db_conn
+    from backend.utils.exit_orders import order_reference
+    symbol = service._market(symbol)['symbol']
+    mode = service.ex.fetch_position_mode(symbol)
+    if not isinstance(mode, dict) or type(mode.get('hedged')) is not bool:
+        raise ValueError('Position mode is unavailable')
+    hedged = mode['hedged']
+    config = _configuration(service)
+    visible = config.get('position_management_policy') == 'visible_first_claim'
+    sides = ([requested_side] if requested_side else ['LONG','SHORT']) if visible else [
+        s['side'] for s in normalize_management(config)['management_scopes']
+        if s['symbol'] == symbol and (requested_side is None or s['side'] == requested_side)]
+    positions = service.ex.fetch_positions([symbol])
+    if not isinstance(positions, list):
+        raise ValueError('Position snapshot is unavailable')
+    amounts = {}
+    for row in positions:
+        quantity = _number(row.get('contracts'))
+        if quantity:
+            side = str(row.get('side', '')).upper()
+            if row.get('symbol') != symbol or side not in {'LONG','SHORT'}:
+                raise ValueError('Position snapshot scope is invalid')
+            amounts[side] = quantity
+    orders = _orders(service.ex, symbol)
+    for side in sides:
+        claim = None
+        if visible:
+            from backend.utils.visible_management import claim_management
+            claim = claim_management(service.mt, symbol, side)
+        _claim(service, symbol, side, hedged)
+        current = service._load(symbol, side)
+        plan = current if current and current.get('state') != 'DONE' else None
+        quantity = amounts.get(side, 0)
+        selected = []
+        unsupported = {}
+        for identity, order in orders.items():
+            try:
+                observed_side, role, all_close = _order_side(order, hedged)
+                if observed_side == side:
+                    selected.append((identity, order, role, all_close))
+            except ValueError as exc:
+                unsupported[identity] = str(exc)
+        if plan is None and not quantity and not selected:
+            with get_db_conn() as conn:
+                _save_observation(conn, service, symbol, side, dict(sync_status='verified',contracts=0,
+                    hedged=hedged,observed_at=time.time()))
+                conn.commit()
+            continue
+        if plan is None and quantity:
+            from backend.utils.independent_cycle_recovery import restore_cycle
+            plan, _ = restore_cycle(service, symbol, side, current)
+        fresh = plan is None
+        plan = plan or service._new(symbol, side)
+        management = plan.setdefault('management', dict(policy='exclusive_scope', source='baseline' if fresh else 'agent',
+            baseline_contracts=quantity if fresh else float((plan.get('adoption') or {}).get('contracts') or 0),
+            baseline_at_ms=int(time.time()*1000) if fresh else int(min(
+                [e.get('created_at',time.time()) for e in plan.get('entries',[])] or [time.time()])*1000),
+            owner=service.config_id))
+        if fresh:
+            # _new() may already have a claim's zero baseline. Enrollment of
+            # existing exposure must record its actual observation, not a fill.
+            management.update(baseline_contracts=quantity,baseline_at_ms=int(time.time()*1000),
+                              source='baseline' if quantity else 'agent')
+        if claim:
+            management.update(policy='visible_first_claim',claim_id=claim['claim_id'],claim_version=claim['version'])
+        for identity, order, role, all_close in selected:
+            record = next((r for r in plan['entries'] + plan['exits'] if order_reference(r) == identity
+                or order.get('clientOrderId') and r.get('client_id') == order['clientOrderId']), None)
+            observed = _external_record(order,side,role,all_close)
+            if record is None:
+                plan['entries' if role == 'entry' else 'exits'].append(observed)
+            else:
+                # Retain the original operation, source and client identity.
+                for key in ('id','status','amount','price','trigger_price','fill_observed_at'):
+                    record[key] = observed[key]
+                if observed['fill_verified'] and observed['filled'] >= float(record.get('filled') or 0):
+                    record.update(filled=observed['filled'],fill_verified=True)
+                    record.pop('fill_pending',None)
+                    record.pop('query_error',None)
+                else:
+                    record['fill_pending'] = True
+                if record.get('submission_state') == 'unknown' and record.get('id'):
+                    record['submission_state'] = 'submitted'
+        # Missing targets and original unknown submissions are resolved by the
+        # existing target-specific admission path, never guessed from a list.
+        confirmed = service._position(plan)
+        if _number((confirmed or {}).get('contracts',0)) != quantity:
+            raise ValueError('Position changed during enrollment; refresh before trading')
+        management.update(sync_status='verified',observed_at=time.time(),contracts=quantity,
+                          hedged=hedged,unsupported_orders=unsupported)
+        management.pop('error',None)
+        plan.pop('ownership_error',None)
+        plan['contract_size'] = float(service._market(symbol).get('contractSize') or 1)
+        plan['position_observation'] = dict(status='verified',amount=quantity*plan['contract_size'],
+                                            observed_at=management['observed_at'])
+        if quantity:
+            plan.update(state='ACTIVE',ever_filled=True)
+        service._save(plan)
+        with get_db_conn() as conn:
+            _save_observation(conn, service, symbol, side, management)
+            conn.commit()
+
+
 def _discover(service, symbol, requested_side):
+    from backend.utils.trade_operations import financial_ack_only
+    if financial_ack_only.get():
+        from backend.utils.execution_timing import stage
+        with stage('current_observation'):
+            return _observe_current(service, symbol, requested_side)
     from backend.database import get_db_conn
     from backend.utils.execution_ledger import ExecutionLedger, rebuild_execution_position_history
     from backend.utils.exit_orders import order_reference
@@ -436,7 +562,11 @@ def _discover(service, symbol, requested_side):
             except Exception as exc:
                 record.update(fill_pending=True, query_error=type(exc).__name__ + ': order observation incomplete')
         ledger = ExecutionLedger(service.ex, service.config_id, symbol)
-        sync = ledger.sync(now_ms=now_ms, start_ms=max(0, management['baseline_at_ms']-60000), min_interval=0)
+        # Current-cycle observations can retain raw fills while historical
+        # attribution is pending. The target/current-plan links below decide
+        # enrollment; incomplete historical ownership never assigns raw fills.
+        sync = ledger.sync(now_ms=now_ms, start_ms=max(0, management['baseline_at_ms']-60000),
+                           min_interval=0, require_index=False)
         if not sync.get('complete'):
             management.update(sync_status='partial', error=sync.get('error') or 'Fill coverage is incomplete')
             plan['ownership_error'] = management['error']
@@ -565,7 +695,8 @@ def _discover(service, symbol, requested_side):
                                  (service.config_id, service.account_scope, symbol, str(fill['order_id'])))
                 _facts(conn, service, symbol, 'trade:' + fill['trade_id'], {**payload, 'source': source})
             conn.commit()
-        rebuild_execution_position_history(service.config_id, service.account_scope, symbol)
+        from backend.utils.execution_history_work import request_history
+        request_history(service.config_id, service.account_scope, symbol)
         management['unsupported_orders'] = {}
         for identity, order in orders.items():
             if identity in old_refs or any(order_reference(r) == identity for r in management.get('pending_orders', [])):
@@ -922,7 +1053,7 @@ def managed_action(function):
         from backend.utils.position_protection import _lock
         # Discovery, admission and the financial callback share one snapshot
         # boundary. Always acquire this before a cross-process scope lock.
-        with _lock(service.account_scope):
+        with financial_lock(service.account_scope):
             return wrapped(service, symbol, *args, **kwargs)
     return coordinated
 
@@ -988,7 +1119,7 @@ def _ensure_visible_management(market_tool, symbol, side=None, *, operation_id=N
 
 def ensure_visible_management(market_tool, symbol, side=None, *, operation_id=None, discover=False):
     from backend.utils.position_protection import _lock
-    with _lock(_legacy_scope_for_tool(market_tool)):
+    with financial_lock(_legacy_scope_for_tool(market_tool)):
         return _ensure_visible_coordinated(market_tool, symbol, side, operation_id=operation_id, discover=discover)
 
 
@@ -1028,7 +1159,7 @@ def discover_management_symbols(market_tool, config):
 @contextmanager
 def management_action(market_tool, symbol, side, operation_id, *, automatic=True, order_id=None):
     from backend.utils.position_protection import _lock
-    with _lock(_legacy_scope_for_tool(market_tool)):
+    with financial_lock(_legacy_scope_for_tool(market_tool)):
         with _management_action(market_tool, symbol, side, operation_id, automatic=automatic, order_id=order_id) as claim:
             yield claim
 

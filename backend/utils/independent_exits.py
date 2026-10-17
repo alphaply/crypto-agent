@@ -515,8 +515,10 @@ class IndependentExits(PositionProtection):
             attempt.submission_state = 'unknown'
         record['submitted_at'] = time.time()
         try:
-            order = self.ex.create_order(plan["symbol"], order_type, side,
-                                         record.get('submission_amount', record["amount"]), record.get("price"), params)
+            from backend.utils.execution_timing import stage
+            with stage('exchange_submit'):
+                order = self.ex.create_order(plan["symbol"], order_type, side,
+                                             record.get('submission_amount', record["amount"]), record.get("price"), params)
         except (ccxt.InvalidOrder, ccxt.InsufficientFunds, ccxt.AuthenticationError, ccxt.PermissionDenied) as exc:
             proof = rejection_evidence(exc)
             if proof is None:

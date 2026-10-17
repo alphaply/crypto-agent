@@ -1,7 +1,7 @@
 import { Tag } from 'antd';
 import MarkdownBlock from './MarkdownBlock';
 import './ToolResultContent.css';
-import { receiptSummary } from '../lib/toolReceipt';
+import { receiptSummary, isTradeReceipt, tradeReceiptRows } from '../lib/toolReceipt';
 
 // What a reader needs to judge one operation: did it work, on what, how much,
 // and where the order stands. Every other field stays in the raw JSON view.
@@ -58,7 +58,33 @@ function Value({ value, field, zh, depth = 0 }) {
   })}</dl>;
 }
 
-export default function ToolResultContent({ content, zh, toolName, fallbackStatus }) {
+const actions = { open: '开仓', close: '平仓', edit: '改单', cancel: '撤单', protect: '保护', amend_entry: '入场改单', amend_exit: '退出改单', update_protection: '保护调整' };
+
+function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
+  const rows = tradeReceiptRows(content, { request, toolName, fallbackStatus });
+  if (!rows) return <div className="tool-result-content tool-result-card"><MarkdownBlock content={String(content || '').replace(/\s+/g, ' ').slice(0, 180)} /></div>;
+  return <div className="tool-result-content tool-trade-results">{rows.map((row, index) => {
+    const price = [row.price != null && `${row.price}`, row.triggerPrice != null && `${zh ? '触发' : 'Trigger'} ${row.triggerPrice}`].filter(Boolean).join(' / ');
+    const fields = [
+      [zh ? '操作' : 'Action', zh ? actions[row.action] || row.action : row.action],
+      [zh ? '标的' : 'Symbol', row.symbol],
+      [zh ? '方向' : 'Side', zh ? ({ LONG: '做多', SHORT: '做空', BUY: '买入', SELL: '卖出' }[row.side] || row.side) : row.side],
+      [zh ? '数量' : 'Amount', row.amount === 'all' ? zh ? '全部' : 'All' : row.amount],
+      [zh ? '价格' : 'Price', price || null],
+    ];
+    return <div className="tool-result-card tool-trade-row" key={index}>
+      {fields.filter(([, value]) => value != null).map(([label, value]) => <div key={label}><span className="tool-trade-label">{label}</span><span>{value}</span></div>)}
+      {row.result && <Tag color={row.result === 'success' ? 'success' : 'error'}>{row.result === 'success' ? zh ? '成功' : 'Success' : zh ? '失败' : 'Failed'}</Tag>}
+    </div>;
+  })}</div>;
+}
+
+export default function ToolResultContent({ content, zh, toolName, fallbackStatus, request }) {
+  if (isTradeReceipt(content, toolName)) return <TradingResult {...{ content, zh, toolName, fallbackStatus, request }} />;
+  return <GenericResult {...{ content, zh, toolName, fallbackStatus }} />;
+}
+
+function GenericResult({ content, zh, toolName, fallbackStatus }) {
   const { value, status: resultStatus, text } = receiptSummary(content, zh);
   const status = resultStatus || fallbackStatus || 'returned';
   const state = states[status] || [status, 'default'];

@@ -5,6 +5,54 @@ function reasonText(value) {
   return '';
 }
 
+const tradeActions = new Set(['open', 'close', 'edit', 'cancel', 'protect', 'amend_entry', 'amend_exit', 'update_protection']);
+export function isTradingTool(name = '') {
+  return tradeActions.has(name) || /^(execute_trade_actions|execute_trade|open_position_|close_position_|cancel_orders_|update_entry_order_|update_exit_order|update_position_protection_)/.test(name);
+}
+
+export function parseReceipt(content) {
+  if (typeof content !== 'string') return content;
+  try { return JSON.parse(content); } catch { return content; }
+}
+
+export function isTradeReceipt(content, toolName) {
+  if (toolName) return isTradingTool(toolName);
+  const value = parseReceipt(content);
+  return Boolean(value && typeof value === 'object' && (tradeActions.has(value.action)
+    || Array.isArray(value.results) && value.results.some(row => tradeActions.has(row.action))));
+}
+
+export function tradeReceiptRows(content, { request = {}, fallbackStatus, toolName } = {}) {
+  const root = parseReceipt(content);
+  if (!root || typeof root !== 'object') return null;
+  const rows = Array.isArray(root) ? root : Array.isArray(root.results) ? root.results : [root];
+  const envelope = request && typeof request === 'object' ? request : {};
+  const requests = envelope.actions || envelope.orders || [envelope];
+  return rows.map((value, index) => {
+    const row = value && typeof value === 'object' ? value : {};
+    const intent = requests[row.index ?? index] || {};
+    const detail = row.result && typeof row.result === 'object' ? row.result : row;
+    const args = intent.order || intent;
+    const action = row.action || root.action || intent.action || (tradeActions.has(toolName) ? toolName : undefined);
+    const status = row.status ?? detail.status ?? (rows.length === 1 ? root.status ?? fallbackStatus : undefined);
+    const rejected = ['failed', 'rejected', 'not_executed', 'skipped', 'not_requested'].includes(status);
+    const accepted = ['submitted', 'completed', 'success', 'open', 'closed', 'filled', 'canceled', 'cancelled', 'waiting_trigger'].includes(status)
+      || detail.submission_state === 'submitted' || detail.submitted === true;
+    return {
+      action,
+      symbol: detail.symbol ?? row.symbol ?? intent.symbol ?? envelope.symbol,
+      side: detail.side ?? detail.pos_side ?? row.side ?? args.side ?? args.pos_side,
+      amount: detail.quantity_mode === 'all' || args.close_all === true ? 'all'
+        : action === 'edit' || action?.startsWith('amend_')
+          ? detail.requested_remaining_amount ?? args.remaining_amount ?? detail.requested_amount ?? detail.amount ?? args.amount
+          : detail.requested_amount ?? detail.amount ?? row.amount ?? args.amount,
+      price: detail.price ?? row.price ?? args.price ?? args.entry_price,
+      triggerPrice: detail.trigger_price ?? args.trigger_price,
+      result: rejected ? 'failed' : accepted ? 'success' : null,
+    };
+  });
+}
+
 export function receiptSummary(content, zh = false) {
   let value = content;
   if (typeof value === 'string') {

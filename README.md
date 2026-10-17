@@ -258,6 +258,6 @@ Paper MCP 现已支持真实公开行情标注与标的搜索、bot 自有账户
 
 QQBot 模拟交易配置在管理页独立的 **QQBot · Paper** tab；原设置、账户和 Paper Key 创建功能保持可用。金融工具按请求顺序提交，依据交易所接口响应简洁返回，不在工具内补查或轮询；后台核验及必要前置检查保留。参见 [回执说明](docs/TRADE_RECEIPTS_AND_RECOVERY.md)。
 
-工具调用链路不再以本地内存/缓存门槛、归属索引时间片或累计执行预算阻止同步；并发、单次超时、重试和资金预算保留。见 [运行说明](docs/RUNTIME_CAPACITY.md) 与 [部署指南](docs/DEPLOYMENT_GUIDE.md)。
+金融工具不因历史归属整理积压而等待全量重扫。历史索引在后台按时间片保存进度、增量处理；当前动作权限、数量、并发、单次超时、重试和资金预算保留。交易所接受后直接返回提交成功，正常成交/持仓/盈亏更新继续在后台进行。前端交易结果直接显示操作、标的、方向、委托数量、价格及成功/失败，不再展开 JSON 或核验树。见 [耗时修复与验收](docs/TRADE_EXECUTION_LATENCY.md)、[运行说明](docs/RUNTIME_CAPACITY.md) 与 [部署指南](docs/DEPLOYMENT_GUIDE.md)。
 
 - Paper 支持用户与 bot 双向转账、后台统一每日单利、破产冻结、用户主动下海重置及收益率/下海双榜；真实账户已授权连接可共管，保留权限、共享预留及并发保护。详见 [账户生命周期与共管说明](docs/PAPER_ACCOUNT_LIFECYCLE.md)。
