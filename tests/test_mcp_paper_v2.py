@@ -115,8 +115,9 @@ def test_budget_units_margin_vs_notional_and_atomic_close_all(ledger):
     caller, _, _ = ledger
     create(caller)
     first = orders.execute_market(caller, '123456', 'swap', 'BTC', 'open_long', 'margin-budget-001', margin_amount=100, leverage=10)
-    assert first['fill']['amount'] == 10
-    assert first['account']['used_margin'] == 100
+    assert first['fill']['amount'] == 9.900990099009
+    assert first['account']['used_margin'] == 99.00990099
+    assert first['account']['used_margin'] + first['fill']['fee'] == 100
     orders.execute_market(caller, '123456', 'swap', 'BTC', 'close_long', 'close-full-001', close_all=True)
     notional = orders.execute_market(caller, '123456', 'swap', 'BTC', 'open_long', 'notional-budget-001', quote_amount=100, leverage=10)
     assert notional['fill']['amount'] == 1 and notional['account']['used_margin'] == 10

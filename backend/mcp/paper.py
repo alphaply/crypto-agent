@@ -165,6 +165,10 @@ def upgrade_account(conn, account):
     account.setdefault('leaderboard_visible', True)
     account.setdefault('notifications_enabled', True)
     account.setdefault('reserved_cash', 0)
+    if account.get('account_status') == 'bankrupt' and (bool(account.get('positions')) or bool(account.get('spot'))):
+        account['account_status'] = 'active'
+        _save(conn, account)
+        _event(conn, account, 'bankruptcy_recovered', {'reason': 'active_positions_decoupled'})
     # Source proof is additive and separate from legacy fields, which may have
     # been filled by a previous upgrade. Never infer a venue or cycle here.
     from .paper_policy import account_facts, persist_origin
@@ -435,6 +439,9 @@ def bank(caller, user_id, action, amount, operation_id):
                 raise ValueError('Paper account is disabled')
             if not settings(conn)['bank_enabled']:
                 raise ValueError('Bank borrowing is disabled')
+            view = snapshot(account, conn=conn)
+            if debt > 0 and view['net_equity'] is not None and view['net_equity'] <= 0:
+                raise ValueError('Cannot borrow additional funds when net equity is non-positive')
             if debt + amount > number(settings(conn)['loan_limit']):
                 raise ValueError('Paper bank loan limit exceeded; an administrator can adjust it')
             cash, debt = cash + amount, debt + amount
@@ -518,6 +525,10 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
     from .paper_lifecycle import refresh_status, assert_active
     refresh_status(conn, account)
     assert_active(account)
+    if action in {'buy', 'open_long', 'open_short'}:
+        view = snapshot(account, conn=conn)
+        if view['net_equity'] is not None and view['net_equity'] <= 0:
+            raise ValueError('Cannot open new positions when net equity is non-positive; reduce debt or close positions first')
     buy = action in {'buy', 'open_long', 'close_short'}
     price = number(quote['ask'] if buy else quote['bid'], positive=True)
     notional = price * amount

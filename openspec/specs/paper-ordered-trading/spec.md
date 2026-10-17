@@ -165,7 +165,7 @@ Paper SHALL 仅读取 Binance 已核验且受现有能力支持的生产公开�
 
 #### Scenario: Perpetual entry uses margin sizing
 - **WHEN** 永续开仓选择 margin_amount 并指定有效杠杆
-- **THEN** 金额表示逐仓保证金且手续费另计，遵守账户最大杠杆及维护保证金限制，不把它解释为不带杠杆的名义金额
+- **THEN** 金额作为包含开仓手续费的总成本预算，系统自动根据杠杆与手续费率倒推持仓保证金与开仓手续费，两者扣款之和严格等于该金额，遵守账户最大杠杆及维持保证金限制，避免额外扣费导致现金透支
 
 #### Scenario: Same instrument is available on several venues
 - **WHEN** 用户旧账本在多个场所有同名标的，新动作需要匹配目标
@@ -221,7 +221,7 @@ Paper 默认结果 SHALL 返回原父子身份、索引、真实操作/订单状
 - **THEN** 使用原父子 ID、索引和指纹返回持久证据及未解决原因，不到旧场所取价、不重下单，不把 unknown 改成取消或把尾项变成新执行
 
 ### Requirement: Bankruptcy admission is checked at financial commit
-Paper 交易入口、兼容入口和后台订单成交 SHALL 在提交金融变化时检查账户破产状态。破产后 SHALL 拒绝新的用户金融操作，并停止已有订单成交；读取及原事实核验 SHALL 不被误当作新交易。并发破产状态更新 SHALL 不被较早的准入结果覆盖。
+Paper 交易入口、兼容入口和后台订单成交 SHALL 在提交金融变化时检查账户破产状态。破产后 SHALL 拒绝新的用户金融操作，并停止已有订单成交；读取及原事实核验 SHALL 不被误当作新交易。并发破产状态更新 SHALL 不被较早的准入结果覆盖。持有有效持仓但净资产小于等于零的未破产账户，准入检查 SHALL 允许平仓与退出订单撮合，仅拒绝新增开仓。
 
 #### Scenario: Bankruptcy races with an order fill
 - **WHEN** 报价已读取，订单成交提交前账户已进入破产状态
@@ -230,6 +230,10 @@ Paper 交易入口、兼容入口和后台订单成交 SHALL 在提交金融变�
 #### Scenario: Legacy endpoint tries to bypass the freeze
 - **WHEN** 破产账户通过隐藏旧交易入口请求开平仓、撤改单或保护操作
 - **THEN** 与新入口一样拒绝，不因 schema、旧工具名或管理员停用字段不同而绕过破产限制
+
+#### Scenario: Negative net equity account executes exit operations
+- **WHEN** 账户仍持有有效持仓但账面净资产小于等于零，请求平仓、追加/撤销止盈止损或其退出订单满足触发条件
+- **THEN** 金融提交准入允许该操作执行并完成撮合，不被误作为破产冻结拦截
 
 ### Requirement: Reset isolates new funds from old trading identities
 下海重置 SHALL 建立新的账户周期并终止旧周期待执行资源。已持久化的父子身份、原回执和历史 SHALL 保留。旧周期操作的重试、后台恢复、撮合或异步结果 SHALL 不得再次成交、释放新周期预留、覆盖新周期状态或支配重置补款。

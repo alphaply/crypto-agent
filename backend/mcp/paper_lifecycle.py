@@ -33,6 +33,8 @@ def refresh_status(conn, account: dict) -> None:
     from . import paper
     if account['account_status'] == 'bankrupt':
         return
+    if bool(account.get('positions')) or bool(account.get('spot')):
+        return
     view = paper.snapshot(account, conn=conn)
     if view['net_equity'] is not None and view['net_equity'] <= 0:
         account['account_status'] = 'bankrupt'

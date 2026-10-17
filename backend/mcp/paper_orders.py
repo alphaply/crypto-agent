@@ -120,7 +120,13 @@ def quantity(account, kind, symbol, action, reference, exchange_name, *, amount=
         return paper.number(amount, positive=True)
     price = paper.number(reference, positive=True)
     if margin_amount is not None:
-        qty = paper.number(margin_amount, positive=True) * (leverage or account['leverage']) / price
+        lev = paper.number(leverage or account['leverage'])
+        if kind == 'swap':
+            fee_rate = paper.number(paper.settings()['fee_rate'])
+            effective_margin = paper.number(margin_amount, positive=True) / (paper.number(1) + lev * fee_rate)
+            qty = effective_margin * lev / price
+        else:
+            qty = paper.number(margin_amount, positive=True) * lev / price
     elif kind == 'spot':
         qty = paper.number(quote_amount, positive=True) / (price * (1 + paper.number(paper.settings()['fee_rate'])))
     else:
@@ -257,6 +263,9 @@ def prepare_order(conn, account, kind, symbol, action, order_type, quote, *, amo
     _, p = exposure(account, kind, symbol, side if kind == 'swap' else None, quote['exchange'])
     reserve, spot_reserve = paper.ZERO, paper.ZERO
     if action in {'buy', 'open_long', 'open_short'}:
+        view = paper.snapshot(account, conn=conn)
+        if view['net_equity'] is not None and view['net_equity'] <= 0:
+            raise ValueError('Cannot open new positions when net equity is non-positive; reduce debt or close positions first')
         lev = leverage or account['leverage'] if kind == 'swap' else 1
         if lev > paper.settings()['max_leverage'] or kind == 'swap' and 1 / lev <= paper.settings()['maintenance_margin_rate'] + paper.settings()['fee_rate']:
             raise ValueError('Leverage leaves insufficient maintenance margin or exceeds the current cap')

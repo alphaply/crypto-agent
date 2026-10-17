@@ -8,7 +8,7 @@ import uuid
 from . import paper_storage
 
 VERSION = 1
-NON_TRADING_EVENTS = {'create', 'bot_created', 'borrow', 'repay', 'leverage', 'preferences', 'admin_adjustment', 'transfer_in', 'transfer_out', 'interest', 'bankruptcy', 'reset'}
+NON_TRADING_EVENTS = {'create', 'bot_created', 'borrow', 'repay', 'leverage', 'preferences', 'admin_adjustment', 'transfer_in', 'transfer_out', 'interest', 'bankruptcy', 'bankruptcy_recovered', 'reset'}
 
 
 def venue(value=None):
