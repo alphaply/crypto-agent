@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from backend import database
 from backend.agent import unified_trading as unified
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.runtime_compatibility import trading_compatibility_report
 from test_unified_trading import CFG, execute, batch, cancel
 from backend.config import config

@@ -9,13 +9,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend import database, database_agent_runs
+from backend import database
+from backend.database import agent_runs as database_agent_runs
 from backend.agent.strategy_material import strategy_material
 from backend.app.api.agent_runs import router as runs_router
 from backend.app.api.history import router as history_router
 from backend.app.api.public import router as public_router
 from backend.app.core.deps import get_current_user
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.execution_ledger import ExecutionLedger, recent_activity_data, recent_activity_summary, register_order
 from backend.utils.execution_metrics import metrics_context
 from backend.utils.trade_review import daily_exchange_evidence, daily_execution_evidence

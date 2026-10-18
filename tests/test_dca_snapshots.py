@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import backend.database as database
-from backend.database_dca import DcaSnapshotStore
+from backend.database.dca import DcaSnapshotStore
 
 
 class DcaSnapshotTests(unittest.TestCase):

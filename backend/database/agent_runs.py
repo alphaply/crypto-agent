@@ -119,7 +119,7 @@ def start_agent_run(
     """Record the actual inputs immediately before invoking the model."""
     from backend.database import get_db_conn
     from backend.app.services.pricing_service import get_price_snapshot, resolve_provider_id
-    from backend.database_usage import start_usage
+    from backend.database.usage import start_usage
 
     if purpose not in PURPOSES:
         raise ValueError('Unknown agent run purpose')
@@ -162,7 +162,7 @@ def finish_agent_run(
     error: str = '', details: dict | None = None,
 ) -> None:
     from backend.database import get_db_conn
-    from backend.database_usage import finish_usage
+    from backend.database.usage import finish_usage
 
     if status not in STATUSES:
         raise ValueError('Unknown agent run status')

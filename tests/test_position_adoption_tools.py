@@ -10,7 +10,7 @@ from backend.agent import agent_tools, tool_registry
 from backend.agent.agent_models import AdoptPositionRealSchema
 from backend.agent.trade_batch import TradeActionsSchema
 from backend.config import config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.independent_exits import IndependentPositionError
 from backend.utils import position_adoption
 from backend.utils.trade_operations import current_operation_id, tool_result_status

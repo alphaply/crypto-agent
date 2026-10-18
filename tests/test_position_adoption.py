@@ -6,7 +6,7 @@ import ccxt
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.independent_exits import IndependentExits
 from backend.utils.position_adoption import OKX_ALGO_ORDER_TYPES, adopt_position, find_adoption_receipt
 from backend.utils.trade_operations import run_once

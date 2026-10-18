@@ -7,10 +7,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 
 from backend import database
-from backend import database_agent_runs as runs
+from backend.database import agent_runs as runs
 from backend.app.api.agent_runs import router
 from backend.app.core.deps import get_current_user
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

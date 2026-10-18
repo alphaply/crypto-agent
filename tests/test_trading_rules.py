@@ -4,7 +4,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend import database, database_rules as rules
+from backend import database
+from backend.database import rules as rules
 from backend.agent.rule_tools import manage_trading_rules
 from backend.app.api.trading_rules import router
 from backend.app.core.deps import get_current_user

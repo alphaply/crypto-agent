@@ -9,12 +9,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend import database, database_news
+from backend import database
+from backend.database import news as database_news
 from backend.app.api.news import router
 from backend.app.core.deps import get_current_user
 from backend.app.schemas.news import NewsSettings, NewsSource
 from backend.app.services import news_service, pricing_service
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils import news_context, jev, binance_announcements
 
 

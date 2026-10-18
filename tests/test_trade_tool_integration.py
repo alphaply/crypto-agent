@@ -8,8 +8,8 @@ import pytest
 from backend import database
 from backend.agent import agent_tools, tool_registry
 from backend.config import config
-from backend.database_independent import MockIndependentTrading
-from backend.database_schema import initialize_schema
+from backend.database.independent import MockIndependentTrading
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

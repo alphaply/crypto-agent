@@ -10,7 +10,7 @@ import pytest
 from backend import database
 from backend.agent import agent_tools, tool_registry
 from backend.config import config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.mcp import service, settings as cfg, store
 from backend.utils import market_data
 from backend.utils.independent_exits import IndependentExits

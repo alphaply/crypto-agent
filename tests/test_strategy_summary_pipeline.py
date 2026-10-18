@@ -8,10 +8,11 @@ from unittest.mock import Mock
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from backend import database, database_agent_runs
+from backend import database
+from backend.database import agent_runs as database_agent_runs
 from backend.agent import agent_graph
 from backend.agent.agent_models import AgentState
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.decision_journal import decision_journal
 from backend.utils.trading_policy import SUMMARY_FACT_POLICY
 

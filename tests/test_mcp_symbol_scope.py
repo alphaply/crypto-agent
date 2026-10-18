@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.mcp import service, settings as cfg, store
 from backend.mcp.transfer import export_settings, import_settings
 from backend.utils import market_data
@@ -42,7 +42,7 @@ class Exchange:
 def unrestricted(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'scope.db'))
     with database.get_db_conn() as conn:
-        from backend.database_schema import initialize_schema
+        from backend.database.schema import initialize_schema
         pass  # PostgreSQL migrations are installed by financial_pg.
         conn.commit()
     with database.get_db_conn() as conn:

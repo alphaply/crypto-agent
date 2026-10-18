@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 
-from backend import database_news
+from backend.database import news as database_news
 from backend.app.schemas.news import NewsSettings
 from backend.app.services.news_models import fingerprint
 from backend.utils.news_context import _parse_iso, _normalize_title

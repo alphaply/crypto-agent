@@ -7,7 +7,7 @@ import pytest
 
 from backend import database
 from backend.agent import agent_tools, tool_registry
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

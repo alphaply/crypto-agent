@@ -9,7 +9,7 @@ import pytest
 from backend import database
 from backend.agent import agent_tools, unified_dispatch
 from backend.config import config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

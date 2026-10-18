@@ -126,7 +126,7 @@ def test_preview_requires_auth_and_validates_target(monkeypatch, event_payload):
 def test_config_round_trip_and_export(monkeypatch, tmp_path, pg):
     from backend import storage
     from backend import config_store
-    from backend.database_schema import initialize_schema
+    from backend.database.schema import initialize_schema
 
     path = tmp_path / 'config.db'
     with storage.connect() as conn:

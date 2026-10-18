@@ -40,7 +40,8 @@ backend/app/core/         调度器、运行时和安全相关逻辑
 backend/agent/            Agent 图、工具和提示词模板
 backend/utils/            行情、指标、日志和 LLM 工具
 backend/config.py         运行配置入口
-backend/database.py       PostgreSQL 数据访问层
+backend/database/         按业务划分的数据库访问代码，保留 backend.database 公共入口
+backend/storage/          PostgreSQL 连接与版本化迁移
 frontend/                 React + Vite 前端
 docs/                     部署和产品文档
 ```

@@ -128,7 +128,7 @@ def test_restart_recovers_only_unstarted_work_and_never_replays_running(runtime)
 
 
 def test_news_identity_and_count_commit_with_queue_and_regular_run_coexists(runtime):
-    from backend import database_news
+    from backend.database import news as database_news
     from backend.app.services.news_triggers import _enqueue_news
     put()
     name = 'news-trigger:a'

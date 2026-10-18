@@ -47,7 +47,7 @@ def _native_receipt(result, action, operation_id, symbol, *, contract_size=1):
 
 def _independent(action, config_id, symbol, cfg, operation_id, mt):
     from backend.agent.agent_models import OpenOrderStrategy
-    from backend.database_independent import MockIndependentTrading
+    from backend.database.independent import MockIndependentTrading
     from backend.utils.independent_exits import IndependentExits
     from backend.utils.trade_receipts import TradeAttempt, current_attempt, project_receipt
     real = cfg.get('mode', 'STRATEGY').upper() == 'REAL'
@@ -387,7 +387,7 @@ def _strategy_attached(action, config_id, symbol, operation_id, mt):
         price = float(mt.exchange.fetch_ticker(symbol)['last'])
         return database.reduce_mock_positions(config_id, symbol, action.side, action.amount or 0,
                                               price, action.reason, operation_id=operation_id)
-    from backend.database_independent import initialize_independent_schema
+    from backend.database.independent import initialize_independent_schema
     from backend.utils.position_protection import PositionProtection
     intent = json.dumps(action.model_dump(exclude_none=True), sort_keys=True)
     order_id = 'ST3-' + hashlib.sha256(f'{config_id}\0{operation_id}'.encode()).hexdigest()[:28]
@@ -663,7 +663,7 @@ def _attached_write_started(config_id, operation_id):
 def live_account_summary(config_id, parsed, config):
     if config.get('mode') == 'STRATEGY':
         from backend import database
-        from backend.database_independent import MockIndependentTrading
+        from backend.database.independent import MockIndependentTrading
         symbols = list(dict.fromkeys(action.symbol for action in parsed.actions))
         with database.get_db_conn() as conn:
             account = conn.execute('SELECT balance FROM mock_accounts WHERE config_id=%s', (config_id,)).fetchone()

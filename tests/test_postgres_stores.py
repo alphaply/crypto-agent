@@ -52,9 +52,9 @@ def pg(monkeypatch, tmp_path):
 
 
 def test_balance_prices_and_scoped_spot_fills(pg):
-    from backend.database_balance import BalanceHistoryStore
-    from backend.database_orders import OrderPersistenceStore
-    from backend.database_pricing import PricingStore
+    from backend.database.balance import BalanceHistoryStore
+    from backend.database.orders import OrderPersistenceStore
+    from backend.database.pricing import PricingStore
     stamp = lambda: '2026-10-15 08:00:00'
     prices = PricingStore(pg)
     prices.upsert('模型', 0.123456789123456, 5.5)
@@ -76,7 +76,7 @@ def test_balance_prices_and_scoped_spot_fills(pg):
 
 
 def test_rule_idempotency_revision_and_rollback(pg):
-    from backend.database_rules import change_trading_rules, list_trading_rules, RuleConflictError
+    from backend.database.rules import change_trading_rules, list_trading_rules, RuleConflictError
     changes = [{'action': 'add', 'content': '中文规则'}]
     with ThreadPoolExecutor(2) as workers:
         results = list(workers.map(lambda _: change_trading_rules('task', changes, actor='human', operation_id='same'), range(2)))
@@ -90,7 +90,7 @@ def test_rule_idempotency_revision_and_rollback(pg):
 
 
 def test_news_leases_and_cache_preserve_identity(pg):
-    from backend import database_news as news
+    from backend.database import news as news
     with ThreadPoolExecutor(2) as workers:
         owners = list(workers.map(lambda _: news.acquire_lease('news'), range(2)))
     assert sum(owner is not None for owner in owners) == 1
@@ -114,7 +114,7 @@ def test_news_leases_and_cache_preserve_identity(pg):
 
 
 def test_independent_account_reservations_and_operation_replay(pg):
-    from backend.database_independent import MockIndependentTrading
+    from backend.database.independent import MockIndependentTrading
     op = SimpleNamespace(action='BUY_LIMIT', amount=60, entry_price=100, stop_loss=None,
                          take_profit=None, reason='test', valid_duration_hours=24)
     trader = MockIndependentTrading('account', 'BTC/USDT')
@@ -129,7 +129,7 @@ def test_independent_account_reservations_and_operation_replay(pg):
 
 
 def test_concurrent_account_credits_do_not_lose_updates(pg):
-    from backend.database_mock import MockTradingStore
+    from backend.database.mock import MockTradingStore
     mock = MockTradingStore(pg, lambda: datetime.now(timezone.utc), lambda: 1, lambda **kw: None, logging.getLogger('test'))
     mock.get_account('account', 'BTC/USDT')
     with ThreadPoolExecutor(4) as workers:
@@ -141,7 +141,7 @@ def test_concurrent_account_credits_do_not_lose_updates(pg):
 
 
 def test_trade_observations_scope_and_bad_row_savepoint(pg):
-    from backend.database_trade import TradeHistoryStore
+    from backend.database.trade import TradeHistoryStore
     store = TradeHistoryStore(pg, logging.getLogger('test'))
     trade = dict(id='fill', order='order', timestamp=1792015200000, symbol='BTC/USDT', side='buy',
                  price=10, amount=2, cost=20, realizedPnl=1)
@@ -156,9 +156,9 @@ def test_trade_observations_scope_and_bad_row_savepoint(pg):
 
 
 def test_chat_and_memory_and_summary_returning(pg, monkeypatch):
-    from backend.database_chat import ChatSessionStore
-    from backend.database_memory import SummaryMemoryStore
-    from backend.database_summary import SummaryStore
+    from backend.database.chat import ChatSessionStore
+    from backend.database.memory import SummaryMemoryStore
+    from backend.database.summary import SummaryStore
     from backend.config import config
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: None)
     chats = ChatSessionStore(pg, lambda: '2026-10-15 08:00:00')
@@ -183,7 +183,7 @@ def test_chat_and_memory_and_summary_returning(pg, monkeypatch):
 
 
 def test_usage_large_counters_and_finish_idempotency(pg):
-    from backend.database_usage import start_usage, finish_usage
+    from backend.database.usage import start_usage, finish_usage
     with pg() as conn:
         start_usage(conn, 'run', config_id='task', purpose='chat', model='test', provider_id=None,
                     started_at='2026-10-15T00:00:00+00:00', prices={'input_price_per_m': 1, 'output_price_per_m': 2})

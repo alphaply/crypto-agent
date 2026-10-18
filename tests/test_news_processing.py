@@ -6,12 +6,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend import config_store, database, database_news
+from backend import config_store, database
+from backend.database import news as database_news
 from backend.app.api.news import router
 from backend.app.core.deps import get_current_user
 from backend.app.services import news_service, pricing_service
-from backend.database_agent_runs import get_agent_run
-from backend.database_schema import initialize_schema
+from backend.database.agent_runs import get_agent_run
+from backend.database.schema import initialize_schema
 from backend.utils import jev, llm_utils, provider_catalog
 
 
@@ -271,7 +272,7 @@ def test_public_snapshots_hide_private_audit_and_trace_metadata(processing, monk
 
 
 def test_news_audit_retention_is_independent_of_ordinary_agents(processing, monkeypatch):
-    from backend import database_agent_runs as runs
+    from backend.database import agent_runs as runs
     monkeypatch.setattr(runs, 'MAX_RUNS_PER_CONFIG', 1)
     monkeypatch.setattr(runs, 'MAX_NEWS_RUNS', 3)
     news_ids = [runs.start_agent_run('news-intelligence', 'news_score', 'jev-latest', [], provider_id='jev') for _ in range(3)]

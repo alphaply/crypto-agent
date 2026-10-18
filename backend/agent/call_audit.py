@@ -13,7 +13,7 @@ def _response_audit_fields(response) -> dict:
     if response is None:
         return {}
     usage = extract_usage(response)
-    from backend.database_agent_runs import _json_value
+    from backend.database.agent_runs import _json_value
     extra = getattr(response, 'additional_kwargs', {}) or {}
     return _json_value({
         'output': extract_message_text(response),
@@ -31,7 +31,7 @@ def _response_audit_fields(response) -> dict:
 
 
 def request_diagnostics(settings: dict) -> dict:
-    from backend.database_agent_runs import _json_value
+    from backend.database.agent_runs import _json_value
     keys = ('max_tokens', 'max_completion_tokens', 'max_output_tokens', 'thinking', 'thinking_enabled', 'reasoning_effort')
     return _json_value({key: value for source in (settings, settings.get('extra_body') or {})
                         for key, value in source.items() if key in keys and value is not None})
@@ -41,7 +41,7 @@ def request_diagnostics(settings: dict) -> dict:
 def model_call_trace(purpose, *, config_id, model, messages, run_id=None, settings=None):
     """Include validation in the trace; tracing failures never replay model work."""
     from langsmith import trace
-    from backend.database_agent_runs import _serialize_message
+    from backend.database.agent_runs import _serialize_message
     context, run = None, None
     try:
         context = trace(purpose, run_type='chain', run_id=run_id,
@@ -85,7 +85,7 @@ def audited_invoke(
     request_settings: dict | None = None,
 ):
     """Validate inside the audit boundary while retaining rejected model output."""
-    from backend.database_agent_runs import start_agent_run, finish_agent_run
+    from backend.database.agent_runs import start_agent_run, finish_agent_run
 
     run_id = None
     try:

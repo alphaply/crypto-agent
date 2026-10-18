@@ -9,7 +9,7 @@ from contextvars import copy_context
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
-from backend import database_news
+from backend.database import news as database_news
 from backend.app.schemas.news import NewsSettings
 from backend.utils import news_context as sources
 from backend.utils.jev import JevError, score_news, validate_provider

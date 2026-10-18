@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from backend.utils import news_context
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 UTC = timezone.utc

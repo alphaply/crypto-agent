@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import backend.database as database
 from backend.app.services import stats_service
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.execution_ledger import account_scope
 
 

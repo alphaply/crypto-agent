@@ -3,7 +3,7 @@ from unittest.mock import patch
 from datetime import datetime, timedelta
 
 import backend.database as database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.agent.memory_service import format_recent_position_history_for_memory
 
 

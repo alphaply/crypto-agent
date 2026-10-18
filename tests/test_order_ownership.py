@@ -4,7 +4,7 @@ import pytest
 
 import backend.database as database
 from backend.agent import agent_tools
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.execution_ledger import account_scope
 from backend.utils.market_data import MarketTool
 from backend.utils.order_ownership import assert_owned_perpetual_order

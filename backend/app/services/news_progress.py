@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import threading
 
-from backend import database_news
+from backend.database import news as database_news
 
 current_progress = ContextVar('news_progress', default=None)
 

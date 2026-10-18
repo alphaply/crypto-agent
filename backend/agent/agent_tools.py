@@ -30,7 +30,7 @@ def _independent_service(config_id, symbol):
     if (config.get_config_by_id(config_id) or {}).get('mode', 'STRATEGY').upper() == 'REAL':
         from backend.utils.independent_exits import IndependentExits
         return IndependentExits(MarketTool(config_id=config_id)), True
-    from backend.database_independent import MockIndependentTrading
+    from backend.database.independent import MockIndependentTrading
     return MockIndependentTrading(config_id, symbol), False
 
 

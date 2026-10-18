@@ -9,7 +9,7 @@ import ccxt
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils import position_management as management
 from backend.utils.trade_operations import run_once
 from test_exclusive_position_management import ExclusiveExchange, make_service, SYMBOL

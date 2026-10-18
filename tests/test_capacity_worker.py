@@ -15,7 +15,7 @@ import pytest
 
 from backend import database
 from backend.config import config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils import background_receipts, runtime_capacity
 from backend.utils.capacity_profile import PHASES
 

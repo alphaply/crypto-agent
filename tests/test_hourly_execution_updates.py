@@ -10,7 +10,7 @@ import pytest
 import pytz
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.agent import agent_graph
 from backend.agent.memory_updates import enqueue_memory_update, process_memory_update
 from backend.utils.decision_record import build_decision_record, read_decision_record

@@ -6,7 +6,7 @@ from backend import storage
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils import protection_scan, runtime_capacity
 from backend.utils.execution_ledger import (ExecutionLedger, register_order,
                                             rebuild_execution_position_history)

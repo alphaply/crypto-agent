@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import backend.database as database
-from backend.database_cleanup import ConfigCleanupStore
+from backend.database.cleanup import ConfigCleanupStore
 
 
 def create_pricing_and_cleanup_tables(db_path: Path) -> None:

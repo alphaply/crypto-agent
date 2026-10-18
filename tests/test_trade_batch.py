@@ -6,7 +6,7 @@ import pytest
 from backend import database
 from backend.agent import trade_batch
 from backend.config import config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.trade_operations import current_operation_id, run_once, tool_result_status, reconcile_pending_trade_operations
 
 
@@ -283,7 +283,7 @@ def test_old_receipt_without_request_metadata_cannot_infer_whole_batch_completio
 
 
 def test_request_receipts_are_included_in_task_cleanup(local_db):
-    from backend.database_cleanup import ConfigCleanupStore
+    from backend.database.cleanup import ConfigCleanupStore
     cleanup = ConfigCleanupStore(database.get_db_conn, lambda: '2026-10-01 00:00:00')
     run_once('cfg', 'ETH/USDT', 'operation', {}, lambda: {'status': 'completed'})
     assert cleanup.get_dependency_counts('cfg')['trade_operation_requests'] == 1

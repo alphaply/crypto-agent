@@ -6,7 +6,7 @@ import ccxt
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.mcp import spot_orders as exits
 
 

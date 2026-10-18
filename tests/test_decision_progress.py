@@ -10,7 +10,7 @@ from backend.agent import agent_graph, decision_context
 from backend.agent.agent_models import AgentState
 from backend.agent.tool_registry import get_trade_tools_for_mode
 from backend.app.core import scheduler
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.mark.parametrize('trade_mode', ['REAL', 'STRATEGY'])

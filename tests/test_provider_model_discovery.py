@@ -29,7 +29,9 @@ def client(monkeypatch):
     app.include_router(router)
     app.dependency_overrides[get_current_user] = lambda: {'sub': 'admin'}
     # Discovery must never cross into any persistence, reload or generation path.
-    from backend import config_store, database_agent_runs, database_usage
+    from backend import config_store
+    from backend.database import agent_runs as database_agent_runs
+    from backend.database import usage as database_usage
     from backend.app.services import config_service, news_service
     from backend.utils import llm_utils
     def forbidden(*args, **kwargs):
@@ -286,7 +288,7 @@ def test_later_timeout_preserves_partial_catalog(client, transport, monkeypatch)
 def test_saved_and_replaced_keys_do_not_change_encrypted_config(tmp_path, monkeypatch, transport, pg):
     from backend import config_store
     from backend.config import Config
-    from backend.database_schema import initialize_schema
+    from backend.database.schema import initialize_schema
     path = tmp_path / 'discovery-config.sqlite'
     with storage.connect() as conn:
         pass  # Native schema installed by the isolated PostgreSQL fixture.

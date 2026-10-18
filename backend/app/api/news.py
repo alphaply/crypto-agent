@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from backend.app.core.deps import get_current_user
 from backend.app.schemas.news import default_news_settings, default_news_sources
 from backend.app.services.news_service import get_latest_news, get_news_status, refresh_news
-from backend import database_news
+from backend.database import news as database_news
 
 router = APIRouter(prefix='/api/news', tags=['news'])
 

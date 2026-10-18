@@ -5,10 +5,11 @@ from unittest.mock import Mock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from backend import database, database_agent_runs
+from backend import database
+from backend.database import agent_runs as database_agent_runs
 from backend.agent import agent_graph
 from backend.agent.call_audit import audited_invoke
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.llm_utils import require_complete_response
 
 

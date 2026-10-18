@@ -6,8 +6,8 @@ import pytest
 
 from backend.app.services import dashboard_service, stats_service
 from backend import database
-from backend.database_dca import DcaSnapshotStore
-from backend.database_schema import initialize_schema
+from backend.database.dca import DcaSnapshotStore
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

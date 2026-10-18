@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.app.core.deps import get_current_user
 from backend.app.services import pricing_service
-from backend.database_news import read_state
+from backend.database.news import read_state
 
 router = APIRouter(prefix='/api/pricing', tags=['pricing'], dependencies=[Depends(get_current_user)])
 

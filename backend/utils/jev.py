@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from backend import database_news
+from backend.database import news as database_news
 from backend.app.schemas.news import DEFAULT_SCORER_INSTRUCTIONS, DEFAULT_SCORER_CRITERIA
 from backend.utils.news_tracing import news_span, pipeline_run_id, trace_identity
 
@@ -136,7 +136,7 @@ def parse_response(payload: dict, level_count: int = 5) -> dict:
 
 
 def score_news(item: dict, provider: dict, *, instructions: str = DEFAULT_SCORER_INSTRUCTIONS, criteria: list[str] | None = None) -> dict:
-    from backend.database_agent_runs import start_agent_run, finish_agent_run
+    from backend.database.agent_runs import start_agent_run, finish_agent_run
     validate_provider(provider)
     body = build_request(item, provider['model'], instructions=instructions, criteria=criteria)
     base = api_base(provider)

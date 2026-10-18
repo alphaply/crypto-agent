@@ -30,7 +30,7 @@ def _capacity_mode(monkeypatch, *, enabled):
 def db(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'mcp.db'))
     with database.get_db_conn() as conn:
-        from backend.database_schema import initialize_schema
+        from backend.database.schema import initialize_schema
         pass  # PostgreSQL migrations are installed by financial_pg.
         store.initialize_schema(conn)
         conn.commit()

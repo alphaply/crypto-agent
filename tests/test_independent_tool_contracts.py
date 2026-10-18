@@ -10,7 +10,7 @@ from backend import database
 from backend.agent import agent_tools, independent_tools, tool_registry, trade_batch
 from backend.agent.trading_contracts import CloseInput, EditInput, OpenInput
 from backend.config import config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.mark.parametrize('dependencies', [[True], [1], [-1], [0, 0], ['0'], None])

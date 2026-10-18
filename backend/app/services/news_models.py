@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 
-from backend import database_news
+from backend.database import news as database_news
 
 
 def fingerprint(value) -> str:

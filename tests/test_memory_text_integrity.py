@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from backend import database
 from backend.agent import agent_graph
 from backend.agent.agent_models import AgentState
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 CONFIG = {'config_id': 'cfg', 'symbol': 'ETH/USDT', 'mode': 'STRATEGY', 'enabled': True}

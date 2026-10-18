@@ -1,6 +1,6 @@
 import pytest
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.app.services.portfolio_history_service import portfolio_decision_page
 
 

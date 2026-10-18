@@ -24,7 +24,7 @@ CALLBACK = 'https://chatgpt.com/connector/oauth/test-callback'
 def client(tmp_path, monkeypatch, pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'oauth.db'))
     with database.get_db_conn() as conn:
-        from backend.database_schema import initialize_schema
+        from backend.database.schema import initialize_schema
         pass  # PostgreSQL migrations are installed by financial_pg.
         conn.commit()
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'connection-test-master')

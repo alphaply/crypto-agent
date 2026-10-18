@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 import backend.database as database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.agent import agent_tools
 from backend.agent.tool_registry import run_trade_tool
 from backend.app.core import scheduler

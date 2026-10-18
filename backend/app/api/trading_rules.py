@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from backend.app.core.deps import get_current_user
 from backend.app.schemas.trading_rules import CreateTradingRuleRequest, UpdateTradingRuleRequest
 from backend.app.services import trading_rules_service as service
-from backend.database_rules import RuleConflictError, RuleLockedError
+from backend.database.rules import RuleConflictError, RuleLockedError
 
 router = APIRouter(prefix='/api/history/trading-rules', tags=['history'])
 

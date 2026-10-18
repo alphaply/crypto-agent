@@ -8,8 +8,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from backend import database
 from backend.agent import agent_graph, chat_graph
 from backend.agent.agent_models import AgentState
-from backend.database_memory import SummaryMemoryStore
-from backend.database_schema import initialize_schema
+from backend.database.memory import SummaryMemoryStore
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def test_recent_decisions_are_three_chronological_complete_summaries(local_db, m
 
 
 def test_market_failure_keeps_active_memory_without_retired_rules(local_db, monkeypatch):
-    from backend.database_rules import change_trading_rules
+    from backend.database.rules import change_trading_rules
     change_trading_rules('cfg', [{'action': 'add', 'content': 'Verify executed amounts'}], actor='human')
     database.save_short_memory('2026-10-01 01:00:00', '2026-10-01 02:00:00', 'ETH/USDT', 'cfg', 'Previous thesis', '', 1)
     from memory_test_support import publish_strategy_views

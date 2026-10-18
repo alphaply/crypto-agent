@@ -4,7 +4,8 @@ import uuid
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from backend import database, database_rules as rules
+from backend import database
+from backend.database import rules as rules
 from backend.agent import memory_agent as memory
 from backend.agent.strategy_material import strategy_material
 from backend.app.services import trading_rules_service as service
@@ -209,7 +210,7 @@ def test_memory_prompt_file_precedence_matches_strategy_summary(
 
 
 def test_actual_audit_includes_input_raw_output_and_no_rule_tools(environment, monkeypatch):
-    from backend import database_agent_runs as audit
+    from backend.database import agent_runs as audit
 
     monkeypatch.setattr(memory, "_start_audit", START_AUDIT)
     monkeypatch.setattr(memory, "_finish_audit", FINISH_AUDIT)
@@ -232,7 +233,7 @@ def test_actual_audit_includes_input_raw_output_and_no_rule_tools(environment, m
 
 
 def test_audit_unavailable_does_not_block_review(environment, monkeypatch):
-    from backend import database_agent_runs as audit
+    from backend.database import agent_runs as audit
 
     def unavailable(*args, **kwargs):
         raise RuntimeError("audit unavailable")

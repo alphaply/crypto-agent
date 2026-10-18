@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 import pytest
 
 import backend.database as database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.agent import agent_graph
 from backend.agent import memory_updates
 from test_trade_tool_integration import simulation, real_short, call

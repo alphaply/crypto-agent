@@ -281,7 +281,7 @@ class MockTradingStore:
         with self._conn_factory() as conn:
             storage.lock_scope(conn, 'mock-account', config_id)
             if operation_id is not None:
-                from backend.database_independent import initialize_independent_schema
+                from backend.database.independent import initialize_independent_schema
                 initialize_independent_schema(conn.cursor())
                 intent = json.dumps({'contract_version': 3, 'action': 'close', 'side': pos_side,
                                      'amount': amount, 'reason': reason}, sort_keys=True)

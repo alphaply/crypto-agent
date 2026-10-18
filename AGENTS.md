@@ -22,7 +22,8 @@
 - `backend/agent/`：agent 图、工具、提示词模板
 - `backend/utils/`：行情数据、指标、日志、LLM 辅助工具
 - `backend/config.py`：运行时配置加载
-- `backend/database.py`：数据库访问层
+- `backend/database/`：按业务划分的数据库访问代码，`backend.database` 保持公共调用入口
+- `backend/storage/`：PostgreSQL 连接与版本化迁移
 - `frontend/`：React + Vite 前端
 - `docs/`：运维与产品文档
 - 运行时状态：`.env`、`trading_data.db`

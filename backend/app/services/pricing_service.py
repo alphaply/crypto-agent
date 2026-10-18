@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from backend.app.schemas.news import PricingSyncSettings
-from backend import database_news
+from backend.database import news as database_news
 
 CATALOG_URL = 'https://models.dev/api.json'
 RATE_FIELDS = ('input_price_per_m', 'output_price_per_m', 'cache_read_price_per_m', 'cache_write_price_per_m')

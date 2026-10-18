@@ -1,4 +1,4 @@
-from backend import database_rules
+from backend.database import rules as database_rules
 from backend.config import config
 
 

@@ -5,8 +5,8 @@ from langchain_core.messages import HumanMessage
 
 from backend.app.services import chat_service
 from backend.agent import chat_graph
-from backend.database_chat import ChatSessionStore
-from backend.database_schema import initialize_schema
+from backend.database.chat import ChatSessionStore
+from backend.database.schema import initialize_schema
 
 
 def _runtime_snapshot():

@@ -1,3 +1,4 @@
+"""Public database API; domain stores live in the sibling modules."""
 import os
 from backend import storage
 import time
@@ -6,20 +7,20 @@ import pytz
 from datetime import datetime, timedelta
 import json
 from contextlib import contextmanager
-from backend.database_balance import BalanceHistoryStore
-from backend.database_chat import ChatSessionStore
-from backend.database_cleanup import ConfigCleanupStore
-from backend.database_dca import DcaSnapshotStore
-from backend.database_memory import SummaryMemoryStore
-from backend.database_mock import MockTradingStore
-from backend.database_orders import OrderPersistenceStore
-from backend.database_position import PositionHistoryStore
-from backend.database_pricing import PricingStore
-from backend.database_summary import SummaryStore
-from backend.database_statistics import TradingStatisticsStore
-from backend.database_trade import TradeHistoryStore
+from backend.database.balance import BalanceHistoryStore
+from backend.database.chat import ChatSessionStore
+from backend.database.cleanup import ConfigCleanupStore
+from backend.database.dca import DcaSnapshotStore
+from backend.database.memory import SummaryMemoryStore
+from backend.database.mock import MockTradingStore
+from backend.database.orders import OrderPersistenceStore
+from backend.database.position import PositionHistoryStore
+from backend.database.pricing import PricingStore
+from backend.database.summary import SummaryStore
+from backend.database.statistics import TradingStatisticsStore
+from backend.database.trade import TradeHistoryStore
 from backend.storage_paths import DATA_DIR, PROJECT_ROOT
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.logger import setup_logger
 
 # 设置时区
@@ -973,9 +974,3 @@ def export_database_bytes() -> tuple[bytes, str]:
     """Export a PostgreSQL custom-format dump using the shared backup service."""
     from backend.storage.backup import export_database_bytes as export_dump
     return export_dump()
-
-
-if __name__ == "__main__":
-    init_db()
-    logger.info("Database initialized.")
-

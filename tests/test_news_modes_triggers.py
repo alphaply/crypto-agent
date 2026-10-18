@@ -5,8 +5,9 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
-from backend import database, database_news
-from backend.database_schema import initialize_schema
+from backend import database
+from backend.database import news as database_news
+from backend.database.schema import initialize_schema
 from backend.app.schemas.news import NewsSettings, NewsTriggerRule
 from backend.app.services import news_service, news_models, news_triggers
 from backend.utils import llm_utils

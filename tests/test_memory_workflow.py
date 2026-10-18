@@ -11,7 +11,7 @@ import pytest
 from backend import database
 from backend.agent import agent_graph, memory_agent, memory_workflow
 from backend.agent.memory_agent import MemoryReviewResult
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 CONFIG = {'config_id': 'cfg', 'symbol': 'BTC/USDT', 'mode': 'REAL', 'enabled': True}

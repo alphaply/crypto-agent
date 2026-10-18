@@ -10,7 +10,7 @@ import ccxt
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.independent_exits import IndependentExits
 from backend.utils.management_policy import normalize_management
 from backend.utils.position_management import action_reservation, ensure_managed, management_snapshot

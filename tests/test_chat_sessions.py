@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import backend.database as database
-from backend.database_chat import ChatSessionStore
+from backend.database.chat import ChatSessionStore
 
 
 def create_chat_sessions_table(db_path: Path) -> None:

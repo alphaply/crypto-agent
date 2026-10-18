@@ -498,7 +498,7 @@ class MarketTool:
     def _check_mock_orders_tp_sl(self, symbol, current_high, current_low, candle_ts_ms=0):
         """检查模拟盘订单是否触及止盈止损并自动平仓"""
         if not self.config_id: return
-        from backend.database_independent import MockIndependentTrading
+        from backend.database.independent import MockIndependentTrading
         independent = MockIndependentTrading(self.config_id, symbol)
         snapshot = independent.snapshot()
         if snapshot['positions'] or snapshot['entries'] or snapshot['exits']:
@@ -657,7 +657,7 @@ class MarketTool:
             active_orders = database.get_mock_orders(
                 symbol=self.symbol, config_id=self.config_id
             )
-            from backend.database_independent import MockIndependentTrading
+            from backend.database.independent import MockIndependentTrading
             independent_snapshot = MockIndependentTrading(self.config_id, self.symbol).snapshot()
             active_orders += independent_snapshot['positions']
             result["checked"] = len(active_orders)
@@ -908,7 +908,7 @@ class MarketTool:
                 
                 # 同时传入 config_id 和 agent_name 以获得最佳兼容性
                 status_data["mock_open_orders"] = database.get_mock_orders(symbol, agent_name=agent_name, config_id=config_id)
-                from backend.database_independent import MockIndependentTrading
+                from backend.database.independent import MockIndependentTrading
                 independent_snapshot = MockIndependentTrading(config_id or agent_name, symbol).snapshot()
                 status_data['mock_open_orders'] += independent_snapshot['positions']
                 status_data['independent_exits'] = independent_snapshot

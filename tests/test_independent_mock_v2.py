@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 import backend.database as database
-from backend.database_independent import MockIndependentTrading
-from backend.database_schema import initialize_schema
+from backend.database.independent import MockIndependentTrading
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

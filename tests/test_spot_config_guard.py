@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.spot_config_guard import SpotConfigConflict, assert_spot_config_change_allowed
 from backend.utils.spot_execution import _initialize
 

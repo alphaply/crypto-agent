@@ -135,7 +135,7 @@ def _management_position_metadata(positions: list[dict], projection: dict) -> li
 
 
 def get_token_stats_payload():
-    from backend.database_usage import token_stats
+    from backend.database.usage import token_stats
     return token_stats()
 
 
@@ -471,7 +471,7 @@ def _fetch_strategy_position_data(mt, config_id, symbol, cfg):
         ).fetchall()
         from backend.utils.exit_policy import effective_exit_mode
         if effective_exit_mode(cfg) == 'independent_exits':
-            from backend.database_independent import MockIndependentTrading
+            from backend.database.independent import MockIndependentTrading
             open_mocks = [{**row, 'stop_loss': None, 'take_profit': None}
                           for row in MockIndependentTrading(config_id, symbol).snapshot()['positions']]
         for order in open_mocks:
@@ -610,7 +610,7 @@ def get_position_stats_payload(config_id: str):
                 from backend.utils.independent_exits import IndependentExits
                 exit_management = IndependentExits(mt).snapshot(symbol)
             else:
-                from backend.database_independent import MockIndependentTrading
+                from backend.database.independent import MockIndependentTrading
                 exit_management = MockIndependentTrading(config_id, symbol).snapshot()
                 exit_management['mode'] = 'independent_exits'
         except storage.Error:
@@ -1170,7 +1170,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
     if mode in {'REAL', 'STRATEGY'} and effective_exit_mode(cfg) == 'independent_exits':
         try:
             if mode == 'STRATEGY':
-                from backend.database_independent import MockIndependentTrading
+                from backend.database.independent import MockIndependentTrading
                 snapshot = MockIndependentTrading(config_id, symbol).snapshot()
                 positions = [{**p, 'side': p['pos_side'], 'entry_price': p['price'],
                               'mark_price': float(candles[-1]['close']) if candles else 0}

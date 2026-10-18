@@ -6,10 +6,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Sys
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 
-from backend import database, database_agent_runs
+from backend import database
+from backend.database import agent_runs as database_agent_runs
 from backend.agent import chat_graph, chat_titles
 from backend.app.services import chat_service
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

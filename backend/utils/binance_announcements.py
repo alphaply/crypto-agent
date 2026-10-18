@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from backend import database_news
+from backend.database import news as database_news
 from backend.utils.runtime_capacity import get_capacity_manager, reserve_bytes, CapacityBusy, current_capacity
 
 _lock = threading.Lock()

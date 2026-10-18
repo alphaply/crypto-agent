@@ -7,7 +7,7 @@ from backend import database
 from backend.agent import agent_graph, decision_context, chat_graph
 from backend.agent.agent_models import AgentState
 from backend.app.core import scheduler
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 MEMORY = decision_context.DecisionMemory('dynamic-memory', 'recent-decisions', 'human-rule')

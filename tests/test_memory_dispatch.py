@@ -7,7 +7,7 @@ import pytest
 from backend import database
 from backend.agent.memory_workflow import memory_review_lease
 from backend.app.services import dashboard_service
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

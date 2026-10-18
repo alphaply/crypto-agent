@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from backend.app.core.deps import get_current_user
-from backend.database_agent_runs import get_agent_run, list_agent_runs
+from backend.database.agent_runs import get_agent_run, list_agent_runs
 
 
 router = APIRouter(prefix='/api/agent-runs', tags=['agent-runs'], dependencies=[Depends(get_current_user)])

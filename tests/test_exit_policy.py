@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils import exit_policy
 
 

@@ -4,9 +4,11 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from backend import database, database_agent_runs, database_usage
+from backend import database
+from backend.database import agent_runs as database_agent_runs
+from backend.database import usage as database_usage
 from backend.app.services import pricing_service
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.fixture

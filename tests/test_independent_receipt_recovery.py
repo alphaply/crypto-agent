@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 from backend import database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.agent import tool_registry
 from backend.utils.trade_operations import reconcile_pending_trade_operations, run_once
 from test_trade_tool_integration import simulation, real_short, call, recover, native_order_id

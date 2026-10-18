@@ -3,8 +3,8 @@ from contextlib import contextmanager
 from unittest.mock import Mock
 
 from backend.app.services.dashboard_service import _scheduler_timestamp_iso
-from backend.database_schema import initialize_schema
-from backend.database_summary import SummaryStore
+from backend.database.schema import initialize_schema
+from backend.database.summary import SummaryStore
 
 
 def test_reasoning_tokens_persist_with_summaries(pg):

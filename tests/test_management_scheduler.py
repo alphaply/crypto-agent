@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from backend import database
 from backend.app.core import scheduler
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.mcp import resilience
 from backend.utils import position_management
 from test_exclusive_position_management import _hold_reservation, ExclusiveExchange, make_service, SYMBOL

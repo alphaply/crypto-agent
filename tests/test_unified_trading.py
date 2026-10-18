@@ -15,7 +15,7 @@ from backend import database
 from backend.agent import agent_tools, chat_graph, independent_tools, tool_registry, unified_trading as unified
 from backend.agent.trading_contracts import UnifiedTradeActionsSchema
 from backend.config import config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from test_spot_trade_execution import spot_runtime
 
 
@@ -222,7 +222,7 @@ def test_worker_crash_recovers_attempted_items_without_tail_replay(ledger):
 
 
 def test_crashed_v3_direct_replay_bypasses_legacy_parent_merger(ledger):
-    from backend.database_independent import initialize_independent_schema
+    from backend.database.independent import initialize_independent_schema
     def dispatch(action, index, child, symbol):
         if index:
             raise SystemExit('stopped')
@@ -241,7 +241,7 @@ def test_crashed_v3_direct_replay_bypasses_legacy_parent_merger(ledger):
 
 
 def test_child_financial_commit_survives_lost_outer_receipt(ledger):
-    from backend.database_independent import initialize_independent_schema
+    from backend.database.independent import initialize_independent_schema
     def dispatch(action, index, child, symbol):
         with database.get_db_conn() as conn:
             initialize_independent_schema(conn.cursor())
@@ -611,7 +611,7 @@ def test_attached_protection_lost_ack_recovery_keeps_new_leg_and_old_cleanup_sep
     ('stop_market', {'trigger_price': 90}), ('take_profit_market', {'trigger_price': 120}),
     ('stop_limit', {'trigger_price': 90, 'price': 89}), ('take_profit_limit', {'trigger_price': 120, 'price': 119})])
 def test_v3_independent_preserves_six_existing_exit_types(ledger, order_type, prices):
-    from backend.database_independent import MockIndependentTrading
+    from backend.database.independent import MockIndependentTrading
     opened = json.loads(tool_registry.run_trade_tool('execute_trade_actions', batch(opening(amount=1)), 'cfg', 'ETH/USDT', 'entry'))
     store = MockIndependentTrading('cfg', 'ETH/USDT')
     import time
@@ -624,7 +624,7 @@ def test_v3_independent_preserves_six_existing_exit_types(ledger, order_type, pr
 
 
 def test_v3_independent_remaining_edit_uses_latest_partial_fill(ledger):
-    from backend.database_independent import MockIndependentTrading
+    from backend.database.independent import MockIndependentTrading
     result = json.loads(tool_registry.run_trade_tool('execute_trade_actions', batch(opening(amount=1)), 'cfg', 'ETH/USDT', 'entry'))
     identity = result['results'][0]['result']['order_id']
     with database.get_db_conn() as conn:

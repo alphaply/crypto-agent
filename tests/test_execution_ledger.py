@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 import backend.database as database
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.execution_ledger import ExecutionLedger, execution_context, register_order
 
 

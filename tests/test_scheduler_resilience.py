@@ -7,7 +7,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from backend.app.core import scheduler
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 class RecordingExecutor:

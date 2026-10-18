@@ -4,7 +4,7 @@ import pytest
 
 import backend.database as database
 from backend.agent import agent_tools
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 
 
 @pytest.mark.parametrize('pos_side,order_side,expected_pnl', [('LONG', 'BUY', 10), ('SHORT', 'SELL', -10)])

@@ -8,7 +8,7 @@ from backend import database
 from backend.agent import context_projections as projections, memory_agent, memory_service, memory_updates
 from backend.agent.decision_context import load_decision_memory
 from backend.agent.memory_workflow import memory_review_lease, get_review_result
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.trade_context import project_trade_state, render_orders
 from test_trade_tool_integration import simulation, real_short, call, recover
 

@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from backend import database_news
+from backend.database import news as database_news
 from backend.app.services import news_service
 from backend.utils.news_schedule import news_schedule_slot
 

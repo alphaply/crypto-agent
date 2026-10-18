@@ -2,7 +2,7 @@ import pytest
 from backend import storage
 from unittest.mock import Mock
 
-from backend.database_trade import TradeHistoryStore
+from backend.database.trade import TradeHistoryStore
 
 
 def test_native_trade_identity_keeps_two_assets_and_task_ownership(tmp_path):

@@ -73,7 +73,7 @@ def _model_settings(agent_config: dict) -> dict:
 
 def _start_audit(config_id: str, model: str, messages: list, provider_id=None) -> str | None:
     try:
-        from backend.database_agent_runs import start_agent_run
+        from backend.database.agent_runs import start_agent_run
 
         return start_agent_run(config_id, "memory_review", model, messages, [], provider_id=provider_id)
     except Exception as exc:
@@ -85,7 +85,7 @@ def _finish_audit(run_id: str | None, **kwargs) -> None:
     if not run_id:
         return
     try:
-        from backend.database_agent_runs import finish_agent_run
+        from backend.database.agent_runs import finish_agent_run
 
         finish_agent_run(run_id, **kwargs)
     except Exception as exc:

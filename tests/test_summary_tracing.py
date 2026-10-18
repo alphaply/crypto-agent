@@ -5,9 +5,10 @@ import pytest
 from langchain_core.messages import AIMessage
 from langsmith import get_current_run_tree, tracing_context
 
-from backend import database, database_agent_runs
+from backend import database
+from backend.database import agent_runs as database_agent_runs
 from backend.agent import call_audit, memory_agent, memory_service
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.llm_utils import require_complete_response
 
 

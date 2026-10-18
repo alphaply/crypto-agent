@@ -2,7 +2,7 @@
 import json
 import pytest
 from backend import database, storage
-from backend.database_independent import MockIndependentTrading, initialize_independent_schema
+from backend.database.independent import MockIndependentTrading, initialize_independent_schema
 
 
 @pytest.fixture

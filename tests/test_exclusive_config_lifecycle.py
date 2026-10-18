@@ -17,7 +17,7 @@ from backend.app.api.config import router as config_router
 from backend.app.core.deps import get_current_user
 from backend.app.services import config_service, market_catalog_service
 from backend.config import Config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.mcp import store, settings as mcp_settings
 from backend.mcp.management import router as mcp_router
 from backend.mcp.transfer import import_settings

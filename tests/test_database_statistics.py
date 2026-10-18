@@ -6,7 +6,7 @@ import math
 import pytest
 
 from backend import database, storage
-from backend.database_statistics import TradingStatisticsStore
+from backend.database.statistics import TradingStatisticsStore
 
 
 def _trade(conn, identity, config, pnl, symbol="BTC/USDT"):
@@ -144,7 +144,7 @@ def test_spot_fill_observation_joins_transaction_and_rolls_back_together(pg):
 
 
 def test_schema_check_keeps_retired_plans_and_does_not_commit_caller_work(pg, monkeypatch):
-    from backend.database_schema import initialize_schema
+    from backend.database.schema import initialize_schema
 
     # This fixture isolates business tables in its own schema, not public.
     monkeypatch.setattr("backend.storage.migrate.check_schema", lambda conn: conn.execute("SELECT 1"))
@@ -242,7 +242,7 @@ def test_task_deletion_keeps_original_unfinished_evidence_but_deletes_completed_
 
 
 def test_task_cleanup_does_not_delete_receipts_changed_after_inspection(pg, monkeypatch):
-    from backend import database_cleanup
+    from backend.database import cleanup as database_cleanup
 
     with database.get_db_conn() as conn:
         for identity, status in [("pending", "unknown"), ("changed", "completed")]:

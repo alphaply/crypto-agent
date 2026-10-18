@@ -9,7 +9,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from backend import database
 from backend.agent.tool_registry import run_trade_tool as real_run_trade_tool
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.mcp import service, settings as cfg, spot_orders, store
 from backend.mcp.tools import TOOL_CATALOG, register_tools
 
@@ -39,7 +39,7 @@ class CatalogExchange:
 def contracts(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'tool-contracts.sqlite'))
     with database.get_db_conn() as conn:
-        from backend.database_schema import initialize_schema
+        from backend.database.schema import initialize_schema
         pass  # PostgreSQL migrations are installed by financial_pg.
         conn.commit()
     with database.get_db_conn() as conn:

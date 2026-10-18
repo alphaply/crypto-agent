@@ -47,35 +47,35 @@ python -m backend.storage.migrate --check
 
 | 表 | 业务主键 | storage_id 来源 | 原结构/调用入口 |
 | --- | --- | --- | --- |
-| `agent_configs` | `(config_id)` | `独立 identity` | `backend/database_schema.py` |
-| `agent_runs` | `(run_id)` | `独立 identity` | `backend/database_agent_runs.py` |
-| `app_settings` | `(key)` | `独立 identity` | `backend/database_schema.py` |
+| `agent_configs` | `(config_id)` | `独立 identity` | `backend/database/schema.py` |
+| `agent_runs` | `(run_id)` | `独立 identity` | `backend/database/agent_runs.py` |
+| `app_settings` | `(key)` | `独立 identity` | `backend/database/schema.py` |
 | `background_mcp_retries` | `(profile_id, operation_id)` | `独立 identity` | `backend/utils/background_receipts.py` |
 | `background_receipt_progress` | `(worker)` | `独立 identity` | `backend/utils/background_receipts.py` |
 | `background_receipt_retries` | `(config_id, operation_id)` | `独立 identity` | `backend/utils/background_receipts.py` |
-| `balance_history` | `(id)` | `id` | `backend/database_schema.py` |
-| `binance_announcements` | `(id)` | `独立 identity` | `backend/database_news.py` |
-| `chat_sessions` | `(session_id)` | `独立 identity` | `backend/database_schema.py` |
-| `daily_summaries` | `(id)` | `id` | `backend/database_schema.py` |
+| `balance_history` | `(id)` | `id` | `backend/database/schema.py` |
+| `binance_announcements` | `(id)` | `独立 identity` | `backend/database/news.py` |
+| `chat_sessions` | `(session_id)` | `独立 identity` | `backend/database/schema.py` |
+| `daily_summaries` | `(id)` | `id` | `backend/database/schema.py` |
 | `database_maintenance_log` | `(id)` | `id` | `backend/app/services/database_service.py` |
-| `dca_daily_snapshots` | `(id)` | `id` | `backend/database_schema.py` |
+| `dca_daily_snapshots` | `(id)` | `id` | `backend/database/schema.py` |
 | `decision_context_projections` | `(config_id, account_scope, source_kind, source_id, source_hash, projection_version)` | `独立 identity` | `backend/agent/context_projections.py` |
-| `durable_usage` | `(run_id)` | `独立 identity` | `backend/database_usage.py` |
-| `durable_usage_meta` | `(key)` | `独立 identity` | `backend/database_usage.py` |
-| `exchange_profiles` | `(profile_id)` | `独立 identity` | `backend/config_store.py`<br>`backend/database_schema.py` |
-| `execution_episodes` | `(episode_id)` | `独立 identity` | `backend/database_schema.py` |
-| `execution_fills` | `(account_scope, symbol, trade_id)` | `独立 identity` | `backend/database_schema.py` |
-| `execution_income` | `(account_scope, income_type, transaction_id)` | `独立 identity` | `backend/database_schema.py` |
-| `execution_order_links` | `(account_scope, symbol, order_id)` | `独立 identity` | `backend/database_schema.py` |
+| `durable_usage` | `(run_id)` | `独立 identity` | `backend/database/usage.py` |
+| `durable_usage_meta` | `(key)` | `独立 identity` | `backend/database/usage.py` |
+| `exchange_profiles` | `(profile_id)` | `独立 identity` | `backend/config_store.py`<br>`backend/database/schema.py` |
+| `execution_episodes` | `(episode_id)` | `独立 identity` | `backend/database/schema.py` |
+| `execution_fills` | `(account_scope, symbol, trade_id)` | `独立 identity` | `backend/database/schema.py` |
+| `execution_income` | `(account_scope, income_type, transaction_id)` | `独立 identity` | `backend/database/schema.py` |
+| `execution_order_links` | `(account_scope, symbol, order_id)` | `独立 identity` | `backend/database/schema.py` |
 | `execution_plan_index_affected` | `(index_id, owner)` | `独立 identity` | `backend/utils/execution_plan_index.py` |
 | `execution_plan_index_facts` | `(id)` | `id` | `backend/utils/execution_plan_index.py` |
 | `execution_plan_index_records` | `(id)` | `id` | `backend/utils/execution_plan_index.py` |
 | `execution_plan_index_runs` | `(index_id)` | `独立 identity` | `backend/utils/execution_plan_index.py` |
-| `execution_position_history` | `(position_id)` | `独立 identity` | `backend/database_schema.py` |
-| `execution_sync` | `(account_scope, symbol)` | `独立 identity` | `backend/database_schema.py` |
-| `global_news_snapshots` | `(id)` | `id` | `backend/database_news.py` |
-| `intelligence_source_cache` | `(source_key)` | `独立 identity` | `backend/database_schema.py` |
-| `llm_providers` | `(provider_id)` | `独立 identity` | `backend/config_store.py`<br>`backend/database_schema.py` |
+| `execution_position_history` | `(position_id)` | `独立 identity` | `backend/database/schema.py` |
+| `execution_sync` | `(account_scope, symbol)` | `独立 identity` | `backend/database/schema.py` |
+| `global_news_snapshots` | `(id)` | `id` | `backend/database/news.py` |
+| `intelligence_source_cache` | `(source_key)` | `独立 identity` | `backend/database/schema.py` |
+| `llm_providers` | `(provider_id)` | `独立 identity` | `backend/config_store.py`<br>`backend/database/schema.py` |
 | `management_account_aliases` | `(legacy_scope)` | `独立 identity` | `backend/utils/visible_management.py` |
 | `management_execution_scopes` | `(physical_account, market_type)` | `独立 identity` | `backend/utils/visible_management.py` |
 | `management_recovery_grants` | `(recovery_id)` | `独立 identity` | `backend/utils/visible_management.py` |
@@ -91,18 +91,18 @@ python -m backend.storage.migrate --check
 | `memory_review_leases` | `(config_id)` | `独立 identity` | `backend/agent/memory_workflow.py` |
 | `memory_review_results` | `(operation_id)` | `独立 identity` | `backend/agent/memory_workflow.py` |
 | `memory_update_jobs` | `(config_id, run_id)` | `独立 identity` | `backend/agent/memory_updates.py` |
-| `mock_accounts` | `(config_id)` | `独立 identity` | `backend/database_schema.py` |
-| `mock_balance_history` | `(id)` | `id` | `backend/database_schema.py` |
-| `mock_exit_orders` | `(order_id)` | `独立 identity` | `backend/database_independent.py` |
-| `mock_orders` | `(order_id)` | `独立 identity` | `backend/database_schema.py` |
-| `mock_positions` | `(config_id, symbol, side)` | `独立 identity` | `backend/database_independent.py` |
-| `mock_trade_operations` | `(config_id, symbol, operation_id)` | `独立 identity` | `backend/database_independent.py` |
+| `mock_accounts` | `(config_id)` | `独立 identity` | `backend/database/schema.py` |
+| `mock_balance_history` | `(id)` | `id` | `backend/database/schema.py` |
+| `mock_exit_orders` | `(order_id)` | `独立 identity` | `backend/database/independent.py` |
+| `mock_orders` | `(order_id)` | `独立 identity` | `backend/database/schema.py` |
+| `mock_positions` | `(config_id, symbol, side)` | `独立 identity` | `backend/database/independent.py` |
+| `mock_trade_operations` | `(config_id, symbol, operation_id)` | `独立 identity` | `backend/database/independent.py` |
 | `model_catalog_cache` | `(id)` | `id` | `backend/app/services/pricing_service.py` |
-| `model_pricing` | `(model)` | `独立 identity` | `backend/database_schema.py` |
-| `news_processing_runs` | `(run_id)` | `独立 identity` | `backend/database_news.py` |
-| `news_score_cache` | `(fingerprint)` | `独立 identity` | `backend/database_news.py` |
-| `news_snapshots` | `(id)` | `id` | `backend/database_schema.py` |
-| `orders` | `(id)` | `id` | `backend/database_schema.py` |
+| `model_pricing` | `(model)` | `独立 identity` | `backend/database/schema.py` |
+| `news_processing_runs` | `(run_id)` | `独立 identity` | `backend/database/news.py` |
+| `news_score_cache` | `(fingerprint)` | `独立 identity` | `backend/database/news.py` |
+| `news_snapshots` | `(id)` | `id` | `backend/database/schema.py` |
+| `orders` | `(id)` | `id` | `backend/database/schema.py` |
 | `paper_accounts` | `(namespace, user_id)` | `独立 identity` | `backend/mcp/paper_schema.py` |
 | `paper_batch_children` | `(namespace, user_id, child_operation_id)` | `独立 identity` | `backend/mcp/paper_schema.py` |
 | `paper_batch_status` | `(namespace, user_id, operation_id)` | `独立 identity` | `backend/mcp/paper_schema.py` |
@@ -118,7 +118,7 @@ python -m backend.storage.migrate --check
 | `paper_receipt_watch` | `(namespace, user_id, operation_id)` | `独立 identity` | `backend/mcp/paper_schema.py` |
 | `paper_resource_origins` | `(namespace, user_id, kind, resource_key)` | `独立 identity` | `backend/mcp/paper_schema.py` |
 | `paper_scan_progress` | `(worker)` | `独立 identity` | `backend/mcp/paper_schema.py` |
-| `position_history` | `(id)` | `id` | `backend/database_schema.py` |
+| `position_history` | `(id)` | `id` | `backend/database/schema.py` |
 | `position_management_actions` | `(account_scope, symbol, side)` | `独立 identity` | `backend/utils/position_management.py` |
 | `position_management_facts` | `(account_scope, symbol, identity)` | `独立 identity` | `backend/utils/position_management.py` |
 | `position_management_scopes` | `(account_scope, symbol, side)` | `独立 identity` | `backend/utils/position_management.py` |
@@ -126,29 +126,29 @@ python -m backend.storage.migrate --check
 | `protection_plan_scan_mode` | `(id)` | `id` | `backend/utils/protection_scan.py` |
 | `protection_plan_scan_progress` | `(id)` | `id` | `backend/utils/protection_scan.py` |
 | `provider_model_pricing` | `(provider_id, model)` | `独立 identity` | `backend/app/services/pricing_service.py` |
-| `real_protection_events` | `(id)` | `id` | `backend/database_schema.py` |
-| `real_protection_plans` | `(config_id, symbol, side)` | `独立 identity` | `backend/database_schema.py` |
-| `scheduler_runs` | `(id)` | `id` | `backend/database_schema.py` |
-| `secret_store` | `(scope, scope_id, secret_key)` | `独立 identity` | `backend/database_schema.py` |
-| `shared_pipeline_state` | `(name)` | `独立 identity` | `backend/database_news.py` |
-| `short_memories` | `(id)` | `id` | `backend/database_schema.py` |
+| `real_protection_events` | `(id)` | `id` | `backend/database/schema.py` |
+| `real_protection_plans` | `(config_id, symbol, side)` | `独立 identity` | `backend/database/schema.py` |
+| `scheduler_runs` | `(id)` | `id` | `backend/database/schema.py` |
+| `secret_store` | `(scope, scope_id, secret_key)` | `独立 identity` | `backend/database/schema.py` |
+| `shared_pipeline_state` | `(name)` | `独立 identity` | `backend/database/news.py` |
+| `short_memories` | `(id)` | `id` | `backend/database/schema.py` |
 | `spot_budget_cycles` | `(config_id, cycle_id)` | `独立 identity` | `backend/utils/spot_execution.py` |
 | `spot_budget_reservations` | `(config_id, operation_id)` | `独立 identity` | `backend/utils/spot_execution.py` |
 | `spot_management_intents` | `(config_id, operation_id)` | `独立 identity` | `backend/utils/visible_management.py` |
-| `spot_order_fills` | `(order_id, config_id, symbol)` | `独立 identity` | `backend/database_schema.py` |
-| `summaries` | `(id)` | `id` | `backend/database_schema.py` |
-| `token_usage` | `(id)` | `id` | `backend/database_schema.py` |
+| `spot_order_fills` | `(order_id, config_id, symbol)` | `独立 identity` | `backend/database/schema.py` |
+| `summaries` | `(id)` | `id` | `backend/database/schema.py` |
+| `token_usage` | `(id)` | `id` | `backend/database/schema.py` |
 | `trade_action_runs` | `(config_id, operation_id)` | `独立 identity` | `backend/utils/trade_operations.py` |
 | `trade_cycle_evidence` | `(config_id, account_scope, symbol, episode_id)` | `独立 identity` | `backend/utils/trade_evidence.py` |
-| `trade_history` | `无独立业务主键（保留唯一索引）` | `独立 identity` | `backend/database_schema.py` |
+| `trade_history` | `无独立业务主键（保留唯一索引）` | `独立 identity` | `backend/database/schema.py` |
 | `trade_operation_evidence` | `(config_id, account_scope, symbol, operation_id, episode_id, order_key)` | `独立 identity` | `backend/utils/trade_evidence.py` |
 | `trade_operation_requests` | `(config_id, operation_id)` | `独立 identity` | `backend/utils/trade_operations.py` |
 | `trade_receipt_revisions` | `(config_id, operation_id, revision)` | `独立 identity` | `backend/utils/trade_evidence.py` |
 | `trade_receipt_watermarks` | `(config_id, account_scope, operation_id)` | `独立 identity` | `backend/utils/trade_evidence.py` |
 | `trade_scope_generations` | `(account_scope, symbol)` | `独立 identity` | `backend/utils/trade_evidence.py` |
-| `trading_rule_operations` | `(config_id, operation_id)` | `独立 identity` | `backend/database_rules.py` |
-| `trading_rule_revisions` | `(rule_id, revision)` | `独立 identity` | `backend/database_rules.py` |
-| `trading_rules` | `(rule_id)` | `独立 identity` | `backend/database_rules.py` |
+| `trading_rule_operations` | `(config_id, operation_id)` | `独立 identity` | `backend/database/rules.py` |
+| `trading_rule_revisions` | `(rule_id, revision)` | `独立 identity` | `backend/database/rules.py` |
+| `trading_rules` | `(rule_id)` | `独立 identity` | `backend/database/rules.py` |
 | `unified_native_intents` | `(config_id, operation_id)` | `独立 identity` | `backend/agent/unified_dispatch.py` |
 | `unified_trade_batches` | `(config_id, parent_operation_id)` | `独立 identity` | `backend/agent/unified_trading.py` |
 | `unified_trade_children` | `(config_id, parent_operation_id, action_index)` | `独立 identity` | `backend/agent/unified_trading.py` |

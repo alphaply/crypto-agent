@@ -10,7 +10,7 @@ from backend.app.api import config as routes
 from backend.app.core.deps import get_current_user
 from backend.app.services import config_service
 from backend.config import Config
-from backend.database_schema import initialize_schema
+from backend.database.schema import initialize_schema
 from backend.utils.spot_execution import _initialize
 
 
