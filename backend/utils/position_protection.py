@@ -149,7 +149,8 @@ class PositionProtection:
         }
         for record in plan.get('entries', []):
             register_order(self.account_scope, plan['symbol'], record.get('id'), self.config_id, 'entry',
-                           refresh=False, planned_entry=record.get('price'), source=record.get('source', 'agent'), **common_history)
+                           refresh=False, planned_entry=record.get('price'), source=record.get('source', 'agent'),
+                           **{**common_history, 'episode_id': record.get('origin_episode_id', plan.get('episode_id'))})
         for record in plan.get('legs', []):
             # Conditional/algo ID can differ from the actual execution order ID.
             register_order(self.account_scope, plan['symbol'], record.get('execution_order_id') or record.get('id'),
@@ -214,6 +215,17 @@ class PositionProtection:
         record.update(id=str(order["id"]), status=order.get("status"),
                       filled=float(order.get("filled") or 0))
         info = order.get('info') or {}
+        if trigger and record.get('kind') in {'sl', 'tp'}:
+            field = 'stopLossPrice' if record['kind'] == 'sl' else 'takeProfitPrice'
+            observed_trigger = next((value for value in (
+                order.get(field), order.get('triggerPrice'), order.get('stopPrice'),
+                info.get('triggerPrice'), info.get('stopPrice'),
+                info.get('slTriggerPx' if record['kind'] == 'sl' else 'tpTriggerPx'))
+                if value is not None), None)
+            if observed_trigger is not None:
+                # Observed exchange facts may change; desired system prices
+                # remain on the plan. _ensure_leg replaces a deviating leg.
+                record['trigger_price'] = float(observed_trigger)
         execution_id = info.get('actualOrderId')
         if not execution_id and self.ex.id == 'okx':
             execution_id = info.get('ordId')
@@ -277,11 +289,11 @@ class PositionProtection:
         if attempt:
             attempt.action, attempt.phase, attempt.submission_state = 'open', 'preflight', 'not_submitted'
         from backend.mcp.guard import assert_entry_allowed
-        assert_entry_allowed(self.mt, symbol)
         if operation_id is None:
             from backend.utils.trade_operations import current_operation_id
             operation_id = current_operation_id.get()
         with _lock(self.account_scope):
+            assert_entry_allowed(self.mt, symbol)
             market = self._market(symbol)
             symbol = market["symbol"]
             side = "LONG" if op.action == "BUY_LIMIT" else "SHORT"
@@ -391,7 +403,6 @@ class PositionProtection:
         if attempt:
             attempt.action, attempt.phase, attempt.submission_state = 'edit', 'preflight', 'not_submitted'
         from backend.mcp.guard import assert_entry_allowed
-        assert_entry_allowed(self.mt, symbol)
         if operation_id is None:
             from backend.utils.trade_operations import current_operation_id
             operation_id = current_operation_id.get()
@@ -406,6 +417,7 @@ class PositionProtection:
         if not str(reason).strip():
             raise ValueError('A changed entry condition and amendment reason are required')
         with _lock(self.account_scope):
+            assert_entry_allowed(self.mt, symbol)
             market = self._market(symbol)
             symbol = market['symbol']
             plan = entry = None

@@ -60,7 +60,7 @@ def isolated(tmp_path, monkeypatch, financial_pg):
 
 def test_default_and_legacy_policy_mapping():
     assert normalize_management({'mode': 'REAL'})['position_management_policy'] == 'visible_first_claim'
-    assert normalize_management({'position_management_policy': 'strict_owned'})['position_management_policy'] == 'strict_owned'
+    assert normalize_management({'position_management_policy': 'strict_owned'})['position_management_policy'] == 'visible_first_claim'
 
 
 def test_query_does_not_claim_or_mutate_and_reports_competition():

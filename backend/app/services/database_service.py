@@ -74,6 +74,13 @@ def _selection(conn, tables: list[str], before: str, config_id: str | None):
             args.append(config_id)
         if table == 'short_memories':
             predicate += ' AND storage_id NOT IN (SELECT MAX(storage_id) FROM short_memories GROUP BY config_id)'
+        if table == 'scheduler_runs':
+            # Queue age is not permission to discard accepted work or its visible
+            # run identity. The same predicate is rechecked during deletion.
+            predicate += """ AND (status IS NULL OR status NOT IN ('QUEUED', 'RUNNING'))
+                AND NOT EXISTS (SELECT 1 FROM agent_run_queue queued
+                    WHERE queued.scheduler_run_id = scheduler_runs.id
+                      AND queued.status IN ('QUEUED', 'CLAIMED', 'RUNNING'))"""
         digest.update(table.encode())
         count = 0
         with conn.cursor(name='cleanup_' + uuid.uuid4().hex) as cursor:

@@ -319,12 +319,12 @@ def test_same_direction_owner_cannot_be_stolen(managed):
     assert exchange.writes == []
 
 
-def test_strict_mode_does_not_implicitly_claim_startup_exposure(managed):
+def test_historical_strict_mode_uses_shared_startup_exposure(managed):
     _, exchange = managed
     service = make_service(exchange, policy='strict_owned')
-    with pytest.raises(ValueError):
-        service.close(SYMBOL, 'LONG', .001, 'market', operation_id='strict-close')
-    assert exchange.writes == [] and plan(service) is None
+    result = service.close(SYMBOL, 'LONG', .001, 'market', operation_id='strict-close')
+    assert result['status'] in {'closed', 'completed'}
+    assert exchange.quantities['LONG'] == pytest.approx(.019)
 
 
 def test_legacy_exclusive_scopes_normalize_to_shared_visibility():
@@ -379,7 +379,7 @@ def test_separate_process_cannot_submit_inside_active_reservation(managed):
         assert process.exitcode == 0
 
 
-def test_external_fullclose_cleans_old_orders_and_later_close_skips(managed):
+def test_external_fullclose_retains_old_orders_and_later_close_skips(managed):
     service, exchange = managed
     exchange.external_order('tp')
     exchange.external_order('sl', channel='algo', trigger=2458, price=None)
@@ -389,8 +389,9 @@ def test_external_fullclose_cleans_old_orders_and_later_close_skips(managed):
     service.reconcile_all()
     exchange.now += 3000
     service.reconcile_all()
-    assert plan(service)['state'] == 'DONE', (plan(service).get('error'), plan(service).get('management'), plan(service).get('exits'))
-    assert all(order['status'] == 'canceled' for order in exchange.orders.values())
+    assert plan(service)['state'] == 'WAITING'
+    assert all(order['status'] == 'open' for order in exchange.orders.values())
+    assert exchange.writes == []
     writes = deepcopy(exchange.writes)
     result = service.close(SYMBOL, 'LONG', .02, 'market', operation_id='already-flat')
     assert result['status'] == 'skipped'
@@ -411,7 +412,8 @@ def test_verified_external_flatten_reopen_creates_successor_boundary(managed):
     assert current['state'] == 'ACTIVE'
     assert exchange.quantities['LONG'] == .01
     assert exchange.orders['regular', 'successor-entry']['status'] == 'open'
-    assert exchange.orders['algo', 'old-all']['status'] == 'canceled' or current['management'].get('pending_orders')
+    assert exchange.orders['algo', 'old-all']['status'] == 'open'
+    assert any(r.get('id') == 'old-all' and r.get('origin_episode_id') == original for r in current['exits'])
     assert not [write for write in exchange.writes if write[0] == 'create']
 
 

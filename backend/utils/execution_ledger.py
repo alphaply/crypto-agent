@@ -234,7 +234,7 @@ class ExecutionLedger:
                 refresh=False,
                 planned_entry=item.get('price'),
                 exchange_channel='regular',
-                **common,
+                **{**common, 'episode_id': item.get('origin_episode_id', plan.get('episode_id'))},
             )
             indexed |= bool(item.get('id'))
 
@@ -256,7 +256,7 @@ class ExecutionLedger:
                 refresh=False,
                 trigger_price=item.get('trigger_price'),
                 exchange_channel=('algo' if str(order_id).startswith('algo:') else 'regular') if independent else None,
-                **common,
+                **{**common, 'episode_id': item.get('origin_episode_id', plan.get('episode_id'))},
             )
             indexed |= bool(order_id)
 
@@ -270,7 +270,7 @@ class ExecutionLedger:
                     refresh=False,
                     trigger_price=item.get('trigger_price'),
                     exchange_channel=('algo' if str(parent_id).startswith('algo:') else 'regular') if independent else None,
-                    **common,
+                    **{**common, 'episode_id': item.get('origin_episode_id', plan.get('episode_id'))},
                 )
         if plan.get('exit_order'):
             order_id = plan['exit_order'].get('id')

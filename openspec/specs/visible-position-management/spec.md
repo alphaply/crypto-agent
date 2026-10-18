@@ -136,10 +136,10 @@ MCP `symbol_scope=all` SHALL 在已授权市场内按实际发现的仓位、库
 - **THEN** 仍拒绝，不能通过共管取得金融权限、访问其他用户账户或读取其他 principal 的私有历史回执
 
 ### Requirement: Later successful explicit modifications govern shared targets
-多个调用者修改同一目标 SHALL 按跨进程执行协调和成功提交顺序处理，后续成功提交的明确修改生效。后台维护 SHALL 使用当前有效目标版本，不恢复被后续明确修改或撤销取代的旧参数。提交前 SHALL 重核当前仓位、订单及共享预留，保留幂等、未知提交核验和只限制实际依赖的规则。
+多个系统内调用者修改同一目标 SHALL 按跨进程执行协调和成功提交顺序处理，后续成功保存的明确修改生效。强制止盈止损模式中，交易所外部人工修改或撤销只更新观察事实，不替换系统保存的目标。后台维护 SHALL 使用当前有效目标版本，不恢复被后续明确修改或撤销取代的旧参数。提交前 SHALL 重核当前仓位、订单及共享预留，保留幂等、未知提交核验和只限制实际依赖的规则。
 
 #### Scenario: Another connection changes a stop loss
-- **WHEN** A 设置止损，B 随后成功修改该止损，A 的旧后台任务继续运行
+- **WHEN** A 设置止损，B 随后通过系统成功保存对该止损的修改，A 的旧后台任务继续运行
 - **THEN** B 的成功修改保持有效，旧维护不恢复 A 的参数；若旧 worker 已读取旧版本，提交前检测失效并刷新或停止旧意图
 
 #### Scenario: Concurrent reductions cannot reverse a shared position
@@ -152,3 +152,17 @@ MCP `symbol_scope=all` SHALL 在已授权市场内按实际发现的仓位、库
 #### Scenario: Historical owner survives as audit metadata only
 - **WHEN** 升级前已有有效认领、旧 exclusive_scope、活跃保护计划或未决订单
 - **THEN** 迁移后其他获授权连接可以提交合法动作，旧事实仍可审计，未决写入按原身份恢复，不撤单、不重发、不丢失核验责任
+
+### Requirement: All supported historical policies normalize to shared management
+已有 strict_owned、exclusive_scope 和 visible_first_claim 配置 SHALL 统一使用当前授权范围共同管理；原始创建者、订单、成交、预算和未知执行身份保留。旧工具入口 SHALL 保留并复用统一内部检查和执行服务。
+
+#### Scenario: Human modifies a position under a historical policy
+- **WHEN** 旧配置升级后发生人工加减仓，当前事实可核验且动作获授权
+- **THEN** 不因旧策略名称拒绝后续合法管理，不伪造人工成交为 Agent 成交
+
+### Requirement: Attached required protection follows the saved system target
+强制止盈止损 SHALL 按系统最新成功保存的目标维护。Agent 与已登录前端均可调整；人工无需二次密码。交易所外部改动不得替换系统目标。独立退出 SHALL 观察外部事实并交给后续 Agent 决策，不自动生成交易意图。
+
+#### Scenario: External cancellation does not clear a required target
+- **WHEN** 强制模式仍保存有效止损目标，但交易所上对应保护被人工取消
+- **THEN** 后台按最新系统目标维护；后续 Agent 或前端保存的新目标取代旧目标

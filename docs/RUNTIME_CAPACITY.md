@@ -8,9 +8,11 @@
 
 `RUNTIME_CAPACITY_ENABLED=false` 保持原有仅观测并发的行为。两个模式下，字节数与内存压力都不拒绝任务。scheduler 使用 `SCHEDULER_MAX_WORKERS`，不再按 CPU 配额缩小。
 
+2026-10-18 起，策略的定时/新闻/定投触发先进入 PostgreSQL 持久队列。名额不足时保留等待，不使用下面 MCP/请求队列的等待超时来跳过策略轮次。每个策略不重叠，跨策略取最早可运行项；暂停、删除或交易范围变化取消未开始项，详见 [运行重构说明](REFACTOR_RUNTIME_20261018.md)。
+
 MCP 响应等待默认读取 20 秒、执行 40 秒、认证 3 秒、恢复 20 秒，变量名为 `MCP_READ/EXECUTE/AUTH/RECOVERY_TIMEOUT_SECONDS`。旧 `MCP_*_BUDGET_SECONDS` 兼容为响应超时；新变量优先。响应超时不会令物理线程后续读取和落盘立即失败。
 
-每次交易所 HTTP 请求独立应用 `MCP_DEPENDENCY_TIMEOUT_SECONDS`（默认 8 秒）及客户端传输超时。队列、锁和数据库请求仍有各自超时。超时不代表订单未提交或已成交，仍需按原操作身份核验。
+每次交易所 HTTP 请求独立应用 `MCP_DEPENDENCY_TIMEOUT_SECONDS`（默认 8 秒）及客户端传输超时。MCP 请求等待、锁和数据库请求仍有各自超时；策略持久队列没有等待过期。超时不代表订单未提交或已成交，仍需按原操作身份核验。
 
 ## 完整证据与分页
 

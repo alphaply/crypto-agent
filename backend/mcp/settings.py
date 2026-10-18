@@ -58,13 +58,17 @@ class MCPProfile(BaseModel):
     leverage: int = Field(1, ge=1, le=125)
     exit_mode: Literal['attached_required', 'attached_optional', 'independent_exits'] = 'attached_required'
     position_management_policy: Literal['strict_owned', 'exclusive_scope', 'visible_first_claim'] = 'visible_first_claim'
+    management_policy_version: int = Field(3, ge=1)
     management_scopes: list[dict[str, str]] = Field(default_factory=list, max_length=30)
     spot_allowance: float = Field(100, gt=0, allow_inf_nan=False)
 
     @model_validator(mode='after')
     def validate_policy(self):
         from backend.utils.management_policy import normalize_management
-        normalize_management(self.model_dump())
+        normalized = normalize_management(self.model_dump())
+        self.position_management_policy = normalized['position_management_policy']
+        self.management_scopes = normalized['management_scopes']
+        self.management_policy_version = normalized['management_policy_version']
         if self.leverage > self.max_leverage:
             raise ValueError('Configured leverage exceeds the MCP maximum')
         if self.symbol_scope == 'selected' and not self.symbols:
@@ -94,7 +98,8 @@ def settings():
 
 
 def profiles():
-    return [{'symbol_scope': 'selected', **row} for row in store.list_records('profile')]
+    from backend.utils.management_policy import normalize_management
+    return [normalize_management({'symbol_scope': 'selected', **row}) for row in store.list_records('profile')]
 
 
 def exchange_profile(profile_id):
@@ -164,6 +169,8 @@ def get_runtime_profile(config_id: str):
     profile = store.get('profile', config_id[4:])
     if not profile:
         return None
+    from backend.utils.management_policy import normalize_management
+    profile = normalize_management(profile)
     account = exchange_profile(profile['exchange_profile_id'])
     symbol_scope = profile.get('symbol_scope', 'selected')
     symbols = list(profile.get('symbols') or [])

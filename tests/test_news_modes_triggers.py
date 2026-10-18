@@ -193,9 +193,9 @@ def test_trigger_dispatch_gates(env, reason):
     if reason == 'global_disabled': env['enable_scheduler'] = False
     if reason == 'invalid_model': env['llm_providers'] = []
     def submit(_):
-        assert reason == 'busy'
-        return False
-    assert news_triggers.dispatch_news([config], submit, regularly_due=regular) == 0
+        assert reason in {'busy', 'regular'}
+        return reason == 'regular'
+    assert news_triggers.dispatch_news([config], submit, regularly_due=regular) == int(reason == 'regular')
 
 
 def test_events_expired_owner_cannot_publish(env):

@@ -3,7 +3,8 @@ param(
     [ValidatePattern('^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*$')]
     [string]$ArchiveName,
     [string]$CapacityProfile = '',
-    [switch]$IsolatedCheckout
+    [switch]$IsolatedCheckout,
+    [switch]$SkipCapacityAcceptance
 )
 
 $ErrorActionPreference = 'Stop'
@@ -184,9 +185,14 @@ try {
     Invoke-Checked docker @('network', 'rm', $smokeNetwork)
     $networkCreated = $false
 
-    $stage = 'three-container PostgreSQL capacity acceptance'
-    Invoke-Checked uv @('run', 'python', 'scripts/verify-runtime-capacity.py', '--image', $commitImage,
-        '--profile', $CapacityProfile, '--mode', 'acceptance', '--output', 'data/capacity-reports')
+    if ($SkipCapacityAcceptance) {
+        Write-Host 'Three-container PostgreSQL capacity acceptance was NOT RUN (explicit -SkipCapacityAcceptance).'
+    }
+    else {
+        $stage = 'three-container PostgreSQL capacity acceptance'
+        Invoke-Checked uv @('run', 'python', 'scripts/verify-runtime-capacity.py', '--image', $commitImage,
+            '--profile', $CapacityProfile, '--mode', 'acceptance', '--output', 'data/capacity-reports')
+    }
 
     $stage = 'source verification before publication'
     Invoke-Checked git @('diff', '--quiet', 'HEAD', '--')
@@ -212,6 +218,9 @@ try {
     Write-Host "Git commit: $commit"
     Write-Host "Images: $commitImage, $latestImage"
     Write-Host "Digests: $digests"
+    if ($SkipCapacityAcceptance) {
+        Write-Host 'Capacity acceptance: NOT RUN (explicit -SkipCapacityAcceptance).'
+    }
     Write-Host 'Release complete. Production containers have not been restarted.'
 }
 catch {

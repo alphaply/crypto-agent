@@ -16,6 +16,7 @@ from backend.database_orders import OrderPersistenceStore
 from backend.database_position import PositionHistoryStore
 from backend.database_pricing import PricingStore
 from backend.database_summary import SummaryStore
+from backend.database_statistics import TradingStatisticsStore
 from backend.database_trade import TradeHistoryStore
 from backend.storage_paths import DATA_DIR, PROJECT_ROOT
 from backend.database_schema import initialize_schema
@@ -73,6 +74,7 @@ _order_persistence_store = OrderPersistenceStore(get_db_conn, _current_timestamp
 _position_history_store = PositionHistoryStore(get_db_conn, lambda: datetime.now(TZ_CN), logger)
 _summary_store = SummaryStore(get_db_conn, _current_timestamp, logger)
 _trade_history_store = TradeHistoryStore(get_db_conn, logger)
+_statistics_store = TradingStatisticsStore(lambda: get_db_conn())
 
 def init_db():
     logger.info("Checking PostgreSQL schema version")
@@ -261,9 +263,13 @@ def update_order_fill_status(order_id, status, filled_qty=0.0, filled_cost=0.0, 
     _order_persistence_store.update_fill_status(order_id, status, filled_qty=filled_qty, filled_cost=filled_cost, avg_fill_price=avg_fill_price, filled_at=filled_at)
 
 
-def upsert_spot_order_fill(order_id, config_id, symbol, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None):
-    """写入或更新现货订单成交同步状态。"""
-    _order_persistence_store.upsert_spot_fill(order_id, config_id, symbol, status, filled_qty=filled_qty, filled_cost=filled_cost, avg_fill_price=avg_fill_price, filled_at=filled_at)
+def upsert_spot_order_fill(order_id, config_id, symbol, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None, *, connection: storage.Connection | None = None):
+    """写入现货成交同步状态；传入连接时由调用方统一提交。"""
+    _order_persistence_store.upsert_spot_fill(
+        order_id, config_id, symbol, status, filled_qty=filled_qty,
+        filled_cost=filled_cost, avg_fill_price=avg_fill_price,
+        filled_at=filled_at, connection=connection,
+    )
 
 
 def save_dca_daily_snapshot(config_id, symbol, stats):
@@ -643,38 +649,6 @@ def sync_trade_position_history(config_id, symbol, trades, source="exchange_trad
     _position_history_store.sync_trade_positions(config_id, symbol, trades, source=source)
 
 
-def _build_pnl_stats(realized_pnls, total_trades=None):
-    normalized_pnls = []
-    for pnl in realized_pnls:
-        if pnl is None:
-            continue
-        try:
-            normalized_pnls.append(float(pnl))
-        except (TypeError, ValueError):
-            continue
-
-    total_pnl = sum(normalized_pnls)
-    win_trades = [pnl for pnl in normalized_pnls if pnl > 0]
-    lose_trades = [pnl for pnl in normalized_pnls if pnl < 0]
-    total_count = int(total_trades if total_trades is not None else len(normalized_pnls))
-    decided_count = len(win_trades) + len(lose_trades)
-    if decided_count > 0:
-        win_rate = len(win_trades) / decided_count * 100
-    elif total_count > 0:
-        win_rate = None
-    else:
-        win_rate = 0
-
-    return {
-        "total_trades": total_count,
-        "total_pnl": total_pnl,
-        "win_rate": win_rate,
-        "win_count": len(win_trades),
-        "lose_count": len(lose_trades),
-        "decided_trades": decided_count,
-    }
-
-
 def _config_mode_for_stats(config_id):
     try:
         from backend.config import config as global_config
@@ -933,134 +907,20 @@ def format_closed_positions_summary(positions: list[dict], days: int = 7) -> str
     return "\n".join(lines) + "\n\n" + stats_line
 
 
-def _rows_to_trade_stats(rows):
-    pnls = []
-    for row in rows:
-        pnls.append(row["realized_pnl"])
-    return len(rows), pnls
-
-
-def _aggregate_config_trade_stats(cursor, symbol, config_id):
-    symbol_prefix = symbol + "%"
-    mode = _config_mode_for_stats(config_id)
-
-    if mode == "REAL":
-        table_exists = 'execution_position_history' in storage.table_names(cursor.connection)
-        if table_exists:
-            exec_rows = cursor.execute(
-                """
-                SELECT realized_pnl
-                FROM execution_position_history
-                WHERE config_id = %s
-                  AND (symbol = %s OR symbol LIKE %s)
-                """,
-                (config_id, symbol, symbol_prefix),
-            ).fetchall()
-            if exec_rows:
-                return _rows_to_trade_stats(exec_rows)
-
-        position_rows = cursor.execute(
-            """
-            SELECT realized_pnl
-            FROM position_history
-            WHERE config_id = %s
-              AND status = 'CLOSED'
-              AND (symbol = %s OR symbol LIKE %s)
-            """,
-            (config_id, symbol, symbol_prefix),
-        ).fetchall()
-        if position_rows:
-            return _rows_to_trade_stats(position_rows)
-
-        trade_rows = cursor.execute(
-            """
-            SELECT realized_pnl
-            FROM trade_history
-            WHERE config_id = %s
-              AND (symbol = %s OR symbol LIKE %s)
-            """,
-            (config_id, symbol, symbol_prefix),
-        ).fetchall()
-        return _rows_to_trade_stats(trade_rows)
-
-    if mode == "STRATEGY":
-        mock_rows = cursor.execute(
-            """
-            SELECT realized_pnl
-            FROM mock_orders
-            WHERE symbol = %s
-              AND config_id = %s
-              AND status = 'CLOSED'
-            """,
-            (symbol, config_id),
-        ).fetchall()
-        return _rows_to_trade_stats(mock_rows)
-
-    if mode == "SPOT_DCA":
-        trade_rows = cursor.execute(
-            """
-            SELECT realized_pnl
-            FROM trade_history
-            WHERE config_id = %s
-              AND (symbol = %s OR symbol LIKE %s)
-            """,
-            (config_id, symbol, symbol_prefix),
-        ).fetchall()
-        return _rows_to_trade_stats(trade_rows)
-
-    mock_rows = cursor.execute(
-        """
-        SELECT realized_pnl
-        FROM mock_orders
-        WHERE symbol = %s
-          AND config_id = %s
-          AND status = 'CLOSED'
-        """,
-        (symbol, config_id),
-    ).fetchall()
-    trade_rows = cursor.execute(
-        """
-        SELECT realized_pnl
-        FROM trade_history
-        WHERE config_id = %s
-          AND (symbol = %s OR symbol LIKE %s)
-        """,
-        (config_id, symbol, symbol_prefix),
-    ).fetchall()
-    return _rows_to_trade_stats(mock_rows + trade_rows)
-
-
 def get_history_pnl_stats_for_configs(symbol, config_ids):
-    """按当前展示的配置列表精确聚合盈亏统计。"""
-    normalized_ids = []
-    for raw_config_id in config_ids or []:
-        config_id = str(raw_config_id or "").strip()
-        if config_id and config_id not in normalized_ids:
-            normalized_ids.append(config_id)
-
-    if not normalized_ids:
-        return _build_pnl_stats([])
-
-    with get_db_conn() as conn:
-
-        c = conn.cursor()
-        realized_pnls = []
-        total_trades = 0
-
-        for config_id in normalized_ids:
-            trade_count, pnls = _aggregate_config_trade_stats(c, symbol, config_id)
-            total_trades += trade_count
-            realized_pnls.extend(pnls)
-
-        return _build_pnl_stats(realized_pnls, total_trades=total_trades)
+    """Aggregate only the displayed task identities using their original sources."""
+    normalized_ids = list(dict.fromkeys(
+        str(value or "").strip() for value in config_ids or [] if str(value or "").strip()
+    ))
+    configs = [(config_id, _config_mode_for_stats(config_id)) for config_id in normalized_ids]
+    return _statistics_store.history_for_configs(symbol, configs)
 
 
 def get_history_pnl_stats(symbol, config_id='ALL'):
-    """获取标的的盈亏统计，整合实盘和模拟盘数据"""
+    """Preserve current-task filtering and the legacy no-current-task ALL query."""
     if config_id == 'ALL':
         try:
             from backend.config import config as global_config
-
             config_ids = [cfg.get("config_id") for cfg in global_config.get_configs_by_symbol(symbol) if cfg.get("config_id")]
         except storage.Error:
             raise
@@ -1068,91 +928,25 @@ def get_history_pnl_stats(symbol, config_id='ALL'):
             config_ids = []
         if config_ids:
             return get_history_pnl_stats_for_configs(symbol, config_ids)
+        return _statistics_store.unscoped_history(symbol)
+    return _statistics_store.history_for_configs(symbol, [(config_id, _config_mode_for_stats(config_id))])
 
-    with get_db_conn() as conn:
-
-        c = conn.cursor()
-
-        if config_id == 'ALL':
-            trades = c.execute(
-                "SELECT realized_pnl FROM trade_history WHERE symbol LIKE %s",
-                (symbol + '%',),
-            ).fetchall()
-            mocks = c.execute(
-                "SELECT realized_pnl FROM mock_orders WHERE symbol = %s AND status='CLOSED'",
-                (symbol,),
-            ).fetchall()
-            return _build_pnl_stats(
-                [row['realized_pnl'] for row in trades] + [row['realized_pnl'] for row in mocks],
-                total_trades=len(trades) + len(mocks),
-            )
-
-        total_trades, realized_pnls = _aggregate_config_trade_stats(c, symbol, config_id)
-        return _build_pnl_stats(realized_pnls, total_trades=total_trades)
-
-# --- Agent 做单统计 ---
 
 def get_agent_trade_stats(config_id):
-    """获取指定 Agent 的做单统计 (从 orders 表聚合)"""
+    """Get the existing order-log categories, preserving public error semantics."""
     with get_db_conn() as conn:
-        c = conn.cursor()
         try:
-            # 总订单数
-            total = c.execute(
-                "SELECT COUNT(*) FROM orders WHERE config_id = %s", (config_id,)
-            ).fetchone()[0]
-
-            if total == 0:
-                return {
-                    "total_orders": 0, "buy_count": 0, "sell_count": 0,
-                    "cancel_count": 0, "close_count": 0,
-                    "long_short_ratio": "N/A", "cancel_rate": 0,
-                    "first_order_at": None, "last_order_at": None,
-                }
-
-            # 分类计数
-            rows = c.execute("""
-                SELECT 
-                    SUM(CASE WHEN LOWER(side) LIKE '%%buy%%' THEN 1 ELSE 0 END) as buy_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%%sell%%' THEN 1 ELSE 0 END) as sell_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%%cancel%%' THEN 1 ELSE 0 END) as cancel_count,
-                    SUM(CASE WHEN LOWER(side) LIKE '%%close%%' THEN 1 ELSE 0 END) as close_count,
-                    MIN(timestamp) as first_order_at,
-                    MAX(timestamp) as last_order_at
-                FROM orders WHERE config_id = %s
-            """, (config_id,)).fetchone()
-
-            buy = rows['buy_count'] or 0
-            sell = rows['sell_count'] or 0
-            cancel = rows['cancel_count'] or 0
-            close = rows['close_count'] or 0
-
-            # 有效开仓单 = buy + sell (排除 cancel 和 close)
-            open_orders = buy + sell
-            ls_ratio = "N/A"
-            if sell > 0:
-                ls_ratio = f"{round(buy / sell, 2)}"
-            elif buy > 0:
-                ls_ratio = "∞ (纯多)"
-
-            cancel_rate = round(cancel / total * 100, 1) if total > 0 else 0
-
-            return {
-                "total_orders": total,
-                "buy_count": buy,
-                "sell_count": sell,
-                "cancel_count": cancel,
-                "close_count": close,
-                "long_short_ratio": ls_ratio,
-                "cancel_rate": cancel_rate,
-                "first_order_at": rows['first_order_at'],
-                "last_order_at": rows['last_order_at'],
-            }
+            return _statistics_store.agent_orders(config_id, connection=conn)
         except storage.Error:
             raise
-        except Exception as e:
-            logger.error(f"❌ get_agent_trade_stats error: {e}")
-            return {"total_orders": 0, "error": str(e)}
+        except Exception as exc:
+            logger.error(f"❌ get_agent_trade_stats error: {exc}")
+            return {"total_orders": 0, "error": str(exc)}
+
+
+def get_financial_statistics_snapshot(symbol: str) -> dict:
+    """Read the financial page data through the shared connection boundary."""
+    return _statistics_store.financial_snapshot(symbol)
 
 
 def get_config_dependency_counts(config_id: str):

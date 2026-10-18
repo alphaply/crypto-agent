@@ -201,26 +201,16 @@ def preflight_tool(tool_name, args, config_id, symbol):
         raise ValueError('Unknown MCP profile')
     if profile['market_type'] == 'spot':
         return
+    if tool_name in {'open', 'edit', 'open_position_real', 'update_entry_order_real', 'execute_trade_actions'}:
+        # The action service verifies live leverage/ownership once, inside its
+        # resource lock and before its first exchange write. Batch entry points
+        # must not reuse one check for later actions or pre-read edit targets.
+        return
     if tool_name == 'adopt_position_real':
         # The explicit adoption service verifies current ownership and quantity.
         # Requiring an existing cycle here would make adoption unreachable.
         return
-    side = args.get('side')
-    if tool_name == 'edit':
-        from backend.agent.independent_tools import describe_order
-        target = describe_order(config_id, symbol, args['order_id'])
-        side = target.get('side') or target.get('pos_side')
-    risky = is_exposure_increasing(tool_name, args, config_id, symbol)
-    if (tool_name == 'execute_trade_actions' and args.get('contract_version') == 2
-            and args.get('execution_policy') == 'independent'):
-        # Gateway permissions and target roles are checked for the whole batch;
-        # live leverage/position dependencies belong to each executing action.
-        return
-    if risky:
-        from backend.utils.market_data import MarketTool
-        assert_entry_allowed(MarketTool(config_id=config_id), symbol, **({'side': side} if side else {}))
-    elif tool_name not in {'cancel', 'cancel_orders_real', 'cancel_orders_spot'}:
-        if tool_name == 'execute_trade_actions' and all(action.get('action') == 'cancel' for action in args.get('actions', [])):
-            return
+    if tool_name not in {'cancel', 'cancel_orders_real', 'cancel_orders_spot'}:
+        side = args.get('side')
         from backend.utils.market_data import MarketTool
         assert_position_owner(MarketTool(config_id=config_id), symbol, **({'side': side} if side else {}))

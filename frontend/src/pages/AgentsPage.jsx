@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Card, Empty, Input, Segmented, Skeleton, Space, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Empty, Input, Segmented, Skeleton, Space, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { WorkspacePanel } from '../components/AgentWorkspace';
 import ScheduleDetails from '../components/ScheduleDetails';
+import { AgentStatus } from '../components/AgentRuntimeStatus';
+import { isAgentActive } from '../lib/agentRuntime';
 import { useDashboardSnapshot } from '../hooks/useDashboardSnapshot';
 import { useChartTimeframe } from '../hooks/useChartTimeframe';
 import { usePreferences } from '../app/usePreferences';
@@ -11,12 +13,6 @@ import { api } from '../lib/api';
 import { filterAgents, selectAgentId, workspaceSignature } from '../lib/dashboard';
 import './AgentsPage.css';
 
-function AgentStatus({ agent, zh }) {
-  const status = agent.execution?.status;
-  const active = ['RUNNING', 'QUEUED'].includes(status);
-  const text = status === 'RUNNING' ? (zh ? '执行中' : 'Running') : status === 'QUEUED' ? (zh ? '排队中' : 'Queued') : status === 'FAILED' ? (zh ? '最近失败' : 'Last run failed') : agent.enabled === false ? (zh ? '已暂停' : 'Paused') : (zh ? '待调度' : 'Scheduled');
-  return <Tag color={active ? 'processing' : status === 'FAILED' ? 'error' : agent.enabled === false ? 'default' : 'success'}>{text}</Tag>;
-}
 
 export default function AgentsPage() {
   const { locale } = usePreferences();
@@ -59,7 +55,7 @@ export default function AgentsPage() {
 
   const selectAgent = (id) => setParams((previous) => { const next = new URLSearchParams(previous); next.set('agent', id); return next; }, { replace: true });
   const workspace = workspaces[activeId];
-  const running = agents.filter((item) => ['RUNNING', 'QUEUED'].includes(item.execution?.status)).length;
+  const running = agents.filter(isAgentActive).length;
   const authenticated = Boolean(localStorage.getItem('crypto-agent-token'));
   return <div className="boxed-page dashboard-page dashboard-v2 agents-page">
     {error && <Alert type="warning" showIcon title={error} action={<Button onClick={refresh} loading={loading}>{zh ? '重试' : 'Retry'}</Button>} />}

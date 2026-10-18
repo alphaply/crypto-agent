@@ -256,7 +256,7 @@ def register_tools(server):
 
     async def adopt_perpetual_position(profile_id: ProfileId, symbol: Symbol, pos_side: Literal['LONG', 'SHORT'],
                                        expected_amount: Amount, reason: Reason, operation_id: OperationId) -> dict:
-        """After the user requests management of a manually opened position, explicitly adopt its entire current side into this profile's independent exit cycle. Read get_positions first: expected_amount must equal its current base-asset quantity, not contract count. Checks account ownership, position and outstanding orders; rejects other tasks' positions. This ONLY saves management records: it does not place/cancel orders or create TP/SL. After success, use close_perpetual for exits or protection. Example: {"profile_id":"swap","symbol":"ETH/USDT:USDT","pos_side":"SHORT","expected_amount":0.37,"reason":"user requested management of their manual position","operation_id":"adopt-eth-short-0001"}."""
+        """Compatibility position verification through shared management. Normal trading automatically enrolls authorized positions and never requires this call first. expected_amount must match the current entire side in base-asset units, not contract count. Existing orders and other authorized actors do not prevent management. Saves verification evidence without placing/canceling orders or creating TP/SL; original sources remain unchanged. Repeated operation_id returns its original receipt."""
         return await execute(profile_id, symbol, 'adopt_position_real', {
             'pos_side': pos_side, 'expected_amount': expected_amount, 'reason': reason,
         }, operation_id)

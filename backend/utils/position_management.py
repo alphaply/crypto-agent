@@ -645,13 +645,15 @@ def _discover(service, symbol, requested_side):
         old_episode = plan['episode_id']
         if boundary is not None:
             boundary_time = observed_fills[boundary][0]['timestamp_ms']
-            # Keep the closed episode in audit history. Its remaining orders are
-            # a separate cleanup queue, never successor entries or protection.
+            # Keep the closed episode in audit history. Independent orders stay
+            # manageable across a manual boundary without becoming new fills.
             old_plan = json.loads(json.dumps(plan))
             old_plan.update(state='DONE', closed_at=boundary_time / 1000,
                             close_source='external_verified_fills')
             service._save(old_plan)
             plan = service._new(symbol, side)
+            from backend.utils.exit_policy import effective_exit_mode
+            observe_only = effective_exit_mode(config) == 'independent_exits'
             old_refs = {order_reference(r) for r in old_plan['entries'] + old_plan['exits']}
             pending = list(management.get('pending_orders', [])) + [r for r in old_plan['entries'] + old_plan['exits']
                        if r.get('status') not in {'closed', 'canceled', 'cancelled', 'expired', 'rejected'}
@@ -673,6 +675,15 @@ def _discover(service, symbol, requested_side):
                                                  if f['timestamp_ms'] == boundary_time],
                           'source': 'external', 'previous_episode_id': old_episode,
                           'pending_orders': pending}
+            if observe_only:
+                from backend.utils.independent_lifecycle import retain_live_orders
+                retain_live_orders(old_plan, plan)
+                # Historical cleanup queues are not an instruction to cancel
+                # orders merely because a human flattened and reopened.
+                # An already persisted explicit cleanup operation is retained.
+                if not management.get('cleanup_operation'):
+                    management['pending_orders'] = []
+                old_refs = set()
             plan['management'] = management
         else:
             old_refs = set()
@@ -744,6 +755,11 @@ def _discover(service, symbol, requested_side):
         if quantity:
             plan.update(state='ACTIVE', ever_filled=True)
         management.update(sync_status='verified', observed_at=time.time(), contracts=quantity, hedged=hedged)
+        if not quantity:
+            # Complete fill history and the final matching position read now
+            # explain a previously unseen entry followed by an external close.
+            plan.pop('unobserved_entry_fills', None)
+            plan.pop('cleanup_fill_unseen', None)
         management.pop('error', None)
         plan.pop('ownership_error', None)
         plan['contract_size'] = float(service._market(symbol).get('contractSize') or 1)
@@ -774,6 +790,10 @@ def cleanup_previous_orders(service, symbol):
             continue
         plan = service._load(symbol, side)
         management = (plan or {}).get('management', {})
+        from backend.utils.exit_policy import effective_exit_mode
+        if (effective_exit_mode(_configuration(service)) == 'independent_exits'
+                and not management.get('cleanup_operation')):
+            continue
         pending = management.get('pending_orders', [])
         if not pending:
             continue
@@ -994,9 +1014,6 @@ def action_reservation(service, symbol, side, operation_id):
 def managed_action(function):
     @wraps(function)
     def wrapped(service, symbol, *args, **kwargs):
-        if function.__name__ == 'open':
-            from backend.mcp.guard import assert_entry_allowed
-            assert_entry_allowed(service.mt, symbol)
         if not enabled(service, symbol):
             return function(service, symbol, *args, **kwargs)
         name = function.__name__

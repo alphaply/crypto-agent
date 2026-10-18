@@ -124,38 +124,33 @@ class SchedulerResilienceTests(unittest.TestCase):
         with patch("backend.app.core.scheduler.global_config.reload_config"), \
             patch("backend.app.core.scheduler.global_config.get_all_symbol_configs", return_value=[cfg]), \
             patch("backend.app.core.scheduler.sync_langsmith_environment"), \
-            patch("backend.app.core.scheduler._insert_scheduler_run", return_value=True):
+            patch("backend.app.core.scheduler.agent_queue.enqueue", return_value=True):
             result = scheduler.job(now=now)
 
         self.assertEqual(result["agent_due"], 1)
         self.assertEqual(result["agent_queued"], 1)
-        self.assertEqual(len(agent_executor.submissions), 1)
+        self.assertEqual(len(agent_executor.submissions), 0)
         self.assertEqual(len(maintenance_executor.submissions), 1)
-        self.assertIn("cfg-a", scheduler._running_agent_futures)
+        self.assertNotIn("cfg-a", scheduler._running_agent_futures)
 
-    def test_running_config_skips_next_same_config_submit(self):
+    def test_running_config_persists_next_trigger_without_starting_another_worker(self):
         pending = concurrent.futures.Future()
         scheduler._running_agent_futures["cfg-a"] = pending
-        recorded = []
-
-        def record_run(config_id, job_type, scheduled_at, status="QUEUED", error=None):
-            recorded.append((config_id, job_type, scheduled_at, status, error))
-            return True
-
-        with patch("backend.app.core.scheduler._insert_scheduler_run", side_effect=record_run):
+        with patch("backend.app.core.scheduler.agent_queue.enqueue", return_value=True) as enqueue:
             submitted = scheduler._submit_agent(
                 {"config_id": "cfg-a", "mode": "STRATEGY"},
                 "2026-05-29 08:20:00",
             )
 
-        self.assertFalse(submitted)
-        self.assertEqual(recorded[0][3], "SKIPPED_RUNNING")
+        self.assertTrue(submitted)
+        enqueue.assert_called_once()
+        self.assertIs(scheduler._running_agent_futures['cfg-a'], pending)
 
     def test_duplicate_scheduler_run_does_not_submit_agent(self):
         agent_executor = RecordingExecutor(complete=False)
         scheduler._agent_executor = agent_executor
 
-        with patch("backend.app.core.scheduler._insert_scheduler_run", return_value=False):
+        with patch("backend.app.core.scheduler.agent_queue.enqueue", return_value=False):
             submitted = scheduler._submit_agent(
                 {"config_id": "cfg-a", "mode": "STRATEGY"},
                 "2026-05-29 08:20:00",

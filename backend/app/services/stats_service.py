@@ -168,44 +168,25 @@ def delete_pricing_payload(model: str):
 
 
 def get_financial_stats_payload(symbol: str):
-    with storage.get_connection() as conn:
+    from backend.database import get_financial_statistics_snapshot
 
-        cursor = conn.cursor()
-
-        balance_history = cursor.execute(
-            "SELECT timestamp, total_equity, total_balance FROM balance_history WHERE symbol = %s ORDER BY id ASC LIMIT 200",
-            (symbol,),
-        ).fetchall()
-
-        daily_equity = cursor.execute(
-            """
-            SELECT day, total_equity FROM (
-                SELECT substring(timestamp from 1 for 10) as day, total_equity,
-                       row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY timestamp DESC NULLS LAST) as rn
-                FROM balance_history WHERE symbol = %s
-            ) WHERE rn = 1 ORDER BY day ASC
-            """,
-            (symbol,),
-        ).fetchall()
-
-        trades = cursor.execute("SELECT realized_pnl FROM trade_history WHERE symbol = %s", (symbol,)).fetchall()
-        total_pnl = sum(trade["realized_pnl"] for trade in trades)
-        win_trades = [trade for trade in trades if trade["realized_pnl"] > 0]
-        lose_trades = [trade for trade in trades if trade["realized_pnl"] < 0]
-        win_rate = (len(win_trades) / len(trades) * 100) if trades else 0
-
-        latest_equity = balance_history[-1]["total_equity"] if balance_history else 0
-        latest_balance = balance_history[-1]["total_balance"] if balance_history else 0
-
+    snapshot = get_financial_statistics_snapshot(symbol)
+    balances = snapshot["balance_history"]
+    totals = snapshot["totals"]
+    total = totals["total_trades"]
+    # This endpoint historically includes flat fills in the win-rate denominator.
+    win_rate = totals["win_count"] / total * 100 if total else 0
+    latest_equity = balances[-1]["total_equity"] if balances else 0
+    latest_balance = balances[-1]["total_balance"] if balances else 0
     return {
-        "balance_history": [storage.record(row) for row in balance_history],
-        "daily_equity": [storage.record(row) for row in daily_equity],
+        "balance_history": balances,
+        "daily_equity": snapshot["daily_equity"],
         "summary": {
-            "total_trades": len(trades),
-            "total_pnl": round(total_pnl, 2),
+            "total_trades": total,
+            "total_pnl": round(totals["total_pnl"], 2),
             "win_rate": round(win_rate, 2),
-            "win_count": len(win_trades),
-            "lose_count": len(lose_trades),
+            "win_count": totals["win_count"],
+            "lose_count": totals["lose_count"],
             "latest_equity": round(latest_equity, 2),
             "latest_balance": round(latest_balance, 2),
         },

@@ -46,7 +46,33 @@ def model_override(config: dict, provider: dict) -> dict:
     return result
 
 
-def dispatch_news(configs: list[dict], submit, *, now=None, regularly_due=None) -> int:
+def _enqueue_news(config: dict, rule, rule_key: str, now, name: str, owner: str, state: dict) -> bool:
+    """Commit accepted articles, their quota and the queue row together."""
+    from backend import storage
+    from backend.storage import agent_queue
+    from backend.database import TZ_CN
+    event = config['_news_event']
+    identity = 'news:' + fingerprint([rule_key, sorted(event_key(item) for item in event['articles'])])
+    with storage.get_connection() as conn:
+        # Configuration writes take runtime-config first, so keep that lock
+        # ordering even while updating the existing news-trigger lease.
+        storage.lock_scope(conn, 'runtime-config')
+        storage.lock_scope(conn, 'pipeline', name)
+        current = conn.execute('SELECT payload_json,lease_owner FROM shared_pipeline_state WHERE name=%s', (name,)).fetchone()
+        if not current or current['lease_owner'] != owner:
+            return False
+        accepted = agent_queue.enqueue(config['config_id'], identity, 'news',
+            now.astimezone(TZ_CN).strftime('%Y-%m-%d %H:%M:00'),
+            identity + ':' + config['config_id'], payload={'event': event, 'provider_id': rule.provider_id}, connection=conn)
+        if accepted:
+            updated = {**json.loads(current['payload_json']), **state}
+            conn.execute('UPDATE shared_pipeline_state SET payload_json=%s WHERE name=%s AND lease_owner=%s',
+                         (json.dumps(updated, ensure_ascii=False), name, owner))
+        conn.commit()
+        return accepted
+
+
+def dispatch_news(configs: list[dict], submit=None, *, now=None, regularly_due=None) -> int:
     from backend.app.services.news_service import _runtime
     runtime = _runtime()
     settings = NewsSettings.model_validate(runtime.get('news') or {})
@@ -84,9 +110,7 @@ def dispatch_news(configs: list[dict], submit, *, now=None, regularly_due=None) 
             reason = 'baseline' if first else 'no_matching_news'
             provider = providers.get(rule.provider_id) or {}
             if fresh:
-                if rule.config_id in (regularly_due or set()):
-                    reason = 'regular_run_due'
-                elif last and (now - last).total_seconds() < rule.cooldown_seconds:
+                if last and (now - last).total_seconds() < rule.cooldown_seconds:
                     reason = 'cooldown'
                 elif count >= rule.max_runs_per_day:
                     reason = 'daily_limit'
@@ -95,17 +119,22 @@ def dispatch_news(configs: list[dict], submit, *, now=None, regularly_due=None) 
                 else:
                     config = model_override(config_map[rule.config_id], provider)
                     config['_news_event'] = {'snapshot_id': latest.get('snapshot_id'), 'articles': [{k: i.get(k) for k in ('title', 'content', 'source', 'url', 'published_at')} for i in fresh[:20]]}
-                    # Reserve budget and consume IDs before enqueue: a crash cannot replay a trade.
-                    count += 1
-                    if not database_news.update_state(name, {'seen': seen, 'rule_key': rule_key, 'day': day,
-                                               'count': count, 'last_dispatch': now.isoformat(), 'status': 'reserved'}, owner=owner):
-                        continue
-                    # Use the same per-task scheduler gate and minute slot as scheduled runs.
-                    if submit(config):
+                    accepted_state = {'seen': seen, 'rule_key': rule_key, 'day': day,
+                                      'count': count + 1, 'last_dispatch': now.isoformat(), 'status': 'queued'}
+                    if submit is None:
+                        accepted = _enqueue_news(config, rule, rule_key, now, name, owner, accepted_state)
+                    else:
+                        # Retain the injectable adapter for callers/tests. The
+                        # scheduler always uses the atomic persistent path above.
+                        if not database_news.update_state(name, accepted_state, owner=owner):
+                            continue
+                        accepted = submit(config)
+                    if accepted:
+                        count += 1
                         queued += 1
                         reason = 'queued'
                     else:
-                        reason = 'busy_or_duplicate'
+                        reason = 'inactive_or_duplicate' if submit is None else 'busy_or_duplicate'
             database_news.update_state(name, {'seen': seen, 'rule_key': rule_key, 'day': day, 'count': count,
                                               'status': reason, 'checked_at': now.isoformat()}, owner=owner)
         finally:

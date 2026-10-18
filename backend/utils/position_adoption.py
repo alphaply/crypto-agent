@@ -1,8 +1,4 @@
-"""Explicit, read-only adoption of a verified manual perpetual position.
-
-The adoption baseline is not an exchange order or a synthetic fill. Ownership
-checks start with its contracts and only accept subsequent, linked task fills.
-"""
+"""Compatibility adoption receipts backed by ordinary shared management."""
 from __future__ import annotations
 
 import hashlib
@@ -13,13 +9,9 @@ import time
 from backend import database
 from backend.utils.exit_policy import effective_exit_mode
 from backend.utils.independent_exits import IndependentExits, positive
-from backend.utils.order_ownership import symbol_aliases
 from backend.utils.position_protection import _lock
-from backend.utils.trade_operations import current_operation_id
 
 
-TRADE_LIMIT = 1000
-BOUNDARY_LOOKBACK_MS = 60_000
 OKX_ALGO_ORDER_TYPES = ('conditional', 'oco', 'chase', 'trigger', 'move_order_stop',
                         'iceberg', 'twap', 'smart_iceberg')
 
@@ -51,7 +43,7 @@ def _adoption_records(config_id: str, operation_id: str, *, strict: bool = False
             plan = json.loads(row["payload"])
             if not isinstance(plan, dict) or not isinstance(plan.get('adoption', {}), dict):
                 raise ValueError('Invalid position adoption history')
-            baseline = plan.get("adoption") or {}
+            baseline = plan.get('management_adoption') or plan.get("adoption") or {}
         except (ValueError, TypeError):
             if strict:
                 raise ValueError('Position adoption history cannot be verified; reconcile before retrying') from None
@@ -87,68 +79,6 @@ def _saved_result(service: IndependentExits, operation_id: str, request_hash: st
     return None
 
 
-def _assert_no_local_conflicts(service: IndependentExits, aliases: tuple[str, ...], operation_id: str) -> None:
-    placeholders = ",".join("%s" for _ in aliases)
-    current = current_operation_id.get()
-    with database.get_db_conn() as conn:
-        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
-        active_agents = {r[0] for r in conn.execute("SELECT config_id FROM agent_configs WHERE enabled=1").fetchall()} if 'agent_configs' in tables else set()
-        mcp_profiles = {'mcp:' + r[0] for r in conn.execute("SELECT id FROM mcp_records WHERE kind='profile'").fetchall()} if 'mcp_records' in tables else set()
-        has_active_registry = bool(active_agents or mcp_profiles)
-
-        for row in conn.execute(
-            f"SELECT config_id,payload FROM real_protection_plans WHERE symbol IN ({placeholders})", aliases
-        ):
-            plan = json.loads(row["payload"])
-            if plan.get("state") == "DONE":
-                continue
-            if row["config_id"] != service.config_id:
-                if has_active_registry and row["config_id"] not in (active_agents | mcp_profiles):
-                    continue
-                if plan.get("account_scope") and plan["account_scope"] != service.account_scope:
-                    continue
-                raise ValueError("An active or unresolved position cycle already owns this account and symbol; adoption denied")
-            else:
-                if not plan.get("account_scope") or plan["account_scope"] == service.account_scope:
-                    raise ValueError("An active or unresolved position cycle already owns this account and symbol; adoption denied")
-        for row in conn.execute(
-            f"SELECT config_id,operation_id,status FROM trade_action_runs WHERE symbol IN ({placeholders}) "
-            "AND status IN ('running','unknown','pending')", aliases,
-        ):
-            own_call = (row["status"] == "running" and row["config_id"] == service.config_id
-                        and current and row["operation_id"] == current
-                        and operation_id == current)
-            if not own_call:
-                # Old operation receipts lack an account scope. Do not assume an
-                # unresolved same-symbol submission belongs to a different account.
-                raise ValueError("An unresolved operation on this symbol must be reconciled before adoption")
-        tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
-        if 'mcp_operations' in tables:
-            for row in conn.execute("SELECT profile_id,principal,operation_id,state FROM mcp_operations "
-                                    "WHERE state IN ('started','running','unknown','pending')"):
-                stable_id = 'mcp:' + hashlib.sha256(f"{row['principal']}:{row['operation_id']}".encode()).hexdigest()
-                own_call = (row['state'] == 'started' and service.config_id == 'mcp:' + row['profile_id']
-                            and current == stable_id and operation_id == stable_id)
-                if own_call:
-                    continue
-                profile_row = conn.execute("SELECT payload FROM mcp_records WHERE kind='profile' AND id=%s",
-                                           (row['profile_id'],)).fetchone() if 'mcp_records' in tables else None
-                profile = json.loads(profile_row[0]) if profile_row else None
-                if profile and profile.get('market_type') == 'spot':
-                    continue
-                if profile and profile.get('symbol_scope', 'selected') != 'all':
-                    from backend.utils.trade_operations import _same_symbol
-                    if profile.get('symbols') and not any(_same_symbol(value, alias) for value in profile['symbols'] for alias in aliases):
-                        continue
-                raise ValueError("An unresolved MCP operation may affect this position; reconcile it before adoption")
-        if conn.execute(
-            f"SELECT 1 FROM execution_position_history WHERE account_scope=%s AND symbol IN ({placeholders}) "
-            "AND config_id!=%s AND closed_at_ms IS NULL AND amount>0 LIMIT 1",
-            (service.account_scope, *aliases, service.config_id),
-        ).fetchone():
-            raise ValueError("Another task has an unclosed position history for this account and symbol; adoption denied")
-
-
 def _position_snapshot(exchange, symbol: str, side: str, expected_amount: float, contract_size: float) -> dict:
     rows = exchange.fetch_positions([symbol])
     if not isinstance(rows, list):
@@ -182,60 +112,9 @@ def _position_snapshot(exchange, symbol: str, side: str, expected_amount: float,
     return {"contracts": contracts, "amount": amount, "entry_price": entry_price, "hedged": hedged}
 
 
-def _assert_no_open_orders(exchange, symbol: str) -> None:
-    # OKX trigger=True defaults to ordType=trigger and does not include its
-    # conditional/OCO/trailing/advanced algo books. Query each documented type.
-    params_list = [{}, *({"trigger": True, "ordType": kind} for kind in OKX_ALGO_ORDER_TYPES)] if exchange.id == 'okx' else [{}, {"trigger": True}]
-    for params in params_list:
-        orders = exchange.fetch_open_orders(symbol, params=params)
-        if not isinstance(orders, list):
-            raise ValueError("Existing orders cannot be verified; adoption denied")
-        if orders:
-            order_ids = [str(o.get('id') or o.get('orderId')) for o in orders if o.get('id') or o.get('orderId')]
-            ids_hint = f" (open order IDs: {', '.join(order_ids)})" if order_ids else ""
-            raise ValueError(f"Existing regular or trigger orders must be reviewed before adoption{ids_hint}; no orders were cancelled or changed")
-
-
-def _trade_boundary(exchange, symbol: str, since_ms: int) -> dict[str, dict]:
-    trades = exchange.fetch_my_trades(symbol, since=since_ms, limit=TRADE_LIMIT)
-    if not isinstance(trades, list) or len(trades) >= TRADE_LIMIT:
-        raise ValueError("Adoption fill boundary is incomplete or exceeds one verifiable page")
-    observed = {}
-    for trade in trades:
-        if not isinstance(trade, dict) or trade.get("id") is None or not str(trade["id"]).strip():
-            raise ValueError("Adoption fill boundary lacks a stable trade ID")
-        timestamp = _number(trade.get("timestamp"), "trade timestamp")
-        if not timestamp.is_integer() or timestamp < since_ms:
-            raise ValueError("Adoption fill boundary has an invalid timestamp")
-        if trade.get("symbol") and trade["symbol"] != symbol:
-            raise ValueError("Adoption fill boundary contains a different symbol")
-        side = str(trade.get("side", "")).lower()
-        if side not in {"buy", "sell"}:
-            raise ValueError("Adoption fill direction cannot be verified")
-        value = {"timestamp": int(timestamp), "order": str(trade["order"]) if trade.get("order") is not None else None,
-                 "side": side, "amount": _number(trade.get("amount"), "trade amount"),
-                 "price": _number(trade["price"], "trade price") if trade.get("price") is not None else None}
-        trade_id = str(trade["id"])
-        if trade_id in observed and observed[trade_id] != value:
-            raise ValueError("Conflicting fills share a trade ID; adoption denied")
-        observed[trade_id] = value
-    return observed
-
-
-def _assert_unclaimed_boundary(service: IndependentExits, aliases: tuple[str, ...], observed: dict[str, dict]) -> None:
-    placeholders = ",".join("%s" for _ in aliases)
-    with database.get_db_conn() as conn:
-        links = {str(row["order_id"]): row["config_id"] for row in conn.execute(
-            f"SELECT order_id,config_id FROM execution_order_links WHERE account_scope=%s AND symbol IN ({placeholders})",
-            (service.account_scope, *aliases),
-        )}
-        if any(value["order"] in links and links[value["order"]] != service.config_id for value in observed.values()):
-            raise ValueError("Another task owns fills at the adoption boundary; adoption denied")
-
-
 def adopt_position(market_tool, symbol: str, pos_side: str, expected_amount: float,
                    reason: str, operation_id: str) -> dict:
-    """Record a manual position baseline without submitting or modifying orders.
+    """Verify shared management without submitting or modifying orders.
 
     ``expected_amount`` is the entire position in base-asset units, not contracts.
     Identical operation IDs replay the original durable receipt, including after
@@ -263,44 +142,39 @@ def adopt_position(market_tool, symbol: str, pos_side: str, expected_amount: flo
         market = service._market(symbol)
         canonical = market["symbol"]
         contract_size = _number(market.get("contractSize"), "contract size")
-        aliases = symbol_aliases(market_tool, canonical)
         request = {"symbol": canonical, "side": pos_side, "expected_amount": expected_amount,
                    "reason": reason, "account_scope": service.account_scope}
         request_hash = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         result = _saved_result(service, operation_id, request_hash)
         if result is not None:
             return result
-        _assert_no_local_conflicts(service, aliases, operation_id)
-
-        server_time = _number(service.ex.fetch_time(), "exchange server time")
-        if not server_time.is_integer():
-            raise ValueError("Exchange server time is invalid; adoption denied")
-        since_ms = max(0, int(server_time) - BOUNDARY_LOOKBACK_MS)
-        position = _position_snapshot(service.ex, canonical, pos_side, expected_amount, contract_size)
-        _assert_no_open_orders(service.ex, canonical)
-        observed = _trade_boundary(service.ex, canonical, since_ms)
-        confirmed_position = _position_snapshot(service.ex, canonical, pos_side, expected_amount, contract_size)
-        confirmed_trades = _trade_boundary(service.ex, canonical, since_ms)
-        if position != confirmed_position or observed != confirmed_trades:
-            raise ValueError("Position or fills changed during verification; adoption denied, verify again before a new request")
-        _assert_no_open_orders(service.ex, canonical)
-        _assert_unclaimed_boundary(service, aliases, observed)
-        _assert_no_local_conflicts(service, aliases, operation_id)
-
-        adopted_at = time.time()
-        plan = service._new(canonical, pos_side)
-        result = {"status": "completed", "action": "adopt_position", "operation_id": operation_id,
-                  "symbol": canonical, "pos_side": pos_side, "amount": position["amount"],
-                  "entry_price": position["entry_price"], "episode_id": plan["episode_id"],
-                  "protection_state": "ACTIVE", "adopted_at": adopted_at,
-                  "message": "Manual position adopted for this task; no exchange orders were placed or changed"}
-        plan.update(state="ACTIVE", ever_filled=True, verified_at=adopted_at,
-                    adoption={"version": 1, "operation_id": operation_id, "request_hash": request_hash,
-                              "reason": reason, "account_scope": service.account_scope,
-                              "symbol": canonical, "side": pos_side, "contracts": position["contracts"],
-                              "contract_size": contract_size, "amount": position["amount"],
-                              "entry_price": position["entry_price"], "hedged": position["hedged"],
-                              "adopted_at": adopted_at, "since_ms": since_ms,
-                              "observed_trade_ids": sorted(observed), "result": result})
-        service._save(plan)
-        return dict(result)
+        from backend.utils.position_management import management_action
+        with management_action(market_tool, canonical, pos_side, operation_id) as claim:
+            # The old explicit tool now uses the same enrollment and account
+            # coordination as every other action. Existing orders need not be
+            # cleared, and another authorized actor does not veto management.
+            result = _saved_result(service, operation_id, request_hash)
+            if result is not None:
+                claim['outcome_status'] = 'completed'
+                return result
+            position = _position_snapshot(service.ex, canonical, pos_side, expected_amount, contract_size)
+            plan = service._load(canonical, pos_side)
+            if not plan:
+                raise ValueError('Current position management evidence is unavailable')
+            adopted_at = time.time()
+            result = {"status": "completed", "action": "adopt_position", "operation_id": operation_id,
+                      "symbol": canonical, "pos_side": pos_side, "amount": position["amount"],
+                      "entry_price": position["entry_price"], "episode_id": plan["episode_id"],
+                      "protection_state": "ACTIVE", "adopted_at": adopted_at,
+                      "message": "Position verified for shared management; no exchange orders were placed or changed"}
+            # Keep this legacy operation's replay evidence without replacing the
+            # current management baseline or attributing manual fills to it.
+            evidence = {**plan, 'management_adoption': {
+                'operation_id': operation_id, 'request_hash': request_hash,
+                'account_scope': service.account_scope, 'symbol': canonical, 'result': result}}
+            with database.get_db_conn() as conn:
+                conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) VALUES(%s,%s,%s,%s)',
+                             (database._current_timestamp(), service.config_id, canonical, json.dumps(evidence)))
+                conn.commit()
+            claim['outcome_status'] = 'completed'
+            return dict(result)

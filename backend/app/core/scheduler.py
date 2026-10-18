@@ -5,6 +5,7 @@ from backend import storage
 import time
 import threading
 import math
+import uuid
 from datetime import datetime, timedelta
 
 import pytz
@@ -18,7 +19,8 @@ from backend.utils.llm_utils import sync_langsmith_environment
 from backend.utils.market_data import MarketTool
 from backend.utils.run_schedule import normalize_dca_freq, parse_dca_time, latest_dca_slot, dca_cycle_id
 from backend.utils.runtime_capacity import (CapacityBusy, get_capacity_manager,
-                                           positive_setting, submit_capacity, reserve_bytes)
+                                           positive_setting, submit_capacity, reserve_bytes, current_capacity)
+from backend.storage import agent_queue
 
 
 load_dotenv()
@@ -50,6 +52,9 @@ _protection_scan_progress = {}
 _background_receipt_future = None
 _background_receipt_cursor = None
 _dispatch_cursor = 0
+_queue_wakeup = threading.Event()
+_queue_thread = None
+_queue_owner = uuid.uuid4().hex
 
 AGENT_JOB_TYPE = "agent"
 MAINTENANCE_JOB_TYPE = "maintenance"
@@ -125,7 +130,7 @@ def _insert_scheduler_run(config_id: str, job_type: str, scheduled_at: str, stat
         return False
 
 
-def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status: str, error: str | None = None) -> None:
+def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status: str, error: str | None = None, *, scheduler_run_id=None) -> None:
     from backend.database import get_db_conn
 
     now_str = _timestamp()
@@ -136,7 +141,9 @@ def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status
         params.append(now_str)
     if status in {"FINISHED", "FAILED", "SKIPPED_RUNNING", "SKIPPED_CAPACITY"}:
         params.append(now_str)
-    params.extend([error, now_str, str(config_id), str(job_type), str(scheduled_at)])
+    params.extend([error, now_str])
+    predicate = 'id=%s' if scheduler_run_id is not None else 'config_id=%s AND job_type=%s AND scheduled_at=%s AND trigger_key=\'\''
+    params.extend([scheduler_run_id] if scheduler_run_id is not None else [str(config_id), str(job_type), str(scheduled_at)])
 
     with get_db_conn() as conn:
         conn.execute(
@@ -145,14 +152,14 @@ def _mark_scheduler_run(config_id: str, job_type: str, scheduled_at: str, status
             SET status = %s{started_at_sql}{finished_at_sql},
                 error = %s,
                 updated_at = %s
-            WHERE config_id = %s AND job_type = %s AND scheduled_at = %s
+            WHERE {predicate}
             """,
             tuple(params),
         )
         conn.commit()
 
 
-def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> None:
+def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict, *, scheduler_run_id=None) -> None:
     """Persist model/tool progress so the dashboard can follow an active task."""
     from backend.database import get_db_conn
 
@@ -178,14 +185,15 @@ def _mark_scheduler_progress(config_id: str, scheduled_at: str, event: dict) -> 
     if event.get('decision') is not None:
         assignments.append('decision_json = %s')
         params.append(json.dumps(event['decision'], ensure_ascii=False, default=str))
-    params.extend([str(config_id), AGENT_JOB_TYPE, str(scheduled_at)])
+    predicate = 'id=%s' if scheduler_run_id is not None else 'config_id=%s AND job_type=%s AND scheduled_at=%s AND trigger_key=\'\''
+    params.extend([scheduler_run_id] if scheduler_run_id is not None else [str(config_id), AGENT_JOB_TYPE, str(scheduled_at)])
 
     with get_db_conn() as conn:
         conn.execute(
             f"""
             UPDATE scheduler_runs
             SET {', '.join(assignments)}
-            WHERE config_id = %s AND job_type = %s AND scheduled_at = %s
+            WHERE {predicate}
             """,
             tuple(params),
         )
@@ -463,16 +471,17 @@ def _run_config_maintenance(config):
             logger.warning(f"[DCA Sync] {config_id} order/stat sync failed: {exc}")
 
 
-def run_config_agent(config, scheduled_at: str):
+def run_config_agent(config, scheduled_at: str, *, queued_run=None):
     config_id = config.get("config_id", "unknown")
     mode = config.get("mode", "STRATEGY").upper()
     logger.info(
         f"[{config_id}] started scheduled agent job ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
     )
-    _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "RUNNING")
-    _mark_scheduler_progress(
-        config_id,
-        scheduled_at,
+    run_fields = {'scheduler_run_id': queued_run['scheduler_run_id']} if queued_run else {}
+    def progress(event):
+        _mark_scheduler_progress(config_id, scheduled_at, event, **run_fields)
+    _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "RUNNING", **run_fields)
+    progress(
         {"phase": "preparing", "message": "正在准备市场、账户与历史上下文"},
     )
     try:
@@ -480,25 +489,27 @@ def run_config_agent(config, scheduled_at: str):
         run_agent_for_config(
             config,
             **({'human_message': trigger_message(config)} if config.get('_news_event') else {}),
-            progress_callback=lambda event: _mark_scheduler_progress(config_id, scheduled_at, event),
-            run_id=dca_cycle_id(config_id, TZ_CN.localize(datetime.fromisoformat(scheduled_at))),
+            progress_callback=progress,
+            run_id=queued_run['run_id'] if queued_run else dca_cycle_id(config_id, TZ_CN.localize(datetime.fromisoformat(scheduled_at))),
         )
         from backend.agent.memory_updates import tick_memory_updates
         tick_memory_updates()
-        _mark_scheduler_progress(
-            config_id,
-            scheduled_at,
+        progress(
             {"phase": "completed", "message": "任务执行完成"},
         )
-        _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FINISHED")
+        if queued_run:
+            agent_queue.finish(queued_run['id'], _queue_owner, 'FINISHED')
+        else:
+            _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FINISHED")
         logger.info(f"[{config_id}] finished scheduled agent job (scheduled_at={scheduled_at})")
     except Exception as exc:
-        _mark_scheduler_progress(
-            config_id,
-            scheduled_at,
+        progress(
             {"phase": "failed", "message": str(exc)},
         )
-        _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FAILED", error=str(exc))
+        if queued_run:
+            agent_queue.finish(queued_run['id'], _queue_owner, 'FAILED', type(exc).__name__)
+        else:
+            _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FAILED", error=str(exc))
         logger.error(f"Error executing agent [{config_id}] scheduled_at={scheduled_at}: {exc}")
 
 
@@ -578,45 +589,93 @@ def _sync_execution(config):
 
 
 def _submit_agent(config, scheduled_at: str) -> bool:
-    config_id = str(config.get("config_id") or "unknown")
-    mode = str(config.get("mode", "STRATEGY")).upper()
+    """Persist a trigger even when its task or every execution slot is busy."""
+    config_id = str(config.get('config_id') or 'unknown')
+    slot = TZ_CN.localize(datetime.fromisoformat(scheduled_at))
+    run_id = dca_cycle_id(config_id, slot)
+    accepted = agent_queue.enqueue(config_id, run_id, 'dca' if config.get('mode') == 'SPOT_DCA' else 'scheduled',
+                                   scheduled_at, run_id)
+    if accepted:
+        _queue_wakeup.set()
+    return accepted
 
-    with _scheduler_lock:
-        existing = _running_agent_futures.get(config_id)
-        if existing and not existing.done():
-            inserted = _insert_scheduler_run(
-                config_id,
-                AGENT_JOB_TYPE,
-                scheduled_at,
-                status="SKIPPED_RUNNING",
-                error="previous job still running",
-            )
-            if inserted:
-                logger.warning(f"[{config_id}] skip_due_to_running scheduled_at={scheduled_at}")
-            else:
-                logger.info(f"[{config_id}] duplicate skipped scheduled_at={scheduled_at}")
-            return False
 
-    if not _insert_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, status="QUEUED"):
-        logger.info(f"[{config_id}] duplicate skipped scheduled_at={scheduled_at}")
-        return False
-
-    logger.info(
-        f"[{config_id}] queued scheduled agent job ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
-    )
+def _run_queued_agent(item, lease):
+    lease.mark_started()
+    token = current_capacity.set(lease)
     try:
-        future = submit_capacity(_get_agent_executor(), 'agent', run_config_agent, config, scheduled_at)
-    except CapacityBusy as exc:
-        _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, 'SKIPPED_CAPACITY', error=exc.reason)
-        return False
+        started = agent_queue.start_claimed(item['id'], _queue_owner)
+        if started is not None:
+            config, queued_run = started
+            global_config.reload_config()
+            run_config_agent(config, queued_run['scheduled_at'], queued_run=queued_run)
     except Exception as exc:
-        _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "FAILED", error=str(exc))
-        logger.error(f"[{config_id}] failed to submit scheduled agent job scheduled_at={scheduled_at}: {exc}")
-        return False
+        # A started round must never return to QUEUED and ask a fresh model to
+        # repeat possibly submitted actions. The original trade ledger recovers.
+        agent_queue.finish(item['id'], _queue_owner, 'FAILED', type(exc).__name__)
+        agent_queue.release_claim(item['id'], _queue_owner)
+        logger.error('Queued agent worker failed: %s', type(exc).__name__)
+    finally:
+        current_capacity.reset(token)
+        lease.release()
+        _queue_wakeup.set()
 
-    with _scheduler_lock:
-        _running_agent_futures[config_id] = future
-    return True
+
+def dispatch_agent_queue() -> int:
+    """Read one oldest eligible row at a time; never load the backlog into RAM."""
+    _drop_finished_futures(_running_agent_futures, 'agent')
+    dispatched = 0
+    while True:
+        with _scheduler_lock:
+            if sum(not f.done() for f in _running_agent_futures.values()) >= _scheduler_max_workers():
+                break
+        try:
+            lease = get_capacity_manager().acquire('agent', timeout=0)
+        except CapacityBusy:
+            break
+        try:
+            item = agent_queue.claim_next(_queue_owner)
+        except BaseException:
+            lease.release()
+            raise
+        if not item:
+            lease.release()
+            break
+        try:
+            future = _get_agent_executor().submit(_run_queued_agent, item, lease)
+        except BaseException:
+            agent_queue.release_claim(item['id'], _queue_owner)
+            lease.release()
+            raise
+        with _scheduler_lock:
+            _running_agent_futures[item['config_id']] = future
+        def completed(done, queued=item, ticket=lease):
+            try:
+                if done.cancelled():
+                    agent_queue.release_claim(queued['id'], _queue_owner)
+            finally:
+                if done.cancelled():
+                    ticket.release()
+                _queue_wakeup.set()
+        future.add_done_callback(completed)
+        dispatched += 1
+    return dispatched
+
+
+def _start_agent_queue():
+    global _queue_thread
+    if _queue_thread and _queue_thread.is_alive():
+        return
+    def drain():
+        while True:
+            _queue_wakeup.wait(1)
+            _queue_wakeup.clear()
+            try:
+                dispatch_agent_queue()
+            except Exception as exc:
+                logger.error('Agent queue dispatch unavailable: %s', type(exc).__name__)
+    _queue_thread = threading.Thread(target=drain, name='agent-queue', daemon=True)
+    _queue_thread.start()
 
 
 def wait_until_next_minute():
@@ -650,7 +709,6 @@ def job(now: datetime | None = None):
     maintenance_queued = 0
     agent_due = 0
     agent_queued = 0
-    regularly_due = set()
 
     for config in active_configs:
         _submit_execution_sync(config)
@@ -658,22 +716,22 @@ def job(now: datetime | None = None):
             maintenance_queued += 1
 
         if is_time_to_run(config, now):
-            regularly_due.add(config['config_id'])
             config_id = config.get("config_id", "unknown")
             mode = str(config.get("mode", "STRATEGY")).upper()
             agent_due += 1
             logger.info(
                 f"[{config_id}] due detected ({mode}, scheduled_at={scheduled_at}, interval={config.get('run_interval', 'default')})"
             )
-            _last_run_times[config_id] = now
             slot = latest_dca_slot(config, now) if mode == 'SPOT_DCA' else None
             dispatch_at = _scheduled_at(slot.astimezone(TZ_CN)) if slot else scheduled_at
             if _submit_agent(config, dispatch_at):
+                _last_run_times[config_id] = now
                 agent_queued += 1
 
     try:
         from backend.app.services.news_triggers import dispatch_news
-        agent_queued += dispatch_news(active_configs, lambda config: _submit_agent(config, scheduled_at), now=now, regularly_due=regularly_due)
+        agent_queued += dispatch_news(active_configs, now=now)
+        _queue_wakeup.set()
     except Exception as exc:
         logger.warning('News dispatch unavailable: %s', type(exc).__name__)
 
@@ -712,6 +770,14 @@ def tick_shared_services():
 
 
 def run_scheduler_forever():
+    # The same shared-volume lock prevents another scheduler from declaring a
+    # still-live worker interrupted. It is released only on process exit.
+    from backend.utils.management_lock import scope_file_lock
+    with scope_file_lock('scheduler-runtime', 'agent-queue', 'leader'):
+        _run_scheduler_forever()
+
+
+def _run_scheduler_forever():
     from backend.utils.deployment_mode import maintenance_enabled
     if maintenance_enabled():
         raise RuntimeError('Scheduler is disabled during deployment maintenance')
@@ -727,6 +793,8 @@ def run_scheduler_forever():
         raise
 
     global_config.reload_config()
+    agent_queue.recover_after_restart()
+    _start_agent_queue()
     _start_protection_monitor()
 
     while True:

@@ -609,9 +609,6 @@ def dispatch_live_action(action, config_id, symbol, config, operation_id):
                                 automatic=True, order_id=getattr(action, 'order_id', None)) if mode != 'STRATEGY' else nullcontext(None)
     result = None
     try:
-        if mode != 'STRATEGY' and action.action == 'open':
-            from backend.mcp.guard import assert_entry_allowed
-            assert_entry_allowed(mt, symbol, side=action.side, only_capability=True)
         with context as claim:
             if attempt:
                 attempt.phase, attempt.submission_state = 'untracked', 'unknown'

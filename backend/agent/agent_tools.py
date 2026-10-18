@@ -435,11 +435,10 @@ def open_position_real(orders: List[OpenOrderReal], config_id: str, symbol: str)
 
 @tool(args_schema=AdoptPositionRealSchema)
 def adopt_position_real(pos_side: str, expected_amount: float, reason: str, config_id: str, symbol: str):
-    """【显式接管已有手动合约仓位】仅用于REAL实盘合约的independent_exits独立退出模式。
-    用户已要求管理已有手动仓位后，先查询并核对账户、标的、LONG/SHORT方向与该方向全部标的币数量，再显式调用本工具。
-    expected_amount必须是核对后的标的币数量，不是合约张数；reason说明用户意图与接管原因。不得因周期缺失而自动接管其他任务仓位。
-    接管只建立本任务管理记录，不下单、不成交、不创建保护，也不改变已有仓位和挂单。成功后再按用户要求调用close_position_real挂独立SL/TP或平仓。
-    接管成功不代表止损止盈已生效；返回拒绝或未知结果时停止并核对，不通过新增开仓或更换operation_id重试绕过校验。
+    """【兼容已有仓位核验】仅用于REAL实盘合约的independent_exits独立退出模式。
+    正常交易已自动纳管授权仓位，无需先调用本工具。旧调用仍核对LONG/SHORT与expected_amount标的币总量。
+    本工具复用共享管理服务，只保存核验记录，不下单、不撤单、不创建保护，不改变既有成交来源。
+    成功不代表止盈止损已生效；未知结果按原operation_id核验，不新增开仓或更换身份重试。
     """
     from backend.utils.deployment_mode import ensure_execution_enabled
     ensure_execution_enabled()

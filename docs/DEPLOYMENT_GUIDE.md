@@ -144,6 +144,8 @@ curl --max-time 10 http://127.0.0.1:31421/health
 
 该入口检查已提交的归档和干净的镜像输入，重新安装锁定的前端依赖、构建前端，再通过 `Dockerfile.prebuilt` 构建带 Git revision 的镜像。烟测使用一次性隔离 PostgreSQL 网络/卷与应用容器、关闭调度器、不挂载生产数据，检查 `/health` 与前端入口后自动清理。成功后推送 `origin/beta`，依次发布 `alphaply712/crypto-agent:git-<short-sha>` 和 `:latest`，输出 commit 与镜像 digest。
 
+若用户明确要求不执行完整容量验收，可追加 `-SkipCapacityAcceptance`。它只跳过三容器长时间容量验收，保留构建、隔离数据库迁移与启动烟测、Git 和镜像发布；输出会明确标注该验收未运行。默认不加此参数，原验收行为保持不变。
+
 任一步失败都停止后续步骤，并报告已推送的阶段。修复后可对同一归档重新运行入口；不能将“目录已归档”当成“发布成功”。该流程由归档 Agent 按项目规则调用，直接运行裸 `openspec archive` 命令不会触发 Git 或 Docker 钩子。生产容器更新继续使用上面的部署流程，在用户请求部署时执行。
 
 三容器 PostgreSQL profile、预先声明的校准/acceptance、memory+swap 总量与安全回退见 [容量验证](CAPACITY_VERIFICATION.md)。目标主机需分别设置预期memory/swap/CPU环境并核验实际cgroup；本地 Docker Desktop 报告不代表生产验收。

@@ -1135,6 +1135,8 @@ def save_runtime_snapshot(
                 if candidate is None:
                     raise ValueError(LAST_RUNTIME_CONFIG_ERROR or "Unable to validate candidate runtime configuration")
                 validate_snapshot(candidate)
+            from backend.storage.agent_queue import synchronize_configuration as sync_agent_queue
+            sync_agent_queue(conn, previous_snapshot, load_runtime_snapshot(connection=conn, raise_on_error=True) or {})
             if transaction_hook is not None:
                 transaction_hook(conn)
             synchronize_configuration(conn, load_runtime_snapshot(connection=conn) or {})

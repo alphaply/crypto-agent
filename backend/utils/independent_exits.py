@@ -110,7 +110,7 @@ class IndependentExits(PositionProtection):
                 register_order(self.account_scope, plan["symbol"], oid, self.config_id,
                                "stop_loss" if exit_group(record) == 'stop_loss' else
                                "take_profit" if exit_group(record) == 'take_profit' else 'agent_exit',
-                               episode_id=plan["episode_id"], side=plan["side"],
+                               episode_id=record.get('origin_episode_id', plan["episode_id"]), side=plan["side"],
                                source=record.get('source', 'agent'),
                                trigger_price=record.get("trigger_price"),
                                planned_exit=record.get("price"))
@@ -458,13 +458,13 @@ class IndependentExits(PositionProtection):
     def open(self, symbol, op, operation_id=None, contract_version=1):
         from backend.mcp.guard import assert_entry_allowed
         entry_side = {'BUY_LIMIT': 'LONG', 'SELL_LIMIT': 'SHORT'}.get(getattr(op, 'action', None))
-        assert_entry_allowed(self.mt, symbol, **({'side': entry_side} if entry_side else {}))
         if op.stop_loss is not None or op.take_profit is not None:
             raise ValueError("Independent mode uses the close tool for exits; entry TP/SL must be omitted")
         if contract_version == 2:
             positive_number(op.amount, 'amount')
             positive_number(op.entry_price, 'price')
         with _lock(self.account_scope):
+            assert_entry_allowed(self.mt, symbol, **({'side': entry_side} if entry_side else {}))
             market = self._market(symbol)
             symbol = market["symbol"]
             side = "LONG" if op.action == "BUY_LIMIT" else "SHORT"
@@ -643,6 +643,7 @@ class IndependentExits(PositionProtection):
                           exchange_channel='algo' if kind not in {'market', 'limit'} else 'regular',
                           requested_amount=None if close_all else quantity * contract_size,
                           resolved_amount=quantity * contract_size if close_all and kind == 'market' else None,
+                          cleanup_on_fill=bool(close_all or requested >= available - 1e-12),
                           trigger_basis=plan.get('trigger_basis', 'last'))
             if close_all and kind == 'market':
                 record['submission_amount'] = quantity
@@ -947,8 +948,6 @@ class IndependentExits(PositionProtection):
     def amend_entry(self, symbol, order_id, price=None, amount=None, reason="", pos_side=None, operation_id=None,
                     entry_price=None):
         # Native edit intent is persisted by the shared entry amendment implementation.
-        from backend.mcp.guard import assert_entry_allowed
-        assert_entry_allowed(self.mt, symbol)
         with _lock(self.account_scope):
             plan, record = self._find_order(symbol, order_id)
             self._admit(plan, 'edit', target=record)
@@ -1116,6 +1115,7 @@ class IndependentExits(PositionProtection):
         return result
 
     def _cleanup(self, plan):
+        plan.setdefault('cleanup_intent', {'source': 'agent_exit', 'started_at': time.time()})
         plan["state"] = "EXITING"
         self._save(plan)
         for record in plan.get("entries", []) + plan.get("exits", []):
@@ -1194,13 +1194,23 @@ class IndependentExits(PositionProtection):
                 self._save(plan)
                 return
             if plan["state"] == "EXITING" or (plan.get("ever_filled") and not pos):
+                from backend.utils.independent_lifecycle import cleanup_authorized, observe_flat
+                if not cleanup_authorized(plan):
+                    if pos:
+                        plan.update(state='ACTIVE', error=None)
+                    else:
+                        observe_flat(plan, time.time())
+                    self._save(plan)
+                    return
                 if plan["state"] != "EXITING" and not self._flat_confirmed(plan):
                     return
                 self._cleanup(plan)
                 return
             if not pos:
                 if plan["entries"] and all(r.get("status") in TERMINAL for r in plan["entries"]):
-                    self._cleanup(plan)
+                    from backend.utils.independent_lifecycle import observe_flat
+                    observe_flat(plan, time.time())
+                    self._save(plan)
                 else:
                     self._save(plan)
                 return

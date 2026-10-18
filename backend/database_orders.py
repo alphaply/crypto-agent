@@ -1,6 +1,6 @@
 from backend import storage
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 
 
 def _normalize_trade_mode(trade_mode: str) -> str:
@@ -98,9 +98,10 @@ class OrderPersistenceStore:
     def ensure_spot_fill_key(conn):
         """Structure is installed by the explicit PostgreSQL migration."""
 
-    def upsert_spot_fill(self, order_id, config_id, symbol, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None):
+    def upsert_spot_fill(self, order_id, config_id, symbol, status, filled_qty=0.0, filled_cost=0.0, avg_fill_price=0.0, filled_at=None, *, connection: storage.Connection | None = None):
+        """Join the caller's observation transaction when a connection is supplied."""
         last_sync_at = self._timestamp_factory()
-        with self._conn_factory() as conn:
+        with nullcontext(connection) if connection is not None else self._conn_factory() as conn:
             self.ensure_spot_fill_key(conn)
             cursor = conn.cursor()
             cursor.execute(
@@ -127,7 +128,8 @@ class OrderPersistenceStore:
                     last_sync_at,
                 ),
             )
-            conn.commit()
+            if connection is None:
+                conn.commit()
 
     def get_paginated_orders(self, config_id, page=1, per_page=10):
         offset = (page - 1) * per_page

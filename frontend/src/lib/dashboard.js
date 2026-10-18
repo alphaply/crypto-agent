@@ -1,3 +1,5 @@
+import { isAgentActive } from './agentRuntime.js';
+
 // Polling execution tokens should not restart market-data requests or charts.
 export function workspaceSignature(agents = []) {
   return JSON.stringify(agents.map((agent) => [agent.config_id, agent.timestamp, agent.market_timeframes, agent.symbols || [agent.symbol], agent.memory_update?.status]));
@@ -17,7 +19,7 @@ export function selectAgentId(agents = [], requested) {
 export function filterAgents(agents = [], search = '', filter = 'all') {
   const query = search.trim().toLowerCase();
   return agents.filter((agent) => {
-    if (filter === 'active' && !['RUNNING', 'QUEUED'].includes(agent.execution?.status)) return false;
+    if (filter === 'active' && !isAgentActive(agent)) return false;
     if (filter === 'enabled' && agent.enabled === false) return false;
     return !query || [agent.config_id, agent.title, agent.display_name, agent.model, agent.mode, ...(agent.symbols || [agent.symbol])].filter(Boolean).join(' ').toLowerCase().includes(query);
   });

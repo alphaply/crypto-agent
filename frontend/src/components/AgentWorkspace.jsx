@@ -26,9 +26,10 @@ import {
 import DecisionRunPanel from './DecisionRunPanel';
 import DecisionMemoryStatus from './DecisionMemoryStatus';
 import MemoryExecutionSnapshot from './MemoryExecutionSnapshot';
-import DecisionMessages from './DecisionMessages';
+import TaskExecutionPanel from './TaskExecutionPanel';
+import { AgentQueuePanel } from './AgentRuntimeStatus';
+import { currentExecution } from '../lib/agentRuntime';
 import MarkdownBlock from '../components/MarkdownBlock';
-import ReasoningBlock from '../components/ReasoningBlock';
 import KlineChart from '../components/KlineChart';
 import PerformancePanel from '../components/PerformancePanel';
 import ManagementStatus, { ManagedResource } from './ManagementStatus';
@@ -76,71 +77,6 @@ function formatPositionValue(value) {
   return numeric.toFixed(decimals).replace(/\.?0+$/, '');
 }
 
-function TaskExecutionPanel({ execution, locale }) {
-  const status = String(execution?.status || '').toUpperCase();
-  if (!execution || !['QUEUED', 'RUNNING', 'FINISHED', 'FAILED'].includes(status)) {
-    return null;
-  }
-  const active = ['QUEUED', 'RUNNING'].includes(status);
-  const completed = status === 'FINISHED';
-  const failed = status === 'FAILED';
-  const toolCalls = Array.isArray(execution.tool_calls) ? execution.tool_calls : [];
-  const title = active
-    ? (locale === 'zh' ? '任务正在执行' : 'Task in progress')
-    : completed
-      ? (locale === 'zh' ? '最近任务已完成' : 'Latest task completed')
-      : (locale === 'zh' ? '最近任务执行失败' : 'Latest task failed');
-  const alertType = failed ? 'error' : completed ? 'success' : 'info';
-  const statusColor = failed ? 'error' : completed ? 'success' : 'processing';
-  const phaseLabel = locale === 'zh'
-    ? ({ thinking: '模型分析', tool_planning: '调用已规划', tool_running: '工具执行中', finalizing: '整理结果', failed: '执行失败' }[execution.phase] || execution.phase || execution.status)
-    : execution.phase || execution.status;
-
-  return (
-    <Alert
-      className={`task-execution-panel ${active ? 'is-active' : completed ? 'is-complete' : 'is-failed'}`}
-      type={alertType}
-      showIcon
-      message={
-        <Space size={8} wrap>
-          <span>{title}</span>
-          <Tag color={statusColor}>{phaseLabel}</Tag>
-          {execution.finished_at || execution.updated_at ? (
-            <Text type="secondary">{execution.finished_at || execution.updated_at}</Text>
-          ) : null}
-        </Space>
-      }
-      description={
-        <Space direction="vertical" size={10} style={{ width: '100%' }}>
-          <Text>{execution.progress_message || execution.error || ''}</Text>
-          {!execution.decision?.messages?.length && toolCalls.length ? (
-            <div className="task-execution-tools">
-              {toolCalls.map((call, index) => (
-                <Tag key={call.id || `${call.name}-${index}`} color={call.status === 'failed' ? 'error' : call.status === 'completed' ? 'success' : 'blue'}>
-                  {call.name || 'tool'} · {call.status || 'pending'}
-                </Tag>
-              ))}
-            </div>
-          ) : null}
-          {execution.decision?.messages?.length ? <DecisionMessages
-            messages={execution.decision.messages}
-            zh={locale === 'zh'} active={active} phase={execution.phase}
-            toolCalls={toolCalls} startedAt={execution.started_at_iso || execution.started_at}
-          /> : <ReasoningBlock
-            title={active
-              ? (locale === 'zh' ? '实时推理' : 'Live reasoning')
-              : (locale === 'zh' ? '最近任务推理' : 'Latest task reasoning')}
-            content={execution.reasoning_content || ''}
-            streaming={active && execution.phase === 'thinking'}
-            reasoningTokens={execution.reasoning_tokens || 0}
-            diagnostics={execution.reasoning_diagnostics}
-            startedAt={execution.started_at_iso || execution.started_at || execution.created_at || execution.scheduled_at}
-          />}
-        </Space>
-      }
-    />
-  );
-}
 
 function formatPercentValue(value) {
   if (value === null || value === undefined || value === '') return '-';
@@ -823,10 +759,12 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   );
 
   if (compact) {
-    const urgentExecution = ['QUEUED', 'RUNNING', 'FAILED'].includes(agent.execution?.status);
+    const execution = currentExecution(agent);
+    const urgentExecution = ['RUNNING', 'FAILED', 'INTERRUPTED'].includes(execution?.status);
     return (
       <div className="agent-workspace-compact">
-        {urgentExecution && <TaskExecutionPanel execution={agent.execution} locale={locale} />}
+        <AgentQueuePanel agent={agent} locale={locale} />
+        {urgentExecution && <TaskExecutionPanel execution={execution} locale={locale} />}
         <Tabs activeKey={activeView} onChange={setActiveView} items={[
           {
             key: 'run', label: locale === 'zh' ? '运行过程' : 'Run activity',
@@ -850,6 +788,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      <AgentQueuePanel agent={agent} locale={locale} />
       {chartPanel}
       {decisionPanel}{summaryPanel}
       {positionPanel}
