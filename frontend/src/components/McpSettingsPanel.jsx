@@ -117,7 +117,7 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
     ]} expandable={{ expandedRowRender: (record) => <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify({ operation_id: record.operation_id, principal: record.principal, result: (() => { try { return JSON.parse(record.result); } catch { return record.result; } })() }, null, 2)}</pre> }} /></Card>
 
     </>}
-    {section === 'paper' && <PaperTradingPanel settings={data.paper_settings} zh={zh} onChanged={load} onCreateKey={() => setKeyDraft({ name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] })} />}
+    {section === 'paper' && <PaperTradingPanel settings={data.paper_settings} zh={zh} onChanged={load} onSettingsSaved={(saved) => setData((current) => ({ ...current, paper_settings: saved }))} onCreateKey={() => setKeyDraft({ name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] })} />}
 
     <Card className="panel-card" title={<Space><KeyOutlined />API Keys</Space>} extra={<Button icon={<PlusOutlined />} onClick={() => setKeyDraft(section === 'paper' ? { name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] } : { name: '', scopes: ['read'], profile_ids: [] })}>{section === 'paper' ? label('创建 Paper Key', 'Create Paper key') : label('创建 API Key', 'Create API key')}</Button>}>
       <div className="settings-stack">{activeKeys.filter((key) => section !== 'paper' || key.key_type === 'paper').map((key) => <div key={key.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border-soft)' }}>

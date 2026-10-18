@@ -13,6 +13,11 @@ def exercise(browser, width, locale):
     zh = locale == 'zh'
     page = browser.new_page(viewport={'width': width, 'height': 1000}, reduced_motion='reduce')
     errors, writes = [], []
+    fail_settings_refresh = False
+    fail_accounts_refresh = False
+    reject_settings_save = False
+    hold_settings_save = False
+    pending_settings_saves = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     cfg = {'enabled': True, 'initial_balance': 10000, 'max_leverage': 125, 'loan_limit': 1000000, 'fee_rate': .001, 'maintenance_margin_rate': .005, 'exchange': 'binance', 'bank_enabled': True, 'daily_interest_rate': .001}
     account = {'namespace': 'qqbot', 'user_id': '123456', 'account_status': 'bankrupt', 'account_epoch': 2, 'reset_count': 2, 'name': 'QQ user', 'cash': 9999, 'debt': 100, 'loan_limit': 5000, 'leverage': 10, 'markets': ['spot', 'swap'], 'enabled': True, 'used_margin': 100, 'net_equity': 9999, 'spot': [], 'positions': [], 'fees': 1}
@@ -23,6 +28,8 @@ def exercise(browser, width, locale):
         url = urlsplit(route.request.url)
         method = route.request.method
         if url.path == '/api/mcp' and method == 'GET':
+            if fail_settings_refresh:
+                return route.fulfill(status=503, content_type='application/json', body=json.dumps({'detail': 'Settings refresh unavailable'}))
             return reply(route, {'settings': {'enabled': True, 'public_url': 'https://example.test'}, 'connection': {'url': 'https://example.test/mcp'}, 'profiles': [], 'keys': keys, 'oauth_connections': [], 'tools': [], 'audit': [], 'paper_settings': cfg})
         if url.path == '/api/mcp/paper/dashboard':
             position = {'symbol': 'BTC/USDT:USDT', 'side': 'LONG', 'exchange': 'binance', 'amount': .01, 'entry_price': 80000, 'mark_price': 83000, 'unrealized_pnl': 30, 'leverage': 5, 'marked_at': 1791968157}
@@ -36,11 +43,20 @@ def exercise(browser, width, locale):
             if url.path == '/api/mcp/keys':
                 keys.append({**body, 'id': 'fixture-paper', 'secret': 'fixture-key-not-real', 'revoked': False})
             elif url.path == '/api/mcp/paper/settings':
+                if reject_settings_save:
+                    return route.fulfill(status=422, content_type='application/json', body=json.dumps({'detail': 'Settings save rejected'}))
                 cfg.update(body)
+                response = {'success': True, 'settings': copy.deepcopy(cfg)}
+                if hold_settings_save:
+                    pending_settings_saves.append((route, response))
+                    return
+                return reply(route, response)
             elif method == 'PATCH':
                 account.update(body)
             return reply(route, {'success': True})
         if url.path == '/api/mcp/paper/accounts':
+            if fail_accounts_refresh:
+                return route.fulfill(status=503, content_type='application/json', body=json.dumps({'detail': 'Account refresh unavailable'}))
             query = parse_qs(url.query)
             rows = [copy.deepcopy(account)] if query.get('user_id', [account['user_id']])[0] == account['user_id'] else []
             return reply(route, {'items': rows, 'total': len(rows)})
@@ -73,12 +89,63 @@ def exercise(browser, width, locale):
     expect(field.get_by_role('spinbutton')).to_have_value('2000')
     expect(panel.get_by_role('button', name='保存模拟交易设置' if zh else 'Save paper settings', exact=True)).to_be_enabled()
     assert cfg['initial_balance'] == 2000
+    daily_rate = panel.locator('.form-field').filter(has=page.get_by_text('日利率（0.01 = 1%）' if zh else 'Daily interest rate (0.01 = 1%)', exact=True)).get_by_role('spinbutton')
+    save_settings = panel.get_by_role('button', name='保存模拟交易设置' if zh else 'Save paper settings', exact=True)
+    # A committed rate must remain visible even if refreshing other data fails.
+    fail_settings_refresh = True
+    daily_rate.fill('0.0123')
+    save_settings.click()
+    expect(save_settings).to_be_enabled()
+    assert cfg['daily_interest_rate'] == .0123
+    expect(daily_rate).to_have_value('0.0123')
+    fail_settings_refresh = False
+    fail_accounts_refresh = True
+    daily_rate.fill('0.0234')
+    save_settings.click()
+    expect(save_settings).to_be_enabled()
+    assert cfg['daily_interest_rate'] == .0234
+    expect(daily_rate).to_have_value('0.0234')
+    expect(panel.get_by_role('alert')).to_contain_text('Account refresh unavailable')
+    fail_accounts_refresh = False
+    # A rejected save keeps the draft so the user can correct or retry it.
+    reject_settings_save = True
+    daily_rate.fill('0.0345')
+    save_settings.click()
+    expect(save_settings).to_be_enabled()
+    assert cfg['daily_interest_rate'] == .0234
+    expect(daily_rate).to_have_value('0.0345')
+    expect(panel.get_by_role('alert')).to_contain_text('Settings save rejected')
+    reject_settings_save = False
+    # Finishing an earlier save must not discard a newer edit.
+    hold_settings_save = True
+    save_settings.click()
+    daily_rate.fill('0.0456')
+    assert len(pending_settings_saves) == 1
+    pending_route, saved_response = pending_settings_saves.pop()
+    reply(pending_route, saved_response)
+    expect(save_settings).to_be_enabled()
+    assert cfg['daily_interest_rate'] == .0345
+    expect(daily_rate).to_have_value('0.0456')
+    hold_settings_save = False
+    save_settings.click()
+    expect(save_settings).to_be_enabled()
+    assert cfg['daily_interest_rate'] == .0456
+    expect(daily_rate).to_have_value('0.0456')
+    # A completed save releases its draft so subsequent server updates can show.
+    cfg['daily_interest_rate'] = .0567
+    panel.get_by_role('button', name='调整账户' if zh else 'Adjust account', exact=True).click()
+    dialog = page.get_by_role('dialog')
+    dialog.locator('.ant-modal-footer .ant-btn-primary').click()
+    expect(dialog).not_to_be_visible()
+    expect(daily_rate).to_have_value('0.0567')
     page.get_by_role('tab', name='MCP', exact=True).click()
     expect(panel).not_to_be_visible()
     page.get_by_role('tab', name='QQBot · Paper', exact=True).click()
     expect(field.get_by_role('spinbutton')).to_have_value('2000')
-    output = Path('docs/screenshots/account-lifecycle')
+    expect(daily_rate).to_have_value('0.0567')
+    output = Path(os.getenv('PAPER_TEST_SCREENSHOTS', 'docs/screenshots/account-lifecycle'))
     output.mkdir(parents=True, exist_ok=True)
+    panel.locator('.settings-form-grid').first.screenshot(path=str(output / f'paper-daily-interest-{width}-{locale}.png'))
     data_panel = panel.locator('.ant-card').filter(has=page.get_by_text('模拟盘数据 · 持仓 / 委托 / 排行 / 事件' if zh else 'Paper data · positions / orders / ranking / events', exact=True))
     expect(data_panel.get_by_text('BTC/USDT:USDT', exact=True).first).to_be_visible()
     data_panel.screenshot(path=str(output / f'paper-v2-positions-{width}-{locale}.png'))
@@ -91,6 +158,9 @@ def exercise(browser, width, locale):
     panel.screenshot(path=str(output / f'paper-trading-{width}-{locale}.png'))
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Page overflows viewport'
     assert not errors, errors
+    page.reload()
+    page.get_by_role('tab', name='QQBot · Paper', exact=True).click()
+    expect(daily_rate).to_have_value('0.0567')
     page.close()
 
 
@@ -99,4 +169,4 @@ with sync_playwright() as playwright:
     for width, locale in [(1440, 'zh'), (1440, 'en'), (390, 'zh')]:
         exercise(browser, width, locale)
     browser.close()
-print('PASS: real paper key creation, account cash/debt editing, settings save; desktop zh/en and mobile zh')
+print('PASS: paper key creation, account editing, daily rate persistence and save failures/concurrent edits; desktop zh/en and mobile zh')

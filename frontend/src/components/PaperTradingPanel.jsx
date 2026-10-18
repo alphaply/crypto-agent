@@ -5,7 +5,7 @@ import { formatPaperAmount, paperFilterCount, paperValuationIncomplete } from '.
 import AuditDisclosure from './AuditDisclosure';
 import PaperDataPanel from './PaperDataPanel';
 
-export default function PaperTradingPanel({ settings: initial, zh, onChanged, onCreateKey }) {
+export default function PaperTradingPanel({ settings: initial, zh, onChanged, onSettingsSaved, onCreateKey }) {
   const label = (cn, en) => zh ? cn : en;
   const [draft, setDraft] = useState(null);
   const settings = draft || initial;
@@ -36,6 +36,20 @@ export default function PaperTradingPanel({ settings: initial, zh, onChanged, on
     catch (err) { setError(err.message); return false; }
     finally { setBusy(false); }
   };
+  const saveSettings = async () => {
+    const submitted = settings;
+    setBusy(true);
+    setError('');
+    try {
+      const { data } = await api.put('/mcp/paper/settings', { ...submitted, exchange: 'binance' });
+      onSettingsSaved(data.settings);
+      // A new edit made while saving belongs to the next save.
+      setDraft((current) => current === submitted ? null : current);
+      await load(page);
+      setRevision((v) => v + 1);
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  };
   const update = (field, value) => setDraft({ ...settings, [field]: value });
   const edit = (field, value) => setEditing((v) => ({ ...v, [field]: value }));
   const path = (row) => `/mcp/paper/accounts/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.user_id)}`;
@@ -60,7 +74,7 @@ export default function PaperTradingPanel({ settings: initial, zh, onChanged, on
         ['maintenance_margin_rate', label('维持保证金比例（0.005 = 0.5%）', 'Maintenance rate (0.005 = 0.5%)'), .000001, .1, .001],
       ].map(([field, title, min, max, step]) => <div className="form-field" key={field}><label>{title}</label><InputNumber min={min} max={max} step={step} precision={field === 'max_leverage' ? 0 : undefined} value={settings[field]} onChange={(v) => update(field, v ?? min)} /></div>)}
     </div>
-    <Button style={{ marginTop: 12 }} loading={busy} onClick={async () => { if (await mutate(() => api.put('/mcp/paper/settings', { ...settings, exchange: 'binance' }))) setDraft(null); }}>{label('保存模拟交易设置', 'Save paper settings')}</Button>
+    <Button style={{ marginTop: 12 }} loading={busy} onClick={saveSettings}>{label('保存模拟交易设置', 'Save paper settings')}</Button>
     <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>{label('初始金额作用于开户和下海重置。借款额度与日利率统一配置，每日北京时间 00:00 按本金单利扣息；现金可以扣负。破产账户仅能收款，用户主动说下海才会重置。杠杆调整只作用于后续开仓。后台分批更新 BN 资源；估值不完整时净资产显示为 —，不参加对应收益排名。可用现金扣除完整账本中的预留。', 'Cash applies to creation/reset. Bank limits and daily simple interest are central. Interest settles at midnight Beijing time and may make cash negative. Bankrupt users may receive funds and must explicitly request a reset. Leverage changes affect subsequent entries only. Background batches update Binance resources. Incomplete equity is shown as — and excluded from the corresponding return ranking. Available cash subtracts all ledger reservations.')}</Typography.Paragraph>
     <Space wrap style={{ marginBottom: 12 }}>
       <Input aria-label={label('账户命名空间', 'Account namespace')} placeholder={label('命名空间', 'Namespace')} value={namespace} onChange={(e) => setNamespace(e.target.value)} style={{ width: 150 }} />
