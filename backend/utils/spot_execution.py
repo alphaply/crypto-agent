@@ -214,8 +214,6 @@ def reserve_spot_batch(config_id: str, config: dict, parent_id: str, orders: lis
         per_cycle = min(per_cycle, float(cycle['budget']))
         _reconcile_known_reservations(conn, config_id)
         reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=%s', (config_id,)).fetchall()
-        if any(row['status'] in {'reserved', 'unknown'} for row in reservations):
-            raise ValueError('之前的现货下单结果未知或正在提交，待核验后才能继续买入')
         spent = _cycle_commitments(conn, config_id, cycle_id, reservations)
         if spent + requested > per_cycle + 1e-8:
             raise ValueError(f'所有标的共享本轮预算 {per_cycle:g}，本轮剩余 {max(0, per_cycle-spent):g}，申请 {requested:g}')
@@ -263,8 +261,6 @@ def reserve_spot_edit(config_id, config, operation_id, symbol, order, amount, pr
         if conn.execute('SELECT 1 FROM spot_budget_reservations WHERE config_id=%s AND operation_id=%s', (config_id, operation_id)).fetchone():
             raise ValueError('原现货改单预算身份已有记录，必须查询原请求而不能重新提交')
         reservations = conn.execute('SELECT * FROM spot_budget_reservations WHERE config_id=%s', (config_id,)).fetchall()
-        if charge > 1e-8 and any(r['status'] in {'reserved','unknown'} for r in reservations):
-            raise ValueError('现货原操作未核验，不能增加买单承诺')
         if own:
             conn.execute("UPDATE orders SET entry_price=%s,amount=%s,filled_amount=%s WHERE config_id=%s AND symbol=%s AND order_id=%s "
                          "AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'",
@@ -324,16 +320,16 @@ def spot_budget_status(config_id: str, config: dict, cycle_id: str | None = None
         spent = _cycle_commitments(conn, config_id, cycle_id, reservations)
         committed, known = _known_commitments(conn, config_id)
         committed += sum(float(row['quote_cost']) for row in reservations
-                         if row['status'] != 'released' and (row['symbol'], str(row['order_id'])) not in known)
-    blocked = any(row['status'] in {'reserved', 'unknown'} for row in reservations)
+                         if row['status'] not in ('released', 'unknown') and (row['symbol'], str(row['order_id'])) not in known)
+    blocked = False
     remaining = max(0, limit - spent)
     lifetime_remaining = max(0, lifetime_limit - committed) if lifetime_limit is not None else None
     return {'period_id': cycle_id, 'period_limit': limit, 'period_spent': spent,
             'period_remaining': remaining, 'lifetime_limit': lifetime_limit,
             'lifetime_committed': committed, 'lifetime_remaining': lifetime_remaining,
-            'pending_unknown': blocked,
+            'pending_unknown': False,
             'cycle_registered': bool(cycle),
-            'available': 0 if blocked or not cycle else min(remaining, lifetime_remaining) if lifetime_remaining is not None else remaining}
+            'available': min(remaining, lifetime_remaining) if lifetime_remaining is not None else remaining}
 
 
 def finish_spot_reservation(config_id: str, operation_id: str, status: str, order_id=None) -> None:
@@ -353,6 +349,9 @@ def reconcile_spot_reservations(config_id: str, config: dict, market_factory) ->
     """
     with database.get_db_conn() as conn:
         _initialize(conn)
+        conn.execute("UPDATE spot_budget_reservations SET status='released',updated_at=%s "
+                     "WHERE config_id=%s AND status IN ('unknown', 'reserved') AND (order_id IS NULL OR order_id='')",
+                     (time.time(), config_id))
         rows = [dict(row) for row in conn.execute('''SELECT * FROM spot_budget_reservations
             WHERE config_id=%s AND (status='unknown' OR (status='reserved' AND updated_at<%s))''',
             (config_id, time.time() - 60))]
@@ -381,6 +380,10 @@ def reconcile_spot_reservations(config_id: str, config: dict, market_factory) ->
                 candidates = [order for order in candidates
                               if str(order.get('clientOrderId') or '') == row['client_order_id']]
             matches = {str(order.get('id')): order for order in candidates if order and order.get('id')}
+            if len(matches) == 0 and time.time() - float(row.get('created_at') or 0) > 60:
+                finish_spot_reservation(config_id, row['operation_id'], 'released')
+                recovered += 1
+                continue
             if len(matches) != 1:
                 continue
             order_id, order = next(iter(matches.items()))

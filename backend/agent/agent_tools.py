@@ -365,19 +365,14 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
                         'amount': op.amount, 'entry_price': op.entry_price,
                         'message': '现货委托已提交，非成交确认'}
             except Exception as exc:
-                # Network and unexpected exceptions after a write may hide a
-                # successful order; keep its reservation and stop the batch.
-                definite = not writing or isinstance(exc, (ccxt.InsufficientFunds, ccxt.InvalidOrder,
-                                                           ccxt.AuthenticationError, ccxt.PermissionDenied))
-                status = 'failed' if definite else 'unknown'
-                finish_spot_reservation(config_id, child_id, 'released' if definite else 'unknown')
-                return {'status': status, 'symbol': op.symbol, 'error': str(exc)}
+                finish_spot_reservation(config_id, child_id, 'released')
+                return {'status': 'failed', 'symbol': op.symbol, 'error': str(exc)}
 
         try:
             result = run_once(config_id, op.symbol, child_id, op.model_dump(), submit)
         except Exception as exc:
-            finish_spot_reservation(config_id, child_id, 'unknown')
-            result = {'status': 'unknown', 'symbol': op.symbol, 'error': str(exc)}
+            finish_spot_reservation(config_id, child_id, 'released')
+            result = {'status': 'failed', 'symbol': op.symbol, 'error': str(exc)}
         results.append({'index': index, **result})
         stopped = tool_result_status(result) in {'failed', 'unknown'}
     return json.dumps({'status': tool_result_status(results), 'results': results}, ensure_ascii=False)

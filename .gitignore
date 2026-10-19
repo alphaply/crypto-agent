@@ -10,6 +10,7 @@ pricing.json
 
 # Docker local overrides
 docker-compose.override.yml
+Dockerfile.prebuilt.mirror.local
 
 # Runtime state
 data/
@@ -29,6 +30,7 @@ chat_checkpoints.sqlite-*
 *.db-journal
 *.log
 app.log
+.codex-test-results.txt
 
 # Python
 __pycache__/
@@ -70,6 +72,7 @@ pnpm-debug.log*
 .kiro/
 .cursor/
 .freebuff/
+.agents/
 .DS_Store
 Thumbs.db
 *.swp

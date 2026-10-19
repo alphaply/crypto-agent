@@ -681,8 +681,6 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             f'预算允许新增买入上限 {budget_status["available"]:g} {quote}，'
             '实际下单还须满足账户可用余额；最终以执行时校验为准。'
         )
-        if budget_status['pending_unknown']:
-            system_prompt += '存在尚未核实结果的下单，当前禁止新增买入，必须先核实成交/挂单结果。'
         external_count = len(account_data.get('external_open_orders') or [])
         system_prompt += (
             f'\n当前挂单列表仅包含本任务订单；所选标的另有 {external_count} 笔其他/未归属挂单，'

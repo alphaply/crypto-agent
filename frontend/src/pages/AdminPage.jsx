@@ -1957,12 +1957,6 @@ export default function AdminPage() {
                       </Text>
                     </div>
                   )}
-                  <div className="form-field field-span-2"><PositionManagementFields value={editingTask}
-                    savedPolicy={persistedAgents.find((agent) => agent.config_id === editingTaskId)?.position_management_policy}
-                    onChange={(patch) => setEditingTask((current) => ({ ...current, ...patch }))}
-                    supported={taskMode === 'REAL' && resolveExitMode(editingTask) === 'independent_exits' && ['binance', 'okx'].includes(taskCatalog.exchange?.toLowerCase())}
-                    symbols={editingTask.symbol ? [editingTask.symbol] : []} locale={locale} /></div>
-                  {editingTaskId && <div className="form-field field-span-2"><ManagementLifecyclePanel configId={editingTaskId} /></div>}
                   <div className="form-field">
                     <label>Prompt File</label>
                     <Select
