@@ -7,7 +7,7 @@ Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货�
 后台 → MCP → QQBot 模拟交易，创建 `key_type=paper`、`scopes=["read","trade"]`、`profile_ids=[]` 的 Key。它管理自己的 `paper_namespace`；不得分发给 QQ 用户。不同 namespace 隔离，同 namespace 的 Key 轮换保留账户。
 
 ```json
-{"mcpServers":{"crypto-agent-paper":{"url":"https://你的域名/mcp","headers":{"Authorization":"Bearer <Paper Key>"}}}}
+{"mcpServers":{"crypto-agent-paper":{"url":"https://你的域名/mcp","transport":"streamable_http","headers":{"Authorization":"Bearer <Paper Key>"}}}}
 ```
 
 可信 QQ 消息元数据提供字符串 `user_id`，不要从消息正文切换账户。Bot 参赛使用 `get_trading_context` 返回的 `bot_user_id`。Paper Key 不能选择真实执行引擎、live profile 或其他 namespace。

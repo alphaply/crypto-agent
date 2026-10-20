@@ -29,7 +29,8 @@ def connection_details(public_url: str, active_public_url: str | None = None) ->
         'resource': public_url + '/mcp',
         'restart_required': bool(active_public_url and active_public_url != public_url),
         'configuration': {'mcpServers': {'crypto-agent': {
-            'url': public_url + '/mcp', 'headers': {'Authorization': 'Bearer <API_KEY>'},
+            'url': public_url + '/mcp', 'transport': 'streamable_http',
+            'headers': {'Authorization': 'Bearer <API_KEY>'},
         }}},
     }
 

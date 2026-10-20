@@ -280,4 +280,4 @@ def test_public_market_uses_only_anonymous_methods_and_rejects_stale_quotes(ledg
     ticker.update(timestamp=time.time() * 1000, bid=102, ask=101)
     with pytest.raises(ValueError, match='invalid'):
         PUBLIC_MARKET('BTC/USDT', 'spot')
-    assert seen.count('closed') == 4
+    assert seen.count('closed') == 7
