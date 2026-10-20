@@ -486,10 +486,11 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
     prompt_balance = account_data.get('available_balance', balance)
     raw_analysis = market_full.get("analysis", {})
     analysis_data = raw_analysis.get("15m") or next(iter(raw_analysis.values()), {})
-    current_price = analysis_data.get("price", 0)
-    atr_15m = analysis_data.get("atr", current_price * 0.01) if current_price > 0 else 0
+    live_quote = market_full.get("live_quote") or {}
+    current_price = live_quote.get("price") if live_quote.get("available") else None
+    atr_15m = analysis_data.get("atr")
 
-    logger.debug(f"📈 Extracted from 15m: price={current_price}, atr={atr_15m}")
+    logger.debug(f"📈 Live quote: price={current_price}; closed-candle ATR={atr_15m}")
     logger.debug(f"💳 Prompt balance (available): {prompt_balance} USDT | Snapshot balance (total): {balance} USDT")
 
     indicators_summary = {}
@@ -533,6 +534,7 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
 
     market_context_llm = {
         "current_price": current_price,
+        "live_quote": live_quote,
         "atr_base": atr_15m,
         "sentiment": market_full.get("sentiment"),
         "news_context": news_context,
@@ -545,8 +547,10 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         for asset, market in markets.items():
             analysis = market.get('analysis', {})
             primary = next(iter(analysis.values()), {})
+            asset_quote = market.get('live_quote') or {}
             blocks.append(f"## {asset}\n" + format_market_data_to_text({
-                'current_price': primary.get('price'), 'atr_base': primary.get('atr'),
+                'current_price': asset_quote.get('price') if asset_quote.get('available') else None,
+                'live_quote': asset_quote, 'atr_base': primary.get('atr'),
                 'sentiment': market.get('sentiment'), 'news_context': news_by_symbol[asset],
                 'technical_indicators': analysis,
             }))
@@ -605,7 +609,9 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             amt = float(o.get('amount', 0))
             entry = float(o.get('price', 0))
             # 简单计算未实现盈亏
-            pnl = (current_price - entry) * amt if pos_side == "LONG" else (entry - current_price) * amt
+            pnl = None if current_price is None else (
+                (current_price - entry) * amt if pos_side == "LONG" else (entry - current_price) * amt
+            )
             display_mock_positions.append({
                 "symbol": o.get('symbol', symbol),
                 "side": pos_side,
@@ -650,7 +656,7 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
         leverage=leverage,
         current_time=current_time_str,
         next_run_time=next_run_time,
-        current_price=current_price,
+        current_price=current_price if current_price is not None else "N/A",
         atr_15m=atr_15m,
         balance=prompt_balance,
         positions_text=positions_text,

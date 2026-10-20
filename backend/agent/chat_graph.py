@@ -138,9 +138,11 @@ def _temporary_market_context_text(market_data: Dict[str, Any]) -> str:
         error = str(market_data.get("error") or "No technical data was returned")
         return f"Technical market data is unavailable for this turn: {error}"
     primary = analysis.get("15m") or next(iter(analysis.values()), {})
+    live_quote = market_data.get("live_quote") or {}
     return format_market_data_to_text(
         {
-            "current_price": primary.get("price", 0),
+            "current_price": live_quote.get("price") if live_quote.get("available") else None,
+            "live_quote": live_quote,
             "atr_base": primary.get("atr", 0),
             "sentiment": market_data.get("sentiment") or {},
             "technical_indicators": analysis,

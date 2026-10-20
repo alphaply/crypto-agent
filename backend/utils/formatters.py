@@ -34,9 +34,9 @@ def format_positions_to_agent_friendly(positions: list, *, observation=None) -> 
             lines.append(f"[SPOT] {symbol} | Account holdings: {amount} | Free: {position.get('available_amount', 'N/A')} | Cost basis/PnL: N/A (account balance, not task attribution)" + _resource_facts(position))
             continue
         entry = float(position.get("entry_price", 0) or 0)
-        pnl = float(position.get("unrealized_pnl", 0) or 0)
-        pnl_sign = "+" if pnl >= 0 else ""
-        lines.append(f"[{side}] {symbol} | Amt: {amount} | Entry: {entry} | PnL: {pnl_sign}{pnl:.3f}" + _resource_facts(position))
+        pnl = position.get("unrealized_pnl")
+        pnl_text = "N/A" if pnl is None else f"{float(pnl):+.3f}"
+        lines.append(f"[{side}] {symbol} | Amt: {amount} | Entry: {entry} | PnL: {pnl_text}" + _resource_facts(position))
 
     return "\n".join(lines)
 
@@ -97,13 +97,29 @@ def _is_spot_market_data(data: dict) -> bool:
     )
 
 
+def _format_live_quote(quote: dict | None) -> str:
+    quote = quote or {}
+    if not quote.get('available'):
+        return (
+            "- Live quote: unavailable; current price is N/A. "
+            "Do not substitute a historical candle close for the current price."
+        )
+    return (
+        f"- Price source: {quote.get('exchange') or 'N/A'} {quote.get('symbol') or 'N/A'} "
+        f"{quote.get('source') or 'N/A'} | fetched_at: {quote.get('fetched_at') or 'N/A'} "
+        f"| exchange_timestamp_ms: {quote.get('exchange_timestamp_ms') or 'N/A'}. "
+        "This is a sampled last-trade quote, not a continuously updated price."
+    )
+
+
 def _format_spot_market_data(data: dict) -> str:
     def fmt(value):
         return 'N/A' if value is None else str(value)
 
     output = [
         f"[Spot market: {data.get('symbol') or ''}]",
-        f"- Live/reference price: {fmt(data.get('current_price'))}",
+        f"- Live price: {fmt(data.get('current_price'))}",
+        _format_live_quote(data.get('live_quote')),
         '- 4h: execution context; 1d: trend and accumulation; 1w: long-term regime.',
         '- Indicators use closed candles only. N/A means insufficient/unavailable data, not zero.',
         '- Drawdown is signed (close/high - 1); RVOL20 uses the previous 20 closed candles. These describe history, not buy instructions.',
@@ -223,7 +239,7 @@ def format_market_data_to_text(data: dict) -> str:
         fvg = fmt_zone_items(payload.get("active_fvg") or [], "FVG")
         return f"Liquidity/IFVG: Sweep={sweep_text} | IFVG={ifvg} | FVG={fvg}"
 
-    current_price = data.get("current_price", 0)
+    current_price = data.get("current_price")
     atr_base = data.get("atr_base", 0)
     sentiment = data.get("sentiment") or {}
     funding = float(sentiment.get("funding_rate", 0) or 0) * 100
@@ -234,7 +250,8 @@ def format_market_data_to_text(data: dict) -> str:
 
     output = [
         "[Market Snapshot]",
-        f"- Price: {current_price} | Base ATR: {atr_base} | Funding: {funding:.4f}% | OI: {oi}",
+        f"- Price: {fmt_value(current_price)} | Base ATR: {fmt_value(atr_base)} | Funding: {funding:.4f}% | OI: {oi}",
+        _format_live_quote(data.get('live_quote')),
         f"- 24h quote Vol: {vol_24h} | Binance top-position L/S (5m): {ls_ratio} | Global account L/S (5m): {ls_accounts}",
         "- OI is a snapshot (exchange quantity units); without changes/contract size it is not a directional signal.",
     ]
@@ -274,7 +291,7 @@ def format_market_data_to_text(data: dict) -> str:
         output.append("- No timeframe data")
         return "\n".join(output).strip()
 
-    output.append("[Technical context: closed candles, oldest to newest; price is the last closed-bar reference, not a live quote. N/A means unavailable.]")
+    output.append("[Technical context: closed candles, oldest to newest; each timeframe's Close is the last closed-bar reference, not a live quote. Use the separately timestamped Market Snapshot price for the sampled current price. N/A means unavailable.]")
     output.append("V uses exchange OHLCV volume units. RVOL20 compares the last candle with the previous 20 closed candles; ATR-normalized distances are signed. Indicators describe history, not independent probabilities.")
     output.append("CHOP: <38.2 trending, >61.8 choppy (descriptive, no direction); CMF is an OHLCV pressure proxy, not net capital flow. Squeeze on=BB inside KC, off=both bands outside, neutral=mixed/touching; release_age=bars since observed on→off (0=this bar, N/A=not observed/reset). Durations are bounded by available history; release alone gives no direction.")
     for tf in available_tfs:

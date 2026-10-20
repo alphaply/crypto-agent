@@ -15,7 +15,8 @@ from backend.utils import llm_utils
 def fresh_data(monkeypatch):
     market = Mock()
     market.get_market_analysis.return_value = {
-        "analysis": {"15m": {"price": 200, "atr": 7, "ema": {}, "macd": {}, "bollinger": {}}},
+        "analysis": {"15m": {"price": 190, "atr": 7, "ema": {}, "macd": {}, "bollinger": {}}},
+        "live_quote": {"available": True, "price": 200, "source": "ticker.last"},
         "timestamp": 123, "sentiment": {},
     }
     market.get_account_status.return_value = {
@@ -150,7 +151,7 @@ def test_every_transport_attempt_uses_admin_timeout_without_sdk_retries(monkeypa
 def test_repeated_refresh_replaces_snapshot_and_notice(fresh_data):
     config = {"configurable": {"agent_config": {"model": "test", "system_prompt_role": "user"}}}
     first = graph.refresh_decision_context(initial_state(), config)
-    fresh_data.get_market_analysis.return_value["analysis"]["15m"]["price"] = 300
+    fresh_data.get_market_analysis.return_value["live_quote"]["price"] = 300
     second = graph.refresh_decision_context(first, config)
     assert "price=300" in second.messages[0].content
     assert "analyze" in second.messages[0].content

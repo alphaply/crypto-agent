@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import time
 import warnings
 import backend.database as database
-from datetime import datetime
+from datetime import datetime, timezone
 from backend.utils.logger import setup_logger
 from backend.utils.indicators import (
     smart_fmt, calc_ema, calc_emas, calc_rsi, calc_atr,
@@ -942,6 +942,28 @@ class MarketTool:
                 status_data.setdefault('management', {'policy': 'visible_first_claim', 'scopes': []}).update(complete=False, error=str(exc))
         return status_data
 
+    def _fetch_live_quote(self, symbol: str) -> dict:
+        """Read the configured market's last trade independently of closed candles."""
+        quote = {
+            'available': False, 'price': None, 'symbol': symbol,
+            'exchange': getattr(getattr(self, 'exchange', None), 'id', None),
+            'source': 'ticker.last', 'exchange_timestamp_ms': None,
+        }
+        try:
+            ticker = self.exchange.fetch_ticker(symbol)
+            price = float(ticker['last'])
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError('Invalid last trade price')
+            quote.update(available=True, price=price)
+            timestamp = ticker.get('timestamp')
+            if isinstance(timestamp, (int, float)) and math.isfinite(timestamp) and timestamp > 0:
+                quote['exchange_timestamp_ms'] = int(timestamp)
+        except Exception as exc:
+            quote['error'] = type(exc).__name__
+            logger.warning('Live quote unavailable for %s (%s)', symbol, type(exc).__name__)
+        quote['fetched_at'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        return quote
+
     def get_market_analysis(self, symbol, mode='STRATEGY', timeframes=None):
         """
         全量获取市场数据的主入口
@@ -981,6 +1003,9 @@ class MarketTool:
             else:
                 logger.warning(f"  ⚠️ {tf} data is None, skipping")
 
+        # Fetch after indicator calculation so the prompt gets a recent quote,
+        # never the close of a historical candle masquerading as current price.
+        final_output['live_quote'] = self._fetch_live_quote(symbol)
         logger.info(f"✅ Market analysis complete. Collected {len(final_output['analysis'])} timeframes")
         return final_output
 
