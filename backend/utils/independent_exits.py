@@ -687,7 +687,8 @@ class IndependentExits(PositionProtection):
                     'filled_amount': result['filled_amount'], 'remaining_amount': result['actual_remaining'],
                     'price': record.get('price'), 'order_id': order_reference(record)}
 
-    def _cancel(self, record, plan, trigger=False, *, allow_child=True, verify_budget=None):
+    def _cancel(self, record, plan, trigger=False, *, allow_child=True, verify_budget=None,
+                wait_for_fill=True):
         if classify_saved_order(record)['state'] in {'not_accepted', 'terminal_verified'}:
             return
         order = self._query(record, plan['symbol'], budget=verify_budget)
@@ -745,6 +746,12 @@ class IndependentExits(PositionProtection):
                     record.update(status=status, cancel_confirmed_at=time.time())
                     record.pop('waiting_trigger', None)
                     if not self._record_cancel_fill(record, response):
+                        if not wait_for_fill and status in {'canceled', 'cancelled'}:
+                            # A confirmed cancellation is sufficient to replace an
+                            # exit. Preserve unknown fills for background accounting.
+                            record['verification_pending'] = True
+                            self._save(plan)
+                            return
                         plan['error'] = 'Cancellation confirmed but cumulative fill is unverified; reconcile the existing order ID'
                         self._save(plan)
                     else:
@@ -841,12 +848,14 @@ class IndependentExits(PositionProtection):
         # (for example a trigger race or fills exhausting its target).
         record['last_operation_id'] = request.get('operation_id')
         self._save(plan)
-        self._cancel(record, plan, allow_child=False)
-        # A dynamic replacement covers whatever the position holds at trigger
-        # time, so its quantity never depends on the cancelled order's fills.
-        # A fixed replacement does, and one bounded read can still quantify a
-        # cancellation ACK that carried no cumulative fill figure.
-        if record.get('fill_pending') and record.get('quantity_mode') != 'all':
+        self._cancel(record, plan, allow_child=False, wait_for_fill=False)
+        cancellation_confirmed = (record.get('cancel_confirmed_at')
+                                  and record.get('status') in {'canceled', 'cancelled'})
+        # Do not let a delayed order read undo the cancellation ACK or interrupt
+        # an authorized replacement. Unknown fills remain unknown; the new exit
+        # uses the requested remaining quantity and the current position check.
+        if (not cancellation_confirmed and record.get('fill_pending')
+                and record.get('quantity_mode') != 'all'):
             budget = {'deadline': time.monotonic() + 2, 'calls': 0}
             try:
                 record['attempt_count'] = record.get('attempt_count', 0) + 1
@@ -858,7 +867,8 @@ class IndependentExits(PositionProtection):
                 if str(plan.get('error') or '').startswith('Cancellation confirmed but cumulative fill is unverified'):
                     plan['error'] = None
             self._save(plan)
-        if record.get('fill_pending') and record.get('quantity_mode') != 'all' and not record.get('execution_order_id'):
+        if (not cancellation_confirmed and record.get('fill_pending')
+                and record.get('quantity_mode') != 'all' and not record.get('execution_order_id')):
             record['unattempted_replacement'] = record.pop('replacement', None)
             record['replacement_error'] = 'Cancellation succeeded; replacement not submitted because cumulative fill is unverified'
             self._save(plan)

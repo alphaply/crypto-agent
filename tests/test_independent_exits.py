@@ -762,19 +762,18 @@ def test_cancel_ack_without_fill_keeps_terminal_status_through_stale_open_read(l
 
     ex.cancel_order = cancel
     ex.fetch_order = stale_query
-    with pytest.raises(RuntimeError, match='cumulative fill is unverified'):
-        svc.amend_exit('ETH/USDT', stop['id'], trigger_price=95, operation_id='amend-stop')
+    svc.amend_exit('ETH/USDT', stop['id'], trigger_price=95, operation_id='amend-stop')
     restarted = IndependentExits(svc.mt)
     assert restarted.reconcile_all()[0]['error']
     plan = restarted._load('ETH/USDT:USDT', 'LONG')
     assert plan['exits'][0]['status'] == 'canceled' and plan['exits'][0]['fill_pending']
-    assert len(ex.calls) == 2 and cancellations == [stop['id']]
+    assert len(ex.calls) == 3 and cancellations == [stop['id']]
     ex.fetch_order = original_query
     restarted.reconcile_all()
     snapshot = restarted.snapshot('ETH/USDT')
-    assert not snapshot['pending'] and snapshot['uncovered']['LONG'] == 1
-    assert snapshot['exits'] == []
-    assert len(ex.calls) == 2 and cancellations == [stop['id']]
+    assert not snapshot['pending'] and snapshot['uncovered']['LONG'] == 0
+    assert len(snapshot['exits']) == 1 and snapshot['exits'][0]['trigger_price'] == 95
+    assert len(ex.calls) == 3 and cancellations == [stop['id']]
 
 
 def _ack_only():
@@ -787,41 +786,62 @@ def _reset_ack_only(token):
     financial_ack_only.reset(token)
 
 
-def test_ack_only_edit_submits_fixed_successor_after_one_bounded_cancel_read(live_service):
-    """A single-call edit must not leave a conditional order cancelled without a successor."""
+@pytest.mark.parametrize('ack_only', [True, False])
+@pytest.mark.parametrize('readback', ['stale', 'unavailable'])
+@pytest.mark.parametrize('ack_style', ['missing_fill', 'binance'])
+def test_edit_replaces_confirmed_cancel_without_waiting_for_fill(live_service, ack_only, readback, ack_style):
+    """A delayed read after the ACK cannot turn a resize into cancel-only."""
     svc, ex = live_service
-    take_profit = svc.close('ETH/USDT', 'LONG', .5, 'stop_market', trigger_price=90)
+    take_profit = svc.close('ETH/USDT', 'LONG', .5, 'stop_market', trigger_price=90, contract_version=2)
     original_cancel, original_query = ex.cancel_order, ex.fetch_order
-    reads = []
+    reads, cancellations = [], []
 
     def cancel_without_fill(oid, symbol, params):
         response = original_cancel(oid, symbol, params)
+        cancellations.append(str(oid))
+        if ack_style == 'binance':
+            return {'id': str(oid), 'status': None, 'filled': 0,
+                    'info': {'algoId': str(oid), 'code': '200'}}
         response['filled'] = None  # A cancellation ACK need not quantify the target.
         return response
 
     def counted_query(oid, symbol, params):
         reads.append(str(oid))
+        if str(oid) in cancellations:
+            if readback == 'unavailable':
+                raise ccxt.RequestTimeout('order read unavailable')
+            return {**original_query(oid, symbol, params), 'status': 'open', 'filled': None}
         return original_query(oid, symbol, params)
 
     ex.cancel_order, ex.fetch_order = cancel_without_fill, counted_query
     submitted = len(ex.calls)
-    token = _ack_only()
+    token = _ack_only() if ack_only else None
     try:
         result = svc.edit('ETH/USDT', take_profit['id'], remaining_amount=.3,
                           reason='resize', operation_id='ack-only-resize')
     finally:
-        _reset_ack_only(token)
+        if token is not None:
+            _reset_ack_only(token)
     assert result['edit_method'] == 'cancel_replace'
     assert not result.get('replacement_error'), result
     assert result['status'] in {'submitted', 'completed'}, result
     assert len(ex.calls) == submitted + 1
     plan = svc._load('ETH/USDT:USDT', 'LONG')
-    assert plan.get('error') is None
     old = next(record for record in plan['exits'] if record['id'] == take_profit['id'])
     assert old['status'] == 'canceled'
-    assert not old.get('fill_pending') and not old.get('unattempted_replacement')
+    assert old['fill_pending'] and not old.get('unattempted_replacement')
+    assert not old.get('replacement_error')
     successors = [record for record in plan['exits'] if str(record.get('replaces')) == str(take_profit['id'])]
     assert len(successors) == 1 and successors[0]['amount'] == pytest.approx(.3)
+    assert cancellations == [str(take_profit['id'])]
+    token = _ack_only() if ack_only else None
+    try:
+        svc.edit('ETH/USDT', take_profit['id'], remaining_amount=.3,
+                 reason='resize', operation_id='ack-only-resize')
+    finally:
+        if token is not None:
+            _reset_ack_only(token)
+    assert len(ex.calls) == submitted + 1
 
 
 def test_ack_only_dynamic_stop_successor_ignores_unverifiable_cancel_fill(live_service):

@@ -51,6 +51,16 @@ def assess_admission(plan: dict, action: str | ActionIntent, *, hedged: bool,
     intent = action if isinstance(action, ActionIntent) else action_intent(plan, action, target)
     snapshot = EvidenceSnapshot(plan, hedged, opposite)
     blockers = unresolved_orders(plan)
+    if intent.effect == 'modify_exit':
+        # A previous resize has already replaced this cancelled exit. Its old
+        # fill accounting must not interrupt resizing the next exit in the batch.
+        replaced = {str(r.get('replaces')) for r in plan.get('exits', [])
+                    if r.get('replaces') and r.get('id') and r.get('acknowledged_at')}
+        settled_cancellations = {order_reference(r) for r in plan.get('exits', [])
+                                 if str(r.get('id')) in replaced and r.get('cancel_confirmed_at')
+                                 and r.get('status') in {'canceled', 'cancelled'}
+                                 and not r.get('execution_order_id') and not r.get('triggered')}
+        blockers = [b for b in blockers if b.get('order_id') not in settled_cancellations]
     price_only_edit = (intent.action == 'edit' and target is not None
                        and bool(intent.changed_fields)
                        and 'remaining_amount' not in intent.changed_fields)

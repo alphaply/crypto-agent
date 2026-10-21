@@ -23,16 +23,24 @@ _discovery_guard = threading.Lock()
 _discovery_success = {}
 
 
+def _acquire_management_lock(lock, stage):
+    """Queue the existing operation instead of imposing a five-second retry gate."""
+    from backend.mcp.resilience import BudgetExceeded, current_budget, remaining
+    timeout = remaining(stage)
+    budget = current_budget.get()
+    if budget is None or budget.deadline is None:
+        lock.acquire()
+    elif not lock.acquire(timeout=timeout):
+        raise BudgetExceeded(f'MCP budget exhausted at {stage}')
+
+
 @contextmanager
 def financial_lock(scope):
     from backend.utils.position_protection import _lock
     from backend.utils.execution_timing import stage
-    from backend.mcp.resilience import remaining
     lock = _lock(scope)
     with stage('financial_lock_wait'):
-        acquired = lock.acquire(timeout=min(5, remaining('financial_lock')))
-    if not acquired:
-        raise ValueError('Management observation is busy; refresh the current scope')
+        _acquire_management_lock(lock, 'financial_lock')
     try:
         yield
     finally:
@@ -344,10 +352,9 @@ def ensure_managed(service, symbol, side=None):
     lock = _lock(service.account_scope)
     with _discovery_guard:
         generation = _discovery_success.get(observation_key, 0)
-    from backend.mcp.resilience import remaining
     waited = not lock.acquire(blocking=False)
-    if waited and not lock.acquire(timeout=min(5, remaining('management_observation_queue'))):
-        raise ValueError('Management observation is busy; refresh the current scope')
+    if waited:
+        _acquire_management_lock(lock, 'management_observation_queue')
     token = _in_discovery.set(True)
     try:
         if waited and _discovery_success.get(observation_key, 0) != generation:
