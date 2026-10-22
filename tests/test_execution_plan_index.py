@@ -113,3 +113,65 @@ def test_history_publication_queues_rebuild_instead_of_running_it_inline(index_d
 def _postgres_storage(financial_pg):
     """Run original financial contracts against an isolated PostgreSQL schema."""
     yield
+
+
+def test_slow_pending_scan_still_publishes_and_unblocks_memory_statistics(index_db, monkeypatch):
+    """A scan slower than the soft slice must not starve publication forever."""
+    import time
+    from backend.utils import execution_plan_index as index
+    from backend.utils.execution_history_work import drain_scope_history
+    from backend.agent.memory_service import format_recent_position_history_for_memory
+
+    ledger = ExecutionLedger(Exchange(), 'cfg', 'ETH/USDT')
+    plan = dict(account_scope=ledger.scope, symbol=ledger.symbol, side='LONG',
+                entries=[dict(id='entry', price=100)], exit_order=dict(id='close'))
+    with database.get_db_conn() as conn:
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) '
+                     'VALUES(%s,%s,%s,%s)',
+                     ('2026-10-15 12:00:00', 'cfg', ledger.symbol, json.dumps(plan)))
+        conn.commit()
+    clock = [0.0]
+    pending = index._pending
+    def slow_scan(*args, **kwargs):
+        result = pending(*args, **kwargs)
+        clock[0] += 1.0  # Exceeds the 0.25 second slice on every scan.
+        return result
+    monkeypatch.setattr(index, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(index, '_pending', slow_scan)
+    for _ in range(6):
+        if ledger.index_saved_plans()['complete']:
+            break
+    assert ledger.index_state['complete']
+
+    now = int(time.time() * 1000)
+    ledger.ingest([
+        dict(id='1', order='entry', timestamp=now-2000, price=100, amount=1,
+             side='buy', cost=100, fee=dict(currency='USDT', cost=.1)),
+        dict(id='2', order='close', timestamp=now-1000, price=110, amount=1,
+             side='sell', cost=110, fee=dict(currency='USDT', cost=.1),
+             info=dict(realizedPnl='10')),
+    ], refresh=False)
+    drain_scope_history(ledger.scope, ledger.symbol)
+    rows = database.get_closed_positions_7d('cfg', ledger.symbol, mode='REAL')
+    assert len(rows) == 1 and rows[0]['realized_pnl'] == 10
+    text = format_recent_position_history_for_memory('cfg', dict(symbol=ledger.symbol, mode='REAL'))
+    assert '100.0%' in text and '暂无已重建' not in text
+
+
+def test_slow_source_query_uses_database_budget_not_expired_slice(index_db, monkeypatch):
+    from contextlib import contextmanager
+    from backend.utils import execution_plan_index as index
+    ledger = ExecutionLedger(Exchange(), 'cfg', 'ETH/USDT')
+    clock = [0.0]
+    original = index.get_db_conn
+    budgets = []
+    @contextmanager
+    def connection(timeout=30):
+        budgets.append(timeout)
+        clock[0] += 1.0
+        with original(timeout=timeout) as conn:
+            yield conn
+    monkeypatch.setattr(index, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(index, 'get_db_conn', connection)
+    assert ledger.index_saved_plans()['complete']
+    assert all(budget == 30 for budget in budgets)

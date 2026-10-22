@@ -44,10 +44,26 @@ def _rows(config_id, end_ms, scope, symbol, maximum, read_conn):
 def _protection(cycle, config_id, maximum, read_conn):
     revisions, used = {}, 0
     with (nullcontext(read_conn) if read_conn is not None else get_db_conn()) as conn:
-        with _stream(conn,'SELECT storage_id AS audit_rowid,timestamp FROM real_protection_events WHERE config_id=%s ORDER BY id', (config_id,)) as rows:
+        # Stream ordinary audit payloads with the cursor instead of issuing
+        # two extra queries per snapshot, per closed cycle. Keep large records
+        # on the existing byte-accounted read path; no evidence is truncated.
+        # The transactionally maintained source projection lets us exclude
+        # other episodes before reading their large raw snapshots. Missing or
+        # unprojectable sources still take the original raw validation path.
+        episode = cycle.get('plan_episode_id')
+        with _stream(conn, """SELECT e.storage_id AS audit_rowid,e.timestamp,
+                CASE WHEN octet_length(e.payload)<=65536 THEN e.payload END AS inline_payload
+                FROM real_protection_events e LEFT JOIN ownership_sources s
+                  ON s.source='events' AND s.source_id=e.storage_id AND s.symbol=e.symbol
+                WHERE e.config_id=%s AND (%s::jsonb IS NULL OR s.payload IS NULL
+                  OR s.payload::jsonb->'episode_id'=%s::jsonb)
+                ORDER BY e.id""",
+                (config_id, json.dumps(episode) if episode else None,
+                 json.dumps(episode) if episode else None)) as rows:
             for audit in rows:
                 try:
-                    with bounded_text(conn,'real_protection_events','payload',audit['audit_rowid'],limit=maximum) as payload:
+                    with (nullcontext(audit['inline_payload']) if audit['inline_payload'] is not None
+                          else bounded_text(conn,'real_protection_events','payload',audit['audit_rowid'],limit=maximum)) as payload:
                         plan=json.loads(payload)
                 except CapacityBusy as exc:
                     if exc.reason!='record_bytes':

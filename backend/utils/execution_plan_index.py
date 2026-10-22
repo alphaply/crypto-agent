@@ -217,7 +217,10 @@ def _advance_index(ledger):
         conn.commit()
     error = None
     try:
-        with get_db_conn(timeout=max(.01, deadline-monotonic())) as conn:
+        # The slice deadline controls yielding between atomic work items. It
+        # must not become a shrinking SQL timeout: a slow pending scan would
+        # otherwise roll back the same batch forever.
+        with get_db_conn() as conn:
             pending = _pending(conn, ledger, key, batch)
             for item in pending:
                 if processed and (monotonic() >= deadline or consumed + len(item['payload'] or '') > byte_limit):
@@ -231,8 +234,12 @@ def _advance_index(ledger):
                 _refresh_facts(conn, key)
             conn.commit()
         # No publication while unprocessed evidence can change regular/algo identity.
-        while processed < batch and monotonic() < deadline:
-            with get_db_conn(timeout=max(.01, deadline-monotonic())) as check:
+        published = 0
+        while processed < batch and (published == 0 or monotonic() < deadline):
+            # Always attempt one publication after collecting sources, even if
+            # the scan used the soft slice budget. Pending evidence still blocks
+            # publication, preserving cross-page regular/algo disambiguation.
+            with get_db_conn() as check:
                 # Source writers take the corresponding revision row; this short
                 # shared lock protects publication against newly committed sources.
                 check.execute('SELECT revision FROM plan_source_revisions WHERE symbol IN (%s,%s) FOR SHARE',
@@ -277,6 +284,7 @@ def _advance_index(ledger):
                     request_history(row['owner'], ledger.scope, ledger.symbol, conn=check)
                 check.commit()
             processed += 1
+            published += 1
     except (ValueError, TypeError) as exc:
         error = type(exc).__name__ + ': ownership source incomplete'
     with get_db_conn() as conn:
