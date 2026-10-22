@@ -23,6 +23,8 @@ class Exchange:
 @pytest.fixture
 def index_db(tmp_path, monkeypatch, financial_pg):
     monkeypatch.setattr(database, 'DB_NAME', str(tmp_path / 'index.db'))
+    monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope',
+                        lambda _: hashlib.sha256(b'binance:index-fixture').hexdigest())
     with database.get_db_conn() as conn:
         pass  # PostgreSQL migrations are installed by financial_pg.
         conn.commit()
@@ -175,3 +177,101 @@ def test_slow_source_query_uses_database_budget_not_expired_slice(index_db, monk
     monkeypatch.setattr(index, 'get_db_conn', connection)
     assert ledger.index_saved_plans()['complete']
     assert all(budget == 30 for budget in budgets)
+
+
+def test_slow_history_scan_is_reused_while_publication_resumes_after_restart(index_db, monkeypatch):
+    """A large backlog must not require one slow full scan per order."""
+    import time
+    from backend.utils import execution_plan_index as index
+    from backend.utils.execution_history_work import drain_scope_history
+    from backend.agent.memory_service import format_recent_position_history_for_memory
+
+    ledger = ExecutionLedger(Exchange(), 'cfg', 'ETH/USDT')
+    plan = dict(account_scope=ledger.scope, symbol=ledger.symbol, side='LONG',
+                entries=[dict(id=f'entry-{n}', price=100) for n in range(80)],
+                exit_order=dict(id='close'))
+    with database.get_db_conn() as conn:
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) '
+                     'VALUES(%s,%s,%s,%s)',
+                     ('2026-10-15 12:00:00', 'cfg', ledger.symbol, json.dumps(plan)))
+        conn.commit()
+    clock, scans = [0.0], []
+    pending = index._pending
+    def slow_scan(*args, **kwargs):
+        scans.append(1)
+        result = pending(*args, **kwargs)
+        clock[0] += 1.0
+        return result
+    monkeypatch.setattr(index, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(index, '_pending', slow_scan)
+    monkeypatch.setenv('RUNTIME_SCAN_BATCH_SIZE', '32')
+
+    assert not ledger.index_saved_plans()['complete']
+    # The durable checkpoint certifies collection, not publication/completeness.
+    assert not index.index_status(ledger)['complete']
+    for _ in range(4):
+        ledger = ExecutionLedger(Exchange(), 'cfg', 'ETH/USDT')
+        state = ledger.index_saved_plans()
+        assert state['processed'] <= 32
+        if state['complete']:
+            break
+    assert state['complete']
+    assert len(scans) == 2
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT count(*) FROM execution_order_links').fetchone()[0] == 81
+
+    now = int(time.time() * 1000)
+    ledger.ingest([
+        dict(id='1', order='entry-0', timestamp=now-2000, price=100, amount=1,
+             side='buy', cost=100, fee=dict(currency='USDT', cost=.1)),
+        dict(id='2', order='close', timestamp=now-1000, price=110, amount=1,
+             side='sell', cost=110, fee=dict(currency='USDT', cost=.1),
+             info=dict(realizedPnl='10')),
+    ], refresh=False)
+    drain_scope_history(ledger.scope, ledger.symbol)
+    text = format_recent_position_history_for_memory('cfg', dict(symbol=ledger.symbol, mode='REAL'))
+    assert '100.0%' in text and '暂无已重建' not in text
+
+
+def test_source_committed_between_publications_invalidates_collection_checkpoint(index_db, monkeypatch):
+    """A newly committed source must be collected before another item publishes."""
+    from contextlib import contextmanager
+    from backend.utils import execution_plan_index as index
+
+    ledger = ExecutionLedger(Exchange(), 'cfg', 'ETH/USDT')
+    plan = dict(account_scope=ledger.scope, symbol=ledger.symbol, side='LONG',
+                entries=[dict(id=f'old-{n}') for n in range(5)])
+    with database.get_db_conn() as conn:
+        conn.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) '
+                     'VALUES(%s,%s,%s,%s)',
+                     ('2026-10-15 12:00:00', 'cfg', ledger.symbol, json.dumps(plan)))
+        conn.commit()
+    monkeypatch.setenv('RUNTIME_SCAN_BATCH_SIZE', '2')
+    assert not ledger.index_saved_plans()['complete']
+
+    original = index.get_db_conn
+    committed = []
+    @contextmanager
+    def connection(*args, **kwargs):
+        with original(*args, **kwargs) as conn:
+            yield conn
+        # Simulate a writer committing after a publication releases its lock.
+        if not committed:
+            with original() as writer:
+                links = writer.execute('SELECT count(*) FROM execution_order_links').fetchone()[0]
+                if links >= 2:
+                    late = {**plan, 'entries': [dict(id='late-entry')]}
+                    writer.execute('INSERT INTO real_protection_events(timestamp,config_id,symbol,payload) '
+                                   'VALUES(%s,%s,%s,%s)',
+                                   ('2026-10-15 12:01:00', 'cfg', ledger.symbol, json.dumps(late)))
+                    writer.commit()
+                    committed.append(True)
+    monkeypatch.setattr(index, 'get_db_conn', connection)
+    state = ledger.index_saved_plans()
+    assert committed and not state['complete']
+    with database.get_db_conn() as conn:
+        assert conn.execute('SELECT count(*) FROM execution_order_links').fetchone()[0] == 2
+    drain(ledger)
+    with database.get_db_conn() as conn:
+        assert conn.execute("SELECT role FROM execution_order_links WHERE order_id='late-entry'").fetchone()[0] == 'entry'
+    assert ledger.index_state['complete']

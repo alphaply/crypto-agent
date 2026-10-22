@@ -469,9 +469,10 @@ def test_stream_missing_fields_do_not_erase_rest_pnl(local_db):
 
 
 @pytest.mark.parametrize('currency,missing,expected', [('USDT', False, -7.82), ('BNB', False, None), ('USDT', True, None)])
-def test_history_net_pnl_deducts_both_fees_once(local_db, currency, missing, expected):
+def test_history_net_pnl_deducts_both_fees_once(local_db, currency, missing, expected, monkeypatch):
     from datetime import datetime
     ledger = indexed_ledger(Exchange([]), 'cfg', 'ETH/USDT')
+    monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope', lambda _: ledger.scope)
     register_order(ledger.scope, ledger.symbol, 'entry', 'cfg', 'entry', side='LONG')
     register_order(ledger.scope, ledger.symbol, 'close', 'cfg', 'stop_loss', side='LONG')
     now = datetime.now(database.TZ_CN)

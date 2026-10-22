@@ -69,7 +69,7 @@ def test_get_closed_positions_7d_strategy_mode(local_db):
     assert p["realized_pnl"] == 200.0
 
 
-def test_get_closed_positions_7d_real_mode_uses_execution_position_history(local_db):
+def test_get_closed_positions_7d_real_mode_uses_account_fills(local_db, monkeypatch):
     now = datetime.now(database.TZ_CN)
     close_dt = now - timedelta(days=1)
     open_dt = now - timedelta(days=1, hours=4)
@@ -104,6 +104,11 @@ def test_get_closed_positions_7d_real_mode_uses_execution_position_history(local
         )
         conn.commit()
 
+    from test_real_symbol_performance import seed_cycle
+    monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope', lambda _: 'scope1')
+    seed_cycle('scope1', 'real_cfg', 'ETH/USDT:USDT', int(open_dt.timestamp()*1000),
+               int(close_dt.timestamp()*1000), side='SHORT', entry_price=2400, close_price=2300,
+               amount=.5, pnl=50, take_profit=2250, stop_loss=2450)
     with patch.object(database, '_config_mode_for_stats', return_value="REAL"):
         positions = database.get_closed_positions_7d("real_cfg", "ETH/USDT", days=7)
 
@@ -174,7 +179,7 @@ def test_format_closed_positions_summary_stats():
     assert "已确认累计盈亏（手续费前）: +20.00 USDT" in summary
 
 
-def test_format_recent_position_history_for_memory_integration(local_db):
+def test_format_recent_position_history_for_memory_integration(local_db, monkeypatch):
     now = datetime.now(database.TZ_CN)
     opened = now - timedelta(hours=2)
     with database.get_db_conn() as conn:
@@ -193,13 +198,18 @@ def test_format_recent_position_history_for_memory_integration(local_db):
         )
         conn.commit()
 
+    from test_real_symbol_performance import seed_cycle
+    monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope', lambda _: 'scope-int')
+    seed_cycle('scope-int', 'cfg_int', 'BTC/USDT:USDT', int(opened.timestamp()*1000),
+               int(now.timestamp()*1000), name='ep-int', entry_price=80000, close_price=81000,
+               amount=.1, pnl=100)
     with patch.object(database, '_config_mode_for_stats', return_value="REAL"):
         text = format_recent_position_history_for_memory("cfg_int", {"mode": "REAL", "symbol": "BTC/USDT"})
 
-    assert 'ep-int' in text and '+100.00 USDT' in text
+    assert '完整平仓周期: 1 笔' in text and '+100.00 USDT' in text
     assert 'BTC/USDT:USDT LONG' in text
     with patch.object(database, '_config_mode_for_stats', return_value='REAL'):
-        history = database.get_closed_positions_7d('cfg_int')
+        history = database.get_closed_positions_7d('cfg_int', 'BTC/USDT')
     assert history[0]['symbol'] == 'BTC/USDT:USDT'
     assert history[0]['realized_pnl'] == 100
 

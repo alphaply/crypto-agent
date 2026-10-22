@@ -574,8 +574,10 @@ def _sync_execution(config):
             try:
                 ensure_stream(mt, symbol=symbol)
                 ledger = ExecutionLedger(mt.exchange, config['config_id'], symbol)
+                # Account/symbol fills do not require a task owner. Persist them
+                # even while historical task attribution is still catching up.
+                result = ledger.sync(require_index=False)
                 ledger.index_saved_plans()
-                result = ledger.sync()
                 if ledger.index_state.get('complete'):
                     from backend.utils.execution_history_work import drain_scope_history
                     drain_scope_history(ledger.scope, ledger.symbol)

@@ -19,11 +19,18 @@ def _stream(conn, statement, parameters):
         yield cursor
 
 
-def _rows(config_id, end_ms, scope, symbol, maximum, read_conn):
+def _rows(config_id, end_ms, scope, symbol, maximum, read_conn, *, account_wide=False):
+    if account_wide and (not scope or not symbol):
+        raise ValueError('Account statistics require an account and symbol')
+    owner_filter = ('f.account_scope=%s' if account_wide else
+                    'EXISTS (SELECT 1 FROM execution_order_links own WHERE own.config_id=%s '
+                    'AND own.account_scope=f.account_scope AND own.symbol=f.symbol)')
+    symbol_column = "split_part(f.symbol, ':', 1)" if account_wide and symbol and ':' not in symbol else 'f.symbol'
     with (nullcontext(read_conn) if read_conn is not None else get_db_conn()) as conn:
         with _stream(conn,
-            'SELECT f.storage_id AS fill_rowid,l.storage_id AS link_rowid,f.account_scope,f.symbol,f.trade_id,f.order_id,f.config_id,f.timestamp_ms,l.role FROM execution_fills f LEFT JOIN execution_order_links l ON f.account_scope=l.account_scope AND f.symbol=l.symbol AND f.order_id=l.order_id WHERE EXISTS (SELECT 1 FROM execution_order_links own WHERE own.config_id=%s AND own.account_scope=f.account_scope AND own.symbol=f.symbol) AND f.timestamp_ms<%s AND (%s::text IS NULL OR f.account_scope=%s) AND (%s::text IS NULL OR f.symbol=%s) ORDER BY f.timestamp_ms,LENGTH(f.trade_id),f.trade_id',
-            (config_id,end_ms,scope,scope,symbol,symbol)) as records:
+            'SELECT f.storage_id AS fill_rowid,l.storage_id AS link_rowid,f.account_scope,f.symbol,f.trade_id,f.order_id,f.config_id,f.timestamp_ms,l.role FROM execution_fills f LEFT JOIN execution_order_links l ON f.account_scope=l.account_scope AND f.symbol=l.symbol AND f.order_id=l.order_id WHERE '
+            + owner_filter + f' AND f.timestamp_ms<%s AND (%s::text IS NULL OR f.account_scope=%s) AND (%s::text IS NULL OR {symbol_column}=%s) ORDER BY f.timestamp_ms,LENGTH(f.trade_id),f.trade_id',
+            (scope if account_wide else config_id,end_ms,scope,scope,symbol,symbol)) as records:
             for record in records:
                 row = dict(record)
                 with ExitStack() as stack:
@@ -91,10 +98,11 @@ def _protection(cycle, config_id, maximum, read_conn):
     return True
 
 
-def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_sink=None,read_conn=None):
+def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_sink=None,read_conn=None,
+                       account_wide=False):
     from backend.utils.execution_ledger import number
     maximum = 4*1024*1024
-    rows = _rows(config_id,end_ms,scope,symbol,maximum,read_conn)
+    rows = _rows(config_id,end_ms,scope,symbol,maximum,read_conn,account_wide=account_wide)
     current = {}
     work_sizes, current_bytes, output_bytes = {}, 0, 0
     completed_count, excluded_count, omitted_completed, omitted_excluded = 0, 0, 0, 0
@@ -142,7 +150,7 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
             if not cycle:
                 cycle = {
                     'account_scope': row['account_scope'],
-                    'config_id': config_id,
+                    'config_id': None if account_wide else config_id,
                     'symbol': row['symbol'],
                     'side': side,
                     'episode_id': metadata.get('episode_id'),
@@ -169,8 +177,8 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
                     'stop_loss': number(metadata.get('stop_loss')),
                 }
                 current[key] = cycle
-            cycle['owned_entry'] |= row['config_id'] == config_id
-            cycle['foreign_entry'] |= row['config_id'] != config_id
+            cycle['owned_entry'] |= account_wide or row['config_id'] == config_id
+            cycle['foreign_entry'] |= not account_wide and row['config_id'] != config_id
             cycle['episode_id'] = cycle.get('episode_id') or metadata.get('episode_id')
             cycle['take_profit'] = number(metadata.get('take_profit')) or cycle.get('take_profit')
             cycle['stop_loss'] = number(metadata.get('stop_loss')) or cycle.get('stop_loss')
@@ -202,9 +210,9 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
                                 'timestamp_ms': row['timestamp_ms'], 'role': role,
                                 'quantity': quantity, 'price': price,
                                 'remaining_base': cycle['remaining_base'],
-                                'owner_known': row['config_id'] == config_id})
-        pnl = fill.get('realized_pnl')
-        if role != 'entry' and pnl is None:
+                                'owner_known': row['config_id'] is not None if account_wide else row['config_id'] == config_id})
+        pnl = number(fill.get('realized_pnl'))
+        if pnl is None and (account_wide or role != 'entry'):
             cycle['missing_pnl'] = True
         elif pnl is not None:
             cycle['realized_pnl_before_fees'] += pnl
@@ -234,8 +242,12 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
             if cycle['missing_pnl']:
                 cycle['realized_pnl_before_fees'] = None
             if cycle['closed_at_ms'] >= start_ms:
-                if cycle['owned_entry'] and not cycle['foreign_entry'] and not cycle['incomplete']:
-                    if not _protection(cycle,config_id,maximum,read_conn):
+                if (account_wide or cycle['owned_entry'] and not cycle['foreign_entry']) and not cycle['incomplete']:
+                    # Account statistics use actual fills. Task-specific intent
+                    # revisions are not a shared account's protection history.
+                    if account_wide:
+                        cycle['protection_history'] = []
+                    elif not _protection(cycle,config_id,maximum,read_conn):
                         scan_complete,reason_code=False,'cycle_protection_budget'
                         break
                     encoded_size=len(json.dumps(cycle,ensure_ascii=False,default=str).encode('utf-8'))
@@ -253,7 +265,7 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
             current_bytes-=work_sizes.pop(key,0)
     return {'completed':completed,'completed_count':completed_count if scan_complete else None,
             'excluded_cycles':excluded,'excluded_cycle_count':excluded_count if scan_complete else None,
-            'unmatched_fill_count':unmatched,'open_cycles':[cycle for cycle in current.values() if cycle['owned_entry']],
+            'unmatched_fill_count':unmatched,'open_cycles':[cycle for cycle in current.values() if account_wide or cycle['owned_entry']],
             'scan_complete':scan_complete,'projection_complete':not (omitted_completed or omitted_excluded),
             'omitted_completed':omitted_completed,'omitted_excluded':omitted_excluded,
             'reason_code':reason_code,'next_cursor':None if scan_complete else last_cursor}

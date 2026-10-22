@@ -14,7 +14,7 @@ pytestmark = pytest.mark.usefixtures('pg')
 
 @pytest.mark.parametrize('mode', ['REAL', 'STRATEGY'])
 @pytest.mark.parametrize('requested', ['BTC/USD', 'BTC/USD:BTC'])
-def test_seven_day_statistics_do_not_mix_usd_and_usdt(mode, requested):
+def test_seven_day_statistics_do_not_mix_usd_and_usdt(mode, requested, monkeypatch):
     now = datetime.now(database.TZ_CN)
     stamp = (now - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
     ms = int((now - timedelta(hours=1)).timestamp()*1000)
@@ -31,6 +31,11 @@ def test_seven_day_statistics_do_not_mix_usd_and_usdt(mode, requested):
                     close_time,price,close_price,amount,realized_pnl,status)
                     VALUES(%s,'audit',%s,'BUY',%s,%s,100,101,1,1,'CLOSED')''', (str(i),symbol,stamp,stamp))
         conn.commit()
+    if mode == 'REAL':
+        from test_real_symbol_performance import seed_cycle
+        monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope', lambda _: 'scope')
+        for i, symbol in enumerate(['BTC/USD:BTC', 'BTC/USDT:USDT']):
+            seed_cycle('scope', 'audit', symbol, ms-1000, ms, name=str(i), close_price=101, pnl=1)
     rows = database.get_closed_positions_7d('audit', requested, mode=mode)
     assert [r['symbol'] for r in rows] == ['BTC/USD:BTC']
 

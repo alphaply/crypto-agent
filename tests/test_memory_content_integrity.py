@@ -197,7 +197,7 @@ def test_configured_model_summary_is_used_without_expanding_raw_analysis(memory_
     assert '_source_content' not in rows[0] and 'content' not in rows[0]
 
 
-def test_seven_day_memory_keeps_all_fills_cycles_and_observations(memory_db):
+def test_seven_day_memory_keeps_all_fills_cycles_and_observations(memory_db, monkeypatch):
     now = database.TZ_CN.localize(datetime(2026, 10, 6, 12))
     end_ms = int(now.timestamp() * 1000)
     exchange = SimpleNamespace(
@@ -206,6 +206,7 @@ def test_seven_day_memory_keeps_all_fills_cycles_and_observations(memory_db):
         market=lambda _: {'symbol': 'ETH/USDT:USDT', 'contract': True, 'swap': True, 'linear': True},
     )
     ledger = ExecutionLedger(exchange, 'cfg', 'ETH/USDT')
+    monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope', lambda _: ledger.scope)
     register_order(ledger.scope, ledger.symbol, 'entry', 'cfg', 'entry', side='LONG')
     register_order(ledger.scope, ledger.symbol, 'close', 'cfg', 'agent_exit', side='LONG')
     fills = []

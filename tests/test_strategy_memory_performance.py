@@ -148,7 +148,6 @@ def test_real_details_preserve_same_account_and_snapshot_boundaries(simulation, 
     from backend.database import TZ_CN
     now = TZ_CN.localize(datetime(2026, 10, 14, 13))
     monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope', lambda _: 'test-account')
-    monkeypatch.setattr(execution_ledger, 'execution_context', lambda *a, **k: '\n' + json.dumps(complete_ledger()))
     with database.get_db_conn() as conn:
         for name, scope, hour in [('in-window', 'test-account', 12), ('future', 'test-account', 14),
                                   ('other-account', 'other-account', 12)]:
@@ -159,9 +158,14 @@ def test_real_details_preserve_same_account_and_snapshot_boundaries(simulation, 
                          (name, scope, 'cfg', 'ETH/USDT:USDT', 'LONG', timestamp - 60000, timestamp,
                           3, '{"USDT":0.1}', '{"missing_fees":false}', timestamp))
         conn.commit()
+    from test_real_symbol_performance import seed_cycle
+    for name, scope, hour in [('in-window', 'test-account', 12), ('future', 'test-account', 14),
+                              ('other-account', 'other-account', 12)]:
+        timestamp = int(now.replace(hour=hour).timestamp()*1000)
+        seed_cycle(scope, 'cfg', 'ETH/USDT:USDT', timestamp-60000, timestamp, name=name, fee_each=.05)
     data = performance_data('cfg', 'ETH/USDT', 'REAL', hours=24, now=now, include_details=True)
     closed = data['details']['closed_positions']
-    assert [row['position_id'] for row in closed] == ['in-window']
+    assert len(closed) == 1 and closed[0]['cycle']['entry_trade_ids'] == ['in-window-entry']
     assert closed[0]['net_realized_pnl'] == pytest.approx(2.9)
     assert data['details']['as_of'] == data['as_of']
 

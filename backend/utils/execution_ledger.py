@@ -559,43 +559,48 @@ class ExecutionLedger:
             return result
 
 
-def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None, symbol=None):
+def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None, symbol=None,
+                      *, account_wide=False, include_cycles=True):
     """Complete facts in the requested time window; active plans remain visible."""
+    if account_wide and (not scope or not symbol):
+        raise ValueError('Account statistics require an account and symbol')
     now = now or datetime.now(TZ_CN)
     if now.tzinfo is None:
         now = TZ_CN.localize(now)
     end_ms = int(now.timestamp() * 1000)
     start_ms = max(0, end_ms - int(hours * 3600 * 1000))
+    symbol_column = "split_part(symbol, ':', 1)" if account_wide and symbol and ':' not in symbol else 'symbol'
     with get_db_conn() as conn:
-        conditions = 'f.config_id=%s AND f.timestamp_ms>=%s AND f.timestamp_ms<%s'
-        args = [config_id, start_ms, end_ms]
+        conditions = ('f.account_scope=%s' if account_wide else 'f.config_id=%s')
+        conditions += ' AND f.timestamp_ms>=%s AND f.timestamp_ms<%s'
+        args = [scope if account_wide else config_id, start_ms, end_ms]
         if scope:
             conditions += ' AND f.account_scope=%s'
             args.append(scope)
         if symbol:
-            conditions += ' AND f.symbol=%s'
+            conditions += ' AND ' + symbol_column.replace('symbol', 'f.symbol') + '=%s'
             args.append(symbol)
         rows = conn.execute('SELECT f.*,l.role,l.payload AS link_metadata FROM execution_fills f '
                             'LEFT JOIN execution_order_links l ON f.account_scope=l.account_scope '
                             'AND f.symbol=l.symbol AND f.order_id=l.order_id WHERE ' + conditions +
                             ' ORDER BY f.timestamp_ms DESC', args).fetchall()
-        plans = [json.loads(r['payload']) for r in conn.execute(
+        plans = [] if account_wide else [json.loads(r['payload']) for r in conn.execute(
             'SELECT payload FROM real_protection_plans WHERE config_id=%s', (config_id,)).fetchall()]
         scopes = {r['account_scope'] for r in rows} | {p.get('account_scope') for p in plans}
         if scope:
             scopes = {scope}
         sync = []
-        index_complete = conn.execute("SELECT 1 FROM execution_plan_index_runs WHERE config_id=%s AND phase!='complete' AND (%s::text IS NULL OR account_scope=%s) AND (%s::text IS NULL OR symbol=%s) LIMIT 1",
+        index_complete = conn.execute(f"SELECT 1 FROM execution_plan_index_runs WHERE config_id=%s AND phase!='complete' AND (%s::text IS NULL OR account_scope=%s) AND (%s::text IS NULL OR {symbol_column}=%s) LIMIT 1",
                                       (config_id, scope, scope, symbol, symbol)).fetchone() is None
         unknown_count = 0
         income_rows = []
         for key in scopes - {None}:
             for row in conn.execute('SELECT symbol,payload FROM execution_sync WHERE account_scope=%s', (key,)):
-                if symbol and row['symbol'] != symbol:
+                if symbol and (row['symbol'].split(':')[0] if account_wide and ':' not in symbol else row['symbol']) != symbol:
                     continue
                 sync.append({'symbol': row['symbol'], **json.loads(row['payload'])})
-            unknown_count += conn.execute('SELECT COUNT(*) FROM execution_fills WHERE account_scope=%s AND config_id IS NULL AND timestamp_ms>=%s AND timestamp_ms<%s AND (%s::text IS NULL OR symbol=%s)', (key, start_ms, end_ms, symbol, symbol)).fetchone()[0]
-            income_rows.extend(conn.execute('SELECT payload FROM execution_income WHERE account_scope=%s AND timestamp_ms>=%s AND timestamp_ms<%s AND (%s::text IS NULL OR symbol=%s)',
+            unknown_count += conn.execute(f'SELECT COUNT(*) FROM execution_fills WHERE account_scope=%s AND config_id IS NULL AND timestamp_ms>=%s AND timestamp_ms<%s AND (%s::text IS NULL OR {symbol_column}=%s)', (key, start_ms, end_ms, symbol, symbol)).fetchone()[0]
+            income_rows.extend(conn.execute(f'SELECT payload FROM execution_income WHERE account_scope=%s AND timestamp_ms>=%s AND timestamp_ms<%s AND (%s::text IS NULL OR {symbol_column}=%s)',
                                             (key, start_ms, end_ms, symbol, symbol)).fetchall())
     facts = []
     fees = {}
@@ -604,7 +609,7 @@ def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None
     missing_fee = 0
     for row in rows:
         fill = json.loads(row['payload'])
-        value = fill.get('realized_pnl')
+        value = number(fill.get('realized_pnl'))
         if value is None:
             missing_pnl += 1
         else:
@@ -635,9 +640,10 @@ def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None
         value = number(item.get('income'))
         if value is not None:
             income_totals[key] = income_totals.get(key, 0) + value
-    window_complete = index_complete and bool(sync) and all(any(left <= start_ms and right >= end_ms - 1
+    window_complete = (account_wide or index_complete) and bool(sync) and all(any(left <= start_ms and right >= end_ms - 1
                                              for left, right in state.get('covered_intervals', [])) for state in sync)
     payload = {'window_hours': hours, 'from_ms': start_ms, 'through_ms': end_ms, 'sync': sync,
+               'statistics_scope': 'account_symbol' if account_wide else 'agent_attributed_fills',
                'window_complete': window_complete, 'ownership_index_complete': index_complete,
                'unknown_owner_fill_count': unknown_count,
                'account_income_by_type_asset_not_agent_pnl': income_totals,
@@ -645,34 +651,78 @@ def execution_context(config_id: str, hours=24, limit=None, now=None, scope=None
                'known_realized_pnl_before_fees': pnl, 'missing_pnl_count': missing_pnl,
                'fees_by_currency': fees, 'missing_fee_count': missing_fee, 'active_protection': active}
     from backend.utils.execution_metrics import metrics_context
-    payload['execution_review'] = metrics_context(config_id, start_ms, end_ms, scope, symbol)
-    payload['position_cycles'] = position_cycles(config_id, start_ms, end_ms, scope, symbol)
+    if not account_wide:
+        payload['execution_review'] = metrics_context(config_id, start_ms, end_ms, scope, symbol)
+    if include_cycles:
+        payload['position_cycles'] = position_cycles(config_id, start_ms, end_ms, scope, symbol,
+                                                     account_wide=account_wide)
+    ownership_note = ('当前交易所账户、当前标的全部已记录成交，包含手动与其他任务成交；不是单个Agent战绩。'
+                      if account_wide else '仅已归属本配置的成交；未知归属不计入。')
     return ('## 近期合约执行事实（直接读取账本，优先于记忆）\n'
-            '仅已归属本配置的成交；未知归属不计入。成交条数不是完整交易笔数；费用不可重复扣除。'
+            + ownership_note + '成交条数不是完整交易笔数；费用不可重复扣除。'
             'account_income是账户/品种资金流水，可能含其他策略或手工操作，不与本Agent成交盈亏相加。'
             'sync缺失/失败或覆盖不足时不能声称历史完整。role表示订单用途，成交才证明执行；缺失数字为未知。\n'
             + json.dumps(payload, ensure_ascii=False, default=str))
 
 
-def recent_activity_data(config_id: str, symbol: str, now=None) -> dict:
-    canonical = symbol if ':' in symbol else f'{symbol}:USDT'
-    raw = execution_context(config_id, hours=168, now=now, symbol=canonical)
+def recent_activity_data(config_id: str, symbol: str, now=None, *, hours=168, include_cycles=True) -> dict:
+    from backend.utils.trade_evidence import configured_account_scope
+    if not symbol or '/' not in symbol:
+        raise ValueError('A concrete symbol is required for real performance')
+    scope = configured_account_scope(config_id)
+    with get_db_conn() as conn:
+        alias = conn.execute('SELECT s.legacy_scope FROM management_account_aliases a '
+                             'JOIN management_shared_accounts s ON s.physical_account=a.physical_account '
+                             "WHERE a.legacy_scope=%s AND s.market_type='swap'", (scope,)).fetchone()
+        if alias:
+            scope = alias[0]
+    raw = execution_context(config_id, hours=hours, now=now, scope=scope, symbol=symbol,
+                            account_wide=True, include_cycles=include_cycles)
     data = json.loads(raw[raw.index('\n{') + 1:])
     return data
 
 
-def recent_activity_summary(config_id: str, symbol: str, now=None) -> str:
+def recent_activity_summary(config_id: str, symbol: str, now=None, *, data=None) -> str:
     """Compact realized performance; accounting diagnostics are on-demand only."""
     from backend.utils.performance_context import profit_metric
-    data = recent_activity_data(config_id, symbol, now)
+    data = recent_activity_data(config_id, symbol, now, include_cycles=False) if data is None else data
     currency = symbol.split(':')[-1] if ':' in symbol else symbol.split('/')[-1]
     metric = profit_metric(data, currency)
     value = f"{metric['amount']:+.2f} {currency}" if metric['available'] else '暂不可完整统计'
-    return f"最近7天已实现盈亏（已归属成交、扣同币种费用）：{value}。"
+    coverage = '' if data.get('window_complete') else ' 同步尚未完整覆盖所选时段，此金额仅代表本地已记录成交。'
+    return f"最近7天已实现盈亏（账户该标的已记录成交、扣同币种费用）：{value}。{coverage}"
+
+
+def closed_positions_from_activity(data: dict) -> list[dict]:
+    """Render account cycles from the same fill evidence as the profit total."""
+    cycles = data.get('position_cycles') or {}
+    if cycles.get('scan_complete') is not True:
+        raise ValueError('Closed-position evidence is incomplete')
+    rows = []
+    for cycle in sorted(cycles['completed'], key=lambda item: item['closed_at_ms'], reverse=True):
+        currency = cycle['settlement_currency']
+        fees = cycle['fees_by_currency']
+        gross = cycle['realized_pnl_before_fees']
+        complete = not cycle['missing_fees'] and bool(fees) and set(fees) <= {currency}
+        rows.append({
+            'position_id': cycle['episode_id'], 'symbol': cycle['symbol'], 'side': cycle['side'],
+            'opened_at': datetime.fromtimestamp(cycle['opened_at_ms'] / 1000, TZ_CN).strftime('%Y-%m-%d %H:%M:%S'),
+            'closed_at': datetime.fromtimestamp(cycle['closed_at_ms'] / 1000, TZ_CN).strftime('%Y-%m-%d %H:%M:%S'),
+            'entry_price': cycle['entry_vwap'], 'close_price': cycle['exit_vwap'],
+            'amount': cycle['entered_base'], 'take_profit': cycle.get('take_profit'),
+            'stop_loss': cycle.get('stop_loss'), 'realized_pnl': gross,
+            'net_realized_pnl': gross - fees.get(currency, 0) if gross is not None and complete else None,
+            'fees': fees, 'fees_complete': complete, 'settlement_currency': currency,
+            'exit_reason': ','.join(cycle['exit_reasons']), 'add_count': cycle['add_count'],
+            'exit_count': cycle['exit_count'], 'events': cycle['events'],
+            'protection_history': cycle['protection_history'], 'cycle': cycle,
+            'source': 'execution_fills', 'statistics_scope': 'account_symbol',
+        })
+    return rows
 
 
 def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None,
-                                 *, cycle_sink=None, read_conn=None):
+                                 *, cycle_sink=None, read_conn=None, account_wide=False):
     """Reconstruct ordered facts with a bounded work set; incomplete never means zero."""
     from backend.utils.execution_cycles import reconstruct_cycles
     from backend.utils.runtime_capacity import positive_setting,reserve_bytes
@@ -680,11 +730,11 @@ def _reconstruct_position_cycles(config_id, start_ms, end_ms, scope=None, symbol
     with reserve_bytes('parse',maximum*4):
         if read_conn is not None:
             return reconstruct_cycles(config_id,start_ms,end_ms,scope,symbol,
-                                      cycle_sink=cycle_sink,read_conn=read_conn)
+                                      cycle_sink=cycle_sink,read_conn=read_conn,account_wide=account_wide)
         with get_db_conn() as conn:
             conn.execute('BEGIN ISOLATION LEVEL REPEATABLE READ')
             return reconstruct_cycles(config_id,start_ms,end_ms,scope,symbol,
-                                      cycle_sink=cycle_sink,read_conn=conn)
+                                      cycle_sink=cycle_sink,read_conn=conn,account_wide=account_wide)
 
 
 def rebuild_execution_position_history(config_id: str, scope: str, symbol: str):
@@ -765,9 +815,9 @@ def rebuild_execution_position_history(config_id: str, scope: str, symbol: str):
 
 
 
-def position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
+def position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None, *, account_wide=False):
     """Return every reconstructed cycle in the selected time window."""
-    rebuilt = _reconstruct_position_cycles(config_id, start_ms, end_ms, scope, symbol)
+    rebuilt = _reconstruct_position_cycles(config_id, start_ms, end_ms, scope, symbol,account_wide=account_wide)
     completed = rebuilt['completed']
     return {
         'completed_count': rebuilt['completed_count'],
@@ -780,5 +830,7 @@ def position_cycles(config_id, start_ms, end_ms, scope=None, symbol=None):
         'projection_complete': rebuilt['projection_complete'],
         'reason_code': rebuilt['reason_code'],
         'next_cursor': rebuilt['next_cursor'],
-        'limits': '按账户同方向成交归零划分；外部退出仅注明未知原因。混合归属入场不计入本策略战绩。实际持仓以交易所快照为准；周期盈亏与窗口内成交盈亏口径不同，不能相加。',
+        'limits': ('当前账户该标的全部成交按同方向数量归零划分，包含手动与其他任务成交；不是单个Agent战绩。'
+                   if account_wide else '按账户同方向成交归零划分；外部退出仅注明未知原因。混合归属入场不计入本策略战绩。')
+                  + '实际持仓以交易所快照为准；周期盈亏与窗口内成交盈亏口径不同，不能相加。',
     }

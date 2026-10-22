@@ -685,6 +685,12 @@ def get_closed_positions_7d(
     now = datetime.now(TZ_CN)
     cutoff_str = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     mode = str(mode or _config_mode_for_stats(config_id)).upper()
+    if mode == "REAL":
+        from backend.config import config as global_config
+        from backend.utils.execution_ledger import recent_activity_data, closed_positions_from_activity
+        selected_symbol = symbol or (global_config.get_config_by_id(config_id) or {}).get('symbol')
+        activity = recent_activity_data(config_id, selected_symbol, now, hours=days * 24)
+        return closed_positions_from_activity(activity)
     clean_sym = symbol.split(':')[0] if symbol else None
     symbol_filter, symbol_params = '', []
     if clean_sym:
@@ -731,57 +737,6 @@ def get_closed_positions_7d(
                         "stop_loss": float(r["stop_loss"]) if r["stop_loss"] and r["stop_loss"] > 0 else None,
                         "realized_pnl": float(r["realized_pnl"] or 0),
                     })
-            return results
-
-        # 2. REAL mode: execution_position_history is the canonical history. The old
-        # position_history table stores snapshots and individual closing fills,
-        # so treating its rows as complete trades creates stale dates and double counts.
-        if mode == "REAL":
-            if "execution_position_history" not in tables:
-                return results
-            cutoff_ms = int((now - timedelta(days=days)).timestamp() * 1000)
-            query = (
-                "SELECT position_id, opened_at_ms, closed_at_ms, symbol, side, entry_price, "
-                "close_price, amount, take_profit, stop_loss, realized_pnl, fees_json, "
-                "exit_reason, payload FROM execution_position_history "
-                "WHERE config_id = %s AND closed_at_ms >= %s AND closed_at_ms <= %s"
-            )
-            params = [config_id, cutoff_ms, int(now.timestamp() * 1000)]
-            if clean_sym:
-                query += symbol_filter
-                params.extend(symbol_params)
-            query += " ORDER BY closed_at_ms DESC"
-
-            for r in cursor.execute(query, params).fetchall():
-                cycle = json.loads(r['payload'] or '{}')
-                fees = json.loads(r["fees_json"] or "{}")
-                currency = cycle.get('settlement_currency', 'USDT')
-                fees_complete = bool(fees) and not cycle.get('missing_fees', True)
-                gross = float(r["realized_pnl"]) if r["realized_pnl"] is not None else None
-                net = gross - fees.get(currency, 0) if gross is not None and fees_complete and set(fees) <= {currency} else None
-                results.append({
-                    "net_realized_pnl": net,
-                    "fees_complete": fees_complete,
-                    "position_id": r["position_id"],
-                    "opened_at": datetime.fromtimestamp(r["opened_at_ms"] / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),
-                    "closed_at": datetime.fromtimestamp(r["closed_at_ms"] / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),
-                    "symbol": r["symbol"],
-                    "side": r["side"],
-                    "entry_price": float(r["entry_price"] or 0),
-                    "close_price": float(r["close_price"] or 0),
-                    "amount": float(r["amount"] or 0),
-                    "take_profit": float(r["take_profit"]) if r["take_profit"] else None,
-                    "stop_loss": float(r["stop_loss"]) if r["stop_loss"] else None,
-                    "realized_pnl": float(r["realized_pnl"]) if r["realized_pnl"] is not None else None,
-                    "fees": json.loads(r["fees_json"] or "{}"),
-                    "exit_reason": r["exit_reason"],
-                    "source": "execution_position_history",
-                    "add_count": cycle.get('add_count', 0),
-                    "exit_count": cycle.get('exit_count', 1),
-                    "protection_history": cycle.get('protection_history', []),
-                    "settlement_currency": cycle.get('settlement_currency', 'USDT'),
-                    "events": cycle.get('events', []),
-                })
             return results
 
         # Fallback for old/unknown configurations only. A known REAL config never

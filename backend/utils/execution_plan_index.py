@@ -208,7 +208,9 @@ def _advance_index(ledger):
             VALUES(%s,%s,%s,%s,'sources',0,TRUE) ON CONFLICT DO NOTHING""",
             (key, ledger.scope, ledger.symbol, ledger.config_id))
         run = conn.execute('SELECT incremental,phase,source_revision FROM execution_plan_index_runs WHERE index_id=%s', (key,)).fetchone()
-        if run['incremental'] and run['phase'] == 'complete' and run['source_revision'] == _revision(conn,ledger):
+        revision = _revision(conn, ledger)
+        collected_revision = revision if run['incremental'] and run['source_revision'] == revision else None
+        if collected_revision is not None and run['phase'] == 'complete':
             return {'complete': True, 'ownership_ready': True, 'phase': 'complete', 'processed': 0, 'error': None}
         if not run['incremental']:
             conn.execute('DELETE FROM execution_plan_index_records WHERE index_id=%s', (key,))
@@ -220,19 +222,20 @@ def _advance_index(ledger):
         # The slice deadline controls yielding between atomic work items. It
         # must not become a shrinking SQL timeout: a slow pending scan would
         # otherwise roll back the same batch forever.
-        with get_db_conn() as conn:
-            pending = _pending(conn, ledger, key, batch)
-            for item in pending:
-                if processed and (monotonic() >= deadline or consumed + len(item['payload'] or '') > byte_limit):
-                    break
-                if item['payload_bytes'] > byte_limit:
-                    raise ValueError('Ownership source exceeds work budget')
-                _collect(conn, ledger, key, item)
-                processed += 1
-                consumed += len((item['payload'] or '').encode())
-            if processed:
-                _refresh_facts(conn, key)
-            conn.commit()
+        if collected_revision is None:
+            with get_db_conn() as conn:
+                pending = _pending(conn, ledger, key, batch)
+                for item in pending:
+                    if processed and (monotonic() >= deadline or consumed + len(item['payload'] or '') > byte_limit):
+                        break
+                    if item['payload_bytes'] > byte_limit:
+                        raise ValueError('Ownership source exceeds work budget')
+                    _collect(conn, ledger, key, item)
+                    processed += 1
+                    consumed += len((item['payload'] or '').encode())
+                if processed:
+                    _refresh_facts(conn, key)
+                conn.commit()
         # No publication while unprocessed evidence can change regular/algo identity.
         published = 0
         while processed < batch and (published == 0 or monotonic() < deadline):
@@ -242,10 +245,21 @@ def _advance_index(ledger):
             with get_db_conn() as check:
                 # Source writers take the corresponding revision row; this short
                 # shared lock protects publication against newly committed sources.
-                check.execute('SELECT revision FROM plan_source_revisions WHERE symbol IN (%s,%s) FOR SHARE',
-                              (ledger.symbol, ledger.symbol.split(':')[0])).fetchall()
-                if _pending(check, ledger, key, 1):
-                    break
+                revisions = check.execute(
+                    'SELECT revision FROM plan_source_revisions WHERE symbol IN (%s,%s) FOR SHARE',
+                    (ledger.symbol, ledger.symbol.split(':')[0])).fetchall()
+                revision = sum(row[0] for row in revisions)
+                if collected_revision != revision:
+                    if _pending(check, ledger, key, 1):
+                        break
+                    # All sources at this revision are collected. Persist that
+                    # fact even while aliases/orders still await publication.
+                    # Rechecking the small, locked revision on each item keeps
+                    # concurrent writes visible without rescanning the entire
+                    # history on every order and every scheduler slice.
+                    check.execute('UPDATE execution_plan_index_runs SET source_revision=%s WHERE index_id=%s',
+                                  (revision, key))
+                    collected_revision = revision
                 fact = check.execute('SELECT id,owner,order_id FROM execution_plan_index_facts '
                                      'WHERE index_id=%s AND conditional=1 AND checked=0 LIMIT 1', (key,)).fetchone()
                 if fact:
@@ -264,8 +278,6 @@ def _advance_index(ledger):
                         WHERE r.index_id=p.index_id AND r.fingerprint=p.fingerprint AND r.relevant) LIMIT 1""", (key,)).fetchone()
                     if not row:
                         phase = 'complete'
-                        check.execute('UPDATE execution_plan_index_runs SET source_revision=%s WHERE index_id=%s',
-                                      (_revision(check,ledger), key))
                         check.commit()
                         break
                     value, finished = _publication_piece(json.loads(row['payload']),row['publish_cursor'])

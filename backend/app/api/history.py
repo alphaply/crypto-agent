@@ -39,13 +39,15 @@ router = APIRouter(prefix="/api/history", tags=["history"])
 def position_cycles_history(config_id: str, _: dict = Depends(get_current_user)):
     from backend.config import config
     from backend import database
-    from backend.utils.execution_ledger import recent_activity_data
+    from backend.utils.execution_ledger import recent_activity_data, closed_positions_from_activity
     cfg = config.get_config_by_id(config_id)
     if not cfg:
         raise HTTPException(404, 'Config not found')
-    rows = database.get_closed_positions_7d(config_id, cfg.get('symbol'), mode=cfg.get('mode'))
+    activity = recent_activity_data(config_id, cfg.get('symbol', '')) if cfg.get('mode') == 'REAL' else None
+    rows = (closed_positions_from_activity(activity) if activity is not None else
+            database.get_closed_positions_7d(config_id, cfg.get('symbol'), mode=cfg.get('mode')))
     return {'positions': rows, 'summary': database.format_closed_positions_summary(rows),
-            'activity': recent_activity_data(config_id, cfg.get('symbol', '')) if cfg.get('mode') == 'REAL' else ''}
+            'activity': activity if activity is not None else ''}
 
 
 @router.get("")

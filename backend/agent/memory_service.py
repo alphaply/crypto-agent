@@ -35,20 +35,26 @@ def format_recent_position_history_for_memory(config_id: str, agent_config: dict
     mode = str(agent_config.get('mode') or 'STRATEGY').upper()
     if mode not in {'REAL', 'STRATEGY'}:
         return ''
-    lines = [f"证据读取时间：{datetime.now(TZ_CN).strftime('%Y-%m-%d %H:%M:%S %Z')}"]
+    now = datetime.now(TZ_CN)
+    lines = [f"证据读取时间：{now.strftime('%Y-%m-%d %H:%M:%S %Z')}"]
+    if mode == 'REAL':
+        from backend.utils.execution_ledger import recent_activity_data, recent_activity_summary, closed_positions_from_activity
+        lines.append('统计范围：当前交易所账户下该标的的全部已记录成交，含其他任务和手动交易；不是单个Agent战绩。')
+        try:
+            activity = recent_activity_data(config_id, symbol, now)
+            rows = closed_positions_from_activity(activity)
+            lines.append(database.format_closed_positions_summary(rows, days=7))
+            lines.append(recent_activity_summary(config_id, symbol, now, data=activity))
+        except Exception:
+            logger.exception('Seven-day account-symbol history unavailable for %s', config_id)
+            lines.append('7天成交与平仓记录读取失败，不能据此断言没有交易或收益为零。')
+        return '\n'.join(lines)
     try:
         rows = database.get_closed_positions_7d(config_id, symbol=symbol, days=7, mode=mode)
         lines.append(database.format_closed_positions_summary(rows, days=7))
     except Exception:
         logger.exception('Seven-day closed positions unavailable for %s', config_id)
         lines.append('7天平仓记录读取失败，不能据此断言没有交易或收益为零。')
-    if mode == 'REAL':
-        from backend.utils.execution_ledger import recent_activity_summary
-        try:
-            lines.append(recent_activity_summary(config_id, symbol))
-        except Exception:
-            logger.exception('Seven-day fills unavailable for %s', config_id)
-            lines.append('最近7天成交活动暂不可用，不能据此断言历史完整。')
     return '\n'.join(lines)
 
 
