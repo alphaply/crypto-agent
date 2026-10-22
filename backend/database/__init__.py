@@ -686,6 +686,16 @@ def get_closed_positions_7d(
     cutoff_str = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     mode = str(mode or _config_mode_for_stats(config_id)).upper()
     clean_sym = symbol.split(':')[0] if symbol else None
+    symbol_filter, symbol_params = '', []
+    if clean_sym:
+        if ':' in symbol:
+            # Accept the legacy unsuffixed alias, but not another contract.
+            symbol_filter = ' AND symbol IN (%s, %s)'
+            symbol_params = [symbol, clean_sym]
+        else:
+            # Compare the complete pair: BTC/USD must not include BTC/USDT.
+            symbol_filter = " AND split_part(symbol, ':', 1) = %s"
+            symbol_params = [clean_sym]
 
     results: list[dict] = []
 
@@ -703,8 +713,8 @@ def get_closed_positions_7d(
                 )
                 params = [config_id, cutoff_str]
                 if clean_sym:
-                    query += " AND (symbol = %s OR symbol LIKE %s)"
-                    params.extend([clean_sym, f"{clean_sym}%"])
+                    query += symbol_filter
+                    params.extend(symbol_params)
                 query += " ORDER BY close_time DESC"
 
                 for r in cursor.execute(query, params).fetchall():
@@ -738,8 +748,8 @@ def get_closed_positions_7d(
             )
             params = [config_id, cutoff_ms, int(now.timestamp() * 1000)]
             if clean_sym:
-                query += " AND (symbol = %s OR symbol LIKE %s)"
-                params.extend([clean_sym, f"{clean_sym}%"])
+                query += symbol_filter
+                params.extend(symbol_params)
             query += " ORDER BY closed_at_ms DESC"
 
             for r in cursor.execute(query, params).fetchall():
@@ -784,8 +794,8 @@ def get_closed_positions_7d(
             )
             m_params = [config_id, cutoff_str]
             if clean_sym:
-                m_query += " AND (symbol = %s OR symbol LIKE %s)"
-                m_params.extend([clean_sym, f"{clean_sym}%"])
+                m_query += symbol_filter
+                m_params.extend(symbol_params)
             m_query += " ORDER BY close_time DESC"
 
             for r in cursor.execute(m_query, m_params).fetchall():

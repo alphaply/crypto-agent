@@ -72,9 +72,10 @@ class DcaSnapshotStore:
                 FROM dca_daily_snapshots
                 WHERE config_id = %s{symbol_clause}
                 GROUP BY snapshot_date
-                ORDER BY snapshot_date ASC
+                ORDER BY snapshot_date DESC
                 LIMIT %s
                 ''',
                 params,
             ).fetchall()
-            return [storage.record(row) for row in rows]
+            # Limit the newest dates first, then display the chart oldest to newest.
+            return [storage.record(row) for row in reversed(rows)]

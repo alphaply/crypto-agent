@@ -16,6 +16,7 @@ class TradeHistoryStore:
     def save_trades(self, trades, config_id=None):
         if not trades:
             return
+        from backend.database import TZ_CN
         with self._conn_factory() as conn:
             ensure_scoped_trade_ids(conn)
             cursor = conn.cursor()
@@ -59,7 +60,7 @@ class TradeHistoryStore:
                             str(trade["id"]),
                             str(trade.get("order", trade.get("order_id", ""))),
                             owner,
-                            datetime.fromtimestamp(trade["timestamp"] / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+                            datetime.fromtimestamp(trade["timestamp"] / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S"),
                             trade["symbol"],
                             trade["side"],
                             float(trade["price"]),

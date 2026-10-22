@@ -70,7 +70,7 @@ def _synchronize_orders(config_id: str, symbol: str, mt, sync_errors: list[str],
                 fill_ts = od.get("lastTradeTimestamp") or od.get("timestamp")
                 filled_at = None
                 if fill_ts:
-                    filled_at = datetime.fromtimestamp(float(fill_ts) / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                    filled_at = datetime.fromtimestamp(float(fill_ts) / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
 
                 local_status = "OPEN"
                 if exch_status in ("closed", "filled"):
