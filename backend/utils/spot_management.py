@@ -65,6 +65,10 @@ def recover_spot_action(mt, config_id, symbol, operation_id, args, previous):
         result.update(status='completed' if confirmed else 'pending', order_id=metadata['resource_id'] if metadata.get('children') else 'regular:'+row['target_id'],
                       order_status=observations[0].get('status'), filled_amount=sum(float(o['filled']) for o in observations) if filled_verified else None,
                       symbol=symbol, query={'status':'completed','source':'exchange_order','queried_at':time.time()})
+        if len(observations) == 1:
+            observed = observations[0]
+            result.update(price=observed.get('price'), amount=observed.get('amount'),
+                          side=observed.get('side'), order_type=observed.get('type'))
         if row['action'] == 'edit':
             result.update(remaining_amount=observations[0].get('remaining'), price=observations[0].get('price'), edit_method='native')
     except Exception as exc:
@@ -291,6 +295,11 @@ def execute_spot_action(config_id, symbol, action, operation_id):
                             'filled_amount':acknowledgement.get('filled') if same else None,'acknowledgement':acknowledgement}
                 else:
                     result = recover_spot_action(mt,config_id,symbol,operation_id,action,{'status':'unknown'})
+                # The target was already fetched and identity checked above.
+                # Retain its limit price even when the cancel ACK omits it.
+                for key in ('price', 'amount', 'side', 'type'):
+                    if old.get(key) is not None and result.get('order_type' if key == 'type' else key) is None:
+                        result['order_type' if key == 'type' else key] = old[key]
         elif name == 'edit':
             target = str(action['order_id']).removeprefix('regular:')
             order = mt.exchange.fetch_order(target, symbol)

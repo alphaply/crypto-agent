@@ -413,6 +413,10 @@ def _receipt(row):
             'requested_amount': row['payload'].get('requested_amount', (row['payload'].get('request') or {}).get('amount', row['amount'])),
             'order_ids': row['payload'].get('order_ids', []),
             'message': 'Exchange acknowledgement is not fill confirmation.'}
+    request = row['payload'].get('request') or {}
+    for key in ('price', 'stop_loss', 'take_profit', 'stop_limit_price', 'take_profit_limit_price'):
+        if request.get(key) is not None:
+            result[key] = request[key]
     if row['payload'].get('error'):
         result['error'] = row['payload']['error']
         if row['state'] == 'failed':

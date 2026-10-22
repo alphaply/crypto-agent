@@ -575,6 +575,7 @@ def _cancel_spot_order(order_id: str, reason: str, config_id: str, symbol: str, 
                                     config_id=config_id, status='CANCELLED', event_type='CANCELLED')
         return json.dumps({'status': 'completed', 'order_id': str(order_id), 'symbol': symbol,
                            'exchange_status': status, 'filled_amount': filled, 'filled_cost': cost,
+                           'price': verified.get('price'), 'amount': verified.get('amount'), 'side': verified.get('side'),
                            'message': '订单已成交，未撤销成交' if local_status == 'FILLED' else '撤单及成交成本已核验'}, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({'status': 'unknown' if writing else 'failed', 'order_id': str(order_id),

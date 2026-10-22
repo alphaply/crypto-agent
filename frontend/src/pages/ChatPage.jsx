@@ -38,6 +38,7 @@ import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import ChatRunProgress from '../components/ChatRunProgress';
 import ToolResultContent from '../components/ToolResultContent';
+import { toolRequest } from '../lib/toolReceipt';
 import MarketSymbolPicker from '../components/MarketSymbolPicker';
 import { api, streamSse } from '../lib/api';
 import { createChatStreamLifecycle, reduceChatStreamLifecycle } from '../lib/chatStreamLifecycle';
@@ -72,8 +73,8 @@ function unwrapApproval(approval) {
   return approval.value && typeof approval.value === 'object' ? approval.value : approval;
 }
 
-function ToolMessage({ content, locale, toolName }) {
-  return <ToolResultContent content={content} zh={locale === 'zh'} toolName={toolName} />;
+function ToolMessage({ content, locale, toolName, request }) {
+  return <ToolResultContent content={content} zh={locale === 'zh'} toolName={toolName} request={request} />;
 }
 
 function MessageBranchActions({ branches, activeSessionId, onSelect, onEdit, disabled, locale }) {
@@ -107,9 +108,9 @@ function MessageBranchActions({ branches, activeSessionId, onSelect, onEdit, dis
   );
 }
 
-function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningDiagnostics, reasoningStartedAt, role, streaming, status, actions, toolName }) {
+function MessageContent({ content, reasoning, reasoningTokens = 0, reasoningDiagnostics, reasoningStartedAt, role, streaming, status, actions, toolName, request }) {
   const { t, locale } = usePreferences();
-  if (role === 'tool') return <ToolMessage content={content} locale={locale} toolName={toolName} />;
+  if (role === 'tool') return <ToolMessage content={content} locale={locale} toolName={toolName} request={request} />;
   const normalized = splitThinkingContent(content || '', reasoning || '');
   const hasAnswer = Boolean(normalized.content?.trim());
   const hasReasoning = Boolean(normalized.reasoning?.trim());
@@ -543,6 +544,7 @@ export default function ChatPage({ token }) {
           reasoningStartedAt: message.reasoning_started_at || null,
           originalRole: message.role,
           toolName: message.tool || message.name,
+          request: message.role === 'tool' ? toolRequest(messages, message) : undefined,
           streaming: streaming && message === messages.at(-1) && message.role === 'assistant',
           status: streamStatus,
           messageIndex,
@@ -959,7 +961,7 @@ export default function ChatPage({ token }) {
                           },
                           system: {
                             placement: 'start', variant: 'outlined', shape: 'round', rootClassName: 'x-bubble-system',
-                            contentRender: (content, info) => <MessageContent content={content} role={info?.extraInfo?.originalRole} toolName={info?.extraInfo?.toolName} />,
+                            contentRender: (content, info) => <MessageContent content={content} role={info?.extraInfo?.originalRole} toolName={info?.extraInfo?.toolName} request={info?.extraInfo?.request} />,
                           },
                         }}
                       />

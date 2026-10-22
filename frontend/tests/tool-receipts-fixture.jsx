@@ -1,6 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Card, Space } from 'antd';
+import { Card, Space, theme } from 'antd';
 import AccessibleConfigProvider from '../src/components/AccessibleConfigProvider';
 import { PreferencesContext } from '../src/app/preferences-context';
 import { ToolReceipt } from '../src/components/DecisionMessages';
@@ -10,6 +10,8 @@ import '../src/index.css';
 import '../src/workbench.css';
 
 const zh = new URLSearchParams(location.search).get('locale') !== 'en';
+const dark = new URLSearchParams(location.search).get('theme') === 'dark';
+document.documentElement.dataset.theme = dark ? 'dark' : 'light';
 const receipt = {
   status: 'submitted',
   results: [{ index: 0, action: 'open', symbol: 'ETH/USDT:USDT', status: 'submitted',
@@ -34,11 +36,23 @@ const batch = {
   audit_reference: { operation_id: 'call_00_Ze0GorUV7ZrxOyEEcmN35320' },
   receipt_updated_at: 1792155645.548852,
 };
-createRoot(document.getElementById('root')).render(<AccessibleConfigProvider>
-  <PreferencesContext.Provider value={{ locale: zh ? 'zh' : 'en', isDark: false, t: value => value }}>
+createRoot(document.getElementById('root')).render(<AccessibleConfigProvider theme={{ algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm }}>
+  <PreferencesContext.Provider value={{ locale: zh ? 'zh' : 'en', isDark: dark, t: value => value }}>
     <main style={{ maxWidth: 1000, margin: 'auto', padding: 16 }}><Space orientation="vertical" style={{ width: '100%' }}>
       <Card title="工具回执 · 离线合成数据"><ToolReceipt zh={zh} item={{ tool: 'execute_trade_actions', result: receipt }} /></Card>
       <Card title="批量失败回执 · 离线合成数据"><ToolReceipt zh={zh} item={{ tool: 'execute_trade_actions', status: 'failed', result: batch }} /></Card>
+      <Card title={zh ? '改单与撤单 · 离线合成数据' : 'Amend & cancel · Synthetic data'}>
+        <ToolReceipt zh={zh} item={{ tool: 'execute_trade_actions', args: { actions: [{ action: 'edit', remaining_amount: .25, price: 2450 }, { action: 'cancel' }] }, result: { results: [
+          { index: 0, action: 'edit', symbol: 'ETH/USDT', status: 'pending', result: { price: 2400, side: 'BUY' } },
+          { index: 1, action: 'cancel', symbol: 'BTC/USDT', status: 'completed', result: { price: 68500, amount: .002, side: 'BUY' } },
+        ] } }} />
+      </Card>
+      <Card title={zh ? '现货与条件单 · 离线合成数据' : 'Spot & conditional orders · Synthetic data'}>
+        <ToolResultContent zh={zh} toolName="open_position_spot_dca" content={{ status: 'submitted', results: [{ symbol: 'PEPE/USDT', entry_price: .00001234, amount: 500000 }] }} />
+        <ToolResultContent zh={zh} toolName="close" content={{ action: 'close', symbol: 'ETH/USDT:USDT', status: 'submitted', order_type: 'stop_limit', price: 2200, trigger_price: 2210, amount: .1, side: 'LONG' }} />
+        <ToolResultContent zh={zh} toolName="close" content={{ action: 'close', symbol: 'ETH/USDT', status: 'completed', order_type: 'market', amount: .05 }} />
+        <ToolResultContent zh={zh} toolName="cancel" content={{ action: 'cancel', symbol: 'BTC/USDT', status: 'completed' }} />
+      </Card>
       <Card title="聊天工具结果"><ToolResultContent zh={zh} toolName="execute_trade_actions" content={JSON.stringify(receipt)} /></Card>
       <Card title="历史文本回执"><ToolResultContent zh={zh} toolName="execute_trade_actions" content={'**已提交挂单**，等待成交。'} /></Card>
     </Space></main>

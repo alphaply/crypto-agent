@@ -398,6 +398,8 @@ def test_owned_spot_snapshot_reference_can_cancel_exact_native_order(monkeypatch
 
     assert result['status'] == 'completed'
     assert result['order_id'] == 'regular:pending-buy'
+    assert result['price'] == 100
+    assert result['amount'] == 1
     assert result['filled_amount'] == .25
     assert venue.writes == [('cancel', 'pending-buy')]
     assert venue.orders['pending-buy']['status'] == 'canceled'
@@ -420,11 +422,13 @@ def test_regular_spot_cancel_keeps_inventory_reserved_until_fills_are_verified(m
     monkeypatch.setattr(spot_orders,'_tool',lambda *a:(mt,venue.market('BTC/USDT')))
     result=execute_spot_action('owner','BTC/USDT',{'action':'cancel','order_id':'regular:external','reason':'cancel'},'cancel-external')
     assert result['status']=='pending' and result['filled_amount'] is None
+    assert result['price'] == 100
     inventory=visible_inventory(mt,'BTC/USDT')
     assert inventory['reserved_quantity']==1 and inventory['available_quantity']==0
     venue.orders['external']['filled']=0
     resolved=recover_spot_action(mt,'owner','BTC/USDT','cancel-external',{},result)
     assert resolved['status']=='completed'
+    assert resolved['price'] == 100
     assert visible_inventory(mt,'BTC/USDT')['available_quantity']==pytest.approx(9.99)
     assert len(venue.writes)==1
 

@@ -1,5 +1,5 @@
 .tool-result-content { margin-top: 12px; min-width: 0; overflow-wrap: anywhere; }
-.tool-result-card { padding: 12px 16px; border: 1px solid var(--border-soft, #8883); border-radius: 12px; background: var(--bg-subtle, #8881); }
+.tool-result-card { padding: 12px 16px; border: 1px solid var(--border-soft, #8883); border-radius: 12px; background: var(--bg-surface, #fff); }
 .tool-result-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .tool-result-card-summary { margin: 8px 0; font-size: 13px; line-height: 1.6; }
 .tool-result-disclosure > summary { cursor: pointer; font-size: 12px; color: var(--text-secondary, #888); }
@@ -17,8 +17,38 @@
 .tool-result-error { color: var(--danger, #cf4141); }
 .tool-result-raw { margin-top: 12px; border-top: 1px solid var(--border-soft, #8883); }
 .tool-result-raw pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; font-size: 12px; }
-.tool-trade-results { display: grid; gap: 8px; }
-.tool-trade-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; font-size: 13px; }
-.tool-trade-row > div { display: flex; flex-direction: column; gap: 4px; min-width: 64px; font-variant-numeric: tabular-nums; }
-.tool-trade-label { font-size: 11px; color: var(--text-secondary, #888); }
-.tool-trade-row > .ant-tag { margin-inline-start: auto; }
+.tool-trade-results { display: grid; gap: 12px; }
+.tool-trade-row { --receipt-accent: var(--accent, #2563eb); padding: 18px 20px; border-color: color-mix(in srgb, var(--receipt-accent) 15%, var(--border-soft)); background: var(--bg-surface, #fff); box-shadow: 0 2px 8px color-mix(in srgb, var(--receipt-accent) 4%, transparent); }
+.tool-trade-row[data-action='open'] { --receipt-accent: #0d9488; }
+.tool-trade-row[data-action='cancel'] { --receipt-accent: #b7791f; }
+.tool-trade-row[data-action='protect'] { --receipt-accent: #7c3aed; }
+.tool-trade-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.tool-trade-icon { flex: 0 0 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; color: var(--receipt-accent); background: color-mix(in srgb, var(--receipt-accent) 9%, var(--bg-surface)); font-size: 16px; }
+.tool-trade-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.tool-trade-action { color: var(--receipt-accent); font-size: 12px; font-weight: 600; }
+.tool-trade-title strong { font-size: 14px; color: var(--text-primary); overflow-wrap: anywhere; }
+.tool-trade-side { font-size: 12px; color: var(--text-secondary); }
+.tool-trade-status { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 11px; font-weight: 500; color: var(--text-secondary); }
+.tool-trade-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.tool-trade-status.is-success { color: var(--success, #15803d); }
+.tool-trade-status.is-failed { color: var(--danger, #dc2626); }
+.tool-trade-status.is-pending { color: var(--receipt-accent); }
+.tool-trade-metrics { display: flex; flex-wrap: wrap; gap: 16px 40px; margin: 16px 0 0 46px; }
+.tool-trade-metrics > div { min-width: 0; max-width: 100%; }
+.tool-trade-metrics dt { color: var(--text-secondary); font-size: 11px; margin-bottom: 5px; }
+.tool-trade-metrics dd { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; margin: 0; color: var(--text-primary); font-size: 17px; line-height: 1.45; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tool-trade-metrics .is-price dd { font-size: 21px; letter-spacing: -.35px; }
+.tool-trade-unit { color: var(--text-muted); font-size: 11px; font-weight: 400; letter-spacing: 0; }
+.tool-trade-metrics .is-missing dd { color: var(--text-muted); font-size: 13px; font-weight: 400; }
+:root[data-theme='dark'] .tool-trade-row[data-action='open'] { --receipt-accent: #2dd4bf; }
+:root[data-theme='dark'] .tool-trade-row[data-action='cancel'] { --receipt-accent: #fbbf24; }
+:root[data-theme='dark'] .tool-trade-row[data-action='protect'] { --receipt-accent: #a78bfa; }
+@media (max-width: 600px) {
+  .tool-trade-row { padding: 14px; }
+  .tool-trade-heading { flex-wrap: wrap; gap: 8px; }
+  .tool-trade-title { flex: 1; }
+  .tool-trade-status { margin-left: 42px; }
+  .tool-trade-metrics { margin-left: 0; gap: 16px 24px; }
+  .tool-trade-metrics > div { flex: 1 1 100px; }
+  .tool-trade-metrics .is-price dd { font-size: 19px; }
+}

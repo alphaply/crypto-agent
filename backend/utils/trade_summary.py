@@ -11,12 +11,12 @@ _IDENTITIES = {'operation_id', 'parent_operation_id', 'execution_operation_id', 
                'resource_id', 'cycle_id', 'episode_id'}
 _FACTS = {'contract_version', 'receipt_version', 'status', 'order_status', 'order_type', 'exchange_channel',
           'market_type', 'exchange', 'quantity_mode', 'amount', 'requested_amount', 'resolved_amount', 'filled_amount',
-          'remaining_amount', 'closed_amount', 'execution_amount', 'price', 'trigger_price', 'average_price',
+          'remaining_amount', 'requested_remaining_amount', 'requested_price', 'requested_trigger_price', 'closed_amount', 'execution_amount', 'price', 'trigger_price', 'average_price',
           'fee', 'realized_pnl', 'edit_method', 'phase', 'submission_state', 'submitted', 'error_code',
           'reason_code', 'blocked_by_index', 'blocked_by_indices', 'depends_on', 'execution_policy',
           'partial_execution', 'rejected_by_user', 'reservation_change', 'reserved_cash', 'reserved_spot',
           'verified_at', 'observed_at', 'last_known_fill_at', 'last_known_filled_amount', 'pending',
-          'stop_loss', 'take_profit', 'protection_state', 'persistence_pending', 'state', 'found',
+          'stop_loss', 'take_profit', 'stop_limit_price', 'take_profit_limit_price', 'protection_state', 'persistence_pending', 'state', 'found',
           'cash_after', 'debt_after', 'borrowed', 'repaid', 'bank_action', 'debt', 'cash', 'margin', 'leverage',
           'enabled', 'created', 'name', 'leaderboard_visible', 'notifications_enabled', 'markets',
           'replacement_status', 'previous_order_status', 'quantity_unit', 'filled_cost', 'avg_fill_price', 'filled_at',
@@ -93,7 +93,7 @@ def _project(value):
             projected.update(filled_amount=fill['amount'], order_status='filled', quantity_unit='base')
     for target, aliases in {'side': ('pos_side',), 'client_id':('client_order_id','clientOrderId'), 'filled_amount': ('filled',),
                             'remaining_amount': ('remaining', 'actual_remaining'),
-                            'requested_amount': ('amount',), 'average_price': ('average',)}.items():
+                            'requested_amount': ('amount',), 'price': ('entry_price',), 'average_price': ('average',)}.items():
         if target not in projected:
             for alias in aliases:
                 if alias in value:

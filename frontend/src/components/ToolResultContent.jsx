@@ -1,4 +1,5 @@
 import { Tag } from 'antd';
+import { ArrowUpOutlined, ArrowDownOutlined, EditOutlined, CloseOutlined, SafetyOutlined } from '@ant-design/icons';
 import MarkdownBlock from './MarkdownBlock';
 import './ToolResultContent.css';
 import { receiptSummary, isTradeReceipt, tradeReceiptRows } from '../lib/toolReceipt';
@@ -60,22 +61,60 @@ function Value({ value, field, zh, depth = 0 }) {
 
 const actions = { open: '开仓', close: '平仓', edit: '改单', cancel: '撤单', protect: '保护', amend_entry: '入场改单', amend_exit: '退出改单', update_protection: '保护调整' };
 
+function displayNumber(value, zh) {
+  if (value == null) return zh ? '未提供' : 'Not provided';
+  if (value === 'all') return zh ? '全部' : 'All';
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toLocaleString(zh ? 'zh-CN' : 'en-US', { maximumFractionDigits: 20 }) : String(value);
+}
+
+const actionIcons = { open: ArrowUpOutlined, close: ArrowDownOutlined, edit: EditOutlined, cancel: CloseOutlined, protect: SafetyOutlined };
+const englishActions = { open: 'Open', close: 'Close', edit: 'Amend', cancel: 'Cancel', protect: 'Protect', amend_entry: 'Amend entry', amend_exit: 'Amend exit', update_protection: 'Update protection' };
+
 function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
   const rows = tradeReceiptRows(content, { request, toolName, fallbackStatus });
   if (!rows) return <div className="tool-result-content tool-result-card"><MarkdownBlock content={String(content || '').replace(/\s+/g, ' ').slice(0, 180)} /></div>;
   return <div className="tool-result-content tool-trade-results">{rows.map((row, index) => {
-    const price = [row.price != null && `${row.price}`, row.triggerPrice != null && `${zh ? '触发' : 'Trigger'} ${row.triggerPrice}`].filter(Boolean).join(' / ');
-    const fields = [
-      [zh ? '操作' : 'Action', zh ? actions[row.action] || row.action : row.action],
-      [zh ? '标的' : 'Symbol', row.symbol],
-      [zh ? '方向' : 'Side', zh ? ({ LONG: '做多', SHORT: '做空', BUY: '买入', SELL: '卖出' }[row.side] || row.side) : row.side],
-      [zh ? '数量' : 'Amount', row.amount === 'all' ? zh ? '全部' : 'All' : row.amount],
-      [zh ? '价格' : 'Price', price || null],
-    ];
-    return <div className="tool-result-card tool-trade-row" key={index}>
-      {fields.filter(([, value]) => value != null).map(([label, value]) => <div key={label}><span className="tool-trade-label">{label}</span><span>{value}</span></div>)}
-      {row.result && <Tag color={row.result === 'success' ? 'success' : 'error'}>{row.result === 'success' ? zh ? '成功' : 'Success' : zh ? '失败' : 'Failed'}</Tag>}
-    </div>;
+    const editing = row.action === 'edit' || row.action?.startsWith('amend_');
+    const action = editing ? 'edit' : row.action;
+    const Icon = actionIcons[action] || SafetyOutlined;
+    const [base, quote] = (row.symbol || '').split(':')[0].split('/');
+    const side = String(row.side || '').toUpperCase();
+    const sideLabel = zh ? ({ LONG: '做多', SHORT: '做空', BUY: '买入', SELL: '卖出' }[side] || side) : side;
+    const priceLabel = row.priceFromRequest ? zh ? '委托价格' : 'Requested price'
+      : row.action === 'cancel' ? zh ? '原挂单价' : 'Order price'
+        : editing ? zh ? '挂单价格' : 'Order price' : zh ? '限价' : 'Limit price';
+    const metrics = [];
+    if (row.price != null || (row.triggerPrice == null && row.stopLoss == null && row.takeProfit == null)) metrics.push({
+      label: row.orderType === 'market' ? zh ? '委托方式' : 'Order type' : priceLabel,
+      value: row.orderType === 'market' ? zh ? '市价' : 'Market' : displayNumber(row.price, zh),
+      unit: row.orderType !== 'market' && row.price != null ? quote : null,
+      primary: true, missing: row.price == null && row.orderType !== 'market',
+    });
+    if (row.triggerPrice != null) metrics.push({ label: row.triggerFromRequest ? zh ? '委托触发价' : 'Requested trigger' : zh ? '触发价' : 'Trigger price', value: displayNumber(row.triggerPrice, zh), unit: quote, primary: true });
+    if (row.requestedPrice != null) metrics.push({ label: zh ? '申请改为' : 'Requested price', value: displayNumber(row.requestedPrice, zh), unit: quote, primary: true });
+    if (row.requestedTriggerPrice != null) metrics.push({ label: zh ? '申请触发价' : 'Requested trigger', value: displayNumber(row.requestedTriggerPrice, zh), unit: quote, primary: true });
+    for (const [value, label] of [[row.stopLoss, zh ? '止损触发价' : 'Stop trigger'], [row.takeProfit, zh ? '止盈触发价' : 'Take-profit trigger'], [row.stopLimitPrice, zh ? '止损限价' : 'Stop limit'], [row.takeProfitLimitPrice, zh ? '止盈限价' : 'Take-profit limit']]) {
+      if (value != null) metrics.push({ label, value: displayNumber(value, zh), unit: quote, primary: true });
+    }
+    metrics.push({ label: row.amountIsRemaining ? zh ? '目标剩余数量' : 'Target remaining' : zh ? '数量' : 'Amount', value: displayNumber(row.amount, zh), unit: row.amount != null && row.amount !== 'all' ? base : null, missing: row.amount == null });
+    const statusLabel = row.result === 'failed' ? zh ? '失败' : 'Failed'
+      : row.result === 'success' ? (zh ? '成功' : 'Success') + (row.status === 'submitted' ? zh ? ' · 已提交' : ' · Submitted' : '')
+        : zh ? states[row.status]?.[0] || '待确认' : row.status || 'Pending';
+    return <article className="tool-result-card tool-trade-row" data-action={action} key={index}>
+      <div className="tool-trade-heading">
+        <span className="tool-trade-icon" aria-hidden="true"><Icon /></span>
+        <div className="tool-trade-title"><span className="tool-trade-action">{zh ? actions[row.action] || '交易操作' : englishActions[row.action] || 'Trade'}</span>
+          <strong>{row.symbol || (zh ? '标的未提供' : 'Symbol not provided')}</strong>
+          {sideLabel && <span className="tool-trade-side">{sideLabel}</span>}
+        </div>
+        <span className={`tool-trade-status is-${row.result || 'pending'}`}><i aria-hidden="true" />{statusLabel}</span>
+      </div>
+      <dl className="tool-trade-metrics">{metrics.map(({ label, value, unit, primary, missing }) =>
+        <div className={`${primary ? 'is-price' : ''} ${missing ? 'is-missing' : ''}`} key={label}>
+          <dt>{label}</dt><dd>{value}{unit && <span className="tool-trade-unit">{unit}</span>}</dd>
+        </div>)}</dl>
+    </article>;
   })}</div>;
 }
 

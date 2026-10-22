@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { receiptSummary, tradeReceiptRows, isTradeReceipt } from '../src/lib/toolReceipt.js';
+import { receiptSummary, tradeReceiptRows, isTradeReceipt, toolRequest } from '../src/lib/toolReceipt.js';
 
 test('accepted unfilled entry shows requested amount and success without internal trees', () => {
   const raw = { status: 'submitted', results: [{ action: 'open', symbol: 'ETH/USDT:USDT', status: 'submitted', result: {
     side: 'SHORT', requested_amount: .05, amount: .05, filled_amount: 0, price: 2460,
     query: { status: 'partial', errors: ['private internal diagnostics'] },
   } }] };
-  assert.deepEqual(tradeReceiptRows(JSON.stringify(raw)), [{ action: 'open', symbol: 'ETH/USDT:USDT', side: 'SHORT', amount: .05,
+  const [{ action, symbol, side, amount, price, triggerPrice, result }] = tradeReceiptRows(JSON.stringify(raw));
+  assert.deepEqual([{ action, symbol, side, amount, price, triggerPrice, result }], [{ action: 'open', symbol: 'ETH/USDT:USDT', side: 'SHORT', amount: .05,
     price: 2460, triggerPrice: undefined, result: 'success' }]);
 });
 test('batch status does not override each action and unknown is never a false failure', () => {
@@ -59,4 +60,47 @@ test('pending verification explains nested errors without exposing an object dum
   assert.equal(result.status, 'pending');
   assert.ok(result.text.includes('Exchange response unavailable'));
   assert.ok(!result.text.includes('[object Object]'));
+});
+
+
+test('spot entry price survives legacy receipts and JSON request arguments', () => {
+  const [row] = tradeReceiptRows({ status: 'submitted', results: [{ entry_price: 0.00001234, amount: 12, symbol: 'PEPE/USDT' }] },
+    { toolName: 'open_position_spot_dca', request: JSON.stringify({ orders: [{ action: 'BUY_LIMIT', entry_price: .00001234, amount: 12 }] }) });
+  assert.equal(row.price, .00001234);
+  assert.equal(row.priceFromRequest, false);
+  assert.equal(row.action, 'open');
+  assert.equal(row.side, 'BUY');
+});
+
+test('amendment keeps observed and requested prices separate', () => {
+  const [row] = tradeReceiptRows({ action: 'edit', status: 'pending', price: 2400, trigger_price: 2390 },
+    { request: { price: 2450, trigger_price: 2440, remaining_amount: .3 } });
+  assert.equal(row.price, 2400);
+  assert.equal(row.requestedPrice, 2450);
+  assert.equal(row.triggerPrice, 2390);
+  assert.equal(row.requestedTriggerPrice, 2440);
+  assert.equal(row.amountIsRemaining, true);
+  assert.equal(row.result, null);
+});
+
+test('cancel price is never substituted with a fill average or market quote', () => {
+  const [row] = tradeReceiptRows({ action: 'cancel', status: 'completed', average_price: 98, fill: { price: 98 } });
+  assert.equal(row.price, undefined);
+  assert.equal(row.priceFromRequest, false);
+});
+
+test('batched actions match request by original index, not display position', () => {
+  const rows = tradeReceiptRows({ results: [{ index: 1, action: 'edit', status: 'failed' }, { index: 0, action: 'open', status: 'submitted' }] },
+    { request: { actions: [{ action: 'open', price: 100 }, { action: 'edit', price: 200 }] } });
+  assert.deepEqual(rows.map(row => row.price), [200, 100]);
+  assert.equal(rows[0].priceFromRequest, true);
+});
+
+test('chat and decision tool requests match exact call id including function arguments', () => {
+  const tool = { role: 'tool', tool_call_id: 'second' };
+  const messages = [{ role: 'assistant', tool_calls: [{ id: 'first', args: { price: 100 } },
+    { id: 'second', function: { arguments: '{"price":200}' } }] }, tool];
+  assert.deepEqual(toolRequest(messages, tool), { price: 200 });
+  assert.deepEqual(toolRequest(messages, { role: 'tool' }), {});
+  assert.deepEqual(toolRequest(messages, { role: 'tool', arguments: '{broken' }), {});
 });

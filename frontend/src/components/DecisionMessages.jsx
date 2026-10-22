@@ -4,7 +4,7 @@ import ReasoningBlock from './ReasoningBlock';
 import { splitThinkingContent } from '../lib/thinking';
 import AuditDisclosure from './AuditDisclosure';
 import ToolResultContent from './ToolResultContent';
-import { isTradeReceipt, isTradingTool } from '../lib/toolReceipt';
+import { isTradeReceipt, isTradingTool, toolRequest } from '../lib/toolReceipt';
 
 const colors = { failed: 'error', unknown: 'warning', pending: 'warning', partial: 'warning', completed: 'success', submitted: 'processing', running: 'processing' };
 const labels = { failed: '失败', unknown: '待核验', pending: '待确认', partial: '部分返回', submitted: '已提交', completed: '已返回', not_executed: '未执行', skipped: '未执行', planned: '已规划', running: '执行中' };
@@ -33,8 +33,7 @@ export function ToolReceipt({ item, zh, request }) {
 export default function DecisionMessages({ messages, zh, active = false, phase, toolCalls = [], startedAt }) {
   return <div className="decision-message-list">{messages.map((entry, index) => {
     if (entry.role === 'tool') {
-      const call = messages.slice(0, index).flatMap(item => item.tool_calls || []).find(item => item.id === entry.tool_call_id);
-      return <ToolReceipt key={`${index}-${entry.tool_call_id}`} item={entry} zh={zh} request={call?.args} />;
+      return <ToolReceipt key={`${index}-${entry.tool_call_id}`} item={entry} zh={zh} request={toolRequest(messages, entry)} />;
     }
     const turn = messages.slice(0, index + 1).filter((item) => item.role === 'assistant').length;
     const text = splitThinkingContent(entry.content || '', entry.reasoning_content || '');

@@ -22,32 +22,72 @@ export function isTradeReceipt(content, toolName) {
     || Array.isArray(value.results) && value.results.some(row => tradeActions.has(row.action))));
 }
 
+function objectValue(value) {
+  const parsed = parseReceipt(value);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+}
+
+export function toolRequest(messages, message) {
+  if (message.args != null || message.arguments != null) return objectValue(message.args ?? message.arguments);
+  if (!message.tool_call_id) return {};
+  const index = messages.indexOf(message);
+  const call = messages.slice(0, index < 0 ? messages.length : index)
+    .flatMap(item => item.tool_calls || []).find(item => item.id === message.tool_call_id);
+  return objectValue(call?.args ?? call?.function?.arguments ?? call?.arguments);
+}
+
+function actionName(value, toolName = '') {
+  if (tradeActions.has(value)) return value;
+  if (/^(open_position_|BUY_LIMIT|SELL_LIMIT)/.test(value || toolName)) return 'open';
+  if (/^close_position_/.test(value || toolName)) return 'close';
+  if (/^cancel_orders_/.test(value || toolName)) return 'cancel';
+  if (/^update_(entry|exit)_order/.test(value || toolName)) return 'edit';
+  if (/^update_position_protection_/.test(value || toolName)) return 'protect';
+  return tradeActions.has(toolName) ? toolName : undefined;
+}
+
 export function tradeReceiptRows(content, { request = {}, fallbackStatus, toolName } = {}) {
   const root = parseReceipt(content);
   if (!root || typeof root !== 'object') return null;
   const rows = Array.isArray(root) ? root : Array.isArray(root.results) ? root.results : [root];
-  const envelope = request && typeof request === 'object' ? request : {};
-  const requests = envelope.actions || envelope.orders || [envelope];
+  const envelope = objectValue(request);
+  const requests = Array.isArray(envelope.actions) ? envelope.actions : Array.isArray(envelope.orders) ? envelope.orders : [envelope];
   return rows.map((value, index) => {
-    const row = value && typeof value === 'object' ? value : {};
-    const intent = requests[row.index ?? index] || {};
+    const row = objectValue(value);
+    const intent = objectValue(requests[row.index ?? index]);
     const detail = row.result && typeof row.result === 'object' ? row.result : row;
-    const args = intent.order || intent;
-    const action = row.action || root.action || intent.action || (tradeActions.has(toolName) ? toolName : undefined);
+    const args = objectValue(intent.order || intent);
+    const action = actionName(row.action || root.action || intent.action, toolName);
+    const editing = action === 'edit' || action?.startsWith('amend_');
     const status = row.status ?? detail.status ?? (rows.length === 1 ? root.status ?? fallbackStatus : undefined);
     const rejected = ['failed', 'rejected', 'not_executed', 'skipped', 'not_requested'].includes(status);
     const accepted = ['submitted', 'completed', 'success', 'open', 'closed', 'filled', 'canceled', 'cancelled', 'waiting_trigger'].includes(status)
       || detail.submission_state === 'submitted' || detail.submitted === true;
+    const price = detail.price ?? detail.entry_price ?? row.price ?? row.entry_price;
+    const triggerPrice = detail.trigger_price ?? row.trigger_price;
+    const requestedPrice = detail.requested_price ?? args.price ?? args.entry_price;
+    const requestedTriggerPrice = detail.requested_trigger_price ?? args.trigger_price;
     return {
       action,
       symbol: detail.symbol ?? row.symbol ?? intent.symbol ?? envelope.symbol,
-      side: detail.side ?? detail.pos_side ?? row.side ?? args.side ?? args.pos_side,
+      side: detail.side ?? detail.pos_side ?? row.side ?? args.side ?? args.pos_side ?? ({ BUY_LIMIT: 'BUY', SELL_LIMIT: 'SELL' }[args.action]),
       amount: detail.quantity_mode === 'all' || args.close_all === true ? 'all'
-        : action === 'edit' || action?.startsWith('amend_')
+        : editing
           ? detail.requested_remaining_amount ?? args.remaining_amount ?? detail.requested_amount ?? detail.amount ?? args.amount
           : detail.requested_amount ?? detail.amount ?? row.amount ?? args.amount,
-      price: detail.price ?? row.price ?? args.price ?? args.entry_price,
-      triggerPrice: detail.trigger_price ?? args.trigger_price,
+      amountIsRemaining: editing && (detail.requested_remaining_amount != null || args.remaining_amount != null),
+      price: price ?? requestedPrice,
+      triggerPrice: triggerPrice ?? requestedTriggerPrice,
+      priceFromRequest: price == null && requestedPrice != null,
+      triggerFromRequest: triggerPrice == null && requestedTriggerPrice != null,
+      requestedPrice: editing && price != null && requestedPrice != null && Number(price) !== Number(requestedPrice) ? requestedPrice : undefined,
+      requestedTriggerPrice: editing && triggerPrice != null && requestedTriggerPrice != null && Number(triggerPrice) !== Number(requestedTriggerPrice) ? requestedTriggerPrice : undefined,
+      stopLoss: detail.stop_loss ?? args.stop_loss,
+      takeProfit: detail.take_profit ?? args.take_profit,
+      stopLimitPrice: detail.stop_limit_price ?? args.stop_limit_price,
+      takeProfitLimitPrice: detail.take_profit_limit_price ?? args.take_profit_limit_price,
+      orderType: detail.order_type ?? detail.exit_type ?? args.order_type,
+      status,
       result: rejected ? 'failed' : accepted ? 'success' : null,
     };
   });

@@ -174,6 +174,15 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
                             'next_retry_at': None if is_converged_terminal else record.get('next_retry_at'),
                             'attempt_count': record.get('attempt_count', 0)})
     if record:
+        # Carry the target order's prices even when there is no base receipt
+        # (for example a cancellation or an exception after submission).
+        for key in ('price', 'trigger_price'):
+            if record.get(key) is not None:
+                result.setdefault(key, record[key])
+        if current_amendment:
+            for source, target in (('price', 'requested_price'), ('trigger_price', 'requested_trigger_price')):
+                if amendment.get(source) is not None:
+                    result[target] = amendment[source]
         result.update(id=record.get('id'), client_id=record.get('client_id'), order_id=order_reference(record),
                       order_status=observed_order_status(record), order_type=canonical_order_type(record),
                       quantity_mode=record.get('quantity_mode', 'fixed'), side=plan.get('side'),
