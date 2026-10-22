@@ -116,6 +116,59 @@ def test_foreign_spot_orders_are_not_presented_as_task_actions(portfolio):
     assert '另有 2 笔其他/未归属挂单' in result.messages[0].content
 
 
+def test_qualified_spot_orders_remain_visible_with_cancellable_ids(portfolio):
+    cfg, market, state = portfolio
+    original = market.get_account_status.side_effect
+
+    def qualified_account(symbol, **kwargs):
+        account = original(symbol, **kwargs)
+        for row in account['real_open_orders']:
+            native_id = row.pop('id')
+            row.update(order_id='regular:' + native_id, exchange_order_id=native_id,
+                       exchange_channel='regular')
+        account['real_open_orders'].append({
+            'order_id': 'regular:manual-order', 'exchange_order_id': 'manual-order',
+            'exchange_channel': 'regular', 'symbol': symbol, 'side': 'buy',
+            'amount': 1, 'price': 100,
+        })
+        return account
+
+    market.get_account_status.side_effect = qualified_account
+    result = graph.start_node(state, {'configurable': {'config_id': 'portfolio', 'agent_config': cfg}})
+
+    assert len(result.account_context['real_open_orders']) == 2
+    assert len(result.account_context['external_open_orders']) == 2
+    prompt = result.messages[0].content
+    for asset in cfg['symbols']:
+        assert f"ID:'regular:{asset[:3]}-order'" in prompt
+    assert 'manual-order' not in prompt
+    assert '另有 2 笔其他/未归属挂单' in prompt
+
+
+def test_spot_order_matching_keeps_symbol_task_and_channel_boundaries(portfolio):
+    from backend.utils.spot_context import scope_spot_accounts
+
+    rows = [
+        {'order_id': 'regular:BTC-order'},
+        {'id': 'BTC-order'},
+        {'order_id': 'algo:BTC-order', 'exchange_order_id': 'BTC-order'},
+        {'order_id': 'BTC-order', 'exchange_channel': 'algo'},
+        {'order_id': 'regular:ETH-order'},
+        {'order_id': 'regular:manual-order'},
+    ]
+    account = {'real_open_orders': rows, 'orders_complete': True}
+    scoped = scope_spot_accounts('portfolio', {'BTC/USDT': account})['BTC/USDT']
+    assert [r.get('order_id') or r['id'] for r in scoped['real_open_orders']] == [
+        'regular:BTC-order', 'BTC-order']
+    assert len(scoped['external_open_orders']) == 4
+    assert scoped['orders_complete'] is True
+    assert account['real_open_orders'] == rows
+    assert all('symbol' not in row for row in rows)
+    other = scope_spot_accounts('another-task', {'BTC/USDT': account})['BTC/USDT']
+    assert other['real_open_orders'] == []
+    assert len(other['external_open_orders']) == len(rows)
+
+
 def test_single_spot_task_also_rejects_stale_data(portfolio):
     cfg, market, state = portfolio
     cfg['symbols'] = ['BTC/USDT']

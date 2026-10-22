@@ -355,6 +355,55 @@ def test_visible_spot_historical_fees_and_external_fills_remain_separate():
     assert inventory['managed_quantity'] == pytest.approx(11.99)
 
 
+def test_owned_spot_snapshot_reference_can_cancel_exact_native_order(monkeypatch):
+    from test_mcp_spot_exits import FakeSpotExchange
+    from backend.mcp import spot_orders
+    from backend.utils.spot_context import scope_spot_accounts
+    from backend.utils.spot_management import execute_spot_action
+    from backend.utils.trade_operations import financial_ack_only
+
+    venue = FakeSpotExchange()
+    mt = _spot_tool(venue)
+    venue.orders['pending-buy'] = {
+        'id': 'pending-buy', 'symbol': 'BTC/USDT', 'side': 'buy', 'type': 'limit',
+        'amount': 1, 'filled': .25, 'remaining': .75, 'price': 100, 'status': 'open',
+    }
+    database.save_order_log('pending-buy', 'BTC/USDT', 'test', 'buy', 100, 0, 0,
+                            'owned entry', trade_mode='SPOT_DCA', config_id='owner', amount=1)
+    snapshot = {'real_open_orders': [{
+        **venue.orders['pending-buy'], 'order_id': 'regular:pending-buy',
+        'exchange_order_id': 'pending-buy', 'exchange_channel': 'regular',
+    }]}
+    scoped = scope_spot_accounts('owner', {'BTC/USDT': snapshot})['BTC/USDT']
+    assert len(scoped['real_open_orders']) == 1
+    assert scoped['external_open_orders'] == []
+    assert venue.writes == []
+
+    original_cancel = venue.cancel_order
+
+    def cancel_with_ack(identity, symbol):
+        original_cancel(identity, symbol)
+        return deepcopy(venue.orders[identity])
+
+    venue.cancel_order = cancel_with_ack
+    monkeypatch.setattr(spot_orders, '_tool', lambda *a: (mt, venue.market('BTC/USDT')))
+    token = financial_ack_only.set(True)
+    try:
+        result = execute_spot_action('owner', 'BTC/USDT', {
+            'action': 'cancel', 'order_id': scoped['real_open_orders'][0]['order_id'],
+            'reason': 'cancel the displayed task order',
+        }, 'cancel-displayed-spot-order')
+    finally:
+        financial_ack_only.reset(token)
+
+    assert result['status'] == 'completed'
+    assert result['order_id'] == 'regular:pending-buy'
+    assert result['filled_amount'] == .25
+    assert venue.writes == [('cancel', 'pending-buy')]
+    assert venue.orders['pending-buy']['status'] == 'canceled'
+    assert venue.orders['buy-1']['status'] == 'closed'
+
+
 def test_regular_spot_cancel_keeps_inventory_reserved_until_fills_are_verified(monkeypatch):
     from test_mcp_spot_exits import FakeSpotExchange
     from backend.mcp import spot_orders

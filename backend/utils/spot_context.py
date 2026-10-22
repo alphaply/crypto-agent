@@ -1,6 +1,7 @@
 """Explicit task ownership for the spot account snapshot shown to the agent."""
 
 from backend import database
+from backend.utils.exit_orders import parse_order_reference
 
 
 def scope_spot_accounts(config_id: str, accounts: dict[str, dict]) -> dict[str, dict]:
@@ -13,8 +14,12 @@ def scope_spot_accounts(config_id: str, accounts: dict[str, dict]) -> dict[str, 
         own_orders, external_orders = [], []
         for order in account.get('real_open_orders') or []:
             item = {**order, 'symbol': order.get('symbol') or symbol}
-            key = (item['symbol'], str(item.get('order_id') or item.get('id') or ''))
-            (own_orders if key in owned else external_orders).append(item)
+            channel, native_id = parse_order_reference(item.get('order_id') or item.get('id') or '')
+            channel = channel or item.get('exchange_channel') or 'regular'
+            # Creation records store native IDs; snapshots carry regular:<id>.
+            # Match only regular spot orders and keep the full reference for cancellation.
+            key = (item['symbol'], native_id)
+            (own_orders if channel == 'regular' and key in owned else external_orders).append(item)
         scoped[symbol] = {**account, 'real_open_orders': own_orders,
                           'external_open_orders': external_orders}
     return scoped
