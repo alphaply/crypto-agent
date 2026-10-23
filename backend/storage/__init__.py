@@ -153,9 +153,10 @@ def get_connection(*, timeout: float = 30):
         # Session settings survive explicit commits; reset them before reuse.
         conn.autocommit = True
         milliseconds = str(max(1, int(remaining * 1000)))
-        conn.execute("SELECT set_config('lock_timeout', %s, false)", (milliseconds,))
-        conn.execute("SELECT set_config('statement_timeout', %s, false)", (milliseconds,))
-        _capacity_settings(conn)
+        conn.execute("SELECT set_config('lock_timeout', %s, false), "
+                     "set_config('statement_timeout', %s, false), "
+                     "set_config('crypto.capacity_enabled', 'false', false)",
+                     (milliseconds, milliseconds))
         conn.autocommit = False
         yield conn
     finally:
@@ -163,8 +164,9 @@ def get_connection(*, timeout: float = 30):
             try:
                 conn.rollback()
                 conn.autocommit = True
-                conn.execute('RESET lock_timeout')
-                conn.execute('RESET statement_timeout')
+                # NULL has RESET semantics, including role/database defaults.
+                conn.execute("SELECT set_config('lock_timeout', NULL, false), "
+                             "set_config('statement_timeout', NULL, false)")
                 conn.autocommit = False
             except psycopg.Error:
                 conn.close()

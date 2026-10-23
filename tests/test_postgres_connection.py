@@ -97,7 +97,9 @@ def test_standalone_configuration_failure_closes_connection(monkeypatch):
     connection = Mock()
     monkeypatch.setattr(storage.psycopg, 'connect', lambda *args, **kwargs: connection)
     monkeypatch.setenv('DATABASE_URL', 'postgresql://localhost/test')
-    monkeypatch.setenv('RUNTIME_CAPACITY_ENABLED', 'invalid')
+    def invalid_settings(_connection):
+        raise storage.StorageConfigurationError('Invalid connection settings')
+    monkeypatch.setattr(storage, '_capacity_settings', invalid_settings)
     with pytest.raises(storage.StorageConfigurationError):
         storage.connect()
     connection.close.assert_called_once()
