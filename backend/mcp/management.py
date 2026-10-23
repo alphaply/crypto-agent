@@ -13,6 +13,7 @@ from backend.utils.spot_config_guard import serialized_spot_execution
 from .settings import MCPSettings, MCPProfile, SCOPES, profiles, save_profile, settings
 from .connection import ChatGPTClientRequest, check_connection, connection_details, register_chatgpt_client
 from . import paper
+from .paper_positions import PositionAdjustment
 from typing import Literal
 
 def prevent_caching(response: Response):
@@ -172,6 +173,13 @@ def paper_dashboard(namespace: str | None = None, user_id: str | None = None, li
                             'reserved_cash': sum(a.get('reserved_cash', 0) for a in accounts['items']),
                             'used_margin': sum(a.get('used_margin', 0) for a in accounts['items']),
                             'available_cash': sum(a['available_cash'] for a in accounts['items']),
+                            'realized_pnl': sum(a['realized_pnl'] for a in accounts['items']),
+                            'fees': sum(a['fees'] for a in accounts['items']),
+                            'interest_paid': sum(a['interest_paid'] for a in accounts['items']),
+                            'unrealized_pnl': sum(a['unrealized_pnl'] for a in accounts['items']) if complete_equity else None,
+                            'performance_pnl': sum(a['performance_pnl'] for a in accounts['items']) if complete_equity and all(a['performance_pnl'] is not None for a in accounts['items']) else None,
+                            'enabled_accounts': sum(a['enabled'] for a in accounts['items']),
+                            'bankrupt_accounts': sum(a['account_status'] == 'bankrupt' for a in accounts['items']),
                             'net_equity': sum(a['net_equity'] for a in accounts['items']) if complete_equity else None,
                             'valuation_status': 'complete' if complete_equity else 'incomplete',
                             'open_orders': sum(o['state'] == 'open' for o in orders['orders']),
@@ -241,3 +249,13 @@ def revoke_grant(grant_id: str):
     store.put('revoked_grant', grant_id, {'revoked_at': time.time()})
     store.audit('admin', 'oauth_revoke', 'completed', result={'grant_id': grant_id})
     return {'success': True}
+
+
+@router.post('/paper/accounts/{namespace}/{user_id}/positions/{position_id}')
+def adjust_paper_position_admin(namespace: str, user_id: str, position_id: str, payload: PositionAdjustment):
+    from .paper_positions import manage
+    caller = {'id': 'admin', 'key_type': 'paper', 'paper_namespace': namespace, 'scopes': ['read', 'trade']}
+    try:
+        return {'success': True, **manage(caller, user_id, position_id, **payload.model_dump(exclude_none=True))}
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(400, str(exc)) from exc

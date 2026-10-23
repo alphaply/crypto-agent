@@ -34,7 +34,7 @@ def tool_catalog():
     from .paper_advanced_tools import PAPER_ADVANCED_CATALOG
     from .canonical_tools import CORE_NAMES, PAPER_NAMES
     legacy = {item['name']: item for item in [*TOOL_CATALOG, *PAPER_TOOL_CATALOG, *PAPER_ADVANCED_CATALOG]}
-    return [dict(legacy.get(name, {'name': name, 'scope': 'trade' if name == 'configure_paper_account' else 'read',
+    return [dict(legacy.get(name, {'name': name, 'scope': 'trade' if name in {'configure_paper_account', 'paper_transfer', 'adjust_paper_position'} else 'read',
                                   'description': 'Canonical scoped trading capability'}))
             for name in (*CORE_NAMES, *PAPER_NAMES)]
 
@@ -44,7 +44,7 @@ def build_server(public_url):
     origin = urlparse(public_url)
     server = FastMCP(
         'Crypto Agent', stateless_http=True, json_response=True, streamable_http_path='/mcp',
-        instructions='Start with get_trading_context for authorized profiles or paper rules and your bot identity. Search unfamiliar symbols with search_symbols; preserve returned symbol and exchange. Read only required get_account_state facets or get_trade_records. Use execute_trade_actions contract_version=3 for one or up to 20 typed ordered actions; execution follows current mode capabilities, permissions and management ownership. Visible manual resources can be managed within authorized scope without a preliminary adopt call; queries never claim. Submitted orders are not fills. Reuse operation_id only for identical intent. Financial calls return factual acknowledgement promptly; the system verifies original identities in the background without a second operation-query tool or resuming a skipped tail. Paper uses real public production prices and simulates only balances/orders/execution; trusted user_id is the sender or your returned bot identity. Paper bank, account settings and ranking have separate tools; notification polling belongs to the bot HTTP integration. Legacy cached names remain authorized compatibility calls.',
+        instructions='Start with get_trading_context for authorized profiles or paper rules and your bot identity. Search unfamiliar symbols with search_symbols; preserve returned symbol and exchange. Read only required get_account_state facets or get_trade_records. Use execute_trade_actions contract_version=3 for one or up to 20 typed ordered actions; execution follows current mode capabilities, permissions and management ownership. Visible manual resources can be managed within authorized scope without a preliminary adopt call; queries never claim. Submitted orders are not fills. Reuse operation_id only for identical intent. Financial calls return factual acknowledgement promptly; the system verifies original identities in the background without a second operation-query tool or resuming a skipped tail. Paper uses real public production prices and simulates only balances/orders/execution; trusted user_id is the sender or your returned bot identity. Paper bank, account settings, transfers, existing isolated-position leverage/margin adjustments and ranking have separate tools; notification polling belongs to the bot HTTP integration. Legacy cached names remain authorized compatibility calls.',
         token_verifier=provider,
         auth=AuthSettings(issuer_url=AnyHttpUrl(public_url + '/oauth'),
                           resource_server_url=AnyHttpUrl(public_url + '/mcp'),

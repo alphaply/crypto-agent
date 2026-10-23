@@ -245,3 +245,38 @@ Paper 交易入口、兼容入口和后台订单成交 SHALL 在提交金融变�
 #### Scenario: Reset races with matching
 - **WHEN** 同一账户的下海重置与后台撮合并发
 - **THEN** 账户周期与状态按同一金融提交边界串行核验，重置成功后不出现旧订单对新周期的成交
+
+
+### Requirement: Existing isolated positions support leverage and margin adjustment
+系统 SHALL 允许通过 Paper 专用 MCP 工具及管理员后台调整已有可信 Binance 永续逐仓仓位。仓位 SHALL 使用当前 resource_id 定位，并在提交时重验账户周期、来源、持仓和资金；不能用旧资源身份修改同标的新开仓。操作 SHALL 原子记录账户、保证金、事件和幂等回执，要求 read 与 trade 权限并遵守破产冻结、停用及部署暂停限制；现货及 live 模式不开放此能力。
+
+#### Scenario: Leverage changes without trading the position
+- **WHEN** 用户为已有仓位提交有效新杠杆
+- **THEN** 保持数量及开仓价不变，将基础保证金重新计算为开仓价乘数量再除以新杠杆，多退少补至账户现金；手动追加保证金保留，不产生交易手续费或已实现盈亏，不改变账户默认杠杆
+
+#### Scenario: Margin is added or reduced
+- **WHEN** 用户为已有逐仓仓位追加或减少指定正数 USDT 保证金
+- **THEN** 现金和保证金按同额相反方向变化，追加只能使用扣除全部挂单占用后的现金；减少后不能低于基础保证金，且按新鲜同场所报价验证不会立即强平；余额不足、超精度或危险减少均明确拒绝且不修改仓位
+
+#### Scenario: Conflicting pending entry leverage is retained
+- **WHEN** 调杠杆时同标的同方向存在与新杠杆冲突的未成交入场单
+- **THEN** 明确提示先处理相关挂单并拒绝本次调整，不自动更改或撤销原订单，不释放其预留
+
+#### Scenario: Position additions and partial closes preserve manual margin
+- **WHEN** 已追加保证金的仓位继续按同杠杆增仓或部分平仓
+- **THEN** 增仓保留已有手动追加金额；部分平仓按剩余数量比例保留手动追加保证金和总保证金，之后改杠杆仍能正确区分基础及追加部分
+
+#### Scenario: An adjustment is retried or the position cycle ends
+- **WHEN** 同一操作重试，或读取报价期间旧仓位已平仓并重新开仓
+- **THEN** 已成功操作返回原始回执且不重复调钱；旧资源或旧账户周期的新提交明确拒绝，不修改新仓位
+
+### Requirement: Background matching retains pending orders on expired quotes
+执行和后台撮合 SHALL 只获取需要的 ticker 与买卖报价，不等待分析或情绪数据。后台报价过期 SHALL 阻止使用该报价成交、估值和强平；已接受订单的原状态、OCO 与预留 SHALL 保留，下一轮取得新报价后继续检查。用户新提交请求的过期报价失败规则以及资金不足等非报价错误规则 SHALL 保持原有处理。普通限价仍按实际 bid/ask 判断，保护单按实时采样 last 判断，不用历史 K 线假定补成交。
+
+#### Scenario: Analysis data is slow
+- **WHEN** 指标或情绪服务耗时超过报价有效期
+- **THEN** 专用成交报价不请求这些数据，限价单和止盈止损不会因其延迟失去有效报价
+
+#### Scenario: Quote expires while loading a locked account
+- **WHEN** 后台报价在等待账户锁、加载账本或结息期间超过有效期
+- **THEN** 在估值及强平前拒绝旧报价；已有订单和资金占用不变，新报价到来后继续撮合

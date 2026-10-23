@@ -14,7 +14,7 @@ from backend.utils.spot_config_guard import serialized_spot_execution
 
 CORE_NAMES = ('get_trading_context', 'search_symbols', 'get_market', 'get_news',
               'get_account_state', 'get_trade_records', 'execute_trade_actions')
-PAPER_NAMES = ('paper_bank', 'configure_paper_account', 'get_paper_leaderboard', 'paper_transfer')
+PAPER_NAMES = ('paper_bank', 'configure_paper_account', 'get_paper_leaderboard', 'paper_transfer', 'adjust_paper_position')
 
 # Private exchange/raw metadata and repeated account snapshots are opt-in;
 # current order evidence, quantities, fees and management facts remain visible.
@@ -31,6 +31,8 @@ _RECORD_FIELDS = {
     'fee', 'fees', 'realized_pnl', 'pnl', 'margin', 'leverage', 'margin_amount',
     'close_all', 'reduceOnly', 'hedged', 'oco_group', 'cycle_id', 'contract_version',
     'reserved_cash', 'reserved_spot', 'reservation_change', 'cash_after', 'debt_after',
+    'currency', 'available_cash', 'interest_reserve', 'resource_id', 'position_id',
+    'leverage_before', 'leverage_after', 'margin_before', 'margin_after', 'added_margin', 'cash_change',
     'source', 'sources', 'agent_name', 'config_id', 'trade_mode', 'event_type',
     'management', 'managed', 'modifiable', 'supported_actions',
     'exchange_channel', 'identity_status', 'pending', 'missing_sources', 'error',
@@ -113,7 +115,7 @@ def catalog_names(caller):
         paper.require(caller)
         names.append('get_paper_leaderboard')
         if 'trade' in scopes:
-            names.extend(('execute_trade_actions', 'paper_bank', 'configure_paper_account', 'paper_transfer'))
+            names.extend(('execute_trade_actions', 'paper_bank', 'configure_paper_account', 'paper_transfer', 'adjust_paper_position'))
     elif scopes & {'trade', 'cancel'} and service.list_profiles(caller):
         names.append('execute_trade_actions')
     return set(names)
@@ -135,6 +137,8 @@ def context(caller, user_id=None):
         return {'execution_mode': 'paper', 'namespace': namespace, 'settings': config,
                 'account_rules': {'transfer_currency': 'USDT', 'bankrupt_can_receive': True,
                                   'bankrupt_can_send': False, 'interest_settlement': '00:00 Asia/Shanghai; simple on unpaid principal',
+                                  'interest_reserve': 'When placing or increasing entry orders, remind the user to leave unreserved USDT for the next midnight interest payment. Use balances.interest_reserve or the execution receipt estimate; do not change their requested size or enforce a reserve.',
+                                  'position_adjustment': 'Use adjust_paper_position with the current positions.resource_id. Quantity and entry price stay fixed. Leverage changes recompute entry notional / leverage, returning or adding base margin while preserving manually added margin. Add/reduce margin uses free cash; reduction cannot fall below base margin or immediately liquidate. Conflicting pending entry orders must be handled first. Account default leverage is separate and applies only to later entries.',
                                   'reset': 'Only a bankrupt human explicitly requesting 下海; never automatic or for the bot'},
                 'bot_user_id': config['bot_user_id'], 'contract_version': 3,
                 'capabilities': capabilities, 'allowed_actions': _permitted_actions(capabilities, caller),
@@ -178,7 +182,7 @@ def account_state(caller, profile_id=None, user_id=None, symbol=None, include=No
                       filter=view['filter'], completeness=view['completeness'],
                       valuation_status=view['valuation_status'], oldest_mark_at=view['oldest_mark_at'])
         if 'balances' in facets:
-            result['balances'] = {key: view[key] for key in ('cash', 'available_cash', 'reserved_cash', 'debt', 'equity', 'net_equity', 'used_margin')}
+            result['balances'] = {key: view[key] for key in ('cash', 'available_cash', 'reserved_cash', 'debt', 'equity', 'net_equity', 'used_margin', 'interest_reserve')}
         if 'positions' in facets:
             result.update(positions=[row for row in view['positions'] if not symbol or row['symbol'] == symbol],
                           spot=[row for row in view['spot'] if not symbol or row['symbol'] == symbol], oldest_mark_at=view['oldest_mark_at'])
@@ -369,7 +373,7 @@ def register(server):
                                     profile_id: str | None = None, user_id: str | None = None, symbol: str | None = None,
                                     execution_policy: Literal['stop_on_error', 'independent'] | None = None,
                                     include: list[Literal['account']] | None = None) -> dict:
-        """Execute 1–20 typed v3 actions in order. Return concise per-action success, failure reason or not-executed text, with structured evidence retained. A successful submission is not a fill. Necessary preflight checks remain; no post-submission polling or verification reads inside this call. Unknown submissions stop all remaining actions, including independent batches. The background verifies original identities without replaying writes or tails. v2 remains a compatibility input."""
+        """Execute 1–20 typed v3 actions in order. Return concise per-action success, failure reason or not-executed text, with structured evidence retained. A successful submission is not a fill. Necessary preflight checks remain; no post-submission polling or verification reads inside this call. Unknown submissions stop all remaining actions, including independent batches. The background verifies original identities without replaying writes or tails. v2 remains a compatibility input. For paper entries, relay interest_reserve reminders so the user leaves unreserved USDT for loan interest; estimates are advisory and do not change order sizing."""
         caller = service.principal()
         is_paper = _scope(caller, profile_id, user_id)
         request = {'contract_version': contract_version, 'actions': actions}
@@ -406,11 +410,20 @@ def register(server):
         from .paper_lifecycle import transfer
         return await invoke(transfer, user_id, recipient_user_id, amount, operation_id, write=True)
 
+    async def adjust_paper_position(user_id: str, position_id: Annotated[str, Field(min_length=1, max_length=160)],
+                                    operation_id: OperationId, action: Literal['set_leverage', 'add_margin', 'reduce_margin'],
+                                    leverage: Annotated[StrictInt, Field(ge=1, le=125)] | None = None,
+                                    amount: Annotated[StrictFloat, Field(gt=0, allow_inf_nan=False)] | None = None) -> dict:
+        """Adjust an existing isolated Paper position using its exact resource_id from get_account_state. set_leverage accepts leverage only; add_margin/reduce_margin accept USDT amount only. Preserve quantity and entry price. Recompute base margin on leverage change, preserving added margin. Reject insufficient free cash, unsafe reduction, or conflicting entry orders. Reuse operation_id for the same intent retry."""
+        from .paper_positions import manage
+        return await invoke(manage, user_id, position_id, operation_id, action=action,
+                            leverage=leverage, amount=amount, write=True)
+
     for function in (get_trading_context, search_symbols, get_market, get_account_state, get_trade_records,
-                     execute_trade_actions, configure_paper_account, paper_transfer):
+                     execute_trade_actions, configure_paper_account, paper_transfer, adjust_paper_position):
         if server._tool_manager.get_tool(function.__name__):
             server._tool_manager.remove_tool(function.__name__)
-        _register(server, function, scope='trade / cancel' if function.__name__ == 'execute_trade_actions' else 'trade' if function.__name__ in {'configure_paper_account', 'paper_transfer'} else 'read')
+        _register(server, function, scope='trade / cancel' if function.__name__ == 'execute_trade_actions' else 'trade' if function.__name__ in {'configure_paper_account', 'paper_transfer', 'adjust_paper_position'} else 'read')
     original_list = server.list_tools
     async def filtered_tools():
         caller = service.principal()

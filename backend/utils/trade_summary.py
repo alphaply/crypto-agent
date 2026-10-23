@@ -8,7 +8,7 @@ from backend.utils.trade_operations import _decode_receipt, tool_result_status
 _IDENTITIES = {'operation_id', 'parent_operation_id', 'execution_operation_id', 'index', 'action',
                'order_id', 'order_ids', 'accepted_order_ids', 'previous_order_id', 'parent_order_id', 'execution_order_id', 'exchange_order_id',
                'client_id', 'client_order_id', 'exit_id', 'oco_group', 'symbol', 'side', 'exchange_side', 'user_id', 'profile_id',
-               'resource_id', 'cycle_id', 'episode_id'}
+               'resource_id', 'position_id', 'cycle_id', 'episode_id'}
 _FACTS = {'contract_version', 'receipt_version', 'status', 'order_status', 'order_type', 'exchange_channel',
           'market_type', 'exchange', 'quantity_mode', 'amount', 'requested_amount', 'resolved_amount', 'filled_amount',
           'remaining_amount', 'requested_remaining_amount', 'requested_price', 'requested_trigger_price', 'closed_amount', 'execution_amount', 'price', 'trigger_price', 'average_price',
@@ -18,10 +18,12 @@ _FACTS = {'contract_version', 'receipt_version', 'status', 'order_status', 'orde
           'verified_at', 'observed_at', 'last_known_fill_at', 'last_known_filled_amount', 'pending',
           'stop_loss', 'take_profit', 'stop_limit_price', 'take_profit_limit_price', 'protection_state', 'persistence_pending', 'state', 'found',
           'cash_after', 'debt_after', 'borrowed', 'repaid', 'bank_action', 'debt', 'cash', 'margin', 'leverage',
+          'currency', 'available_cash', 'leverage_before', 'leverage_after', 'margin_before', 'margin_after',
+          'base_margin', 'added_margin', 'cash_change',
           'enabled', 'created', 'name', 'leaderboard_visible', 'notifications_enabled', 'markets',
           'replacement_status', 'previous_order_status', 'quantity_unit', 'filled_cost', 'avg_fill_price', 'filled_at',
           'adopted', 'protection_created', 'reset_count', 'account_epoch', 'account_status', 'interest_paid', 'sender_user_id', 'recipient_user_id',
-          'receipt_updated_at', 'projected_at', 'evidence_source', 'current_evidence_status'}
+          'receipt_updated_at', 'projected_at', 'evidence_source', 'current_evidence_status', 'interest_reserve'}
 _RETIRED = ('get_trade_operation', 'get_operation', 'get_paper_operation')
 
 
@@ -116,7 +118,8 @@ def _project(value):
             projected[key] = short
     for key, fields in {
         'execution': {'phase', 'submission_state', 'fill_status'},
-        'position': {'side', 'amount', 'status', 'observed_at', 'last_known_amount'},
+        'position': {'resource_id', 'position_id', 'symbol', 'exchange', 'market_type', 'side', 'amount',
+                     'entry_price', 'leverage', 'margin', 'base_margin', 'added_margin', 'status', 'observed_at', 'last_known_amount'},
         'query': {'status', 'source', 'observed_at', 'queried_at'},
         'management': {'state', 'owner', 'source', 'claim_id', 'claim_version', 'reason_code'},
         'admission': {'decision', 'allowed', 'reason_code', 'side', 'assessed_at'},
@@ -275,7 +278,45 @@ def render_trade_receipt(payload) -> str:
                 outcome = '撤旧成功；替代下单' + outcome
         if receipt.get('accepted_order_ids') and status in {'failed', 'unknown', 'pending'}:
             outcome += '；已受理保护单：' + ' / '.join(str(item) for item in receipt['accepted_order_ids'])
-        line = f"{index + 1}. {action}：{' '.join([target, *facts]).strip()}，{outcome}。"
+        if action in {'set_leverage', 'add_margin', 'reduce_margin'}:
+            label = {'set_leverage': '调整持仓杠杆', 'add_margin': '增加逐仓保证金',
+                     'reduce_margin': '减少逐仓保证金'}[action]
+            position_id = receipt.get('position_id') or receipt.get('resource_id')
+            position_target = ' '.join(str(item) for item in (receipt.get('symbol'), receipt.get('side')) if item)
+            if position_id:
+                position_target += (' ' if position_target else '') + '仓位 ' + str(position_id)
+            line = f"{index + 1}. {label}：{position_target}，{outcome}。"
+            currency = receipt.get('currency', '')
+            if receipt.get('leverage_before') is not None and receipt.get('leverage_after') is not None:
+                line += f" 杠杆 {receipt['leverage_before']}× → {receipt['leverage_after']}×。"
+            if receipt.get('margin_before') is not None and receipt.get('margin_after') is not None:
+                line += f" 逐仓保证金 {receipt['margin_before']} → {receipt['margin_after']} {currency}。"
+            if receipt.get('added_margin') is not None:
+                line += f" 额外保证金 {receipt['added_margin']} {currency}。"
+            cash_change = receipt.get('cash_change')
+            if cash_change is not None:
+                if isinstance(cash_change, (int, float)):
+                    direction = '增加' if cash_change > 0 else '减少' if cash_change < 0 else '变化'
+                    line += f" 账户现金{direction} {abs(cash_change)} {currency}。"
+                else:
+                    line += f" 账户现金变化 {cash_change} {currency}。"
+            if receipt.get('available_cash') is not None:
+                line += f" 调整后可用现金 {receipt['available_cash']} {currency}。"
+        elif action == 'transfer':
+            sender = receipt.get('sender_user_id')
+            recipient = receipt.get('recipient_user_id')
+            currency = receipt.get('currency', '')
+            line = (f"{index + 1}. 转账：付款账户 {sender} → 收款账户 {recipient}，"
+                    f"{receipt.get('amount')} {currency}，{outcome}。")
+            if receipt.get('available_cash') is not None:
+                line += f" 转后可用现金 {receipt['available_cash']} {currency}。"
+            if receipt.get('reserved_cash') is not None:
+                line += f" 挂单已占用 {receipt['reserved_cash']} {currency}，占用资金不能用于转账。"
+        else:
+            line = f"{index + 1}. {action}：{' '.join([target, *facts]).strip()}，{outcome}。"
+        reminder = receipt.get('interest_reserve')
+        if isinstance(reminder, dict) and reminder.get('message'):
+            line += ' ' + reminder['message']
         lines.append(line)
     if isinstance(value.get('account_summary'), dict):
         lines.append('账户摘要：' + json.dumps(_project(value)['account_summary'], ensure_ascii=False))

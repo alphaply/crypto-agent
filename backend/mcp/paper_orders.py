@@ -10,6 +10,10 @@ from . import paper, store
 from .paper_market import canonical
 
 
+class PaperQuoteExpired(ValueError):
+    """A temporary quote failure; existing orders retain their execution intent."""
+
+
 def exposure(account, kind, symbol, side=None, exchange_name=None, *, include_excluded=False):
     from .paper_policy import visible
     collection = account['spot' if kind == 'spot' else 'positions']
@@ -153,7 +157,7 @@ def existing_receipt(caller, user_id, operation_id, request):
 def get_quote(symbol, kind, exchange_name=None):
     from .paper_policy import venue
     selected = venue(exchange_name)
-    result = paper.market(symbol, kind, candles=False, exchange_name=selected)
+    result = paper.market(symbol, kind, candles=False, exchange_name=selected, include=['ticker'])
     venue(result['exchange'])
     return result
 
@@ -490,6 +494,14 @@ def match(conn, account, kind, symbol, quote, cfg):
             paper._event(conn, account, 'order_filled', {'order_id': order['order_id'], 'order_type': order['order_type'],
                                                        'automatic': True, **details}, order.get('operation_id'))
             conn.execute('RELEASE paper_match')
+        except PaperQuoteExpired:
+            conn.execute('ROLLBACK TO paper_match')
+            conn.execute('RELEASE paper_match')
+            account.clear()
+            account.update(original)
+            # Nothing was submitted to an exchange. Keep the original pending
+            # order and any OCO/reservations until maintenance gets a new quote.
+            return
         except ValueError as exc:
             conn.execute('ROLLBACK TO paper_match')
             conn.execute('RELEASE paper_match')

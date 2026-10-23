@@ -23,13 +23,13 @@ def test_paper_catalog_counts_scopes_and_hidden_compatibility(ledger, monkeypatc
     server = server_for(caller, monkeypatch)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
     assert names == set(canonical_tools.CORE_NAMES + canonical_tools.PAPER_NAMES)
-    assert len(names) == 11
+    assert len(names) == 12
     assert server._tool_manager.get_tool('paper_trade') is not None
     readonly = {**caller, 'scopes': ['read']}
     monkeypatch.setattr(service, 'principal', lambda: readonly)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
     assert len(names) == 7
-    assert not names & {'execute_trade_actions', 'paper_bank', 'configure_paper_account'}
+    assert not names & {'execute_trade_actions', 'paper_bank', 'configure_paper_account', 'adjust_paper_position'}
 
 
 def test_paper_catalog_does_not_publish_live_parameters(ledger, monkeypatch):

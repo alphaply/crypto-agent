@@ -222,7 +222,8 @@ def test_symbol_search_does_not_expand_other_venues_after_binance_failure(ledger
 
 def test_read_quote_has_no_other_venue_resolution(ledger, monkeypatch):
     calls = []
-    def quote(symbol, kind, timeframe, limit, exchange_name=None):
+    def quote(symbol, kind, timeframe, limit, exchange_name=None, include=None):
+        assert include is None
         calls.append(exchange_name)
         raise ValueError('Binance market source unavailable')
     monkeypatch.setattr(paper_market, 'quote', quote)

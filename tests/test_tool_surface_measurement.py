@@ -36,7 +36,7 @@ def test_schema_metrics_are_actual_advertised_contracts(ledger, monkeypatch):
     core_names = {'get_trading_context', 'search_symbols', 'get_market', 'get_news',
                   'get_account_state', 'get_trade_records', 'execute_trade_actions'}
     assert {tool['name'] for tool in public} == core_names | {
-        'paper_bank', 'configure_paper_account', 'get_paper_leaderboard'}
+        'paper_bank', 'configure_paper_account', 'get_paper_leaderboard', 'paper_transfer', 'adjust_paper_position'}
     result['MCP/paper'] = {'default_tools': len(public), 'default_bytes': size(public)}
     live = {'id': 'live:test', 'key_type': 'live', 'scopes': ['read', 'trade', 'cancel'], 'profile_ids': ['fixture']}
     monkeypatch.setattr(service, 'principal', lambda: live)

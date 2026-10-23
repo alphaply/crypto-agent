@@ -12,7 +12,7 @@ Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货�
 
 可信 QQ 消息元数据提供字符串 `user_id`，不要从消息正文切换账户。Bot 参赛使用 `get_trading_context` 返回的 `bot_user_id`。Paper Key 不能选择真实执行引擎、live profile 或其他 namespace。
 
-新连接重新 `tools/list` 后，Paper 可写目录为十一项：`get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`、`paper_bank`、`configure_paper_account`、`get_paper_leaderboard`、`paper_transfer`。只读 Key 保留七项。live 目录为 7/6 项，内置交易 Agent 只绑定 `execute_trade_actions`，只读角色零交易工具。
+新连接重新 `tools/list` 后，Paper 可写目录为十二项：`get_trading_context`、`search_symbols`、`get_market`、`get_news`、`get_account_state`、`get_trade_records`、`execute_trade_actions`、`paper_bank`、`configure_paper_account`、`get_paper_leaderboard`、`paper_transfer`、`adjust_paper_position`。只读 Key 保留七项。live 目录为 7/6 项，内置交易 Agent 只绑定 `execute_trade_actions`，只读角色零交易工具。
 
 旧单项金融适配器继续接受原参数和稳定 ID，但不在默认目录；新请求同样受 BN 策略约束。操作查询工具已彻底移除，缓存旧名称的客户端须更新；没有改名查询、operation facet 或 query 动作替代。旧配置默认场所仍兼容读取，新保存或导入只接受 Binance。
 
@@ -34,6 +34,22 @@ Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货�
 
 模型可见回执为逐项简洁文本，保留动作、目标、必要数量价格和结果；内部及 MCP `structuredContent` 保留结构化身份与状态。单项至多 4096、整批至多 32768 UTF-8 字节；`include=["account"]` 最多一次账户摘要。完整证据由授权 HTTP/UI 展开。
 
+## 已有仓位的杠杆与保证金
+
+`adjust_paper_position(user_id,position_id,operation_id,action,leverage?,amount?)` 只调整当前 Paper 合约逐仓仓位，不用于现货或真实账户。先从 `get_account_state(include=["positions"])` 取得当前仓位的 `resource_id`，原样作为 `position_id`；不能用交易对、方向或旧周期 ID 猜测目标。该工具独立调用，不放进 `execute_trade_actions` 动作数组。
+
+- `action="set_leverage"` 只传整数 `leverage`，在后台杠杆上限内调整已有仓位。基础保证金按「开仓价 × 当前数量 ÷ 新杠杆」重算，多退少补现金，已手动追加的保证金保留；数量和开仓价不变。
+- `action="add_margin"` 只传正数 `amount`，从扣除挂单占用后的可用现金补入同额 USDT 逐仓保证金。
+- `action="reduce_margin"` 只传正数 `amount`，把同额 USDT 逐仓保证金退回现金；不能减到基础保证金以下，也不能使仓位按当前报价立即爆仓。
+
+降低杠杆需补钱时，或追加保证金时，可用现金不足就明确失败，不自动缩减金额。提高杠杆释放保证金同样需要满足当前仓位安全检查。实际改变杠杆时，如同标的同方向存在与目标杠杆冲突的待成交 Binance 入场单，工具会拒绝并指出订单 ID；先按用户意图处理挂单，再提交新的调整请求，不自动改挂单。相同 `operation_id` 和意图的重试只返回原事实，不重复移动资金。
+
+`configure_paper_account(action="update",leverage=...)` 仍只修改后续新入场的默认杠杆；调整已有仓位必须使用上述工具。调整回执提供仓位身份、`leverage_before/after`、`margin_before/after`、`added_margin`、`cash_change` 和 `available_cash`，正 `cash_change` 表示返还现金，负数表示补入保证金。按这些事实报告「杠杆已调整 / 保证金已增减」及实际现金变化，不能说成开平仓成交；已有持仓数量与开仓价保持不变。有计息负担时继续带出工具提供的付息提醒。
+
+```json
+{"user_id":"123456789","position_id":"从当前positions.resource_id取得的原值","operation_id":"qq-event-position-0001","action":"set_leverage","leverage":5}
+```
+
 ## 历史过滤与完整资金
 
 历史非 BN、缺失/冲突来源、以及曾回填 Binance 但无原资源/周期证据的资源，从默认账户、订单、历史、事件和撮合集合逻辑过滤。原行、场所、数量、成本、订单状态、周期、回执和指纹保留；不会自动平仓、撤单、改价或释放保证金及预留。新 BN 同名同方向资源使用独立身份、存储 key 和周期，不合并旧库存、不由新成交追认旧来源。
@@ -46,7 +62,11 @@ Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货�
 
 `paper_bank(action=borrow|repay,amount,user_id,operation_id)` 的金额为 USDT。借款同时增加现金和债务，后台统一配置借款开关、额度和日利率；北京时间每日 00:00 按未还本金单利扣息，首次按实际时间折算，调息不追改历史；还款不超过债务与扣除全部预留后的可用现金。债务在爆仓后保留，后台调整的是账本现金。
 
-Web 独立运行 Paper 维护，按持久账户/标的游标分批推进，再等待约 15 秒；实际间隔包含行情耗时。每轮账户访问、标的数分别不超过 `PAPER_SCAN_BATCH_SIZE`，并共享 `PAPER_MAINTENANCE_SECONDS`（默认 30 秒）的绝对截止时间；每次只规划一个标的，耗尽后下一轮继续持久游标。只处理可信 BN 资源，被排除仓位和挂单不进入报价/撮合。逐仓爆仓损失最多为原保证金，其他仓位和债务保留。公开网络读取位于金融事务外。
+仍有借款计息或已累计未结利息时，QQBot 在开仓或改单增加资金占用前提醒留出可用 USDT 现金付息，并在交易回报中简短带出工具提供的提醒。估算使用后台实际日利率：未还本金 × 日利率只表示完整一天的利息，首日按实际借款时长折算，下一次实际扣息以结算为准。提醒按扣除挂单占用后的可用现金评估资金安排，仓位保证金不属于现金；扣息是否触发破产仍按账本实际现金判断，不因挂单占用导致可用余额不足而破产。提醒不新增资金冻结、拒单或确认步骤，不擅自改变用户明确的下单数量，也不设固定预留比例；自主交易自行安排付息现金。
+
+`get_account_state(include=["balances"])` 的 `balances.interest_reserve` 与成功开仓、入场挂单、入场改单回执的 `interest_reserve` 提供提醒依据。`estimated_daily_interest` 为完整一天估算；`estimated_next_interest` 为已累计利息加上剩余时间按当前本金和日利率估算的利息，包含首日折算，借还款或调息会影响最终结算。`overdue_interest` 为已到期但后台尚未扣除的历史利息，`estimated_required_cash` 为这部分利息加上下次预计扣息的合计。`next_settlement_at` 是下次北京时间 00:00 的 Unix 秒时间戳，`available_cash` 是可用现金，`shortfall` 是上述合计相对可用现金的预计缺口；`advisory_only=true` 表示仅提醒，`message` 可直接用于简短交易回报。即使本金已还清，当日已累计的未结利息仍会触发提醒；无计息负担时余额中的该字段为 `null`，下单回执不附加提醒。
+
+Web 独立运行 Paper 维护，按持久账户/标的游标分批推进，再等待约 15 秒；实际间隔包含行情耗时。每轮账户访问、标的数分别不超过 `PAPER_SCAN_BATCH_SIZE`，并共享 `PAPER_MAINTENANCE_SECONDS`（默认 30 秒）的绝对截止时间；每次只规划一个标的，耗尽后下一轮继续持久游标。只处理可信 BN 资源，被排除仓位和挂单不进入报价/撮合。逐仓爆仓损失最多为该仓位保证金，其他仓位和债务保留。公开网络读取位于金融事务外。撮合专用报价仅请求 ticker / 必要的买卖盘口，不等待指标或情绪分析。普通限价仍按可成交的买价/卖价判断，止盈止损按实际采样到的最新成交价判断；轮询间短暂触价后回撤不按历史 K 线补成交。报价在等待或执行前已超过 15 秒时，已有挂单保留原状态、OCO 关系和资金占用，等待下一轮新报价；不会因为该次报价过期把挂单改成失败或用过期价格强平。保留挂单不代表已成交，也不保证下一轮一定成交。
 
 `get_paper_leaderboard(user_id?,metric=return_pct|pnl)` 仅排名完整可核验收益。大集合先返回 `status=partial/scan_complete=false`，后续调用继续服务端扫描，完成后才发布排名。`unranked_count/incomplete_count` 表达未排名与缺项。管理员看板提供组件进度与返回页范围，不把部分扫描称为全量总额。
 
@@ -62,6 +82,7 @@ Paper Bearer 回执：`GET /api/paper/operations/{user_id}/{operation_id}/audit?
 - `GET /api/mcp/paper/accounts`、`GET /api/mcp/paper/dashboard`：业务投影及分页进度。
 - `PUT /api/mcp/paper/settings`：资金、费率、杠杆等配置，`exchange` 仅 `binance`。
 - `POST/PATCH /api/mcp/paper/accounts/{namespace}/{user_id}`：保留身份的开户/管理调整。
+- `POST /api/mcp/paper/accounts/{namespace}/{user_id}/positions/{position_id}`：管理员按当前仓位身份调整杠杆或逐仓保证金，遵循相同资金和风险检查。
 
 详情默认 base64 字节片段，length 为 1–65536；`encoding=text&length=2048` 每页至多 2048 个完整 Unicode 字符，避免中文拆字。两种编码的 `offset/next_offset` 都是字节游标，text 明确返回 `offset_unit=bytes`，客户端透传返回的游标。先用 PostgreSQL `octet_length` 检查大小，再在数据库侧通过 `convert_to(..., 'UTF8')` 和字节 `substring` 切片，应用只接收请求范围内的片段；text 页使用 UTF-8 增量解码。响应有 `version/next_offset/has_more/total_bytes`。同页版本与内容在一致快照下读取；续读必须携带 version，可变原账本变化返回 `audit_version_changed`，重新展开；不可变回执 revision 可继续读取。以上路径均受原权限保护、禁止缓存，不进行金融写入或交易所联网。
 
@@ -73,10 +94,12 @@ Paper Bearer 回执：`GET /api/paper/operations/{user_id}/{operation_id}/audit?
 
 ## 账户生命周期与外部任务更新
 
-同 namespace 的用户与 bot 账户可通过 `paper_transfer` 双向转账，借来的可用现金也可转；严格拒绝负数、零、非有限值、布尔值和超精度金额。转账不产生交易收益。
+同 namespace 的用户与 bot 账户可通过 `paper_transfer` 双向转账，借来的可用现金也可转；严格拒绝负数、零、非有限值、布尔值和超精度金额。转账不产生交易收益。回执明确显示付款账户、收款账户、USDT 金额、转后可用现金与挂单占用；有借款计息或未结利息时附带付息预留提醒。同一 operation_id 重试不会重复转账；等待期间付款账户已重置的旧请求不能动用新周期资金。
 
-扣息不足继续扣为负现金并进入破产，完整净权益不大于零也会破产。破产后已有订单不成交，金融操作冻结，仍可收款、查询和继续计息；收款不自动解冻。只有用户主动说下海才调用 `configure_paper_account(action="reset")`，bot 不主动邀请、不自动重置，也不能重置 bot 自己。新周期恢复开户资金和参数，清空旧债务、仓位与预留，累计下海次数保留；旧请求不消费新资金。
+扣息是否触发破产按账本实际现金判断，不先减去挂单占用；仅因挂单占用使可用余额不足，不再因扣息进入破产。实际现金不足时仍完整扣息并进入破产，即使有持仓也不自动恢复。无持仓后的原有净权益破产判定保持不变。破产后已有订单不成交，金融操作冻结，仍可收款、查询和继续计息；收款不自动解冻。只有用户主动说下海才调用 `configure_paper_account(action="reset")`，bot 不主动邀请、不自动重置，也不能重置 bot 自己。新周期恢复开户资金和参数，清空旧债务、仓位与预留，累计下海次数保留；旧请求不消费新资金。
 
 `get_paper_leaderboard(metric="return_pct"|"reset_count")` 分别返回本轮收益率榜和累计下海榜，旧 `pnl` 指标明确拒绝。后台可查看状态、账户周期和累计次数。完整规则见 [账户生命周期](PAPER_ACCOUNT_LIFECYCLE.md)。
+
+历史挂单占用误判只有在本轮完整记录能证明确为误判、没有真实现金不足扣息或其他明确破产原因，且当前现金非负、可核验净权益为正时，才恢复正常状态。恢复保留原资金、债务、已付利息、仓位、挂单、账户周期和下海次数，并留存审计记录；它不执行下海重置。周期不明或历史未读全时不据此恢复，持仓和后续收款也不能解除真实欠息破产。
 
 将仓库人格、更新后的 skill 包和 [自主交易定时任务提示](qqbot/自主交易定时任务.txt)同步到已有机器人服务。定时任务管理 `bot_user_id` 的账户，自行决策并实际执行或给出具体观望原因；日常以交易者身份表达，直接问及资金性质/提现时按事实回答。仓库文件更新不会自动部署外部 QQBot，也不创建第二个调度器。

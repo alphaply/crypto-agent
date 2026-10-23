@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import time
 from functools import wraps
@@ -29,6 +29,137 @@ def initialize(account: dict, conn=None) -> None:
     account.setdefault('interest_paid', 0)
 
 
+def interest_reserve(account: dict, conn=None) -> dict | None:
+    """Project unpaid interest without settling, reserving cash or changing status."""
+    from . import paper
+    principal = paper.number(account['debt'])
+    accrued = Decimal(account['interest_accrued'])
+    if principal == 0 and accrued <= 0:
+        return None
+    if conn is None:
+        with store.connection() as conn:
+            return interest_reserve(account, conn)
+    cursor = account['interest_cursor']
+    now = max(time.time(), cursor)
+    settlement = (datetime.fromtimestamp(now, BEIJING).replace(hour=0, minute=0, second=0, microsecond=0)
+                  + timedelta(days=1)).timestamp()
+    rate = Decimal(account['interest_rate_at_cursor'])
+    latest = conn.execute('SELECT daily_rate FROM paper_bank_rates WHERE effective_at<=%s '
+                          'ORDER BY effective_at DESC,revision DESC LIMIT 1', (cursor,)).fetchone()
+    if latest:
+        rate = Decimal(str(latest[0]))
+    changes = conn.execute('SELECT effective_at,daily_rate FROM paper_bank_rates WHERE effective_at>%s '
+                           'AND effective_at<=%s ORDER BY effective_at,revision', (cursor, now)).fetchall()
+    overdue = Decimal(0)
+    estimate = Decimal(0)
+    # Writes settle before changing principal. Only rates can change since the
+    # stored cursor. Follow the same daily rounding and carry as settle().
+    for boundary, next_rate in [*[(r[0], Decimal(str(r[1]))) for r in changes], (settlement, None)]:
+        while cursor < boundary:
+            day_end = (datetime.fromtimestamp(cursor, BEIJING).replace(hour=0, minute=0, second=0, microsecond=0)
+                       + timedelta(days=1)).timestamp()
+            end = min(boundary, day_end)
+            accrued += principal * rate * Decimal(str(end - cursor)) / Decimal(86400)
+            cursor = end
+            if cursor == day_end:
+                charged = accrued.quantize(UNIT)
+                if day_end <= now:
+                    overdue += charged
+                else:
+                    estimate = charged
+                accrued -= charged
+        if next_rate is not None:
+            rate = next_rate
+    daily = principal * rate
+    required = overdue + estimate
+    if daily <= 0 and required <= 0:
+        return None
+    available = max(paper.signed_cash(account['cash']) - paper.number(account.get('reserved_cash', 0)), Decimal(0))
+    shortfall = paper.money(max(required - available, Decimal(0)))
+
+    def amount(value):
+        return f'{paper.money(value):.8f}'.rstrip('0').rstrip('.')
+
+    message = (f'请预留 USDT 支付借款利息：按当前本金和日利率，完整一天约 {amount(daily)} U，'
+               f'下次北京时间零点预计扣息 {amount(estimate)} U；扣除挂单占用后可用现金 {amount(available)} U。')
+    if overdue > 0:
+        message += f'另有已到期未扣利息 {amount(overdue)} U，合计预计需预留 {amount(required)} U。'
+    if shortfall > 0:
+        message += f'预计还差 {amount(shortfall)} U，请留足现金或调整挂单。'
+    message += '这是提醒，不冻结资金；借还款或调息会改变实际扣息金额。'
+    return {'currency': 'USDT', 'daily_interest_rate': float(rate),
+            'estimated_daily_interest': paper.money(daily), 'estimated_next_interest': paper.money(estimate),
+            'overdue_interest': paper.money(overdue), 'estimated_required_cash': paper.money(required),
+            'next_settlement_at': settlement, 'available_cash': paper.money(available), 'shortfall': shortfall,
+            'advisory_only': True, 'message': message}
+
+
+def recover_bankruptcy(conn, account: dict) -> None:
+    """Repair a proven legacy misclassification under the account write lock."""
+    from . import paper
+    from .paper_storage import payload_page, history_limit
+    if account['account_status'] != 'bankrupt' or account.get('bankruptcy_reason') == 'insufficient_cash_for_interest':
+        return
+    namespace, user_id = account['namespace'], account['user_id']
+    boundaries = conn.execute("SELECT COALESCE(MAX(id) FILTER (WHERE kind='reset'),0), "
+                              "COALESCE(MAX(id) FILTER (WHERE kind='bankruptcy_recovered'),0) "
+                              "FROM paper_events WHERE namespace=%s AND user_id=%s "
+                              "AND kind IN ('reset','bankruptcy_recovered')", (namespace, user_id)).fetchone()
+    boundary, last_recovery = boundaries
+    events, progress = payload_page(conn, 'paper_events',
+                                   "namespace=%s AND user_id=%s AND kind IN ('interest','bankruptcy')",
+                                   (namespace, user_id), cursor=boundary, count=history_limit())
+    candidates = []
+    causes = set()
+    complete = not progress['has_more'] and not progress['skipped_records']
+    for event in events:
+        detail = event['payload']
+        if event['kind'] == 'bankruptcy':
+            if detail.get('reason') == 'insufficient_cash_for_interest':
+                account['bankruptcy_reason'] = 'insufficient_cash_for_interest'
+                paper._save(conn, account)
+                return
+            if event['id'] > last_recovery:
+                causes.add(detail.get('reason'))
+            continue
+        if detail.get('account_epoch') != account['account_epoch']:
+            complete = False
+            continue
+        try:
+            cash_after = paper.signed_cash(detail['cash_after'])
+            charged = paper.number(detail['interest'], positive=True)
+        except (KeyError, ValueError, TypeError, InvalidOperation):
+            complete = False
+            continue
+        if cash_after < 0:
+            # A later incoming transfer or the old unconditional position heal
+            # cannot erase a real cash shortfall within this account cycle.
+            account['bankruptcy_reason'] = 'insufficient_cash_for_interest'
+            paper._save(conn, account)
+            return
+        if event['id'] > last_recovery and charged and cash_after < paper.number(account.get('reserved_cash', 0)):
+            candidates.append(event['id'])
+    if not complete:
+        return
+    reason = None
+    if candidates and not causes and not account.get('bankruptcy_reason'):
+        view = paper.snapshot(account, conn=conn)
+        if paper.signed_cash(account['cash']) >= 0 and view['net_equity'] is not None and view['net_equity'] > 0:
+            reason = 'interest_reservation_misclassification'
+    if reason is None and (account.get('positions') or account.get('spot')) and causes <= {'nonpositive_net_equity'}:
+        if account.get('bankruptcy_reason') in {None, 'nonpositive_net_equity'}:
+            reason = 'active_positions_decoupled'
+    if reason is None:
+        return
+    account['account_status'] = 'active'
+    account.pop('bankruptcy_reason', None)
+    paper._save(conn, account)
+    paper._event(conn, account, 'bankruptcy_recovered', {
+        'reason': reason, 'account_epoch': account['account_epoch'],
+        'evidence_event_ids': candidates,
+    })
+
+
 def refresh_status(conn, account: dict) -> None:
     from . import paper
     if account['account_status'] == 'bankrupt':
@@ -38,7 +169,8 @@ def refresh_status(conn, account: dict) -> None:
     view = paper.snapshot(account, conn=conn)
     if view['net_equity'] is not None and view['net_equity'] <= 0:
         account['account_status'] = 'bankrupt'
-        paper._event(conn, account, 'bankruptcy', {'reason': 'nonpositive_net_equity'})
+        account['bankruptcy_reason'] = 'nonpositive_net_equity'
+        paper._event(conn, account, 'bankruptcy', {'reason': 'nonpositive_net_equity', 'account_epoch': account['account_epoch']})
 
 
 def assert_active(account: dict) -> None:
@@ -128,12 +260,21 @@ def settle(conn, account: dict, now: float | None = None) -> None:
                                     (account['namespace'], account['user_id'], account['account_epoch'], day_end, charged)).fetchone()
             if inserted and charged:
                 cash = paper.signed_cash(account['cash'])
-                if charged > cash - paper.number(account.get('reserved_cash', 0)):
+                cash_shortfall = charged > cash
+                newly_insolvent = cash_shortfall and account.get('bankruptcy_reason') != 'insufficient_cash_for_interest'
+                if cash_shortfall:
                     account['account_status'] = 'bankrupt'
+                    account['bankruptcy_reason'] = 'insufficient_cash_for_interest'
                 account['cash'] = paper.money(cash - charged)
                 account['interest_paid'] = paper.money(Decimal(str(account['interest_paid'])) + charged)
                 paper._event(conn, account, 'interest', {'interest': paper.money(charged), 'period_end': day_end,
                                                        'account_epoch': account['account_epoch']})
+                if newly_insolvent:
+                    paper._event(conn, account, 'bankruptcy', {
+                        'reason': 'insufficient_cash_for_interest', 'interest': paper.money(charged),
+                        'cash_before': paper.money(cash), 'period_end': day_end,
+                        'account_epoch': account['account_epoch'],
+                    })
             accrued -= charged
         while changes and changes[0][0] == cursor:
             _, rate = changes.pop(0)
@@ -150,6 +291,7 @@ def _record(conn, caller, account, operation_id, fingerprint, result):
     paper._save(conn, account)
 
 
+@capture_epoch
 def transfer(caller, user_id, recipient_user_id, amount, operation_id):
     from . import paper
     from .paper_orders import refresh_reservations
@@ -195,12 +337,17 @@ def transfer(caller, user_id, recipient_user_id, amount, operation_id):
         conn.execute('INSERT INTO paper_transfers(namespace,sender,operation_id,recipient,amount,sender_epoch,recipient_epoch) '
                      'VALUES(%s,%s,%s,%s,%s,%s,%s)',
                      (namespace, user_id, operation_id, recipient_user_id, amount, sender['account_epoch'], recipient['account_epoch']))
-        details = {'amount': paper.money(amount), 'sender_user_id': user_id, 'recipient_user_id': recipient_user_id}
+        details = {'amount': paper.money(amount), 'currency': 'USDT', 'sender_user_id': user_id, 'recipient_user_id': recipient_user_id}
         paper._event(conn, sender, 'transfer_out', details, operation_id)
         paper._event(conn, recipient, 'transfer_in', details, operation_id)
         refresh_status(conn, sender)
-        result = {'status': 'completed', 'operation_id': operation_id, **details,
-                  'account': paper.snapshot(sender, project=False, conn=conn)}
+        view = paper.snapshot(sender, project=False, conn=conn)
+        result = {'status': 'completed', 'action': 'transfer', 'currency': 'USDT',
+                  'operation_id': operation_id, **details, 'cash_after': view['cash'],
+                  'available_cash': view['available_cash'], 'reserved_cash': view['reserved_cash'],
+                  'account': view}
+        if view['interest_reserve'] is not None:
+            result['interest_reserve'] = view['interest_reserve']
         _record(conn, caller, sender, operation_id, fingerprint, result)
         paper._save(conn, recipient)
         conn.commit()
@@ -214,6 +361,7 @@ def reset(caller, user_id, operation_id):
         if account['account_type'] == 'bot' or account['account_status'] != 'bankrupt':
             raise ValueError('Only a bankrupt user can request 下海')
         epoch, count = account['account_epoch'] + 1, account['reset_count'] + 1
+        account.pop('bankruptcy_reason', None)
         for order in rows(conn, account['namespace'], account['user_id']):
             finish(conn, account, order, 'cancelled', 'Account reset: old cycle ended')
         cfg = paper.settings(conn)

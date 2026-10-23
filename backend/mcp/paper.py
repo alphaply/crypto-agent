@@ -132,7 +132,20 @@ def _save(conn, account):
 
 
 def upgrade_account(conn, account):
-    from .paper_lifecycle import initialize
+    from .paper_lifecycle import initialize, recover_bankruptcy
+    repair_locked = False
+    if account.get('account_status') == 'bankrupt':
+        from backend.storage import try_lock_scope
+        from .paper_storage import one
+        # Readers and multi-account scans may hold stale snapshots. Do not wait
+        # out of account order or overwrite a concurrent transfer/settlement.
+        repair_locked = try_lock_scope(conn, 'paper-account', account['namespace'], account['user_id'])
+        if repair_locked:
+            current = one(conn, 'paper_accounts', 'payload', 'namespace=%s AND user_id=%s',
+                          (account['namespace'], account['user_id']), identity='bankruptcy repair account')
+            if current is not None:
+                account.clear()
+                account.update(current)
     initialize(account, conn)
     if 'initial_capital' not in account:
         from .paper_storage import one, payload_page, history_limit
@@ -165,10 +178,6 @@ def upgrade_account(conn, account):
     account.setdefault('leaderboard_visible', True)
     account.setdefault('notifications_enabled', True)
     account.setdefault('reserved_cash', 0)
-    if account.get('account_status') == 'bankrupt' and (bool(account.get('positions')) or bool(account.get('spot'))):
-        account['account_status'] = 'active'
-        _save(conn, account)
-        _event(conn, account, 'bankruptcy_recovered', {'reason': 'active_positions_decoupled'})
     # Source proof is additive and separate from legacy fields, which may have
     # been filled by a previous upgrade. Never infer a venue or cycle here.
     from .paper_policy import account_facts, persist_origin
@@ -176,6 +185,8 @@ def upgrade_account(conn, account):
     account['_venue_origins'] = {kind + ':' + key: fact for (kind, key), fact in facts.items()}
     for (kind, key), fact in facts.items():
         persist_origin(conn, account, kind, key, account[kind][key], fact)
+    if repair_locked:
+        recover_bankruptcy(conn, account)
     return account
 
 
@@ -242,6 +253,13 @@ def _write(caller, user_id, operation_id, request, change):
         accepted = request['action'] in {'place_order', 'set_protection'} and any(order.get('state') == 'open' for order in accepted_orders)
         result = {'status': 'submitted' if accepted else 'completed', 'paper': True, 'operation_id': operation_id,
                   'account': snapshot(account, project=False, conn=conn), **details}
+        entry_actions = {'buy', 'open_long', 'open_short'}
+        if (request['action'] in entry_actions | {'set_leverage', 'add_margin', 'reduce_margin'}
+                or request['action'] in {'place_order', 'edit_order'}
+                and details.get('order', {}).get('action') in entry_actions):
+            reminder = result['account']['interest_reserve']
+            if reminder is not None:
+                result['interest_reserve'] = reminder
         if accepted and any(order.get('order_type') in {'stop_loss', 'take_profit'} for order in accepted_orders):
             result.update(order_status='waiting_trigger', filled_amount=0)
         from .paper_storage import max_payload, PaperPayloadLimit
@@ -319,6 +337,8 @@ def snapshot(account: dict, *, project=True, conn=None) -> dict:
             'performance_pnl': money(equity - number(account['debt']) - Money(str(account['competition_capital']))) if account.get('competition_capital') is not None else None,
             'valuation_status': 'last_observed' if all(observed) else 'entry_prices',
             'oldest_mark_at': min(observed) if observed and all(observed) else None}
+    from .paper_lifecycle import interest_reserve
+    result['interest_reserve'] = interest_reserve(account, conn)
     if not project:
         return result
     from .paper_policy import account_facts, classify
@@ -469,10 +489,10 @@ def set_leverage(caller, user_id, leverage, operation_id):
     return _write(caller, user_id, operation_id, {'action': 'leverage', 'leverage': leverage}, change)
 
 
-def market(symbol: str, market_type='swap', timeframe='1h', limit=120, *, candles=True, exchange_name=None) -> dict:
+def market(symbol: str, market_type='swap', timeframe='1h', limit=120, *, candles=True, exchange_name=None, include=None) -> dict:
     from .paper_market import quote
     from .paper_policy import venue
-    return quote(symbol, market_type, timeframe, limit, candles=candles, exchange_name=venue(exchange_name))
+    return quote(symbol, market_type, timeframe, limit, candles=candles, exchange_name=venue(exchange_name), include=include)
 
 
 def _mark(account, quotes, conn, cfg):
@@ -520,7 +540,8 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
     if action in {'buy', 'open_long', 'open_short'} and (not account['enabled'] or market_type not in account['markets']):
         raise ValueError('Paper account or requested market is disabled')
     if time.time() - quote['observed_at'] > 15:
-        raise ValueError('Paper execution quote expired; no fill recorded')
+        from .paper_orders import PaperQuoteExpired
+        raise PaperQuoteExpired('Paper execution quote expired; no fill recorded')
     _mark(account, {(market_type, canonical): quote}, conn, cfg)
     from .paper_lifecycle import refresh_status, assert_active
     refresh_status(conn, account)
@@ -589,6 +610,7 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
             account['positions'][key] = {'symbol': canonical, 'exchange': quote['exchange'], 'side': side,
                                          'cycle_id': p.get('cycle_id') if p else uuid.uuid4().hex, 'amount': float(old_amount + amount),
                                          'entry_price': money(entry), 'margin': money((number(p['margin']) if p else ZERO) + margin),
+                                         'added_margin': money(number(p.get('added_margin', 0))) if p else 0,
                                          'leverage': lev, 'mark_price': quote['price'], 'marked_at': quote['observed_at']}
             stamp(account['positions'][key], operation_id=(p or {}).get('origin_operation_id'),
                   resource_id=(p or {}).get('resource_id'))
@@ -608,7 +630,8 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
             if amount == old_amount:
                 del account['positions'][key]
             else:
-                p.update(amount=float(old_amount - amount), margin=money(number(p['margin']) - margin))
+                p.update(amount=float(old_amount - amount), margin=money(number(p['margin']) - margin),
+                         added_margin=money(number(p.get('added_margin', 0)) * (old_amount - amount) / old_amount))
     account.update(cash=money(cash), fees=money(number(account['fees']) + fee),
                    realized_pnl=money(Money(str(account['realized_pnl'])) + realized))
     from .paper_orders import cleanup_orders
@@ -758,9 +781,15 @@ def reconcile_instrument(market_type, symbol, exchange_name=None, *, namespace=N
         for record in sorted(accounts, key=lambda item: (item['namespace'], item['user_id'])):
             lock_scope(conn, 'paper-account', record['namespace'], record['user_id'])
         for record in accounts:
+            if time.time() - quote['observed_at'] > 15:
+                from .paper_orders import PaperQuoteExpired
+                raise PaperQuoteExpired('Paper execution quote expired; wait for a fresh maintenance quote')
             account = _get(conn, record['namespace'], record['user_id'])
             from .paper_lifecycle import settle, refresh_status
             settle(conn, account)
+            if time.time() - quote['observed_at'] > 15:
+                from .paper_orders import PaperQuoteExpired
+                raise PaperQuoteExpired('Paper execution quote expired; wait for a fresh maintenance quote')
             _mark(account, {(market_type, symbol): quote}, conn, cfg)
             refresh_status(conn, account)
             match(conn, account, market_type, symbol, quote, cfg)

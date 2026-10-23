@@ -253,9 +253,9 @@ Dashboard 专注数据总览；独立 Agents 页承载任务运行计划与实�
 
 ### QQBot Paper MCP
 
-后台独立的 **QQBot · Paper** tab 可创建 Paper Key，为 QQBot 按用户 ID 管理模拟账户，仅交易 Binance 上现有引擎支持的 USDT 现货与线性永续、设置杠杆和借还款。历史非 BN 或来源不能证明的资源从默认查询和维护过滤，原账本、全部预留/保证金及授权审计保留；混合估值不完整时不按假零值排名。后台可调整现金与负债，统一配置银行借款开关、额度与日利率。详见 [接入文档](docs/QQBOT_PAPER_MCP.md)。
+后台独立的 **QQBot · Paper** tab 可创建 Paper Key，为 QQBot 按用户 ID 管理模拟账户，仅交易 Binance 上现有引擎支持的 USDT 现货与线性永续、设置杠杆和借还款。历史非 BN 或来源不能证明的资源从默认查询和维护过滤，原账本、全部预留/保证金及授权审计保留；混合估值不完整时不按假零值排名。后台以资金概览、盈亏与费用、持仓/委托/事件表格展示 Paper 数据，标明当前筛选、本页统计范围和行情更新时间；缺失估值显示为未知，不补零。可调整现金与负债，统一配置银行借款开关、额度与日利率。详见 [接入文档](docs/QQBOT_PAPER_MCP.md)。
 
-Paper MCP 现已支持真实公开行情标注与标的搜索、bot 自有账户、用户 PK 排行、限价委托、OCO 止盈止损及分页成交/爆仓事件扫描；后台可查看持仓、委托和事件。完整人格与 skill 见 [QQBot 接入文档](docs/QQBOT_PAPER_MCP.md)。
+Paper MCP 现已支持真实公开行情标注与标的搜索、bot 自有账户、用户 PK 排行、限价委托、OCO 止盈止损及分页成交/爆仓事件扫描；后台可查看持仓、委托和事件，并调整已有合约仓位的杠杆、追加或减少逐仓保证金。调杠杆保持数量与开仓价，基础保证金多退少补，手动追加部分保留；减少保证金需满足基础与强平检查。bot 可通过 `adjust_paper_position` 使用查询返回的 `resource_id` 执行相同操作。完整人格与 skill 见 [QQBot 接入文档](docs/QQBOT_PAPER_MCP.md)。
 
 资源准入、限额与隔离验收见 [运行容量](docs/RUNTIME_CAPACITY.md)、[容量验证与回退](docs/CAPACITY_VERIFICATION.md) 和 [资源诊断](docs/RESOURCE_DIAGNOSTICS.md)。本地报告不代表生产已部署。
 

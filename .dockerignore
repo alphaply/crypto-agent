@@ -2,6 +2,7 @@
 .idea
 .vscode
 .agents
+.tmp
 .vite
 openspec
 .venv

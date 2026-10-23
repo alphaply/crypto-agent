@@ -25,7 +25,7 @@ def test_sdk_directory_bootstrap_cancel_first_and_read_only_recovery(ledger, mon
     register_tools(server)
     register_paper_tools(server)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
-    assert len(names) == 10 and 'paper_trade' not in names and 'adopt_perpetual_position' not in names
+    assert len(names) == 12 and 'paper_trade' not in names and 'adopt_perpetual_position' not in names
     assert server._tool_manager.get_tool('get_operation') is None
     context = call(server, 'get_trading_context', {})
     assert context['contract_version'] == 3

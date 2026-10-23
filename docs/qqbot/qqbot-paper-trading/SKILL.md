@@ -20,6 +20,10 @@ description: 通过 Crypto Agent 精简 MCP 目录查询真实公开行情，按
 
 get_account_state 按 include=["balances"|"positions"|"inventory"|"orders"] 请求所需 facet。净权益和估值依据最后观察价格，陈旧时间不能说成实时权益。
 
+已有 Paper 合约仓位调整使用独立工具 adjust_paper_position(user_id, position_id, operation_id, action, leverage?, amount?)，不放进 execute_trade_actions。position_id 必须原样取当前 positions.resource_id，不用交易对或旧周期 ID 代替。action="set_leverage" 只传上限内的整数 leverage；数量和开仓价不变，基础保证金按开仓价乘当前数量除以新杠杆重算，现金多退少补，手动追加的保证金保留。action="add_margin" 或 "reduce_margin" 只传正数 USDT amount；增额用扣除挂单占用后的可用现金，减额返还现金，不能低于基础保证金或导致立即爆仓。余额不足明确失败，不缩量。同仓同方向存在与目标杠杆冲突的待成交 Binance 入场单时，实际改杠杆会拒绝并给出订单 ID；先按用户意图处理挂单，不自动改单。configure_paper_account 的默认 leverage 仍只影响后续入场。
+
+调整回报按 leverage_before/after、margin_before/after、added_margin、cash_change 和 available_cash 说明实际结果。cash_change 为正是返还现金，为负是补入保证金，不是交易盈利；不要说成开平仓成交。保留工具给出的付息提醒。现货和真实账户不使用此工具，破产冻结时不能调整。
+
 get_trade_records 的 record_type=orders/order/fills/history 分别读取挂单、一个指定 order_id、已确认成交和事件历史。订单接受不等于成交；order_id 是本地 Paper 订单身份，不能传给真实交易所工具。金融入口当次返回权威事实，后续状态由后台自动更新，不追加模型执行核验调用。
 
 ## 一次调用顺序交易
@@ -32,11 +36,13 @@ get_trade_records 的 record_type=orders/order/fills/history 分别读取挂单�
 - cancel：指定返回的 order_id，撤销当前账户待执行订单并释放已核实预留；已经成交的订单不被恢复为挂单。
 - protect：单腿或成对 stop_loss/take_profit、amount 或当前周期 close_all。省略已有腿保留。OCO 一腿成交另一腿原子取消。
 
-amount 是基础币数量；quote_amount 是 USDT 名义金额（现货买入为含手续费预算）；margin_amount 是合约入场保证金，手续费另计。入场三种数量方式仅选一种，预算 sizing 只用于入场。杠杆仅用于合约入场且为上限内整数；不猜测“100U”指金额还是保证金。
+amount 是基础币数量；quote_amount 是 USDT 名义金额（现货买入为含手续费预算）；margin_amount 是合约入场保证金，手续费另计。入场三种数量方式仅选一种，预算 sizing 只用于入场。交易批次内的 leverage 用于合约入场且为上限内整数；已有仓位改杠杆用独立 adjust_paper_position，不猜测“100U”指金额还是保证金。
 
 请求按数组顺序执行，默认 stop_on_error 在 failed/pending/unknown 后停止。cancel 放前面后，后项按释放后的余额重新核验。显式 independent 仅继续依赖满足且自身可准入的项；depends_on 是不重复的此前零起算索引，前项必须 completed，submitted 不满足依赖。
 
 批次非原子：后项失败不回滚前项。限价 accepted/submitted 不是 filled，不等待未来成交；未成交入场不能被当作可平持仓，支持的入场附带保护只在成交后激活。Paper all 跟随当前周期，旧退出不能平掉以后重开的新周期。
+
+后台使用同场所 ticker / 必要盘口撮合，不等待指标或情绪分析。报价在等待或执行前超过 15 秒时，已有挂单、OCO 和资金占用保持原状，等待下一轮新报价，不因一次报价过期变成失败；不使用过期价格强平。保留委托不能报告成成交，轮询间短暂触价后回撤不按历史 K 线补成交。
 
 ## 幂等与恢复
 
@@ -49,6 +55,10 @@ amount 是基础币数量；quote_amount 是 USDT 名义金额（现货买入为
 ## 银行、竞赛和事件
 
 paper_bank(action=borrow|repay, amount, user_id, operation_id) 的 amount 是 USDT。借款等额增加现金和债务，不增加净权益；后台统一配置借款开关、额度和日利率，按本金单利、北京时间每天 00:00 扣前一日利息，首日按实际时长折算，扣息可使现金为负；还款受可用现金和债务限制。爆仓后债务保留。
+
+仍有借款计息或已累计未结利息时，开仓或改单增加资金占用前，用 balances 中的可用现金与后台实际日利率提醒预留可用 USDT 付息。未还本金 × 日利率是完整一天的估算，不代表首日或下一次实际扣息金额；首日按实际时长折算，金额以实际结算为准。付息资金安排按扣除挂单占用后的可用现金评估，仓位保证金不是现金，总现金也不等于可用现金；实际扣息是否触发破产看账本现金，不先扣挂单占用。交易回报自然补充工具返回的付息提醒；没有可靠数值就不猜测金额或利率。提醒不新增强制冻结、拒单或确认步骤，不擅自改变用户已明确的下单数量；自主交易把付息需求纳入资金安排，不自行设定固定预留比例。
+
+付息提醒来源为 get_account_state(include=["balances"]) 的 balances.interest_reserve，以及成功开仓、入场挂单或入场改单回执的 interest_reserve。优先用 estimated_next_interest 和 message 说明下次北京时间零点预计扣息；estimated_next_interest 包含已累计利息及按当前本金和日利率估算的剩余时段利息，因此已还清本金仍可能需要付息。estimated_daily_interest 仅为完整一天估算，overdue_interest 为已到期但后台尚未扣除的历史利息，estimated_required_cash 为历史待扣利息与下次预计扣息的合计。next_settlement_at 为下次结息时间，available_cash 为可用现金，shortfall 为上述合计相对可用现金的预计缺口。advisory_only=true 表示仅提醒。无计息负担时 balances.interest_reserve 为 null，下单回执不附加提醒。
 
 get_paper_leaderboard(user_id=可信发送者ID, metric=return_pct|reset_count) 查询公开排名、自身和 Bot。交易榜只按本轮收益率排名，转账/重置补款不算交易盈利，利息与手续费计入损益；下海榜按累计次数排名。重置后本轮收益率归零。其他用户私人仓位、现金、债务不可从排行推断。
 
@@ -69,4 +79,6 @@ get_paper_leaderboard(user_id=可信发送者ID, metric=return_pct|reset_count) 
 
 paper_transfer(user_id, recipient_user_id, amount, operation_id) 在同一服务已开户账户间转 USDT，金额必须为正有限数且不超过可用现金。用户发起只从可信本人账户转出；主动接济用 bot_user_id，自有钱可以送给用户，用户也可转给 bot。借来的可用钱可以转出；收款人用可信 @ 对象对应的稳定 ID，不猜昵称。
 
-account_status=bankrupt 时禁止开平仓、撤改单、保护、借还款和转出，已有订单不成交，但可收款并继续扣息。收款不自动恢复。仅用户本人主动说“下海”且明确要求重置时使用 configure_paper_account(action="reset", user_id=可信本人, operation_id=消息稳定身份)，无需二次机械确认。不主动邀请、不自动重置、不让 bot 自己重置。新周期清空资金负债、仓位挂单与收益率，按后台初始状态重建；历史和累计次数保留。重试沿用原 ID，旧周期不能动用新资金。
+转账回报核对工具返回的付款账户、完整收款身份、USDT 金额、转后可用现金及挂单占用，并带出付息提醒；不能把占用资金说成还能转出。重试沿用同一 operation_id 和原参数，等待期间付款账户已重置的旧请求不得动用新一轮资金。
+
+仅因挂单占用导致可用余额不足，不再因扣息判破产；实际现金不足付息仍完整扣息并冻结，有持仓也不自动解冻。account_status=bankrupt 时禁止开平仓、撤改单、保护、借还款和转出，已有订单不成交，但可收款并继续扣息。收款不自动恢复。仅用户本人主动说“下海”且明确要求重置时使用 configure_paper_account(action="reset", user_id=可信本人, operation_id=消息稳定身份)，无需二次机械确认。不主动邀请、不自动重置、不让 bot 自己重置。新周期清空资金负债、仓位挂单与收益率，按后台初始状态重建；历史和累计次数保留。重试沿用原 ID，旧周期不能动用新资金。

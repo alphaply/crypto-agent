@@ -123,11 +123,11 @@ search_symbols 与 get_market SHALL 根据可信执行上下文使用相应标�
 - **THEN** analysis 正常计算现货指标，sentiment 保持为空字典，不返回伪造的合约资金费率或多空比
 
 ### Requirement: Paper retains distinct financial and competition capabilities
-Paper SHALL 在七个核心名称上增加 paper_bank、configure_paper_account、get_paper_leaderboard、paper_transfer；read+trade 共十一项，仅 read 共七项。账户配置 SHALL 区分开户、后续杠杆和显示/参赛/通知偏好，以及用户主动下海的显式 reset；重复开户不重置。银行 SHALL 反映统一配置的日利率；榜单 SHALL 支持 return_pct 与 reset_count。移除 get_operation SHALL 不影响银行、偏好或榜单权限，live SHALL 不公布 Paper 金融工具。
+Paper SHALL 在七个核心名称上增加 paper_bank、configure_paper_account、get_paper_leaderboard、paper_transfer、adjust_paper_position；read+trade 共十二项，仅 read 共七项。已有逐仓仓位的杠杆及保证金调整 SHALL 通过 adjust_paper_position 使用当前 resource_id 定位，要求 read+trade；账户配置 SHALL 区分开户、后续杠杆和显示/参赛/通知偏好，以及用户主动下海的显式 reset；重复开户不重置。银行 SHALL 反映统一配置的日利率；榜单 SHALL 支持 return_pct 与 reset_count。移除 get_operation SHALL 不影响银行、偏好或榜单权限，live SHALL 不公布 Paper 金融工具。
 
 #### Scenario: Writable paper key discovers all capabilities
 - **WHEN** Paper key 有 read、trade 且既有 Paper 功能可用
-- **THEN** 默认目录共十一项，银行、配置、榜单和转账可达，不出现操作查询及重复交易适配器
+- **THEN** 默认目录共十二项，银行、配置、榜单、转账和已有逐仓调整可达，不出现操作查询及重复交易适配器
 
 #### Scenario: Read-only paper key discovers tools
 - **WHEN** Paper key 只有 read

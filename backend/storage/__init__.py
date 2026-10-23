@@ -178,6 +178,13 @@ def lock_scope(conn: Connection, *parts: object) -> None:
     conn.execute('SELECT pg_advisory_xact_lock(%s)', (key,))
 
 
+def try_lock_scope(conn: Connection, *parts: object) -> bool:
+    """Take the same scope without waiting, for opportunistic account repair."""
+    identity = '\0'.join(str(part) for part in parts).encode('utf-8')
+    key = int.from_bytes(hashlib.sha256(identity).digest()[:8], 'big', signed=True)
+    return conn.execute('SELECT pg_try_advisory_xact_lock(%s)', (key,)).fetchone()[0]
+
+
 def table_names(conn: Connection) -> set[str]:
     return {row[0] for row in conn.execute(
         "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
