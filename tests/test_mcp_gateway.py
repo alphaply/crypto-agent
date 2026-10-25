@@ -192,70 +192,124 @@ def test_durable_idempotence_and_scope_identity(gateway, monkeypatch):
     assert store.audit_rows()
 
 
-def test_actual_leverage_guard_before_any_protection_side_effect(gateway, monkeypatch):
+@pytest.fixture
+def guarded_service(gateway, monkeypatch):
+    from backend.agent import agent_tools
+    from backend.config import config
+    from backend.utils import market_data
+    from test_exclusive_position_management import ExclusiveExchange, make_service
+
+    exchange = ExclusiveExchange()
+    protection = make_service(exchange, owner='mcp:test', policy='visible_first_claim')
+    profile = {**protection.mt.runtime_config, 'enabled': True, 'mcp_max_leverage': 5, 'leverage': 1}
+    monkeypatch.setattr(cfg, 'get_runtime_profile', lambda _: profile)
+    monkeypatch.setattr(config, 'get_config_by_id', lambda _: profile)
+    monkeypatch.setattr(agent_tools, '_independent_service', lambda *_: (protection, True))
+    monkeypatch.setattr(agent_tools, 'MarketTool', lambda **_: protection.mt)
+    monkeypatch.setattr(market_data, 'MarketTool', lambda **_: protection.mt)
+    return protection, exchange
+
+
+@pytest.mark.parametrize('exit_mode', ['attached_required', 'independent_exits'])
+@pytest.mark.parametrize('action', ['open', 'amend_entry'])
+def test_actual_leverage_guard_before_any_protection_side_effect(guarded_service, monkeypatch, exit_mode, action):
+    from backend.agent.agent_models import OpenOrderStrategy
     from backend.mcp.guard import assert_entry_allowed
     from backend.utils.position_protection import PositionProtection
-    from backend.utils.independent_exits import IndependentExits
-    exchange = SimpleNamespace(id='binanceusdm', apiKey='fake', market=lambda symbol: {'symbol': symbol},
-                               fetch_leverage=lambda symbol: {'longLeverage': 20, 'shortLeverage': 20},
-                               fetch_positions=lambda symbols: [])
-    mt = SimpleNamespace(config_id='mcp:test', exchange=exchange)
-    for cls in (PositionProtection, IndependentExits):
-        protection = cls(mt)
-        monkeypatch.setattr(protection, '_market', lambda symbol: pytest.fail('Protection must not start before leverage approval'))
-        with pytest.raises(ValueError, match='Actual exchange leverage'):
-            protection.open('ETH/USDT', SimpleNamespace())
-        with pytest.raises(ValueError, match='Actual exchange leverage'):
-            protection.amend_entry('ETH/USDT', 'order', price=100, reason='test')
-    assert_entry_allowed(SimpleNamespace(config_id='internal', exchange=exchange), 'ETH/USDT')
-    exchange.fetch_leverage = lambda symbol: {'longLeverage': 5, 'shortLeverage': 5}
-    assert_entry_allowed(mt, 'ETH/USDT')
-    exchange.fetch_leverage = lambda symbol: {}
+    from test_exclusive_position_management import SYMBOL
+
+    protection, exchange = guarded_service
+    if exit_mode == 'attached_required':
+        protection = PositionProtection(protection.mt)
+    exchange.external_order('entry', role='entry', amount=.001, price=2385)
+    monkeypatch.setattr(exchange, 'fetch_leverage', lambda _: {'longLeverage': 20, 'shortLeverage': 20})
+    order = OpenOrderStrategy(action='BUY_LIMIT', entry_price=2385, amount=.001, reason='entry')
+
+    # Discovery may read markets/orders and persist ownership evidence. Only
+    # exchange writes (create, edit, cancel) are forbidden before approval.
+    with pytest.raises(ValueError, match='Actual exchange leverage'):
+        if action == 'open':
+            protection.open(SYMBOL, order)
+        else:
+            protection.amend_entry(SYMBOL, 'entry', price=2380, reason='test')
+    assert exchange.writes == []
+    assert exchange.orders['regular', 'entry']['price'] == 2385
+
+    assert_entry_allowed(SimpleNamespace(config_id='internal', exchange=exchange), SYMBOL)
+    monkeypatch.setattr(exchange, 'fetch_leverage', lambda _: {})
+    monkeypatch.setattr(exchange, 'fetch_positions', lambda _: [])
     with pytest.raises(ValueError, match='Cannot verify'):
-        assert_entry_allowed(mt, 'ETH/USDT')
+        assert_entry_allowed(protection.mt, SYMBOL)
+    assert exchange.writes == []
 
 
-def test_batch_preflight_checks_entries_before_protection_dispatch(gateway, monkeypatch):
+@pytest.mark.parametrize('contract_version', [1, 2])
+def test_batch_checks_current_leverage_before_each_entry(guarded_service, monkeypatch, contract_version):
     from backend.agent.trade_batch import execute_trade_actions
-    from backend.config import config
-    from backend.utils.market_data import MarketTool
-    import backend.mcp.guard as guard
-    monkeypatch.setattr(config, 'get_config_by_id', lambda _: {'mode': 'REAL', 'exit_mode': 'attached_required'})
-    calls = []
-    monkeypatch.setattr(MarketTool, '__init__', lambda self, **kwargs: None)
-    monkeypatch.setattr(guard, 'assert_entry_allowed', lambda *args: (_ for _ in ()).throw(ValueError('actual leverage too high')))
-    import backend.agent.trade_batch as batch
-    monkeypatch.setattr(batch, '_dispatch', lambda *args: calls.append(args))
-    actions = [dict(action='update_protection', pos_side='LONG', stop_loss=90, reason='test'),
-               dict(action='open', order=dict(action='BUY_LIMIT', entry_price=100, amount=1, stop_loss=90, take_profit=110, reason='test'))]
-    with pytest.raises(ValueError, match='actual leverage'):
-        execute_trade_actions.func(actions=actions, config_id='mcp:test', symbol='ETH/USDT')
-    assert not calls
+    from test_exclusive_position_management import SYMBOL
+
+    protection, exchange = guarded_service
+    leverage, reads = [1], []
+
+    def fetch_leverage(symbol):
+        reads.append(symbol)
+        return {'longLeverage': leverage[0], 'shortLeverage': leverage[0]}
+
+    create_order = exchange.create_order
+
+    def create_then_change_leverage(*args, **kwargs):
+        result = create_order(*args, **kwargs)
+        leverage[0] = 20
+        return result
+
+    monkeypatch.setattr(exchange, 'fetch_leverage', fetch_leverage)
+    monkeypatch.setattr(exchange, 'create_order', create_then_change_leverage)
+    if contract_version == 1:
+        actions = [dict(action='open', order=dict(action='BUY_LIMIT', entry_price=price,
+                   amount=.001, reason='entry')) for price in (2385, 2380, 2375)]
+    else:
+        actions = [dict(action='open', side='LONG', price=price, amount=.001, reason='entry')
+                   for price in (2385, 2380, 2375)]
+    result = json.loads(execute_trade_actions.func(actions=actions, config_id=protection.config_id,
+                       symbol=SYMBOL, contract_version=contract_version))
+
+    assert result['status'] == 'failed'
+    assert [row['status'] for row in result['results']] == ['submitted', 'failed', 'not_executed']
+    assert 'Actual exchange leverage' in json.dumps(result['results'][1])
+    assert len(reads) == 2
+    assert [write[0] for write in exchange.writes] == ['create']
 
 
-def test_canonical_edit_guards_classify_the_owned_target(gateway, monkeypatch):
-    from unittest.mock import Mock
-    from backend.agent import independent_tools
-    from backend.mcp import guard
-    from backend.utils.market_data import MarketTool
-    target = Mock(return_value={'kind': 'entry', 'amount': 1, 'filled_amount': .2})
-    monkeypatch.setattr(independent_tools, 'describe_order', target)
-    monkeypatch.setattr(MarketTool, '__init__', lambda self, **_: None)
-    entry = Mock(side_effect=ValueError('entry leverage limit'))
-    owner = Mock()
-    monkeypatch.setattr(guard, 'assert_entry_allowed', entry)
-    monkeypatch.setattr(guard, 'assert_position_owner', owner)
-    args = {'order_id': 'regular:entry', 'remaining_amount': .5, 'reason': 'revise'}
-    with pytest.raises(ValueError, match='entry leverage'):
-        guard.preflight_tool('edit', args, 'mcp:test', 'ETH/USDT')
-    entry.assert_called_once()
-    owner.assert_not_called()
-    target.return_value = {'kind': 'exit'}
-    guard.preflight_tool('edit', args, 'mcp:test', 'ETH/USDT')
-    owner.assert_called_once()
-    target.return_value = {'kind': 'unknown'}
-    with pytest.raises(ValueError, match='target role'):
-        guard.preflight_tool('edit', args, 'mcp:test', 'ETH/USDT')
+@pytest.mark.parametrize('target_kind', ['entry', 'exit', 'missing'])
+def test_canonical_edit_guards_classify_the_owned_target(guarded_service, monkeypatch, target_kind):
+    from backend.agent.independent_tools import execute_action
+    from test_exclusive_position_management import SYMBOL
+
+    protection, exchange = guarded_service
+    if target_kind != 'missing':
+        exchange.external_order('target', role=target_kind, amount=.001,
+                                price=2385 if target_kind == 'entry' else 2565)
+    reads = []
+
+    def fetch_leverage(symbol):
+        reads.append(symbol)
+        return {'longLeverage': 20, 'shortLeverage': 20}
+
+    monkeypatch.setattr(exchange, 'fetch_leverage', fetch_leverage)
+    price = 2380 if target_kind == 'entry' else 2570
+    result = json.loads(execute_action('edit', {'order_id': 'regular:target', 'price': price,
+                        'reason': 'revise owned order'}, protection.config_id, SYMBOL))
+    if target_kind == 'exit':
+        assert result['status'] == 'completed'
+        assert reads == []  # Reducing exposure remains available above the entry cap.
+        assert [write[0] for write in exchange.writes] == ['edit']
+        assert exchange.orders['regular', 'target']['price'] == price
+    else:
+        assert result['status'] == 'failed'
+        expected = 'Actual exchange leverage' if target_kind == 'entry' else 'offline target missing'
+        assert expected in result['error'], result
+        assert len(reads) == (1 if target_kind == 'entry' else 0)
+        assert exchange.writes == []
 
 
 def test_foreign_and_untracked_positions_fail_closed_but_owned_reduction_allowed(gateway, monkeypatch):
