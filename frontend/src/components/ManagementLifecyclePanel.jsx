@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Checkbox, Input, Popconfirm, Space, Tag, Typography } from 'antd';
 import { api } from '../lib/api';
+import { useLatestRequest } from '../hooks/useLatestRequest';
 import { usePreferences } from '../app/usePreferences';
 import ManagementStatus from './ManagementStatus';
 
 export default function ManagementLifecyclePanel({ configId }) {
+  return configId ? <ManagementLifecycleContent key={configId} configId={configId} /> : null;
+}
+
+function ManagementLifecycleContent({ configId }) {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
   const [data, setData] = useState(null);
@@ -14,15 +19,22 @@ export default function ManagementLifecyclePanel({ configId }) {
   const [accepted, setAccepted] = useState(false);
   const [receipt, setReceipt] = useState(null);
   const base = `/management/${encodeURIComponent(configId || '')}`;
+  const { begin, cancel } = useLatestRequest();
   const load = useCallback(async () => {
-    if (!configId) return;
+    const signal = begin();
+    if (!signal) return;
     setBusy(true);
-    try { const response = await api.get(`/management/${encodeURIComponent(configId)}`, { silent: true }); setData(response.data); setError(null); }
-    catch (err) { setError(err.response?.data?.detail || err.message); }
-    finally { setBusy(false); }
-  }, [configId]);
-  useEffect(() => { setData(null); setReceipt(null); setTarget(''); setAccepted(false); load(); }, [load]);
-  if (!configId) return null;
+    try {
+      const response = await api.get(`/management/${encodeURIComponent(configId)}`, { silent: true, signal });
+      if (!signal.aborted) { setData(response.data); setError(null); }
+    } catch (err) { if (!signal.aborted) setError(err.response?.data?.detail || err.message); }
+    finally { if (!signal.aborted) setBusy(false); }
+  }, [configId, begin]);
+  useEffect(() => {
+    let active = true;
+    Promise.resolve().then(() => { if (active) load(); });
+    return () => { active = false; cancel(); };
+  }, [load, cancel]);
   const act = async (scope, action) => {
     setBusy(true); setError(null); setReceipt(null);
     try {

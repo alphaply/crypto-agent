@@ -4,51 +4,24 @@ from datetime import datetime, timezone
 import json
 import logging
 import os
-from pathlib import Path
 import threading
 from types import SimpleNamespace
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
-import uuid
 
-import psycopg
-from psycopg import sql
 import pytest
 
 from backend import storage
 
 
 @pytest.fixture
-def pg(monkeypatch, tmp_path):
-    address = os.getenv('TEST_POSTGRES_URL')
-    if not address:
-        pytest.skip('Set TEST_POSTGRES_URL to an isolated PostgreSQL test database')
-    parsed = urlsplit(address)
-    if 'test' not in parsed.path.lower():
-        pytest.fail('TEST_POSTGRES_URL must identify a disposable database whose name contains test')
+def pg(financial_pg, monkeypatch):
+    # Reuse the shared disposable schema with every versioned migration. A
+    # baseline-only schema silently misses tables required by current stores.
     # No production dotenv or credentials may enter these tests, including imports.
     import dotenv
     monkeypatch.setattr(dotenv, 'load_dotenv', lambda *args, **kwargs: False)
     monkeypatch.setenv('PYTHON_DOTENV_DISABLED', '1')
     monkeypatch.setenv('CONFIG_MASTER_KEY', 'postgres-test-master-key')
-    monkeypatch.setenv('DATA_DIR', str(tmp_path))
-    schema = 'stores_' + uuid.uuid4().hex
-    with psycopg.connect(address, autocommit=True) as admin:
-        admin.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(schema)))
-    query = dict(parse_qsl(parsed.query))
-    query['options'] = f'-c search_path={schema}'
-    scoped = urlunsplit(parsed._replace(query=urlencode(query, quote_via=quote)))
-    monkeypatch.setenv('DATABASE_URL', scoped)
-    storage.close_pool()
-    try:
-        with storage.get_connection() as conn:
-            baseline = Path('backend/storage/migrations/0001_application.sql').read_text(encoding='utf-8')
-            conn.execute(baseline)
-            conn.commit()
-        yield storage.get_connection
-    finally:
-        storage.close_pool()
-        with psycopg.connect(address, autocommit=True) as admin:
-            admin.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))
+    yield storage.get_connection
 
 
 def test_balance_prices_and_scoped_spot_fills(pg):

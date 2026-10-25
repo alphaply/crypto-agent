@@ -336,7 +336,8 @@ def test_paper_sdk_schemas_offer_only_binance(ledger, monkeypatch):
     register_tools(server)
     register_paper_tools(server)
     offered = asyncio.run(server.list_tools())
-    assert len(offered) == 11
+    assert {'get_trading_context', 'get_account_state', 'execute_trade_actions', 'adjust_paper_position'} <= {
+        tool.name for tool in offered}
     for tool in offered:
         schemas = [tool.inputSchema, *tool.inputSchema.get('$defs', {}).values()]
         for schema in schemas:

@@ -124,7 +124,6 @@ def _get(conn, namespace, user_id):
 
 
 def _save(conn, account):
-    from .paper_storage import max_payload, PaperPayloadLimit
     account['updated_at'] = time.time()
     encoded = json.dumps({k: v for k, v in account.items() if not k.startswith('_')}, allow_nan=False)
     conn.execute('INSERT INTO paper_accounts(namespace,user_id,payload) VALUES(%s,%s,%s) ON CONFLICT(namespace,user_id) DO UPDATE SET payload=excluded.payload',
@@ -234,7 +233,7 @@ def _write(caller, user_id, operation_id, request, change):
         fingerprint, previous = _receipt(conn, namespace, user_id, operation_id, request)
         if previous is not None:
             return previous
-        account = upgrade_account(conn, _get(conn, namespace, user_id))
+        account = _get(conn, namespace, user_id)
         from .paper_orders import refresh_reservations
         refresh_reservations(conn, account)
         from .paper_lifecycle import settle, refresh_status, assert_active
@@ -262,7 +261,6 @@ def _write(caller, user_id, operation_id, request, change):
                 result['interest_reserve'] = reminder
         if accepted and any(order.get('order_type') in {'stop_loss', 'take_profit'} for order in accepted_orders):
             result.update(order_status='waiting_trigger', filled_amount=0)
-        from .paper_storage import max_payload, PaperPayloadLimit
         encoded = json.dumps(result, allow_nan=False)
         conn.execute('INSERT INTO paper_operations(namespace,user_id,operation_id,fingerprint,principal,result) VALUES(%s,%s,%s,%s,%s,%s)',
                      (namespace, user_id, operation_id, fingerprint, caller['id'], encoded))
@@ -398,7 +396,7 @@ def history_page(caller, user_id, limit=50, offset=0, *, cursor=None, record_typ
     identity(user_id)
     if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
         raise ValueError('Invalid history page')
-    from .paper_storage import decode, history_limit, max_payload, blob_size, read_blob
+    from .paper_storage import decode, history_limit, read_blob
     from .paper_policy import event_visible
     clauses, params = ['namespace=%s', 'user_id=%s'], [namespace, user_id]
     if cursor is not None:
@@ -664,7 +662,13 @@ def admin_accounts(namespace=None, user_id=None, limit=100, offset=0, *, cursor=
         count = conn.execute('SELECT COUNT(*) FROM paper_accounts WHERE ' + where, params).fetchone()[0]
         if cursor is None and offset:
             prior = conn.execute('SELECT storage_id AS rowid FROM paper_accounts WHERE ' + where + ' ORDER BY namespace,user_id LIMIT 1 OFFSET %s', [*params, offset - 1]).fetchone()
-            cursor = prior[0] if prior else conn.execute('SELECT COALESCE(MAX(storage_id),0) FROM paper_accounts').fetchone()[0]
+            if prior is None:
+                # IDs reflect creation order, while this page is sorted by
+                # namespace/user. An out-of-range offset must stay past that
+                # ordering's last account, even when the newest ID sorts first.
+                prior = conn.execute('SELECT storage_id FROM paper_accounts WHERE ' + where +
+                                     ' ORDER BY namespace DESC,user_id DESC LIMIT 1', params).fetchone()
+            cursor = prior[0] if prior else 0
         records, progress = payload_page(conn, 'paper_accounts', where, params, cursor=cursor or 0, count=limit, order_by=('namespace', 'user_id'))
         items = []
         for row in records:
@@ -705,12 +709,14 @@ def admin_update(namespace, user_id, payload: AccountUpdate):
         _event(conn, account, 'admin_adjustment', updates)
         conn.commit()
     with store.connection() as conn:
-        return snapshot(account, conn=conn)
+        result = snapshot(account, conn=conn)
+        conn.commit()  # Persist this page of additive valuation/source proofs.
+        return result
 
 
 def maintenance_plan(*, max_items=None, max_accounts=None):
     """Stable cursor includes position within a large account's instrument set."""
-    from .paper_storage import batch_size, max_payload, decode, PaperPayloadLimit, blob_size, read_blob
+    from .paper_storage import batch_size, decode, PaperPayloadLimit, read_blob
     from .paper_policy import visible
     from .paper_orders import rows
     item_limit = min(batch_size(), max_items if max_items is not None else batch_size())
@@ -800,7 +806,7 @@ def reconcile_instrument(market_type, symbol, exchange_name=None, *, namespace=N
 
 def reconcile():
     """Synchronous maintenance entry point for isolated validation and operations."""
-    from .paper_storage import batch_size, limit
+    from .paper_storage import batch_size
     from .resilience import Budget, current_budget
     token = current_budget.set(Budget(None, uuid.uuid4().hex, 'execute'))
     from .paper_lifecycle import maintenance_finances
@@ -826,7 +832,7 @@ def reconcile():
 
 async def maintenance_round(stop: asyncio.Event):
     """Every planned item advances durable progress; no unattempted page tail."""
-    from .paper_storage import recover_receipts, batch_size, limit
+    from .paper_storage import recover_receipts, batch_size
     from .paper_batch import recover_pending
     await run('recovery', recover_receipts, label='paper_receipt_updates')
     await run('recovery', recover_pending, label='paper_recovery')

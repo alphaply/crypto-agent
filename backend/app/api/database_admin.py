@@ -3,8 +3,10 @@ from backend.storage import OperationalError
 import tempfile
 from pathlib import Path
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from backend.app.core.deps import get_current_user
 from backend.app.services import database_service as service
@@ -35,14 +37,14 @@ async def analyze_import(request: Request):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / 'import.db'
         size = 0
-        with path.open('wb') as stream:
+        async with await anyio.open_file(path, 'wb') as stream:
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > 512 * 1024 * 1024:
                     raise HTTPException(413, '数据库副本最大 512 MiB')
-                stream.write(chunk)
+                await stream.write(chunk)
         try:
-            return service.inspect_database(path)
+            return await run_in_threadpool(service.inspect_database, path)
         except (sqlite3.Error, ValueError) as exc:
             raise HTTPException(400, '无法读取有效 SQLite 数据库') from exc
 

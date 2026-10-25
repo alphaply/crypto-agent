@@ -5,7 +5,7 @@ import MarkdownBlock from '../components/MarkdownBlock';
 import { api } from '../lib/api';
 import { usePreferences } from '../app/usePreferences';
 
-const { Title, Paragraph, Text } = Typography;
+const { Title, Paragraph } = Typography;
 const { useBreakpoint } = Grid;
 
 function HistoryReview({ record, defaultOpen = false, locale }) {

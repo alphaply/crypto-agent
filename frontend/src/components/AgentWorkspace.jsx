@@ -4,7 +4,6 @@ import {
   Button,
   Card,
   Checkbox,
-  DatePicker,
   Descriptions,
   Empty,
   Form,
@@ -41,7 +40,7 @@ import { exitModeLabel, resolveExitMode, exitQuantityLabel } from '../lib/exitMa
 import { usePreferences } from '../app/usePreferences';
 import '../pages/DashboardPage.css';
 
-const { Text, Title, Paragraph } = Typography;
+const { Text, Title } = Typography;
 const { TextArea } = Input;
 const { useBreakpoint } = Grid;
 

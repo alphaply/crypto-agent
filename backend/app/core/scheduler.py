@@ -6,6 +6,7 @@ import time
 import threading
 import math
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 
 import pytz
@@ -230,13 +231,13 @@ def check_dca_executed(config_id, now, freq="1d"):
         return False
 
 
-def dca_was_dispatched(config_id, now, freq=None, config=None):
+def dca_was_dispatched(config_id, now, freq=None, config=None, *, connection=None):
     cfg = config or global_config.get_config_by_id(config_id) or {'dca_freq': freq or '1d'}
     slot = latest_dca_slot(cfg, now)
     if not slot:
         return False
     from backend.database import get_db_conn
-    with get_db_conn() as conn:
+    with nullcontext(connection) if connection is not None else get_db_conn() as conn:
         return bool(conn.execute('SELECT 1 FROM scheduler_runs WHERE config_id=%s AND job_type=%s AND scheduled_at>=%s AND scheduled_at<=%s',
                                 (config_id, AGENT_JOB_TYPE, _scheduled_at(slot.astimezone(TZ_CN)), _scheduled_at(now.astimezone(TZ_CN)))).fetchone())
 

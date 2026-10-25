@@ -205,7 +205,6 @@ def capture_epoch(function):
 
 
 def update_settings(payload) -> dict:
-    from . import paper
     from backend.utils.deployment_mode import ensure_execution_enabled
     ensure_execution_enabled()
     config = payload.model_dump()

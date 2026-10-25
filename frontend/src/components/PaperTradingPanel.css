@@ -61,6 +61,7 @@
 .paper-order-detail { display: flex; flex-wrap: wrap; gap: 12px 25px; color: var(--text-secondary); overflow-wrap: anywhere; padding: 8px; font-size: 12px; }
 .paper-audit-json { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 11px; max-height: 380px; overflow: auto; }
 .paper-account-detail { padding: 7px 10px; }
+.paper-valuation-reasons { max-width: min(680px, calc(100vw - 124px)); }
 .paper-detail-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; padding-bottom: 18px; }
 .paper-account-holdings { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 14px 0; }
 .paper-holding { display: grid; gap: 8px; padding: 14px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--bg-surface); }

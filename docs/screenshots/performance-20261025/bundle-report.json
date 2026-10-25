@@ -1,0 +1,24 @@
+{
+  "src/pages/DashboardPage.jsx": {
+    "before": {
+      "raw_bytes": 1865461,
+      "gzip_bytes": 616637
+    },
+    "after": {
+      "raw_bytes": 1178533,
+      "gzip_bytes": 394065
+    },
+    "gzip_reduction_pct": 36.1
+  },
+  "src/pages/AdminPage.jsx": {
+    "before": {
+      "raw_bytes": 1959708,
+      "gzip_bytes": 634706
+    },
+    "after": {
+      "raw_bytes": 1338562,
+      "gzip_bytes": 442898
+    },
+    "gzip_reduction_pct": 30.2
+  }
+}

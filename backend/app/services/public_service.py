@@ -1,12 +1,10 @@
 from backend.config import config as global_config
-from backend.database import get_latest_news_snapshot
 from backend.utils.spot_portfolio import get_config_symbols, SPOT_MARKET_TIMEFRAMES
 
 from backend.app.services.dashboard_service import (
     build_dashboard_overview,
     get_dashboard_data,
     build_history_payload,
-    get_daily_summaries_payload,
     get_short_memories_payload,
     list_short_memories_payload,
     get_recent_order_activity_payload,

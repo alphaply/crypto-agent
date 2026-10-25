@@ -26,7 +26,7 @@ def _encode(value):
 
 
 def _load(conn, namespace, user_id, operation_id):
-    from .paper_storage import max_payload, PaperPayloadLimit, blob_size, read_blob
+    from .paper_storage import read_blob
     row = conn.execute('SELECT storage_id AS rowid FROM paper_batches WHERE namespace=%s AND user_id=%s AND operation_id=%s',
                         (namespace, user_id, operation_id)).fetchone()
     if row is None:
@@ -37,7 +37,6 @@ def _load(conn, namespace, user_id, operation_id):
 
 
 def _save(conn, namespace, user_id, operation_id, payload):
-    from .paper_storage import max_payload, PaperPayloadLimit
     encoded = _encode(payload)
     from .paper_storage import receipt_revision
     # Preserve the first available pre-upgrade observation before recovery.
@@ -378,7 +377,7 @@ def execute(caller, user_id, request, operation_id):
 @bounded(critical=True)
 def recover_pending():
     """Refresh only original local evidence; no financial callback or quote."""
-    from .paper_storage import batch_size, max_payload, PaperPayloadLimit, blob_size
+    from .paper_storage import batch_size, PaperPayloadLimit
     with store.connection(recovery=True) as conn:
         saved = conn.execute("SELECT cursor FROM paper_scan_progress WHERE worker='batch-recovery'").fetchone()
         cursor = saved[0] if saved else 0

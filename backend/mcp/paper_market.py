@@ -118,7 +118,7 @@ def search(keyword='', market_type=None, exchange_name=None, limit=50, offset=0)
 
 
 def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True, exchange_name=None, include=None):
-    from .paper import money, number, settings
+    from .paper import money, number
     if timeframe not in {'1m', '5m', '15m', '1h', '4h', '1d', '1w'} or type(limit) is not int or not 1 <= limit <= 200:
         raise ValueError('Unsupported timeframe or candle limit')
     facets = include if include is not None else ['ticker', 'candles', 'analysis', 'sentiment']

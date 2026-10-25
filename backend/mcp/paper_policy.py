@@ -177,9 +177,19 @@ def performance_complete(conn, account):
 
 def _performance_scan(conn, account):
     namespace, user_id = account['namespace'], account['user_id']
+    # A successful reset starts a new capital/return cycle. Keep old event
+    # projections for audit, but they cannot invalidate this cycle's valuation.
+    # Match the durable reset to the loaded epoch; create/retry is not a reset.
+    boundary = 0
+    if account.get('account_epoch', 0):
+        boundary = conn.execute("SELECT COALESCE(MAX(id),0) FROM paper_events WHERE namespace=%s AND user_id=%s "
+                                "AND kind='reset' AND payload::jsonb->>'account_epoch'=%s",
+                                (namespace, user_id, str(account['account_epoch']))).fetchone()[0]
     worker = 'performance:' + hashlib.sha256((namespace + '\0' + user_id).encode()).hexdigest()
+    if account.get('account_epoch', 0):
+        worker += ':epoch:' + str(account['account_epoch'])
     saved = conn.execute('SELECT cursor FROM paper_scan_progress WHERE worker=%s', (worker,)).fetchone()
-    cursor = saved[0] if saved else 0
+    cursor = max(saved[0] if saved else 0, boundary)
     events, progress = paper_storage.payload_page(conn, 'paper_events', 'namespace=%s AND user_id=%s',
         (namespace, user_id), cursor=cursor)
 
@@ -203,7 +213,7 @@ def _performance_scan(conn, account):
     # origin scan can restore eligibility; closed foreign fills never can.
     retry_worker = worker + ':unresolved'
     saved = conn.execute('SELECT cursor FROM paper_scan_progress WHERE worker=%s', (retry_worker,)).fetchone()
-    retry_cursor = saved[0] if saved else 0
+    retry_cursor = max(saved[0] if saved else 0, boundary)
     refs = conn.execute("SELECT event_id FROM paper_performance_events WHERE namespace=%s AND user_id=%s AND state='unresolved' AND event_id>%s ORDER BY event_id LIMIT %s",
                         (namespace, user_id, retry_cursor, paper_storage.batch_size())).fetchall()
     for ref in refs:
@@ -218,8 +228,8 @@ def _performance_scan(conn, account):
         remember({'id': ref['event_id'], 'kind': row[0], 'payload': payload})
     conn.execute('INSERT INTO paper_scan_progress(worker,cursor,payload) VALUES(%s,%s,%s) ON CONFLICT(worker) DO UPDATE SET cursor=excluded.cursor',
                  (retry_worker, refs[-1]['event_id'] if len(refs) == paper_storage.batch_size() else 0, '{}'))
-    unresolved = conn.execute("SELECT 1 FROM paper_performance_events WHERE namespace=%s AND user_id=%s AND state!='binance' LIMIT 1",
-                              (namespace, user_id)).fetchone()
+    unresolved = conn.execute("SELECT 1 FROM paper_performance_events WHERE namespace=%s AND user_id=%s AND event_id>%s AND state!='binance' LIMIT 1",
+                              (namespace, user_id, boundary)).fetchone()
     if progress['has_more']:
         return False, 'paper_performance_scan_incomplete'
     return (False, 'paper_historical_performance_unverified') if unresolved else (True, None)

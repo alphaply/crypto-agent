@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-from contextlib import nullcontext
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -29,10 +28,6 @@ def limit(name, default):
     if value <= 0 or value > 1 << 30:
         raise ValueError(name + ' must be within 1..1073741824')
     return value
-
-
-def max_payload():
-    return limit('PAPER_MAX_PAYLOAD_BYTES', 262144)
 
 
 def batch_size():
@@ -105,9 +100,9 @@ def blob_size(conn, table, column, rowid):
     return byte_size(conn, table, column, rowid)
 
 
-def read_blob(conn, table, column, rowid, *, identity='ledger'):
+def read_blob(conn, table, column, rowid, *, identity='ledger', expected_size=None):
     from backend.utils.sqlite_blob import blob_slice
-    size = blob_size(conn, table, column, rowid)
+    size = blob_size(conn, table, column, rowid) if expected_size is None else expected_size
     stack = _payload_lifetime.get()
     if stack is not None:
         stack.enter_context(_reserve(size))
@@ -140,18 +135,20 @@ def payload_page(conn, table, where, params, *, cursor=0, count=None, column='pa
     if ceiling is not None:
         condition += ' AND storage_id<=%s'
         arguments = (*arguments, ceiling)
-    records = conn.execute(f'SELECT storage_id AS scan_id '
+    from backend.storage import table_columns
+    fields = [row['name'] for row in table_columns(conn, table) if row['name'] not in {column, 'storage_id'}]
+    # Fetch compact metadata once per page. Payload bytes still need a memory
+    # reservation before retrieval, and blob_slice rechecks their stored size.
+    records = conn.execute(f'SELECT {",".join(fields)},storage_id AS scan_id,octet_length({column}) AS payload_bytes '
                            f'FROM {table} WHERE {where} AND {condition} ORDER BY {order} LIMIT %s',
                            (*arguments, count + 1)).fetchall()
     more = len(records) > count
     selected, skipped = [], []
     for record in records[:count]:
         row_id = record['scan_id']
-        payload = read_blob(conn, table, column, row_id, identity=f'{table}:{row_id}')
-        from backend.storage import table_columns
-        fields = [row['name'] for row in table_columns(conn, table) if row['name'] not in {column, 'storage_id'}]
-        row = conn.execute(f'SELECT {",".join(fields)},storage_id AS scan_id FROM {table} WHERE storage_id=%s', (row_id,)).fetchone()
-        selected.append({**dict(row), column: decode(payload, identity=f'{table}:{row_id}')})
+        payload = read_blob(conn, table, column, row_id, identity=f'{table}:{row_id}', expected_size=record['payload_bytes'])
+        selected.append({**{field: record[field] for field in fields}, 'scan_id': row_id,
+                         column: decode(payload, identity=f'{table}:{row_id}')})
     next_cursor = records[min(len(records), count) - 1]['scan_id'] if records else cursor
     return selected, {'next_cursor': next_cursor, 'has_more': more, 'scan_complete': not more,
                       'skipped_records': skipped, 'status': 'partial' if more or skipped else 'complete'}

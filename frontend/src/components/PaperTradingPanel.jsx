@@ -1,43 +1,55 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Card, Checkbox, Collapse, Empty, Input, InputNumber, Modal, Space, Switch, Table, Tag, Typography } from 'antd';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Button, Card, Checkbox, Collapse, Empty, Input, InputNumber, Modal, Switch, Table, Tag, Tooltip, Typography } from 'antd';
 import { BankOutlined, KeyOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
-import { formatPaperAmount, paperFilterCount, paperValuationIncomplete } from '../lib/paperDisplay';
+import { useLatestRequest } from '../hooks/useLatestRequest';
+import { formatPaperAmount, paperFilterCount, paperValuationIncomplete, paperValuationReasons } from '../lib/paperDisplay';
 import AuditDisclosure from './AuditDisclosure';
 import PaperDataPanel from './PaperDataPanel';
 import './PaperTradingPanel.css';
 
-export default function PaperTradingPanel({ settings: initial, zh, onChanged, onSettingsSaved, onCreateKey }) {
+export default function PaperTradingPanel({ settings: initial, zh, onSettingsSaved, onCreateKey }) {
   const label = (cn, en) => zh ? cn : en;
   const [draft, setDraft] = useState(null);
   const settings = draft || initial;
   const [accounts, setAccounts] = useState([]);
   const [total, setTotal] = useState(null);
-  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [userId, setUserId] = useState('');
   const [namespace, setNamespace] = useState('qqbot');
+  const page = pagination?.namespace === namespace && pagination?.userId === userId ? pagination.page : 1;
   const [editing, setEditing] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
-  const load = useCallback(async (target = 1, signal) => {
+  const { begin, cancel } = useLatestRequest();
+  const currentView = useRef(null);
+  const load = useCallback(async (target = 1) => {
+    const signal = begin();
+    if (!signal) return;
     setLoading(true);
     try {
       const { data } = await api.get('/mcp/paper/accounts', { signal, params: { limit: 20, offset: (target - 1) * 20, ...(userId ? { user_id: userId } : {}), ...(namespace ? { namespace } : {}) } });
       if (signal?.aborted) return;
-      setAccounts(data.items); setTotal(data.total); setPage(target); setError('');
-    } catch (err) { if (!signal?.aborted) setError(err.message); }
+      setAccounts(data.items); setTotal(data.total); setPagination({ namespace, userId, page: target }); setError('');
+      return true;
+    } catch (err) { if (!signal.aborted) { setError(err.message); return false; } }
     finally { if (!signal?.aborted) setLoading(false); }
-  }, [userId, namespace]);
+  }, [userId, namespace, begin]);
   useEffect(() => {
-    const controller = new AbortController();
-    Promise.resolve().then(() => { if (!controller.signal.aborted) load(1, controller.signal); });
-    return () => controller.abort();
-  }, [load]);
+    let active = true;
+    Promise.resolve().then(() => { if (active) load(1); });
+    return () => { active = false; cancel(); };
+  }, [load, cancel]);
+  useEffect(() => {
+    currentView.current = () => load(page);
+    return () => { currentView.current = null; };
+  }, [load, page]);
   const mutate = async (action) => {
     setBusy(true);
-    try { await action(); await load(page); await onChanged(); setRevision((v) => v + 1); setError(''); return true; }
+    setError('');
+    try { await action(); await currentView.current?.(); setRevision((v) => v + 1); return true; }
     catch (err) { setError(err.message); return false; }
     finally { setBusy(false); }
   };
@@ -50,12 +62,12 @@ export default function PaperTradingPanel({ settings: initial, zh, onChanged, on
       onSettingsSaved(data.settings);
       // Keep any draft edited while this request was in flight.
       setDraft((current) => current === submitted ? null : current);
-      await load(page);
+      await currentView.current?.();
       setRevision((v) => v + 1);
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   };
-  const update = (field, value) => setDraft({ ...settings, [field]: value });
+  const update = (field, value) => setDraft((current) => ({ ...(current || initial), [field]: value }));
   const edit = (field, value) => setEditing((v) => ({ ...v, [field]: value }));
   const path = (row) => '/mcp/paper/accounts/' + encodeURIComponent(row.namespace) + '/' + encodeURIComponent(row.user_id);
   const format = (v) => formatPaperAmount(v, zh);
@@ -80,10 +92,10 @@ export default function PaperTradingPanel({ settings: initial, zh, onChanged, on
       <div className="paper-filter-title"><SearchOutlined /><span>{label('查看范围', 'View scope')}</span></div>
       <div className="paper-filter-field"><label htmlFor="paper-namespace">{label('命名空间', 'Namespace')}</label><Input id="paper-namespace" aria-label={label('账户命名空间', 'Account namespace')} placeholder={label('全部命名空间', 'All namespaces')} value={namespace} onChange={(e) => setNamespace(e.target.value)} allowClear /></div>
       <div className="paper-filter-field paper-filter-user"><label htmlFor="paper-user">{label('用户 ID', 'User ID')}</label><Input id="paper-user" aria-label={label('用户 ID', 'User ID')} placeholder={label('全部账户 / 输入完整 QQ 用户 ID', 'All accounts / exact QQ user ID')} value={userId} onChange={(e) => setUserId(e.target.value)} allowClear /></div>
-      <Button icon={<ReloadOutlined />} loading={loading} onClick={async () => { await load(1); setRevision((v) => v + 1); }}>{label('刷新', 'Refresh')}</Button>
+      <Button icon={<ReloadOutlined />} loading={loading} onClick={async () => { if (await load(1) !== undefined) setRevision((v) => v + 1); }}>{label('刷新', 'Refresh')}</Button>
     </div>
 
-    <PaperDataPanel namespace={namespace} userId={userId} revision={revision} zh={zh} maxLeverage={initial.max_leverage} onChanged={() => load(page)} />
+    <PaperDataPanel namespace={namespace} userId={userId} revision={revision} zh={zh} maxLeverage={initial.max_leverage} onChanged={() => currentView.current?.()} />
 
     <section className="paper-accounts-section">
       <div className="paper-section-heading">
@@ -98,13 +110,14 @@ export default function PaperTradingPanel({ settings: initial, zh, onChanged, on
           { title: label('可用现金', 'Available cash'), dataIndex: 'available_cash', render: number, align: 'right' },
           { title: label('保证金', 'Margin'), dataIndex: 'used_margin', render: number, align: 'right' },
           { title: label('负债', 'Debt'), dataIndex: 'debt', render: number, align: 'right' },
-          { title: label('净资产', 'Net equity'), dataIndex: 'net_equity', align: 'right', render: (v, r) => <div className="paper-cell-stack paper-align-right"><strong className={'paper-number' + (v != null && v < 0 ? ' paper-negative' : '')}>{format(v)}</strong>{paperValuationIncomplete(r) && <Tag color="orange">{label('估值不完整', 'Incomplete')}</Tag>}</div> },
+          { title: label('净资产', 'Net equity'), dataIndex: 'net_equity', align: 'right', render: (v, r) => <div className="paper-cell-stack paper-align-right"><strong className={'paper-number' + (v != null && v < 0 ? ' paper-negative' : '')}>{format(v)}</strong>{paperValuationIncomplete(r) && <Tooltip title={paperValuationReasons(r, zh).join(' ') || undefined}><Tag color="orange">{label('估值不完整', 'Incomplete')}</Tag></Tooltip>}</div> },
           { title: label('默认杠杆 / 市场', 'Default leverage / markets'), width: 145, render: (_, r) => <div className="paper-cell-stack"><span className="paper-number">{r.leverage != null ? format(r.leverage) + '×' : '—'}</span><span className="paper-cell-note">{r.markets?.map((v) => v === 'spot' ? label('现货', 'Spot') : v === 'swap' ? label('永续', 'Perpetual') : v).join(' · ') || '—'}</span>{paperFilterCount(r.filter) > 0 && <Tag>{label('历史过滤 ', 'Filtered ')}{paperFilterCount(r.filter)}</Tag>}</div> },
           { title: label('操作', 'Actions'), width: 105, render: (_, r) => <Button size="small" onClick={() => openEditor(r)}>{label('调整账户', 'Adjust')}</Button> },
         ]} expandable={{ expandedRowRender: (r) => <div className="paper-account-detail">
           <div className="paper-detail-facts">
             {[[label('已实现盈亏', 'Realized PnL'), r.realized_pnl, 'USDT'], [label('本轮手续费', 'Cycle fees'), r.fees, 'USDT'], [label('本轮已付利息', 'Cycle interest paid'), r.interest_paid, 'USDT'], [label('账户周期', 'Account cycle'), r.account_epoch, '']].map(([title, value, unit]) => <div key={title}><span>{title}</span><strong className="paper-number">{format(value)} <small>{unit}</small></strong></div>)}
           </div>
+          {paperValuationIncomplete(r) && paperValuationReasons(r, zh).length > 0 && <Alert className="paper-valuation-reasons" type="warning" showIcon title={label('估值不完整的原因', 'Why valuation is incomplete')} description={paperValuationReasons(r, zh).join(' ')} />}
           {r.interest_reserve?.message && <Alert type={r.interest_reserve.shortfall > 0 ? 'warning' : 'info'} showIcon title={label('付息资金提醒', 'Interest cash reminder')} description={r.interest_reserve.message} />}
           {paperFilterCount(r.filter) > 0 && <Alert type="info" showIcon title={label('历史资源已过滤，资金占用仍保留', 'Filtered history retains financial commitments')} description={label('预留现金：', 'Reserved cash: ') + format(r.filter.retained_reserved_cash) + ' USDT · ' + label('保证金：', 'Margin: ') + format(r.filter.retained_margin) + ' USDT'} />}
           <div className="paper-account-holdings">

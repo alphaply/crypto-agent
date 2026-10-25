@@ -1,8 +1,8 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { Empty, Segmented, Select, Space, Tag, Typography } from 'antd';
-import LineChart from './LineChart';
+import React, { lazy, Suspense, useCallback, useMemo, useState } from 'react';
+import { Empty, Segmented, Select, Space, Spin, Tag, Typography } from 'antd';
 import { usePreferences } from '../app/usePreferences';
 
+const LineChart = lazy(() => import('./LineChart'));
 const { Text } = Typography;
 
 function formatNumber(value) {
@@ -100,12 +100,12 @@ function EquityCompareChart({ series = [], selectedIds = [], onSelectedIdsChange
 
       <div className="chart-wrap">
         {chartSeries.length ? (
-          <LineChart
+          <Suspense fallback={<Spin />}><LineChart
             series={chartSeries}
             yName={isReturnMode ? '%' : t('equity')}
             valueFormatter={isReturnMode ? valueFormatter : undefined}
             tooltipFormatter={tooltipFormatter}
-          />
+          /></Suspense>
         ) : (
           <Empty description={t('noData')} />
         )}

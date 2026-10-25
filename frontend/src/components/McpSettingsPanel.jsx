@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Checkbox, Collapse, Empty, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Typography, message } from 'antd';
 import { ApiOutlined, CopyOutlined, KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
+import { useLatestRequest } from '../hooks/useLatestRequest';
 import { usePreferences } from '../app/usePreferences';
 import McpSymbolPicker from './McpSymbolPicker';
 import PositionManagementFields from './PositionManagementFields';
@@ -10,7 +11,7 @@ import { managementError } from '../lib/positionManagement';
 import McpConnectionSetup from './McpConnectionSetup';
 import { mcpSuggestedOrigin } from '../lib/mcpConnection';
 import { mcpProfileDraft, mcpProfilePayload } from '../lib/mcpSymbols';
-import PaperTradingPanel from './PaperTradingPanel';
+const PaperTradingPanel = lazy(() => import('./PaperTradingPanel'));
 
 const { Text, Paragraph } = Typography;
 const blankProfile = () => ({ profile_id: `connection-${Date.now()}`, name: '', exchange_profile_id: '', market_type: 'swap', symbol_scope: 'selected', symbols: [], enabled: true, max_leverage: 5, leverage: 1, exit_mode: 'attached_required', spot_allowance: 100, position_management_policy: 'visible_first_claim', management_scopes: [] });
@@ -20,7 +21,8 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
   const zh = locale === 'zh';
   const label = (cn, en) => zh ? cn : en;
   const [data, setData] = useState(null);
-  const [settings, setSettings] = useState(null);
+  const [settingsDraft, setSettingsDraft] = useState(null);
+  const settings = settingsDraft || data?.settings;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -29,21 +31,26 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
   const [keyDraft, setKeyDraft] = useState(null);
   const [selectedKey, setSelectedKey] = useState('');
 
+  const { begin, cancel } = useLatestRequest();
+  const paperSettingsVersion = useRef(0);
   const load = useCallback(async () => {
+    const signal = begin();
+    if (!signal) return;
+    const paperVersion = paperSettingsVersion.current;
     try {
-      const { data: next } = await api.get('/mcp');
-      setData(next);
-      setSettings(next.settings);
+      const { data: next } = await api.get('/mcp', { signal });
+      if (signal.aborted) return;
+      setData((current) => paperVersion === paperSettingsVersion.current ? next : { ...next, paper_settings: current.paper_settings });
       setSelectedKey((current) => next.keys?.some((key) => key.id === current && !key.revoked) ? current : '');
       setError('');
-    } catch (err) { setError(err.message); }
-    finally { setLoading(false); }
-  }, []);
+    } catch (err) { if (!signal.aborted) setError(err.message); }
+    finally { if (!signal.aborted) setLoading(false); }
+  }, [begin]);
   useEffect(() => {
     let active = true;
     Promise.resolve().then(() => { if (active) load(); });
-    return () => { active = false; };
-  }, [load]);
+    return () => { active = false; cancel(); };
+  }, [load, cancel]);
 
   const mutate = async (action) => {
     setBusy(true);
@@ -51,6 +58,19 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
     catch (err) { setError(err.message); return false; }
     finally { setBusy(false); }
   };
+  const acceptPaperSettings = (saved) => {
+    paperSettingsVersion.current += 1;
+    setData((current) => ({ ...current, paper_settings: saved }));
+  };
+  const saveSettings = async (submitted = settings) => {
+    const original = settings;
+    return mutate(async () => {
+      const { data: saved } = await api.put('/mcp/settings', submitted);
+      setData((current) => ({ ...current, settings: saved.settings }));
+      setSettingsDraft((current) => current === original ? null : current);
+    });
+  };
+  const updateSettings = (patch) => setSettingsDraft((current) => ({ ...(current || data.settings), ...patch }));
   const copy = async (value) => {
     try { await navigator.clipboard.writeText(value); message.success(label('已复制', 'Copied')); }
     catch { message.error(label('复制失败，请手动选择文本复制。', 'Copy failed. Select the text and copy manually.')); }
@@ -72,12 +92,12 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
     <Card className="panel-card" title={<Space><ApiOutlined />{label('外部助手接入', 'External assistants')}</Space>} extra={<Button icon={<ReloadOutlined />} onClick={load}>{label('刷新', 'Refresh')}</Button>}>
       <Paragraph type="secondary">{label('在 Workbuddy、ChatGPT 或其他 MCP 客户端中连接此服务，共享消息情报、查询账户并执行授权的交易。每个连接配置独立于内部 Agent。', 'Connect Workbuddy, ChatGPT or another MCP client to shared intelligence, account queries and authorized trading. Connection profiles are independent of internal agents.')}</Paragraph>
       <div className="settings-form-grid">
-        <div className="form-field"><label>{label('启用 MCP', 'Enable MCP')}</label><Switch checked={settings.enabled} onChange={(enabled) => setSettings({ ...settings, enabled })} /></div>
-        <div className="form-field"><label>{label('服务公开地址', 'Public service origin')}</label><Input value={settings.public_url} placeholder="https://agent.example.com" onChange={(event) => setSettings({ ...settings, public_url: event.target.value })} /></div>
+        <div className="form-field"><label>{label('启用 MCP', 'Enable MCP')}</label><Switch checked={settings.enabled} onChange={(enabled) => updateSettings({ enabled })} /></div>
+        <div className="form-field"><label>{label('服务公开地址', 'Public service origin')}</label><Input value={settings.public_url} placeholder="https://agent.example.com" onChange={(event) => updateSettings({ public_url: event.target.value })} /></div>
       </div>
       <Space wrap style={{ marginTop: 16 }}>
-        <Button type="primary" loading={busy} onClick={() => mutate(() => api.put('/mcp/settings', settings))}>{label('保存接入设置', 'Save connection settings')}</Button>
-        <Button disabled={busy || !suggestedOrigin || (suggestedOrigin === settings.public_url && suggestedOrigin === data.settings.public_url)} onClick={() => mutate(() => api.put('/mcp/settings', { ...settings, public_url: suggestedOrigin }))}>{label('使用当前域名并保存', 'Use current origin and save')}</Button>
+        <Button type="primary" loading={busy} onClick={() => saveSettings()}>{label('保存接入设置', 'Save connection settings')}</Button>
+        <Button disabled={busy || !suggestedOrigin || (suggestedOrigin === settings.public_url && suggestedOrigin === data.settings.public_url)} onClick={() => saveSettings({ ...settings, public_url: suggestedOrigin })}>{label('使用当前域名并保存', 'Use current origin and save')}</Button>
         <Text type="secondary">{suggestedOrigin || label('请通过公网 HTTPS 域名访问后使用当前域名。', 'Open this page on its public HTTPS origin to use the current address.')}</Text>
       </Space>
       <Paragraph type="secondary" style={{ marginTop: 10, marginBottom: 0 }}>{label('填写网站根地址，不带 /mcp。公开地址变更后重启后端服务；其他设置即时生效。', 'Enter the site origin without /mcp. Restart the backend after changing the public origin; other settings take effect immediately.')}</Paragraph>
@@ -117,7 +137,7 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
     ]} expandable={{ expandedRowRender: (record) => <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify({ operation_id: record.operation_id, principal: record.principal, result: (() => { try { return JSON.parse(record.result); } catch { return record.result; } })() }, null, 2)}</pre> }} /></Card>
 
     </>}
-    {section === 'paper' && <PaperTradingPanel settings={data.paper_settings} zh={zh} onChanged={load} onSettingsSaved={(saved) => setData((current) => ({ ...current, paper_settings: saved }))} onCreateKey={() => setKeyDraft({ name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] })} />}
+    {section === 'paper' && <Suspense fallback={<Card className="panel-card loading-card"><Spin /></Card>}><PaperTradingPanel settings={data.paper_settings} zh={zh} onSettingsSaved={acceptPaperSettings} onCreateKey={() => setKeyDraft({ name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] })} /></Suspense>}
 
     <Card className="panel-card" title={<Space><KeyOutlined />API Keys</Space>} extra={<Button icon={<PlusOutlined />} onClick={() => setKeyDraft(section === 'paper' ? { name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] } : { name: '', scopes: ['read'], profile_ids: [] })}>{section === 'paper' ? label('创建 Paper Key', 'Create Paper key') : label('创建 API Key', 'Create API key')}</Button>}>
       <div className="settings-stack">{activeKeys.filter((key) => section !== 'paper' || key.key_type === 'paper').map((key) => <div key={key.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border-soft)' }}>

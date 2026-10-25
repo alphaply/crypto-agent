@@ -27,7 +27,7 @@ def exposure(account, kind, symbol, side=None, exchange_name=None, *, include_ex
 
 
 def rows(conn, namespace, user_id=None, state='open'):
-    from .paper_storage import decode, history_limit, max_payload, PaperPayloadLimit, blob_size, read_blob
+    from .paper_storage import decode, read_blob
     query, params = 'SELECT storage_id AS rowid FROM paper_orders WHERE namespace=%s', [namespace]
     if user_id is not None:
         query += ' AND user_id=%s'
@@ -41,7 +41,6 @@ def rows(conn, namespace, user_id=None, state='open'):
 
 
 def save(conn, order):
-    from .paper_storage import max_payload, PaperPayloadLimit
     order['updated_at'] = time.time()
     encoded = json.dumps(order, allow_nan=False)
     conn.execute('INSERT INTO paper_orders(namespace,user_id,order_id,state,payload,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(namespace,user_id,order_id) DO UPDATE SET state=excluded.state,payload=excluded.payload,updated_at=excluded.updated_at',
@@ -364,10 +363,38 @@ def records_page(caller, user_id, state='open', limit=100, offset=0, *, cursor=0
     return {'items': items, **page, 'filtered_count': len(found) - len(items), 'execution_mode': 'paper'}
 
 
+def _require_order_origin(namespace, user_id, order):
+    """Persist source-proof progress independently of the later financial write."""
+    from .paper_policy import classify, require_target
+    if classify(order)['classification'] != 'unresolved_origin':
+        return require_target(order)
+    with store.connection() as conn:
+        account = paper._get(conn, namespace, user_id)
+        account['_venue_origins']['orders:' + order['order_id']] = classify(order, account=account, conn=conn)
+        conn.commit()
+    require_target(order, account=account)
+
+
 def cancel(caller, user_id, order_id, operation_id):
+    from backend.utils.deployment_mode import ensure_execution_enabled
     from .paper_policy import require_target
+    from .paper_storage import one
+    ensure_execution_enabled()
+    namespace = paper.require(caller, 'trade')
+    paper.require(caller, 'read')
+    paper.identity(user_id)
+    request = {'action': 'cancel_order', 'order_id': order_id}
+    with store.connection() as conn:
+        _, previous = paper._receipt(conn, namespace, user_id, operation_id, request)
+        if previous is not None:
+            return previous
+        found = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s',
+                    (namespace, user_id, order_id))
+    if found is None:
+        raise ValueError('Order not found in this account')
+    _require_order_origin(namespace, user_id, found)
+
     def change(account, conn):
-        from .paper_storage import one
         found = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s', (account['namespace'], user_id, order_id))
         if not found:
             raise ValueError('Order not found in this account')
@@ -376,7 +403,7 @@ def cancel(caller, user_id, order_id, operation_id):
             return {'order': found, 'changed': False}
         finish(conn, account, found, 'cancelled', 'Requested by account owner')
         return {'order': found, 'changed': True}
-    return paper._write(caller, user_id, operation_id, {'action': 'cancel_order', 'order_id': order_id}, change)
+    return paper._write(caller, user_id, operation_id, request, change)
 
 
 def edit(caller, user_id, order_id, operation_id, price=None, trigger_price=None, amount=None):
@@ -390,9 +417,7 @@ def edit(caller, user_id, order_id, operation_id, price=None, trigger_price=None
         order = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s', (namespace, user_id, order_id))
     if not order or order['state'] != 'open':
         raise ValueError('Only an open order in this account can be edited')
-    from .paper_policy import require_target
-    with store.connection() as conn:
-        require_target(order, account=paper._get(conn, namespace, user_id), conn=conn)
+    _require_order_origin(namespace, user_id, order)
     quote = get_quote(order['symbol'], order['market_type'], order['exchange'])
     def change(account, conn):
         current = one(conn, 'paper_orders', 'payload', 'namespace=%s AND user_id=%s AND order_id=%s', (namespace, user_id, order_id))
@@ -516,8 +541,11 @@ def _require_exposure(caller, user_id, kind, symbol, side):
     with store.connection() as conn:
         account = paper._get(conn, namespace, user_id)
         _, target = exposure(account, kind, symbol, side)
-        if target is None:
-            raise ValueError('paper_origin_unverified: no eligible Binance exposure; raw commitments retained')
+        # A rejected preflight must still retain its bounded source-proof page;
+        # otherwise every retry of a legacy holding starts from the first page.
+        conn.commit()
+    if target is None:
+        raise ValueError('paper_origin_unverified: no eligible Binance exposure; raw commitments retained')
 
 
 def admin_orders(namespace=None, user_id=None, state='open', limit=100, *, cursor=0):

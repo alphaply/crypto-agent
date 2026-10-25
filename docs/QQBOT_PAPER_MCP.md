@@ -86,7 +86,7 @@ Paper Bearer 回执：`GET /api/paper/operations/{user_id}/{operation_id}/audit?
 
 详情默认 base64 字节片段，length 为 1–65536；`encoding=text&length=2048` 每页至多 2048 个完整 Unicode 字符，避免中文拆字。两种编码的 `offset/next_offset` 都是字节游标，text 明确返回 `offset_unit=bytes`，客户端透传返回的游标。先用 PostgreSQL `octet_length` 检查大小，再在数据库侧通过 `convert_to(..., 'UTF8')` 和字节 `substring` 切片，应用只接收请求范围内的片段；text 页使用 UTF-8 增量解码。响应有 `version/next_offset/has_more/total_bytes`。同页版本与内容在一致快照下读取；续读必须携带 version，可变原账本变化返回 `audit_version_changed`，重新展开；不可变回执 revision 可继续读取。以上路径均受原权限保护、禁止缓存，不进行金融写入或交易所联网。
 
-`PAPER_MAX_PAYLOAD_BYTES`（默认 262144）、`PAPER_SCAN_BATCH_SIZE`（64）、`PAPER_HISTORY_SCAN_LIMIT`（256）为有限校准值，非法值报错。先查大小再解析；不能完整核验资金时拒绝金融请求，原行仍可分块审计。后台保存扫描游标，重启继续；已结束回执不持续进入活跃订单解析集合。原资源来源核验有固定扫描 horizon，后来的新成交不会追认旧资源。
+`PAPER_SCAN_BATCH_SIZE`（64）、`PAPER_HISTORY_SCAN_LIMIT`（256）控制分页扫描范围，非法值报错。旧的 `PAPER_MAX_PAYLOAD_BYTES` 大小门槛已废弃，不再因超过该值拒绝完整账本读取；仍先查大小、记录内存占用并检查读取中内容大小是否改变。不能完整核验资金时拒绝金融请求，原行仍可分块审计。后台保存扫描游标，重启继续；已结束回执不持续进入活跃订单解析集合。原资源来源核验有固定扫描 horizon，后来的新成交不会追认旧资源。
 
 配置导入导出保留 Paper Key、namespace 和有效 BN 设置；运行账本随数据库卷持久化，不在配置导出中。人格和集成 skill 见 [人格 prompt](qqbot/人格prompt.txt)、[QQBot Paper skill](qqbot/qqbot-paper-trading/SKILL.md)。
 

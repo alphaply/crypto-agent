@@ -1,4 +1,6 @@
 """Resolve discovery credentials without persisting or changing runtime configuration."""
+from starlette.concurrency import run_in_threadpool
+
 from backend.app.schemas.provider_models import ProviderDiscoveryRequest
 from backend.config_store import load_effective_runtime_snapshot
 from backend.utils.provider_catalog import CatalogError, connection_identity, fetch_models
@@ -27,4 +29,5 @@ def resolve_discovery_connection(request: ProviderDiscoveryRequest) -> dict:
 
 
 async def discover_provider_models(request: ProviderDiscoveryRequest) -> dict:
-    return await fetch_models(resolve_discovery_connection(request))
+    connection = await run_in_threadpool(resolve_discovery_connection, request)
+    return await fetch_models(connection)

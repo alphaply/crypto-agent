@@ -1,22 +1,15 @@
-import McpSettingsPanel from '../components/McpSettingsPanel';
-import PositionManagementFields from '../components/PositionManagementFields';
-import ManagementLifecyclePanel from '../components/ManagementLifecyclePanel';
 import { managementDraft, managementError } from '../lib/positionManagement';
 import { PriceSyncPanel, ProviderPricingFields } from '../components/ProviderPricingFields';
 import RunScheduleEditor from '../components/RunScheduleEditor';
 import SpotScheduleEditor from '../components/SpotScheduleEditor';
-import NewsSettingsPanel from '../components/NewsSettingsPanel';
 import ScorerProviderFields from '../components/ScorerProviderFields';
 import ProviderModelSelect from '../components/ProviderModelSelect';
 import { createModelDiscovery, discoveryConnection } from '../lib/providerModelDiscovery';
 import { JEV_PROVIDER_PRESETS } from '../lib/scorerProvider';
-import DatabaseMaintenance from '../components/DatabaseMaintenance';
 import ResponsiveTabs from '../components/ResponsiveTabs';
-import TradingRulesPanel from '../components/TradingRulesPanel';
-import AgentRunsPanel from '../components/AgentRunsPanel';
 import SpotSymbolPicker from '../components/SpotSymbolPicker';
 import MarketSymbolPicker from '../components/MarketSymbolPicker';
-import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Alert,
   Button,
@@ -47,7 +40,12 @@ import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, DownloadOutlined, H
 import { api } from '../lib/api';
 import { EXIT_MODES, exitModeLabel, resolveExitMode } from '../lib/exitManagement';
 import { usePreferences } from '../app/usePreferences';
-import { ShortMemoryPanel } from '../components/AgentWorkspace';
+const McpSettingsPanel = lazy(() => import('../components/McpSettingsPanel'));
+const NewsSettingsPanel = lazy(() => import('../components/NewsSettingsPanel'));
+const DatabaseMaintenance = lazy(() => import('../components/DatabaseMaintenance'));
+const TradingRulesPanel = lazy(() => import('../components/TradingRulesPanel'));
+const AgentRunsPanel = lazy(() => import('../components/AgentRunsPanel'));
+const ShortMemoryPanel = lazy(() => import('../components/AgentWorkspace').then((module) => ({ default: module.ShortMemoryPanel })));
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
@@ -1870,7 +1868,10 @@ export default function AdminPage() {
             ),
           },
           // ===== 计价 =====
-        ].sort((a,b)=>ADMIN_TAB_KEYS.indexOf(a.key)-ADMIN_TAB_KEYS.indexOf(b.key))} />
+        ].sort((a,b)=>ADMIN_TAB_KEYS.indexOf(a.key)-ADMIN_TAB_KEYS.indexOf(b.key)).map((item) => ({
+          ...item,
+          children: <Suspense fallback={<Card className="panel-card loading-card"><Spin /></Card>}>{item.children}</Suspense>,
+        }))} />
       ) : null}
 
       {/* Task (Agent) Drawer */}

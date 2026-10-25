@@ -6,7 +6,6 @@ from backend.agent.agent_graph import resolve_market_timeframes
 from backend.agent.memory_workflow import get_review_result
 from backend.config import config as global_config
 from backend.database import (
-    get_short_memory,
     clean_financial_data,
     delete_daily_summary as db_delete_daily_summary,
     delete_short_memories as db_delete_short_memories,
@@ -14,7 +13,6 @@ from backend.database import (
     delete_summaries_by_symbol,
     get_active_agents,
     get_daily_summaries,
-    get_latest_news_snapshot,
     get_short_memories,
     list_short_memories,
     get_db_conn,
@@ -32,14 +30,14 @@ from backend.database import (
     save_trade_history,
     update_daily_summary as db_update_daily_summary,
     update_short_memory as db_update_short_memory,
-    update_order_fill_status,
     upsert_spot_order_fill,
 )
 from backend.utils.market_data import MarketTool
-from backend.utils.run_schedule import schedule_preview, normalize_dca_freq
+from backend.utils.run_schedule import schedule_preview
 from backend.utils.spot_portfolio import get_config_symbols
 
 from backend.app.services.agent_runtime_view import runtime_view, scheduler_timestamp_iso as _scheduler_timestamp_iso
+from backend.app.services.dashboard_read_model import load_memory_updates, load_recent_orders
 from backend.storage.agent_queue import get_runtime_states
 
 from backend.app.services.common import TZ_CN, get_scheduler_status, get_symbol_specific_status, list_symbols, logger
@@ -71,33 +69,6 @@ def _equity_series_metadata(points: list[dict]) -> dict:
         "latest_equity": latest,
         "return_pct": ((latest - first) / first * 100) if first else None,
     }
-
-
-def _order_action_label(order: dict) -> str:
-    side = str(order.get("side") or "").lower()
-    status = str(order.get("status") or "").upper()
-    trade_mode = str(order.get("trade_mode") or "").upper()
-    # 明确撤单记录（side 包含 cancel）：优先判断方向
-    if "cancel" in side:
-        if "buy" in side or "long" in side:
-            return "撤多单"
-        if "sell" in side or "short" in side:
-            return "撤空单"
-        return "撤单"
-    if "close" in side:
-        return "平多" if "long" in side or "buy" in side else "平空"
-    if "sell" in side or "short" in side:
-        if status == "CANCELLED":
-            return "开空(撤)"
-        return "开空" if status != "CLOSED" else "平多"
-    if "buy" in side or "long" in side:
-        if status == "CANCELLED":
-            return "开多(撤)" if trade_mode != "SPOT_DCA" else "现货买入(撤)"
-        return "开多" if trade_mode != "SPOT_DCA" else "现货买入"
-    # 纯 status=CANCELLED 的兜底（无方向信息）
-    if status == "CANCELLED":
-        return "撤单"
-    return side.upper() or status or "记录"
 
 
 def _event_label(event_type: str, trade_mode: str, side: str, status: str) -> str:
@@ -164,12 +135,6 @@ def _normalize_order_record(order: dict) -> dict:
         for value in (payload.get("entry_price"), payload.get("amount"), payload.get("take_profit"), payload.get("stop_loss"))
         if value not in (None, "")
     ]
-    if str(payload.get("trade_mode") or "").upper() == "SPOT_DCA":
-        payload["strategy_note"] = "监控自动成交"
-    elif payload.get("take_profit") or payload.get("stop_loss"):
-        payload["strategy_note"] = "止盈止损"
-    else:
-        payload["strategy_note"] = ""
     if payload.get("is_auto"):
         payload["strategy_note"] = "自动检测"
     elif trade_mode == "SPOT_DCA":
@@ -513,6 +478,8 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                     (config_ids,),
                 ).fetchall()
             } if config_ids else {}
+            recent_orders = load_recent_orders(conn, config_ids)
+            memory_updates = load_memory_updates(conn, latest_summaries)
             agent_summaries = []
             for config in symbol_configs:
                 config_id = config['config_id']
@@ -546,7 +513,7 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 dca_executed = False
                 if mode == "SPOT_DCA":
                     from backend.app.core.scheduler import dca_was_dispatched
-                    dca_executed = dca_was_dispatched(config_id, now, config=config)
+                    dca_executed = dca_was_dispatched(config_id, now, config=config, connection=conn)
                 schedule = schedule_preview(config, now, scheduler_enabled=get_scheduler_status(), dca_executed=dca_executed)
                 summary_dict["schedule"] = schedule
                 summary_dict["next_run"] = schedule["next_run"]
@@ -557,9 +524,8 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                 summary_dict["market_timeframes"] = resolve_market_timeframes(config)
                 summary_dict["title"] = config.get("title") or config_id
                 summary_dict["display_name"] = f"{summary_dict['title']} ({mode})"
-                orders, total = get_paginated_orders(config_id, page=1, per_page=10)
-                summary_dict["all_orders"] = orders
-                summary_dict["order_total"] = total
+                summary_dict["all_orders"] = recent_orders[config_id]["orders"]
+                summary_dict["order_total"] = recent_orders[config_id]["total"]
                 summary_dict["order_page"] = 1
                 from backend.utils.decision_record import read_decision_record
                 summary_dict['decision'] = read_decision_record(summary_dict)
@@ -567,16 +533,7 @@ def get_dashboard_data(symbol, page=1, per_page=10, *, config_id=None):
                     summary_dict['content'] = summary_dict['decision']['raw_analysis']
                 summary_dict.pop('report_json', None)
                 summary_dict.pop('decision_json', None)
-                summary_dict['memory_update'] = None
-                if summary_dict.get('run_id'):
-                    try:
-                        memory_job = conn.execute(
-                            'SELECT status,attempts,error FROM memory_update_jobs WHERE config_id=%s AND run_id=%s',
-                            (config_id, summary_dict['run_id']),
-                        ).fetchone()
-                        summary_dict['memory_update'] = storage.record(memory_job) if memory_job else None
-                    except storage.Error:
-                        raise
+                summary_dict['memory_update'] = memory_updates.get((config_id, summary_dict.get('run_id')))
                 summary_dict['runtime'] = runtime
                 # Existing consumers retain execution; it never lets a newly
                 # queued/cancelled row hide a still-running decision.

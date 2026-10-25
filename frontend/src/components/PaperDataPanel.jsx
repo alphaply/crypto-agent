@@ -1,32 +1,48 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Empty, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Empty, Space, Table, Tabs, Tag } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
+import { useLatestRequest } from '../hooks/useLatestRequest';
 import { formatPaperAmount, paperFilterCount, paperValuationIncomplete } from '../lib/paperDisplay';
 import PaperPositionAdjustModal from './PaperPositionAdjustModal';
 import './PaperTradingPanel.css';
+
+const FIRST_PAGE = {};
 
 export default function PaperDataPanel({ namespace, userId, revision, zh, maxLeverage, onChanged }) {
   const label = (cn, en) => zh ? cn : en;
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [cursor, setCursor] = useState({});
+  const [pagination, setPagination] = useState(null);
+  const sameScope = pagination?.namespace === namespace && pagination?.userId === userId;
+  const cursor = sameScope ? pagination.cursor : FIRST_PAGE;
   const [adjusting, setAdjusting] = useState(null);
   const pendingPositionIntents = useRef(new Map());
-  const load = useCallback(async (signal, pageCursor = {}) => {
+  const { begin, cancel } = useLatestRequest();
+  const currentView = useRef(null);
+  const load = useCallback(async (pageCursor = {}) => {
+    const signal = begin();
+    if (!signal) return;
     setLoading(true);
     try {
       const { data: next } = await api.get('/mcp/paper/dashboard', { signal, params: { ...(namespace ? { namespace } : {}), ...(userId ? { user_id: userId } : {}), ...pageCursor, limit: 100 } });
-      if (!signal?.aborted) { setData(next); setCursor(pageCursor); setError(''); }
-    } catch (err) { if (!signal?.aborted) setError(err.message); }
+      if (!signal.aborted) { setData(next); setPagination({ namespace, userId, cursor: pageCursor }); setError(''); return true; }
+    } catch (err) { if (!signal.aborted) { setError(err.message); return false; } }
     finally { if (!signal?.aborted) setLoading(false); }
-  }, [namespace, userId]);
+  }, [namespace, userId, begin]);
   useEffect(() => {
-    const controller = new AbortController();
-    Promise.resolve().then(() => { if (!controller.signal.aborted) load(controller.signal); });
-    return () => controller.abort();
-  }, [load, revision]);
+    let active = true;
+    Promise.resolve().then(() => { if (active) load(); });
+    return () => { active = false; cancel(); };
+  }, [load, revision, cancel]);
+  useEffect(() => {
+    currentView.current = async () => {
+      const results = await Promise.all([load(cursor), onChanged?.()]);
+      if (results.includes(false)) throw new Error('Paper list refresh failed');
+    };
+    return () => { currentView.current = null; };
+  }, [load, cursor, onChanged]);
   const format = (v) => formatPaperAmount(v, zh);
   const number = (v) => <span className="paper-number">{format(v)}</span>;
   const pnl = (v) => <span className={'paper-number ' + (v == null ? '' : Number(v) > 0 ? 'paper-positive' : Number(v) < 0 ? 'paper-negative' : '')}>{v != null && Number(v) > 0 ? '+' : ''}{format(v)}</span>;
@@ -43,7 +59,7 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
   const incompleteAccounts = (data?.accounts || []).filter(paperValuationIncomplete).length;
   const filteredResources = (data?.accounts || []).reduce((sum, account) => sum + (paperFilterCount(account.filter) || 0), 0);
   const partial = data?.scan_complete === false || data?.status === 'partial';
-  const hasNext = data?.scan_complete === false || Object.values(data?.next_cursor || {}).some(value => value != null);
+  const hasNext = sameScope && (data?.scan_complete === false || Object.values(data?.next_cursor || {}).some(value => value != null));
   const tableProps = { size: 'small', loading, pagination: { pageSize: 8, hideOnSinglePage: true }, locale: { emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={label('当前范围暂无记录', 'No records in this scope')} /> } };
   const account = (v, r) => <div className="paper-cell-stack"><span>{r.account_name || v}{r.account_type === 'bot' && <Tag color="blue">Bot</Tag>}</span>{r.account_name && <span className="paper-cell-note">{v}</span>}</div>;
   const symbol = (_, r) => <div className="paper-cell-stack"><strong>{r.symbol}</strong><span className="paper-cell-note">{r.exchange} · {r.market_type === 'spot' ? label('现货', 'Spot') : r.market_type === 'swap' ? label('永续', 'Perpetual') : r.market_type}</span></div>;
@@ -128,13 +144,13 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
           { title: label('现金变动后 · USDT', 'Cash after · USDT'), render: (_, r) => number(r.payload?.cash_after), align: 'right' },
         ]} expandable={{ expandedRowRender: (r) => <pre className="paper-audit-json">{JSON.stringify(r.payload, null, 2)}</pre> }} /> },
       ]} />
-      <div className="paper-records-footer"><span>{label('Binance 公开行情 · 资金和撮合为模拟', 'Binance public quotes · simulated balances and execution')}</span>{hasNext && <Button loading={loading} onClick={() => load(undefined, {
+      <div className="paper-records-footer"><span>{label('Binance 公开行情 · 资金和撮合为模拟', 'Binance public quotes · simulated balances and execution')}</span>{hasNext && <Button loading={loading} onClick={() => load({
         account_cursor: data?.next_cursor?.accounts ?? cursor.account_cursor ?? 0,
         order_cursor: data?.next_cursor?.orders ?? cursor.order_cursor ?? 0,
         event_cursor: data?.next_cursor?.events ?? cursor.event_cursor ?? 0,
         namespace_cursor: data?.next_cursor?.namespaces ?? cursor.namespace_cursor ?? '',
       })}>{label('继续扫描下一页', 'Continue to next page')}</Button>}</div>
     </Card>
-    {adjusting && <PaperPositionAdjustModal position={adjusting} maxLeverage={maxLeverage} pendingIntents={pendingPositionIntents} zh={zh} onClose={() => setAdjusting(null)} onCompleted={async () => { await Promise.all([load(undefined, cursor), onChanged?.()]); }} />}
+    {adjusting && <PaperPositionAdjustModal position={adjusting} maxLeverage={maxLeverage} pendingIntents={pendingPositionIntents} zh={zh} onClose={() => setAdjusting(null)} onCompleted={() => currentView.current?.()} />}
   </section>;
 }

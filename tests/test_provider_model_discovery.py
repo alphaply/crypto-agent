@@ -1,6 +1,7 @@
 """Offline supplier catalogs: credentials, protocol contracts and bounded failures."""
 import asyncio
 import copy
+import threading
 from backend import storage
 
 import httpx
@@ -17,6 +18,37 @@ from backend.utils import provider_catalog as catalog, jev
 KEY = 'fixture-discovery-secret-123456'
 BASE = 'https://supplier.example/v1'
 ENDPOINT = '/api/config/provider-models/discover'
+
+
+def test_saved_credential_lookup_allows_other_async_work(monkeypatch):
+    started = threading.Event()
+    other_work_finished = threading.Event()
+
+    def snapshot():
+        started.set()
+        assert other_work_finished.wait(2), 'Configuration lookup blocked other requests'
+        return {'llm_providers': [{'provider_id': 'p', 'api_base': BASE, 'api_key': KEY}]}
+
+    async def fetch(connection):
+        assert connection['api_key'] == KEY
+        return {'models': []}
+
+    monkeypatch.setattr(service, 'load_effective_runtime_snapshot', snapshot)
+    monkeypatch.setattr(service, 'fetch_models', fetch)
+    request = service.ProviderDiscoveryRequest(
+        api_base=BASE, credential={'mode': 'saved', 'provider_id': 'p'})
+
+    async def run():
+        async def unrelated_request():
+            while not started.is_set():
+                await asyncio.sleep(0.001)
+            other_work_finished.set()
+
+        result, _ = await asyncio.gather(
+            service.discover_provider_models(request), unrelated_request())
+        return result
+
+    assert asyncio.run(run()) == {'models': []}
 
 
 def request_body(**overrides):
