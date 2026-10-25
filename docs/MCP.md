@@ -12,6 +12,8 @@
 
 所有新交易使用 `contract_version=3` 与 1–20 项有类型的 actions。例：已知订单撤销后设置替代退出（一次调用、按请求顺序执行）：
 
+每项必须使用准确的字段名 `action`，不能写成 `action_type`；动作参数直接平铺在同一对象内，不嵌套 `order`。`edit` 修改已有订单，必须同时提供 `order_id`、`reason` 及至少一项当前模式支持的修改字段。`cancel` 同样必须提供 `order_id`。订单 ID 从当前订单查询或执行回执原样复制（字符串，保留 `regular:` / `algo:` 等前缀），不能用请求的 `operation_id` 代替；缺失时先通过 `get_trade_records(record_type="orders", …)` 获取订单，不能猜测。改单的 `price` 是委托价，`trigger_price` 是条件单触发价，`remaining_amount` 是目标未成交基础币数量。参数错误会指出需要修正的字段，整批在交易执行前拒绝；不会自动改名或补填订单 ID。更新服务后重新连接 MCP 并刷新 `tools/list`，让模型读到新说明。
+
 ```json
 {"profile_id":"swap","operation_id":"replace-stop-v3-0001","contract_version":3,"actions":[{"action":"cancel","symbol":"BTC/USDT:USDT","order_id":"algo:123","reason":"撤旧止损"},{"action":"close","symbol":"BTC/USDT:USDT","side":"LONG","order_type":"stop_market","amount":0.1,"trigger_price":58000,"reason":"替代止损"}]}
 ```

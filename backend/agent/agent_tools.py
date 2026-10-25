@@ -289,7 +289,6 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
     """
     from backend.utils.deployment_mode import ensure_execution_enabled
     ensure_execution_enabled()
-    import ccxt
     from backend.config import config as global_config
     from backend.utils.spot_execution import (resolve_spot_symbol, reserve_spot_batch, finish_spot_reservation,
                                                reconcile_spot_reservations, spot_client_order_id)
@@ -337,7 +336,6 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
             continue
 
         def submit():
-            writing = False
             try:
                 latest = market_tool.get_account_status(op.symbol, is_real=True, agent_name=config_id)
                 if latest.get('error'):
@@ -349,7 +347,6 @@ def open_position_spot_dca(orders: List[OpenOrderSpotDCA], config_id: str, symbo
                 cost = op.entry_price * op.amount
                 if not math.isfinite(available) or available < cost:
                     raise ValueError(f'现货可用计价币余额不足：可用 {available:g}，订单需要 {cost:g}')
-                writing = True
                 params = {**op.model_dump(), 'client_order_id': spot_client_order_id(config_id, child_id)}
                 response = market_tool.place_real_order(op.symbol, op.action, params, agent_name=config_id)
                 if not response or not response.get('id'):

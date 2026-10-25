@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_serializer, model_validator
+
+from backend.agent.trade_guidance import ACTION_DESCRIPTION, ACTIONS_DESCRIPTION, ORDER_ID_DESCRIPTION, validate_action_identity
 
 
 PositiveNumber = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
@@ -53,7 +55,7 @@ class CloseInput(TradingInput):
 
 
 class EditInput(TradingInput):
-    order_id: str = Field(min_length=1, description='查询/回执中的当前有效订单身份，原样回传')
+    order_id: str = Field(min_length=1, description=ORDER_ID_DESCRIPTION)
     reason: Reason
     remaining_amount: PositiveNumber | None = Field(None, description='目标未成交基础币数量；入场与退出含义一致；all 单不可设置')
     price: PositiveNumber | None = None
@@ -67,7 +69,7 @@ class EditInput(TradingInput):
 
 
 class CancelInput(TradingInput):
-    order_id: str = Field(min_length=1, description='当前任务订单的规范身份，原样回传')
+    order_id: str = Field(min_length=1, description=ORDER_ID_DESCRIPTION)
     reason: Reason
 
 
@@ -93,27 +95,28 @@ class BatchDependencies(TradingInput):
 
 
 class OpenAction(OpenInput, BatchDependencies):
-    action: Literal['open']
+    action: Literal['open'] = Field(description=ACTION_DESCRIPTION)
 
 
 class CloseAction(CloseInput, BatchDependencies):
-    action: Literal['close']
+    action: Literal['close'] = Field(description=ACTION_DESCRIPTION)
 
 
 class EditAction(EditInput, BatchDependencies):
-    action: Literal['edit']
+    action: Literal['edit'] = Field(description=ACTION_DESCRIPTION)
 
 
 class CancelAction(CancelInput, BatchDependencies):
-    action: Literal['cancel']
+    action: Literal['cancel'] = Field(description=ACTION_DESCRIPTION)
 
 
-TradeAction = Annotated[OpenAction | CloseAction | EditAction | CancelAction, Field(discriminator='action')]
+TradeAction = Annotated[OpenAction | CloseAction | EditAction | CancelAction,
+                        Field(discriminator='action'), BeforeValidator(validate_action_identity)]
 
 
 class CanonicalTradeActionsSchema(TradingInput):
     contract_version: Literal[2] = Field(description='新平铺动作必须显式填写 2；不接受旧 order 嵌套格式')
-    actions: list[TradeAction] = Field(min_length=1, max_length=20)
+    actions: list[TradeAction] = Field(min_length=1, max_length=20, description=ACTIONS_DESCRIPTION)
     execution_policy: Literal['stop_on_error', 'independent'] = Field('stop_on_error', description=EXECUTION_POLICY_DESCRIPTION)
 
     @model_validator(mode='after')
@@ -151,7 +154,7 @@ class UnifiedActionBase(BatchDependencies):
     symbol: str | None = Field(None, min_length=1, max_length=100)
     market_type: Literal['spot', 'swap'] | None = None
     exchange: Literal['binance', 'okx', 'bitget', 'bybit'] | None = None
-    reason: Reason
+    reason: Reason = Field(description='Required non-empty explanation for this individual action.')
 
     @field_validator('symbol', mode='after')
     @classmethod
@@ -162,7 +165,7 @@ class UnifiedActionBase(BatchDependencies):
 
 
 class UnifiedOpenAction(UnifiedActionBase):
-    action: Literal['open']
+    action: Literal['open'] = Field(description=ACTION_DESCRIPTION + ' open creates an entry order.')
     side: Side
     order_type: Literal['market', 'limit'] = 'limit'
     amount: PositiveNumber | None = None
@@ -189,7 +192,7 @@ class UnifiedOpenAction(UnifiedActionBase):
 
 
 class UnifiedCloseAction(UnifiedActionBase):
-    action: Literal['close']
+    action: Literal['close'] = Field(description=ACTION_DESCRIPTION + ' close creates an exit order for an existing holding.')
     side: Side
     order_type: Literal['market', 'limit', 'take_profit_market', 'take_profit_limit',
                         'stop_market', 'stop_limit', 'stop_loss', 'take_profit', 'oco']
@@ -231,11 +234,11 @@ class UnifiedCloseAction(UnifiedActionBase):
 
 
 class UnifiedEditAction(UnifiedActionBase):
-    action: Literal['edit']
-    order_id: str = Field(min_length=1, max_length=200)
+    action: Literal['edit'] = Field(description=ACTION_DESCRIPTION + ' edit changes an existing order.')
+    order_id: str = Field(min_length=1, max_length=200, description=ORDER_ID_DESCRIPTION)
     remaining_amount: PositiveNumber | None = Field(None, description='目标未成交基础币数量；依据最新实际成交计算总量，all 单不可设置')
-    price: PositiveNumber | None = None
-    trigger_price: PositiveNumber | None = None
+    price: PositiveNumber | None = Field(None, description='New limit price for this existing order; not its trigger price.')
+    trigger_price: PositiveNumber | None = Field(None, description='New trigger price for an existing conditional order, where supported.')
     stop_loss: PositiveNumber | None = None
     take_profit: PositiveNumber | None = None
 
@@ -247,14 +250,16 @@ class UnifiedEditAction(UnifiedActionBase):
 
 
 class UnifiedCancelAction(UnifiedActionBase):
-    action: Literal['cancel']
-    order_id: str = Field(min_length=1, max_length=200)
+    action: Literal['cancel'] = Field(description=ACTION_DESCRIPTION + ' cancel cancels an existing order.')
+    order_id: str = Field(min_length=1, max_length=200, description=ORDER_ID_DESCRIPTION)
 
 
 class UnifiedProtectAction(UnifiedActionBase):
-    action: Literal['protect']
+    action: Literal['protect'] = Field(description=ACTION_DESCRIPTION + ' protect changes position protection where this mode supports it.')
     side: Side
-    order_id: str | None = Field(None, min_length=1, max_length=200)
+    order_id: str | None = Field(None, min_length=1, max_length=200, description=(
+        'Strategy attached protection requires the current order ID from order evidence. '
+        'Copy the exact string, preserving prefixes. Other modes expose only their supported fields.'))
     amount: PositiveNumber | None = None
     close_all: StrictBool | None = None
     stop_loss: PositiveNumber | None = None
@@ -273,14 +278,14 @@ class UnifiedProtectAction(UnifiedActionBase):
 
 UnifiedTradeAction = Annotated[
     UnifiedOpenAction | UnifiedCloseAction | UnifiedEditAction | UnifiedCancelAction | UnifiedProtectAction,
-    Field(discriminator='action'),
+    Field(discriminator='action'), BeforeValidator(validate_action_identity),
 ]
 
 
 class UnifiedTradeActionsSchema(CanonicalTradeActionsSchema):
     """Fresh contract; v1/v2 serializers above retain their exact old meaning."""
     contract_version: Literal[3] = Field(description='显式整数3；使用当前可信模式的平铺动作，不覆盖账户或引擎')
-    actions: list[UnifiedTradeAction] = Field(min_length=1, max_length=20)
+    actions: list[UnifiedTradeAction] = Field(min_length=1, max_length=20, description=ACTIONS_DESCRIPTION)
     include: list[Literal['account']] = Field(default_factory=list, max_length=1)
 
     @model_validator(mode='before')

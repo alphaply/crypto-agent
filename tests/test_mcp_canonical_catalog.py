@@ -40,6 +40,48 @@ def test_paper_catalog_does_not_publish_live_parameters(ledger, monkeypatch):
     execution = next(tool for tool in asyncio.run(server.list_tools()) if tool.name == 'execute_trade_actions')
     assert execution.inputSchema['properties']['contract_version']['const'] == 3
     assert 'discriminator' in execution.inputSchema['properties']['actions']['items']
+    assert 'action (not action_type)' in execution.description
+    edit = execution.inputSchema['$defs']['UnifiedEditAction']
+    assert 'order_id' in edit['required']
+    assert 'query open orders' in edit['properties']['order_id']['description']
+
+
+@pytest.mark.parametrize('bad_action,hint', [
+    ({'action_type': 'edit', 'trigger_price': 2351.8, 'reason': 'edit stop'}, 'action, not action_type'),
+    ({'action': 'edit', 'execution_order_id': 'wrong-field', 'trigger_price': 2351.8,
+      'reason': 'edit stop'}, 'order_id is required'),
+])
+def test_paper_sdk_malformed_edit_rejects_whole_batch_with_useful_hint(ledger, monkeypatch, bad_action, hint):
+    from unittest.mock import Mock
+    from backend.mcp import paper_batch, paper_orders
+    caller, _, _ = ledger
+    create(caller)
+    queued = paper_orders.place(caller, '123456', 'spot', 'BTC/USDT', 'buy', 'limit',
+                                'guidance-existing-order', amount=1, price=99)
+    server = server_for(caller, monkeypatch)
+    dispatch = Mock(side_effect=AssertionError('Malformed batch must not change an order'))
+    monkeypatch.setattr(paper_batch, '_dispatch', dispatch)
+    args = {'user_id': '123456', 'operation_id': 'guidance-invalid-batch', 'contract_version': 3,
+            'actions': [{'action': 'cancel', 'order_id': queued['order']['order_id'], 'reason': 'cancel'}, bad_action]}
+    result = call(server, 'execute_trade_actions', args)
+    assert result['status'] == 'failed' and hint in str(result)
+    dispatch.assert_not_called()
+    assert paper_orders.get_orders(caller, '123456', 'open', 100)['orders'][0]['order_id'] == queued['order']['order_id']
+
+
+@pytest.mark.parametrize('version', [2, 3])
+@pytest.mark.parametrize('bad_action,hint', [
+    ({'action_type': 'edit', 'trigger_price': 2351.8, 'reason': 'edit stop'}, 'action, not action_type'),
+    ({'action': 'edit', 'execution_order_id': 'wrong-field', 'trigger_price': 2351.8,
+      'reason': 'edit stop'}, 'order_id is required'),
+])
+def test_live_sdk_malformed_edit_never_dispatches(contracts, version, bad_action, hint):
+    from mcp.server.fastmcp.exceptions import ToolError
+    _, _, dispatch, server = contracts
+    with pytest.raises(ToolError, match=hint):
+        call(server, 'execute_trade_actions', {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT',
+             'operation_id': 'guidance-invalid-live', 'contract_version': version, 'actions': [bad_action]})
+    dispatch.assert_not_called()
 
 
 def test_account_facets_and_records_do_not_leak_or_append_full_account(ledger):

@@ -22,6 +22,7 @@ from backend.agent.agent_tools import (
     update_exit_order,
 )
 from backend.agent.trade_batch import execute_trade_actions
+from backend.agent.trade_guidance import TRADE_ARGUMENT_GUIDANCE
 from backend.agent.independent_tools import CANONICAL_TOOLS, READ_ONLY_TRADE_TOOLS
 from backend.utils.trade_operations import current_operation_id, run_once, tool_result_status
 from backend.utils.logger import setup_logger
@@ -74,7 +75,7 @@ def get_trade_tools_for_mode(mode: str | None, config: dict | None = None, *, in
         cfg = {**(config or {}), 'mode': trade_mode}
         return [execute_trade_actions.model_copy(update={
             'args_schema': unified_schema_for_config(cfg),
-            'description': '一次按顺序执行1–20项交易动作。contract_version=3；单笔用一项数组。'
+            'description': TRADE_ARGUMENT_GUIDANCE + '一次按顺序执行1–20项交易动作；单笔用一项数组。'
                            '动作与参数按当前模式提供，数量是基础币；edit.remaining_amount为目标未成交量。'
                            '默认失败/待核验/未知停止；depends_on要求显式independent且此前项completed。'
                            '逐项简洁返回成功、失败原因或未执行；受理成功不等于成交。提交后不查询或等待核验。'

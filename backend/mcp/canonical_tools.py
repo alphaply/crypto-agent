@@ -11,6 +11,7 @@ from . import paper, paper_batch, paper_competition, paper_market, paper_orders,
 from .resilience import run
 from .tools import OperationId, _register
 from backend.utils.spot_config_guard import serialized_spot_execution
+from backend.agent.trade_guidance import TRADE_ARGUMENT_GUIDANCE
 
 CORE_NAMES = ('get_trading_context', 'search_symbols', 'get_market', 'get_news',
               'get_account_state', 'get_trade_records', 'execute_trade_actions')
@@ -418,6 +419,8 @@ def register(server):
         from .paper_positions import manage
         return await invoke(manage, user_id, position_id, operation_id, action=action,
                             leverage=leverage, amount=amount, write=True)
+
+    execute_trade_actions.__doc__ = TRADE_ARGUMENT_GUIDANCE + execute_trade_actions.__doc__
 
     for function in (get_trading_context, search_symbols, get_market, get_account_state, get_trade_records,
                      execute_trade_actions, configure_paper_account, paper_transfer, adjust_paper_position):

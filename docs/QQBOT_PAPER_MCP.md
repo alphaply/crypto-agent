@@ -22,6 +22,8 @@ Paper 只使用 Binance 生产公开行情，支持现有引擎的 USDT 现货�
 
 交易调用 `execute_trade_actions(user_id,operation_id,contract_version=3,actions,execution_policy?,include?)`，一次 1–20 项，有类型的 `open/close/edit/cancel/protect` 按数组顺序执行。父请求只属于一个 namespace/user。
 
+每个动作必须用 `action`（不是 `action_type`）并填写 `reason`。改单 `edit` 必须给出当前 `order_id` 和至少一个支持的修改字段；撤单 `cancel` 也必须给出 `order_id`。从订单查询或回执原样复制订单 ID，不能拿 `operation_id` 代替，不能猜测；缺少时先查 `get_trade_records(record_type="orders", user_id=…)`。这些字段与 `action` 平级，不要放入嵌套 `order`。`edit.price` 是委托价，`edit.trigger_price` 是条件单触发价，`edit.remaining_amount` 是目标未成交数量。升级后让 QQBot 重新连接 MCP、刷新工具列表，清除缓存的旧工具说明。
+
 ```json
 {"user_id":"123456789","operation_id":"qq-event-v3-0001","contract_version":3,"include":["account"],"actions":[{"action":"cancel","order_id":"原真实订单ID","reason":"撤销旧计划"},{"action":"open","market_type":"spot","exchange":"binance","symbol":"BTC/USDT","side":"LONG","order_type":"limit","quote_amount":100,"price":50000,"reason":"用户的新计划"}]}
 ```

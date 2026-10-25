@@ -695,7 +695,7 @@ def test_spot_cancel_first_is_not_blocked_by_later_zero_allowance(spot_runtime, 
     assert current_spot_cycle_id.get() is None
 
 
-def test_spot_unknown_buy_queries_exact_original_client_without_rebuy(spot_runtime, monkeypatch):
+def test_spot_timeout_releases_allowance_and_replays_without_rebuy(spot_runtime, monkeypatch):
     from contextlib import contextmanager
     from backend.mcp import spot_orders
     @contextmanager
@@ -707,23 +707,28 @@ def test_spot_unknown_buy_queries_exact_original_client_without_rebuy(spot_runti
     payload = batch(opening(symbol='BTC/USDT', amount=2, price=10))
     first = json.loads(tool_registry.run_trade_tool('execute_trade_actions', payload, 'spot', 'BTC/USDT', 'buy-timeout'))
     child = first['results'][0]['result']
-    assert first['status'] == 'unknown'
+    # The 2026-10-19 spot-budget change reports failed submissions without
+    # keeping the former unverified budget lock. Replay still cannot buy again.
+    assert first['status'] == 'failed'
     assert child['execution_operation_id'] == 'buy-timeout:0:0'
-    spot_runtime.verified.update(id='accepted-buy', clientOrderId=child['client_id'], symbol='BTC/USDT',
-                                 status='closed', filled=2, remaining=0)
-    result = unified.query_unified_operation('spot', 'BTC/USDT', 'buy-timeout')
-    assert result['results'][0]['status'] == 'completed'
-    assert result['results'][0]['result']['order_id'] == 'regular:accepted-buy'
-    assert result['results'][0]['result']['filled_amount'] == 2
-    tool_registry.run_trade_tool('execute_trade_actions', payload, 'spot', 'BTC/USDT', 'buy-timeout')
+    assert child['client_id'] == spot_runtime.calls[0][2]['client_order_id']
+    with database.get_db_conn() as conn:
+        reservation = conn.execute('SELECT status FROM spot_budget_reservations WHERE operation_id=%s',
+                                   (child['execution_operation_id'],)).fetchone()
+    assert reservation['status'] == 'released'
+    assert json.loads(tool_registry.run_trade_tool('execute_trade_actions', payload, 'spot', 'BTC/USDT', 'buy-timeout')) == first
     assert len(spot_runtime.calls) == 1
 
 
-def test_current_step_entry_gate_precedes_claim_and_does_not_block_prior_cancel(ledger, monkeypatch):
+def test_current_step_entry_gate_blocks_write_and_keeps_prior_cancel(ledger, monkeypatch):
     from backend.agent import unified_dispatch
     from contextlib import contextmanager
+    from test_position_protection import Exchange
     cfg = {**CFG, 'mode': 'REAL', 'exit_mode': 'attached_optional'}
     monkeypatch.setattr(config, 'get_config_by_id', lambda _: cfg)
+    exchange = Exchange()
+    mt = SimpleNamespace(exchange=exchange, config_id='cfg', runtime_config=cfg)
+    monkeypatch.setattr(agent_tools, 'MarketTool', lambda **_: mt)
     claim_entries = []
     @contextmanager
     def managed(*args, **kw):
@@ -732,11 +737,14 @@ def test_current_step_entry_gate_precedes_claim_and_does_not_block_prior_cancel(
     monkeypatch.setattr('backend.utils.position_management.management_action', managed)
     gate = Mock(side_effect=ValueError('current leverage exceeds limit'))
     monkeypatch.setattr('backend.mcp.guard.assert_entry_allowed', gate)
-    monkeypatch.setattr(unified_dispatch, '_attached_real', lambda *args: {'receipt_version': 1, 'status': 'completed'})
+    actual = unified_dispatch._attached_real
+    monkeypatch.setattr(unified_dispatch, '_attached_real', lambda action, *args:
+                        {'receipt_version': 1, 'status': 'completed'} if action.action == 'cancel' else actual(action, *args))
     result = json.loads(tool_registry.run_trade_tool('execute_trade_actions', batch(cancel(), opening()), 'cfg', 'ETH/USDT', 'guarded'))
     assert [row['status'] for row in result['results']] == ['completed', 'failed']
-    assert claim_entries == ['guarded:0']
-    assert gate.call_args.kwargs['only_capability'] is True
+    assert claim_entries == ['guarded:0', 'guarded:1']
+    gate.assert_called_once_with(mt, 'ETH/USDT')
+    assert exchange.calls == []
 
 
 def test_handoff_parent_query_filters_private_symbols_and_sides_before_reads(ledger, monkeypatch):
