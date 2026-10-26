@@ -2023,6 +2023,9 @@ export default function AdminPage() {
                         <Text type="secondary">{locale === 'zh' ? '所有标的累计买入共用此额度，计价币与现货标的一致。' : 'A shared cap on cumulative buys across all symbols, in their quote currency.'}</Text>
                       </div>
                       <div className="form-field field-span-2"><SpotScheduleEditor config={editingTask} onChange={(value) => updateEditingTask('dca_schedule', value)} /></div>
+                      <div className="form-field field-span-2">
+                        <Text type="secondary">{locale === 'zh' ? '下面的旧初始字段表示启用任务前的持仓，会加上任务的全部历史买入。若要校准现在的总持仓和均价，请在现货看板点击「修改持仓成本」；每个币种可分别修改，保存后只累加新增买入。' : 'The legacy initial fields below represent holdings before this task started and are added to all historical buys. To adjust current total holdings and average cost, use Adjust holdings on the spot dashboard for each asset; only subsequent buys are then added.'}</Text>
+                      </div>
                       <div className="form-field">
                         <label>Initial Qty</label>
                         <InputNumber min={0} value={editingTask.initial_qty ?? 0} onChange={(v) => updateEditingTask('initial_qty', v ?? 0)} style={{ width: '100%' }} disabled={multiSpotTask} />

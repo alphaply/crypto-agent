@@ -13,6 +13,9 @@ from datetime import datetime
 from typing import Callable
 
 from backend import storage
+from backend.database.spot_cost_basis import (
+    buys_after_cost_basis, read_spot_buy_totals, read_spot_cost_basis, read_spot_unsettled_buy_ids,
+)
 from backend.utils.spot_portfolio import get_config_symbols
 from backend.app.services.common import TZ_CN, logger
 
@@ -29,28 +32,32 @@ class SpotStatisticsDependencies:
 
 
 def _synchronize_orders(config_id: str, symbol: str, mt, sync_errors: list[str],
-                        dependencies: SpotStatisticsDependencies) -> None:
+                        dependencies: SpotStatisticsDependencies, *,
+                        for_cost_basis: bool = False) -> None:
     try:
         with dependencies.connection_factory() as conn:
-            open_rows = conn.execute(
-                """
-                SELECT order_id
-                FROM orders
-                WHERE config_id = %s
-                  AND symbol = %s
-                  AND trade_mode = 'SPOT_DCA'
-                  AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'
-                  AND UPPER(side) IN ('BUY','BUY_LIMIT')
-                  AND status IN ('OPEN', 'PARTIAL')
-                GROUP BY order_id
-                ORDER BY MAX(id) DESC
-                LIMIT 100
-                """,
-                (config_id, symbol),
-            ).fetchall()
+            if for_cost_basis:
+                order_ids = read_spot_unsettled_buy_ids(conn, config_id, symbol)
+            else:
+                open_rows = conn.execute(
+                    """
+                    SELECT order_id
+                    FROM orders
+                    WHERE config_id = %s
+                      AND symbol = %s
+                      AND trade_mode = 'SPOT_DCA'
+                      AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'
+                      AND UPPER(side) IN ('BUY','BUY_LIMIT')
+                      AND status IN ('OPEN', 'PARTIAL')
+                    GROUP BY order_id
+                    ORDER BY MAX(id) DESC
+                    LIMIT 100
+                    """,
+                    (config_id, symbol),
+                ).fetchall()
+                order_ids = [str(row['order_id']) for row in open_rows]
 
-        for row in open_rows:
-            order_id = str(row["order_id"])
+        for order_id in order_ids:
             try:
                 od = mt.exchange.fetch_order(order_id, symbol)
                 exch_status = str(od.get("status", "") or "").lower()
@@ -127,12 +134,16 @@ def calculate_spot_symbol_statistics(
         cache_key = f'{config_id}:{symbol}'
         now_ts = time.time()
 
-        cache_signature = (
+        with dependencies.connection_factory() as conn:
+            cost_basis = read_spot_cost_basis(conn, config_id, symbol)
+
+        config_signature = (
             tuple(get_config_symbols(cfg)), symbol, cfg.get('dca_amount'), cfg.get('exchange_profile_id'),
             cfg.get("initial_cost"),
             cfg.get("initial_qty"),
             cfg.get("manual_avg_cost"),
         )
+        cache_signature = config_signature + (cost_basis['updated_at'] if cost_basis else None,)
         if not force_sync:
             cached = dependencies.cache.get(cache_key)
             if cached and cached.get("signature") == cache_signature and now_ts - cached["timestamp"] < dependencies.cache_ttl:
@@ -159,45 +170,16 @@ def calculate_spot_symbol_statistics(
         _synchronize_trades(config_id, symbol, mt, sync_errors, dependencies)
 
         with dependencies.connection_factory() as conn:
-            # Order fill totals survive exchange trade-history pagination. Use
-            # the larger complete evidence per order, never add two copies of
-            # the same fill and never lose older orders outside fetch_my_trades.
-            rows = conn.execute('''SELECT o.*,f.filled_qty AS sync_qty,f.filled_cost AS sync_cost,
-                    f.avg_fill_price AS sync_price,f.status AS sync_status,
-                    t.traded_qty,t.traded_cost,t.first_buy,t.last_buy
-                FROM orders o LEFT JOIN spot_order_fills f
-                  ON f.config_id=o.config_id AND f.symbol=o.symbol AND f.order_id=o.order_id
-                LEFT JOIN (SELECT order_id,SUM(amount) AS traded_qty,SUM(cost) AS traded_cost,
-                    MIN(timestamp) AS first_buy,MAX(timestamp) AS last_buy FROM trade_history
-                    WHERE symbol=%s AND (config_id=%s OR config_id IS NULL OR config_id='')
-                      AND LOWER(side)='buy' GROUP BY order_id) t ON t.order_id=o.order_id
-                WHERE o.config_id=%s AND o.symbol=%s AND o.trade_mode='SPOT_DCA'
-                  AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
-                  AND UPPER(o.side) IN ('BUY','BUY_LIMIT') ORDER BY o.id DESC''',
-                (symbol, config_id, config_id, symbol)).fetchall()
-            traded_cost = traded_qty = 0.0
-            buy_count = 0
-            buy_dates = []
-            seen = set()
-            for row in rows:
-                if row['order_id'] in seen:
-                    continue
-                seen.add(row['order_id'])
-                synced = row['sync_status'] is not None
-                qty = float((row['sync_qty'] if synced else row['filled_amount']) or 0)
-                cost = float((row['sync_cost'] if synced else row['filled_cost']) or 0)
-                avg = float((row['sync_price'] if synced else row['avg_fill_price']) or row['entry_price'] or 0)
-                cost = max(cost, qty * avg)
-                history_qty, history_cost = float(row['traded_qty'] or 0), float(row['traded_cost'] or 0)
-                if history_qty >= qty:
-                    qty, cost = history_qty, max(cost, history_cost)
-                if any(not math.isfinite(value) or value < 0 for value in (qty, cost)):
-                    raise ValueError('现货历史成交数量或成本无效')
-                traded_qty += qty
-                traded_cost += cost
-                if qty > 0:
-                    buy_count += 1
-                    buy_dates.extend(value for value in (row['first_buy'], row['last_buy'], row['filled_at'] or row['timestamp']) if value)
+            # Re-read after exchange synchronization so a concurrent calibration
+            # is reflected in both the result and its cache signature.
+            cost_basis = read_spot_cost_basis(conn, config_id, symbol)
+            cache_signature = config_signature + (cost_basis['updated_at'] if cost_basis else None,)
+            buy_totals = read_spot_buy_totals(conn, config_id, symbol)
+            traded_qty = sum(order['qty'] for order in buy_totals.values())
+            traded_cost = sum(order['cost'] for order in buy_totals.values())
+            buy_count = sum(order['qty'] > 0 for order in buy_totals.values())
+            buy_dates = [value for order in buy_totals.values()
+                         for value in (order['first_buy'], order['last_buy']) if value]
             agg = {'first_buy': min(buy_dates) if buy_dates else None, 'last_buy': max(buy_dates) if buy_dates else None}
 
             pending = conn.execute(
@@ -227,7 +209,17 @@ def calculate_spot_symbol_statistics(
             current_qty = None
             sync_errors.append(f'{symbol} 账户余额同步失败')
 
-        if initial_qty > 0:
+        subsequent_qty = subsequent_cost = None
+        if cost_basis is not None:
+            initial_qty = cost_basis['quantity']
+            manual_avg_cost = cost_basis['avg_cost']
+            subsequent_qty, subsequent_cost = buys_after_cost_basis(
+                buy_totals, cost_basis['order_baselines'],
+            )
+            final_qty = initial_qty + subsequent_qty
+            final_invested = initial_qty * manual_avg_cost + subsequent_cost
+            stats_source = 'cost_basis_and_trades' if subsequent_qty else 'cost_basis'
+        elif initial_qty > 0:
             final_qty = initial_qty + traded_qty
             final_invested = initial_cost + traded_cost
             stats_source = "manual_and_trades" if traded_qty else "manual"
@@ -262,6 +254,12 @@ def calculate_spot_symbol_statistics(
             "manual_qty": round(initial_qty, 6),
             "recorded_buy_qty": round(traded_qty, 6),
             "recorded_buy_cost": round(traded_cost, 2),
+            "cost_basis": ({key: cost_basis[key] for key in ('quantity', 'avg_cost', 'updated_at')}
+                           if cost_basis is not None else None),
+            "cost_basis_current_quantity": final_qty,
+            "cost_basis_current_avg_cost": avg_cost,
+            "subsequent_buy_qty": round(subsequent_qty, 6) if subsequent_qty is not None else None,
+            "subsequent_buy_cost": round(subsequent_cost, 2) if subsequent_cost is not None else None,
             "stats_source": stats_source,
             "current_price": round(current_price, 4) if current_price is not None else None,
             "market_value": round(market_value, 2) if market_value is not None else None,

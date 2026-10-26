@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 import time
 import jwt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -114,6 +114,37 @@ class ConfigSymbolsRequest(BaseModel):
 
 class SchedulePreviewRequest(BaseModel):
     config: dict
+
+
+class SpotCostBasisRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=100)
+    quantity: float = Field(ge=0, allow_inf_nan=False)
+    avg_cost: float = Field(ge=0, allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def require_cost_for_holdings(self):
+        if self.quantity > 0 and self.avg_cost <= 0:
+            raise ValueError('持仓数量大于零时，平均成本价必须大于零。')
+        return self
+
+
+@router.patch('/{config_id}/spot-cost-basis')
+def update_spot_cost_basis(config_id: str, payload: SpotCostBasisRequest,
+                           _: dict = Depends(get_current_user)):
+    from backend.app.services.spot_cost_basis_service import (
+        SpotCostBasisUnavailable, update_spot_cost_basis as update_basis,
+    )
+    try:
+        basis = update_basis(config_id, payload.symbol, payload.quantity, payload.avg_cost)
+        return {'success': True, 'cost_basis': basis}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except SpotConfigConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except SpotCostBasisUnavailable as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post('/schedule-preview')

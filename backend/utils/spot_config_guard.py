@@ -54,6 +54,64 @@ def serialized_spot_execution(function):
     return wrapped
 
 
+def spot_cost_basis_account_identity(snapshot: dict, agent: dict) -> str:
+    """Fingerprint the exchange account in a resolved runtime snapshot.
+
+    Provider-resolved ``api_key`` can belong to the LLM. Prefer the bound
+    exchange profile and exchange-specific fields, and only interpret the
+    generic legacy key as an exchange key when no LLM provider is bound.
+    """
+    profile_id = str(agent.get('exchange_profile_id') or '')
+    profile = next((item for item in snapshot.get('exchange_profiles') or []
+                    if str(item.get('profile_id') or '') == profile_id), {}) if profile_id else {}
+    exchange = str(profile.get('exchange') or agent.get('exchange') or 'binance').lower()
+    prefix = 'okx' if exchange == 'okx' else 'binance'
+    key = profile.get('api_key') or agent.get(f'{prefix}_api_key')
+    secret = profile.get('secret') or agent.get(f'{prefix}_secret')
+    if not profile_id:
+        if not agent.get('llm_provider_id'):
+            key = key or agent.get('api_key')
+        secret = secret or agent.get('secret')
+    passphrase = profile.get('passphrase') or agent.get('passphrase')
+    if not key or not secret:
+        key = snapshot.get(f'global_{prefix}_api_key')
+        secret = snapshot.get(f'global_{prefix}_secret')
+        passphrase = snapshot.get('global_okx_passphrase') if exchange == 'okx' else None
+    elif exchange == 'okx' and not passphrase:
+        passphrase = snapshot.get('global_okx_passphrase')
+    if exchange != 'okx':
+        passphrase = None
+    identity = [
+        profile_id, exchange, profile.get('market_type') or agent.get('market_type') or 'spot',
+        key or None, secret or None, passphrase or None,
+    ]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=True).encode()).hexdigest()
+
+
+def assert_spot_cost_basis_snapshot_change_allowed(conn, previous: dict | None, updated: dict) -> None:
+    """Recheck persisted bases while the caller holds the runtime-config lock.
+
+    An earlier API check can race another process saving a new cost basis.
+    Explicit task deletion removes its basis in the same transaction before
+    this check; ordinary saves and imports must keep its task and account.
+    """
+    rows = conn.execute('SELECT config_id,symbol FROM spot_cost_basis').fetchall()
+    if not rows:
+        return
+    previous = previous or {}
+    before = {item.get('config_id'): item for item in previous.get('agents') or []}
+    after = {item.get('config_id'): item for item in updated.get('agents') or []}
+    for row in rows:
+        old_agent = before.get(row['config_id'])
+        new_agent = after.get(row['config_id'])
+        if (not old_agent or not new_agent
+                or str(new_agent.get('mode') or '').upper() != 'SPOT_DCA'
+                or row['symbol'] not in get_config_symbols(new_agent)):
+            raise SpotConfigConflict('现货任务有已保存的持仓成本，不能移除币种或切换模式；删除任务请使用删除按钮。')
+        if spot_cost_basis_account_identity(previous, old_agent) != spot_cost_basis_account_identity(updated, new_agent):
+            raise SpotConfigConflict('现货任务有已保存的持仓成本，不能切换交易账户或凭据；请新建任务。')
+
+
 def assert_spot_config_change_allowed(previous: dict | None, updated: dict | None, *, account_changed=False) -> None:
     if not previous or str(previous.get('mode') or '').upper() != 'SPOT_DCA':
         return
@@ -80,6 +138,9 @@ def assert_spot_config_change_allowed(previous: dict | None, updated: dict | Non
     with database.get_db_conn() as conn:
         tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname=current_schema()")}
         affected = set()
+        if 'spot_cost_basis' in tables:
+            affected.update(row[0] for row in conn.execute(
+                'SELECT symbol FROM spot_cost_basis WHERE config_id=%s', (config_id,)))
         if 'orders' in tables:
             fill_join = ('LEFT JOIN spot_order_fills f ON f.config_id=o.config_id AND f.symbol=o.symbol '
                          'AND f.order_id=o.order_id') if 'spot_order_fills' in tables else ''

@@ -45,7 +45,6 @@ def portfolio(tmp_path, monkeypatch):
     monkeypatch.setattr(dashboard_service, 'get_db_conn', connect)
     monkeypatch.setattr(dashboard_service, 'MarketTool', lambda **_: SimpleNamespace(exchange=exchange))
     monkeypatch.setattr(dashboard_service, 'DCA_STATS_CACHE', {})
-    monkeypatch.setattr(dashboard_service, 'update_order_fill_status', lambda *a, **k: None)
     monkeypatch.setattr(dashboard_service, 'upsert_spot_order_fill', lambda *a, **k: None)
     monkeypatch.setattr(dashboard_service, 'save_dca_daily_snapshot', snapshots.save_snapshot)
     return SimpleNamespace(cfg=cfg, snapshots=snapshots, connect=connect, sync_calls=sync_calls, path=path, exchange=exchange)

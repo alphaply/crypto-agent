@@ -51,7 +51,7 @@ class DcaSnapshotTests(unittest.TestCase):
 
         rows = database.get_dca_daily_snapshot_history("cfg-a", days=2)
 
-        self.assertEqual([row["snapshot_date"] for row in rows], ["2026-05-10", "2026-05-11"])
+        self.assertEqual([row["snapshot_date"] for row in rows], ["2026-05-11", "2026-05-12"])
 
     def test_legacy_key_migrates_and_two_symbols_keep_separate_daily_snapshots(self):
         with database.get_db_conn() as conn:

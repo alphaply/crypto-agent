@@ -26,6 +26,7 @@ import DecisionRunPanel from './DecisionRunPanel';
 import DecisionMemoryStatus from './DecisionMemoryStatus';
 import MemoryExecutionSnapshot from './MemoryExecutionSnapshot';
 import TaskExecutionPanel from './TaskExecutionPanel';
+import SpotCostBasisEditor from './SpotCostBasisEditor';
 import { AgentQueuePanel } from './AgentRuntimeStatus';
 import { currentExecution } from '../lib/agentRuntime';
 import MarkdownBlock from '../components/MarkdownBlock';
@@ -296,6 +297,9 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   const spotMode = isSpotMode(agent?.mode || position?.mode);
   const spotStats = position?.dca_stats || {};
   const chartSymbols = agent?.symbols?.length ? agent.symbols : [agent?.symbol].filter(Boolean);
+  const spotPortfolio = chartSymbols.length > 1 || spotStats.is_portfolio;
+  const availableSpotSymbols = new Set((spotStats.by_symbol || []).map(asset => asset.symbol));
+  const missingSpotSymbols = spotPortfolio ? chartSymbols.filter(symbol => !availableSpotSymbols.has(symbol)) : [];
   const requestedChartSymbol = chartSymbols.includes(chartSymbol) ? chartSymbol : agent?.symbol;
   const displayedChartSymbol = kline.symbol || agent?.symbol;
   const exitMode = position.exit_management?.mode || resolveExitMode({ ...agent, ...position });
@@ -489,14 +493,31 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
         {!spotMode && <ManagementStatus management={position.management} />}
         {spotMode ? (
           <div className="spot-account-summary">
-            <FactGrid items={buildSpotFacts(t, spotStats, pendingOrders)} />
+            {authenticated && !spotPortfolio ? (
+              <div style={{ marginBottom: 12 }}>
+                <SpotCostBasisEditor key={`${agent?.config_id}:${spotStats.symbol || agent?.symbol}`} configId={agent?.config_id} symbol={spotStats.symbol || agent?.symbol} stats={spotStats} />
+              </div>
+            ) : null}
+            <FactGrid items={buildSpotFacts(t, { ...spotStats, is_portfolio: spotPortfolio }, pendingOrders)} />
+            {authenticated && missingSpotSymbols.length ? (
+              <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 12 }}>
+                <Text type="secondary">{locale === 'zh' ? '以下标的的统计暂不可用，可手动填写当前持仓：' : 'Statistics are unavailable for these symbols. You can enter their current holdings:'}</Text>
+                {missingSpotSymbols.map(symbol => (
+                  <Space key={symbol} wrap>
+                    <Text>{symbol}</Text>
+                    <SpotCostBasisEditor key={`${agent?.config_id}:${symbol}`} configId={agent?.config_id} symbol={symbol} stats={{}} />
+                  </Space>
+                ))}
+              </Space>
+            ) : null}
             {spotStats.sync_status === 'partial' ? <Alert type="warning" showIcon message={locale === 'zh' ? '部分账户或行情数据未能核验，未知金额显示为 —，请刷新后确认。' : 'Some account or market data could not be verified. Unknown values are shown as —. Refresh to verify.'} /> : null}
             {spotStats.missing_symbols?.length ? <Alert type="warning" showIcon message={locale === 'zh' ? `部分标的数据不可用：${spotStats.missing_symbols.join(', ')}，组合总额仅含已读取标的。` : `Some symbols are unavailable: ${spotStats.missing_symbols.join(', ')}. Totals include available symbols only.`} /> : null}
-            {spotStats.is_portfolio && spotStats.by_symbol?.length ? (
+            {spotPortfolio && spotStats.by_symbol?.length ? (
               <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 16 }}>
                 <Text type="secondary">{locale === 'zh' ? '以下按标的列出持仓，数量与均价分别计算；组合总额使用共同计价币。' : 'Holdings, quantities and average costs are calculated per symbol. Portfolio totals use the shared quote currency.'}</Text>
                 {spotStats.by_symbol.map((asset) => (
-                  <Card size="small" key={asset.symbol} title={asset.symbol}>
+                  <Card size="small" key={asset.symbol} title={asset.symbol}
+                    extra={authenticated ? <SpotCostBasisEditor key={`${agent?.config_id}:${asset.symbol}`} configId={agent?.config_id} symbol={asset.symbol} stats={asset} /> : null}>
                     <FactGrid items={buildSpotFacts(t, asset)} />
                   </Card>
                 ))}

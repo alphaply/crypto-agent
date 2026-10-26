@@ -1139,7 +1139,10 @@ def save_runtime_snapshot(
             sync_agent_queue(conn, previous_snapshot, load_runtime_snapshot(connection=conn, raise_on_error=True) or {})
             if transaction_hook is not None:
                 transaction_hook(conn)
-            synchronize_configuration(conn, load_runtime_snapshot(connection=conn) or {})
+            from backend.utils.spot_config_guard import assert_spot_cost_basis_snapshot_change_allowed
+            candidate = load_runtime_snapshot(connection=conn, raise_on_error=True) or {}
+            assert_spot_cost_basis_snapshot_change_allowed(conn, previous_snapshot, candidate)
+            synchronize_configuration(conn, candidate)
             for removed_id in removed_ids:
                 # Active exclusive plans must remain visible to the retirement
                 # guard; deleting them earlier would erase the only inventory proof.
