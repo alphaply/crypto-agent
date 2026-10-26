@@ -44,6 +44,10 @@ def test_paper_catalog_does_not_publish_live_parameters(ledger, monkeypatch):
     edit = execution.inputSchema['$defs']['UnifiedEditAction']
     assert 'order_id' in edit['required']
     assert 'query open orders' in edit['properties']['order_id']['description']
+    close = execution.inputSchema['$defs']['UnifiedCloseAction']
+    assert {'side', 'order_type'} <= set(close['required'])
+    assert 'SHORT closes a short' in close['properties']['side']['description']
+    assert 'lowercase' in close['properties']['order_type']['description']
 
 
 @pytest.mark.parametrize('bad_action,hint', [
@@ -81,6 +85,40 @@ def test_live_sdk_malformed_edit_never_dispatches(contracts, version, bad_action
     with pytest.raises(ToolError, match=hint):
         call(server, 'execute_trade_actions', {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT',
              'operation_id': 'guidance-invalid-live', 'contract_version': version, 'actions': [bad_action]})
+    dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize('version', [2, 3])
+def test_live_sdk_uppercase_close_is_canonical_and_replay_does_not_resubmit(contracts, version):
+    from test_mcp_tool_contracts import enable_independent_profile
+    _, _, dispatch, server = contracts
+    enable_independent_profile()
+    action = {'action': 'close', 'side': 'SHORT', 'order_type': 'STOP_MARKET',
+              'amount': .12, 'trigger_price': 2349.2, 'reason': 'short stop'}
+    if version == 3:
+        action['symbol'] = 'ETH/USDT:USDT'
+    request = {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT', 'operation_id': 'uppercase-close-replay',
+               'contract_version': version, 'actions': [action]}
+    call(server, 'execute_trade_actions', request)
+    assert dispatch.call_args.args[1]['actions'][0]['order_type'] == 'stop_market'
+    assert dispatch.call_args.args[1]['actions'][0]['side'] == 'SHORT'
+    call(server, 'execute_trade_actions', {**request, 'actions': [{**action, 'order_type': 'stop_market'}]})
+    dispatch.assert_called_once()
+
+
+@pytest.mark.parametrize('version', [2, 3])
+def test_live_sdk_missing_close_side_rejects_entire_batch_before_any_dispatch(contracts, version):
+    from mcp.server.fastmcp.exceptions import ToolError
+    from test_mcp_tool_contracts import enable_independent_profile
+    _, _, dispatch, server = contracts
+    enable_independent_profile()
+    with pytest.raises(ToolError, match='close.side is required'):
+        call(server, 'execute_trade_actions', {'profile_id': 'swap', 'symbol': 'ETH/USDT:USDT',
+             'operation_id': 'close-missing-side', 'contract_version': version, 'actions': [
+                 {'action': 'cancel', 'order_id': 'algo:current', 'reason': 'replace stop'},
+                 {'action': 'close', 'order_type': 'STOP_MARKET', 'amount': .12,
+                  'trigger_price': 2349.2, 'reason': 'short stop'},
+             ]})
     dispatch.assert_not_called()
 
 

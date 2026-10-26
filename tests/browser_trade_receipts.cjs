@@ -1,7 +1,7 @@
 /* Synthetic local React fixtures only; no production requests. */
 const path = require('node:path');
 const fs = require('node:fs');
-const { chromium } = require(require.resolve('playwright', {paths:[process.env.PLAYWRIGHT_MODULE_ROOT || process.cwd()]}));
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE_PATH || require.resolve('playwright', {paths:[process.env.PLAYWRIGHT_MODULE_ROOT || process.cwd()]}));
 (async()=>{
  const browser=await chromium.launch({channel:'msedge',headless:true});
  try {
@@ -13,6 +13,11 @@ const { chromium } = require(require.resolve('playwright', {paths:[process.env.P
   await page.goto(`http://127.0.0.1:18973/tests/tool-receipts-fixture.html?locale=${locale}&theme=${theme}`,{waitUntil:'networkidle'});
   await page.locator('.tool-trade-row').first().waitFor();
   const text=await page.locator('main').innerText();
+  const stopCard=await page.locator('.tool-trade-row').first().innerText();
+  for(const expected of locale==='zh'?['修改止损','平空','2,349.2','0.12']:['Amend stop loss','Close short','2,349.2','0.12']) {
+   if(!stopCard.includes(expected))throw Error('Incorrect stop amendment label: '+expected);
+  }
+  if(stopCard.includes(locale==='zh'?'做空':'Open short'))throw Error('Stop amendment mislabelled as short entry');
   if(!text.includes(locale==='zh'?'成功':'Success') || !text.includes('0.13')) throw Error('Missing accepted requested amount');
   for(const price of ['2,400', '2,450', '68,500', '0.00001234', '2,210']) if(!text.includes(price)) throw Error('Missing price: '+price);
   if(!text.includes(locale==='zh'?'未提供':'Not provided') || !text.includes(locale==='zh'?'市价':'Market')) throw Error('Missing honest price labels');

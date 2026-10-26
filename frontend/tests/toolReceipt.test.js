@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { receiptSummary, tradeReceiptRows, isTradeReceipt, toolRequest } from '../src/lib/toolReceipt.js';
+import { receiptSummary, tradeReceiptRows, tradeReceiptLabels, isTradeReceipt, toolRequest } from '../src/lib/toolReceipt.js';
 
 test('accepted unfilled entry shows requested amount and success without internal trees', () => {
   const raw = { status: 'submitted', results: [{ action: 'open', symbol: 'ETH/USDT:USDT', status: 'submitted', result: {
@@ -103,4 +103,45 @@ test('chat and decision tool requests match exact call id including function arg
   assert.deepEqual(toolRequest(messages, tool), { price: 200 });
   assert.deepEqual(toolRequest(messages, { role: 'tool' }), {});
   assert.deepEqual(toolRequest(messages, { role: 'tool', arguments: '{broken' }), {});
+});
+
+test('short stop amendment is labelled as changing a stop loss that closes a short', () => {
+  const [row] = tradeReceiptRows({ results: [{ index: 0, action: 'edit', status: 'completed',
+    result: { symbol: 'ETH/USDT:USDT', side: 'SHORT', order_type: 'stop_market', kind: 'exit',
+      trigger_price: 2349.2, amount: .12, filled_amount: 0 } }] });
+  assert.deepEqual(tradeReceiptLabels(row, true), { action: '修改止损', side: '平空' });
+  assert.deepEqual(tradeReceiptLabels(row, false), { action: 'Amend stop loss', side: 'Close short' });
+  assert.equal(row.amount, .12);
+  assert.equal(row.triggerPrice, 2349.2);
+  assert.equal(row.result, 'success');
+});
+
+test('each action keeps its own entry or exit meaning and status in a mixed batch', () => {
+  const rows = tradeReceiptRows({ status: 'failed', results: [
+    { index: 0, action: 'open', side: 'SHORT', status: 'submitted', order_type: 'limit' },
+    { index: 1, action: 'close', side: 'SHORT', status: 'submitted', order_type: 'market' },
+    { index: 2, action: 'edit', side: 'LONG', status: 'failed', kind: 'exit', order_type: 'take_profit_limit' },
+    { index: 3, action: 'edit', side: 'SHORT', status: 'pending', kind: 'exit', order_type: 'limit' },
+    { index: 4, action: 'close', side: 'LONG', status: 'not_executed' },
+  ] });
+  assert.deepEqual(rows.map(row => tradeReceiptLabels(row, true)), [
+    { action: '开仓', side: '做空' }, { action: '平仓', side: '平空' },
+    { action: '修改止盈', side: '平多' }, { action: '退出改单', side: '平空' },
+    { action: '平仓', side: '平多' },
+  ]);
+  assert.deepEqual(rows.map(row => row.result), ['success', 'success', 'failed', null, 'failed']);
+});
+
+test('old amendments use explicit order evidence and never guess from a trigger alone', () => {
+  const [conditional] = tradeReceiptRows({ action: 'edit', pos_side: 'SHORT', exit_type: 'STOP_MARKET', trigger_price: 2349.2 });
+  assert.deepEqual(tradeReceiptLabels(conditional, true), { action: '修改止损', side: '平空' });
+  const [unknown] = tradeReceiptRows({ action: 'edit', side: 'SHORT', trigger_price: 2349.2 });
+  assert.deepEqual(tradeReceiptLabels(unknown, true), { action: '改单', side: '空头仓位' });
+  const [entry] = tradeReceiptRows({ action: 'edit', side: 'SHORT', kind: 'entry', order_type: 'limit', stop_loss: 2349.2 });
+  assert.deepEqual(tradeReceiptLabels(entry, true), { action: '改单', side: '做空' });
+});
+
+test('position side takes precedence over native exchange buy or sell direction', () => {
+  const [row] = tradeReceiptRows({ action: 'close', side: 'BUY', pos_side: 'SHORT', order_type: 'market' });
+  assert.deepEqual(tradeReceiptLabels(row, true), { action: '平仓', side: '平空' });
 });

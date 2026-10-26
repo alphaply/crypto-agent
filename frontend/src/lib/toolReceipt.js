@@ -70,7 +70,7 @@ export function tradeReceiptRows(content, { request = {}, fallbackStatus, toolNa
     return {
       action,
       symbol: detail.symbol ?? row.symbol ?? intent.symbol ?? envelope.symbol,
-      side: detail.side ?? detail.pos_side ?? row.side ?? args.side ?? args.pos_side ?? ({ BUY_LIMIT: 'BUY', SELL_LIMIT: 'SELL' }[args.action]),
+      side: detail.pos_side ?? detail.position_side ?? detail.side ?? row.pos_side ?? row.position_side ?? row.side ?? args.side ?? args.pos_side ?? ({ BUY_LIMIT: 'BUY', SELL_LIMIT: 'SELL' }[args.action]),
       amount: detail.quantity_mode === 'all' || args.close_all === true ? 'all'
         : editing
           ? detail.requested_remaining_amount ?? args.remaining_amount ?? detail.requested_amount ?? detail.amount ?? args.amount
@@ -86,11 +86,45 @@ export function tradeReceiptRows(content, { request = {}, fallbackStatus, toolNa
       takeProfit: detail.take_profit ?? args.take_profit,
       stopLimitPrice: detail.stop_limit_price ?? args.stop_limit_price,
       takeProfitLimitPrice: detail.take_profit_limit_price ?? args.take_profit_limit_price,
-      orderType: detail.order_type ?? detail.exit_type ?? args.order_type,
+      orderType: detail.order_type ?? detail.exit_type ?? row.order_type ?? row.exit_type ?? args.order_type,
+      orderKind: detail.kind ?? row.kind,
       status,
       result: rejected ? 'failed' : accepted ? 'success' : null,
     };
   });
+}
+
+const actionLabels = {
+  open: ['开仓', 'Open'], close: ['平仓', 'Close'], edit: ['改单', 'Amend'], cancel: ['撤单', 'Cancel'],
+  protect: ['保护', 'Protect'], amend_entry: ['入场改单', 'Amend entry'],
+  amend_exit: ['退出改单', 'Amend exit'], update_protection: ['保护调整', 'Update protection'],
+};
+
+export function tradeReceiptLabels(row, zh = false) {
+  const language = zh ? 0 : 1;
+  const type = String(row.orderType || '').toLowerCase();
+  const stop = ['stop_market', 'stop_limit', 'stop_loss', 'stop_loss_limit'].includes(type);
+  const profit = ['take_profit_market', 'take_profit_limit', 'take_profit'].includes(type);
+  const editing = row.action === 'edit' || row.action?.startsWith('amend_');
+  const entry = row.action === 'open' || row.action === 'amend_entry' || row.orderKind === 'entry';
+  const exit = !entry && (row.action === 'close' || row.action === 'amend_exit' || row.orderKind === 'exit'
+    || stop || profit || type === 'oco');
+  let action = (actionLabels[row.action] || ['交易操作', 'Trade'])[language];
+  if (editing && exit) {
+    if (stop) action = ['修改止损', 'Amend stop loss'][language];
+    else if (profit) action = ['修改止盈', 'Amend take profit'][language];
+    else if (type === 'oco') action = ['修改止盈止损', 'Amend TP/SL'][language];
+    else action = ['退出改单', 'Amend exit'][language];
+  }
+  const side = String(row.side || '').toUpperCase();
+  // A position direction alone cannot establish whether an amendment opens
+  // or closes it. Historical receipts without order evidence stay neutral.
+  const positions = exit
+    ? { LONG: ['平多', 'Close long'], SHORT: ['平空', 'Close short'] }
+    : entry
+      ? { LONG: ['做多', 'Open long'], SHORT: ['做空', 'Open short'] }
+      : { LONG: ['多头仓位', 'Long position'], SHORT: ['空头仓位', 'Short position'] };
+  return { action, side: (positions[side] || { BUY: ['买入', 'Buy'], SELL: ['卖出', 'Sell'] }[side])?.[language] || side };
 }
 
 export function receiptSummary(content, zh = false) {

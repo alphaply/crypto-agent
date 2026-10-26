@@ -9,7 +9,7 @@ _IDENTITIES = {'operation_id', 'parent_operation_id', 'execution_operation_id', 
                'order_id', 'order_ids', 'accepted_order_ids', 'previous_order_id', 'parent_order_id', 'execution_order_id', 'exchange_order_id',
                'client_id', 'client_order_id', 'exit_id', 'oco_group', 'symbol', 'side', 'exchange_side', 'user_id', 'profile_id',
                'resource_id', 'position_id', 'cycle_id', 'episode_id'}
-_FACTS = {'contract_version', 'receipt_version', 'status', 'order_status', 'order_type', 'exchange_channel',
+_FACTS = {'contract_version', 'receipt_version', 'status', 'order_status', 'order_type', 'kind', 'exchange_channel',
           'market_type', 'exchange', 'quantity_mode', 'amount', 'requested_amount', 'resolved_amount', 'filled_amount',
           'remaining_amount', 'requested_remaining_amount', 'requested_price', 'requested_trigger_price', 'closed_amount', 'execution_amount', 'price', 'trigger_price', 'average_price',
           'fee', 'realized_pnl', 'edit_method', 'phase', 'submission_state', 'submitted', 'error_code',

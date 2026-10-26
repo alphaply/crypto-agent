@@ -39,6 +39,14 @@ const batch = {
 createRoot(document.getElementById('root')).render(<AccessibleConfigProvider theme={{ algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm }}>
   <PreferencesContext.Provider value={{ locale: zh ? 'zh' : 'en', isDark: dark, t: value => value }}>
     <main style={{ maxWidth: 1000, margin: 'auto', padding: 16 }}><Space orientation="vertical" style={{ width: '100%' }}>
+      <Card title={zh ? '空头止损修改 · 离线合成数据' : 'Short stop amendment · Synthetic data'}>
+        <ToolReceipt zh={zh} item={{ tool: 'execute_trade_actions', result: { results: [
+          { index: 0, action: 'edit', symbol: 'ETH/USDT:USDT', status: 'completed', result: {
+            side: 'SHORT', kind: 'exit', order_type: 'stop_market', trigger_price: 2349.2,
+            amount: .12, filled_amount: 0, order_status: 'waiting_trigger',
+          } },
+        ] } }} />
+      </Card>
       <Card title="工具回执 · 离线合成数据"><ToolReceipt zh={zh} item={{ tool: 'execute_trade_actions', result: receipt }} /></Card>
       <Card title="批量失败回执 · 离线合成数据"><ToolReceipt zh={zh} item={{ tool: 'execute_trade_actions', status: 'failed', result: batch }} /></Card>
       <Card title={zh ? '改单与撤单 · 离线合成数据' : 'Amend & cancel · Synthetic data'}>

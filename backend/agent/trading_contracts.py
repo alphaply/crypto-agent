@@ -5,7 +5,10 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_serializer, model_validator
 
-from backend.agent.trade_guidance import ACTION_DESCRIPTION, ACTIONS_DESCRIPTION, ORDER_ID_DESCRIPTION, validate_action_identity
+from backend.agent.trade_guidance import (
+    ACTION_DESCRIPTION, ACTIONS_DESCRIPTION, CLOSE_SIDE_DESCRIPTION, OPEN_SIDE_DESCRIPTION,
+    ORDER_ID_DESCRIPTION, ORDER_TYPE_DESCRIPTION, validate_action_identity,
+)
 
 
 PositiveNumber = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
@@ -22,17 +25,24 @@ EXECUTION_POLICY_DESCRIPTION = (
 class TradingInput(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
 
+    @field_validator('order_type', mode='before', check_fields=False)
+    @classmethod
+    def canonical_order_type_case(cls, value):
+        # Casing does not change order intent. Enum and mode validation still
+        # reject unknown or unavailable types; side is never inferred.
+        return value.lower() if isinstance(value, str) else value
+
 
 class OpenInput(TradingInput):
-    side: Side = Field(description='持仓方向：LONG 开多，SHORT 开空；双向持仓要求 Hedge Mode')
+    side: Side = Field(description=OPEN_SIDE_DESCRIPTION)
     amount: PositiveNumber = Field(description='基础币数量，不是保证金或合约张数')
     price: PositiveNumber = Field(description='限价入场价格')
     reason: Reason
 
 
 class CloseInput(TradingInput):
-    side: Side = Field(description='要减少的持仓方向，LONG 平多、SHORT 平空')
-    order_type: OrderType
+    side: Side = Field(description=CLOSE_SIDE_DESCRIPTION)
+    order_type: OrderType = Field(description=ORDER_TYPE_DESCRIPTION)
     reason: Reason
     amount: PositiveNumber | None = Field(None, description='固定基础币数量；与 close_all=true 二选一')
     close_all: StrictBool | None = Field(None, description='仅允许 true；市价按提交前快照，条件市价在触发时全平')
@@ -166,8 +176,8 @@ class UnifiedActionBase(BatchDependencies):
 
 class UnifiedOpenAction(UnifiedActionBase):
     action: Literal['open'] = Field(description=ACTION_DESCRIPTION + ' open creates an entry order.')
-    side: Side
-    order_type: Literal['market', 'limit'] = 'limit'
+    side: Side = Field(description=OPEN_SIDE_DESCRIPTION)
+    order_type: Literal['market', 'limit'] = Field('limit', description=ORDER_TYPE_DESCRIPTION)
     amount: PositiveNumber | None = None
     quote_amount: PositiveNumber | None = None
     margin_amount: PositiveNumber | None = None
@@ -193,11 +203,11 @@ class UnifiedOpenAction(UnifiedActionBase):
 
 class UnifiedCloseAction(UnifiedActionBase):
     action: Literal['close'] = Field(description=ACTION_DESCRIPTION + ' close creates an exit order for an existing holding.')
-    side: Side
+    side: Side = Field(description=CLOSE_SIDE_DESCRIPTION)
     order_type: Literal['market', 'limit', 'take_profit_market', 'take_profit_limit',
-                        'stop_market', 'stop_limit', 'stop_loss', 'take_profit', 'oco']
-    amount: PositiveNumber | None = None
-    close_all: StrictBool | None = None
+                        'stop_market', 'stop_limit', 'stop_loss', 'take_profit', 'oco'] = Field(description=ORDER_TYPE_DESCRIPTION)
+    amount: PositiveNumber | None = Field(None, description='Fixed base-coin quantity; choose exactly one of amount or close_all=true.')
+    close_all: StrictBool | None = Field(None, description='Close all of the explicitly specified side; side is still required. Mutually exclusive with amount.')
     price: PositiveNumber | None = None
     trigger_price: PositiveNumber | None = None
     stop_loss: PositiveNumber | None = None

@@ -174,6 +174,10 @@ def project_receipt(plan: dict | None, record: dict | None, *, operation_id: str
                             'next_retry_at': None if is_converged_terminal else record.get('next_retry_at'),
                             'attempt_count': record.get('attempt_count', 0)})
     if record:
+        if record.get('exit_type') or record in plan.get('exits', []):
+            result['kind'] = 'exit'
+        elif record in plan.get('entries', []):
+            result['kind'] = 'entry'
         # Carry the target order's prices even when there is no base receipt
         # (for example a cancellation or an exception after submission).
         for key in ('price', 'trigger_price'):

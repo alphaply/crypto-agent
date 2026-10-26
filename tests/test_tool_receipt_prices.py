@@ -1,5 +1,6 @@
 """Price evidence stays visible across receipt projections; no external calls."""
 from copy import deepcopy
+import pytest
 
 from backend.mcp.spot_orders import _receipt
 from backend.utils.trade_receipts import project_receipt
@@ -50,3 +51,20 @@ def test_missing_prices_are_not_created():
                                                    operation_id='cancel', action='cancel'))
     assert 'price' not in receipt
     assert 'trigger_price' not in receipt
+
+
+@pytest.mark.parametrize('kind,order_type', [('entry', 'limit'), ('exit', 'limit'), ('exit', 'stop_market')])
+def test_amendment_preserves_target_order_purpose_through_compact_receipt(kind, order_type):
+    record = {'id': 'stop-1', 'status': 'open', 'order_type': order_type, 'amount': .12,
+              'amendment': {'operation_id': 'edit', 'state': 'confirmed'}}
+    if kind == 'exit':
+        record['exit_type'] = order_type
+    plan = {'side': 'SHORT', 'symbol': 'ETH/USDT:USDT', 'exits' if kind == 'exit' else 'entries': [record]}
+    original = deepcopy(plan)
+    receipt = project_receipt(plan, record, operation_id='edit', action='edit')
+    compact = compact_trade_receipt({'results': [{'index': 0, 'action': 'edit', 'result': receipt}]})
+    result = compact['results'][0]['result']
+    assert result['kind'] == kind
+    assert result['side'] == 'SHORT'
+    assert result['order_type'] == order_type
+    assert plan == original

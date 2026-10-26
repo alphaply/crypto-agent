@@ -178,18 +178,18 @@ def unified_schema_for_config(config: dict | None, *, engine: str = 'live') -> d
         definition['required'] = [key for key in definition.get('required', []) if key in fields]
         if caps['engine'] == 'live':
             if 'side' in fields and caps['market_type'] == 'spot':
-                definition['properties']['side'] = {'type': 'string', 'const': 'LONG'}
+                definition['properties']['side'] = {**definition['properties']['side'], 'const': 'LONG', 'enum': ['LONG']}
             if action_name == 'open':
                 definition['properties']['amount'] = {'type': 'number', 'exclusiveMinimum': 0, 'description': '基础币数量'}
                 definition['properties']['price'] = {'type': 'number', 'exclusiveMinimum': 0}
-                definition['properties']['order_type'] = {'type': 'string', 'const': 'limit', 'default': 'limit'}
+                definition['properties']['order_type'] = {**definition['properties']['order_type'], 'const': 'limit', 'enum': ['limit'], 'default': 'limit'}
                 definition['required'] += [key for key in ('amount', 'price') if key not in definition['required']]
                 if caps['market_type'] == 'swap' and caps['exit_mode'] == 'attached_required':
                     for key in ('stop_loss', 'take_profit'):
                         definition['properties'][key] = {'type': 'number', 'exclusiveMinimum': 0}
                         definition['required'].append(key)
             elif action_name == 'close':
-                definition['properties']['order_type'] = {'type': 'string', 'enum': caps['close_order_types']}
+                definition['properties']['order_type'] = {**definition['properties']['order_type'], 'enum': caps['close_order_types']}
             elif action_name == 'protect' and caps['mode'] == 'STRATEGY':
                 definition['required'].append('order_id')
             if caps['market_type'] == 'spot' and action_name in {'close', 'protect'}:

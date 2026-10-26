@@ -459,7 +459,7 @@ def register(server):
                         if action == 'open':
                             definition['properties']['leverage'] = {'anyOf': [{'type': 'integer', 'minimum': 1, 'maximum': paper.settings()['max_leverage']}, {'type': 'null'}]}
                         if action == 'close':
-                            definition['properties']['order_type'] = {'type': 'string', 'enum': capabilities_for_config({'mode': 'PAPER'}, engine='paper')['close_order_types']}
+                            definition['properties']['order_type'] = {**definition['properties']['order_type'], 'enum': capabilities_for_config({'mode': 'PAPER'}, engine='paper')['close_order_types']}
                 elif len(configs) == 1:
                     envelope = unified_schema_for_config(configs[0])
                 else:

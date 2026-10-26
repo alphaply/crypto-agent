@@ -2,7 +2,7 @@ import { Tag } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined, EditOutlined, CloseOutlined, SafetyOutlined } from '@ant-design/icons';
 import MarkdownBlock from './MarkdownBlock';
 import './ToolResultContent.css';
-import { receiptSummary, isTradeReceipt, tradeReceiptRows } from '../lib/toolReceipt';
+import { receiptSummary, isTradeReceipt, tradeReceiptRows, tradeReceiptLabels } from '../lib/toolReceipt';
 
 // What a reader needs to judge one operation: did it work, on what, how much,
 // and where the order stands. Every other field stays in the raw JSON view.
@@ -59,8 +59,6 @@ function Value({ value, field, zh, depth = 0 }) {
   })}</dl>;
 }
 
-const actions = { open: '开仓', close: '平仓', edit: '改单', cancel: '撤单', protect: '保护', amend_entry: '入场改单', amend_exit: '退出改单', update_protection: '保护调整' };
-
 function displayNumber(value, zh) {
   if (value == null) return zh ? '未提供' : 'Not provided';
   if (value === 'all') return zh ? '全部' : 'All';
@@ -69,7 +67,6 @@ function displayNumber(value, zh) {
 }
 
 const actionIcons = { open: ArrowUpOutlined, close: ArrowDownOutlined, edit: EditOutlined, cancel: CloseOutlined, protect: SafetyOutlined };
-const englishActions = { open: 'Open', close: 'Close', edit: 'Amend', cancel: 'Cancel', protect: 'Protect', amend_entry: 'Amend entry', amend_exit: 'Amend exit', update_protection: 'Update protection' };
 
 function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
   const rows = tradeReceiptRows(content, { request, toolName, fallbackStatus });
@@ -79,8 +76,7 @@ function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
     const action = editing ? 'edit' : row.action;
     const Icon = actionIcons[action] || SafetyOutlined;
     const [base, quote] = (row.symbol || '').split(':')[0].split('/');
-    const side = String(row.side || '').toUpperCase();
-    const sideLabel = zh ? ({ LONG: '做多', SHORT: '做空', BUY: '买入', SELL: '卖出' }[side] || side) : side;
+    const { action: actionLabel, side: sideLabel } = tradeReceiptLabels(row, zh);
     const priceLabel = row.priceFromRequest ? zh ? '委托价格' : 'Requested price'
       : row.action === 'cancel' ? zh ? '原挂单价' : 'Order price'
         : editing ? zh ? '挂单价格' : 'Order price' : zh ? '限价' : 'Limit price';
@@ -104,7 +100,7 @@ function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
     return <article className="tool-result-card tool-trade-row" data-action={action} key={index}>
       <div className="tool-trade-heading">
         <span className="tool-trade-icon" aria-hidden="true"><Icon /></span>
-        <div className="tool-trade-title"><span className="tool-trade-action">{zh ? actions[row.action] || '交易操作' : englishActions[row.action] || 'Trade'}</span>
+        <div className="tool-trade-title"><span className="tool-trade-action">{actionLabel}</span>
           <strong>{row.symbol || (zh ? '标的未提供' : 'Symbol not provided')}</strong>
           {sideLabel && <span className="tool-trade-side">{sideLabel}</span>}
         </div>
