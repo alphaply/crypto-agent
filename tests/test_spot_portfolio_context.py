@@ -279,3 +279,62 @@ def test_daily_review_retains_fills_with_same_id_across_symbols(portfolio, monke
     evidence = json.loads(result.split('\n', 1)[1])
     assert evidence['returned_fill_count'] == 2
     assert {fill['symbol'] for fill in evidence['fills']} == set(cfg['symbols'])
+
+
+@pytest.fixture
+def spot_news_portfolio(portfolio):
+    cfg, market, state = portfolio
+    original = market.get_market_analysis.side_effect
+
+    def spot_analysis(symbol, **kwargs):
+        data = original(symbol, **kwargs)
+        for indicators in data['analysis'].values():
+            indicators['indicator_profile'] = 'spot_long_term'
+        return data
+
+    market.get_market_analysis.side_effect = spot_analysis
+    return cfg, market, state
+
+
+@pytest.mark.parametrize('stale', [False, True])
+def test_shared_spot_news_appears_once_for_the_portfolio(spot_news_portfolio, monkeypatch, stale):
+    cfg, _, state = spot_news_portfolio
+    news = {'digest': 'Shared macro and crypto news.', 'stale': stale, 'available': True}
+    monkeypatch.setattr(graph, 'fetch_news_risk_context', lambda symbol: news)
+    result = graph.start_node(state, {'configurable': {'config_id': 'portfolio', 'agent_config': cfg}})
+    prompt = result.messages[0].content
+    assert prompt.count(news['digest']) == 1
+    assert 'BTC/USDT, ETH/USDT' in prompt
+    assert ('News context [cached/stale]' in prompt) is stale
+    assert graph.database.save_news_snapshot.call_count == 2
+
+
+def test_distinct_spot_news_is_preserved_without_repeating_shared_text(spot_news_portfolio, monkeypatch):
+    cfg, _, state = spot_news_portfolio
+    news = {'BTC/USDT': {'digest': 'First snapshot.', 'stale': False},
+            'ETH/USDT': {'digest': 'Updated snapshot.', 'stale': True}}
+    monkeypatch.setattr(graph, 'fetch_news_risk_context', lambda symbol: news[symbol])
+    result = graph.start_node(state, {'configurable': {'config_id': 'portfolio', 'agent_config': cfg}})
+    prompt = result.messages[0].content
+    assert prompt.count('First snapshot.') == 1
+    assert prompt.count('Updated snapshot.') == 1
+    assert 'News context [cached/stale]: Updated snapshot.' in prompt
+
+
+@pytest.mark.parametrize('stale', [False, True])
+def test_single_spot_keeps_its_news_and_staleness(spot_news_portfolio, monkeypatch, stale):
+    cfg, _, state = spot_news_portfolio
+    cfg['symbols'] = ['BTC/USDT']
+    news = {'digest': 'Single asset news.', 'stale': stale}
+    monkeypatch.setattr(graph, 'fetch_news_risk_context', lambda symbol: news)
+    result = graph.start_node(state, {'configurable': {'config_id': 'portfolio', 'agent_config': cfg}})
+    prompt = result.messages[0].content
+    assert prompt.count(news['digest']) == 1
+    assert ('News context [cached/stale]' in prompt) is stale
+    assert '## Portfolio news context' not in prompt
+
+
+def test_empty_spot_news_does_not_invent_a_shared_summary(spot_news_portfolio):
+    cfg, _, state = spot_news_portfolio
+    result = graph.start_node(state, {'configurable': {'config_id': 'portfolio', 'agent_config': cfg}})
+    assert '## Portfolio news context' not in result.messages[0].content

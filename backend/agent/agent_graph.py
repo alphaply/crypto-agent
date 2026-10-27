@@ -29,7 +29,7 @@ from backend.utils.decision_journal import decision_journal
 from backend.utils.exit_policy import effective_exit_mode
 from backend.utils.spot_portfolio import get_config_symbols, SPOT_MARKET_TIMEFRAMES
 from backend.utils.formatters import format_positions_to_agent_friendly, format_orders_to_agent_friendly, \
-    format_market_data_to_text
+    format_market_data_to_text, format_spot_portfolio_news
 from backend.utils.llm_utils import (
     LLMInvocationError,
     build_chat_model,
@@ -551,9 +551,12 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
             blocks.append(f"## {asset}\n" + format_market_data_to_text({
                 'current_price': asset_quote.get('price') if asset_quote.get('available') else None,
                 'live_quote': asset_quote, 'atr_base': primary.get('atr'),
-                'sentiment': market.get('sentiment'), 'news_context': news_by_symbol[asset],
+                'sentiment': market.get('sentiment'),
                 'technical_indicators': analysis,
             }))
+        portfolio_news = format_spot_portfolio_news(news_by_symbol)
+        if portfolio_news:
+            blocks.append(portfolio_news)
         formatted_market_data = '\n\n'.join(blocks)
     prompt_template = clean_decision_template(resolve_prompt_template(agent_config, trade_mode, PROJECT_ROOT, logger))
     next_run_time = calculate_next_run_time(agent_config, now_cn)

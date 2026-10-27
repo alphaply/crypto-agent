@@ -693,6 +693,14 @@ def financial_reservation(mt, claim, operation_id):
             raise ValueError('A nested financial action crosses its management reservation')
         yield active
         return
+    from backend.utils.trade_receipts import current_attempt
+    attempt = current_attempt.get()
+    # Spot accumulation uses its own shared budget and fresh quote balance.
+    # Historical unresolved management actions must not reintroduce the retired
+    # buy lock. Exact-operation replay and account/resource locks still apply.
+    spot_buy = (str(_config(mt).get('mode', '')).upper() == 'SPOT_DCA'
+                and claim['market_type'] == 'spot' and attempt is not None
+                and attempt.action == 'open' and attempt.operation_id == operation_id)
     with scope_file_lock(claim['physical_account'], claim['market_type'], claim['resource']):
         with database.get_db_conn() as conn:
             lock_scope(conn, 'management-resource', claim['physical_account'], claim['market_type'], claim['resource'])
@@ -700,19 +708,23 @@ def financial_reservation(mt, claim, operation_id):
             if not current or current['version'] != claim['version'] or current['state'] != 'owned':
                 raise ManagementConflict('Management changed before submission', current)
             old = conn.execute("SELECT * FROM visible_management_actions WHERE claim_id=%s AND state IN ('running','unknown','pending')", (claim['claim_id'],)).fetchone()
-            if old and (old['operation_id'] != operation_id or old['owner'] != mt.config_id):
+            if old and not spot_buy and (old['operation_id'] != operation_id or old['owner'] != mt.config_id):
                 raise ValueError('An original financial operation in this scope requires verification')
-            # Earlier compatibility entry points persisted their pending writes
-            # separately. Sharing a resource must not bypass those originals.
+            # Compatibility entry points persisted pending writes separately.
+            # Keep that verification gate for actions other than spot buys.
             legacy = conn.execute("SELECT 1 FROM position_management_actions WHERE "
                                   "account_scope IN (SELECT legacy_scope FROM management_account_aliases WHERE physical_account=%s) "
                                   "AND symbol=%s AND (side=%s OR side='BOTH' OR %s='BOTH') "
                                   "AND state IN ('running','unresolved') LIMIT 1",
                                   (claim['physical_account'], claim['symbol'], claim['side'], claim['side'])).fetchone()
-            if legacy:
+            if legacy and not spot_buy:
                 raise ValueError('An original financial operation in this scope requires verification')
-            conn.execute('INSERT INTO visible_management_actions(claim_id,owner,version,operation_id,state,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(claim_id) DO UPDATE SET owner=excluded.owner,version=excluded.version,operation_id=excluded.operation_id,state=excluded.state,payload=excluded.payload',
-                         (claim['claim_id'], mt.config_id, claim['version'], operation_id, 'running', json.dumps({'symbol': claim['symbol']})))
+            # Keep the original unresolved identity for recovery; the new buy
+            # uses its own durable trade_action_runs and budget records.
+            record_action = not (spot_buy and old)
+            if record_action:
+                conn.execute('INSERT INTO visible_management_actions(claim_id,owner,version,operation_id,state,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(claim_id) DO UPDATE SET owner=excluded.owner,version=excluded.version,operation_id=excluded.operation_id,state=excluded.state,payload=excluded.payload',
+                             (claim['claim_id'], mt.config_id, claim['version'], operation_id, 'running', json.dumps({'symbol': claim['symbol']})))
             conn.commit()
         token = _active_management.set(claim)
         state = 'unknown'
@@ -729,6 +741,7 @@ def financial_reservation(mt, claim, operation_id):
             raise
         finally:
             _active_management.reset(token)
-            with database.get_db_conn() as conn:
-                conn.execute('UPDATE visible_management_actions SET state=%s WHERE claim_id=%s AND operation_id=%s', (state, claim['claim_id'], operation_id))
-                conn.commit()
+            if record_action:
+                with database.get_db_conn() as conn:
+                    conn.execute('UPDATE visible_management_actions SET state=%s WHERE claim_id=%s AND operation_id=%s', (state, claim['claim_id'], operation_id))
+                    conn.commit()

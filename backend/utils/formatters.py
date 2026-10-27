@@ -146,10 +146,30 @@ def _format_spot_market_data(data: dict) -> str:
         times, closes = item.get('recent_times') or [], item.get('recent_closes') or []
         if len(times) == len(closes) and closes:
             output.append('- Recent closed prices (UTC): ' + ', '.join(f'{ts}={fmt(close)}' for ts, close in zip(times, closes)))
-    news = data.get('news_context') or {}
-    if news.get('digest'):
-        output.append(f"- News context{' [cached/stale]' if news.get('stale') else ''}: {news['digest']}")
+    news_text = _format_spot_news(data.get('news_context') or {})
+    if news_text:
+        output.append(news_text)
     return '\n'.join(output)
+
+
+def _format_spot_news(news: dict) -> str:
+    if not news.get('digest'):
+        return ''
+    return f"- News context{' [cached/stale]' if news.get('stale') else ''}: {news['digest']}"
+
+
+def format_spot_portfolio_news(news_by_symbol: dict[str, dict]) -> str:
+    """Show identical spot news once, preserving distinct snapshots and staleness."""
+    groups: dict[str, list[str]] = {}
+    for symbol, news in news_by_symbol.items():
+        text = _format_spot_news(news or {})
+        if text:
+            groups.setdefault(text, []).append(symbol)
+    if not groups:
+        return ''
+    return '## Portfolio news context\n' + '\n\n'.join(
+        f"- Applies to: {', '.join(symbols)}\n{text}" for text, symbols in groups.items()
+    )
 
 
 def format_market_data_to_text(data: dict) -> str:
