@@ -14,7 +14,7 @@ import { filterAgents, selectAgentId, workspaceSignature } from '../lib/dashboar
 import './AgentsPage.css';
 
 
-export default function AgentsPage() {
+export default function AgentsPage({ authenticated = false }) {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
   const navigate = useNavigate();
@@ -56,7 +56,16 @@ export default function AgentsPage() {
   const selectAgent = (id) => setParams((previous) => { const next = new URLSearchParams(previous); next.set('agent', id); return next; }, { replace: true });
   const workspace = workspaces[activeId];
   const running = agents.filter(isAgentActive).length;
-  const authenticated = Boolean(localStorage.getItem('crypto-agent-token'));
+  const onMemorySaved = (saved) => setWorkspaces((previous) => {
+    const current = previous[saved.config_id];
+    if (!current) return previous;
+    const rows = current.short_memories?.short_memories || [];
+    return { ...previous, [saved.config_id]: { ...current, short_memories: {
+      ...current.short_memories,
+      short_memories: rows.map((row) => row.config_id === saved.config_id && row.bucket_start === saved.bucket_start
+        ? { ...row, market_summary: saved.market_summary } : row),
+    } } };
+  });
   return <div className="boxed-page dashboard-page dashboard-v2 agents-page">
     {error && <Alert type="warning" showIcon title={error} action={<Button onClick={refresh} loading={loading}>{zh ? '重试' : 'Retry'}</Button>} />}
     {loading && !dashboard ? <Card><Skeleton active /></Card> : !agents.length ? <Card><Empty description={zh ? '尚未配置 Agent' : 'No agents configured'}><Button type="primary" onClick={() => navigate('/console/config')}>{zh ? '创建任务' : 'Create an agent'}</Button></Empty></Card> : <div className={`agents-layout${agents.length === 1 ? ' is-single' : ''}`}>
@@ -81,7 +90,7 @@ export default function AgentsPage() {
             <ScheduleDetails agents={[agent]} activeTab={activeId} locale={locale} compact />
           </header>
           {workspaceError && <Alert type="warning" showIcon title={zh ? '持仓或行情未能更新' : 'Unable to update positions or markets'} description={workspaceError} action={<Button onClick={refresh}>{zh ? '重试' : 'Retry'}</Button>} />}
-          {workspace ? <WorkspacePanel key={activeId} compact workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} chartLoading={workspaceLoading} chartError={Boolean(workspaceError)} chartSymbol={chartSymbol} setChartSymbol={(symbol) => setChartSymbols((previous) => ({ ...previous, [activeId]: symbol }))} /> : <Card><Skeleton active loading={workspaceLoading}><Empty description={zh ? '行情暂时不可用，请重试。' : 'Market data unavailable. Please retry.'} /></Skeleton></Card>}
+          {workspace ? <WorkspacePanel key={activeId} compact workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} onMemorySaved={onMemorySaved} chartLoading={workspaceLoading} chartError={Boolean(workspaceError)} chartSymbol={chartSymbol} setChartSymbol={(symbol) => setChartSymbols((previous) => ({ ...previous, [activeId]: symbol }))} /> : <Card><Skeleton active loading={workspaceLoading}><Empty description={zh ? '行情暂时不可用，请重试。' : 'Market data unavailable. Please retry.'} /></Skeleton></Card>}
         </>}
       </section>
     </div>}

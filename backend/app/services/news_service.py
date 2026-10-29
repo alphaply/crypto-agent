@@ -19,6 +19,9 @@ from backend.app.services.news_progress import NewsProgress, current_progress
 from backend.app.services.news_models import article_data, fingerprint, model_identity, score_batch, generate
 from backend.utils.news_tracing import news_trace_mode
 from backend.utils.news_schedule import news_schedule_slot
+from backend.utils.event_time import (
+    EVENT_TIME_POLICY, EVENT_TIME_POLICY_VERSION, article_time_fields, news_time_context,
+)
 from backend.utils.runtime_capacity import CapacityBusy, submit_capacity, capacity_scope, get_capacity_manager
 
 logger = setup_logger('SharedNews')
@@ -181,9 +184,10 @@ def _summarize(items: list[dict], provider: dict) -> str:
         '合并重复报道，标注冲突与修正；区分已发生事实、预测、日历事件及潜在影响。CPI/就业/利率属于宏观信息，'
         '日历不能当成已公布的数据。旧摘要只作上下文，删去当前原文无法支持或已过期的内容。'
         '按本轮 reference 重新引用编号，禁止沿用旧编号。不得编造信息、价格或交易建议。最多800字。\n'
-        + provider.get('_summary_instructions', ''),
+        + provider.get('_summary_instructions', '') + '\n' + EVENT_TIME_POLICY,
         {'previous': provider.get('_summary_context'),
-         'current_sources': [{'reference': i + 1, **article_data(item), 'content': str(item.get('content') or '')[:4000]} for i, item in enumerate(items)]}, 'news_summary')
+         'time_context': news_time_context({'items': items}),
+         'current_sources': [{'reference': i + 1, **article_time_fields(article_data(item)), 'content': str(item.get('content') or '')[:4000]} for i, item in enumerate(items)]}, 'news_summary')
 
 
 def _run_refresh(owner: str, snapshot: dict) -> None:
@@ -287,7 +291,7 @@ def _process_refresh(owner: str, snapshot: dict, progress: NewsProgress) -> None
         selected = sorted((item for item in scored if settings.scoring_mode == 'off' or item['scoring']['score'] >= settings.min_score), key=lambda item: (item['scoring']['score'] or 0, item.get('published_at') or '', item.get('url') or item['title']), reverse=True)[:settings.max_items]
         progress.selected({item.pop('_progress_index') for item in selected})
         previous = database_news.latest_snapshot() or {}
-        summary_config_key = fingerprint([model_identity(summary_provider), settings.summary_mode, settings.summary_instructions, settings.scoring_mode, settings.min_score, settings.lookback_hours, settings.max_items])
+        summary_config_key = fingerprint([EVENT_TIME_POLICY_VERSION, model_identity(summary_provider), settings.summary_mode, settings.summary_instructions, settings.scoring_mode, settings.min_score, settings.lookback_hours, settings.max_items])
         summary_key = fingerprint([[article_data(item) for item in selected], summary_config_key])
         summary_time = sources._parse_iso(previous.get('summary_as_of') or previous.get('as_of'))
         previous_in_window = all((not sources._parse_iso(item.get('published_at')) or sources._parse_iso(item['published_at']) >= now - timedelta(hours=settings.lookback_hours)) and (not sources._parse_iso(item.get('scheduled_at')) or sources._parse_iso(item['scheduled_at']) >= now - timedelta(hours=2)) for item in previous.get('items', []))
@@ -407,7 +411,10 @@ def get_latest_news() -> dict:
     payload.pop('summary_config_key', None)
     # Older snapshots may carry private audit IDs. Public consumers get only
     # scoring content; processing diagnostics remain on authenticated routes.
-    payload['items'] = [{**item, 'scoring': _public_scoring(item.get('scoring') or {})} for item in payload.get('items', [])]
+    payload['items'] = [{**article_time_fields(item), 'scoring': _public_scoring(item.get('scoring') or {})} for item in payload.get('items', [])]
+    payload['events'] = [article_time_fields(item) for item in payload.get('events', [])]
+    payload['time_context'] = news_time_context(payload)
+    payload['time_policy'] = EVENT_TIME_POLICY
     as_of = sources._parse_iso(payload.get('as_of'))
     state = database_news.read_state('news')
     stale = not as_of or datetime.now(timezone.utc) - as_of > timedelta(seconds=settings.refresh_seconds * 1.5)

@@ -152,17 +152,21 @@ def _format_spot_market_data(data: dict) -> str:
     return '\n'.join(output)
 
 
-def _format_spot_news(news: dict) -> str:
+def _format_spot_news(news: dict, *, now=None) -> str:
+    from backend.utils.event_time import news_time_context
     if not news.get('digest'):
         return ''
-    return f"- News context{' [cached/stale]' if news.get('stale') else ''}: {news['digest']}"
+    time_context = news_time_context(news, now=now)
+    return f"- News context{' [cached/stale]' if news.get('stale') else ''}: {news['digest']}\n{time_context}"
 
 
 def format_spot_portfolio_news(news_by_symbol: dict[str, dict]) -> str:
     """Show identical spot news once, preserving distinct snapshots and staleness."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
     groups: dict[str, list[str]] = {}
     for symbol, news in news_by_symbol.items():
-        text = _format_spot_news(news or {})
+        text = _format_spot_news(news or {}, now=now)
         if text:
             groups.setdefault(text, []).append(symbol)
     if not groups:
@@ -290,6 +294,8 @@ def format_market_data_to_text(data: dict) -> str:
 
     news_context = data.get("news_context") or {}
     if news_context:
+        from backend.utils.event_time import news_time_context
+        output.append(news_context.get('time_context') or news_time_context(news_context))
         digest = str(news_context.get("digest") or "").strip()
         headlines = news_context.get("headlines") or []
         headline_text = "; ".join(str(item) for item in headlines[:10]) if headlines else ("none selected" if news_context.get("available") else "unavailable")

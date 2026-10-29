@@ -732,8 +732,8 @@ def _select_calendar(items: list[dict[str, Any]], now: datetime) -> list[dict[st
 def _display_title(item: dict[str, Any]) -> str:
     if item.get("category") != "macro_calendar":
         return item.get("title", "")
-    scheduled = _parse_iso(item.get("scheduled_at"))
-    when = scheduled.astimezone(EASTERN).strftime("%b %d %H:%M ET") if scheduled else "TBA"
+    from backend.utils.event_time import source_time_text
+    when = source_time_text(item.get('scheduled_at')) or 'TBA'
     return f"{item.get('title', '')} — {when}"
 
 

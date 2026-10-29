@@ -45,6 +45,14 @@ const { Text, Title } = Typography;
 const { TextArea } = Input;
 const { useBreakpoint } = Grid;
 
+function memorySaveError(error, locale) {
+  if (error.response?.status === 401) {
+    return locale === 'zh' ? '登录已失效，请重新登录后重试。编辑内容已保留。'
+      : 'Your session has expired. Sign in again and retry. Your edits are preserved.';
+  }
+  return error.message || (locale === 'zh' ? '保存失败，请重试。' : 'Save failed. Please retry.');
+}
+
 function FactGrid({ items }) {
   return (
     <div className="dashboard-fact-grid">
@@ -269,7 +277,7 @@ function PaginatedOrderList({ orders, t }) {
   );
 }
 
-export function WorkspacePanel({ compact = false, workspace, timeframe, setTimeframe, authenticated, chartLoading = false, chartError = false, chartSymbol, setChartSymbol }) {
+export function WorkspacePanel({ compact = false, workspace, timeframe, setTimeframe, authenticated, onMemorySaved, chartLoading = false, chartError = false, chartSymbol, setChartSymbol }) {
   const { t, locale } = usePreferences();
   const timeframeControlsRef = useRef(null);
   useEffect(() => {
@@ -309,6 +317,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   const [editingMemory, setEditingMemory] = useState(null);
   const [memoryEditText, setMemoryEditText] = useState('');
   const [memorySaving, setMemorySaving] = useState(false);
+  const [memoryError, setMemoryError] = useState('');
   const [editingProtection, setEditingProtection] = useState(null);
   const [protectionTp, setProtectionTp] = useState(null);
   const [protectionSl, setProtectionSl] = useState(null);
@@ -354,22 +363,29 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   };
 
   const openMemoryEdit = (memory) => {
+    setMemoryError('');
     setEditingMemory(memory);
     setMemoryEditText(memory.market_summary || '');
   };
 
   const saveMemoryEdit = async () => {
-    if (!editingMemory) return;
+    if (!editingMemory || memorySaving || !authenticated) return;
     setMemorySaving(true);
+    setMemoryError('');
     try {
-      await api.put('/history/short-memories', {
+      const saved = {
         config_id: editingMemory.config_id,
         bucket_start: editingMemory.bucket_start,
         market_summary: memoryEditText,
-      });
+      };
+      const { data } = await api.put('/history/short-memories', saved, { timeout: 30000 });
+      if (data.success !== true) throw new Error(data.message || 'Memory save was not confirmed');
+      onMemorySaved?.(saved);
       setEditingMemory(null);
       message.success(t('saved'));
       window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'));
+    } catch (err) {
+      setMemoryError(memorySaveError(err, locale));
     } finally {
       setMemorySaving(false);
     }
@@ -647,7 +663,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
       className="panel-card"
       title={locale === 'zh' ? '3 · 短期记忆' : '3 · Short-term memory'}
       extra={shortMemories[0] && authenticated ? (
-        <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openMemoryEdit(shortMemories[0])} />
+        <Button size="small" type="text" aria-label={locale === 'zh' ? '编辑短期记忆' : 'Edit short-term memory'} icon={<EditOutlined />} onClick={() => openMemoryEdit(shortMemories[0])} />
       ) : null}
     >
       {memoryStatus && <Alert type={memoryStatus === 'completed' ? 'success' : ['failed', 'partial'].includes(memoryStatus) ? 'warning' : 'info'} showIcon title={memoryLabels[memoryStatus] || memoryStatus} description={agent.memory_update?.error || undefined} style={{ marginBottom: 12 }} />}
@@ -672,15 +688,18 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
       <Modal
         open={Boolean(editingMemory)}
         title={t('shortMemories')}
-        onCancel={() => setEditingMemory(null)}
+        onCancel={() => { if (!memorySaving) setEditingMemory(null); }}
         onOk={saveMemoryEdit}
         confirmLoading={memorySaving}
+        okButtonProps={{ disabled: !authenticated }}
+        cancelButtonProps={{ disabled: memorySaving }}
         okText={t('save')}
         cancelText={t('cancel')}
         width={640}
       >
         {editingMemory ? (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            {memoryError && <Alert type="error" showIcon title={memoryError} />}
             <Text type="secondary">{editingMemory.window_start || editingMemory.bucket_start} — {editingMemory.window_end || editingMemory.bucket_end}</Text>
             <TextArea rows={10} value={memoryEditText} onChange={(e) => setMemoryEditText(e.target.value)} />
           </Space>
@@ -826,6 +845,8 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
   const [filter, setFilter] = useState({ symbol: '', config_id: 'ALL', limit: 100 });
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRow, setEditingRow] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [reviewing, setReviewing] = useState(false);
   const [reviewResult, setReviewResult] = useState(null);
@@ -877,6 +898,7 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
   }, [dashboard?.current_symbol]);
 
   const openEditor = (row) => {
+    setSaveError('');
     setEditingRow(row);
     form.setFieldsValue({
       market_summary: row?.market_summary || '',
@@ -885,16 +907,30 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
   };
 
   const saveMemory = async () => {
-    if (!editingRow) return;
-    const values = await form.validateFields();
-    await api.put('/history/short-memories', {
-      config_id: editingRow.config_id,
-      bucket_start: editingRow.bucket_start,
-      market_summary: values.market_summary || '',
-    });
-    setModalOpen(false);
-    await loadRows();
-    message.success(t('saved'));
+    if (!editingRow || saving || !authenticated) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      const values = await form.validateFields();
+      const saved = {
+        config_id: editingRow.config_id,
+        bucket_start: editingRow.bucket_start,
+        market_summary: values.market_summary || '',
+      };
+      const { data } = await api.put('/history/short-memories', saved, { timeout: 30000 });
+      if (data.success !== true) throw new Error(data.message || 'Memory save was not confirmed');
+      ++requestIdRef.current;
+      setRows((previous) => previous.map((row) => row.config_id === saved.config_id && row.bucket_start === saved.bucket_start
+        ? { ...row, market_summary: saved.market_summary } : row));
+      setModalOpen(false);
+      message.success(t('saved'));
+      window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'));
+      await loadRows();
+    } catch (err) {
+      if (!err.errorFields) setSaveError(memorySaveError(err, locale));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const deleteShortMemories = async (payload) => {
@@ -1054,10 +1090,14 @@ export function ShortMemoryPanel({ dashboard, authenticated, embedded = false })
         title={t('shortMemories')}
         open={modalOpen}
         onOk={saveMemory}
-        onCancel={() => setModalOpen(false)}
+        onCancel={() => { if (!saving) setModalOpen(false); }}
+        confirmLoading={saving}
+        okButtonProps={{ disabled: !authenticated }}
+        cancelButtonProps={{ disabled: saving }}
         width={760}
         okText={t('save')}
       >
+        {saveError && <Alert type="error" showIcon title={saveError} />}
         <Form form={form} layout="vertical">
           <Form.Item label={t('marketDecision')} name="market_summary">
             <TextArea rows={10} />

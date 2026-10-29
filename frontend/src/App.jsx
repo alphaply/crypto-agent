@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { ReloadOutlined } from '@ant-design/icons';
 import { Button, Space, Spin } from 'antd';
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
@@ -7,6 +7,7 @@ import AppTopBar from './components/AppTopBar';
 import AuthGate from './components/AuthGate';
 import GlobalLoader from './components/GlobalLoader';
 import { api, setApiToken } from './lib/api';
+import { readAuthToken, subscribeAuthToken } from './lib/authSession';
 import './workbench.css';
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
@@ -122,19 +123,10 @@ function ConsoleShell({ token, bootstrapping, onLogin, onLogout }) {
 
 export default function App() {
   const navigate = useNavigate();
-  const [token, setToken] = useState(() => localStorage.getItem('crypto-agent-token') || '');
+  const token = useSyncExternalStore(subscribeAuthToken, readAuthToken);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [setupStatus, setSetupStatus] = useState(null);
   const [setupLoading, setSetupLoading] = useState(true);
-
-  useEffect(() => {
-    setApiToken(token);
-    if (token) {
-      localStorage.setItem('crypto-agent-token', token);
-    } else {
-      localStorage.removeItem('crypto-agent-token');
-    }
-  }, [token]);
 
   useEffect(() => {
     let mounted = true;
@@ -163,9 +155,9 @@ export default function App() {
       }
       try {
         await api.get('/auth/me');
-      } catch {
-        if (mounted) {
-          setToken('');
+      } catch (err) {
+        if (mounted && err.response?.status === 401 && readAuthToken() === token) {
+          setApiToken('');
         }
       } finally {
         if (mounted) {
@@ -181,12 +173,12 @@ export default function App() {
 
   const handleLogin = async (password) => {
     const response = await api.post('/auth/login', { password });
-    setToken(response.data.token);
+    setApiToken(response.data.token);
     navigate('/console/chat');
   };
 
   const handleLogout = () => {
-    setToken('');
+    setApiToken('');
     navigate('/');
   };
 
@@ -209,7 +201,7 @@ export default function App() {
       <Route path="/public" element={<Navigate to="/" replace />} />
       <Route element={<PublicShell authenticated={Boolean(token)} onLogout={handleLogout} />}>
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/agents" element={<AgentsPage authenticated={Boolean(token)} />} />
         <Route path="/history" element={<HistoryPage />} />
         <Route path="/usage" element={<PublicUsagePage />} />
       </Route>
@@ -226,7 +218,7 @@ export default function App() {
       >
         <Route index element={<Navigate to="/console/chat" replace />} />
         <Route path="chat" element={<ChatPage token={token} />} />
-        <Route path="agents" element={<AgentsPage />} />
+        <Route path="agents" element={<AgentsPage authenticated={Boolean(token)} />} />
         <Route path="config" element={<AdminPage />} />
         <Route path="history" element={<HistoryPage />} />
       </Route>

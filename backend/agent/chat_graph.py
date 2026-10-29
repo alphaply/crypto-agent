@@ -51,6 +51,7 @@ from backend.utils.formatters import (
     format_positions_to_agent_friendly,
 )
 from backend.utils.news_context import fetch_news_risk_context
+from backend.utils.event_time import EVENT_TIME_POLICY, news_time_context
 
 load_dotenv()
 logger = setup_logger("ChatGraph")
@@ -163,6 +164,7 @@ def _temporary_news_context_text(news_context: Dict[str, Any]) -> str:
     return "\n".join(
         [
             f"Source: {source}{stale_note}",
+            news_time_context(news_context),
             *([f"Compressed intelligence:\n{digest}"] if digest else []),
             *[f"- {headline}" for headline in headlines],
         ]
@@ -258,6 +260,7 @@ def _start_temporary_chat(state: ChatState, configurable: Dict[str, Any], cfg: D
             f"## Live news and macro context (refreshed for this message)\n{news_context_text}",
             f"## Account context (read-only)\n{account_context_text}",
             f"## Analysis limitations\n{limitations_text}",
+            EVENT_TIME_POLICY,
         )
         if part
     )
@@ -421,7 +424,7 @@ New conversation to incorporate:
         previous_summary=previous_summary or "(none)",
         conversation=conversation,
     )
-    summary_messages = [instruction_message(prompt, cfg.get("system_prompt_role"))]
+    summary_messages = [instruction_message(prompt + '\n\n' + EVENT_TIME_POLICY, cfg.get("system_prompt_role"))]
     if not isinstance(summary_messages[0], HumanMessage):
         # Anthropic requires a user message even when all source text is already
         # present in the system instruction. User-role providers need only one.

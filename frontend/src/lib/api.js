@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { createSseParser } from './sse';
+import { readAuthToken, writeAuthToken } from './authSession';
 
 export const api = axios.create({
   baseURL: '/api',
@@ -25,6 +26,9 @@ function normalizeApiError(error) {
 
 // 全局加载进度条：通过自定义事件与 GlobalLoader 通信
 api.interceptors.request.use((config) => {
+  const token = readAuthToken();
+  if (token) config.headers.set('Authorization', `Bearer ${token}`);
+  else config.headers.delete('Authorization');
   if (!config.silent) window.dispatchEvent(new Event('global-loading-start'));
   return config;
 });
@@ -41,11 +45,7 @@ api.interceptors.response.use(
 );
 
 export function setApiToken(token) {
-  if (token) {
-    api.defaults.headers.common.Authorization = `Bearer ${token}`;
-  } else {
-    delete api.defaults.headers.common.Authorization;
-  }
+  writeAuthToken(token);
 }
 
 export async function fullExport(includeSecrets = true) {

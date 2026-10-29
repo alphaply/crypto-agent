@@ -5,6 +5,7 @@ from string import Formatter
 
 from backend.utils.logger import setup_logger
 from backend.utils.prompt_utils import render_prompt
+from backend.utils.event_time import EVENT_TIME_POLICY
 
 logger = setup_logger(__name__)
 
@@ -134,4 +135,4 @@ def render_decision_prompt(template: str, memory: DecisionMemory, **values) -> s
     if values.get('exit_mode') == 'independent_exits':
         from backend.utils.trading_policy import INDEPENDENT_RUNTIME_POLICY
         prompt += '\n\n## 当前退出工具事实\n' + INDEPENDENT_RUNTIME_POLICY
-    return prompt
+    return prompt + '\n\n' + EVENT_TIME_POLICY
