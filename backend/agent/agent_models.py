@@ -63,7 +63,7 @@ class AdoptPositionRealSchema(BaseModel):
     """Explicitly adopt a verified existing perpetual position without trading."""
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    pos_side: Literal["LONG", "SHORT"] = Field(description="已核对的现有持仓方向：LONG多仓，SHORT空仓")
+    pos_side: Literal["LONG", "SHORT"] = Field(description="已核对的现有持仓方向：LONG多头，SHORT空头")
     expected_amount: float = Field(gt=0, allow_inf_nan=False, strict=True,
                                    description="已核对的该方向全部标的币数量，不是合约张数；必须与交易所当前仓位一致")
     reason: str = Field(min_length=1, description="用户要求管理已有手动仓位的具体意图及接管原因")

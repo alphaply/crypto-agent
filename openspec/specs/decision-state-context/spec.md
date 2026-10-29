@@ -22,7 +22,7 @@ Agent 短期记忆及历史列表中的成交事实快照 SHALL 明确为整理�
 - **THEN** 页面不显示清除入口，写入接口拒绝未认证请求
 
 ### Requirement: Default trading context describes current state
-REAL、STRATEGY、SPOT_DCA 的默认决策和绑定任务聊天 SHALL 使用同一当前交易状态语义，展示配置可见范围内的当前持仓、活跃挂单、保护覆盖、数量冲突、管理者及相关异常。完整历史操作回执、回执修订列表和旧准入建议 SHALL NOT 被逐轮默认注入。市场、消息及有效策略背景继续可用；本轮工具结果和用户明确请求的历史查询不属于该默认注入限制。外部来源 SHALL 不单独构成不能管理的结论；共享管理、原提交来源、权限、当前目标能力及实际并发/证据限制分别表达，不把其他连接归属当作只读依据。
+REAL、STRATEGY、SPOT_DCA 的默认决策和绑定任务聊天 SHALL 使用同一当前交易状态语义，展示配置可见范围内的当前持仓、活跃挂单、保护覆盖、数量冲突、管理状态及相关异常。完整历史操作回执、回执修订列表和旧准入建议 SHALL NOT 被逐轮默认注入。市场、消息及有效策略背景继续可用；本轮工具结果和用户明确请求的历史查询不属于该默认注入限制。外部来源 SHALL 不单独构成不能管理的结论；共享管理、原提交来源、权限、当前目标能力及实际并发/证据限制分别表达，不把其他连接归属当作只读依据。
 
 #### Scenario: Completed history does not grow the default prompt
 - **WHEN** 当前账户和相关异常完全相同，仅新增或刷新 100 条已完成且无残留影响的历史操作
@@ -34,7 +34,7 @@ REAL、STRATEGY、SPOT_DCA 的默认决策和绑定任务聊天 SHALL 使用同�
 
 #### Scenario: Bound chat uses the same state
 - **WHEN** 定时决策和绑定任务聊天使用相同账户证据
-- **THEN** 两者呈现相同持仓、挂单、管理者和异常事实，聊天不会再追加一份历史恢复记录块，既有审批保持有效
+- **THEN** 两者呈现相同持仓、挂单、管理状态和异常事实，聊天不会再追加一份历史恢复记录块，既有审批保持有效
 
 #### Scenario: An external position has no local cycle
 - **WHEN** 当前账户存在可见人工仓位及挂单，本地周期尚未建立且本调用者具有对应交易授权
@@ -165,7 +165,7 @@ REAL、STRATEGY、SPOT_DCA 的默认决策和绑定任务聊天 SHALL 使用同�
 - **THEN** 其余有效来源继续展示，管理端保留故障状态，不将整份背景替换为通用占位符
 
 ### Requirement: Current trade facts use compact readable text
-当前持仓和挂单 SHALL 使用确定性文本或表格渲染，保留原订单身份、方向、用途、状态、精确数量以及分别标识的限价和触发价。正常项目只展示一次，省略空值和冗余内部元数据；未知、零、fixed 和触发时 all 必须可区分。真实观察时间按数据来源集中展示，差异和陈旧性显式保留；保护覆盖、数量冲突及当前执行异常简洁单列。管理范围、当前管理者和外部来源 SHALL 清楚展示，来源与管理权分开表达。格式整理 SHALL NOT 发起模型调用、认领范围或修改执行状态。
+当前持仓和挂单 SHALL 使用确定性文本或表格渲染，保留原订单身份、方向、用途、状态、精确数量以及分别标识的限价和触发价。正常项目只展示一次，省略空值和冗余内部元数据；未知、零、fixed 和触发时 all 必须可区分。真实观察时间按数据来源集中展示，差异和陈旧性显式保留；保护覆盖、数量冲突及当前执行异常简洁单列。管理范围、管理状态和外部来源 SHALL 清楚展示，来源与管理权分开表达。方向 SHALL 使用“多头/空头”，不将 SHORT 写成“空仓”；精简文本 SHALL 省略管理者内部 ID，结构化身份保持可用。格式整理 SHALL NOT 发起模型调用、认领范围或修改执行状态。
 
 #### Scenario: Normal position and three orders
 - **WHEN** 持仓为多仓 0.07、均价 2415、浮盈 7.93163651，挂有止盈市价 0.07 @2545、止损市价 0.07 @2357 和限价入场 0.1 @2385
@@ -182,6 +182,10 @@ REAL、STRATEGY、SPOT_DCA 的默认决策和绑定任务聊天 SHALL 使用同�
 #### Scenario: Scheduled agent and bound chat share rendering
 - **WHEN** 定时决策和绑定任务聊天读取相同状态
 - **THEN** 二者得到相同精简事实、管理状态与已发布策略内容；增加无关内部元数据或已完成历史记录不会增长默认 Prompt
+
+#### Scenario: Short position is not an empty account
+- **WHEN** 当前存在 SHORT 0.04、均价 2332.5、浮盈 1.05 USDT，状态为 shared 且带有内部 owner
+- **THEN** 精简持仓文本显示“空头 0.04｜均价 2332.5｜浮盈约 +1.05 USDT｜授权共管”，不显示“空仓”或管理者 ID；原结构化身份保持不变
 
 ### Requirement: Memory review has one effective output contract
 系统 SHALL 按当前记忆整理模式选择唯一有效的输出契约，并使用对应契约验证响应。REAL/STRATEGY 独立退出模式 SHALL 要求完整原文 `summary`、新记忆策略内容 `memory` 和待转换来源集合 `projections`；其他模式保留单 `summary` 契约。自定义 Prompt 和历史素材 SHALL NOT 改变程序输出约束，已保存模板及完整来源正文保持不变。
@@ -288,7 +292,7 @@ REAL、STRATEGY、SPOT_DCA 的默认决策和绑定任务聊天 SHALL 使用同�
 - **THEN** 系统将其标记为已收敛，停止对其递增 attempt_count 并移出活跃 recovery 轮询集合，回执中的尝试计数不再无限制增长
 
 ### Requirement: Current context describes management scope and external changes
-内置 Agent、绑定任务聊天、MCP 与前端 SHALL 以一致事实展示独占范围、管理者、当前仓位、已纳管外部订单、变化来源、真实观察时间和对账完整性。外部来源不确定时 SHALL 标识为外部/未跟踪活动，不能推断一定由人类操作。默认上下文 SHALL 使用当前相关事实及变化摘要，不逐轮注入全部外部成交历史。
+内置 Agent、绑定任务聊天、MCP 与前端 SHALL 以一致事实展示独占范围、管理状态、当前仓位、已纳管外部订单、变化来源、真实观察时间和对账完整性。外部来源不确定时 SHALL 标识为外部/未跟踪活动，不能推断一定由人类操作。默认上下文 SHALL 使用当前相关事实及变化摘要，不逐轮注入全部外部成交历史。
 
 #### Scenario: External reduction is reconciled
 - **WHEN** 独占范围内发生可核验外部减仓

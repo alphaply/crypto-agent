@@ -39,11 +39,11 @@ def test_user_three_orders_compact_complete_and_read_only():
     state = user_example()
     before = copy.deepcopy(state)
     text = render_positions(state) + '\n' + render_orders(state)
-    assert '多仓 0.07｜均价 2415｜浮盈约 +7.93 USDT｜本任务' in text
+    assert '多头 0.07｜均价 2415｜浮盈约 +7.93 USDT｜本任务' in text
     assert '持仓：持仓' not in text
-    for row in ['algo:1000002617965160 | 多仓止盈市价 | 0.07 | 触发 2545 | 待触发',
-                'algo:1000002618311010 | 多仓止损市价 | 0.07 | 触发 2357 | 待触发',
-                'regular:8389766294627213395 | 多仓限价入场 | 0.1 | 限价 2385 | 挂单中']:
+    for row in ['algo:1000002617965160 | 多头止盈市价 | 0.07 | 触发 2545 | 待触发',
+                'algo:1000002618311010 | 多头止损市价 | 0.07 | 触发 2357 | 待触发',
+                'regular:8389766294627213395 | 多头限价入场 | 0.1 | 限价 2385 | 挂单中']:
         assert row in text
     for order in state.orders:
         assert text.count(order['order_id']) == 1
@@ -77,7 +77,7 @@ def test_unknown_is_not_zero_and_last_known_ownership_remain(unknown):
               dict(state.orders[1], remaining=0, verified=True)]
     text = render_positions(replace(state, positions=[position])) + render_orders(replace(state, orders=orders))
     assert '未知（最后已知 0.07）' in text and '归属未核验' in text and '事实待核验' in text
-    assert '多仓止盈市价 | 未知 |' in text and '多仓止损市价 | 0 |' in text
+    assert '多头止盈市价 | 未知 |' in text and '多头止损市价 | 0 |' in text
     assert '交易所快照 未知' in text
 
 
@@ -88,13 +88,13 @@ def test_snapshot_disagreement_coverage_and_scoped_issues_keep_facts():
     account['real_open_orders'][0]['remaining'] = .4
     state = view(account, [plan])
     text = render_orders(state)
-    for fact in ['快照余量 0.4', '订单余量冲突', '同方向', 'algo:sl', '快照余量与本地成交对齐', '止损未覆盖估计：多仓 0.15']:
+    for fact in ['快照余量 0.4', '订单余量冲突', '同方向', 'algo:sl', '快照余量与本地成交对齐', '止损未覆盖估计：多头 0.15']:
         assert fact in text
     assert 'identity' not in text and 'missing_evidence' not in text
     conflicts = replace(state, coverage={'uncovered': {'LONG': None}, 'quantity_conflict': [
         dict(side='LONG', group='stop_loss', fixed_remaining=.4, position_amount=.15)]})
     text = render_orders(conflicts)
-    assert '多仓 未知' in text and '多仓止损固定余量 0.4 > 持仓 0.15' in text
+    assert '多头 未知' in text and '多头止损固定余量 0.4 > 持仓 0.15' in text
 
 
 def test_missing_account_never_claims_no_orders_or_no_issues():

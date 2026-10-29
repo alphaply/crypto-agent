@@ -28,7 +28,7 @@ def _text(value):
 
 
 def _side(value):
-    return {'LONG': '多仓', 'SHORT': '空仓'}.get(str(value).upper(), f'方向未核验({_text(value)})')
+    return {'LONG': '多头', 'SHORT': '空头'}.get(str(value).upper(), f'方向未核验({_text(value)})')
 
 
 def _ownership(value):
@@ -38,12 +38,11 @@ def _ownership(value):
 def _management(row):
     facts = row.get('management') or {}
     state = row.get('management_state') or facts.get('state')
-    names = {'owned': '已纳管', 'eligible_unclaimed': '可自动认领', 'conflict': '其他管理者占用',
+    names = {'shared': '授权共管', 'owned': '已纳管', 'eligible_unclaimed': '可自动认领', 'conflict': '其他管理者占用',
              'read_only': '只读可见', 'needs_refresh': '管理证据待核验'}
     if not state:
         return ''
-    owner = row.get('owner') or facts.get('owner')
-    return names.get(state, _text(state)) + (f'；管理者 {_text(owner)}' if owner else '')
+    return names.get(state, _text(state))
 
 
 def _observations(rows, sources=None):

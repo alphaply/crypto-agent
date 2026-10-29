@@ -769,7 +769,7 @@ def update_entry_order_strategy(order_id: str, pos_side: str, reason: str, confi
 def update_position_protection_strategy(order_id: str, reason: str, config_id: str, symbol: str,
                                         stop_loss: Optional[float] = None, take_profit: Optional[float] = None):
     """【调整模拟TP/SL】按order_id更新本配置待成交或已成交模拟仓位；至少提供stop_loss或take_profit及reason，省略字段保留。
-    BUY为LONG多仓，SELL为SHORT空仓；未成交按入场价校验多单SL<入场<TP、空单TP<入场<SL，已成交按当前价校验，允许保护盈利的移动止损。
+    BUY为LONG多头，SELL为SHORT空头；未成交按入场价校验多单SL<入场<TP、空单TP<入场<SL，已成交按当前价校验，允许保护盈利的移动止损。
     用户要求保持的订单不得改动；报告实际返回，失败不能当作已更新。调整需说明新的失效条件和风险变化。
     """
     from backend.utils.deployment_mode import ensure_execution_enabled

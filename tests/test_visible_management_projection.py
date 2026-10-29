@@ -54,6 +54,6 @@ def test_attached_and_spot_formatters_show_authority_and_partial_evidence():
     state = view('owned', 'cfg')
     position = {**state.positions[0], 'symbol': 'ETH/USDT', 'market_type': 'spot', 'available_amount': .01}
     text = format_positions_to_agent_friendly([position]) + format_orders_to_agent_friendly(state.orders)
-    assert '已纳管' in text and '管理者 cfg' in text and 'close' in text and 'cancel/edit' in text
+    assert '已纳管' in text and '管理者 cfg' not in text and 'close' in text and 'cancel/edit' in text
     assert 'flat exposure unconfirmed' in format_positions_to_agent_friendly([], observation={'error': 'offline'})
     assert 'no-orders status unconfirmed' in format_orders_to_agent_friendly([], observation={'error': 'offline'})
