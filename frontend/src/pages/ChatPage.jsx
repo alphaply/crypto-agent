@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -41,6 +41,7 @@ import ToolResultContent from '../components/ToolResultContent';
 import { toolRequest } from '../lib/toolReceipt';
 import MarketSymbolPicker from '../components/MarketSymbolPicker';
 import { api, streamSse } from '../lib/api';
+import { browserChatStorage, readLastSession, rememberSession, readChatDraft, writeChatDraft } from '../lib/chatRecovery';
 import { createChatStreamLifecycle, reduceChatStreamLifecycle } from '../lib/chatStreamLifecycle';
 import { splitThinkingContent } from '../lib/thinking';
 import { usePreferences } from '../app/usePreferences';
@@ -241,7 +242,7 @@ function StreamFailureCard({ failure, onRetry, onEdit, locale }) {
       className="chat-stream-failure"
       type="error"
       showIcon
-      message={isZh ? '本次回复未完成' : 'Response did not complete'}
+      message={failure.phase === 'network' ? (isZh ? '连接中断，请检查已保存记录' : 'Connection interrupted; review saved history') : (isZh ? '本次回复未完成' : 'Response did not complete')}
       description={failure.message || (isZh ? '模型请求失败，请重试或修改问题。' : 'The model request failed. Retry or edit your question.')}
       action={failure.messageText ? <Space><Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>{isZh ? '重试' : 'Retry'}</Button><Button size="small" icon={<EditOutlined />} onClick={onEdit}>{isZh ? '编辑问题' : 'Edit'}</Button></Space> : null}
     />
@@ -265,7 +266,13 @@ export default function ChatPage({ token }) {
   const [currentConfigId, setCurrentConfigId] = useState('');
   const [messages, setMessages] = useState([]);
   const [pendingApproval, setPendingApproval] = useState(null);
-  const [input, setInput] = useState('');
+  const [input, setInputValue] = useState(() => readChatDraft(browserChatStorage, ''));
+  const [draftStored, setDraftStored] = useState(true);
+  const inputSessionRef = useRef('');
+  const setInput = (value) => {
+    setInputValue(value);
+    setDraftStored(writeChatDraft(browserChatStorage, inputSessionRef.current, value));
+  };
   const [loading, setLoading] = useState(true);
   const [streaming, setStreaming] = useState(false);
   const [run, setRun] = useState(null);
@@ -273,6 +280,12 @@ export default function ChatPage({ token }) {
   const sendingRef = useRef(false);
   const pendingQuestionRef = useRef('');
   const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionReadyId, setSessionReadyId] = useState('');
+  const [sessionLoadError, setSessionLoadError] = useState('');
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const [recoveryNotice, setRecoveryNotice] = useState('');
+  const currentSessionRef = useRef('');
+  const mountedRef = useRef(false);
   const [streamStatus, setStreamStatus] = useState('');
   const [streamFailure, setStreamFailure] = useState(null);
   const [persistenceWarning, setPersistenceWarning] = useState('');
@@ -304,7 +317,7 @@ export default function ChatPage({ token }) {
 
   const isZh = locale === 'zh';
 
-  const paintDraftMessage = () => {
+  const paintDraftMessage = useCallback(() => {
     const draft = normalizeAssistantDraft(draftRef.current);
     setMessages((prev) => {
       const next = [...prev];
@@ -313,9 +326,9 @@ export default function ChatPage({ token }) {
       else next.push(draft);
       return next;
     });
-  };
+  }, []);
 
-  const drainDraftBuffer = (immediate = false) => {
+  const drainDraftBuffer = useCallback((immediate = false) => {
     if (immediate && animationFrameRef.current) {
       window.cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
@@ -332,9 +345,9 @@ export default function ChatPage({ token }) {
     pending.content = '';
     draftRef.current.pending = false;
     paintDraftMessage();
-  };
+  }, [paintDraftMessage]);
 
-  const scheduleDraftAnimation = () => {
+  const scheduleDraftAnimation = useCallback(() => {
     if (animationFrameRef.current) return;
     const animate = (timestamp) => {
       animationFrameRef.current = null;
@@ -347,32 +360,33 @@ export default function ChatPage({ token }) {
       }
     };
     animationFrameRef.current = window.requestAnimationFrame(animate);
-  };
+  }, [drainDraftBuffer]);
 
-  const appendDraftMessage = () => {
+  const appendDraftMessage = useCallback((startedAt) => {
     draftRef.current = {
       content: '',
       reasoning_content: '',
       reasoning_tokens: 0,
-      reasoning_started_at: Date.now(),
+      reasoning_started_at: startedAt,
       pending: true,
     };
     incomingDraftRef.current = { content: '', reasoning_content: '' };
     followOutputRef.current = true;
     setShowScrollToBottom(false);
     setMessages((prev) => [...prev, normalizeAssistantDraft(draftRef.current)]);
-  };
+  }, []);
 
-  const addOrUpdateSession = (session) => {
+  const addOrUpdateSession = useCallback((session) => {
     if (!session?.session_id) return;
     setBootstrap((prev) => ({
       ...prev,
       sessions: [session, ...(prev?.sessions || []).filter((item) => item.session_id !== session.session_id)],
     }));
-  };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
+    mountedRef.current = true;
     async function load() {
       setLoading(true);
       try {
@@ -383,7 +397,7 @@ export default function ChatPage({ token }) {
         const firstConfig = data.configs?.[0]?.config_id || '';
         setCurrentConfigId(firstConfig);
         setTemporaryRuntime(buildInitialRuntime(data));
-        if (data.sessions?.[0]?.session_id) setCurrentSessionId(data.sessions[0].session_id);
+        setCurrentSessionId(readLastSession(browserChatStorage) || data.sessions?.[0]?.session_id || '');
       } catch (err) {
         if (mounted) setError(err.message || 'Failed to load chat bootstrap');
       } finally {
@@ -393,6 +407,7 @@ export default function ChatPage({ token }) {
     load();
     return () => {
       mounted = false;
+      mountedRef.current = false;
       if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
       abortRef.current?.abort();
     };
@@ -400,25 +415,48 @@ export default function ChatPage({ token }) {
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
     async function loadMessages() {
+      currentSessionRef.current = currentSessionId;
+      inputSessionRef.current = currentSessionId;
+      if (currentSessionId) rememberSession(browserChatStorage, currentSessionId);
+      if (currentSessionId && pendingBranchSessionRef.current === currentSessionId) {
+        pendingBranchSessionRef.current = '';
+        setInputValue(readChatDraft(browserChatStorage, currentSessionId));
+        setSessionReadyId(currentSessionId);
+        return;
+      }
+
+      setSessionLoadError('');
+      setSessionReadyId('');
+      setSessionLoading(false);
+      setPendingApproval(null);
+      setConversationMemory(null);
+      setStreamFailure(null);
+      setPersistenceWarning('');
+      setRecoveryNotice('');
+      setEditingFailedMessage('');
+      setRun(null);
+      followOutputRef.current = true;
+      setShowScrollToBottom(false);
+      setInputValue(pendingQuestionRef.current || readChatDraft(browserChatStorage, currentSessionId));
+      if (pendingQuestionRef.current) {
+        setDraftStored(writeChatDraft(browserChatStorage, currentSessionId, pendingQuestionRef.current));
+        writeChatDraft(browserChatStorage, '', '');
+        pendingQuestionRef.current = '';
+      }
       if (!currentSessionId) {
         setMessages([]);
         setPendingApproval(null);
         setConversationMemory(null);
         return;
       }
-      if (pendingBranchSessionRef.current === currentSessionId) {
-        pendingBranchSessionRef.current = '';
-        return;
-      }
       setSessionLoading(true);
       setMessages([]);
-      setRun(null);
-      setInput(pendingQuestionRef.current);
-      pendingQuestionRef.current = '';
       try {
-        const response = await api.get(`/chat/sessions/${currentSessionId}`);
+        const response = await api.get(`/chat/sessions/${currentSessionId}`, { signal: controller.signal, timeout: 15000 });
         if (!mounted) return;
+        setSessionReadyId(currentSessionId);
         setMessages((response.data.messages || []).filter(hasRenderableMessage));
         setPendingApproval(response.data.pending_approval || null);
         setConversationMemory(response.data.conversation_memory || null);
@@ -430,14 +468,14 @@ export default function ChatPage({ token }) {
           setCurrentConfigId(response.data.session.config_id);
         }
       } catch (err) {
-        if (mounted) setError(err.message || 'Failed to load session');
+        if (mounted) setSessionLoadError(err.message || 'Failed to load session');
       } finally {
         if (mounted) setSessionLoading(false);
       }
     }
     loadMessages();
-    return () => { mounted = false; };
-  }, [currentSessionId]);
+    return () => { mounted = false; controller.abort(); };
+  }, [currentSessionId, reloadVersion, addOrUpdateSession]);
 
   useEffect(() => {
     const scroller = chatWindowRef.current?.querySelector('.ant-bubble-list');
@@ -461,6 +499,16 @@ export default function ChatPage({ token }) {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [messages, streamStatus]);
+
+  useEffect(() => {
+    const recoverOnline = () => {
+      if (currentSessionId && !streaming && !sendingRef.current && !persistenceWarning) {
+        setReloadVersion((value) => value + 1);
+      }
+    };
+    window.addEventListener('online', recoverOnline);
+    return () => window.removeEventListener('online', recoverOnline);
+  }, [currentSessionId, streaming, persistenceWarning]);
 
   const scrollToBottom = () => {
     const scroller = chatWindowRef.current?.querySelector('.ant-bubble-list');
@@ -561,21 +609,22 @@ export default function ChatPage({ token }) {
     throw new Error(isZh ? '请先新建任务。' : 'Create a task first.');
   };
 
-  const runStream = async (url, messageText = '', requestBody = null) => {
-    setStreaming(true);
+  const runStream = useCallback(async (url, messageText = '', requestBody = null) => {
     const startedAt = Date.now();
+    setStreaming(true);
     setRun({ startedAt, endedAt: null, characters: 0, events: [{ at: startedAt, label: isZh ? '整理上下文与行情' : 'Preparing context and market data' }] });
     const recordStage = (label, characters = 0) => setRun((prev) => prev ? ({ ...prev, characters: prev.characters + characters, events: prev.events.at(-1)?.label === label ? prev.events : [...prev.events.slice(-49), { at: Date.now(), label }] }) : prev);
     setStreamStatus(isZh ? '正在整理上下文' : 'Preparing context');
     setStreamFailure(null);
     setPersistenceWarning('');
-    appendDraftMessage();
+    appendDraftMessage(startedAt);
     const controller = new AbortController();
     abortRef.current = controller;
     let aborted = false;
     let lifecycle = createChatStreamLifecycle();
     try {
       await streamSse(url, token, (event) => {
+        if (!mountedRef.current) return;
         lifecycle = reduceChatStreamLifecycle(lifecycle, event);
         const labels = { token: isZh ? '生成回答' : 'Writing answer', reasoning_token: isZh ? '接收推理摘要' : 'Receiving reasoning', tool_calls: isZh ? '准备工具调用' : 'Preparing tools', approval_required: isZh ? '等待工具审批' : 'Awaiting approval', tool_result: isZh ? '工具已返回结果' : 'Tool result received', done: isZh ? '本轮请求完成' : 'Request completed', error: isZh ? '请求遇到错误' : 'Request error' };
         if (event.type === 'status' || labels[event.type]) recordStage(event.type === 'status' ? event.message : labels[event.type], ['token', 'reasoning_token'].includes(event.type) ? String(event.token || '').length : 0);
@@ -648,14 +697,30 @@ export default function ChatPage({ token }) {
       });
       setRun((prev) => prev ? ({ ...prev, endedAt: Date.now(), events: [...prev.events, { at: Date.now(), label: aborted ? (isZh ? '已停止' : 'Stopped') : lifecycle.completed ? (isZh ? '完成' : 'Complete') : (isZh ? '请求结束，请查看结果状态' : 'Request ended; review result') }] }) : prev);
       abortRef.current = null;
-      setStreaming(false);
       setStreamStatus('');
     }
+    // Read the checkpoint after a broken connection. This never issues a model
+    // request, replays a question, or approves a tool.
+    if (!lifecycle.completed && !aborted && mountedRef.current) {
+      const sessionId = currentSessionRef.current;
+      try {
+        const response = await api.get(`/chat/sessions/${sessionId}`, { silent: true, timeout: 15000 });
+        if (mountedRef.current && currentSessionRef.current === sessionId) {
+          setMessages((response.data.messages || []).filter(hasRenderableMessage));
+          setPendingApproval(response.data.pending_approval || null);
+          setConversationMemory(response.data.conversation_memory || null);
+          setRecoveryNotice(isZh ? '已恢复服务器保存的聊天记录。问题不会自动重发。' : 'Saved conversation restored. Your question was not resent.');
+        }
+      } catch {
+        if (mountedRef.current) setRecoveryNotice(isZh ? '暂时无法恢复记录。连接恢复后可点击“刷新记录”。问题不会自动重发。' : 'Unable to restore history. Use Refresh history after reconnecting. Your question was not resent.');
+      }
+    }
+    setStreaming(false);
     return { ...lifecycle, aborted };
-  };
+  }, [isZh, token, t, appendDraftMessage, scheduleDraftAnimation, drainDraftBuffer, paintDraftMessage, addOrUpdateSession]);
 
   const handleSend = async (value = input, { appendUserMessage = true, retryBackend = false, replaceLastUserMessage = false } = {}) => {
-    if (!value.trim() || streaming || sendingRef.current || sessionLoading) return;
+    if (!value.trim() || streaming || sendingRef.current || sessionLoading || (currentSessionId && sessionReadyId !== currentSessionId) || pendingApproval) return;
     if (!currentSessionId) { pendingQuestionRef.current = value; openCreateSessionModal(); return; }
     sendingRef.current = true;
     const message = value.trim();
@@ -684,9 +749,11 @@ export default function ChatPage({ token }) {
   };
 
   const handleApproval = async (approved) => {
-    if (!currentSessionId || streaming) return;
+    if (!currentSessionId || streaming || sendingRef.current || sessionReadyId !== currentSessionId) return;
+    sendingRef.current = true;
     setPendingApproval(null);
-    await runStream(`/api/chat/sessions/${currentSessionId}/stream`, '', { approval: approved });
+    try { await runStream(`/api/chat/sessions/${currentSessionId}/stream`, '', { approval: approved }); }
+    finally { sendingRef.current = false; }
   };
 
   const stopStreaming = () => {
@@ -712,7 +779,7 @@ export default function ChatPage({ token }) {
   };
 
   const openMessageEditor = (messageIndex) => {
-    const message = messages[messageIndex];
+    const message = messages.find((item) => item.message_index === messageIndex);
     if (!message || message.role !== 'user' || streaming) return;
     setEditingMessage({ messageIndex, content: String(message.content || '') });
   };
@@ -732,7 +799,7 @@ export default function ChatPage({ token }) {
       const branchId = response.data.session_id;
       if (!branchId || !branchSession) throw new Error('Branch session was not created');
 
-      const prefix = messages.slice(0, editingMessage.messageIndex);
+      const prefix = messages.filter((item) => item.message_index < editingMessage.messageIndex);
       pendingBranchSessionRef.current = branchId;
       addOrUpdateSession(branchSession);
       setMessages([...prefix, { role: 'user', content }]);
@@ -742,6 +809,7 @@ export default function ChatPage({ token }) {
       setPersistenceWarning('');
       setEditingMessage(null);
       setCurrentSessionId(branchId);
+      currentSessionRef.current = branchId;
       await runStream(`/api/chat/sessions/${branchId}/stream`, content, { message: content });
     } catch (err) {
       setError(err.message || (isZh ? '创建回答分支失败。' : 'Failed to create response branch.'));
@@ -824,10 +892,12 @@ export default function ChatPage({ token }) {
     if (!currentSessionId) return;
     const deletingId = currentSessionId;
     await api.delete(`/chat/sessions/${deletingId}`);
+    writeChatDraft(browserChatStorage, deletingId, '');
     const remaining = sessionItems.filter((item) => item.session_id !== deletingId);
     const nextSession = remaining[0] || null;
     setBootstrap((prev) => ({ ...prev, sessions: remaining }));
     setCurrentSessionId(nextSession?.session_id || '');
+    rememberSession(browserChatStorage, nextSession?.session_id || '');
     setCurrentConfigId(nextSession?.config_id || currentConfigId || configOptions[0]?.config_id || '');
     if (!nextSession) {
       setMessages([]);
@@ -927,12 +997,13 @@ export default function ChatPage({ token }) {
                   </Space>
                   <Space size={8}>
                     {isMobile ? <Button aria-label={isZh ? '会话记忆' : 'Conversation memory'} icon={<DatabaseOutlined />} onClick={() => setMemoryOpen(true)} /> : null}
+                    <Button aria-label={isZh ? '刷新记录' : 'Refresh history'} title={isZh ? '只重新读取已保存记录，不重发问题' : 'Reload saved history without resending'} icon={<ReloadOutlined />} disabled={streaming || sessionLoading || !currentSessionId} onClick={() => { if (!sendingRef.current) setReloadVersion((value) => value + 1); }} />
                     <Button aria-label={t('createSession')} disabled={streaming} icon={<PlusOutlined />} onClick={openCreateSessionModal}>{isMobile ? null : t('createSession')}</Button>
                   </Space>
                 </div>
                 <div className="x-chat-main-body">
                   <div className="x-chat-window" ref={chatWindowRef}>
-                    {sessionLoading ? <div className="loading-card"><Spin /></div> : bubbleItems.length ? (
+                    {sessionLoading ? <div className="loading-card"><Spin tip={isZh ? '正在恢复会话…' : 'Restoring conversation…'}><div style={{ minHeight: 80 }} /></Spin></div> : sessionLoadError ? <Alert type="error" showIcon title={isZh ? '会话未能加载' : 'Could not load conversation'} description={sessionLoadError} action={<Button onClick={() => setReloadVersion((value) => value + 1)}>{isZh ? '重新加载' : 'Reload'}</Button>} /> : bubbleItems.length ? (
                       <Bubble.List
                         items={bubbleItems}
                         role={{
@@ -975,12 +1046,14 @@ export default function ChatPage({ token }) {
                     )}
                     {showScrollToBottom ? <Button className="chat-scroll-bottom" shape="circle" icon={<DownOutlined />} onClick={scrollToBottom} aria-label={isZh ? '回到底部' : 'Scroll to bottom'} /> : null}
                   </div>
+                  {recoveryNotice ? <Alert type="info" showIcon closable onClose={() => setRecoveryNotice('')} title={recoveryNotice} /> : null}
                   <ToolApproval approval={pendingApproval} loading={streaming} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} locale={locale} />
                   <PersistenceWarning warning={persistenceWarning} locale={locale} onDismiss={() => setPersistenceWarning('')} />
                   <StreamFailureCard failure={streamFailure} onRetry={retryFailedMessage} onEdit={editFailedMessage} locale={locale} />
                   <ChatRunProgress run={run} streaming={streaming} locale={locale} />
                   <div className="x-chat-sender-wrap">
-                    <Sender disabled={sessionLoading || !!pendingApproval} value={input} onChange={setInput} onSubmit={handleSend} onCancel={stopStreaming} loading={streaming} placeholder={t('chatPlaceholder')} autoSize={{ minRows: 1, maxRows: isMobile ? 5 : 7 }} submitType={isMobile ? "shiftEnter" : "enter"} />
+                    <Sender disabled={sessionLoading || !!pendingApproval || !!(currentSessionId && sessionReadyId !== currentSessionId)} value={input} onChange={setInput} onSubmit={handleSend} onCancel={stopStreaming} loading={streaming} placeholder={t('chatPlaceholder')} autoSize={{ minRows: 1, maxRows: isMobile ? 5 : 7 }} submitType={isMobile ? "shiftEnter" : "enter"} />
+                    {input ? <div className="chat-draft-status" role="status">{isZh ? `${input.length} 字符 · ${draftStored ? '草稿已保存在此浏览器' : '草稿暂未保存，请勿关闭页面'}` : `${input.length} characters · ${draftStored ? 'Draft saved in this browser' : 'Draft not saved; keep this page open'}`}</div> : null}
                     <div className="chat-composer-hint">{pendingApproval ? (isZh ? "请先处理工具审批" : "Review the pending tool approval") : isZh ? (isMobile ? "点击发送 · 回车换行" : "Enter 发送 · Shift+Enter 换行") : (isMobile ? "Tap to send · Enter for newline" : "Enter to send · Shift+Enter for newline")}</div>
                   </div>
                 </div>

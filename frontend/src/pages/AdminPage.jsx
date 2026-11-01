@@ -7,6 +7,7 @@ import ProviderModelSelect from '../components/ProviderModelSelect';
 import { createModelDiscovery, discoveryConnection } from '../lib/providerModelDiscovery';
 import { JEV_PROVIDER_PRESETS } from '../lib/scorerProvider';
 import ResponsiveTabs from '../components/ResponsiveTabs';
+import PromptCodeEditor from '../components/PromptCodeEditor';
 import SpotSymbolPicker from '../components/SpotSymbolPicker';
 import MarketSymbolPicker from '../components/MarketSymbolPicker';
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -276,78 +277,9 @@ function ProfileSelect({ profiles, value, onChange, allowEmpty, emptyLabel, aria
   return <Select aria-label={ariaLabel} value={value || ''} options={options} onChange={onChange} style={{ width: '100%' }} />;
 }
 
-function escapeHtml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function highlightPrompt(value) {
-  const escaped = escapeHtml(value || '');
-  return escaped.replace(/(\{[a-zA-Z_][a-zA-Z0-9_]*(?::[^}]*)?\})/g, '<mark class="prompt-placeholder">$1</mark>');
-}
-
-function PromptCodeEditor({ value, onChange, placeholder, height = 420, onSave, disabled = false }) {
-  const textRef = useRef(null);
-  const gutterRef = useRef(null);
-  const highlightRef = useRef(null);
-  const safeValue = value || '';
-  const lineCount = safeValue.split('\n').length;
-  const lineNumbers = Array.from({ length: lineCount }, (_, index) => index + 1).join('\n');
-  const charCount = safeValue.length;
-
-  const syncScroll = () => {
-    if (!textRef.current) return;
-    const { scrollTop, scrollLeft } = textRef.current;
-    if (gutterRef.current) gutterRef.current.scrollTop = scrollTop;
-    if (highlightRef.current) {
-      highlightRef.current.scrollTop = scrollTop;
-      highlightRef.current.scrollLeft = scrollLeft;
-    }
-  };
-
-  return (
-    <div className="prompt-editor-wrapper">
-      <div className="prompt-editor" style={{ height }}>
-        <div className="prompt-editor__gutter" ref={gutterRef}>
-          <pre className="prompt-editor__line-numbers">{lineNumbers}</pre>
-        </div>
-        <div className="prompt-editor__body">
-          <pre
-            className="prompt-editor__highlight"
-            ref={highlightRef}
-            dangerouslySetInnerHTML={{ __html: `${highlightPrompt(safeValue)}\n` }}
-          />
-          <textarea
-            ref={textRef}
-            className="prompt-editor__textarea"
-            value={safeValue}
-            onChange={(event) => onChange(event.target.value)}
-            onScroll={syncScroll}
-            placeholder={placeholder}
-            spellCheck={false}
-            aria-label="Prompt editor"
-            disabled={disabled}
-            onKeyDown={(event) => {
-              if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-                event.preventDefault(); onSave?.();
-              }
-            }}
-          />
-        </div>
-      </div>
-      <div className="prompt-editor-meta">
-        <Text type="secondary">{lineCount} {lineCount === 1 ? 'line' : 'lines'}</Text>
-        <Text type="secondary">{charCount} chars</Text>
-      </div>
-    </div>
-  );
-}
-
-function PromptVarHints({ content, vars, locale }) {
+function PromptVarHints({ content, vars, locale, onInsert, disabled }) {
   const usedVars = new Set();
-  const varPattern = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+  const varPattern = /(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_]*)(?::[^{}]*)?\}(?!\})/g;
   let match;
   const safeContent = content || '';
   while ((match = varPattern.exec(safeContent)) !== null) {
@@ -368,8 +300,9 @@ function PromptVarHints({ content, vars, locale }) {
             key={v}
             type="button"
             className={`prompt-var-tag ${used ? 'prompt-var-tag--used' : 'prompt-var-tag--unused'}`}
-            onClick={() => copyVar(v)}
-            title={locale === 'zh' ? `点击复制 {${v}}` : `Click to copy {${v}}`}
+            disabled={disabled}
+            onClick={() => onInsert ? onInsert(v) : copyVar(v)}
+            title={locale === 'zh' ? `点击${onInsert ? '插入' : '复制'} {${v}}` : `Click to ${onInsert ? 'insert' : 'copy'} {${v}}`}
           >
             {used ? '✓' : '○'} {v}
           </button>
@@ -438,13 +371,19 @@ export default function AdminPage() {
   const [promptContent, setPromptContent] = useState('');
   const [savedPrompt, setSavedPrompt] = useState('');
   const [promptLoading, setPromptLoading] = useState(false);
+  const [loadedPrompt, setLoadedPrompt] = useState('');
+  const [promptLoadError, setPromptLoadError] = useState('');
+  const [promptReload, setPromptReload] = useState(0);
+  const [promptDraftStored, setPromptDraftStored] = useState(true);
+  const promptEditorRef = useRef(null);
+  const promptReady = Boolean(selectedPrompt && loadedPrompt === selectedPrompt);
   const [promptSaving, setPromptSaving] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
   const [promptQuery, setPromptQuery] = useState('');
-  const promptDirty = promptContent !== savedPrompt;
+  const promptDirty = promptReady && promptContent !== savedPrompt;
   const updatePromptContent = (content) => {
     setPromptContent(content);
-    try { sessionStorage.setItem(`crypto-prompt-draft:${selectedPrompt}`, content); } catch { /* Editor remains usable when storage is full. */ }
+    try { sessionStorage.setItem(`crypto-prompt-draft:${selectedPrompt}`, content); setPromptDraftStored(true); } catch { setPromptDraftStored(false); }
   };
   useEffect(() => {
     if (!promptDirty) return undefined;
@@ -503,7 +442,8 @@ export default function AdminPage() {
       setPersistedProviders(response.data.llm_providers || []);
       setPersistedAgents(response.data.agents || []);
       setSaveState('idle');
-      const firstPrompt = response.data.prompts?.files?.[0] || '';
+      let firstPrompt = response.data.prompts?.files?.[0] || '';
+      try { const last = sessionStorage.getItem('crypto-prompt-last-file'); if (response.data.prompts?.files?.includes(last)) firstPrompt = last; } catch { /* Storage unavailable. */ }
       setSelectedPrompt((prev) =>
         response.data.prompts?.files?.includes(prev) ? prev : firstPrompt,
       );
@@ -533,6 +473,10 @@ export default function AdminPage() {
     async function fetchPromptContent() {
       if (!selectedPrompt) { setPromptContent(''); setSavedPrompt(''); return; }
       setPromptLoading(true);
+      setLoadedPrompt('');
+      setPromptLoadError('');
+      setPromptContent('');
+      setSavedPrompt('');
       try {
         const response = await api.get('/config/prompts/content', { params: { name: selectedPrompt } });
         if (mounted) {
@@ -540,14 +484,16 @@ export default function AdminPage() {
           try { draft = sessionStorage.getItem(`crypto-prompt-draft:${selectedPrompt}`); } catch { /* Storage unavailable. */ }
           setPromptContent(draft ?? response.data.content ?? '');
           setSavedPrompt(response.data.content || '');
+          setLoadedPrompt(selectedPrompt);
+          try { sessionStorage.setItem('crypto-prompt-last-file', selectedPrompt); } catch { /* Storage unavailable. */ }
         }
       } catch (err) {
-        if (mounted) setError(err.message || 'Failed to load prompt');
+        if (mounted) setPromptLoadError(err.message || 'Failed to load prompt');
       } finally { if (mounted) setPromptLoading(false); }
     }
     fetchPromptContent();
     return () => { mounted = false; };
-  }, [selectedPrompt]);
+  }, [selectedPrompt, promptReload]);
 
   const updatePayload = (updater) => {
     if (!payloadRef.current || deletingTaskRef.current) return;
@@ -1072,7 +1018,7 @@ export default function AdminPage() {
 
   // --- Prompt CRUD ---
   const savePrompt = async () => {
-    if (!selectedPrompt || promptSaving || promptLoading) return;
+    if (!promptReady || promptSaving || promptLoading || !promptDirty) return;
     setPromptSaving(true);
     const content = promptContent;
     try {
@@ -1784,23 +1730,27 @@ export default function AdminPage() {
                     )}
                   />
                 </Card>
-                <Card className="panel-card" title={<Space wrap>{selectedPrompt || t('promptEditor')}<Tag title={locale === 'zh' ? '未保存的编辑会在当前浏览器标签页中保留为草稿' : 'Unsaved edits are retained as drafts in this browser tab'} color={promptDirty ? 'orange' : 'green'}>{promptLoading ? 'Loading…' : promptDirty ? (locale === 'zh' ? '未保存' : 'Unsaved') : (locale === 'zh' ? '已保存' : 'Saved')}</Tag></Space>} extra={<Space wrap><Button type="primary" loading={promptSaving} disabled={!selectedPrompt || promptLoading || !promptDirty} onClick={savePrompt}>{t('savePrompt')}</Button><Button onClick={() => setPromptExpanded(!promptExpanded)}>{promptExpanded ? (locale === 'zh' ? '退出专注' : 'Exit focus') : (locale === 'zh' ? '专注编辑' : 'Focus editor')}</Button></Space>}>
+                <Card className="panel-card" title={<Space wrap>{selectedPrompt || t('promptEditor')}<Tag title={locale === 'zh' ? '未保存的编辑会在当前浏览器标签页中保留为草稿' : 'Unsaved edits are retained as drafts in this browser tab'} color={promptDirty ? 'orange' : 'green'}>{promptLoading ? (locale === 'zh' ? '加载中…' : 'Loading…') : !promptReady ? (locale === 'zh' ? '未加载' : 'Not loaded') : promptDirty ? (locale === 'zh' ? '未保存' : 'Unsaved') : (locale === 'zh' ? '已保存' : 'Saved')}</Tag></Space>} extra={<Space wrap><Button type="primary" loading={promptSaving} disabled={!selectedPrompt || promptLoading || !promptDirty} onClick={savePrompt}>{t('savePrompt')}</Button><Button onClick={() => setPromptExpanded(!promptExpanded)}>{promptExpanded ? (locale === 'zh' ? '退出专注' : 'Exit focus') : (locale === 'zh' ? '专注编辑' : 'Focus editor')}</Button></Space>}>
                   <Space direction="vertical" style={{ width: '100%' }} size="middle">
                     <div className="prompt-editor-container">
+                      {promptLoadError ? <Alert type="error" showIcon title={locale === 'zh' ? 'Prompt 加载失败' : 'Could not load prompt'} description={promptLoadError} action={<Button onClick={() => setPromptReload((value) => value + 1)}>{locale === 'zh' ? '重新加载' : 'Reload'}</Button>} /> : null}
+                      {promptDirty ? <Text type={promptDraftStored ? 'secondary' : 'danger'} role="status">{locale === 'zh' ? (promptDraftStored ? '编辑草稿已保留在当前标签页，点击保存后才会应用。' : '草稿暂未保存，请勿关闭页面。') : (promptDraftStored ? 'Draft retained in this tab. Save to apply changes.' : 'Draft not saved; keep this page open.')}</Text> : null}
                       <PromptCodeEditor
+                        ref={promptEditorRef}
+                        key={selectedPrompt}
                         value={promptContent}
                         onChange={updatePromptContent}
                         placeholder="Use {current_time}, {symbol}, {formatted_market_data}, {positions_text}, {orders_text}, {short_memory_text}"
                         height={promptExpanded ? "calc(100dvh - 290px)" : 520}
                         onSave={savePrompt}
-                        disabled={promptLoading || promptSaving}
+                        disabled={!promptReady || promptLoading || promptSaving}
                       />
                       <div className="prompt-editor-stats">
                         <Text type="secondary">{(promptContent || '').split('\n').length} {locale === 'zh' ? '行' : 'lines'}</Text>
                         <Text type="secondary">{(promptContent || '').length} {locale === 'zh' ? '字符' : 'chars'}</Text>
                       </div>
                     </div>
-                    <PromptVarHints content={promptContent} vars={AGENT_PROMPT_VARS} locale={locale} />
+                    <PromptVarHints content={promptContent} vars={AGENT_PROMPT_VARS} locale={locale} disabled={!promptReady || promptLoading || promptSaving} onInsert={(name) => promptEditorRef.current?.insertText(`{${name}}`)} />
                     <Space>
                       <Button type="primary" loading={promptSaving} onClick={savePrompt} disabled={!selectedPrompt || promptLoading || !promptDirty}>{t('savePrompt')} · Ctrl/⌘ S</Button>
                       <Popconfirm title={t('confirmDelete')} onConfirm={deletePrompt} disabled={!selectedPrompt}>

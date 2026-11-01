@@ -3456,3 +3456,13 @@ a {
   .reasoning-block__content,
   .reasoning-block__dots::after { animation: none; }
 }
+
+/* Native text rendering keeps Chinese text, selection and wrapped lines aligned. */
+.prompt-native-editor .prompt-editor__body { min-height: 0; }
+.prompt-native-editor .prompt-editor__textarea { color: var(--text-primary); tab-size: 4; white-space: pre; overflow-wrap: normal; }
+.prompt-native-editor.is-wrapped { grid-template-columns: minmax(0, 1fr); }
+.prompt-native-editor.is-wrapped .prompt-editor__textarea { white-space: pre-wrap; overflow-wrap: break-word; }
+.prompt-native-editor:focus-within { border-color: var(--accent, #1677ff); box-shadow: 0 0 0 2px rgb(22 119 255 / 12%); }
+.prompt-editor-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.prompt-var-tag:disabled { opacity: .5; cursor: not-allowed; }
+.chat-draft-status { color: var(--text-muted); font-size: 12px; text-align: right; padding: 6px 8px 0; }

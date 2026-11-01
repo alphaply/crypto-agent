@@ -210,3 +210,26 @@ MCP 服务接入、独立配置和 OAuth 说明见 [MCP 接入](MCP.md)。
 新记忆与新策略摘要直接发布文本，程序保存账户范围、来源哈希和执行关联；沿用已有存储表保留历史，不再生产旧投影转换或 contract recovery 任务。已有有效已发布内容仍可读，人工编辑/删除使旧来源失效，迟到结果不能覆盖变更来源。最近三条策略摘要的展示与 4 小时整理窗口分别处理。“重试失败整理”只重排仍有源摘要的失败记忆任务，不重排旧投影。原文和发布记录原子保存，失败不重放交易。
 
 工具回执默认使用简短卡片，展示名称、真实状态和简短结果；完整结果及审计按需展开。Paper 银行、破产、下海和双榜规则见 [账户生命周期](PAPER_ACCOUNT_LIFECYCLE.md)。本轮中英文桌面/手机验收截图在 `docs/screenshots/account-lifecycle/`。
+
+
+## 聊天恢复与 Prompt 编辑
+
+聊天页会记住同一浏览器最后打开的会话，每个会话的未发送内容单独保存在本地。切换会话、刷新页面或重新打开浏览器后，草稿可继续编辑；发送时清除该草稿，删除会话也会移除对应草稿。不同浏览器和设备之间不共享草稿。浏览器禁止存储或空间不足时，输入仍可使用，界面会提示草稿暂未保存。
+
+连接意外结束后，页面会重新读取服务器已保存的聊天记录和待审批工具；网络恢复时也会重新读取。右上角「刷新记录」可手动执行相同操作。这些操作不会自动重发问题、重新调用模型或批准工具。正在生成但还未保存的内容不属于恢复范围。读取失败会显示错误与「重新加载」，加载成功前禁止发送，避免把读取失败误认为空会话。原会话已删除时会显示读取错误，不会静默跳转到其他会话。
+
+历史记录和待审批工具从同一份保存状态读取，避免恢复时二者不一致。读取历史无需解析当前模型和交易所密钥；原配置被删除后仍能查看历史，继续发送时仍按原规则检查运行配置。
+
+Prompt 编辑器支持自动换行开关、光标行列位置、字符数、专注编辑和 Ctrl/⌘+S 保存。点击下方变量可插入到光标处或替换选中文本，支持撤销；`{balance:.2f}` 等带格式的变量也会标记为已使用。文本使用原生输入框渲染，避免中文、换行和光标位置错位。
+
+Prompt 草稿保留在当前浏览器标签页；刷新后恢复上次编辑的文件及草稿，点击保存才会应用到服务端。切换文件时若存在未保存修改，沿用放弃修改确认。文件加载失败时清空旧文件的显示内容并禁止编辑和保存，可点击「重新加载」重试，避免把上一份文件内容误存到当前文件。
+
+验证命令（不连接真实模型或交易所）：
+
+```bash
+python -m pytest tests/test_chat_recovery.py tests/test_chat_stream_lifecycle.py tests/test_chat_stream_api.py tests/test_chat_branching.py tests/test_chat_stream_interrupts.py tests/test_chat_message_serialization.py tests/test_chat_context_compaction.py -q
+npm run test:chat --prefix frontend
+npm run build --prefix frontend
+```
+
+浏览器验证脚本为 `tests/test_chat_prompt_browser.py`，需要 Playwright 和 Edge，先在 18971 端口启动前端：`npm run dev --prefix frontend -- --port 18971`，再运行 `python tests/test_chat_prompt_browser.py`。脚本拦截所有后端请求，覆盖 1440px / 390px 下的会话恢复、草稿隔离、断流恢复、不重复发送、读取失败保护、变量插入/撤销与 Prompt 草稿恢复，并输出截图到 `docs/screenshots/`。

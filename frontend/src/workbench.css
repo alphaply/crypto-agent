@@ -58,3 +58,10 @@
 .workspace-page-title { flex-shrink: 0; white-space: nowrap; }
 .workspace-header-actions { min-width: 0; }
 @media (min-width: 701px) and (max-width: 1100px) { .admin-page .settings-form-grid { grid-template-columns: minmax(0,1fr); } }
+
+/* Let the actual navigation height determine the remaining chat viewport. */
+.app-shell:has(.chat-console-page) { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
+.app-shell:has(.chat-console-page) > .workspace-topbar { flex: 0 0 auto; }
+.app-shell > .page-wrap:has(.chat-console-page) { flex: 1; min-height: 0; padding-block: 0; }
+.app-shell .chat-console-page { height: 100%; }
+.x-chat-sender-wrap { flex-shrink: 0; }

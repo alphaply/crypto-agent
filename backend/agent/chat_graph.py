@@ -1391,18 +1391,24 @@ def resume_chat(session_id: str, approved: bool, config_id: str = None, runtime:
     return result
 
 
-def get_chat_state(session_id: str, config_id: str = None, runtime: Dict[str, Any] | None = None):
+def get_chat_snapshot(session_id: str, config_id: str = None) -> dict[str, Any]:
+    """Read history and pending approval from the same persisted checkpoint."""
     config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
     snapshot = chat_app.get_state(config)
-    return snapshot.values if snapshot else {}
+    interrupts = getattr(snapshot, "interrupts", None) if snapshot else None
+    approval = None
+    if interrupts:
+        intr = interrupts[0]
+        approval = {"id": getattr(intr, "id", ""), "value": getattr(intr, "value", {}) or {}}
+    return {"state": snapshot.values if snapshot else {}, "pending_approval": approval}
+
+
+def get_chat_state(session_id: str, config_id: str = None, runtime: Dict[str, Any] | None = None):
+    return get_chat_snapshot(session_id, config_id)["state"]
 
 
 def get_chat_interrupt(session_id: str, config_id: str = None, runtime: Dict[str, Any] | None = None):
-    config = {"configurable": {"thread_id": session_id, "config_id": config_id}}
-    snapshot = chat_app.get_state(config)
-    if not snapshot or not getattr(snapshot, "interrupts", None): return None
-    intr = snapshot.interrupts[0]
-    return {"id": getattr(intr, "id", ""), "value": getattr(intr, "value", {}) or {}}
+    return get_chat_snapshot(session_id, config_id)["pending_approval"]
 
 
 def delete_chat_threads(session_ids):

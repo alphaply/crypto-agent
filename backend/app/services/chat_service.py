@@ -12,6 +12,7 @@ from backend.agent.chat_graph import (
     delete_chat_threads,
     get_chat_interrupt,
     get_chat_state,
+    get_chat_snapshot,
     stream_chat,
     stream_resume_chat,
 )
@@ -375,37 +376,29 @@ def get_chat_session_payload(session_id: str):
     if not session:
         raise FileNotFoundError("Chat session not found")
 
-    runtime = _effective_session_runtime(session)
-    state = get_chat_state(session_id, config_id=session["config_id"], runtime=runtime)
+    # Reading saved history requires no live model/exchange credentials. Resolve
+    # runtime only when a request actually needs to execute a model or tool.
+    snapshot = get_chat_snapshot(session_id, config_id=session["config_id"])
+    state = snapshot["state"]
     messages = state.get("messages", []) if state else []
     return {
         "session": _serialize_session(session),
         "messages": _serialize_chat_messages(messages),
         "conversation_memory": conversation_memory_payload(state),
-        "pending_approval": get_chat_interrupt(session_id, config_id=session["config_id"], runtime=runtime),
+        "pending_approval": snapshot["pending_approval"],
     }
 
 
 def get_chat_messages_payload(session_id: str):
-    session = get_chat_session(session_id)
-    if not session:
-        raise FileNotFoundError("Chat session not found")
-    runtime = _effective_session_runtime(session)
-    state = get_chat_state(session_id, config_id=session["config_id"], runtime=runtime)
-    messages = state.get("messages", []) if state else []
-    return {
-        "session": _serialize_session(session),
-        "messages": _serialize_chat_messages(messages),
-        "conversation_memory": conversation_memory_payload(state),
-    }
+    payload = get_chat_session_payload(session_id)
+    return {key: value for key, value in payload.items() if key != "pending_approval"}
 
 
 def get_chat_memory_payload(session_id: str):
     session = get_chat_session(session_id)
     if not session:
         raise FileNotFoundError("Chat session not found")
-    runtime = _effective_session_runtime(session)
-    state = get_chat_state(session_id, config_id=session["config_id"], runtime=runtime)
+    state = get_chat_state(session_id, config_id=session["config_id"])
     return {"session": _serialize_session(session), "conversation_memory": conversation_memory_payload(state)}
 
 
