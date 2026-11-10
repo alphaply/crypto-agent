@@ -904,6 +904,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
         return {'messages': [ToolMessage(tool_call_id=call['id'], content='Error: Read-only chat cannot execute tools.')
                              for call in tool_calls], 'symbol': symbol}
 
+    from backend.database.trade_calls import record_trade_call
     stopped = False
     for call in tool_calls:
         tool_name = call["name"]
@@ -912,6 +913,8 @@ def tools_node(state: ChatState, config: RunnableConfig):
             outputs.append(ToolMessage(tool_call_id=call['id'], content=json.dumps({
                 'status': 'not_executed', 'reason': '前序工具被拒绝、失败或待核验，后续操作未执行。'
             }, ensure_ascii=False)))
+            record_trade_call(config_id, call['id'], tool_name, tool_args, symbol,
+                              {'status': 'not_executed', 'reason': '前序操作被拒绝或结果待核验'}, tool_call_id=call['id'])
             continue
 
         if tool_name == 'manage_trading_rules':
@@ -921,6 +924,17 @@ def tools_node(state: ChatState, config: RunnableConfig):
 
         batch_approvals = None
         is_v3_batch = tool_name == 'execute_trade_actions' and tool_args.get('contract_version') == 3
+        from backend.agent.single_trade_tools import (
+            SINGLE_TRADE_ACTIONS, SingleTradeParameterError, prepare_single_trade_request, single_trade_error_receipt,
+        )
+        if tool_name in SINGLE_TRADE_ACTIONS:
+            try:
+                prepare_single_trade_request(tool_name, tool_args, cfg, symbol)
+            except SingleTradeParameterError as exc:
+                outputs.append(ToolMessage(tool_call_id=call['id'], content=json.dumps(
+                    single_trade_error_receipt(tool_name, exc), ensure_ascii=False)))
+                record_trade_call(config_id, call["id"], tool_name, tool_args, symbol, single_trade_error_receipt(tool_name, exc), tool_call_id=call['id'])
+                continue
         if is_v3_batch:
             from backend.agent.unified_trading import validate_for_config
             try:
@@ -944,6 +958,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
                 batch_approvals[action_index] = accepted
                 if not accepted:
                     break
+        record_trade_call(config_id, call["id"], tool_name, tool_args, symbol, status="awaiting_approval", tool_call_id=call['id'])
         approval = True if is_v3_batch else interrupt(
             {
                 "type": "tool_approval",
@@ -951,7 +966,7 @@ def tools_node(state: ChatState, config: RunnableConfig):
                 "tool_name": tool_name,
                 "tool_args": tool_args,
                 "config_id": config_id,
-                "symbol": symbol,
+                "symbol": (tool_args.get('symbol') or symbol) if tool_name in SINGLE_TRADE_ACTIONS else symbol,
             }
         )
 
@@ -963,6 +978,8 @@ def tools_node(state: ChatState, config: RunnableConfig):
 
         if not approved:
             outputs.append(ToolMessage(tool_call_id=call["id"], content="Rejected by user."))
+            record_trade_call(config_id, call["id"], tool_name, tool_args, symbol,
+                              {"status": "rejected", "reason": "用户拒绝本次审批"}, tool_call_id=call['id'])
             stopped = True
             continue
 
@@ -983,14 +1000,15 @@ def tools_node(state: ChatState, config: RunnableConfig):
                     stopped = stopped or bool(json.loads(result).get('rejected_by_user'))
                 except (ValueError, TypeError, AttributeError):
                     pass
-            from backend.agent.tool_registry import uses_scoped_admission
-            stopped = stopped or (tool_result_status(result) in {'failed', 'unknown', 'pending'}
-                                  and not uses_scoped_admission(tool_name, config_id, tool_args))
+            from backend.agent.tool_registry import stops_tool_sequence
+            stopped = stopped or stops_tool_sequence(tool_name, tool_result_status(result), config_id, tool_args)
         except Exception as exc:
             logger.error(f"Tool error ({tool_name}): {exc}")
-            outputs.append(ToolMessage(tool_call_id=call["id"], content=f"Error: {exc}"))
-            from backend.agent.tool_registry import uses_scoped_admission
-            stopped = stopped or not uses_scoped_admission(tool_name, config_id, tool_args)
+            status = 'unknown' if tool_name in SINGLE_TRADE_ACTIONS else 'failed'
+            content = json.dumps({'status': status, 'operation_id': call['id'], 'error': str(exc)}, ensure_ascii=False)
+            outputs.append(ToolMessage(tool_call_id=call["id"], content=content if status == 'unknown' else f"Error: {exc}"))
+            from backend.agent.tool_registry import stops_tool_sequence
+            stopped = stopped or stops_tool_sequence(tool_name, status, config_id, tool_args)
 
     return {"messages": outputs, "symbol": symbol}
 

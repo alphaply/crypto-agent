@@ -8,6 +8,17 @@ import math
 from backend.database import news as database_news
 
 
+class NewsModelError(RuntimeError):
+    def __init__(self, original, provider, purpose, call_run_id):
+        from backend.utils.log_safety import redact_log_text
+        super().__init__(redact_log_text(original))
+        self.original = original
+        self.model = provider['model']
+        self.provider_id = provider['provider_id']
+        self.purpose = purpose
+        self.call_run_id = call_run_id
+
+
 def fingerprint(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
@@ -20,17 +31,28 @@ def model_identity(provider: dict) -> dict:
     return {key: provider.get(key) for key in ('provider_id', 'model', 'api_base', 'api_protocol', 'thinking_enabled', 'reasoning_effort', 'extra_body')}
 
 
-def generate(provider: dict, instructions: str, data, purpose: str, validator=None) -> str:
+def generate(provider: dict, instructions: str, data, purpose: str, validator=None, *, timeout_seconds=None, retry=True) -> str:
     from langchain_core.messages import HumanMessage
     from backend.agent.call_audit import audited_invoke
     from backend.utils.llm_utils import build_chat_model, instruction_message, extract_message_text, require_complete_response, invoke_with_retry
     from backend.utils.news_tracing import pipeline_run_id
     from backend.utils.logger import setup_logger
+    from backend.utils.log_safety import register_log_secrets
+    from backend.app.services.news_progress import current_progress
+    register_log_secrets(provider['api_key'])
+    call_run_id = None
+
+    def recorded(run_id):
+        nonlocal call_run_id
+        call_run_id = run_id
+        progress = current_progress.get()
+        if progress:
+            progress.model_call(run_id, purpose=purpose, model=provider['model'], provider_id=provider['provider_id'])
     messages = [instruction_message(instructions, provider.get('system_prompt_role')), HumanMessage(content=json.dumps(data, ensure_ascii=False))]
     llm = build_chat_model(model=provider['model'], api_key=provider['api_key'], base_url=provider.get('api_base') or None,
                            temperature=0.1, compatibility_mode=provider.get('compatibility_mode', 'auto'),
                            thinking_enabled=provider.get('thinking_enabled'), reasoning_effort=provider.get('reasoning_effort'),
-                           extra_body=provider.get('extra_body'))
+                           extra_body=provider.get('extra_body'), **({'timeout_seconds': timeout_seconds} if timeout_seconds is not None else {}))
 
     def validate(response):
         require_complete_response(response, context=purpose)
@@ -40,9 +62,14 @@ def generate(provider: dict, instructions: str, data, purpose: str, validator=No
         if validator:
             validator(text)
 
-    response = invoke_with_retry(lambda: audited_invoke(lambda: llm.invoke(messages), config_id='news-intelligence',
+    invoke = lambda: audited_invoke(lambda: llm.invoke(messages), config_id='news-intelligence',
                                 purpose=purpose, model=provider['model'], provider_id=provider['provider_id'],
-                                messages=messages, response_validator=validate, parent_run_id=pipeline_run_id.get()), logger=setup_logger('NewsModels'), context=purpose)
+                                messages=messages, response_validator=validate, parent_run_id=pipeline_run_id.get(),
+                                on_recorded=recorded)
+    try:
+        response = invoke_with_retry(invoke, logger=setup_logger('NewsModels'), context=purpose) if retry else invoke()
+    except Exception as exc:
+        raise NewsModelError(exc, provider, purpose, call_run_id) from exc
     return extract_message_text(response).strip()
 
 

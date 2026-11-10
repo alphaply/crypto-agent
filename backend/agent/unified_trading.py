@@ -7,7 +7,6 @@ from __future__ import annotations
 from backend.storage import lock_scope
 
 from contextvars import ContextVar
-from copy import deepcopy
 import hashlib
 import json
 import os
@@ -15,7 +14,7 @@ import time
 import uuid
 from typing import Callable
 
-from backend.agent.trading_contracts import UnifiedTradeActionsSchema
+from backend.agent.trading_contracts import TradeParameterError, UnifiedTradeActionsSchema, parse_v3_request, side_error
 from backend.utils.trade_operations import current_operation_id, run_once, tool_result_status, _decode_receipt, _same_symbol
 
 
@@ -92,9 +91,9 @@ def _action_fields(action: str, caps: dict) -> set[str]:
 
 def validate_for_config(payload, config: dict | None, *, engine: str = 'live',
                         default_symbol: str | None = None, allowed_symbols=None) -> UnifiedTradeActionsSchema:
-    parsed = UnifiedTradeActionsSchema.model_validate(payload)
     cfg = config or {}
     caps = capabilities_for_config(cfg, engine=engine)
+    parsed = parse_v3_request(payload, market=caps['markets'][0] if len(caps['markets']) == 1 else None)
     configured = list(allowed_symbols if allowed_symbols is not None else cfg.get('symbols') or
                       ([cfg['symbol']] if cfg.get('symbol') else []))
     unrestricted = cfg.get('mcp_symbol_scope', cfg.get('symbol_scope')) == 'all' or engine == 'paper'
@@ -132,10 +131,12 @@ def validate_for_config(payload, config: dict | None, *, engine: str = 'live',
         if engine == 'paper' and action.action in {'open', 'close', 'protect'} and market not in caps['markets']:
             reject('market_type is required and must be supported by the paper account')
         if market == 'spot' and getattr(action, 'side', 'LONG') != 'LONG':
-            reject('spot uses side=LONG: open buys and close sells; SHORT is unsupported')
+            hint = side_error(action.action, index, missing=False, market=market)
+            raise TradeParameterError(hint)
         if action.action == 'open':
             if action.order_type not in caps['open_order_types']:
-                reject('unsupported_combination: live entry supports limit only')
+                raise TradeParameterError(f'第 {index + 1} 项开仓不支持 order_type={action.order_type}。'
+                                          '当前模式只支持限价开仓，填 limit 并提供委托价格 price。')
             if market == 'spot' and (action.margin_amount is not None or action.leverage is not None):
                 reject('spot does not accept leverage or margin_amount')
             if engine == 'paper' and action.leverage is not None and (not action.leverage.is_integer() or not 1 <= action.leverage <= min(125, int(cfg.get('max_leverage') or 125))):
@@ -158,14 +159,49 @@ def validate_for_config(payload, config: dict | None, *, engine: str = 'live',
     return parsed
 
 
-def unified_schema_for_config(config: dict | None, *, engine: str = 'live') -> dict:
+def _action_examples(config: dict | None, caps: dict, allowed) -> list[list[dict]]:
+    """Publish examples only for the caller's actions and trusted market."""
+    symbols = (config or {}).get('symbols') or []
+    target = {'symbol': symbols[0]} if len(symbols) > 1 else {}
+    market = caps['market_type']
+    if caps['engine'] == 'paper':
+        market = caps['markets'][0]
+        target = {'market_type': market, 'symbol': 'BTC/USDT' if market == 'spot' else 'BTC/USDT:USDT'}
+    examples = []
+    if 'open' in allowed:
+        side = 'LONG' if market == 'spot' else 'SHORT'
+        entry = {'action': 'open', 'side': side, 'order_type': 'limit', 'amount': 0.1,
+                 'price': 100, 'reason': '示例限价入场', **target}
+        if market == 'swap' and caps['exit_mode'] == 'attached_required':
+            entry.update(stop_loss=105, take_profit=95)
+        examples.append([entry])
+    if 'close' not in allowed:
+        return examples
+    if caps['exit_mode'] == 'independent_exits' and market == 'swap':
+        examples.append([
+            {**target, 'action': 'close', 'side': 'SHORT', 'order_type': 'limit', 'amount': 0.12,
+             'price': 2242, 'reason': '部分平空止盈'},
+            {**target, 'action': 'close', 'side': 'SHORT', 'order_type': 'stop_market', 'close_all': True,
+             'trigger_price': 2316.5, 'reason': '保护剩余空头'},
+        ])
+    else:
+        examples.append([{**target, 'action': 'close', 'side': 'LONG', 'order_type': 'market',
+                          'amount': 0.12, 'reason': '减少持仓'}])
+    return examples
+
+
+def unified_schema_for_config(config: dict | None, *, engine: str = 'live', allowed_actions: list[str] | None = None,
+                              ref_template: str = '#/$defs/{model}') -> dict:
     caps = capabilities_for_config(config, engine=engine)
-    schema = deepcopy(UnifiedTradeActionsSchema.model_json_schema())
+    schema = UnifiedTradeActionsSchema.model_json_schema(ref_template=ref_template)
     items = schema['properties']['actions']['items']
     mapping = items['discriminator']['mapping']
     for name in list(mapping):
-        if name not in caps['actions']:
+        if name not in caps['actions'] or (allowed_actions is not None and name not in allowed_actions):
             mapping.pop(name)
+    examples = _action_examples(config, caps, mapping)
+    if examples:
+        schema['properties']['actions']['examples'] = examples
     items['oneOf'] = [{'$ref': ref} for ref in mapping.values()]
     keep_defs = set(ref.rsplit('/', 1)[-1] for ref in mapping.values())
     for name in list(schema.get('$defs', {})):
@@ -174,49 +210,73 @@ def unified_schema_for_config(config: dict | None, *, engine: str = 'live') -> d
     for action_name, ref in mapping.items():
         definition = schema['$defs'][ref.rsplit('/', 1)[-1]]
         fields = _action_fields(action_name, caps)
+        if action_name == 'close' and caps['close_order_types'] == ['market']:
+            fields -= {'price', 'trigger_price'}
         definition['properties'] = {key: value for key, value in definition['properties'].items() if key in fields}
+        properties = definition['properties']
         definition['required'] = [key for key in definition.get('required', []) if key in fields]
+        positive = {'type': 'number', 'exclusiveMinimum': 0}
         if caps['engine'] == 'live':
             if 'side' in fields and caps['market_type'] == 'spot':
-                definition['properties']['side'] = {**definition['properties']['side'], 'const': 'LONG', 'enum': ['LONG']}
+                side_help = {'open': 'Spot purchase: set side to LONG on this item.',
+                             'close': 'Spot sale: set side to LONG on every close item, including stops and take profits.',
+                             'protect': 'Protect spot holdings: set side to LONG.'}
+                properties['side'].update(const='LONG', enum=['LONG'], description=side_help[action_name])
             if action_name == 'open':
-                definition['properties']['amount'] = {'type': 'number', 'exclusiveMinimum': 0, 'description': '基础币数量'}
-                definition['properties']['price'] = {'type': 'number', 'exclusiveMinimum': 0}
-                definition['properties']['order_type'] = {**definition['properties']['order_type'], 'const': 'limit', 'enum': ['limit'], 'default': 'limit'}
+                if caps['market_type'] == 'swap' and caps['exit_mode'] == 'independent_exits':
+                    properties['action']['description'] += ' Entries may be scaled in. Opening both sides requires hedge mode.'
+                for key in ('amount', 'price'):
+                    properties[key] = {**positive, 'description': properties[key]['description']}
+                properties['order_type'].update(const='limit', enum=['limit'], default='limit',
+                                                description='Limit entries only. Use limit and supply the entry price in price.')
                 definition['required'] += [key for key in ('amount', 'price') if key not in definition['required']]
                 if caps['market_type'] == 'swap' and caps['exit_mode'] == 'attached_required':
                     for key in ('stop_loss', 'take_profit'):
-                        definition['properties'][key] = {'type': 'number', 'exclusiveMinimum': 0}
+                        properties[key] = {**positive, 'description': properties[key]['description']}
                         definition['required'].append(key)
             elif action_name == 'close':
-                definition['properties']['order_type'] = {**definition['properties']['order_type'], 'enum': caps['close_order_types']}
+                properties['order_type']['enum'] = caps['close_order_types']
+                if 'stop_limit' in caps['close_order_types']:
+                    properties['order_type']['description'] += ' Conditional limit exits require both trigger_price and price.'
+                if caps['exit_mode'] == 'independent_exits' and 'close_all' in fields:
+                    properties['close_all']['description'] = ('Use true instead of amount. market closes the quantity verified at submission; '
+                                                              'stop_market and take_profit_market close the entire side at trigger time.')
+                    properties['amount']['description'] += ' Each fixed exit keeps its quantity when the position changes.'
             elif action_name == 'protect' and caps['mode'] == 'STRATEGY':
                 definition['required'].append('order_id')
             if caps['market_type'] == 'spot' and action_name in {'close', 'protect'}:
-                definition['properties']['amount'] = {'type': 'number', 'exclusiveMinimum': 0}
+                properties['amount'] = {**positive, 'description': 'Required fixed quantity in base coins.'}
                 definition['required'].append('amount')
         else:
             if action_name in {'open', 'close', 'protect'}:
+                properties['side']['description'] = 'Spot requires LONG. For swaps: ' + properties['side']['description']
                 definition['required'].append('symbol')
                 if len(caps['markets']) != 1:
                     definition['required'].append('market_type')
             if action_name == 'open':
-                definition['properties']['leverage'] = {'anyOf': [
-                    {'type': 'integer', 'minimum': 1, 'maximum': min(125, int((config or {}).get('max_leverage') or 125))}, {'type': 'null'}]}
-        properties = definition['properties']
-        positive = {'type': 'number', 'exclusiveMinimum': 0}
+                properties['action']['description'] += ' Relay any interest_reserve reminder in the paper receipt.'
+                properties['leverage']['anyOf'] = [
+                    {'type': 'integer', 'minimum': 1, 'maximum': min(125, int((config or {}).get('max_leverage') or 125))}, {'type': 'null'}]
+                properties['amount']['description'] += ' Choose exactly one of amount, quote_amount or margin_amount.'
+            elif action_name == 'close':
+                properties['order_type']['enum'] = caps['close_order_types']
+                for key in ('stop_loss', 'take_profit'):
+                    properties[key]['description'] = f'Trigger for {key}; choose this or trigger_price for that order type.'
+        # Gemini validates each branch independently; object keywords need a
+        # local type even when the enclosing action is already an object.
         if action_name == 'open' and caps['engine'] == 'paper':
             sizing = [key for key in ('amount', 'quote_amount', 'margin_amount') if key in properties]
-            definition['oneOf'] = [{'required': [key], 'properties': {
+            definition['oneOf'] = [{'type': 'object', 'required': [key], 'properties': {
                 name: positive if name == key else {'type': 'null'} for name in sizing}} for key in sizing]
-            definition['allOf'] = [{'if': {'required': ['order_type'], 'properties': {'order_type': {'const': 'market'}}},
-                                     'then': {'properties': {'price': {'type': 'null'}}},
-                                     'else': {'required': ['price'], 'properties': {'price': positive}}}]
+            definition['allOf'] = [{'if': {'type': 'object', 'required': ['order_type'],
+                                          'properties': {'order_type': {'const': 'market'}}},
+                                     'then': {'type': 'object', 'properties': {'price': {'type': 'null'}}},
+                                     'else': {'type': 'object', 'required': ['price'], 'properties': {'price': positive}}}]
         elif action_name == 'close':
             if 'close_all' in properties:
                 definition['oneOf'] = [
-                    {'required': ['amount'], 'properties': {'amount': positive, 'close_all': {'type': 'null'}}},
-                    {'required': ['close_all'], 'properties': {'close_all': {'const': True}, 'amount': {'type': 'null'}}}]
+                    {'type': 'object', 'required': ['amount'], 'properties': {'amount': positive, 'close_all': {'type': 'null'}}},
+                    {'type': 'object', 'required': ['close_all'], 'properties': {'close_all': {'const': True}, 'amount': {'type': 'null'}}}]
             rules = []
             for kind in caps['close_order_types']:
                 required = {'limit': ['price'], 'stop_market': ['trigger_price'], 'take_profit_market': ['trigger_price'],
@@ -227,20 +287,21 @@ def unified_schema_for_config(config: dict | None, *, engine: str = 'live') -> d
                     allowed |= {'trigger_price', kind, 'stop_limit_price' if kind == 'stop_loss' else 'take_profit_limit_price'}
                 if kind == 'oco':
                     allowed |= {'stop_limit_price', 'take_profit_limit_price'}
-                condition = {'required': required, 'properties': {field: positive if field in required else {'type': 'null'}
+                condition = {'type': 'object', 'required': required, 'properties': {field: positive if field in required else {'type': 'null'}
                     for field in ('price', 'trigger_price', 'stop_loss', 'take_profit', 'stop_limit_price', 'take_profit_limit_price')
                     if field in properties and (field in required or field not in allowed)}}
                 if kind in {'stop_loss', 'take_profit'}:
                     condition['oneOf'] = [
-                        {'required': ['trigger_price'], 'properties': {'trigger_price': positive, kind: {'type': 'null'}}},
-                        {'required': [kind], 'properties': {kind: positive, 'trigger_price': {'type': 'null'}}}]
+                        {'type': 'object', 'required': ['trigger_price'], 'properties': {'trigger_price': positive, kind: {'type': 'null'}}},
+                        {'type': 'object', 'required': [kind], 'properties': {kind: positive, 'trigger_price': {'type': 'null'}}}]
                 if caps['exit_mode'] == 'independent_exits' and kind not in {'market', 'stop_market', 'take_profit_market'} and 'close_all' in properties:
                     condition['properties']['close_all'] = {'type': 'null'}
-                rules.append({'if': {'properties': {'order_type': {'const': kind}}}, 'then': condition})
+                rules.append({'if': {'type': 'object', 'properties': {'order_type': {'const': kind}}}, 'then': condition})
             definition['allOf'] = rules
         elif action_name in {'edit', 'protect'}:
             changes = ['remaining_amount', 'price', 'trigger_price', 'stop_loss', 'take_profit'] if action_name == 'edit' else ['stop_loss', 'take_profit']
-            definition['anyOf'] = [{'required': [key], 'properties': {key: positive}} for key in changes if key in properties]
+            definition['anyOf'] = [{'type': 'object', 'required': [key], 'properties': {key: positive}}
+                                   for key in changes if key in properties]
         definition['required'] = list(dict.fromkeys(definition.get('required', [])))
     return schema
 
@@ -277,7 +338,7 @@ def _prepare_children(config_id, parent_id, parsed, default_symbol):
 
 def _failure(payload, parent_id, exc):
     return {'contract_version': 3, 'receipt_version': 1, 'operation_id': parent_id, 'status': 'failed',
-            'phase': 'preflight', 'submitted': False, 'error': str(exc), 'error_code': 'invalid_request',
+            'phase': 'preflight', 'submitted': False, 'error': str(exc), 'error_code': getattr(exc, 'code', 'invalid_request'),
             'results': [{'index': index, 'action': item.get('action'), 'status': 'not_executed'}
                         for index, item in enumerate(payload.get('actions', []))]}
 

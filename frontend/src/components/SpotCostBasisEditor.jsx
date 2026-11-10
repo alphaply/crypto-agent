@@ -57,7 +57,7 @@ export default function SpotCostBasisEditor({ configId, symbol, stats }) {
         throw new Error(response.data.error || label('持仓成本未能保存，请重试。', 'Holdings could not be saved. Please retry.'));
       }
       setOpen(false);
-      message.success(label('持仓成本已更新，后续买入会自动累加。', 'Holdings updated. Future buys will be added automatically.'));
+      message.success(label('成本基准已更新，后续买卖按新基准计算。', 'Cost basis updated. Future trades will use this baseline.'));
       window.dispatchEvent(new Event('crypto-agent-dashboard-refresh'));
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -94,8 +94,8 @@ export default function SpotCostBasisEditor({ configId, symbol, stats }) {
     >
       <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 16 }}>
         <Alert type="info" showIcon description={label(
-          '请填写保存时的全部持有数量和平均成本价（包含之前已买入的部分）。保存后以此为新起点，旧买入不会重复计算，后续新增买入会自动累加。',
-          'Enter your total holdings and average cost at the time of saving, including previous buys. This becomes the new starting point: previous buys are not counted again, and future buys are added automatically.',
+          '请填写保存时的全部持有数量和平均成本价（包含之前已买入的部分）。保存会建立新成本基准，不增加买入次数或利润；已覆盖的历史不重复计算，后续买卖更新剩余成本。',
+          'Enter your total holdings and average cost, including previous buys. Saving establishes a cost baseline without adding a purchase or profit. Covered history is not counted again; future trades update the remaining cost.',
         )} />
         {error ? <Alert type="error" showIcon description={error} /> : null}
         <Form form={form} layout="vertical" name={`spot-cost-${configId}-${symbol}`} disabled={saving} style={{ width: '100%' }}>

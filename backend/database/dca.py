@@ -28,8 +28,9 @@ class DcaSnapshotStore:
                 '''
                 INSERT INTO dca_daily_snapshots (
                     snapshot_date, config_id, symbol, total_invested, total_qty, avg_cost,
-                    buy_count, first_buy, last_buy, actual_balance, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    buy_count, first_buy, last_buy, actual_balance, updated_at,
+                    remaining_cost,market_value,holding_return_pct,realized_pnl,cost_basis_revision,valuation_status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(snapshot_date, config_id, symbol) DO UPDATE SET
                     total_invested = excluded.total_invested,
                     total_qty = excluded.total_qty,
@@ -38,13 +39,16 @@ class DcaSnapshotStore:
                     first_buy = excluded.first_buy,
                     last_buy = excluded.last_buy,
                     actual_balance = excluded.actual_balance,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    remaining_cost=excluded.remaining_cost,market_value=excluded.market_value,
+                    holding_return_pct=excluded.holding_return_pct,realized_pnl=excluded.realized_pnl,
+                    cost_basis_revision=excluded.cost_basis_revision,valuation_status=excluded.valuation_status
                 ''',
                 (
                     snapshot_date,
                     str(config_id),
                     str(symbol),
-                    float(stats.get("total_invested", 0) or 0),
+                    float(stats.get("recorded_investment", stats.get("total_invested", 0)) or 0),
                     float(stats.get("total_qty", 0) or 0),
                     float(stats.get("avg_cost", 0) or 0),
                     int(stats.get("buy_count", 0) or 0),
@@ -52,6 +56,8 @@ class DcaSnapshotStore:
                     stats.get("last_buy"),
                     float(stats.get("actual_balance", 0) or 0),
                     updated_at,
+                    stats.get('remaining_cost'), stats.get('market_value'), stats.get('return_pct'),
+                    stats.get('realized_pnl'), stats.get('cost_basis_revision'), stats.get('valuation_status'),
                 ),
             )
             conn.commit()

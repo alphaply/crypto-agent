@@ -1,17 +1,20 @@
 import React, { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import { Empty, Segmented, Select, Space, Spin, Tag, Typography } from 'antd';
 import { usePreferences } from '../app/usePreferences';
+import { equityPointValue } from '../lib/equitySeries';
 
 const LineChart = lazy(() => import('./LineChart'));
 const { Text } = Typography;
 
 function formatNumber(value) {
+  if (value == null) return '—';
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return '-';
   return numeric.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
 function formatPercent(value) {
+  if (value == null) return '—';
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return '-';
   return `${numeric >= 0 ? '+' : ''}${numeric.toFixed(2)}%`;
@@ -26,6 +29,7 @@ function sourceName(source, locale) {
   if (kind === 'real_equity') return locale === 'zh' ? '实盘账户权益快照' : 'Live account equity snapshots';
   if (kind === 'strategy_equity') return locale === 'zh' ? '策略模拟权益快照' : 'Strategy simulated equity snapshots';
   if (kind === 'dca_invested') return locale === 'zh' ? '定投累计投入快照' : 'DCA invested capital snapshots';
+  if (kind === 'spot_holding') return locale === 'zh' ? '现货持仓收益 · 按剩余成本' : 'Spot holding return · remaining cost';
   return source?.display_label || source?.label || '-';
 }
 
@@ -40,17 +44,18 @@ function EquityCompareChart({ series = [], selectedIds = [], onSelectedIdsChange
   );
   const plottedItems = useMemo(() => visibleItems.filter((item) => item.points?.length), [visibleItems]);
   const isReturnMode = valueMode === 'return';
+  const hasSpot = visibleItems.some(item => item.mode === 'SPOT_DCA');
 
   const chartSeries = useMemo(() => plottedItems.map((item) => {
-    const base = Number(item.points?.[0]?.equity || 0);
     return {
       name: item.label || item.config_id,
       data: (item.points || []).map((point) => ({
         name: point.date,
-        value: isReturnMode && base ? ((Number(point.equity) - base) / base) * 100 : Number(point.equity),
+        value: equityPointValue(item, point, valueMode),
       })),
+      calibrationDates: (item.points || []).filter(point => point.calibrated).map(point => point.date),
     };
-  }), [isReturnMode, plottedItems]);
+  }), [valueMode, plottedItems]);
 
   const tooltipFormatter = useCallback((params = []) => {
     if (!params.length) return '';
@@ -72,8 +77,9 @@ function EquityCompareChart({ series = [], selectedIds = [], onSelectedIdsChange
         <Segmented
           value={valueMode}
           options={[
-            { label: locale === 'zh' ? '绝对权益' : 'Equity', value: 'equity' },
-            { label: locale === 'zh' ? '起点收益率' : 'Return', value: 'return' },
+            { label: locale === 'zh' ? '权益 / 市值' : 'Equity / value', value: 'equity' },
+            { label: locale === 'zh' ? '收益率' : 'Return', value: 'return' },
+            ...(hasSpot ? [{ label: locale === 'zh' ? '投入记录' : 'Recorded investment', value: 'invested' }] : []),
           ]}
           onChange={setValueMode}
         />
@@ -94,15 +100,15 @@ function EquityCompareChart({ series = [], selectedIds = [], onSelectedIdsChange
 
       <Text type="secondary" className="equity-compare-help">
         {locale === 'zh'
-          ? '权益基于各配置自己的快照。只显示真实记录日期，不会补齐或伪造缺失数据。'
-          : 'Each curve uses its own snapshots. Missing dates stay empty and are never fabricated.'}
+          ? '实盘收益率 =（权益变化 − 转入 + 转出）/ 起点权益；划转不算盈亏，流水不完整时待核对。权益曲线保留实际金额。现货收益率按剩余持仓成本计算，虚线标记成本校准日；旧记录缺少市值时只能查看投入。'
+          : 'Live return = (equity change − deposits + withdrawals) / starting equity. Transfers are not profit; incomplete history awaits reconciliation. Equity shows actual funds. Spot return uses remaining cost; dashed lines mark calibrations. Legacy records without valuation only show invested amounts.'}
       </Text>
 
       <div className="chart-wrap">
-        {chartSeries.length ? (
+        {chartSeries.some(item => item.data.some(point => point.value != null)) ? (
           <Suspense fallback={<Spin />}><LineChart
             series={chartSeries}
-            yName={isReturnMode ? '%' : t('equity')}
+            yName={isReturnMode ? '%' : valueMode === 'invested' ? locale === 'zh' ? '投入记录' : 'Invested' : t('equity')}
             valueFormatter={isReturnMode ? valueFormatter : undefined}
             tooltipFormatter={tooltipFormatter}
           /></Suspense>
@@ -133,6 +139,7 @@ function EquityCompareChart({ series = [], selectedIds = [], onSelectedIdsChange
                 <span>{item.first_date} → {item.last_date}</span>
                 <span>{locale === 'zh' ? '最新' : 'Latest'} {formatNumber(item.latest_equity)}</span>
                 <span className={Number(item.return_pct) < 0 ? 'negative' : 'positive'}>{formatPercent(item.return_pct)}</span>
+                {item.mode === 'REAL' && item.return_status !== 'ready' && <Tag color="warning">{locale === 'zh' ? '划转流水待核对' : 'Transfers awaiting reconciliation'}</Tag>}
               </div>
             ) : (
               <Text type="secondary">

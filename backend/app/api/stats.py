@@ -19,6 +19,17 @@ from backend.app.services.stats_service import (
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 
+@router.get('/task-history/{config_id}')
+def task_history(config_id: str, _: dict = Depends(get_current_user)):
+    from backend.utils.task_performance import task_performance
+    try:
+        return {'success': True, 'statistics': task_performance(config_id)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.get('/performance/{config_id}')
 def performance(config_id: str, hours: int = 168, _: dict = Depends(get_current_user)):
     from backend.app.services.performance_service import get_performance_payload

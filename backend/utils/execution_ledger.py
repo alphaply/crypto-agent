@@ -233,6 +233,7 @@ class ExecutionLedger:
                 'entry',
                 refresh=False,
                 planned_entry=item.get('price'),
+                replaces_order_id=item.get('replaces'),
                 exchange_channel='regular',
                 **{**common, 'episode_id': item.get('origin_episode_id', plan.get('episode_id'))},
             )

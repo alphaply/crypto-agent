@@ -188,6 +188,16 @@ def paper_dashboard(namespace: str | None = None, user_id: str | None = None, li
         raise HTTPException(400, str(exc)) from exc
 
 
+@router.get('/paper/statistics')
+def paper_statistics(namespace: str | None = None, user_id: str | None = None,
+                     period: Literal['current_cycle', '7d', '30d', 'all'] = 'current_cycle'):
+    from .paper_statistics import statistics
+    try:
+        return {'success': True, **statistics(namespace, user_id, period)}
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get('/paper/receipts/{namespace}/{user_id}/{operation_id}')
 def paper_receipt_audit(namespace: str, user_id: str, operation_id: str, offset: int = 0, length: int = 16384, version: str | None = None, view: str = 'original', encoding: str = 'base64-utf8'):
     """JWT administrator audit; binary chunks preserve immutable original bytes."""

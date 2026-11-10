@@ -209,6 +209,8 @@ class WorkerPool:
                 with self.lock:
                     self.queued -= 1
 
+        logger.info('mcp_queue request_id=%s kind=%s tool=%s elapsed_ms=%d',
+                    budget.request_id, self.kind, label or self.kind, (time.monotonic() - start) * 1000)
         context = contextvars.copy_context()
 
         def worker():

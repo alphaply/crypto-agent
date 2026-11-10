@@ -261,6 +261,15 @@ def publish_new_memory(conn, config_id: str, row: dict, metadata: dict):
     publish_text(conn, config_id, 'short_memory', row, metadata.get('execution_refs', []))
 
 
+def covered_summary_ids(memories) -> set[str]:
+    ids = set()
+    for memory in memories:
+        values = memory.get('row', {}).get('source_summary_ids') or []
+        values = json.loads(values) if isinstance(values, str) else values
+        ids.update(str(value) for value in values)
+    return ids
+
+
 def load_strategy_views(config_id: str) -> tuple[str, str, dict]:
     from backend.config import config
     scope = trade_evidence.configured_account_scope(config_id)
@@ -268,12 +277,16 @@ def load_strategy_views(config_id: str) -> tuple[str, str, dict]:
     texts = {}
     refs = set()
     reference_failure = False
+    covered = set()
     for kind, limit, label in [('short_memory', 1, '短期策略记忆'), ('strategy_summary', 3, '策略摘要')]:
         published = []
         try:
             published = stored_sources(config_id, scope, kind, status='ready', limit=limit)
+            if kind == 'short_memory':
+                covered = covered_summary_ids(published)
+            visible = [s for s in published if kind != 'strategy_summary' or str(s['source_id']) not in covered]
             texts[kind] = '\n\n'.join(f"[截至 {s['timestamp']}] {s['projection']['strategy_text'] or '(无策略背景)'}"
-                                       for s in reversed(published)) or f'（尚无已发布{label}）'
+                                       for s in reversed(visible)) or ('（最近摘要已纳入短期记忆）' if published and covered else f'（尚无已发布{label}）')
         except Exception:
             logger.exception('Unable to read published %s for %s', kind, config_id)
             texts[kind] = f'（已发布{label}读取失败）'

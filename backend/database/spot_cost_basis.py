@@ -11,7 +11,7 @@ from backend import storage
 def read_spot_unsettled_buy_ids(
     conn: storage.Connection, config_id: str, symbol: str, *, limit: int | None = None,
 ) -> list[str]:
-    """Find buys whose order or cumulative-fill evidence is not terminal.
+    """Find buys or sells whose cumulative-fill evidence is not terminal.
 
     Some execution paths commit the order before its fill snapshot. Both
     sources must agree that an order is terminal before calibration can freeze
@@ -24,7 +24,7 @@ def read_spot_unsettled_buy_ids(
           ON f.config_id=o.config_id AND f.symbol=o.symbol AND f.order_id=o.order_id
         WHERE o.config_id=%s AND o.symbol=%s AND o.trade_mode='SPOT_DCA'
           AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
-          AND UPPER(o.side) IN ('BUY','BUY_LIMIT')
+          AND UPPER(o.side) IN ('BUY','BUY_LIMIT','SELL','SELL_LIMIT')
           AND (UPPER(COALESCE(o.status,''))
                 NOT IN ('FILLED','CLOSED','CANCELLED','CANCELED','EXPIRED','REJECTED')
             OR (f.order_id IS NOT NULL AND UPPER(COALESCE(f.status,''))
@@ -35,6 +35,12 @@ def read_spot_unsettled_buy_ids(
 
 def read_spot_buy_totals(
     conn: storage.Connection, config_id: str, symbol: str,
+) -> dict[str, dict[str, Any]]:
+    return read_spot_order_totals(conn, config_id, symbol, side='buy')
+
+
+def read_spot_order_totals(
+    conn: storage.Connection, config_id: str, symbol: str, *, side: str = 'buy',
 ) -> dict[str, dict[str, Any]]:
     """Return one cumulative fill per owned order, including unfilled orders.
 
@@ -50,11 +56,11 @@ def read_spot_buy_totals(
         LEFT JOIN (SELECT order_id,SUM(amount) AS traded_qty,SUM(cost) AS traded_cost,
             MIN(timestamp) AS first_buy,MAX(timestamp) AS last_buy FROM trade_history
             WHERE symbol=%s AND (config_id=%s OR config_id IS NULL OR config_id='')
-              AND LOWER(side)='buy' GROUP BY order_id) t ON t.order_id=o.order_id
+              AND LOWER(side)=%s GROUP BY order_id) t ON t.order_id=o.order_id
         WHERE o.config_id=%s AND o.symbol=%s AND o.trade_mode='SPOT_DCA'
           AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
-          AND UPPER(o.side) IN ('BUY','BUY_LIMIT') ORDER BY o.id DESC''',
-        (symbol, config_id, config_id, symbol)).fetchall()
+          AND UPPER(o.side) IN (%s,%s) ORDER BY o.id DESC''',
+        (symbol, config_id, side, config_id, symbol, side.upper(), side.upper() + '_LIMIT')).fetchall()
     totals = {}
     for row in rows:
         order_id = str(row['order_id'])
@@ -76,6 +82,8 @@ def read_spot_buy_totals(
         ) if value] if qty > 0 else []
         totals[order_id] = {
             'order_id': order_id, 'qty': qty, 'cost': cost,
+            'side': side, 'timestamp': row['filled_at'] or row['timestamp'],
+            'fill_timestamp': row['last_buy'] or row['filled_at'],
             'status': str(row['sync_status'] if synced else row['status'] or 'UNKNOWN').upper(),
             'first_buy': min(dates) if dates else None,
             'last_buy': max(dates) if dates else None,
@@ -86,7 +94,7 @@ def read_spot_buy_totals(
 def read_spot_cost_basis(
     conn: storage.Connection, config_id: str, symbol: str,
 ) -> dict[str, Any] | None:
-    row = conn.execute('''SELECT quantity,avg_cost,order_baselines_json,updated_at
+    row = conn.execute('''SELECT quantity,avg_cost,order_baselines_json,updated_at,revision,realized_carry_json
         FROM spot_cost_basis WHERE config_id=%s AND symbol=%s''', (config_id, symbol)).fetchone()
     if row is None:
         return None
@@ -95,6 +103,8 @@ def read_spot_cost_basis(
         'avg_cost': float(row['avg_cost']),
         'order_baselines': json.loads(row['order_baselines_json']),
         'updated_at': row['updated_at'],
+        'revision': row['revision'],
+        'realized_carry': json.loads(row['realized_carry_json']) if row['realized_carry_json'] else None,
     }
 
 

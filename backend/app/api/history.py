@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from backend.app.core.deps import get_current_user
@@ -33,6 +34,24 @@ from backend.app.services.dashboard_service import (
 
 
 router = APIRouter(prefix="/api/history", tags=["history"])
+
+
+@router.get('/trade-calls')
+def trade_calls(config_id: str, page: int = Query(1, ge=1), per_page: int = Query(20, ge=1, le=100),
+                action: str | None = None, status: str | None = None,
+                start: datetime | None = None, end: datetime | None = None, _: dict = Depends(get_current_user)):
+    from backend.config import config
+    from backend.database.trade_calls import list_trade_calls
+    if not config.get_config_by_id(config_id):
+        raise HTTPException(404, 'Config not found')
+    if any(value is not None and value.tzinfo is None for value in (start, end)):
+        raise HTTPException(422, 'Filter timestamps must include a timezone')
+    if start and end and start > end:
+        raise HTTPException(422, 'Start must not be later than end')
+    return {'success': True, **list_trade_calls(config_id, page=page, per_page=per_page,
+        action=action, status=status,
+        start=start.astimezone(timezone.utc).isoformat(timespec='microseconds') if start else None,
+        end=end.astimezone(timezone.utc).isoformat(timespec='microseconds') if end else None)}
 
 
 @router.get('/position-cycles')

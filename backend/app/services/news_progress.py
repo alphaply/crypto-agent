@@ -22,10 +22,15 @@ class NewsProgress:
             'counts': {key: 0 for key in ('sources_total', 'sources_completed', 'fetched', 'candidates', 'scored', 'cached', 'failed', 'selected', 'filtered')},
             'progress': {'completed': 0, 'total': 0, 'percent': 0},
             'source_health': {}, 'items': [],
+            'model_calls': [], 'error_code': None, 'error_details': None,
         }
 
     def update(self, *, counts=None, **updates):
         with self.lock:
+            if 'source_health' in updates:
+                previous = self.value['source_health']
+                updates['source_health'] = {key: {**previous.get(key, {}), **value}
+                                            for key, value in updates['source_health'].items()}
             self.value.update(updates)
             if counts:
                 self.value['counts'].update(counts)
@@ -63,6 +68,13 @@ class NewsProgress:
                          'trace_url': None, 'published_at': item.get('published_at')})
         self.update(stage='score', items=rows, counts={'candidates': len(rows)}, candidate_count=len(rows))
 
+    def model_call(self, run_id, *, purpose, model, provider_id):
+        with self.lock:
+            self.value['model_calls'].append({'run_id': run_id, 'purpose': purpose,
+                                             'model': model, 'provider_id': provider_id})
+            self.value['model_calls'] = self.value['model_calls'][-650:]
+            self._save()
+
     def item(self, index, *, status, scoring=None, error=None):
         from backend.utils.jev import JevError
         with self.lock:
@@ -76,8 +88,13 @@ class NewsProgress:
                 self.value['counts'][counter] = self.value['counts'].get(counter, 0) + 1
                 self.value['counts']['cached'] += int(bool(scoring.get('cached')))
             if error:
-                row['error'] = str(error) if isinstance(error, JevError) else 'News scoring request failed'
-                row['error_code'] = error.code if isinstance(error, JevError) else 'scoring_error'
+                from backend.utils.log_safety import exception_diagnostic
+                diagnostic = exception_diagnostic(error, stage='score', run_id=self.owner)
+                row['error'] = diagnostic['message']
+                row['error_code'] = error.code if isinstance(error, JevError) else diagnostic['code']
+                row['error_details'] = diagnostic
+                if diagnostic.get('call_run_id'):
+                    row['run_id'] = diagnostic['call_run_id']
                 if isinstance(error, JevError):
                     row.update({key: value for key, value in error.details.items()
                                 if key in {'run_id', 'trace_url', 'trace_id', 'attempts', 'raw_score', 'weighted_score', 'score_lower_bound', 'score_upper_bound', 'http_status'}})
@@ -98,3 +115,10 @@ class NewsProgress:
     def finish(self, status, error=None):
         self.update(status=status, error=error, finished_at=database_news.now_iso(),
                     **({'stage': 'complete'} if status in {'success', 'degraded'} else {}))
+
+    def fail(self, exc):
+        from backend.utils.log_safety import exception_diagnostic
+        diagnostic = exception_diagnostic(exc, stage=self.value['stage'], run_id=self.owner)
+        self.update(error_code=diagnostic['code'], error_details=diagnostic)
+        self.finish('error', diagnostic['message'])
+        return diagnostic

@@ -46,6 +46,17 @@ def processing_run(run_id: str) -> dict | None:
     return json.loads(row[0]) if row else None
 
 
+def processing_calls(run_id: str) -> list[dict]:
+    from backend.database import get_db_conn
+    from backend.storage import record
+    with get_db_conn() as conn:
+        rows = conn.execute('''SELECT run_id,purpose,model,provider_id,status,started_at,
+            finished_at,error FROM agent_runs WHERE config_id='news-intelligence'
+            AND parent_run_id=%s ORDER BY started_at,storage_id LIMIT 650''', (run_id,)).fetchall()
+    from backend.utils.log_safety import redact_log_text
+    return [{**record(row), 'error': redact_log_text(row['error']) if row['error'] else None} for row in rows]
+
+
 def _recover_interrupted_runs(conn) -> None:
     """An expired or replaced worker is a failed run, never a completed one."""
     # Lease acquisition and progress publication can occur in another process.
@@ -134,6 +145,30 @@ def latest_snapshot() -> dict | None:
     return {**json.loads(row['payload_json']), 'snapshot_id': row['id']} if row else None
 
 
+def latest_digest() -> dict | None:
+    """Project only the published digest in PostgreSQL, never transfer the full blob."""
+    from backend.database import get_db_conn
+    with get_db_conn() as conn:
+        row = conn.execute('''SELECT n.id, jsonb_build_object(
+            'digest', n.payload_json::jsonb->'digest',
+            'as_of', n.payload_json::jsonb->'as_of',
+            'summary_as_of', COALESCE(n.payload_json::jsonb->'summary_as_of', n.payload_json::jsonb->'as_of'),
+            'available', n.payload_json::jsonb->'available',
+            'stale', n.payload_json::jsonb->'stale') AS digest_payload,
+            s.payload_json::jsonb->>'status' AS pipeline_status, s.lease_owner, s.lease_until
+            FROM global_news_snapshots n LEFT JOIN shared_pipeline_state s ON s.name='news'
+            ORDER BY n.id DESC LIMIT 1''').fetchone()
+    if row is None:
+        return None
+    payload = row['digest_payload']
+    status = row['pipeline_status'] or 'success'
+    if status == 'running' and (not row['lease_owner'] or (row['lease_until'] or '') <= now_iso()):
+        status = 'error'
+    # read_state('news') repairs interrupted runs under a write lock. A tool
+    # read must never acquire that lock or load the processing-run payloads.
+    return {**(json.loads(payload) if isinstance(payload, str) else payload), 'snapshot_id': row['id'], 'status': status}
+
+
 def publish_events(items: list[dict], owner: str) -> bool:
     """Publish trigger observations before summaries, under the news lease."""
     from backend.database import get_db_conn
@@ -154,11 +189,17 @@ def publish_snapshot(payload: dict, owner: str) -> bool:
     from backend.database import get_db_conn
     with get_db_conn() as conn:
         initialize(conn)
+        storage.lock_scope(conn, 'runtime-config')
         storage.lock_scope(conn, 'pipeline', 'news')
         lease = conn.execute('SELECT lease_owner, lease_until FROM shared_pipeline_state WHERE name=%s', ('news',)).fetchone()
         if not lease or lease['lease_owner'] != owner or (lease['lease_until'] or '') < now_iso():
             return False
-        conn.execute('INSERT INTO global_news_snapshots(created_at,payload_json) VALUES (%s,%s)', (now_iso(), json.dumps(payload, ensure_ascii=False)))
+        from backend.database.polymarket import publish_review
+        snapshot_id = conn.execute('INSERT INTO global_news_snapshots(created_at,payload_json) VALUES (%s,%s) RETURNING id', (now_iso(), json.dumps(payload, ensure_ascii=False))).fetchone()[0]
+        if not publish_review(conn, owner, snapshot_id):
+            conn.execute('DELETE FROM global_news_snapshots WHERE id=%s', (snapshot_id,))
+            conn.commit()
+            return False
         conn.execute('DELETE FROM global_news_snapshots WHERE id NOT IN (SELECT id FROM global_news_snapshots ORDER BY id DESC LIMIT 168)')
         conn.commit()
     return True

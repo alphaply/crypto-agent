@@ -243,13 +243,21 @@ def _independent_orders_view(mt, symbol, limit, caller=None, profile_id=None):
 
 
 def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=120, keyword='', quote='', offset=0, order_id=None, include=None):
-    bind_scope(profile_id)
+    bind_scope(caller.get('id') if resource == 'news' else profile_id)
     try:
         remaining('authorization')
-        profile = require(caller, 'read', profile_id)
+        with stage('authorization'):
+            profile = require(caller, 'read', profile_id)
         if resource == 'news':
-            from backend.app.services.news_service import get_latest_news
-            result = get_latest_news()
+            from backend.app.services.news_service import get_latest_digest
+            with stage('news_database_read'):
+                result = get_latest_digest()
+            with stage('news_serialization'):
+                size = len(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+            import logging
+            budget = current_budget.get()
+            logging.getLogger('MCPResilience').info('mcp_news_response request_id=%s bytes=%d snapshot_id=%s',
+                budget.request_id if budget else '-', size, result.get('snapshot_id'))
         elif resource == 'profiles':
             result = list_profiles(caller)
         else:

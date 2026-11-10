@@ -118,6 +118,10 @@ class TradeActionsSchema(BaseModel):
         return {**legacy.model_dump(), **({'contract_version': 1} if 'contract_version' in value else {})}
 
 
+class PositionModeUnavailable(ValueError):
+    code = 'position_mode_unavailable'
+
+
 def _validate_batch_direction(actions, config_id, symbol, mode):
     if mode != 'REAL':
         return
@@ -125,8 +129,17 @@ def _validate_batch_direction(actions, config_id, symbol, mode):
              for action in actions if action.action == 'open'}
     if len(sides) > 1:
         from backend.agent.agent_tools import MarketTool
-        if not MarketTool(config_id=config_id).exchange.fetch_position_mode(symbol).get('hedged'):
-            raise ValueError('One-way mode does not support a batch of both LONG and SHORT entries')
+        # MarketTool owns its client's market catalogue and clears it on teardown.
+        try:
+            market_tool = MarketTool(config_id=config_id)
+            position_mode = market_tool.exchange.fetch_position_mode(symbol)
+        except Exception as exc:
+            raise PositionModeUnavailable(f'读取 {symbol} 的持仓模式失败（{type(exc).__name__}），无法核验双向开仓。') from exc
+        hedged = position_mode.get('hedged') if isinstance(position_mode, dict) else None
+        if not isinstance(hedged, bool):
+            raise PositionModeUnavailable(f'{symbol} 未返回有效的持仓模式，无法核验双向开仓。')
+        if not hedged:
+            raise ValueError(f'{symbol} 当前为单向持仓，同一批次不能同时开多和开空。')
 
 
 def _execute_v2(actions, config_id, symbol, mode, execution_policy=None):

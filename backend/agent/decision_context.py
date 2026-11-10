@@ -35,6 +35,10 @@ def format_recent_decisions(config_id: str) -> str:
     from backend.utils.trade_evidence import configured_account_scope
     rows = stored_sources(config_id, configured_account_scope(config_id),
                           'strategy_summary', status='ready', limit=3)
+    from backend.agent.context_projections import covered_summary_ids
+    memories = stored_sources(config_id, configured_account_scope(config_id), 'short_memory', status='ready', limit=1)
+    covered = covered_summary_ids(memories)
+    rows = [row for row in rows if str(row['source_id']) not in covered]
     return '\n'.join(
         f"[{row.get('timestamp')}] {row['projection']['strategy_text']}"
         for row in reversed(rows) if row['projection']['strategy_text'].strip()
@@ -47,6 +51,7 @@ class DecisionMemory:
     recent_summaries_text: str
     trading_rules_text: str = ''  # Retired placeholder, retained for old callers/templates.
     execution_evidence: dict = field(default_factory=dict)
+    task_history_text: str = ''
 
 
 def load_decision_memory(config_id: str, agent_config: dict | None = None) -> DecisionMemory:
@@ -54,13 +59,15 @@ def load_decision_memory(config_id: str, agent_config: dict | None = None) -> De
     from backend.config import config
     from backend.agent.context_projections import enabled, load_strategy_views
     cfg = agent_config if agent_config is not None else config.get_config_by_id(config_id)
+    from backend.utils.task_performance import task_history_context
+    history = task_history_context(config_id, cfg)
     if enabled(cfg):
         try:
             short, recent, evidence = load_strategy_views(config_id)
-            return DecisionMemory(short, recent, execution_evidence=evidence)
+            return DecisionMemory(short, recent, execution_evidence=evidence, task_history_text=history)
         except Exception as exc:
             logger.warning('Strategy projections unavailable for %s: %s', config_id, exc)
-            return DecisionMemory('（已发布短期策略记忆读取失败）', '（已发布策略摘要读取失败）')
+            return DecisionMemory('（已发布短期策略记忆读取失败）', '（已发布策略摘要读取失败）', task_history_text=history)
     sources = (
         ('short_memory_text', lambda: format_short_memory_for_llm(config_id, include_metadata=True), '(短期记忆读取失败)'),
         ('recent_summaries_text', lambda: format_recent_decisions(config_id), '(近期摘要读取失败)'),
@@ -72,7 +79,7 @@ def load_decision_memory(config_id: str, agent_config: dict | None = None) -> De
         except Exception as exc:
             logger.warning('Unable to load %s for %s: %s', name, config_id, exc)
             values[name] = fallback
-    return DecisionMemory(**values)
+    return DecisionMemory(**values, task_history_text=history)
 
 
 _HEADING = re.compile(r'^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$')
@@ -125,6 +132,8 @@ def render_decision_prompt(template: str, memory: DecisionMemory, **values) -> s
                   recent_summaries_text=memory.recent_summaries_text)
     values['trading_rules_text'] = ''
     prompt = render_prompt(template, **values).strip()
+    if memory.task_history_text:
+        prompt += '\n\n## 当前任务历史统计\n' + memory.task_history_text
     sections = (
         ('short_memory_text', 'Short-term memory'),
         ('recent_summaries_text', recent_title),

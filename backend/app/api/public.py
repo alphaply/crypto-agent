@@ -17,10 +17,11 @@ router = APIRouter(prefix="/api/public", tags=["public"])
 @router.get("/polymarket")
 def polymarket():
     from backend.app.services.news_service import get_latest_news
+    from backend.database.polymarket import maintenance_status
 
     news = get_latest_news()
     predictions = news.get('polymarket') or {'enabled': False, 'events': [], 'source_health': {}}
-    return {"success": True, **predictions, 'snapshot_id': news.get('snapshot_id'),
+    return {"success": True, **predictions, 'maintenance': maintenance_status(), 'snapshot_id': news.get('snapshot_id'),
             'as_of': news.get('as_of'), 'stale': news.get('stale', False),
             'status': news.get('status')}
 
@@ -58,9 +59,12 @@ def short_memories(config_id: str = "ALL", symbol: str | None = None, limit: int
 
 
 @router.get("/workspace/{config_id}")
-def workspace(config_id: str, timeframe: str = "1h", symbol: str | None = None):
+def workspace(config_id: str, timeframe: str = "1h", symbol: str | None = None, section: str = 'all'):
     try:
-        payload = build_public_workspace_payload(config_id, timeframe, symbol=symbol) if symbol else build_public_workspace_payload(config_id, timeframe)
+        options = {'symbol': symbol} if symbol else {}
+        if section != 'all':
+            options['section'] = section
+        payload = build_public_workspace_payload(config_id, timeframe, **options)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

@@ -8,6 +8,7 @@ import json
 from backend.database import get_db_conn, TZ_CN
 from backend.utils.runtime_capacity import positive_setting, CapacityBusy
 from backend.utils.sqlite_blob import bounded_text
+from backend.utils.fill_classification import classify_fill
 
 
 @contextmanager
@@ -23,7 +24,7 @@ def _rows(config_id, end_ms, scope, symbol, maximum, read_conn, *, account_wide=
     if account_wide and (not scope or not symbol):
         raise ValueError('Account statistics require an account and symbol')
     owner_filter = ('f.account_scope=%s' if account_wide else
-                    'EXISTS (SELECT 1 FROM execution_order_links own WHERE own.config_id=%s '
+                    'EXISTS (SELECT 1 FROM execution_fills own WHERE own.config_id=%s '
                     'AND own.account_scope=f.account_scope AND own.symbol=f.symbol)')
     symbol_column = "split_part(f.symbol, ':', 1)" if account_wide and symbol and ':' not in symbol else 'f.symbol'
     with (nullcontext(read_conn) if read_conn is not None else get_db_conn()) as conn:
@@ -118,23 +119,16 @@ def reconstruct_cycles(config_id,start_ms,end_ms,scope=None,symbol=None,*,cycle_
             break
         fill = json.loads(row['payload'])
         metadata = json.loads(row['link_metadata'] or '{}')
-        side = str(fill.get('position_side') or metadata.get('side') or '').upper()
-        if side == 'BOTH':
-            side = metadata.get('side')
+        role, side = classify_fill(fill, metadata, row['role'])
         if side not in {'LONG', 'SHORT'}:
             unmatched += 1
             for key in list(current):
                 if key[:2] == (row['account_scope'], row['symbol']):
                     current[key]['incomplete'] = True
             continue
-        role = row['role']
         if not role:
-            # Direction establishes increase/decrease, never the reason for an exit.
-            action = str(fill.get('side') or '').lower()
-            if action not in {'buy', 'sell'}:
-                unmatched += 1
-                continue
-            role = 'entry' if (action == 'buy') == (side == 'LONG') else 'external_unknown_exit'
+            unmatched += 1
+            continue
         key = (row['account_scope'], row['symbol'], side)
         quantity = number(fill.get('base_amount', fill.get('amount')))
         price = number(fill.get('price'))

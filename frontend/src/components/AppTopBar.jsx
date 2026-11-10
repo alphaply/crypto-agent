@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AppstoreOutlined, BulbOutlined, CommentOutlined, GlobalOutlined, HistoryOutlined, MenuOutlined, SettingOutlined, BarChartOutlined, RobotOutlined } from '@ant-design/icons';
-import { Button, Drawer, Grid, Space, Tooltip, Typography } from 'antd';
+import { Button, Drawer, Grid, Space, Tooltip, Typography, Popover } from 'antd';
+import { MoreOutlined } from '@ant-design/icons';
 import { usePreferences } from '../app/usePreferences';
 
 const NAV = [
@@ -35,7 +36,7 @@ export default function AppTopBar({ activeKey, onNavigate, actions, extraActions
     </aside>}
     <header className="app-topbar workspace-topbar">
       <Space className="workspace-page-title">{!screens.lg && <Button icon={<MenuOutlined />} aria-label={locale === 'zh' ? '打开导航' : 'Open navigation'} onClick={() => setOpen(true)} />}<Typography.Text strong>{locale === 'zh' ? current.zh : current.en}</Typography.Text></Space>
-      <Space className="workspace-header-actions" wrap>{extraActions}<PreferenceControls />{actions}</Space>
+      <Space className="workspace-header-actions">{extraActions}{screens.md ? <><PreferenceControls />{actions}</> : <Popover trigger="click" placement="bottomRight" content={<div className="workspace-mobile-actions"><PreferenceControls />{actions}</div>}><Button icon={<MoreOutlined />} aria-label={locale === 'zh' ? '更多操作与偏好设置' : 'More actions and preferences'} /></Popover>}</Space>
     </header>
     <Drawer placement="left" open={open} onClose={() => setOpen(false)} size={280} title="Crypto Agent">{nav}</Drawer>
   </>;

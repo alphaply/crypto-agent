@@ -3,6 +3,7 @@ import json
 
 from langchain_core.messages import AIMessage, ToolMessage
 
+from backend.agent.trade_guidance import PARAMETER_ERROR_PREFIX
 from backend.database.agent_runs import _json_value
 from backend.utils.llm_utils import extract_message_text, extract_reasoning_content, extract_reasoning_token_count
 from backend.utils.trade_operations import tool_result_status
@@ -91,6 +92,16 @@ def read_decision_record(summary: dict) -> dict | None:
 def is_transient_schema_error(result: str | None) -> bool:
     if not result or not isinstance(result, str):
         return False
+    if result.removeprefix('Error: ').startswith(PARAMETER_ERROR_PREFIX):
+        return True
+    if PARAMETER_ERROR_PREFIX in result:
+        try:
+            receipt = json.loads(result)
+        except ValueError:
+            receipt = None
+        if (isinstance(receipt, dict) and receipt.get('phase') == 'preflight'
+                and receipt.get('submitted') is False and str(receipt.get('error', '')).startswith(PARAMETER_ERROR_PREFIX)):
+            return True
     indicators = (
         'validation error for',
         'pydantic.dev',

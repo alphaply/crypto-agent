@@ -12,7 +12,7 @@ export default function SharedNewsPanel({ snapshot }) {
   const raw = snapshot?.raw || snapshot || {};
   const items = raw.items || [];
   const digest = raw.digest || raw.summary || '';
-  const timestamp = snapshot?.timestamp || raw.generated_at;
+  const timestamp = raw.summary_as_of || snapshot?.timestamp || raw.as_of || raw.generated_at;
   const unavailable = Object.entries(raw.source_health || {}).filter(([,state]) => !['ok','disabled'].includes(state.status));
   const safeLink = (value) => /^https?:\/\//i.test(value || '');
   return <Card className="panel-card shared-intelligence" title={<Space><RadarChartOutlined /><span>{zh ? '共享市场情报' : 'Shared market intelligence'}</span><Tag color="blue">1h</Tag></Space>} extra={<Text type="secondary">{timestamp ? dayjs(timestamp).format('MM-DD HH:mm') : (zh ? '等待首次更新' : 'Awaiting first update')}</Text>}>

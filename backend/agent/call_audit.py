@@ -83,6 +83,7 @@ def audited_invoke(
     provider_id: str | None = None,
     parent_run_id: str | None = None,
     request_settings: dict | None = None,
+    on_recorded: Callable[[str], None] | None = None,
 ):
     """Validate inside the audit boundary while retaining rejected model output."""
     from backend.database.agent_runs import start_agent_run, finish_agent_run
@@ -92,6 +93,11 @@ def audited_invoke(
         run_id = start_agent_run(config_id or 'unknown', purpose, model or 'unknown', messages, tools, provider_id=provider_id, parent_run_id=parent_run_id)
     except Exception as exc:
         logger.warning('Cannot record model input: %s', exc)
+    if run_id and on_recorded:
+        try:
+            on_recorded(run_id)
+        except Exception as exc:
+            logger.warning('Cannot link model call to processing progress: %s', exc)
     response = None
     from backend.utils.reasoning_diagnostics import current_request
     diagnostic_token = current_request.set(None)
@@ -118,7 +124,8 @@ def audited_invoke(
                 fields['details'] = {**fields.get('details', {}), 'request_settings': request_diagnostics(request_settings or {})}
                 if current_request.get():
                     fields['details']['reasoning_diagnostics'] = {**current_request.get(), 'request_outcome': 'error'}
-                finish_agent_run(run_id, status='error', error=str(exc), **fields)
+                from backend.utils.log_safety import redact_log_text
+                finish_agent_run(run_id, status='error', error=redact_log_text(exc), **fields)
             except Exception as audit_exc:
                 logger.warning('Cannot record model error: %s', audit_exc)
         current_request.reset(diagnostic_token)

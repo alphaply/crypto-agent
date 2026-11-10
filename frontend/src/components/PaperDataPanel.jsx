@@ -5,6 +5,7 @@ import { api } from '../lib/api';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { formatPaperAmount, paperFilterCount, paperValuationIncomplete } from '../lib/paperDisplay';
 import PaperPositionAdjustModal from './PaperPositionAdjustModal';
+import PaperStatisticsPanel from './PaperStatisticsPanel';
 import './PaperTradingPanel.css';
 
 const FIRST_PAGE = {};
@@ -18,6 +19,7 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
   const sameScope = pagination?.namespace === namespace && pagination?.userId === userId;
   const cursor = sameScope ? pagination.cursor : FIRST_PAGE;
   const [adjusting, setAdjusting] = useState(null);
+  const [statisticsRevision, setStatisticsRevision] = useState(0);
   const pendingPositionIntents = useRef(new Map());
   const { begin, cancel } = useLatestRequest();
   const currentView = useRef(null);
@@ -39,6 +41,7 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
   useEffect(() => {
     currentView.current = async () => {
       const results = await Promise.all([load(cursor), onChanged?.()]);
+      setStatisticsRevision((value) => value + 1);
       if (results.includes(false)) throw new Error('Paper list refresh failed');
     };
     return () => { currentView.current = null; };
@@ -55,7 +58,6 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
   const actions = { buy: label('买入', 'Buy'), sell: label('卖出', 'Sell'), open_long: label('开多', 'Open long'), open_short: label('开空', 'Open short'), close_long: label('平多', 'Close long'), close_short: label('平空', 'Close short') };
   const types = { market: label('市价', 'Market'), limit: label('限价', 'Limit'), stop_loss: label('止损', 'Stop loss'), take_profit: label('止盈', 'Take profit') };
   const kinds = { interest: label('扣息', 'Interest'), bankruptcy: label('破产', 'Bankruptcy'), bankruptcy_recovered: label('状态恢复', 'Status restored'), reset: label('下海', 'Reset'), transfer_in: label('转入', 'Transfer in'), transfer_out: label('转出', 'Transfer out'), order_filled: label('自动成交', 'Automatic fill'), liquidation: label('爆仓', 'Liquidation'), order_rejected: label('委托失败', 'Rejected order'), admin_adjustment: label('后台调整', 'Admin adjustment'), bot_created: label('Bot 开户', 'Bot created'), create: label('开户', 'Account created'), place_order: label('挂单', 'Order placed'), edit_order: label('改单', 'Order edited'), cancel_order: label('撤单', 'Order cancelled'), set_protection: label('设置止盈止损', 'Protection set'), borrow: label('借款', 'Borrow'), repay: label('还款', 'Repay'), set_leverage: label('调整仓位杠杆', 'Position leverage'), add_margin: label('追加保证金', 'Margin added'), reduce_margin: label('减少保证金', 'Margin reduced') };
-  const summary = data?.summary;
   const incompleteAccounts = (data?.accounts || []).filter(paperValuationIncomplete).length;
   const filteredResources = (data?.accounts || []).reduce((sum, account) => sum + (paperFilterCount(account.filter) || 0), 0);
   const partial = data?.scan_complete === false || data?.status === 'partial';
@@ -64,36 +66,12 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
   const account = (v, r) => <div className="paper-cell-stack"><span>{r.account_name || v}{r.account_type === 'bot' && <Tag color="blue">Bot</Tag>}</span>{r.account_name && <span className="paper-cell-note">{v}</span>}</div>;
   const symbol = (_, r) => <div className="paper-cell-stack"><strong>{r.symbol}</strong><span className="paper-cell-note">{r.exchange} · {r.market_type === 'spot' ? label('现货', 'Spot') : r.market_type === 'swap' ? label('永续', 'Perpetual') : r.market_type}</span></div>;
   const tabLabel = (cn, en, count) => <span className="paper-tab-label">{label(cn, en)}{data && <span className="paper-tab-count">{count}</span>}</span>;
-  const metrics = [
-    { key: 'net_equity', title: label('净资产', 'Net equity'), value: summary?.net_equity, note: label('扣除负债后的账户权益', 'Account equity after debt'), accent: true },
-    { key: 'available_cash', title: label('可用现金', 'Available cash'), value: summary?.available_cash, note: label('已扣除挂单占用', 'After order reservations') },
-    { key: 'debt', title: label('借款负债', 'Outstanding debt'), value: summary?.debt, note: label('借款不计入交易收益', 'Borrowing is not trading profit') },
-    { key: 'performance_pnl', title: label('本轮交易盈亏', 'Cycle trading PnL'), value: summary?.performance_pnl, note: label('扣除借款及资金调整影响', 'Excluding funding and loan effects'), signed: true },
-  ];
   return <section className="paper-data-panel" aria-label={label('Paper 交易统计', 'Paper trading statistics')}>
-    <div className="paper-section-heading">
-      <div><h3>{label('资金与交易概览', 'Capital & trading overview')}</h3><p>{label('统计仅覆盖本页账户与订单；盈亏、费用和利息按各账户当前周期合计。', 'Figures cover this page only; PnL, fees and interest sum each account’s current cycle.')}</p></div>
-      <Button icon={<ReloadOutlined />} onClick={() => load()} loading={loading}>{label('刷新数据', 'Refresh data')}</Button>
-    </div>
+    <PaperStatisticsPanel namespace={namespace} userId={userId} revision={String(revision) + ':' + statisticsRevision} zh={zh} />
+    <div className="paper-section-heading"><h3>{label('交易明细', 'Trading records')}</h3><Button icon={<ReloadOutlined />} onClick={() => load()} loading={loading}>{label('刷新明细', 'Refresh records')}</Button></div>
     {error && <Alert type="error" showIcon title={error} />}
-    <div className="paper-metrics" aria-busy={loading}>
-      {metrics.map((metric) => <div key={metric.key} className={'paper-metric' + (metric.accent ? ' paper-metric-primary' : '')}>
-        <div className="paper-metric-title">{metric.title}{!metric.count && <span>USDT</span>}</div>
-        <div className={'paper-metric-value' + (metric.signed && metric.value != null ? Number(metric.value) > 0 ? ' paper-positive' : Number(metric.value) < 0 ? ' paper-negative' : '' : '')}>{metric.signed && metric.value > 0 ? '+' : ''}{format(metric.value)}</div>
-        <div className="paper-metric-note">{metric.key === 'net_equity' && summary?.valuation_status === 'incomplete' ? label('估值不完整，暂不显示', 'Valuation incomplete') : metric.note}</div>
-      </div>)}
-    </div>
-    <div className="paper-profit-strip">
-      {[[label('已实现盈亏', 'Realized PnL'), summary?.realized_pnl, true], [label('合约浮动盈亏', 'Perpetual unrealized PnL'), summary?.unrealized_pnl, true], [label('本轮手续费', 'Cycle fees'), summary?.fees, false], [label('本轮已付利息', 'Cycle interest paid'), summary?.interest_paid, false]].map(([title, value, signed]) => <div key={title}><span>{title}</span><strong>{signed ? pnl(value) : number(value)} <small>USDT</small></strong></div>)}
-    </div>
-    <div className="paper-balance-strip">
-      {[[label('账本现金', 'Ledger cash'), summary?.cash], [label('持仓保证金', 'Position margin'), summary?.used_margin], [label('挂单占用', 'Reserved cash'), summary?.reserved_cash]].map(([title, value]) => <div key={title}><span>{title}</span><strong className="paper-number">{format(value)} <small>USDT</small></strong></div>)}
-      <div><span>{label('本页待成交委托', 'Page open orders')}</span><strong className="paper-number">{format(summary?.open_orders)}</strong></div>
-      <div><span>{label('本页 / 筛选内账户', 'Page / matching accounts')}</span><strong className="paper-number">{format(summary?.account_count)} <small>/ {format(data?.account_total)}</small></strong></div>
-    </div>
-    <div className="paper-account-state-line"><span>{label('本页账户状态', 'Accounts on this page')}</span><Tag color="blue">{label('已启用 ', 'Enabled ')}{format(summary?.enabled_accounts)}</Tag><Tag color={summary?.bankrupt_accounts > 0 ? 'red' : 'default'}>{label('破产冻结 ', 'Bankrupt ')}{format(summary?.bankrupt_accounts)}</Tag><span>{label('已启用与冻结分别统计，可同时出现。', 'Enabled and bankrupt counts can overlap.')}</span></div>
     {(incompleteAccounts > 0 || filteredResources > 0) && <Alert type="info" showIcon title={label('部分历史或估值不可用', 'Some history or valuations are unavailable')} description={label('本页过滤 ' + filteredResources + ' 项历史资源；' + incompleteAccounts + ' 个账户估值不完整，缺项显示为 —。被过滤资源的资金占用仍保留。', filteredResources + ' historical resources filtered; ' + incompleteAccounts + ' accounts have incomplete valuations shown as —. Their financial commitments remain.')} />}
-    {partial && <Alert type="info" showIcon title={label('扫描尚未完成', 'Scan in progress')} description={label('当前列表与统计不代表完整数据集合；继续扫描可查看后续记录。', 'These lists and figures are not the complete data set. Continue scanning for later records.')} />}
+    {partial && <Alert type="info" showIcon title={label('扫描尚未完成', 'Scan in progress')} description={label('下方明细尚未加载完整，继续翻页可查看后续记录；上方统计独立覆盖全部账户。', 'More detail records are available. Statistics above independently cover all matching accounts.')} />}
     <Card className="paper-records-card" size="small">
       <div className="paper-records-meta"><span>{label('交易明细', 'Trading records')}</span><span>{label('本页记录 · 北京时间', 'Page records · Beijing time')}</span></div>
       <Tabs items={[

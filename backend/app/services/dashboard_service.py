@@ -59,6 +59,14 @@ def _equity_series_metadata(points: list[dict]) -> dict:
             "latest_equity": None,
             "return_pct": None,
         }
+    if 'cashflow_return_pct' in points[-1]:
+        from backend.utils.real_returns import return_metadata
+        return return_metadata(points)
+    if 'holding_return_pct' in points[-1]:
+        return dict(data_state='ready', point_count=len(points), first_date=points[0]['date'],
+                    last_date=points[-1]['date'], latest_equity=points[-1]['equity'],
+                    return_pct=points[-1]['holding_return_pct'], return_basis='holding_remaining_cost',
+                    valuation_status=points[-1]['valuation_status'])
     first = float(points[0].get("equity") or 0)
     latest = float(points[-1].get("equity") or 0)
     return {
@@ -420,18 +428,27 @@ def calculate_dca_stats(config_id, force_sync=False, symbol=None):
         return None
     totals = {key: (round(sum(float(item[key]) for item in available), 4)
                    if len(available) == len(symbols) and all(item.get(key) is not None for item in available) else None)
-              for key in ('total_invested', 'market_value', 'unrealized_pnl', 'recorded_buy_cost')}
-    invested = totals['total_invested']
+              for key in ('total_invested', 'remaining_cost', 'market_value', 'unrealized_pnl', 'recorded_buy_cost', 'recorded_investment', 'realized_pnl')}
+    invested = totals['remaining_cost']
+    if invested is None:
+        invested = totals['total_invested']
     complete = len(available) == len(symbols) and all(item.get('sync_status') == 'synced' for item in available)
+    fees = {}
+    for item in available:
+        for currency, amount in item.get('fees_by_currency', {}).items():
+            fees[currency] = fees.get(currency, 0.0) + amount
     return {
         **totals, 'is_portfolio': True, 'symbols': symbols, 'by_symbol': available,
+        'fees_by_currency': fees,
+        'fees_complete': len(available) == len(symbols) and all(item.get('fees_complete') is True for item in available),
+        'return_basis': 'holding_remaining_cost',
         'quote_asset': symbols[0].split('/')[1],
         'total_qty': None, 'avg_cost': None, 'current_price': None, 'actual_balance': None,
         'manual_avg_cost': None, 'manual_qty': None, 'recorded_buy_qty': None,
-        'return_pct': (round(totals['unrealized_pnl'] / invested * 100, 2) if invested else 0)
+        'return_pct': (round(totals['unrealized_pnl'] / invested * 100, 2) if invested else None)
                       if invested is not None and totals['unrealized_pnl'] is not None else None,
-        'buy_count': sum(item['buy_count'] for item in available),
-        'pending_orders': sum(item['pending_orders'] for item in available),
+        'buy_count': sum(item['buy_count'] for item in available) if all(item.get('buy_count') is not None for item in available) else None,
+        'pending_orders': sum(item['pending_orders'] for item in available) if all(item.get('pending_orders') is not None for item in available) else None,
         'dca_amount_per': cfg.get('dca_amount', cfg.get('dca_budget', 0)),
         'has_legacy': any(item['has_legacy'] for item in available), 'stats_source': 'portfolio',
         'first_buy': min((item['first_buy'] for item in available if item['first_buy']), default=None),
@@ -630,17 +647,8 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
     if agent_mode == "REAL" and agent_filter != "ALL":
         try:
             with get_db_conn() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT day, total_equity FROM (
-                        SELECT substring(timestamp from 1 for 10) as day, total_equity,
-                               row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY timestamp DESC NULLS LAST) as rn
-                        FROM balance_history WHERE config_id = %s AND symbol = %s AND total_equity > 0
-                    ) WHERE rn = 1 ORDER BY day ASC
-                    """,
-                    (agent_filter, symbol),
-                ).fetchall()
-                real_chart_data = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
+                from backend.utils.real_returns import real_history_points
+                real_chart_data = real_history_points(conn, agent_filter, symbol=symbol, config_source=global_config)
         except storage.Error:
             raise
         except Exception as exc:
@@ -674,17 +682,8 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
 
                 data_source = None
                 if mode == "REAL":
-                    rows = conn.execute(
-                        """
-                        SELECT day, total_equity FROM (
-                            SELECT substring(timestamp from 1 for 10) as day, total_equity,
-                                   row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY timestamp DESC NULLS LAST) as rn
-                            FROM balance_history WHERE config_id = %s AND symbol = %s AND total_equity > 0
-                        ) WHERE rn = 1 ORDER BY day ASC
-                        """,
-                        (config_id, symbol),
-                    ).fetchall()
-                    points = [{"date": r["day"], "equity": r["total_equity"]} for r in rows]
+                    from backend.utils.real_returns import real_history_points
+                    points = real_history_points(conn, config_id, symbol=symbol, config_source=global_config)
                     data_source = {
                         "table": "balance_history",
                         "field": "total_equity",
@@ -718,27 +717,9 @@ def build_history_payload(symbol: str, agent_filter: str = "ALL", page: int = 1,
                         "kind": "strategy_equity",
                     }
                 elif mode == "SPOT_DCA":
-                    rows = conn.execute(
-                        """
-                        SELECT snapshot_date AS day, total_invested AS equity
-                        FROM dca_daily_snapshots
-                        WHERE config_id = %s AND symbol = %s AND total_invested > 0
-                        ORDER BY snapshot_date ASC
-                        LIMIT 30
-                        """,
-                        (config_id, symbol),
-                    ).fetchall()
-                    points = [{"date": r["day"], "equity": r["equity"]} for r in rows]
-                    data_source = {
-                        "table": "dca_daily_snapshots",
-                        "field": "total_invested",
-                        "scope": "config_id",
-                        "config_id": config_id,
-                        "symbol": symbol,
-                        "label": "dca_daily_snapshots.total_invested",
-                        "display_label": "定投累计投入快照",
-                        "kind": "dca_invested",
-                    }
+                    from backend.app.services.spot_history_service import spot_history_points, spot_history_source
+                    points = spot_history_points(conn, config_id, [symbol])[-30:]
+                    data_source = spot_history_source(config_id, [symbol])
 
                 history_compare_series.append(
                     {

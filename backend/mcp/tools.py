@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import partial
+import time
 from typing import Annotated, Literal
 
 from mcp.types import ToolAnnotations
@@ -138,8 +139,9 @@ def register_tools(server):
         return await query('symbols', profile_id=profile_id, keyword=keyword, quote=quote, limit=limit, offset=offset)
 
     async def get_news() -> dict:
-        """Read the shared scored news digest with source timestamps and freshness."""
-        return await query('news')
+        """Read the exact published Shared market intelligence text, its update time and freshness. No article lists or live generation."""
+        return await run('read', partial(service.query, service.principal(), 'news'),
+                         label='get_news', deadline=time.monotonic() + 20)
 
     async def get_market(profile_id: ProfileId, symbol: Symbol,
                          timeframe: Literal['15m', '1h', '4h', '1d', '1w'] = '1h', limit: int = 120) -> dict:

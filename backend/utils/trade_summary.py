@@ -113,7 +113,8 @@ def _project(value):
     if projected.get('client_id') == projected.get('client_order_id'):
         projected.pop('client_order_id', None)
     for key in ('error', 'message', 'protection_error', 'reason'):
-        short = _small_text(value.get(key))
+        batch_input_error = key == 'error' and value.get('error_code') == 'invalid_request' and value.get('submitted') is False
+        short = _small_text(value.get(key), 4096 if batch_input_error else 240)
         if short:
             projected[key] = short
     for key, fields in {
@@ -216,6 +217,10 @@ def render_trade_receipt(payload) -> str:
         if not isinstance(nested, dict):
             break
         value = nested
+    if (value.get('phase') == 'preflight' and value.get('submitted') is False and value.get('error')
+            and value.get('error_code') in {'invalid_request', 'position_mode_unavailable'}):
+        reason = value['error']
+        return reason if '本批未提交' in reason else '本批未提交。' + reason
     rows = value.get('results') if isinstance(value.get('results'), list) else [value]
     lines = []
     for index, row in enumerate(rows):

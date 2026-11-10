@@ -1,8 +1,5 @@
 """Compact, deterministic display of decision facts; no I/O or trading decisions."""
-from datetime import datetime
 from decimal import Decimal, InvalidOperation
-
-import pytz
 
 
 def _decimal(value):
@@ -45,42 +42,6 @@ def _management(row):
     return names.get(state, _text(state))
 
 
-def _observations(rows, sources=None):
-    groups = {}
-    for row in rows:
-        groups.setdefault(row.get('source', 'unknown'), []).append(row.get('observed_at'))
-        if 'snapshot_observed_at' in row:
-            groups.setdefault('exchange_snapshot', []).append(row['snapshot_observed_at'])
-    for name, source in (sources or {}).items():
-        if isinstance(source, dict):
-            groups.setdefault(name, []).append(source.get('observed_at'))
-    labels = {'exchange_snapshot': '交易所快照', 'mock_snapshot': '模拟快照',
-              'local_execution_evidence': '本地核验', 'unknown': '来源未知',
-              'positions': '持仓快照', 'orders': '普通单快照', 'trigger_orders': '条件单快照',
-              'agent': 'Agent', 'external': '外部', 'baseline': '接管基线'}
-    parts = []
-    for source, values in sorted(groups.items()):
-        times, unknown = [], False
-        for value in values:
-            try:
-                if value is None:
-                    raise ValueError('No observation time')
-                times.append(datetime.fromtimestamp(float(value), pytz.timezone('Asia/Shanghai')))
-            except (ValueError, TypeError, OverflowError, OSError):
-                unknown = True
-        stamp = '未知'
-        if times:
-            first, last = min(times), max(times)
-            stamp = first.strftime('%Y-%m-%d %H:%M:%S')
-            last_stamp = last.strftime('%Y-%m-%d %H:%M:%S')
-            if stamp != last_stamp:
-                stamp += '～' + last_stamp
-            if unknown:
-                stamp += '；部分未知'
-        parts.append(f'{labels.get(source, _text(source))} {stamp}')
-    return '观察时间（UTC+8）：' + '；'.join(parts) if parts else '观察时间：未知'
-
-
 def render_positions(state):
     lines = []
     currency = str(state.scope.get('symbol') or '计价币').split(':')[-1].split('/')[-1]
@@ -93,10 +54,9 @@ def render_positions(state):
         owner = _ownership(position.get('ownership')) + ('（已接管）' if position.get('adoption') else '')
         owner = _management(position) or owner
         lines.append(f"{_side(position.get('side'))} {amount}｜均价 {_number(position.get('entry_price'))}｜浮盈{pnl_text}｜{owner}")
-    if not lines:
-        lines.append('未知（持仓读取不完整）' if state.evidence_state.get('positions') == 'unavailable' else '无')
-    sources = state.evidence_state.get('sources', {})
-    return '\n'.join([*lines, _observations(state.positions, {k: v for k, v in sources.items() if k == 'positions'})])
+    if state.evidence_state.get('positions') == 'unavailable':
+        lines.append('持仓未知（读取不完整）')
+    return '\n'.join(lines) or '无'
 
 
 def _purpose(order):
@@ -133,7 +93,7 @@ def _order_row(order):
     if order.get('source') == 'external':
         notes.append('外部来源，已纳管' if order.get('managed') else '外部来源，待核验')
     if order.get('supported_actions'):
-        notes.append('支持 ' + '/'.join(order['supported_actions']) + '（执行前核验）')
+        notes.append('支持 ' + '/'.join(order['supported_actions']))
     if order.get('ownership') != 'task':
         notes.append(_ownership(order.get('ownership')))
     if not order.get('verified'):
@@ -157,76 +117,16 @@ def _order_row(order):
     return f"{_text(identity)} | {_purpose(order)} | {quantity} | {'；'.join(prices) or ('市价' if kind == 'market' else '未知')} | {status}"
 
 
-_REASONS = {
-    'account_snapshot_unavailable': '账户快照不可用', 'positions_unavailable': '持仓读取失败',
-    'orders_unavailable': '普通单读取失败', 'trigger_orders_unavailable': '条件单读取失败',
-    'cycle_evidence_unavailable': '任务仓位/订单证据不可用', 'ownership_unverified': '仓位归属未核验',
-    'ownership_error': '仓位归属冲突', 'position_error': '仓位证据冲突',
-    'order_unresolved': '订单结果未核验', 'fill_unverified': '成交明细未核验',
-    'execution_unverified': '执行结果未核验', 'cycle_cleanup_unverified': '退出清理尚未核验',
-    'residual_position_requires_management': '仍有剩余仓位需管理',
-    'order_quantity_conflict': '订单余量冲突', 'order_snapshot_conflict': '快照未找到本地有效单',
-    'referenced_evidence_unavailable': '原操作证据读取失败', 'referenced_evidence_missing': '原操作证据缺失',
-    'referenced_evidence_scope_mismatch': '原操作账户/标的不匹配',
-}
-_MISSING = {
-    'real_positions': '交易所持仓', 'real_open_orders': '交易所挂单',
-    'current_task_ownership_and_orders': '当前任务归属及订单', 'current_task_position_ownership': '当前任务仓位归属',
-    'verified_execution_outcome': '已核验执行结果', 'position_and_cleanup_fills': '仓位及清理成交',
-    'reconcile_snapshot_remaining_with_local_fill': '快照余量与本地成交对齐',
-    'live_order_in_current_snapshot': '当前快照中的活动订单',
-    'original_operation_in_current_account': '当前账户中的原操作证据',
-}
-
-
-def _issue_text(issue):
-    reason = issue.get('reason_code')
-    parts = [_REASONS.get(reason, _text(reason))]
-    if issue.get('side'):
-        parts.append(_side(issue['side']))
-    scopes = {'same_side': '同方向', 'shared_net_position': '共享净仓', 'position_mode_unverified': '持仓模式未核验'}
-    if issue.get('scope'):
-        parts.append(scopes.get(issue['scope'], _text(issue['scope'])))
-    for key, label in [('order_id', '订单'), ('operation_id', '操作'), ('episode_id', '周期')]:
-        if issue.get(key):
-            parts.append(label + ' ' + _text(issue[key]))
-    if issue.get('affected_effects'):
-        effects = {'increase_exposure': '增加敞口', 'reduce_exposure': '减少敞口'}
-        parts.append('涉及 ' + '/'.join(effects.get(e, _text(e)) for e in issue['affected_effects']))
-    if issue.get('missing_evidence'):
-        missing = issue['missing_evidence']
-        parts.append('缺少 ' + _MISSING.get(str(missing), _text(missing)))
-    for key, label in [('amount', '剩余量'), ('last_known_amount', '最后已知量')]:
-        if issue.get(key) is not None:
-            parts.append(label + ' ' + _number(issue[key]))
-    if issue.get('last_error'):
-        parts.append(_text(issue['last_error']))
-    return '；'.join(parts)
-
-
 def render_orders(state):
-    sources = state.evidence_state.get('sources', {})
-    incomplete = (state.evidence_state.get('local_cycles') == 'unavailable'
-                  or state.evidence_state.get('positions') == 'unavailable'
-                  or any(isinstance(value, dict) and value.get('error') for value in sources.values()))
     lines = ['当前挂单（数量单位：标的币；本任务订单，其他归属单列）']
     if state.orders:
         lines += ['ID | 用途 | 数量 | 价格 | 状态', '--- | --- | --- | --- | ---']
         lines += [_order_row(order) for order in state.orders]
-    else:
-        lines.append('挂单未知（存在缺项）。' if incomplete else
-                     '尚无已确认挂单（存在缺项，见异常）。' if state.issues else '无挂单。')
-    lines.append(_observations(state.orders, {k: v for k, v in sources.items() if k in {'orders', 'trigger_orders'}}))
-    uncovered = state.coverage.get('uncovered', {})
-    lines.append('止损未覆盖估计：' + ('；'.join(f'{_side(side)} {_number(value)}' for side, value in uncovered.items()) or '未知'))
+    if state.evidence_state.get('orders') == 'unavailable' or state.evidence_state.get('local_cycles') == 'unavailable':
+        lines.append('挂单数据不完整。')
+    elif not state.orders:
+        lines.append('尚无已确认挂单。' if state.issues else '无挂单。')
     for conflict in state.coverage.get('quantity_conflict', []):
         group = {'stop_loss': '止损', 'take_profit': '止盈'}.get(conflict.get('group'), _text(conflict.get('group')))
         lines.append(f"数量冲突：{_side(conflict.get('side'))}{group}固定余量 {_number(conflict.get('fixed_remaining'))} > 持仓 {_number(conflict.get('position_amount'))}")
-    if any(order.get('order_type') in {'stop_limit', 'take_profit_limit'} for order in state.orders):
-        lines.append('条件限价单触发后仍须限价成交，不能视为已退出。')
-    lines.append('当前相关执行异常：' + ('\n' + '\n'.join('- ' + _issue_text(issue) for issue in state.issues)
-                                         if state.issues else '无法判断（数据读取不完整）。' if incomplete else '无（当前数据源读取完整）。'))
-    if state.issues:
-        lines.append(_observations([dict(source='local_execution_evidence', observed_at=i.get('observed_at')) for i in state.issues]))
-    lines.append('挂单不保证成交；执行层在动作前核验，历史建议不构成本轮许可或封锁。')
     return '\n'.join(lines)

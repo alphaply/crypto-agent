@@ -660,6 +660,14 @@ def _equity_series_metadata(points: list[dict]) -> dict:
             "latest_equity": None,
             "return_pct": None,
         }
+    if 'cashflow_return_pct' in points[-1]:
+        from backend.utils.real_returns import return_metadata
+        return return_metadata(points)
+    if 'holding_return_pct' in points[-1]:
+        return dict(data_state='ready', point_count=len(points), first_date=points[0]['date'],
+                    last_date=points[-1]['date'], latest_equity=points[-1]['equity'],
+                    return_pct=points[-1]['holding_return_pct'], return_basis='holding_remaining_cost',
+                    valuation_status=points[-1]['valuation_status'])
     first = float(points[0]["equity"] or 0)
     latest = float(points[-1]["equity"] or 0)
     return {
@@ -717,21 +725,9 @@ def get_equity_compare_payload(symbol: str | None = None, config_ids: str = ""):
             data_source = None
             selected_symbol = symbol or cfg.get('symbol') or next(iter(get_config_symbols(cfg)), '')
             if mode == "REAL":
-                ids = cfg['_config_ids']
-                id_placeholders = ','.join('%s' for _ in ids)
-                symbol_clause = ' AND symbol = %s' if symbol else ''
-                rows = cursor.execute(
-                    f"""
-                    SELECT day, total_equity FROM (
-                        SELECT substring(timestamp from 1 for 10) as day, total_equity,
-                               row_number() OVER (PARTITION BY substring(timestamp from 1 for 10) ORDER BY timestamp DESC NULLS LAST) as rn
-                        FROM balance_history
-                        WHERE config_id IN ({id_placeholders}){symbol_clause} AND total_equity > 0
-                    ) WHERE rn = 1 ORDER BY day ASC
-                    """,
-                    [*ids, *([symbol] if symbol else [])],
-                ).fetchall()
-                points = [{"date": row["day"], "equity": row["total_equity"]} for row in rows]
+                from backend.utils.real_returns import real_history_points
+                points = real_history_points(conn, config_id, config_ids=cfg['_config_ids'],
+                                             symbol=symbol, config_source=global_config)
                 data_source = {
                     "table": "balance_history",
                     "field": "total_equity",
@@ -769,29 +765,9 @@ def get_equity_compare_payload(symbol: str | None = None, config_ids: str = ""):
                 }
             elif mode == "SPOT_DCA":
                 target_symbols = [symbol] if symbol else get_config_symbols(cfg)
-                placeholders = ','.join('%s' for _ in target_symbols)
-                rows = cursor.execute(
-                    f"""
-                    SELECT snapshot_date AS day, SUM(total_invested) AS equity
-                    FROM dca_daily_snapshots
-                    WHERE config_id = %s AND symbol IN ({placeholders}) AND total_invested > 0
-                    GROUP BY snapshot_date
-                    ORDER BY snapshot_date ASC
-                    """,
-                    (config_id, *target_symbols),
-                ).fetchall()
-                points = [{"date": row["day"], "equity": row["equity"]} for row in rows]
-                data_source = {
-                    "table": "dca_daily_snapshots",
-                    "field": "total_invested",
-                    "scope": "config_id",
-                    "config_id": config_id,
-                    "symbol": symbol,
-                    "label": "dca_daily_snapshots.total_invested",
-                    "display_label": "定投累计投入快照",
-                    "kind": "dca_invested",
-                    "symbols": target_symbols,
-                }
+                from backend.app.services.spot_history_service import spot_history_points, spot_history_source
+                points = spot_history_points(conn, config_id, target_symbols)
+                data_source = spot_history_source(config_id, target_symbols)
 
             series.append(
                 {

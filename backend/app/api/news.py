@@ -8,6 +8,12 @@ from backend.database import news as database_news
 router = APIRouter(prefix='/api/news', tags=['news'])
 
 
+@router.get('/polymarket/history')
+def polymarket_history(limit: int = Query(20, ge=1, le=100), _: dict = Depends(get_current_user)):
+    from backend.database.polymarket import review_history
+    return {'success': True, 'reviews': review_history(limit)}
+
+
 @router.get('')
 def latest():
     return {'success': True, **get_latest_news()}
@@ -29,6 +35,11 @@ def processing_run(run_id: str, _: dict = Depends(get_current_user)):
     if run is None:
         raise HTTPException(status_code=404, detail='News processing run not found')
     return {'success': True, 'run': run}
+
+
+@router.get('/runs/{run_id}/calls')
+def processing_calls(run_id: str, _: dict = Depends(get_current_user)):
+    return {'success': True, 'calls': database_news.processing_calls(run_id)}
 
 
 @router.get('/scorer-models')

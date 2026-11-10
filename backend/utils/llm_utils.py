@@ -600,7 +600,10 @@ def build_chat_model(
     thinking_enabled: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     compatibility_mode: Optional[str] = "auto",
+    timeout_seconds: Optional[float] = None,
 ) -> BaseChatModel:
+    from backend.utils.log_safety import register_log_secrets
+    register_log_secrets(api_key)
     sync_langsmith_environment()
 
     resolved_mode = resolve_compatibility_mode(
@@ -648,7 +651,7 @@ def build_chat_model(
             "api_key": api_key,
             "base_url": _anthropic_base_url(base_url),
             "streaming": streaming,
-            "timeout": get_llm_timeout_seconds(),
+            "timeout": timeout_seconds if timeout_seconds is not None else get_llm_timeout_seconds(),
             "max_retries": 0,
             "output_version": "v1",
             "metadata": diagnostic_metadata,
@@ -686,7 +689,7 @@ def build_chat_model(
         "base_url": base_url,
         "temperature": effective_temperature,
         "streaming": streaming,
-        "timeout": get_llm_timeout_seconds(),
+        "timeout": timeout_seconds if timeout_seconds is not None else get_llm_timeout_seconds(),
         # Retries are handled in invoke_with_retry so SSE status events can reflect retry progress.
         "max_retries": 0,
         **request_options,

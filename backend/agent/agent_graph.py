@@ -456,11 +456,12 @@ def start_node(state: AgentState, config: RunnableConfig, *, require_fresh: bool
 
     if is_real_exec:
         try:
-            balance = account_data.get('balance', 0)
+            balance = account_data.get('balance')
             positions = account_data.get('real_positions', [])
             total_unrealized_pnl = sum(float(p.get('unrealized_pnl') or 0) for p in positions)
             
-            if now.minute < 15 and trade_mode != 'SPOT_DCA':
+            if (now.minute < 15 and trade_mode != 'SPOT_DCA'
+                    and not account_data.get('error') and balance is not None):
                 database.save_balance_snapshot(symbol, balance, total_unrealized_pnl, config_id=config_id)
                 
             for asset in symbols:
@@ -1215,7 +1216,7 @@ def finalize_node(state: AgentState, config: RunnableConfig) -> AgentState:
                             has_dca_order = True
                             break
                     if isinstance(msg, AIMessage) and msg.tool_calls:
-                        if any(tc['name'] == 'open_position_spot_dca' or
+                        if any(tc['name'] in {'open_position', 'open_position_spot_dca'} or
                                tc['name'] == 'execute_trade_actions' and any(
                                    action.get('action') == 'open' for action in tc.get('args', {}).get('actions', []))
                                for tc in msg.tool_calls):
@@ -1275,6 +1276,9 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
             tool_outputs.append(ToolMessage(tool_call_id=tool_call['id'], content=json.dumps({
                 'status': 'not_executed', 'reason': '前序工具失败或结果待核验，本轮后续操作已停止。'
             }, ensure_ascii=False)))
+            from backend.database.trade_calls import record_trade_call
+            record_trade_call(config_id, tool_call['id'], tool_name, args, symbol,
+                              {'status': 'not_executed', 'reason': '前序操作结果待核验，本轮未执行'}, tool_call_id=tool_call['id'])
             for item in progress_calls:
                 if item['id'] == str(tool_call.get('id') or ''):
                     item['status'] = 'not_executed'
@@ -1308,11 +1312,13 @@ def tools_node(state: AgentState, config: RunnableConfig) -> AgentState:
             status = tool_result_status(result)
         except Exception as e:
             logger.error("Error executing tool %s: %s", tool_name, e)
-            tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"], content=f"Error: {str(e)}"))
-            status = "failed"
-        from backend.agent.tool_registry import uses_scoped_admission
-        stopped = stopped or (status in {'failed', 'unknown', 'pending'}
-                              and not uses_scoped_admission(tool_name, config_id, args))
+            from backend.agent.single_trade_tools import SINGLE_TRADE_ACTIONS
+            status = 'unknown' if tool_name in SINGLE_TRADE_ACTIONS else 'failed'
+            content = json.dumps({'status': status, 'operation_id': tool_call['id'], 'error': str(e)}, ensure_ascii=False)
+            tool_outputs.append(ToolMessage(tool_call_id=tool_call["id"],
+                                            content=content if status == 'unknown' else f"Error: {str(e)}"))
+        from backend.agent.tool_registry import stops_tool_sequence
+        stopped = stopped or stops_tool_sequence(tool_name, status, config_id, args)
         for item in progress_calls:
             if item["id"] == str(tool_call.get("id") or ""):
                 item["status"] = status

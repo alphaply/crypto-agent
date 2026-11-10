@@ -10,6 +10,7 @@ const STORAGE_KEYS = {
 const messages = {
   en: {
     brand: 'Crypto Agent',
+    remainingCost: 'Remaining holding cost', recordedInvestment: 'Recorded buy cost', realizedNetPnl: 'Realized PnL · net', holdingRoi: 'Holding return',
     publicDashboard: 'Dashboard',
     usage: 'Usage',
     console: 'Console',
@@ -232,6 +233,7 @@ const messages = {
   },
   zh: {
     brand: 'Crypto Agent',
+    remainingCost: '剩余持仓成本', recordedInvestment: '累计成交买入额', realizedNetPnl: '已实现盈亏 · 扣费后', holdingRoi: '持仓收益率',
     publicDashboard: '公开看板',
     usage: '用量统计',
     console: '控制台',
@@ -459,7 +461,7 @@ function detectTheme() {
   if (saved === 'light' || saved === 'dark') {
     return saved;
   }
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return 'light';
 }
 
 function detectSelectedSymbol() {

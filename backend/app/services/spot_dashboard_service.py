@@ -17,6 +17,7 @@ from backend.database.spot_cost_basis import (
     buys_after_cost_basis, read_spot_buy_totals, read_spot_cost_basis, read_spot_unsettled_buy_ids,
 )
 from backend.utils.spot_portfolio import get_config_symbols
+from backend.utils.spot_valuation import spot_orders, spot_holding_valuation
 from backend.app.services.common import TZ_CN, logger
 
 
@@ -47,7 +48,7 @@ def _synchronize_orders(config_id: str, symbol: str, mt, sync_errors: list[str],
                       AND symbol = %s
                       AND trade_mode = 'SPOT_DCA'
                       AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'
-                      AND UPPER(side) IN ('BUY','BUY_LIMIT')
+                      AND UPPER(side) IN ('BUY','BUY_LIMIT','SELL','SELL_LIMIT')
                       AND status IN ('OPEN', 'PARTIAL')
                     GROUP BY order_id
                     ORDER BY MAX(id) DESC
@@ -74,7 +75,9 @@ def _synchronize_orders(config_id: str, symbol: str, mt, sync_errors: list[str],
                 if any(not math.isfinite(value) or value < 0 for value in (filled_qty, filled_cost, avg_price)) or (filled_qty > 0 and filled_cost <= 0):
                     raise ValueError('交易所成交成本无效')
 
-                fill_ts = od.get("lastTradeTimestamp") or od.get("timestamp")
+                # The order creation time is not an execution time. Missing
+                # fill timestamps remain unknown until actual trades arrive.
+                fill_ts = od.get("lastTradeTimestamp")
                 filled_at = None
                 if fill_ts:
                     filled_at = datetime.fromtimestamp(float(fill_ts) / 1000, TZ_CN).strftime("%Y-%m-%d %H:%M:%S")
@@ -89,7 +92,7 @@ def _synchronize_orders(config_id: str, symbol: str, mt, sync_errors: list[str],
 
                 with dependencies.connection_factory() as conn:
                     conn.execute('''UPDATE orders SET status=%s, filled_amount=%s, filled_cost=%s,
-                        avg_fill_price=%s, filled_at=%s WHERE order_id=%s AND config_id=%s AND symbol=%s
+                        avg_fill_price=%s, filled_at=COALESCE(%s,filled_at) WHERE order_id=%s AND config_id=%s AND symbol=%s
                         AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED' ''',
                         (local_status, filled_qty, filled_cost, avg_price, filled_at, order_id, config_id, symbol))
                     dependencies.fill_writer(order_id, config_id, symbol, local_status,
@@ -175,6 +178,8 @@ def calculate_spot_symbol_statistics(
             cost_basis = read_spot_cost_basis(conn, config_id, symbol)
             cache_signature = config_signature + (cost_basis['updated_at'] if cost_basis else None,)
             buy_totals = read_spot_buy_totals(conn, config_id, symbol)
+            holding = spot_holding_valuation(conn, config_id, symbol, spot_orders(conn, config_id, symbol),
+                                            cost_basis, initial_qty, initial_cost)
             traded_qty = sum(order['qty'] for order in buy_totals.values())
             traded_cost = sum(order['cost'] for order in buy_totals.values())
             buy_count = sum(order['qty'] > 0 for order in buy_totals.values())
@@ -227,6 +232,11 @@ def calculate_spot_symbol_statistics(
             final_qty = traded_qty
             final_invested = traded_cost
             stats_source = "trades"
+        # The legacy total_invested field remains a valuation-base amount for
+        # old clients. New clients use explicit remaining cost / actual buys.
+        valuation_base = final_invested
+        final_qty = holding['quantity']
+        final_invested = holding['remaining_cost']
         avg_cost = (final_invested / final_qty) if final_qty > 0 else 0
         current_price = None
         try:
@@ -242,12 +252,22 @@ def calculate_spot_symbol_statistics(
             logger.debug(f"Fetch ticker failed for DCA stats {config_id}: {ticker_error}")
         market_value = final_qty * current_price if current_price is not None else None
         unrealized_pnl = market_value - final_invested if market_value is not None else None
-        return_pct = ((unrealized_pnl / final_invested * 100) if final_invested > 0 else 0) if unrealized_pnl is not None else None
+        return_pct = (unrealized_pnl / final_invested * 100) if unrealized_pnl is not None and final_invested > 0 else None
 
         result = {
             'symbol': symbol, 'base_asset': base_asset, 'quote_asset': symbol.split('/')[1], 'is_portfolio': False,
             "buy_count": buy_count,
             "total_invested": round(final_invested, 2),
+            "remaining_cost": final_invested,
+            "recorded_investment": traded_cost,
+            "valuation_base": valuation_base,
+            "realized_pnl": holding['realized_pnl'],
+            "realized_pnl_known_cost": holding['realized_pnl_known_cost'],
+            "fees_by_currency": holding['fees_by_currency'],
+            "fees_complete": holding['fees_complete'],
+            "return_basis": "holding_remaining_cost",
+            "valuation_status": 'price_unavailable' if current_price is None else 'zero_cost' if final_invested <= 0 else 'ready',
+            "cost_basis_revision": cost_basis['revision'] if cost_basis else 0,
             "total_qty": round(final_qty, 6),
             "avg_cost": round(avg_cost, 4),
             "manual_avg_cost": round(manual_avg_cost, 4),
@@ -284,4 +304,10 @@ def calculate_spot_symbol_statistics(
         raise
     except Exception as exc:
         logger.error(f"Error calculating CCXT DCA stats for {config_id}: {exc}\n{traceback.format_exc()}")
-        return None
+        return dict(symbol=symbol, base_asset=symbol.split('/')[0], quote_asset=symbol.split('/')[-1],
+                    is_portfolio=False, total_qty=None, total_invested=None, remaining_cost=None,
+                    avg_cost=None, market_value=None, unrealized_pnl=None, return_pct=None,
+                    realized_pnl=None, recorded_buy_cost=None, recorded_investment=None,
+                    buy_count=None, pending_orders=None, first_buy=None, last_buy=None, has_legacy=False,
+                    valuation_status='evidence_unavailable', sync_status='partial', errors=[str(exc)],
+                    last_sync=datetime.now(TZ_CN).strftime('%Y-%m-%d %H:%M:%S'))

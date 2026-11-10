@@ -5,7 +5,8 @@ import math
 
 from backend import database, storage
 from backend.config import config as global_config
-from backend.database.spot_cost_basis import read_spot_buy_totals, read_spot_unsettled_buy_ids
+from backend.database.spot_cost_basis import read_spot_unsettled_buy_ids, read_spot_cost_basis
+from backend.utils.spot_valuation import spot_orders, spot_holding_valuation
 from backend.utils.market_data import MarketTool
 from backend.utils.spot_config_guard import (
     SpotConfigConflict, serialized_spot_execution, spot_cost_basis_account_identity,
@@ -21,13 +22,12 @@ def _assert_reconciled_buy_evidence(conn, config_id: str, symbol: str) -> None:
     missing = conn.execute('''SELECT 1 FROM spot_budget_reservations r
         WHERE r.config_id=%s AND r.symbol=%s
           AND r.status IN ('reserved','unknown','submitted')
-          AND COALESCE(r.reservation_kind,'buy')='buy'
           AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.config_id=r.config_id
             AND o.symbol=r.symbol AND o.order_id=r.order_id AND o.trade_mode='SPOT_DCA'
             AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
-            AND UPPER(o.side) IN ('BUY','BUY_LIMIT')) LIMIT 1''', (config_id, symbol)).fetchone()
+            ) LIMIT 1''', (config_id, symbol)).fetchone()
     if missing:
-        raise SpotCostBasisUnavailable('该币种还有买入结果待核验，请稍后重试；持仓成本未修改。')
+        raise SpotCostBasisUnavailable('该币种还有交易结果待核验，请稍后重试；持仓成本未修改。')
 
 
 def _sync_pending_buys(config_id: str, symbol: str) -> None:
@@ -57,9 +57,9 @@ def _sync_pending_buys(config_id: str, symbol: str) -> None:
     except storage.Error:
         raise
     except Exception as exc:
-        raise SpotCostBasisUnavailable('暂时无法核对已有买入成交，请稍后重试；持仓成本未修改。') from exc
+        raise SpotCostBasisUnavailable('暂时无法核对已有买卖成交，请稍后重试；持仓成本未修改。') from exc
     if errors:
-        raise SpotCostBasisUnavailable('部分买入委托尚未核验，请稍后重试；持仓成本未修改。')
+        raise SpotCostBasisUnavailable('部分买卖委托尚未核验，请稍后重试；持仓成本未修改。')
 
 
 @serialized_spot_execution
@@ -99,19 +99,37 @@ def update_spot_cost_basis(config_id: str, symbol: str, quantity: float, avg_cos
         if (current.get('mode') != 'SPOT_DCA' or symbol not in get_config_symbols(current)
                 or spot_cost_basis_account_identity(snapshot, current) != expected_account):
             raise SpotConfigConflict('任务的交易账户或币种已变更，请刷新后重试。')
-        orders = read_spot_buy_totals(conn, config_id, symbol)
+        orders = spot_orders(conn, config_id, symbol)
+        previous = read_spot_cost_basis(conn, config_id, symbol)
+        initial_qty = float(current.get('initial_qty') or 0) if symbol == current.get('symbol') else 0
+        initial_cost = (initial_qty * float(current.get('manual_avg_cost') or 0)
+                        or float(current.get('initial_cost') or 0)) if symbol == current.get('symbol') else 0
+        keys = ('realized_pnl', 'realized_pnl_known_cost')
+        try:
+            valuation = spot_holding_valuation(conn, config_id, symbol, orders, previous, initial_qty, initial_cost)
+            carry = {key: valuation[key] for key in keys}
+            if not valuation['sell_fill_count'] and previous is None:
+                carry = {key: 0.0 for key in keys}
+        except ValueError:
+            # Calibration repairs the remaining holding, not missing historical
+            # outcomes. Keep the latter unknown while accepting the correction.
+            carry = {key: None for key in keys}
         baselines = {
             order_id: {key: order[key] for key in ('qty', 'cost', 'status')}
             for order_id, order in orders.items()
         }
         updated_at = datetime.now(timezone.utc).isoformat(timespec='microseconds')
         conn.execute('''INSERT INTO spot_cost_basis
-            (config_id,symbol,quantity,avg_cost,order_baselines_json,updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s)
+            (config_id,symbol,quantity,avg_cost,order_baselines_json,updated_at,realized_carry_json)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (config_id,symbol) DO UPDATE SET quantity=excluded.quantity,
                 avg_cost=excluded.avg_cost,order_baselines_json=excluded.order_baselines_json,
-                updated_at=excluded.updated_at''',
-            (config_id, symbol, quantity, avg_cost, json.dumps(baselines, allow_nan=False), updated_at))
+                updated_at=excluded.updated_at,revision=spot_cost_basis.revision+1,
+                realized_carry_json=excluded.realized_carry_json''',
+            (config_id, symbol, quantity, avg_cost, json.dumps(baselines, allow_nan=False), updated_at, json.dumps(carry, allow_nan=False)))
+        conn.execute('''INSERT INTO spot_cost_basis_revisions
+            SELECT config_id,symbol,revision,quantity,avg_cost,order_baselines_json,updated_at,realized_carry_json
+            FROM spot_cost_basis WHERE config_id=%s AND symbol=%s''', (config_id, symbol))
         conn.commit()
     from backend.app.services.dashboard_service import DCA_STATS_CACHE
     DCA_STATS_CACHE.pop(f'{config_id}:{symbol}', None)

@@ -6,8 +6,12 @@ function reasonText(value) {
 }
 
 const tradeActions = new Set(['open', 'close', 'edit', 'cancel', 'protect', 'amend_entry', 'amend_exit', 'update_protection']);
+const singleTradeTools = {
+  open_position: 'open', close_position: 'close', edit_order: 'edit',
+  cancel_order: 'cancel', set_position_protection: 'protect',
+};
 export function isTradingTool(name = '') {
-  return tradeActions.has(name) || /^(execute_trade_actions|execute_trade|open_position_|close_position_|cancel_orders_|update_entry_order_|update_exit_order|update_position_protection_)/.test(name);
+  return Object.hasOwn(singleTradeTools, name) || tradeActions.has(name) || /^(execute_trade_actions|execute_trade|open_position_|close_position_|cancel_orders_|update_entry_order_|update_exit_order|update_position_protection_)/.test(name);
 }
 
 export function parseReceipt(content) {
@@ -27,6 +31,51 @@ function objectValue(value) {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
 }
 
+// A preflight rejection belongs to the batch. Showing it as the first action
+// would attach the error to the wrong trade when a later item is invalid.
+export function tradeValidationMessage(content, request, zh, toolName) {
+  const receipt = parseReceipt(content);
+  const preflight = receipt?.status === 'failed' && receipt.phase === 'preflight' && receipt.submitted === false
+    && ['invalid_request', 'position_mode_unavailable'].includes(receipt.error_code) && !receipt.partial_execution;
+  const message = preflight ? receipt.error : receipt;
+  if (typeof message !== 'string') return '';
+  const text = message.replace(/^Error:\s*/, '');
+  if (Object.hasOwn(singleTradeTools, toolName)) {
+    if (!preflight && !text.startsWith('交易参数校验失败：')) return '';
+    // The shared backend stores a one-item v3 request, but this result belongs
+    // only to this tool call, never to other calls in the same model response.
+    const detail = text.replace(/第\s*1\s*项\s*|actions\[0\]:\s*/g, '')
+      .replace(/本批未提交。/g, zh ? '本次操作未提交。' : 'This operation was not submitted. ');
+    return detail.startsWith('交易参数校验失败：') || detail.includes('本次') ? detail
+      : (zh ? '本次操作未提交。' : 'This operation was not submitted. ') + detail;
+  }
+  if (text.startsWith('交易参数校验失败：') || text.startsWith('本批未提交。')) return text;
+  const actions = objectValue(request).actions;
+  // Older decision records sometimes contain only one formatted line per action.
+  const lines = text.trim().split('\n');
+  const legacyMarketError = /actions\[(\d+)\]: unsupported_combination: live entry supports limit only/;
+  const marketError = legacyMarketError.exec(text);
+  if (marketError && (preflight || (actions?.length === lines.length && lines.every((line, index) =>
+    line.startsWith(`${index + 1}. `) && line.includes('，未执行。原因：' + marketError[0]))))) {
+    const item = Number(marketError[1]) + 1;
+    return zh ? `第 ${item} 项开仓只支持限价单。填 order_type=limit 并提供委托价格 price。本批未提交。`
+      : `Item ${item}: entries require order_type=limit and a limit price (price). No actions were submitted.`;
+  }
+  if (!/^\d+ validation errors? for (?:Unified)?TradeActionsSchema\b/i.test(text)) {
+    return preflight ? (zh ? '本批未提交。' : 'No actions were submitted. ') + text : '';
+  }
+
+  // Old Pydantic receipts used the same sentence for a missing and an invalid side.
+  const legacy = /^1 validation error for (?:Unified)?TradeActionsSchema\s+actions\.(\d+)\s+Value error, close\.side is required/i.exec(text);
+  if (!legacy) return text;
+  const index = Number(legacy[1]);
+  const item = actions?.[index];
+  const missing = item?.action === 'close' && !Object.hasOwn(item, 'side');
+  const reason = zh ? `第 ${index + 1} 项平仓${missing ? '缺少 side' : '的 side 无效或缺失'}。合约平多填 LONG，平空填 SHORT。现货卖出填 LONG。`
+    : `Item ${index + 1} (close): ${missing ? 'missing side' : 'missing or invalid side'}. Use LONG to close a long, SHORT to close a short, and LONG for a spot sale.`;
+  return preflight ? reason + (zh ? '本批未提交。' : ' No actions were submitted.') : reason;
+}
+
 export function toolRequest(messages, message) {
   if (message.args != null || message.arguments != null) return objectValue(message.args ?? message.arguments);
   if (!message.tool_call_id) return {};
@@ -38,6 +87,7 @@ export function toolRequest(messages, message) {
 
 function actionName(value, toolName = '') {
   if (tradeActions.has(value)) return value;
+  if (Object.hasOwn(singleTradeTools, toolName)) return singleTradeTools[toolName];
   if (/^(open_position_|BUY_LIMIT|SELL_LIMIT)/.test(value || toolName)) return 'open';
   if (/^close_position_/.test(value || toolName)) return 'close';
   if (/^cancel_orders_/.test(value || toolName)) return 'cancel';
@@ -47,7 +97,20 @@ function actionName(value, toolName = '') {
 }
 
 export function tradeReceiptRows(content, { request = {}, fallbackStatus, toolName } = {}) {
-  const root = parseReceipt(content);
+  let root = parseReceipt(content);
+  if (typeof root === 'string') {
+    const lines = root.trim().split('\n').filter(line => line.trim());
+    const parsed = lines.map(line => {
+      const match = /^\s*(\d+)\.\s*(open|close|edit|cancel|protect)：?\s*:?\s*([^\s，]+)\s+(LONG|SHORT|BUY|SELL)\s+数量([\d.eE+-]+)\s+价格([\d.eE+-]+)，(失败|未执行|已提交|已成交|部分成交|待核验)[。.]?(?:\s*原因[：:](.*))?$/.exec(line);
+      if (!match) return null;
+      const [, index, action, symbol, side, amount, price, state, error] = match;
+      if (!Number.isFinite(Number(amount)) || !Number.isFinite(Number(price))) return null;
+      return { index: Number(index) - 1, action, symbol, side, amount: Number(amount), requested_price: Number(price),
+        status: ({ 失败: 'failed', 未执行: 'not_executed', 已提交: 'submitted', 已成交: 'filled', 部分成交: 'partially_filled', 待核验: 'unknown' })[state], error };
+    });
+    if (!parsed.length || parsed.some(row => !row)) return null;
+    root = { results: parsed };
+  }
   if (!root || typeof root !== 'object') return null;
   const rows = Array.isArray(root) ? root : Array.isArray(root.results) ? root.results : [root];
   const envelope = objectValue(request);
@@ -59,7 +122,9 @@ export function tradeReceiptRows(content, { request = {}, fallbackStatus, toolNa
     const args = objectValue(intent.order || intent);
     const action = actionName(row.action || root.action || intent.action, toolName);
     const editing = action === 'edit' || action?.startsWith('amend_');
-    const status = row.status ?? detail.status ?? (rows.length === 1 ? root.status ?? fallbackStatus : undefined);
+    let status = String(row.status ?? detail.status ?? (rows.length === 1 ? root.status ?? fallbackStatus ?? '' : '')).toLowerCase();
+    const orderStatus = String(detail.order_status || '').toLowerCase();
+    if (['submitted', 'success', 'completed'].includes(status) && ['filled', 'partially_filled', 'canceled', 'cancelled'].includes(orderStatus)) status = orderStatus;
     const rejected = ['failed', 'rejected', 'not_executed', 'skipped', 'not_requested'].includes(status);
     const accepted = ['submitted', 'completed', 'success', 'open', 'closed', 'filled', 'canceled', 'cancelled', 'waiting_trigger'].includes(status)
       || detail.submission_state === 'submitted' || detail.submitted === true;
@@ -69,6 +134,7 @@ export function tradeReceiptRows(content, { request = {}, fallbackStatus, toolNa
     const requestedTriggerPrice = detail.requested_trigger_price ?? args.trigger_price;
     return {
       action,
+      originalReason: typeof args.reason === 'string' ? args.reason : undefined,
       symbol: detail.symbol ?? row.symbol ?? intent.symbol ?? envelope.symbol,
       side: detail.pos_side ?? detail.position_side ?? detail.side ?? row.pos_side ?? row.position_side ?? row.side ?? args.side ?? args.pos_side ?? ({ BUY_LIMIT: 'BUY', SELL_LIMIT: 'SELL' }[args.action]),
       amount: detail.quantity_mode === 'all' || args.close_all === true ? 'all'
@@ -88,10 +154,19 @@ export function tradeReceiptRows(content, { request = {}, fallbackStatus, toolNa
       takeProfitLimitPrice: detail.take_profit_limit_price ?? args.take_profit_limit_price,
       orderType: detail.order_type ?? detail.exit_type ?? row.order_type ?? row.exit_type ?? args.order_type,
       orderKind: detail.kind ?? row.kind,
+      error: rejected || ['pending', 'unknown'].includes(status) ? reasonText(detail.error || row.error || detail.reason || row.reason) : '',
       status,
+      filledAmount: detail.filled_amount ?? detail.fill?.amount,
+      averagePrice: detail.average_price ?? detail.fill?.price,
       result: rejected ? 'failed' : accepted ? 'success' : null,
     };
   });
+}
+
+export function friendlyTradeError(error, zh) {
+  if (/\b(?:MIN_)?NOTIONAL\b/.test(error || '')) return zh ? '订单金额不符合交易所限制' : 'Order value does not meet exchange limits';
+  if (/Filter failure: LOT_SIZE/.test(error || '')) return zh ? '订单数量不符合交易所限制' : 'Order quantity does not meet exchange limits';
+  return error;
 }
 
 const actionLabels = {

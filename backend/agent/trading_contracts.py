@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator, model_serializer, model_validator
 
 from backend.agent.trade_guidance import (
     ACTION_DESCRIPTION, ACTIONS_DESCRIPTION, CLOSE_SIDE_DESCRIPTION, OPEN_SIDE_DESCRIPTION,
-    ORDER_ID_DESCRIPTION, ORDER_TYPE_DESCRIPTION, validate_action_identity,
+    ORDER_ID_DESCRIPTION, ORDER_TYPE_DESCRIPTION, PARAMETER_ERROR_PREFIX, validate_action_identity, validate_action_keys,
 )
 
 
@@ -161,9 +161,9 @@ def contract_version(tool_name: str, arguments: dict) -> int:
 # Version 3 is deliberately separate: adding defaults to the v2 models changes
 # persisted request hashes and makes old replay unsafe.
 class UnifiedActionBase(BatchDependencies):
-    symbol: str | None = Field(None, min_length=1, max_length=100)
-    market_type: Literal['spot', 'swap'] | None = None
-    exchange: Literal['binance', 'okx', 'bitget', 'bybit'] | None = None
+    symbol: str | None = Field(None, min_length=1, max_length=100, description='Authorized trading pair for this item. Required when the task has multiple symbols.')
+    market_type: Literal['spot', 'swap'] | None = Field(None, description='Paper market for this item: spot or perpetual swap.')
+    exchange: Literal['binance', 'okx', 'bitget', 'bybit'] | None = Field(None, description='Venue of the selected paper symbol.')
     reason: Reason = Field(description='Required non-empty explanation for this individual action.')
 
     @field_validator('symbol', mode='after')
@@ -175,17 +175,17 @@ class UnifiedActionBase(BatchDependencies):
 
 
 class UnifiedOpenAction(UnifiedActionBase):
-    action: Literal['open'] = Field(description=ACTION_DESCRIPTION + ' open creates an entry order.')
+    action: Literal['open'] = Field(description='Enter or add to a position.')
     side: Side = Field(description=OPEN_SIDE_DESCRIPTION)
     order_type: Literal['market', 'limit'] = Field('limit', description=ORDER_TYPE_DESCRIPTION)
-    amount: PositiveNumber | None = None
-    quote_amount: PositiveNumber | None = None
-    margin_amount: PositiveNumber | None = None
-    price: PositiveNumber | None = None
-    leverage: PositiveNumber | None = None
-    stop_loss: PositiveNumber | None = None
-    take_profit: PositiveNumber | None = None
-    valid_duration_hours: Annotated[int, Field(strict=True, gt=0, le=168)] | None = None
+    amount: PositiveNumber | None = Field(None, description='Entry quantity in base coins.')
+    quote_amount: PositiveNumber | None = Field(None, description='Entry value in quote currency. Supply exactly one of amount, quote_amount or margin_amount.')
+    margin_amount: PositiveNumber | None = Field(None, description='Swap margin in quote currency, used with leverage. Supply only one sizing field.')
+    price: PositiveNumber | None = Field(None, description='Entry limit price in quote currency per base coin. Required for a limit order.')
+    leverage: PositiveNumber | None = Field(None, description='Leverage multiplier for a paper swap entry.')
+    stop_loss: PositiveNumber | None = Field(None, description='Attached stop-loss trigger price.')
+    take_profit: PositiveNumber | None = Field(None, description='Attached take-profit trigger price.')
+    valid_duration_hours: Annotated[int, Field(strict=True, gt=0, le=168)] | None = Field(None, description='Lifetime of the unfilled entry order, in whole hours.')
 
     @model_validator(mode='after')
     def validate_entry(self):
@@ -202,18 +202,18 @@ class UnifiedOpenAction(UnifiedActionBase):
 
 
 class UnifiedCloseAction(UnifiedActionBase):
-    action: Literal['close'] = Field(description=ACTION_DESCRIPTION + ' close creates an exit order for an existing holding.')
+    action: Literal['close'] = Field(description='Reduce the specified existing position or place an exit order for it.')
     side: Side = Field(description=CLOSE_SIDE_DESCRIPTION)
     order_type: Literal['market', 'limit', 'take_profit_market', 'take_profit_limit',
                         'stop_market', 'stop_limit', 'stop_loss', 'take_profit', 'oco'] = Field(description=ORDER_TYPE_DESCRIPTION)
     amount: PositiveNumber | None = Field(None, description='Fixed base-coin quantity; choose exactly one of amount or close_all=true.')
     close_all: StrictBool | None = Field(None, description='Close all of the explicitly specified side; side is still required. Mutually exclusive with amount.')
-    price: PositiveNumber | None = None
-    trigger_price: PositiveNumber | None = None
-    stop_loss: PositiveNumber | None = None
-    take_profit: PositiveNumber | None = None
-    stop_limit_price: PositiveNumber | None = None
-    take_profit_limit_price: PositiveNumber | None = None
+    price: PositiveNumber | None = Field(None, description='Limit price of this exit order, in quote currency per base coin.')
+    trigger_price: PositiveNumber | None = Field(None, description='Price that activates a conditional exit.')
+    stop_loss: PositiveNumber | None = Field(None, description='Stop-loss trigger. For stop_loss choose this or trigger_price; OCO requires both stop_loss and take_profit.')
+    take_profit: PositiveNumber | None = Field(None, description='Take-profit trigger. For take_profit choose this or trigger_price; OCO requires both stop_loss and take_profit.')
+    stop_limit_price: PositiveNumber | None = Field(None, description='Optional execution limit price of the stop-loss leg.')
+    take_profit_limit_price: PositiveNumber | None = Field(None, description='Optional execution limit price of the take-profit leg.')
 
     @model_validator(mode='after')
     def validate_exit(self):
@@ -244,13 +244,13 @@ class UnifiedCloseAction(UnifiedActionBase):
 
 
 class UnifiedEditAction(UnifiedActionBase):
-    action: Literal['edit'] = Field(description=ACTION_DESCRIPTION + ' edit changes an existing order.')
+    action: Literal['edit'] = Field(description='Amend a current order. Supply its order_id and at least one change; omitted fields keep their current values.')
     order_id: str = Field(min_length=1, max_length=200, description=ORDER_ID_DESCRIPTION)
     remaining_amount: PositiveNumber | None = Field(None, description='目标未成交基础币数量；依据最新实际成交计算总量，all 单不可设置')
     price: PositiveNumber | None = Field(None, description='New limit price for this existing order; not its trigger price.')
     trigger_price: PositiveNumber | None = Field(None, description='New trigger price for an existing conditional order, where supported.')
-    stop_loss: PositiveNumber | None = None
-    take_profit: PositiveNumber | None = None
+    stop_loss: PositiveNumber | None = Field(None, description='New attached stop-loss trigger price.')
+    take_profit: PositiveNumber | None = Field(None, description='New attached take-profit trigger price.')
 
     @model_validator(mode='after')
     def require_change(self):
@@ -260,22 +260,20 @@ class UnifiedEditAction(UnifiedActionBase):
 
 
 class UnifiedCancelAction(UnifiedActionBase):
-    action: Literal['cancel'] = Field(description=ACTION_DESCRIPTION + ' cancel cancels an existing order.')
+    action: Literal['cancel'] = Field(description='Cancel the current order identified by order_id.')
     order_id: str = Field(min_length=1, max_length=200, description=ORDER_ID_DESCRIPTION)
 
 
 class UnifiedProtectAction(UnifiedActionBase):
-    action: Literal['protect'] = Field(description=ACTION_DESCRIPTION + ' protect changes position protection where this mode supports it.')
-    side: Side
-    order_id: str | None = Field(None, min_length=1, max_length=200, description=(
-        'Strategy attached protection requires the current order ID from order evidence. '
-        'Copy the exact string, preserving prefixes. Other modes expose only their supported fields.'))
-    amount: PositiveNumber | None = None
-    close_all: StrictBool | None = None
-    stop_loss: PositiveNumber | None = None
-    take_profit: PositiveNumber | None = None
-    stop_limit_price: PositiveNumber | None = None
-    take_profit_limit_price: PositiveNumber | None = None
+    action: Literal['protect'] = Field(description='Set protection for an existing position. Supply stop_loss, take_profit or both.')
+    side: Side = Field(description='Direction of the position to protect.')
+    order_id: str | None = Field(None, min_length=1, max_length=200, description=ORDER_ID_DESCRIPTION)
+    amount: PositiveNumber | None = Field(None, description='Fixed quantity to protect in base coins.')
+    close_all: StrictBool | None = Field(None, description='Use true to protect the entire specified side. Omit amount when using close_all.')
+    stop_loss: PositiveNumber | None = Field(None, description='Stop-loss trigger price for the position.')
+    take_profit: PositiveNumber | None = Field(None, description='Take-profit trigger price for the position.')
+    stop_limit_price: PositiveNumber | None = Field(None, description='Optional execution limit price of the stop-loss leg.')
+    take_profit_limit_price: PositiveNumber | None = Field(None, description='Optional execution limit price of the take-profit leg.')
 
     @model_validator(mode='after')
     def validate_protection(self):
@@ -288,7 +286,7 @@ class UnifiedProtectAction(UnifiedActionBase):
 
 UnifiedTradeAction = Annotated[
     UnifiedOpenAction | UnifiedCloseAction | UnifiedEditAction | UnifiedCancelAction | UnifiedProtectAction,
-    Field(discriminator='action'), BeforeValidator(validate_action_identity),
+    Field(discriminator='action'), BeforeValidator(validate_action_keys),
 ]
 
 
@@ -296,7 +294,7 @@ class UnifiedTradeActionsSchema(CanonicalTradeActionsSchema):
     """Fresh contract; v1/v2 serializers above retain their exact old meaning."""
     contract_version: Literal[3] = Field(description='显式整数3；使用当前可信模式的平铺动作，不覆盖账户或引擎')
     actions: list[UnifiedTradeAction] = Field(min_length=1, max_length=20, description=ACTIONS_DESCRIPTION)
-    include: list[Literal['account']] = Field(default_factory=list, max_length=1)
+    include: list[Literal['account']] = Field(default_factory=list, max_length=1, description='Optional ["account"] to append one account summary after the batch.')
 
     @model_validator(mode='before')
     @classmethod
@@ -312,3 +310,80 @@ class UnifiedTradeActionsSchema(CanonicalTradeActionsSchema):
             if field not in self.model_fields_set:
                 result.pop(field, None)
         return result
+
+
+class TradeParameterError(ValueError):
+    """Static input rejection before financial submission."""
+    def __init__(self, detail: str):
+        super().__init__(PARAMETER_ERROR_PREFIX + detail + '本批未提交。')
+
+
+def side_error(action: str, index: int, *, missing: bool, market: str | None) -> str:
+    label = {'open': '开仓', 'close': '平仓', 'protect': '保护单'}[action]
+    problem = '缺少 side' if missing else '的 side 无效'
+    if market == 'spot':
+        hint = '现货只允许 LONG。'
+    else:
+        hint = {'open': '开多填 LONG，开空填 SHORT。', 'close': '平多填 LONG，平空填 SHORT。',
+                'protect': '保护多头填 LONG，保护空头填 SHORT。'}[action]
+        if market != 'swap':
+            hint = '现货只允许 LONG。合约' + hint
+    return f'第 {index + 1} 项{label}{problem}。{hint}'
+
+
+def _entry_spelling_hint(item: dict, error: dict, market: str | None) -> str:
+    """Explain familiar spellings together, without translating an order into an executable one."""
+    wrong_action = item.get('action') in ('open_short', 'open_long') and error['type'] == 'union_tag_invalid'
+    if not wrong_action:
+        if item.get('action') != 'open' or not ('position_side' in item or 'quantity' in item):
+            return ''
+        if error['loc'][2:] not in (('open', 'side'), ('open', 'position_side'), ('open', 'quantity')):
+            return ''
+    hints = []
+    if wrong_action:
+        hints.append('开多和开空的动作名都填 action="open"。' if market != 'spot' else '现货买入的动作名填 action="open"。')
+    if 'position_side' in item:
+        hints.append('方向字段用 side，删除 position_side。')
+    if wrong_action or 'position_side' in item or item.get('side') not in ('LONG', 'SHORT'):
+        if market == 'spot':
+            hints.append('现货填 side="LONG"。')
+        elif market == 'swap':
+            hints.append('开空填 side="SHORT"，开多填 side="LONG"。')
+        else:
+            hints.append('现货填 side="LONG"。合约开空填 side="SHORT"，开多填 side="LONG"。')
+    if 'quantity' in item:
+        hints.append('标的币数量字段用 amount，删除 quantity。')
+    return ''.join(hints)
+
+
+def parse_v3_request(payload: dict, *, market: str | None) -> UnifiedTradeActionsSchema:
+    """Give callers the invalid items before any action reaches execution."""
+    try:
+        return UnifiedTradeActionsSchema.model_validate(payload)
+    except ValidationError as exc:
+        messages = []
+        spelling_errors = {}
+        for error in exc.errors(include_input=False, include_context=False, include_url=False):
+            location = error['loc']
+            message = error['msg'].removeprefix('Value error, ')
+            if len(location) >= 2 and location[0] == 'actions' and isinstance(location[1], int):
+                index = location[1]
+                item = payload['actions'][index]
+                if isinstance(item, dict):
+                    hint = _entry_spelling_hint(item, error, market or item.get('market_type'))
+                    if hint:
+                        spelling_errors.setdefault(hint, set()).add(index + 1)
+                        continue
+                if len(location) == 4 and location[-1] == 'side' and location[2] in ('open', 'close', 'protect'):
+                    messages.append(side_error(location[2], index, missing=error['type'] == 'missing',
+                                               market=market or payload['actions'][index].get('market_type')))
+                    continue
+                if error['type'] == 'union_tag_invalid':
+                    message = 'action 无效，请从当前工具简介列出的动作名中选择。'
+                field = '.'.join(map(str, location[2:]))
+                message = ' '.join(filter(None, (f'第 {index + 1} 项', field, message)))
+            elif location:
+                message = '.'.join(map(str, location)) + ' ' + message
+            messages.append(message)
+        corrections = [f"第 {'、'.join(map(str, sorted(indices)))} 项：{hint}" for hint, indices in spelling_errors.items()]
+        raise TradeParameterError(' '.join([*corrections, *messages])) from exc

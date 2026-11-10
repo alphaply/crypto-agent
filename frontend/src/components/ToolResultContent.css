@@ -18,7 +18,7 @@
 .tool-result-raw { margin-top: 12px; border-top: 1px solid var(--border-soft, #8883); }
 .tool-result-raw pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; font-size: 12px; }
 .tool-trade-results { display: grid; gap: 12px; }
-.tool-trade-row { --receipt-accent: var(--accent, #2563eb); padding: 18px 20px; border-color: color-mix(in srgb, var(--receipt-accent) 15%, var(--border-soft)); background: var(--bg-surface, #fff); box-shadow: 0 2px 8px color-mix(in srgb, var(--receipt-accent) 4%, transparent); }
+.tool-trade-row { --receipt-accent: var(--accent, #2563eb); padding: 12px 16px; border-color: var(--border-soft); background: var(--bg-surface, #fff); box-shadow: none; }
 .tool-trade-row[data-action='open'] { --receipt-accent: #0d9488; }
 .tool-trade-row[data-action='cancel'] { --receipt-accent: #b7791f; }
 .tool-trade-row[data-action='protect'] { --receipt-accent: #7c3aed; }
@@ -33,11 +33,11 @@
 .tool-trade-status.is-success { color: var(--success, #15803d); }
 .tool-trade-status.is-failed { color: var(--danger, #dc2626); }
 .tool-trade-status.is-pending { color: var(--receipt-accent); }
-.tool-trade-metrics { display: flex; flex-wrap: wrap; gap: 16px 40px; margin: 16px 0 0 46px; }
+.tool-trade-metrics { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 10px 0 0 46px; }
 .tool-trade-metrics > div { min-width: 0; max-width: 100%; }
 .tool-trade-metrics dt { color: var(--text-secondary); font-size: 11px; margin-bottom: 5px; }
 .tool-trade-metrics dd { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; margin: 0; color: var(--text-primary); font-size: 17px; line-height: 1.45; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.tool-trade-metrics .is-price dd { font-size: 21px; letter-spacing: -.35px; }
+.tool-trade-metrics .is-price dd { font-size: 16px; letter-spacing: 0; }
 .tool-trade-unit { color: var(--text-muted); font-size: 11px; font-weight: 400; letter-spacing: 0; }
 .tool-trade-metrics .is-missing dd { color: var(--text-muted); font-size: 13px; font-weight: 400; }
 :root[data-theme='dark'] .tool-trade-row[data-action='open'] { --receipt-accent: #2dd4bf; }
@@ -52,3 +52,6 @@
   .tool-trade-metrics > div { flex: 1 1 100px; }
   .tool-trade-metrics .is-price dd { font-size: 19px; }
 }
+.tool-original-reason { margin-top: 10px; overflow-wrap: anywhere; }
+.tool-original-reason small { color: var(--text-muted); }
+.tool-original-reason .ant-typography { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.8; }

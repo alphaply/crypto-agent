@@ -1,8 +1,8 @@
-import { Tag } from 'antd';
+import { Tag, Typography } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined, EditOutlined, CloseOutlined, SafetyOutlined } from '@ant-design/icons';
 import MarkdownBlock from './MarkdownBlock';
 import './ToolResultContent.css';
-import { receiptSummary, isTradeReceipt, tradeReceiptRows, tradeReceiptLabels } from '../lib/toolReceipt';
+import { receiptSummary, isTradeReceipt, tradeReceiptRows, tradeReceiptLabels, tradeValidationMessage, friendlyTradeError } from '../lib/toolReceipt';
 
 // What a reader needs to judge one operation: did it work, on what, how much,
 // and where the order stands. Every other field stays in the raw JSON view.
@@ -29,6 +29,7 @@ const states = {
   failed: ['失败', 'error'], rejected: ['已拒绝', 'error'], unknown: ['待核验', 'warning'],
   pending: ['待确认', 'warning'], partial: ['部分核验', 'warning'], verified: ['已核验', 'success'],
   filled: ['已成交', 'success'], open: ['挂单中', 'processing'], waiting_trigger: ['等待触发', 'processing'],
+  partially_filled: ['部分成交', 'processing'], success: ['已完成', 'success'],
   canceled: ['已撤销', 'default'], cancelled: ['已撤销', 'default'], not_executed: ['未执行', 'default'],
   skipped: ['已跳过', 'default'], not_requested: ['未请求', 'default'],
 };
@@ -68,9 +69,20 @@ function displayNumber(value, zh) {
 
 const actionIcons = { open: ArrowUpOutlined, close: ArrowDownOutlined, edit: EditOutlined, cancel: CloseOutlined, protect: SafetyOutlined };
 
+function OriginalReason({ reason, zh }) {
+  return reason ? <div className="tool-original-reason"><small>{zh ? '操作理由 · 原文' : 'Original reason'}</small><Typography.Paragraph ellipsis={{ rows: 2, expandable: 'collapsible', symbol: expanded => zh ? expanded ? '收起' : '展开' : expanded ? 'Less' : 'More' }}>{reason}</Typography.Paragraph></div> : null;
+}
+
 function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
+  const validation = tradeValidationMessage(content, request, zh, toolName);
+  if (validation) return <div className="tool-result-content tool-result-card"><OriginalReason reason={request?.reason} zh={zh} /><p className="tool-result-error">{validation}</p></div>;
   const rows = tradeReceiptRows(content, { request, toolName, fallbackStatus });
-  if (!rows) return <div className="tool-result-content tool-result-card"><MarkdownBlock content={String(content || '').replace(/\s+/g, ' ').slice(0, 180)} /></div>;
+  if (!rows) {
+    const text = String(content || '').trim();
+    const failed = ['failed', 'unknown', 'pending', 'not_executed'].includes(fallbackStatus)
+      || /^(Error:|\d+\. .*?(?:失败|未执行|未知))/s.test(text);
+    return <div className="tool-result-content tool-result-card"><Tag color={failed ? 'warning' : 'default'}>{zh ? '历史回执 · 查看原文核对' : 'Legacy receipt · verify details'}</Tag><OriginalReason reason={request?.reason} zh={zh} /><Typography.Paragraph ellipsis={{ rows: 2, expandable: 'collapsible' }}>{text}</Typography.Paragraph></div>;
+  }
   return <div className="tool-result-content tool-trade-results">{rows.map((row, index) => {
     const editing = row.action === 'edit' || row.action?.startsWith('amend_');
     const action = editing ? 'edit' : row.action;
@@ -94,9 +106,9 @@ function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
       if (value != null) metrics.push({ label, value: displayNumber(value, zh), unit: quote, primary: true });
     }
     metrics.push({ label: row.amountIsRemaining ? zh ? '目标剩余数量' : 'Target remaining' : zh ? '数量' : 'Amount', value: displayNumber(row.amount, zh), unit: row.amount != null && row.amount !== 'all' ? base : null, missing: row.amount == null });
-    const statusLabel = row.result === 'failed' ? zh ? '失败' : 'Failed'
-      : row.result === 'success' ? (zh ? '成功' : 'Success') + (row.status === 'submitted' ? zh ? ' · 已提交' : ' · Submitted' : '')
-        : zh ? states[row.status]?.[0] || '待确认' : row.status || 'Pending';
+    if (row.filledAmount != null) metrics.push({ label: zh ? '已确认成交' : 'Confirmed fill', value: displayNumber(row.filledAmount, zh), unit: base });
+    if (row.averagePrice != null) metrics.push({ label: zh ? '成交均价' : 'Average fill price', value: displayNumber(row.averagePrice, zh), unit: quote });
+    const statusLabel = zh ? states[row.status]?.[0] || '待核验' : row.status || 'Unconfirmed';
     return <article className="tool-result-card tool-trade-row" data-action={action} key={index}>
       <div className="tool-trade-heading">
         <span className="tool-trade-icon" aria-hidden="true"><Icon /></span>
@@ -104,18 +116,20 @@ function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
           <strong>{row.symbol || (zh ? '标的未提供' : 'Symbol not provided')}</strong>
           {sideLabel && <span className="tool-trade-side">{sideLabel}</span>}
         </div>
-        <span className={`tool-trade-status is-${row.result || 'pending'}`}><i aria-hidden="true" />{statusLabel}</span>
+        <span className={`tool-trade-status is-${row.status === 'not_executed' ? 'not-executed' : row.result || 'pending'}`}><i aria-hidden="true" />{statusLabel}</span>
       </div>
       <dl className="tool-trade-metrics">{metrics.map(({ label, value, unit, primary, missing }) =>
         <div className={`${primary ? 'is-price' : ''} ${missing ? 'is-missing' : ''}`} key={label}>
           <dt>{label}</dt><dd>{value}{unit && <span className="tool-trade-unit">{unit}</span>}</dd>
         </div>)}</dl>
+      <OriginalReason reason={row.originalReason} zh={zh} />
+      {row.error && <p className="tool-result-card-summary tool-result-error">{friendlyTradeError(row.error, zh)}</p>}
     </article>;
   })}</div>;
 }
 
 export default function ToolResultContent({ content, zh, toolName, fallbackStatus, request }) {
-  if (isTradeReceipt(content, toolName)) return <TradingResult {...{ content, zh, toolName, fallbackStatus, request }} />;
+  if (isTradeReceipt(content, toolName)) return <div className="trade-receipt"><TradingResult {...{ content, zh, toolName, fallbackStatus, request }} /><details className="tool-result-raw"><summary>{zh ? '参数与完整回执' : 'Parameters & full receipt'}</summary><pre>{JSON.stringify({ request, result: content }, null, 2)}</pre></details></div>;
   return <GenericResult {...{ content, zh, toolName, fallbackStatus }} />;
 }
 

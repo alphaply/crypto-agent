@@ -73,6 +73,8 @@ def performance_data(config_id: str, symbol: str, mode: str, *, hours: int = 168
     table = 'balance_history' if mode == 'REAL' else 'mock_balance_history'
     currency = symbol.split(':')[-1] if ':' in symbol else symbol.split('/')[-1]
     metric = {'available': False, 'samples': 0}
+    if mode == 'REAL':
+        metric.update(return_status='pending', return_reason='equity_unavailable')
     errors = []
     ledger, closed = {}, []
     try:
@@ -80,7 +82,12 @@ def performance_data(config_id: str, symbol: str, mode: str, *, hours: int = 168
             rows = conn.execute(f'SELECT timestamp,total_equity FROM {table} '
                                 'WHERE config_id=%s AND symbol=%s AND timestamp>=%s AND timestamp<=%s ORDER BY timestamp,id',
                                 (config_id, symbol, start, end)).fetchall()
-        metric = equity_metrics(rows)
+            if mode == 'REAL':
+                from backend.utils.real_returns import read_adjusted_points, adjusted_metrics
+                points = [dict(timestamp=r['timestamp'], equity=r['total_equity']) for r in rows]
+                metric = adjusted_metrics(read_adjusted_points(conn, config_id, points))
+            else:
+                metric = equity_metrics(rows)
     except Exception:
         errors.append('equity_unavailable')
     try:
@@ -108,15 +115,19 @@ def performance_data(config_id: str, symbol: str, mode: str, *, hours: int = 168
                       basis='realized_after_quote_fees' if mode == 'REAL' else 'mock_realized_pnl',
                       scope='account_symbol' if mode == 'REAL' else 'local_strategy_orders', reason='read_failed')
     equity = dict(available=metric['available'], start=metric.get('start'), latest=metric.get('latest'),
-                  change=(metric['latest']['equity'] - metric['start']['equity']) if metric['available'] else None,
-                  return_pct=metric.get('return_pct') if metric['available'] else None, scope='account_snapshots', currency=currency)
+                  change=metric.get('change', metric['latest']['equity'] - metric['start']['equity']) if metric['available'] else None,
+                  return_pct=metric.get('return_pct') if metric['available'] else None, scope='account_snapshots',
+                  currency='USDT' if mode == 'REAL' else currency, basis=metric.get('basis'),
+                  net_transfers=metric.get('net_transfers'), return_status=metric.get('return_status'),
+                  return_reason=metric.get('return_reason'))
     drawdown = dict(available=metric['available'], current_pct=metric.get('drawdown_pct') if metric['available'] else None,
                     max_pct=metric.get('max_drawdown_pct') if metric['available'] else None, scope='snapshot')
     result = dict(config_id=config_id, symbol=symbol, mode=mode, window_hours=hours,
                   from_time=start, as_of=end, equity=equity, profit=profit, drawdown=drawdown,
                   note='权益与回撤为本地快照，未剔除划转或共享账户影响；盈亏按归属成交，三者不可相加。')
     if mode == 'REAL':
-        result['note'] = '实盘盈亏按当前交易所账户下该标的全部已记录成交计算，包含其他任务和手动交易；权益、回撤与成交盈亏不可相加。'
+        result['note'] = ('实盘收益率按（权益变化−净转入）/起点权益计算，回撤使用同一扣除划转后的序列；'
+                          '币安USDT合约流水不完整时待核对。已实现盈亏按账户该标的成交，包含其他任务和手动交易；两者不可相加。')
         result['window_complete'] = ledger.get('window_complete', False)
         if not result['window_complete']:
             result['note'] += '同步尚未完整覆盖所选时段，金额仅代表本地已记录成交。'
@@ -141,5 +152,6 @@ def performance_context(config_id: str, symbol: str, mode: str) -> str:
     change = f"{e['change']:+.2f} {e['currency']} ({e['return_pct']:+.2f}%)" if e['available'] else '暂不可统计'
     profit = f"{p['amount']:+.2f} {p['currency']}" if p['available'] else '暂不可完整统计'
     drawdown = f"当前 {d['current_pct']:.2f}% / 最大 {d['max_pct']:.2f}%" if d['available'] else '暂不可统计'
-    return (f"权益变化：{change}；盈亏：{profit}；快照回撤：{drawdown}。\n"
+    label = '剔除划转后净盈亏' if str(mode).upper() == 'REAL' else '权益变化'
+    return (f"{label}：{change}；盈亏：{profit}；快照回撤：{drawdown}。\n"
             f"区间 {data['from_time']} → {data['as_of']}。{data['note']}")

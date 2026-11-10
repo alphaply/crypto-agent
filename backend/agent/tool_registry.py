@@ -22,7 +22,10 @@ from backend.agent.agent_tools import (
     update_exit_order,
 )
 from backend.agent.trade_batch import execute_trade_actions
-from backend.agent.trade_guidance import TRADE_ARGUMENT_GUIDANCE
+from backend.agent.single_trade_tools import (
+    SINGLE_TRADE_ACTIONS, SingleTradeParameterError, get_single_trade_tools,
+    prepare_single_trade_request, single_trade_error_receipt,
+)
 from backend.agent.independent_tools import CANONICAL_TOOLS, READ_ONLY_TRADE_TOOLS
 from backend.utils.trade_operations import current_operation_id, run_once, tool_result_status
 from backend.utils.logger import setup_logger
@@ -45,6 +48,12 @@ def uses_scoped_admission(tool_name: str, config_id: str, arguments: dict | None
         tool_name == 'execute_trade_actions' and (arguments or {}).get('contract_version') == 2)
     cfg = config.get_config_by_id(config_id) or {}
     return canonical and cfg.get('mode', 'STRATEGY').upper() in {'REAL', 'STRATEGY'} and effective_exit_mode(cfg) == 'independent_exits'
+
+
+def stops_tool_sequence(tool_name: str, status: str, config_id: str, arguments: dict | None = None) -> bool:
+    if tool_name in SINGLE_TRADE_ACTIONS:
+        return status in {'pending', 'unknown'}
+    return status in {'failed', 'unknown', 'pending'} and not uses_scoped_admission(tool_name, config_id, arguments)
 
 
 _CANCEL_TOOL_NAMES = {"cancel_orders_real", "cancel_orders_strategy"}
@@ -71,17 +80,7 @@ def get_trade_tools_for_mode(mode: str | None, config: dict | None = None, *, in
         return []
     trade_mode = str(mode or "STRATEGY").upper()
     if not include_legacy:
-        from backend.agent.unified_trading import unified_schema_for_config
-        cfg = {**(config or {}), 'mode': trade_mode}
-        return [execute_trade_actions.model_copy(update={
-            'args_schema': unified_schema_for_config(cfg),
-            'description': TRADE_ARGUMENT_GUIDANCE + '一次按顺序执行1–20项交易动作；单笔用一项数组。'
-                           '动作与参数按当前模式提供，数量是基础币；edit.remaining_amount为目标未成交量。'
-                           '默认失败/待核验/未知停止；depends_on要求显式independent且此前项completed。'
-                           '逐项简洁返回成功、失败原因或未执行；受理成功不等于成交。提交后不查询或等待核验。'
-                           '未知结果停止整批（含independent），系统后台核验原身份，不能换ID重发。'
-                           '保留提交前必要检查并自动纳管授权目标，无需先adopt。include=["account"]末尾可选一次账户摘要。',
-        })]
+        return get_single_trade_tools({**(config or {}), 'mode': trade_mode})
     tools = list(_TOOLS_BY_MODE.get(trade_mode, _TOOLS_BY_MODE["STRATEGY"]))
     if config is None or trade_mode == 'SPOT_DCA':
         if include_legacy:
@@ -146,6 +145,23 @@ def _summarize_result(result: Any, limit: int = 300) -> str:
 def run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, operation_id: str | None = None,
                    cycle_id: str | None = None, expected_spot_fingerprint: str | None = None,
                    *, project_result: bool = True) -> str:
+    from backend.database.trade_calls import record_trade_call
+    tool_call_id = operation_id
+    operation_id = operation_id or current_operation_id.get() or uuid.uuid4().hex
+    record_trade_call(config_id, operation_id, tool_name, args, symbol, tool_call_id=tool_call_id)
+    try:
+        result = _dispatch_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id,
+                                      expected_spot_fingerprint, project_result=project_result)
+    except Exception as exc:
+        record_trade_call(config_id, operation_id, tool_name, args, symbol,
+                          {'status': 'unknown', 'error': str(exc)})
+        raise
+    record_trade_call(config_id, operation_id, tool_name, args, symbol, result)
+    return result
+
+
+def _dispatch_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, operation_id: str,
+                         cycle_id=None, expected_spot_fingerprint=None, *, project_result=True) -> str:
     tool_name = canonical_tool_name(tool_name)
     if tool_name in {'get_trade_operation', 'get_operation', 'get_paper_operation'}:
         return json.dumps({'status': 'failed', 'error_code': 'tool_removed',
@@ -172,6 +188,9 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
                     cycle_id: str | None = None, *, project_result: bool = True) -> str:
     from backend.config import config as runtime_config
     config = runtime_config.get_config_by_id(config_id)
+    if tool_name in SINGLE_TRADE_ACTIONS:
+        return _run_single_trade_tool(tool_name, args, config_id, symbol, operation_id, cycle_id,
+                                      config or {}, project_result=project_result)
     if config and tool_name not in {tool.name for tool in get_trade_tools_for_mode(config.get('mode'), config, include_legacy=True)}:
         return f"Error: Tool '{tool_name}' is not allowed for this trading mode."
     tool_obj = _TOOL_BY_NAME.get(tool_name)
@@ -237,7 +256,11 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
             symbol = resolve_spot_symbol(config, requested_symbol or symbol)
         except ValueError as exc:
             return json.dumps({'status': 'failed', 'error': str(exc)}, ensure_ascii=False)
-    if tool_name in {'open', 'close', 'edit', 'cancel', 'adopt_position_real', 'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy', 'update_exit_order', 'execute_trade_actions'}:
+    if is_v3:
+        from backend.agent.trading_contracts import parse_v3_request
+        market = 'spot' if is_spot else (config or {}).get('market_type', 'swap')
+        call_args = parse_v3_request(call_args, market=market).model_dump(exclude_none=True)
+    elif tool_name in {'open', 'close', 'edit', 'cancel', 'adopt_position_real', 'update_position_protection_real', 'update_position_protection_strategy', 'update_entry_order_real', 'update_entry_order_strategy', 'update_exit_order', 'execute_trade_actions'}:
         # Dispatch uses .func(), so these scalar arguments need explicit schema validation.
         supplied_version = 'contract_version' in call_args
         call_args = tool_obj.args_schema.model_validate(call_args).model_dump()
@@ -290,3 +313,28 @@ def _run_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, oper
         _summarize_result(result),
     )
     return result
+
+
+def _run_single_trade_tool(tool_name: str, args: Any, config_id: str, symbol: str, operation_id: str,
+                           cycle_id: str | None, config: dict, *, project_result: bool) -> str:
+    try:
+        payload = prepare_single_trade_request(tool_name, args, config, symbol)
+    except SingleTradeParameterError as exc:
+        return json.dumps({**single_trade_error_receipt(tool_name, exc), 'operation_id': operation_id}, ensure_ascii=False)
+
+    from backend.agent.unified_trading import execute_v3_actions, compact_trade_receipt
+    from backend.utils.spot_execution import current_spot_cycle_id
+    is_spot = str(config.get('mode') or '').upper() == 'SPOT_DCA'
+    token = current_operation_id.set(operation_id)
+    cycle_token = current_spot_cycle_id.set(cycle_id) if is_spot else None
+    try:
+        # One original tool-call ID owns one v3 request. No other call is included.
+        raw = execute_v3_actions(payload, config_id=config_id, symbol=symbol,
+                                 operation_id=operation_id, config=config)
+        if project_result:
+            raw = compact_trade_receipt(raw)
+        return json.dumps(raw, ensure_ascii=False) if isinstance(raw, dict) else str(raw)
+    finally:
+        if cycle_token is not None:
+            current_spot_cycle_id.reset(cycle_token)
+        current_operation_id.reset(token)

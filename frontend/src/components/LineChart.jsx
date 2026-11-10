@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import { Grid } from 'antd';
 import { init, use as registerCharts } from 'echarts/core';
 import { LineChart as EchartsLineChart } from 'echarts/charts';
-import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
+import { GridComponent, LegendComponent, TooltipComponent, MarkLineComponent } from 'echarts/components';
 import { SVGRenderer } from 'echarts/renderers';
 import { usePreferences } from '../app/usePreferences';
 
-registerCharts([EchartsLineChart, GridComponent, LegendComponent, TooltipComponent, SVGRenderer]);
+registerCharts([EchartsLineChart, GridComponent, LegendComponent, TooltipComponent, MarkLineComponent, SVGRenderer]);
 
 function LineChart({
   series = [],
@@ -113,8 +113,9 @@ function LineChart({
       showSymbol: (item.data || []).length < 3,
       areaStyle: area ? {} : undefined,
       connectNulls: false,
+      markLine: item.calibrationDates?.length ? { symbol: 'none', silent: true, label: { show: false }, lineStyle: { type: 'dashed', color: '#d97706' }, data: item.calibrationDates.map(date => ({ xAxis: date })) } : undefined,
       data: (item.data || [])
-        .filter((point) => point?.name !== undefined && point?.value !== undefined && point?.value !== null)
+        .filter((point) => point?.name !== undefined)
         .map((point) => [point.name, point.value]),
     })),
   }), [area, isDark, isMobile, series, smooth, tooltipFormatter, valueFormatter, xName, yName]);

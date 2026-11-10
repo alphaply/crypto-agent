@@ -16,11 +16,26 @@ from backend.app.api import auth, chat, config, dashboard, history, public, setu
 from backend.app.api import management
 from backend.app.api import resources
 from backend.app.api import trade_audit
+from backend.app.api import logs
+from backend.utils.logger import setup_logger
 from backend.mcp.discovery import DiscoveryHeadersMiddleware
 from backend.app.core.runtime import lifespan
 
 
 app = FastAPI(title="Crypto Agent API", version="2.0.0", lifespan=lifespan)
+api_logger = setup_logger('API')
+
+
+@app.middleware('http')
+async def record_unhandled_api_error(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:
+        # Query strings may carry download tickets or other credentials.
+        api_logger.exception('Unhandled API error method=%s path=%s', request.method, request.url.path)
+        raise
+
+
 app.add_middleware(DiscoveryHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -46,6 +61,7 @@ app.include_router(pricing.router)
 app.include_router(management.router)
 app.include_router(resources.router)
 app.include_router(trade_audit.router)
+app.include_router(logs.router)
 
 
 DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"

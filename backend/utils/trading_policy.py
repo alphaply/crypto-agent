@@ -54,12 +54,7 @@ INDEPENDENT_TRADE_PROMPT_BODY = """
 )
 
 INDEPENDENT_RUNTIME_POLICY = (
-    '当前退出模式为 independent_exits。open 可多次调用并分批建仓；双向开仓须账户支持 Hedge。'
-    '退出只能针对已确认的本任务持仓；入场提交成功不代表成交。已成交可在本轮 close，也可后续轮次再设置退出。'
-    'close 的固定 amount 是标的币数量；各固定档不会自动按比例缩量或补量。'
-    '条件 close_all 在触发时退出该账户该品种该方向的全部仓位；市价 close_all 只取提交前核验的仓位快照。'
-    'edit.remaining_amount 是目标未成交量；cancel 撤销挂单。quantity_conflict 是数量冲突提示，不等于操作待核验。'
-    '等待触发、已触发和提交成功均不等于成交；依实际成交回执决定后续操作。'
+    '当前退出模式为 independent_exits。已确认的持仓可在本轮或后续轮次设置退出。'
 )
 
 MARKET_POLICY = """## 数据与决策约定

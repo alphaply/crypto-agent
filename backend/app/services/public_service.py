@@ -96,7 +96,9 @@ def build_public_short_memories_payload(
     return list_short_memories_payload(symbol=symbol, config_id=config_id, limit=limit)
 
 
-def build_public_workspace_payload(config_id: str, timeframe: str = "1h", symbol: str | None = None) -> dict:
+def build_public_workspace_payload(config_id: str, timeframe: str = "1h", symbol: str | None = None, section: str = 'all') -> dict:
+    if section not in {'all', 'context', 'account', 'chart'}:
+        raise ValueError('Unknown workspace section')
     selected_symbol = symbol
     cfg = global_config.get_config_by_id(config_id)
     if not cfg:
@@ -104,6 +106,13 @@ def build_public_workspace_payload(config_id: str, timeframe: str = "1h", symbol
     if selected_symbol and selected_symbol not in get_config_symbols(cfg):
         raise ValueError(f'Symbol {selected_symbol} is not configured for {config_id}')
 
+    payload = {'timeframe': timeframe, 'market_timeframes': _resolved_market_timeframes(cfg)}
+    if section in {'account', 'all'}:
+        payload['position'] = get_position_stats_payload(config_id)
+    if section in {'chart', 'all'}:
+        payload['kline'] = get_kline_payload(config_id, timeframe, symbol=selected_symbol) if selected_symbol else get_kline_payload(config_id, timeframe)
+    if section != 'all' and section != 'context':
+        return payload
     symbol = cfg.get("symbol")
     agents = get_dashboard_data(symbol, config_id=config_id)
     agent = agents[0] if agents else None
@@ -114,10 +123,9 @@ def build_public_workspace_payload(config_id: str, timeframe: str = "1h", symbol
         "timeframe": timeframe,
         "market_timeframes": _resolved_market_timeframes(cfg),
         "agent": agent,
-        "position": get_position_stats_payload(config_id),
+        **payload,
         "orders": get_recent_order_activity_payload(config_id, limit=40),
         "short_memories": get_short_memories_payload(config_id, limit=1),
-        "kline": get_kline_payload(config_id, timeframe, symbol=selected_symbol) if selected_symbol else get_kline_payload(config_id, timeframe),
     }
 
 

@@ -9,10 +9,12 @@ export function ManagedResource({ resource }) {
   const actions = resource.supported_actions || resource.allowed_actions || [];
   return <Space direction="vertical" size={2} style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
     <Space wrap size={4}><Tag>{sourceLabel(resource.source, locale)}</Tag><Tag color={resource.managed ? 'green' : resource.management_state === 'conflict' ? 'red' : 'orange'}>{managementLabel(resource, locale)}</Tag></Space>
+    <details className="content-disclosure"><summary>{zh ? '管理详情' : 'Management details'}</summary>
     {(resource.owner || resource.owner_config_id) && <Typography.Text type="secondary">{zh ? '原提交来源' : 'Original actor'}: {resource.owner || resource.owner_config_id}</Typography.Text>}
     <Typography.Text type="secondary">{zh ? '可用动作' : 'Available actions'}: {actions.length ? actions.join(' · ') : (zh ? '待核验或无支持动作' : 'Pending verification or unsupported')}</Typography.Text>
     <Typography.Text type="secondary">{zh ? '观察于' : 'Observed'}: {observationTime(resource.observed_at, locale)}</Typography.Text>
     {resource.change_source === 'external' && <Typography.Text type="secondary">{zh ? '外部调整已同步' : 'External change synchronized'}</Typography.Text>}
+    </details>
     {resource.error && <Typography.Text type="warning">{resource.error}</Typography.Text>}
   </Space>;
 }

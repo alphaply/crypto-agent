@@ -37,8 +37,11 @@ async def lifespan(app: FastAPI):
     from backend.storage import close_pool
     from backend.storage.checkpoints import close_checkpoints
     from backend.utils.resource_diagnostics import start_resource_collector, stop_resource_collector
+    from backend.app.services.log_service import start_log_maintenance
+    log_maintenance_stop = None
     try:
         init_db()
+        log_maintenance_stop = start_log_maintenance()
         # A fresh lifespan reloads persisted OAuth settings and owns a fresh SDK
         # session manager. Remove only routes installed by the previous lifespan.
         old_routes = getattr(app.state, 'mcp_routes', ())
@@ -56,6 +59,8 @@ async def lifespan(app: FastAPI):
         async with mcp_lifespan():
             yield
     finally:
+        if log_maintenance_stop:
+            log_maintenance_stop.set()
         from backend.utils.binance_announcements import stop_worker
         stop_worker()
         stop_resource_collector()

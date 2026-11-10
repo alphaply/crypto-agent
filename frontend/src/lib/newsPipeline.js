@@ -1,4 +1,22 @@
-export const NEWS_STAGES = ['collect', 'score', 'filter', 'summarize', 'publish', 'complete'];
+export const NEWS_STAGES = ['collect', 'polymarket_review', 'score', 'filter', 'summarize', 'publish', 'complete'];
+
+export function newsErrorExplanation(error, details = {}, locale = 'zh') {
+  if (locale !== 'zh') return error;
+  details ||= {};
+  const value = String(error || '');
+  if (/News digest exceeds 800 characters/.test(value)) return '摘要超过了旧版设置的800字上限，该轮结果未发布。';
+  if (/Invalid news digest reference/.test(value)) return '摘要里的来源编号无效，无法对应到本轮新闻。';
+  if (/Invalid news digest text/.test(value)) return '摘要正文包含不符合要求的引用或链接格式。';
+  if (/Invalid news digest (structure|section|item)/.test(value)) return '摘要的段落结构或事件格式不符合要求。';
+  if (/Empty news model response/.test(value)) return '摘要模型返回了空内容。';
+  if (details.code === 'timeout') return '模型请求超时，本轮未能完成。';
+  if (details.code === 'rate_limit' || details.http_status === 429) return '模型服务限制了请求频率或额度，请检查服务商的额度。';
+  if (details.code === 'auth_error' || details.http_status === 401) return '模型服务拒绝了身份验证，请检查该模型的 API Key。';
+  if (details.code === 'permission_error' || details.http_status === 403) return '当前模型账号没有访问权限，请检查服务商权限。';
+  if (details.code === 'invalid_response') return '模型已返回内容，但结果未通过校验。下方可查看具体原因和原始响应。';
+  if (/News processing failed; retaining the previous snapshot/.test(value)) return '该历史批次只保存了通用错误提示，可打开本轮模型调用记录查看当时的具体原因。';
+  return value;
+}
 
 const count = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
 

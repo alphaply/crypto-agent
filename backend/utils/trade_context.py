@@ -100,7 +100,12 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
     position_observation = evidence.get('positions') or {}
     position_failed = bool(position_observation.get('error') or
                            (account.get('error') and not position_observation.get('observed_at')) or
-                           (not is_mock and 'real_positions' not in account))
+                           ('positions' not in mock if is_mock else 'real_positions' not in account))
+    order_observation = evidence.get('orders') or {}
+    orders_incomplete = (account.get('orders_complete') is False or order_observation.get('error')
+                         or (evidence.get('trigger_orders') or {}).get('error')
+                         or (account.get('error') and not order_observation.get('observed_at'))
+                         or (not {'entries', 'exits'} <= mock.keys() if is_mock else 'real_open_orders' not in account))
     for p in (mock.get('positions', []) if is_mock else account.get('real_positions', [])):
         if p.get('symbol') and not _same_symbol(p['symbol'], symbol):
             continue
@@ -278,4 +283,5 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
                               sorted(issues.values(), key=lambda i: i['identity']),
                               dict(sources=evidence, local_cycles='unavailable' if plans is None and not is_mock else 'read',
                                    positions='unavailable' if position_failed else 'read',
+                                   orders='unavailable' if orders_incomplete else 'read',
                                    cycle_versions={p['episode_id']: p.get('record_version') for p in cycles}))

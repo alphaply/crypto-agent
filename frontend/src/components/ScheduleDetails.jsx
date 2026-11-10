@@ -1,9 +1,11 @@
-import { Collapse, Tag, Typography } from 'antd';
+import { useState } from 'react';
+import { Button, Collapse, Drawer, Tag, Typography } from 'antd';
 import { ClockCircleOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
 export default function ScheduleDetails({ agents, activeTab, locale, compact = false }) {
+  const [open, setOpen] = useState(false);
   const zh = locale === 'zh';
   const visible = activeTab === 'compare' ? agents : agents.filter((agent) => agent.config_id === activeTab);
   const runningCount = visible.filter((agent) => ['RUNNING', 'QUEUED'].includes(String(agent.execution?.status || '').toUpperCase())).length;
@@ -23,7 +25,7 @@ export default function ScheduleDetails({ agents, activeTab, locale, compact = f
               <div className="dashboard-schedule-next"><span>{zh ? '下次计划' : 'Next scheduled'}</span><strong>{paused ? (zh ? '已暂停' : 'Paused') : agent.next_run || '—'}</strong><span>{schedule?.timezone}</span></div>
               <Tag color={active ? 'processing' : status === 'FAILED' ? 'error' : 'default'}>{paused && !active ? (zh ? '调度已暂停' : 'Scheduler paused') : active ? (zh ? '执行中' : 'In progress') : status === 'FAILED' ? (zh ? '最近执行失败' : 'Last run failed') : (zh ? '等待下次调度' : 'Awaiting dispatch')}</Tag>
             </div>}
-            <Collapse ghost size="small" items={[{
+            <Collapse ghost size="small" activeKey={compact ? ['rules'] : undefined} items={[{
               key: 'rules',
               label: compact ? <span className="agent-schedule-line"><ClockCircleOutlined /><span>{paused ? (zh ? '调度已暂停' : 'Scheduler paused') : `${zh ? '下次运行' : 'Next run'} ${agent.next_run || '—'}`}</span><span>{schedule?.timezone}</span><span>{agent.freq}</span><span className="agent-schedule-link">{zh ? '计划详情' : 'Schedule details'}</span></span> : `${zh ? '当前规则' : 'Current rule'}: ${schedule?.rule_name || '—'} · ${agent.freq || '—'}`,
               children: <div className="dashboard-schedule-rules">
@@ -41,6 +43,11 @@ export default function ScheduleDetails({ agents, activeTab, locale, compact = f
     </section>
   );
 
+  if (compact) {
+    const agent = visible[0];
+    return <><div className="agent-schedule-line"><ClockCircleOutlined /><span>{agent?.enabled === false ? (zh ? '调度已暂停' : 'Paused') : `${zh ? '下次运行' : 'Next run'} ${agent?.next_run || '—'}`}</span><span>{agent?.freq}</span><Button type="link" size="small" onClick={() => setOpen(true)}>{zh ? '计划详情' : 'Schedule details'}</Button></div>
+      <Drawer title={zh ? '运行计划' : 'Run schedule'} open={open} onClose={() => setOpen(false)} size={560}>{schedules}</Drawer></>;
+  }
   return activeTab === 'compare' ? (
     <details className="content-disclosure dashboard-schedule-group">
       <summary>

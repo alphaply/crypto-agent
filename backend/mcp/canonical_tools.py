@@ -11,7 +11,7 @@ from . import paper, paper_batch, paper_competition, paper_market, paper_orders,
 from .resilience import run
 from .tools import OperationId, _register
 from backend.utils.spot_config_guard import serialized_spot_execution
-from backend.agent.trade_guidance import TRADE_ARGUMENT_GUIDANCE
+from backend.agent.trade_guidance import TRADE_ARGUMENT_GUIDANCE, describe_trade_tool
 
 CORE_NAMES = ('get_trading_context', 'search_symbols', 'get_market', 'get_news',
               'get_account_state', 'get_trade_records', 'execute_trade_actions')
@@ -63,6 +63,60 @@ def _permitted_actions(capabilities, caller):
         return capabilities['actions'] if 'trade' in scopes else []
     return [action for action in capabilities['actions']
             if ('cancel' if action == 'cancel' else 'trade') in scopes]
+
+
+def _publish_trade_inputs(schema: dict, caller: dict) -> None:
+    from backend.agent.unified_trading import capabilities_for_config, unified_schema_for_config
+    from .settings import get_runtime_profile
+
+    if caller.get('key_type') == 'paper':
+        config = {'mode': 'PAPER', 'markets': ['spot', 'swap'], 'max_leverage': paper.settings()['max_leverage']}
+        allowed = _permitted_actions(capabilities_for_config(config, engine='paper'), caller)
+        envelope = unified_schema_for_config(config, engine='paper', allowed_actions=allowed)
+        for definition in envelope['$defs'].values():
+            exchange = definition['properties'].get('exchange')
+            if exchange:
+                exchange['anyOf'] = [{'type': 'string', 'const': 'binance'}, {'type': 'null'}]
+    else:
+        # A client can use several profiles with different contracts. Share one definition
+        # per distinct mode and example symbol, and bind it to the matching profile IDs.
+        groups = {}
+        for profile in service.list_profiles(caller):
+            profile_id = profile['profile_id']
+            config = get_runtime_profile('mcp:' + profile_id)
+            if not config:
+                continue
+            caps = capabilities_for_config(config)
+            symbols = config.get('symbols') or []
+            key = (caps['mode'], caps['market_type'], caps['exit_mode'], symbols[0] if len(symbols) > 1 else None)
+            group = groups.setdefault(key, {'config': config, 'actions': _permitted_actions(caps, caller), 'ids': []})
+            group['ids'].append(profile_id)
+        if not groups:
+            # The profiles may have been removed between the catalogue and schema reads.
+            schema['properties']['actions'].update(minItems=1, items=False)
+            return
+        alternatives = []
+        for index, group in enumerate(groups.values()):
+            config, allowed, ids = group['config'], group['actions'], group['ids']
+            if len(groups) == 1:
+                envelope = unified_schema_for_config(config, allowed_actions=allowed)
+                break
+            name = f'ProfileActions{index + 1}'
+            ref = f'#/$defs/{name}'
+            envelope = unified_schema_for_config(config, allowed_actions=allowed, ref_template=ref + '/$defs/{model}')
+            schema.setdefault('$defs', {})[name] = {
+                **envelope['properties']['actions'], '$defs': envelope['$defs'], 'title': 'Profiles: ' + ', '.join(ids)}
+            alternatives.append({'properties': {'profile_id': {'enum': ids}, 'actions': {'$ref': ref}}})
+        if alternatives:
+            # Keep an object at the tool root. The selected profile narrows the
+            # array while clients can inspect all available variants at actions.
+            schema['dependentSchemas'] = {'profile_id': {'oneOf': alternatives}}
+            envelope['$defs'] = {}
+            envelope['properties']['actions'] = {
+                'type': 'array', 'minItems': 1, 'maxItems': 20, 'description': 'Use the action schema for the selected profile_id.',
+                'anyOf': [item['properties']['actions'] for item in alternatives]}
+    schema.setdefault('$defs', {}).update(envelope['$defs'])
+    schema['properties'].update(envelope['properties'])
 
 
 def child_alias(profile_id, principal, parent_id, index):
@@ -171,13 +225,28 @@ def _scope(caller, profile_id, user_id):
     return is_paper
 
 
-def account_state(caller, profile_id=None, user_id=None, symbol=None, include=None):
+def account_state(caller, profile_id=None, user_id=None, symbol=None, include=None, period=None):
     is_paper = _scope(caller, profile_id, user_id)
     facets = include if include is not None else ['balances', 'positions']
-    if not facets or set(facets) - {'balances', 'positions', 'inventory', 'orders'}:
+    if not facets or set(facets) - {'balances', 'positions', 'inventory', 'orders', 'performance'}:
         raise ValueError('Unsupported account facet')
+    if 'performance' in facets:
+        if not is_paper or symbol is not None:
+            raise ValueError('performance requires a Paper account without a symbol filter')
+    elif period is not None:
+        raise ValueError('period requires the Paper performance facet')
     result = {'execution_mode': 'paper' if is_paper else 'live', 'profile_id': profile_id} if not is_paper else {'execution_mode': 'paper', 'user_id': user_id}
     if is_paper:
+        if 'performance' in facets:
+            from .paper_statistics import statistics
+            with store.connection() as conn:
+                exists = conn.execute('SELECT 1 FROM paper_accounts WHERE namespace=%s AND user_id=%s',
+                                      (caller['paper_namespace'], user_id)).fetchone()
+            if not exists:
+                raise ValueError('Paper account does not exist; create it explicitly first')
+            result['performance'] = statistics(caller['paper_namespace'], user_id, period or 'current_cycle')
+            if set(facets) == {'performance'}:
+                return result
         view = paper.get_account(caller, user_id)
         result.update(account_status=view['account_status'], account_epoch=view['account_epoch'], reset_count=view['reset_count'],
                       filter=view['filter'], completeness=view['completeness'],
@@ -358,9 +427,10 @@ def register(server):
         return await invoke(query)
 
     async def get_account_state(profile_id: str | None = None, user_id: str | None = None, symbol: str | None = None,
-                                include: list[Literal['balances', 'positions', 'inventory', 'orders']] | None = None) -> dict:
+                                include: list[Literal['balances', 'positions', 'inventory', 'orders', 'performance']] | None = None,
+                                period: Literal['current_cycle', '7d', '30d', 'all'] | None = None) -> dict:
         """Read only requested account facets. Positions alone do not append all balances, orders or history."""
-        return await invoke(account_state, profile_id, user_id, symbol, include)
+        return await invoke(account_state, profile_id, user_id, symbol, include, period)
 
     async def get_trade_records(record_type: Literal['orders', 'order', 'fills', 'history'], profile_id: str | None = None,
                                 user_id: str | None = None, symbol: str | None = None, order_id: str | None = None,
@@ -374,7 +444,6 @@ def register(server):
                                     profile_id: str | None = None, user_id: str | None = None, symbol: str | None = None,
                                     execution_policy: Literal['stop_on_error', 'independent'] | None = None,
                                     include: list[Literal['account']] | None = None) -> dict:
-        """Execute 1–20 typed v3 actions in order. Return concise per-action success, failure reason or not-executed text, with structured evidence retained. A successful submission is not a fill. Necessary preflight checks remain; no post-submission polling or verification reads inside this call. Unknown submissions stop all remaining actions, including independent batches. The background verifies original identities without replaying writes or tails. v2 remains a compatibility input. For paper entries, relay interest_reserve reminders so the user leaves unreserved USDT for loan interest; estimates are advisory and do not change order sizing."""
         caller = service.principal()
         is_paper = _scope(caller, profile_id, user_id)
         request = {'contract_version': contract_version, 'actions': actions}
@@ -420,7 +489,7 @@ def register(server):
         return await invoke(manage, user_id, position_id, operation_id, action=action,
                             leverage=leverage, amount=amount, write=True)
 
-    execute_trade_actions.__doc__ = TRADE_ARGUMENT_GUIDANCE + execute_trade_actions.__doc__
+    execute_trade_actions.__doc__ = TRADE_ARGUMENT_GUIDANCE
 
     for function in (get_trading_context, search_symbols, get_market, get_account_state, get_trade_records,
                      execute_trade_actions, configure_paper_account, paper_transfer, adjust_paper_position):
@@ -444,45 +513,21 @@ def register(server):
                 for key in ('user_id', 'exchange', 'market_type'):
                     properties.pop(key, None)
             if tool.name == 'execute_trade_actions':
-                from backend.agent.unified_trading import unified_schema_for_config, capabilities_for_config
-                from .settings import get_runtime_profile
-                profiles = [] if is_paper else service.list_profiles(caller)
-                configs = [get_runtime_profile('mcp:' + row['profile_id']) for row in profiles]
-                if is_paper:
-                    envelope = unified_schema_for_config({'mode': 'PAPER', 'markets': ['spot', 'swap']}, engine='paper')
-                    for definition in envelope.get('$defs', {}).values():
-                        if 'exchange' in definition.get('properties', {}):
-                            definition['properties']['exchange'] = {'anyOf': [{'type': 'string', 'const': 'binance'}, {'type': 'null'}], 'default': None}
-                        action = definition.get('properties', {}).get('action', {}).get('const')
-                        if action in {'open', 'close', 'protect'}:
-                            definition.setdefault('required', []).extend(['market_type', 'symbol'])
-                        if action == 'open':
-                            definition['properties']['leverage'] = {'anyOf': [{'type': 'integer', 'minimum': 1, 'maximum': paper.settings()['max_leverage']}, {'type': 'null'}]}
-                        if action == 'close':
-                            definition['properties']['order_type'] = {**definition['properties']['order_type'], 'enum': capabilities_for_config({'mode': 'PAPER'}, engine='paper')['close_order_types']}
-                elif len(configs) == 1:
-                    envelope = unified_schema_for_config(configs[0])
-                else:
-                    from backend.agent.trading_contracts import UnifiedTradeActionsSchema
-                    envelope = UnifiedTradeActionsSchema.model_json_schema()
-                    for definition in envelope.get('$defs', {}).values():
-                        for key in ('market_type', 'exchange', 'margin_amount', 'quote_amount', 'leverage', 'valid_duration_hours'):
-                            definition.get('properties', {}).pop(key, None)
-                allowed = set().union(*[set(_permitted_actions(capabilities_for_config(cfg), caller)) for cfg in configs]) if not is_paper else set(_permitted_actions(capabilities_for_config({'mode': 'PAPER'}, engine='paper'), caller))
-                items = envelope['properties']['actions']['items']
-                mapping = items['discriminator']['mapping']
-                for action in list(mapping):
-                    if action not in allowed:
-                        mapping.pop(action)
-                items['oneOf'] = [{'$ref': ref} for ref in mapping.values()]
-                used = {ref.rsplit('/', 1)[-1] for ref in mapping.values()}
-                envelope['$defs'] = {name: value for name, value in envelope.get('$defs', {}).items() if name in used}
-                schema.setdefault('$defs', {}).update(envelope.get('$defs', {}))
-                for key in ('actions', 'contract_version', 'execution_policy', 'include'):
-                    if key in envelope['properties']:
-                        properties[key] = envelope['properties'][key]
+                _publish_trade_inputs(schema, caller)
+                tool.description = describe_trade_tool(schema, paper=is_paper)
             if tool.name == 'get_trade_records' and not is_paper:
                 properties['state'] = {'type': 'string', 'const': 'open', 'default': 'open'}
+            if tool.name == 'get_account_state':
+                tool.description = ('Read only requested account facets. Paper performance returns whole-account statistics and a concise summary; '
+                                    'period defaults to current_cycle, also supports 7d/30d/all. performance cannot use symbol. '
+                                    'Current balances include open PnL; period net income deducts allocated entry/exit fees and paid interest. '
+                                    'Missing evidence is not zero.' if is_paper else
+                                    'Read only requested balances, positions, inventory or orders. Does not append history.')
+                if not is_paper:
+                    properties.pop('period', None)
+                    for branch in properties.get('include', {}).get('anyOf', []):
+                        if branch.get('type') == 'array':
+                            branch['items']['enum'] = ['balances', 'positions', 'inventory', 'orders']
             if properties.get('profile_id') is not None:
                 schema.setdefault('required', []).append('profile_id')
             if is_paper and properties.get('user_id') is not None and tool.name in {'execute_trade_actions', 'get_account_state', 'get_trade_records'}:

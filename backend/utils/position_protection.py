@@ -150,6 +150,7 @@ class PositionProtection:
         for record in plan.get('entries', []):
             register_order(self.account_scope, plan['symbol'], record.get('id'), self.config_id, 'entry',
                            refresh=False, planned_entry=record.get('price'), source=record.get('source', 'agent'),
+                           replaces_order_id=record.get('replaces'),
                            **{**common_history, 'episode_id': record.get('origin_episode_id', plan.get('episode_id'))})
         for record in plan.get('legs', []):
             # Conditional/algo ID can differ from the actual execution order ID.

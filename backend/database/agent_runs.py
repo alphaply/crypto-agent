@@ -243,4 +243,7 @@ def get_agent_run(run_id: str) -> dict | None:
     result = storage.record(row)
     for key in ('messages', 'tools', 'details'):
         result[key] = json.loads(result.pop(key + '_json'))
+    if result.get('error'):
+        from backend.utils.log_safety import redact_log_text
+        result['error'] = redact_log_text(result['error'])
     return result

@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.datastructures import FormData
 
 from . import store
-from .resilience import offloaded_auth
+from .resilience import offloaded_auth, bind_scope
 from .settings import SCOPES, profiles, settings
 
 
@@ -198,6 +198,7 @@ class AuthorizationProvider:
             row = store.get('key', lookup['id'])
             if not row or row['revoked'] or row['digest'] != store.digest(token):
                 return None
+            bind_scope('key:' + row['id'])
             return AccessToken(token=token, client_id='key:' + row['id'], scopes=row['scopes'], resource=self.resource,
                                subject='admin', claims={'profile_ids': row['profile_ids'], 'principal': 'key:' + row['id'],
                                                         'key_type': row.get('key_type', 'live'), 'paper_namespace': row.get('paper_namespace')})
@@ -205,6 +206,7 @@ class AuthorizationProvider:
         if (not row or row['expires_at'] <= time.time() or row['resource'] != self.resource
                 or store.get('revoked_grant', row['claims']['grant_id'])):
             return None
+        bind_scope(row['claims'].get('principal') or row['client_id'])
         return AccessToken.model_validate({**row, 'token': token})
 
     async def verify_token(self, token):

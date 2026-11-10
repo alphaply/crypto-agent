@@ -46,13 +46,14 @@ const NewsSettingsPanel = lazy(() => import('../components/NewsSettingsPanel'));
 const DatabaseMaintenance = lazy(() => import('../components/DatabaseMaintenance'));
 const TradingRulesPanel = lazy(() => import('../components/TradingRulesPanel'));
 const AgentRunsPanel = lazy(() => import('../components/AgentRunsPanel'));
+const SystemLogsPanel = lazy(() => import('../components/SystemLogsPanel'));
 const ShortMemoryPanel = lazy(() => import('../components/AgentWorkspace').then((module) => ({ default: module.ShortMemoryPanel })));
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 const { useBreakpoint } = Grid;
 const ADMIN_TAB_STORAGE_KEY = 'crypto-agent-admin-active-tab';
-const ADMIN_TAB_KEYS = ['tasks', 'intelligence', 'providers', 'exchanges', 'mcp', 'paper', 'memory', 'runtime', 'agent-runs', 'prompts', 'database', 'importexport'];
+const ADMIN_TAB_KEYS = ['tasks', 'intelligence', 'providers', 'exchanges', 'mcp', 'paper', 'memory', 'runtime', 'logs', 'agent-runs', 'prompts', 'database', 'importexport'];
 
 const DEFAULT_STRATEGY_PROMPT = '请把以下单轮交易分析压缩为100–200字、最多4条短句的中文策略摘要。合并重复分析，保留趋势判断、关键价位、风险点、持仓/挂单意图、实际执行结果和下一步条件。不要为字数目标截断条件或结果。只输出摘要文本。\n\n内容：\n{content}';
 const DEFAULT_SHORT_MEMORY_PROMPT = '请将上一轮记忆、最近4小时含本轮的策略压缩摘要及旧版7天操作记录整理为一份纯文本摘要，不输出JSON、不另取新闻。目标300–500字，保留近期操作、策略思路、关键价位和教训，合并重复项，不硬截断。素材：\n{content}';
@@ -1764,6 +1765,7 @@ export default function AdminPage() {
           },
           // ===== 导入导出 =====
           { key: 'database', label: locale === 'zh' ? '数据库管理' : 'Database', children: <DatabaseMaintenance /> },
+          { key: 'logs', label: locale === 'zh' ? '系统日志' : 'System logs', children: <SystemLogsPanel /> },
           {
             key: 'importexport',
             label: locale === 'zh' ? '导入导出' : 'Import/Export',

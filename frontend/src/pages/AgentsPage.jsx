@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Card, Empty, Input, Segmented, Skeleton, Space, Typography } from 'antd';
+import { Alert, Button, Card, Empty, Input, Segmented, Select, Skeleton, Space, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { WorkspacePanel } from '../components/AgentWorkspace';
@@ -8,8 +8,8 @@ import { AgentStatus } from '../components/AgentRuntimeStatus';
 import { isAgentActive } from '../lib/agentRuntime';
 import { useDashboardSnapshot } from '../hooks/useDashboardSnapshot';
 import { useChartTimeframe } from '../hooks/useChartTimeframe';
+import { useWorkspaceSections } from '../hooks/useWorkspaceSections';
 import { usePreferences } from '../app/usePreferences';
-import { api } from '../lib/api';
 import { filterAgents, selectAgentId, workspaceSignature } from '../lib/dashboard';
 import './AgentsPage.css';
 
@@ -24,51 +24,28 @@ export default function AgentsPage({ authenticated = false }) {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [chartSymbols, setChartSymbols] = useState({});
-  const [workspaces, setWorkspaces] = useState({});
-  const [requestState, setRequestState] = useState(null);
+  const [memoryEdits, setMemoryEdits] = useState({});
   const agents = dashboard?.agent_summaries || [];
   const activeId = selectAgentId(agents, params.get('agent'));
   const agent = agents.find((item) => item.config_id === activeId);
   const visibleAgents = filterAgents(agents, search, filter);
   const signature = workspaceSignature(agent ? [agent] : []);
   const chartSymbol = (agent?.symbols || [agent?.symbol]).includes(chartSymbols[activeId]) ? chartSymbols[activeId] : agent?.symbol;
-  const requestKey = JSON.stringify([signature, timeframe, chartSymbol, revision, marketRefresh]);
-  const workspaceLoading = Boolean(activeId && requestState?.key !== requestKey);
-  const workspaceError = requestState?.key === requestKey ? requestState.error : '';
-
-  useEffect(() => {
-    if (!activeId) return undefined;
-    let active = true;
-    const controller = new AbortController();
-    api.get(`/public/workspace/${encodeURIComponent(activeId)}`, {
-      params: { timeframe, symbol: chartSymbol }, signal: controller.signal, timeout: 30000, silent: true,
-    }).then(({ data }) => {
-      if (active) {
-        setWorkspaces((previous) => ({ ...previous, [activeId]: data }));
-        setRequestState({ key: requestKey, error: '' });
-      }
-    }).catch((err) => {
-      if (active) setRequestState({ key: requestKey, error: err.message || 'Workspace unavailable' });
-    });
-    return () => { active = false; controller.abort(); };
-  }, [activeId, timeframe, chartSymbol, requestKey]);
+  const { workspace: sectionWorkspace, context, account, chart } = useWorkspaceSections(activeId, `${signature}:${revision}`, timeframe, chartSymbol, marketRefresh);
+  const workspaceLoading = context.loading || account.loading || chart.loading;
 
   const selectAgent = (id) => setParams((previous) => { const next = new URLSearchParams(previous); next.set('agent', id); return next; }, { replace: true });
-  const workspace = workspaces[activeId];
+  const workspace = { ...sectionWorkspace, short_memories: memoryEdits[activeId] || sectionWorkspace.short_memories };
+  useEffect(() => { setMemoryEdits({}); }, [context.updatedAt]);
   const running = agents.filter(isAgentActive).length;
-  const onMemorySaved = (saved) => setWorkspaces((previous) => {
-    const current = previous[saved.config_id];
-    if (!current) return previous;
-    const rows = current.short_memories?.short_memories || [];
-    return { ...previous, [saved.config_id]: { ...current, short_memories: {
-      ...current.short_memories,
-      short_memories: rows.map((row) => row.config_id === saved.config_id && row.bucket_start === saved.bucket_start
-        ? { ...row, market_summary: saved.market_summary } : row),
-    } } };
+  const onMemorySaved = (saved) => setMemoryEdits((previous) => {
+    const current = workspace.short_memories || {};
+    return { ...previous, [saved.config_id]: { ...current, short_memories: (current.short_memories || []).map(row => row.bucket_start === saved.bucket_start ? { ...row, market_summary: saved.market_summary } : row) } };
   });
   return <div className="boxed-page dashboard-page dashboard-v2 agents-page">
     {error && <Alert type="warning" showIcon title={error} action={<Button onClick={refresh} loading={loading}>{zh ? '重试' : 'Retry'}</Button>} />}
     {loading && !dashboard ? <Card><Skeleton active /></Card> : !agents.length ? <Card><Empty description={zh ? '尚未配置 Agent' : 'No agents configured'}><Button type="primary" onClick={() => navigate('/console/config')}>{zh ? '创建任务' : 'Create an agent'}</Button></Empty></Card> : <div className={`agents-layout${agents.length === 1 ? ' is-single' : ''}`}>
+      {agents.length > 1 && <Select className="agent-mobile-selector" aria-label={zh ? '选择任务' : 'Select task'} value={activeId} onChange={selectAgent} options={agents.map(item => ({ value: item.config_id, label: item.display_name || item.title || item.config_id }))} />}
       {agents.length > 1 && <aside className="agent-directory" aria-label={zh ? 'Agent 列表' : 'Agent list'}>
         <Typography.Text type="secondary">{zh ? `${agents.length} 个任务 · ${running} 个进行中` : `${agents.length} agents · ${running} active`}</Typography.Text>
         <Input allowClear prefix={<SearchOutlined />} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={zh ? '搜索任务、标的或模型' : 'Search agents, symbols or models'} aria-label={zh ? '搜索 Agent' : 'Search agents'} />
@@ -89,8 +66,8 @@ export default function AgentsPage({ authenticated = false }) {
             </div>
             <ScheduleDetails agents={[agent]} activeTab={activeId} locale={locale} compact />
           </header>
-          {workspaceError && <Alert type="warning" showIcon title={zh ? '持仓或行情未能更新' : 'Unable to update positions or markets'} description={workspaceError} action={<Button onClick={refresh}>{zh ? '重试' : 'Retry'}</Button>} />}
-          {workspace ? <WorkspacePanel key={activeId} compact workspace={{ ...workspace, agent }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} onMemorySaved={onMemorySaved} chartLoading={workspaceLoading} chartError={Boolean(workspaceError)} chartSymbol={chartSymbol} setChartSymbol={(symbol) => setChartSymbols((previous) => ({ ...previous, [activeId]: symbol }))} /> : <Card><Skeleton active loading={workspaceLoading}><Empty description={zh ? '行情暂时不可用，请重试。' : 'Market data unavailable. Please retry.'} /></Skeleton></Card>}
+          {context.error && <Alert type="warning" showIcon title={zh ? '决策与记忆未能更新' : 'Unable to update decisions and memory'} description={context.error} action={<Button onClick={refresh}>{zh ? '重试' : 'Retry'}</Button>} />}
+          <WorkspacePanel key={activeId} compact workspace={{ ...workspace, agent: { ...agent, ...workspace.agent, execution: agent.execution, schedule: agent.schedule } }} timeframe={timeframe} setTimeframe={setTimeframe} authenticated={authenticated} onMemorySaved={onMemorySaved} chartLoading={chart.loading} chartError={Boolean(chart.error)} chartSymbol={chartSymbol} setChartSymbol={(symbol) => setChartSymbols((previous) => ({ ...previous, [activeId]: symbol }))} />
         </>}
       </section>
     </div>}

@@ -3,7 +3,7 @@ import { Alert, Button, Card, Collapse, Drawer, Empty, Input, Progress, Select, 
 import { ExportOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { api } from '../lib/api';
-import { NEWS_STAGES, durationLabel, pipelineCounts, pipelineProgress, safeTraceUrl } from '../lib/newsPipeline';
+import { NEWS_STAGES, durationLabel, newsErrorExplanation, pipelineCounts, pipelineProgress, safeTraceUrl } from '../lib/newsPipeline';
 import './NewsPipelineMonitor.css';
 
 const NewsPipelineCharts = lazy(() => import('./NewsPipelineCharts'));
@@ -22,6 +22,7 @@ export default function NewsPipelineMonitor({ status, history = [], error, refre
   const [auditError, setAuditError] = useState('');
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [calls, setCalls] = useState([]);
   const detailRequest = useRef(null);
   const auditRequest = useRef(null);
   useEffect(() => () => { detailRequest.current?.abort(); auditRequest.current?.abort(); }, []);
@@ -37,13 +38,25 @@ export default function NewsPipelineMonitor({ status, history = [], error, refre
     } catch (err) { if (!controller.signal.aborted) setDetailError(err.message); }
     finally { if (!controller.signal.aborted) setDetailLoading(false); }
   };
-  const viewAudit = async (id) => {
+  const viewAudit = async (id, keepCalls = false) => {
     auditRequest.current?.abort();
     const controller = new AbortController(); auditRequest.current = controller;
     setAudit(null); setAuditError(''); setAuditLoading(true); setAuditOpen(true);
+    if (!keepCalls) setCalls([]);
     try {
       const { data } = await api.get(`/agent-runs/${encodeURIComponent(id)}`, { signal: controller.signal, silent: true });
       if (!controller.signal.aborted) setAudit(data.run);
+    } catch (err) { if (!controller.signal.aborted) setAuditError(err.message); }
+    finally { if (!controller.signal.aborted) setAuditLoading(false); }
+  };
+  const viewCalls = async () => {
+    if (!run.run_id) return;
+    auditRequest.current?.abort();
+    const controller = new AbortController(); auditRequest.current = controller;
+    setAudit(null); setCalls([]); setAuditError(''); setAuditLoading(true); setAuditOpen(true);
+    try {
+      const { data } = await api.get(`/news/runs/${encodeURIComponent(run.run_id)}/calls`, { signal: controller.signal, silent: true });
+      if (!controller.signal.aborted) setCalls(data.calls || []);
     } catch (err) { if (!controller.signal.aborted) setAuditError(err.message); }
     finally { if (!controller.signal.aborted) setAuditLoading(false); }
   };
@@ -58,7 +71,7 @@ export default function NewsPipelineMonitor({ status, history = [], error, refre
   const itemStates = zh ? { pending: '等待评分', scoring: '评分中', scored: '已评分', selected: '已入选', filtered: '已过滤', failed: '评分失败' }
     : { pending: 'Pending', scoring: 'Scoring', scored: 'Scored', selected: 'Selected', filtered: 'Filtered', failed: 'Failed' };
   const colors = { running: 'processing', scoring: 'processing', success: 'success', selected: 'success', failed: 'error', error: 'error', degraded: 'warning', interrupted: 'warning', scored: 'blue' };
-  const stages = zh ? ['采集', '评分', '筛选', '摘要', '发布', '完成'] : ['Collect', 'Score', 'Filter', 'Summarize', 'Publish', 'Done'];
+  const stages = zh ? ['采集', '监控维护', '评分', '筛选', '摘要', '发布', '完成'] : ['Collect', 'Watchlist', 'Score', 'Filter', 'Summarize', 'Publish', 'Done'];
   const visible = items.filter((item) => (filter === 'all' || item.status === filter)
     && `${item.title || ''} ${item.source || ''} ${item.error || ''}`.toLowerCase().includes(query.toLowerCase()));
   const sourceHealth = run.source_health || run.sources || {};
@@ -83,12 +96,13 @@ export default function NewsPipelineMonitor({ status, history = [], error, refre
     {detailError && <Alert type="error" showIcon title={detailError} />}
     {detailLoading ? <div className="news-pipeline-loading"><Spin /></div> : <>
       {run.summary_reused && <Alert type="info" showIcon title={run.summary_deferred ? (zh ? '新消息已采集，摘要等待最小生成间隔' : 'New articles collected; summary deferred by its interval') : (zh ? '摘要输入未变化，已复用，未调用摘要模型' : 'Summary inputs unchanged; reused without a model call')} description={`${zh ? '摘要生成于' : 'Summary generated at'} ${clock(run.summary_as_of)}`} />}
-      {run.error && <Alert type={state === 'error' ? 'error' : 'warning'} showIcon title={state === 'error' ? (zh ? '本轮未发布，继续使用上次成功快照' : 'No new snapshot published; keeping the last successful result') : (zh ? '部分消息未完成处理' : 'Some items could not be processed')} description={state === 'degraded' && counts.failed ? (zh ? `${counts.failed} 条评分失败；已从 ${counts.scored} 条成功结果中筛选 ${counts.selected} 条生成摘要。下方可查看失败原因和调用记录。` : `${counts.failed} items failed scoring. ${counts.selected} of ${counts.scored} successful results were selected for the summary. See the item errors and call records below.`) : run.error} />}
+      {run.error && <Alert type={state === 'error' ? 'error' : 'warning'} showIcon title={state === 'error' ? (zh ? '本轮未发布，继续使用上次成功快照' : 'No new snapshot published; keeping the last successful result') : (zh ? '部分消息未完成处理' : 'Some items could not be processed')} description={state === 'degraded' && counts.failed ? (zh ? `${counts.failed} 条评分失败；已从 ${counts.scored} 条成功结果中筛选 ${counts.selected} 条生成摘要。下方可查看失败原因和调用记录。` : `${counts.failed} items failed scoring. ${counts.selected} of ${counts.scored} successful results were selected for the summary. See the item errors and call records below.`) : newsErrorExplanation(run.error, run.error_details, locale)} />}
+      {run.error_details && <Collapse size="small" items={[{ key: 'error', label: zh ? '查看具体错误与堆栈' : 'Error details and stack trace', children: <Space direction="vertical" style={{ width: '100%' }}><Space wrap><Tag>{stages[Math.max(0, NEWS_STAGES.indexOf(run.error_details.stage || run.stage))]}</Tag><Text>{run.error_details.cause_type}</Text><Text code>{run.error_code}</Text>{run.error_details.model && <Tag>{run.error_details.model}</Tag>}{run.error_details.http_status && <Tag>HTTP {run.error_details.http_status}</Tag>}{run.error_details.attempts && <Text>{zh ? '尝试次数：' : 'Attempts: '}{run.error_details.attempts}</Text>}</Space><Text copyable>{run.error_details.message}</Text><pre className="settings-code">{run.error_details.traceback}</pre></Space> }]} />}
       <div className="news-pipeline-stats">{stats.map(([label, value, caption], index) => <div key={label} className={`news-stat ${index === 2 && counts.failed ? 'news-stat-error' : ''}`}><span>{label}</span><strong>{value}</strong><small>{caption}</small></div>)}</div>
       {run.run_id || run.stage ? <div className="news-pipeline-stages">
         <Steps size="small" current={Math.max(0, NEWS_STAGES.indexOf(run.stage))} status={state === 'error' ? 'error' : run.stage === 'complete' ? 'finish' : 'process'} items={stages.map((title) => ({ title }))} />
         <div className="news-score-progress"><Text type="secondary">{stages[Math.max(0, NEWS_STAGES.indexOf(run.stage))]} · {progress.completed} / {progress.total}</Text><Progress percent={progress.percent} size="small" status={state === 'error' ? 'exception' : running ? 'active' : 'normal'} /></div>
-        <Space wrap className="news-trace-links"><Text type="secondary">{zh ? '批次' : 'Run'} {run.run_id?.slice(0, 12) || '—'}</Text>{traceUrl ? <a href={traceUrl} target="_blank" rel="noreferrer"><ExportOutlined /> LangSmith</a> : <Text type="secondary">{zh ? 'LangSmith：' : 'LangSmith: '}{({ disabled: zh ? '未启用，可在运行设置配置' : 'Disabled; configure in runtime settings', error: zh ? '追踪发送失败，本地记录仍可查看' : 'Trace export failed; local records remain available', unavailable: zh ? '追踪暂不可用' : 'Unavailable' })[run.trace_status] || (zh ? '暂无远程追踪链接' : 'No remote trace link')}</Text>}</Space>
+        <Space wrap className="news-trace-links"><Text type="secondary" copyable={run.run_id ? { text: run.run_id } : false}>{zh ? '批次' : 'Run'} {run.run_id?.slice(0, 12) || '—'}</Text>{run.run_id && <Button size="small" onClick={viewCalls}>{zh ? '本轮模型调用记录' : 'Model calls for this run'}</Button>}{traceUrl ? <a href={traceUrl} target="_blank" rel="noreferrer"><ExportOutlined /> LangSmith</a> : <Text type="secondary">{zh ? 'LangSmith：' : 'LangSmith: '}{({ disabled: zh ? '未启用，可在运行设置配置' : 'Disabled; configure in runtime settings', error: zh ? '追踪发送失败，本地记录仍可查看' : 'Trace export failed; local records remain available', unavailable: zh ? '追踪暂不可用' : 'Unavailable' })[run.trace_status] || (zh ? '暂无远程追踪链接' : 'No remote trace link')}</Text>}</Space>
       </div> : null}
       {items.length > 0 ? <>
         <Suspense fallback={<div className="news-pipeline-loading"><Spin /></div>}><NewsPipelineCharts items={items} locale={locale} /></Suspense>
@@ -104,11 +118,17 @@ export default function NewsPipelineMonitor({ status, history = [], error, refre
         { title: zh ? '来源' : 'Source', render: (_, item) => item.name || item.id || item.source_id },
         { title: zh ? '状态' : 'Status', dataIndex: 'status', render: (value) => <Tag color={value === 'ok' ? 'success' : value === 'error' ? 'error' : undefined}>{value}</Tag> },
         { title: zh ? '条数' : 'Items', render: (_, item) => item.item_count ?? item.count ?? '—' },
-        { title: zh ? '详情' : 'Detail', render: (_, item) => item.error || item.message || '—' },
+        { title: zh ? '详情' : 'Detail', render: (_, item) => item.error_details?.message || item.error || item.message || '—' },
       ]} scroll={{ x: 500 }} /> }]} />}
     </>}
-    <Drawer title={zh ? '消息评分调用记录' : 'News scoring call'} open={auditOpen} width={800} onClose={() => { auditRequest.current?.abort(); setAuditOpen(false); }}>
+    <Drawer title={zh ? '消息模型调用记录' : 'News model calls'} open={auditOpen} width={800} onClose={() => { auditRequest.current?.abort(); setAuditOpen(false); }}>
+      {calls.length > 0 && <Table size="small" rowKey="run_id" dataSource={calls} pagination={{ pageSize: 10 }} scroll={{ x: 550 }} columns={[
+        { title: zh ? '调用' : 'Call', render: (_, call) => <Space direction="vertical" size={0}><Text>{clock(call.started_at)} · {call.purpose === 'news_summary' ? (zh ? '摘要生成' : 'Summary') : (zh ? '消息评分' : 'Scoring')}</Text><Text type="secondary">{call.model}</Text></Space> },
+        { title: zh ? '结果 / 原因' : 'Result / reason', render: (_, call) => <Space direction="vertical" size={0}><Tag color={call.status === 'error' ? 'red' : call.status === 'success' ? 'green' : undefined}>{call.status}</Tag>{call.error && <Text type="danger">{call.error}</Text>}</Space> },
+        { title: '', render: (_, call) => <Button size="small" onClick={() => viewAudit(call.run_id, true)}>{zh ? '请求与响应' : 'Request and response'}</Button> },
+      ]} />}
       {auditLoading && <Spin />}{auditError && <Alert type="error" showIcon title={auditError} />}
+      {!auditLoading && !auditError && !audit && calls.length === 0 && <Empty description={zh ? '没有可查看的模型调用记录（可能未调用模型，或已按保留规则清理）' : 'No model calls available; the run may not have invoked a model or its records were pruned'} />}
       {audit && <div className="settings-stack"><Space wrap><Tag>{audit.model}</Tag><Tag>{audit.status}</Tag><Text type="secondary">{clock(audit.started_at)}</Text></Space>{audit.error && <Alert type="error" showIcon title={audit.error} />}<Text strong>{zh ? '请求' : 'Request'}</Text><pre className="settings-code">{JSON.stringify(audit.messages || [], null, 2)}</pre><Text strong>{zh ? '响应 / 校验信息' : 'Response / validation'}</Text><pre className="settings-code">{audit.output || JSON.stringify(audit.details || {}, null, 2)}</pre></div>}
     </Drawer>
   </Card>;

@@ -128,6 +128,8 @@ def _save(conn, account):
     encoded = json.dumps({k: v for k, v in account.items() if not k.startswith('_')}, allow_nan=False)
     conn.execute('INSERT INTO paper_accounts(namespace,user_id,payload) VALUES(%s,%s,%s) ON CONFLICT(namespace,user_id) DO UPDATE SET payload=excluded.payload',
                  (account['namespace'], account['user_id'], encoded))
+    from .paper_statistics import sync_account
+    sync_account(conn, account)
 
 
 def upgrade_account(conn, account):
@@ -190,9 +192,13 @@ def upgrade_account(conn, account):
 
 
 def _event(conn, account, kind, details, operation_id=None):
-    conn.execute('INSERT INTO paper_events(namespace,user_id,timestamp,kind,operation_id,payload) VALUES(%s,%s,%s,%s,%s,%s)',
-                 (account['namespace'], account['user_id'], time.time(), kind, operation_id,
-                  json.dumps({**details, 'cash_after': account['cash'], 'debt_after': account['debt']}, allow_nan=False)))
+    timestamp = time.time()
+    payload = {**details, 'cash_after': account['cash'], 'debt_after': account['debt'], 'account_epoch': account.get('account_epoch')}
+    row = conn.execute('INSERT INTO paper_events(namespace,user_id,timestamp,kind,operation_id,payload) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id',
+                       (account['namespace'], account['user_id'], timestamp, kind, operation_id, json.dumps(payload, allow_nan=False))).fetchone()
+    from .paper_statistics import on_event
+    on_event(conn, account, dict(id=row[0], namespace=account['namespace'], user_id=account['user_id'],
+                                timestamp=timestamp, kind=kind, operation_id=operation_id, payload=payload))
 
 
 def _receipt(conn, namespace, user_id, operation_id, request):
@@ -855,6 +861,12 @@ async def maintenance_round(stop: asyncio.Event):
         processed += 1
         if plan['scan_complete']:
             break
+    # Statistics failures must never prevent settlement, recovery or matching.
+    from .paper_statistics import maintain_statistics
+    try:
+        await run('read', maintain_statistics, label='paper_statistics')
+    except Exception as exc:
+        logger.warning('paper_statistics_failed type=%s', type(exc).__name__)
     return {'processed_instruments': processed, 'scanned_accounts': scanned}
 
 

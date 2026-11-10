@@ -325,10 +325,12 @@ def _snapshot_real_equity(config, mt):
 
     try:
         status = mt.get_account_status(symbol, is_real=True, config_id=config_id)
-        balance = float(status.get("balance") or 0)
+        if status.get('error') or status.get('balance') is None:
+            return
+        balance = float(status['balance'])
         positions = status.get("real_positions") or []
         unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
-        if balance > 0:
+        if math.isfinite(balance) and math.isfinite(unrealized):
             save_balance_snapshot(symbol, balance, unrealized, config_id=config_id)
             logger.debug(
                 f"[EquitySnapshot] REAL {config_id} {symbol}: "
@@ -587,6 +589,13 @@ def _sync_execution(config):
                     logger.warning(f"[ExecutionSync] {config['config_id']} {symbol}: {result['error']}")
             except Exception as exc:
                 logger.warning(f"[ExecutionSync] {config['config_id']} {symbol}: {exc}")
+        try:
+            from backend.utils.real_returns import sync_binance_cashflows
+            flow_sync = sync_binance_cashflows(mt.exchange, config['config_id'])
+            if flow_sync.get('error'):
+                logger.warning('[CashflowSync] %s: %s', config['config_id'], flow_sync['error'])
+        except Exception as exc:
+            logger.warning('[CashflowSync] %s: %s', config['config_id'], type(exc).__name__)
     except Exception as exc:
         logger.warning(f"[ExecutionSync] {config['config_id']}: {exc}")
 
@@ -761,6 +770,7 @@ def job(now: datetime | None = None):
 def tick_shared_services():
     """Each service owns its nonblocking cadence and durable retry state."""
     for module_name, function_name in (
+        ('backend.app.services.log_service', 'tick_log_cleanup'),
         ('backend.app.services.news_service', 'tick_news_pipeline'),
         ('backend.app.services.pricing_service', 'tick_price_sync'),
         ('backend.agent.memory_updates', 'tick_memory_updates'),

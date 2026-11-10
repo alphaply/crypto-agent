@@ -306,10 +306,15 @@ def execute(caller, user_id, request, operation_id):
                 raise  # Intent/identity conflicts retain their original contract.
             return _intent_storage_failure(operation_id, user_id)
         try:
+            from backend.agent.trading_contracts import TradeParameterError
             from backend.agent.unified_trading import validate_for_config
             account = paper.get_account(caller, user_id)
             config = {**paper.settings(), **account, 'mode': 'PAPER', 'market_type': 'paper', 'exit_mode': 'paper'}
-            parsed = validate_for_config(request, config, engine='paper')
+            try:
+                parsed = validate_for_config(request, config, engine='paper')
+            except TradeParameterError:
+                payload.update(phase='preflight', submitted=False, error_code='invalid_request')
+                raise
             from .paper_policy import preflight_actions
             with store.connection() as conn:
                 preflight_actions(conn, paper._get(conn, namespace, user_id), parsed.actions)

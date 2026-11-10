@@ -15,9 +15,7 @@ def _resource_facts(row):
     if row.get('source'):
         parts.append('来源 ' + _text(row['source']))
     if row.get('supported_actions'):
-        parts.append('能力 ' + '/'.join(row['supported_actions']) + '（执行前核验）')
-    if row.get('observed_at') is not None:
-        parts.append('观察时间 ' + _text(row['observed_at']))
+        parts.append('能力 ' + '/'.join(row['supported_actions']))
     return (' | ' + '；'.join(parts)) if parts else ''
 
 

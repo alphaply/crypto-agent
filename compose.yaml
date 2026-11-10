@@ -14,6 +14,11 @@ x-app: &app
     db:
       condition: service_healthy
   restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "6"
 
 services:
   db:

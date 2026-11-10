@@ -29,37 +29,13 @@ def save_short_memory(*args, **kwargs):
 
 
 def format_recent_position_history_for_memory(config_id: str, agent_config: dict) -> str:
-    """Restore only the old seven-day closed-position/fill evidence."""
-    from backend import database
-    symbol = agent_config.get('symbol', '')
-    mode = str(agent_config.get('mode') or 'STRATEGY').upper()
-    if mode not in {'REAL', 'STRATEGY'}:
-        return ''
-    now = datetime.now(TZ_CN)
-    lines = [f"证据读取时间：{now.strftime('%Y-%m-%d %H:%M:%S %Z')}"]
-    if mode == 'REAL':
-        from backend.utils.execution_ledger import recent_activity_data, recent_activity_summary, closed_positions_from_activity
-        lines.append('统计范围：当前交易所账户下该标的的全部已记录成交，含其他任务和手动交易；不是单个Agent战绩。')
-        try:
-            activity = recent_activity_data(config_id, symbol, now)
-            rows = closed_positions_from_activity(activity)
-            lines.append(database.format_closed_positions_summary(rows, days=7))
-            lines.append(recent_activity_summary(config_id, symbol, now, data=activity))
-        except Exception:
-            logger.exception('Seven-day account-symbol history unavailable for %s', config_id)
-            lines.append('7天成交与平仓记录读取失败，不能据此断言没有交易或收益为零。')
-        return '\n'.join(lines)
-    try:
-        rows = database.get_closed_positions_7d(config_id, symbol=symbol, days=7, mode=mode)
-        lines.append(database.format_closed_positions_summary(rows, days=7))
-    except Exception:
-        logger.exception('Seven-day closed positions unavailable for %s', config_id)
-        lines.append('7天平仓记录读取失败，不能据此断言没有交易或收益为零。')
-    return '\n'.join(lines)
+    """One bounded task-scoped statistics block; no full historical ledger."""
+    from backend.utils.task_performance import task_history_context
+    return task_history_context(config_id, agent_config)
 
 
 def format_memory_evidence(evidence: str) -> str:
-    return ('\n\n最近7天操作记录（成交/平仓，不是实时持仓；缺失事实不补零）：\n' + evidence) if evidence else ''
+    return ('\n\n最近7天与全部历史统计（仅当前任务；不是实时持仓；缺失事实不补零）：\n' + evidence) if evidence else ''
 
 
 def build_memory_input(rows, previous: str, evidence: str, beginning: str, end: str) -> str:

@@ -28,6 +28,7 @@ def event_slug(value: str) -> str:
 
 class PolymarketSettings(BaseModel):
     enabled: bool = False
+    auto_manage: bool = True
     events: list[str] = Field(default_factory=list, max_length=8)
     refresh_seconds: int = Field(default=300, ge=60, le=3600)
 
@@ -87,18 +88,18 @@ def fetch_event(slug: str, timeout: float = 5.0) -> list[dict]:
     return [{
         'slug': slug, 'title': _clean_text(payload.get('title'))[:500],
         'url': f'https://polymarket.com/event/{slug}',
-        'closed': bool(payload.get('closed')), 'end_date': payload.get('endDate'),
+        'closed': bool(payload.get('closed')), 'active': bool(payload.get('active')), 'end_date': payload.get('endDate'),
         'volume_24h': number(payload.get('volume24hr')),
         'liquidity': number(payload.get('liquidity')), 'markets': markets,
     }]
 
 
-def get_polymarket_context() -> dict:
+def get_polymarket_context(settings_payload: dict | None = None) -> dict:
     from backend.config import config
     from backend.utils.news_context import _fetch_cached, _parse_iso
 
-    settings = PolymarketSettings.model_validate(getattr(config, 'polymarket', {}) or {})
-    result = {'enabled': settings.enabled, 'refresh_seconds': settings.refresh_seconds, 'events': [], 'source_health': {}}
+    settings = PolymarketSettings.model_validate(settings_payload if settings_payload is not None else getattr(config, 'polymarket', {}) or {})
+    result = {'enabled': settings.enabled, 'auto_manage': settings.auto_manage, 'refresh_seconds': settings.refresh_seconds, 'events': [], 'source_health': {}}
     if not settings.enabled or not settings.events:
         return result
     now = datetime.now(timezone.utc)
