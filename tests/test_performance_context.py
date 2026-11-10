@@ -21,7 +21,7 @@ def test_equity_loss_recovery_and_drawdown():
     assert equity_metrics(rows + [{'timestamp': '7', 'total_equity': 0}])['return_pct'] == -100
 
 
-def test_performance_is_strictly_scoped_and_uses_selected_window():
+def test_performance_is_strictly_scoped_and_uses_selected_window(monkeypatch):
     from datetime import datetime
     from backend.utils.performance_context import performance_data
     conn = storage.connect()
@@ -35,6 +35,10 @@ def test_performance_is_strictly_scoped_and_uses_selected_window():
         (5, 'a', 'BTC/USDT', '2020-01-01', 1000),
     ])
     conn.commit()
+    from backend.utils import real_returns
+    monkeypatch.setattr(real_returns, 'configured_scope', lambda *args, **kwargs: 'verified-account')
+    real_returns._save_page('verified-account', real_returns.timestamp_ms('2026-10-14 00:00:18'),
+                           real_returns.timestamp_ms('2026-10-14 13:00:00'), [], 0)
     data = performance_data('a', 'BTC/USDT', 'REAL', now=datetime(2026, 10, 14, 13))
     assert data['equity']['return_pct'] == pytest.approx(-8)
     assert data['equity']['start']['timestamp'] == '2026-10-14 00:00:18'

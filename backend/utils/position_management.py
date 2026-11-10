@@ -1222,7 +1222,7 @@ def _management_action(market_tool, symbol, side, operation_id, *, automatic=Tru
             return
         if not _active_management.get():
             reconcile_visible_actions(market_tool.config_id)
-        with financial_reservation(market_tool, claim, operation_id):
+        with financial_reservation(market_tool, claim, operation_id, order_id=order_id):
             # Reuse the original independent reservation context so its nested
             # tools do not try to acquire an unrelated file lock again.
             token = _in_action.set({'operation_id': operation_id, 'account_scope': _legacy_scope_for_tool(market_tool),

@@ -76,9 +76,9 @@ def test_eth_history_includes_manual_and_other_tasks_without_waiting_for_index(a
     assert [p['net_realized_pnl'] for p in closed] == pytest.approx([-5.2, 9.8])
     assert len(database.get_closed_positions_7d('cfg', 'ETH/USDT', mode='REAL')) == 2
     memory = format_recent_position_history_for_memory('cfg', dict(symbol='ETH/USDT', mode='REAL'))
-    assert '完整平仓周期: 2 笔' in memory and '胜率: 50.0%' in memory
-    assert '+4.70 USDT' in memory and '不是单个Agent战绩' in memory
-    assert '同步尚未完整覆盖' in memory
+    assert '完整平仓0' in memory and '仅当前任务' in memory
+    assert '+4.70 USDT' not in memory
+    assert '7天覆盖完整：False' in memory
     # Two task views of the same real account/symbol show the same statistics.
     other = performance_data('another-task', 'ETH/USDT', 'REAL', now=now, include_details=True)
     assert other['profit']['amount'] == data['profit']['amount']

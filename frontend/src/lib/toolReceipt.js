@@ -11,7 +11,7 @@ const singleTradeTools = {
   cancel_order: 'cancel', set_position_protection: 'protect',
 };
 export function isTradingTool(name = '') {
-  return Object.hasOwn(singleTradeTools, name) || tradeActions.has(name) || /^(execute_trade_actions|execute_trade|open_position_|close_position_|cancel_orders_|update_entry_order_|update_exit_order|update_position_protection_)/.test(name);
+  return name === 'automatic_exit' || Object.hasOwn(singleTradeTools, name) || tradeActions.has(name) || /^(execute_trade_actions|execute_trade|open_position_|close_position_|cancel_orders_|update_entry_order_|update_exit_order|update_position_protection_)/.test(name);
 }
 
 export function parseReceipt(content) {

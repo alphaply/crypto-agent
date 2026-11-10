@@ -163,7 +163,9 @@ def test_later_quantity_with_unconfirmed_added_cost_is_unknown(spot):
     spot.exchange_orders[('partial', 'BTC/USDT')] = {
         'status': 'open', 'filled': 0.4, 'cost': 20, 'average': 50,
     }
-    assert spot.stats() is None
+    result = spot.stats()
+    assert result['valuation_status'] == 'evidence_unavailable'
+    assert result['return_pct'] is None and result['errors']
     assert spot.snapshots == []
 
 

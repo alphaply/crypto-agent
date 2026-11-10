@@ -27,7 +27,10 @@ def test_schema_metrics_are_actual_advertised_contracts(ledger, monkeypatch):
         cfg = {'mode': mode, 'exit_mode': exit_mode}
         public = [convert_to_openai_tool(tool) for tool in get_trade_tools_for_mode(mode, cfg)]
         compatibility = [convert_to_openai_tool(tool) for tool in get_trade_tools_for_mode(mode, cfg, include_legacy=True)]
-        assert [tool['function']['name'] for tool in public] == ['execute_trade_actions']
+        expected = ['open_position', 'close_position', 'edit_order', 'cancel_order']
+        if exit_mode != 'independent_exits' or mode == 'SPOT_DCA':
+            expected.append('set_position_protection')
+        assert [tool['function']['name'] for tool in public] == expected
         assert not {'get_trade_operation', 'get_operation', 'get_paper_operation'} & {
             tool['function']['name'] for tool in compatibility}
         result[f'{mode}/{exit_mode}'] = {'default_tools': len(public), 'default_bytes': size(public),

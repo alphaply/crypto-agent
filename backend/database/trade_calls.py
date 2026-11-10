@@ -59,6 +59,8 @@ def list_trade_calls(config_id: str, *, page=1, per_page=20, action=None, status
             conditions.append(f'c.{column}{operator}%s')
             parameters.append(value)
     with database.get_db_conn() as conn:
+        from backend.database.execution_events import backfill_automatic_exits
+        backfill_automatic_exits(conn, config_id)
         # Recovery writes the canonical receipt. Reflect it without another
         # financial invocation and without assigning a new operation identity.
         conn.execute('''UPDATE agent_trade_calls c SET result_json=r.result,
@@ -79,5 +81,6 @@ def list_trade_calls(config_id: str, *, page=1, per_page=20, action=None, status
         item = dict(row)
         item['arguments'] = json.loads(item.pop('arguments_json'))
         item['result'] = json.loads(item.pop('result_json') or 'null')
+        item['source'] = 'automatic' if item['tool_name'] == 'automatic_exit' else 'model'
         items.append(item)
     return dict(items=items, total=count, page=page, per_page=per_page)

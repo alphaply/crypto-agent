@@ -106,6 +106,10 @@ def test_verified_zero_and_partial_cycle_realized_profit():
 
 def test_supplied_equity_change_and_incomplete_profit_are_distinct(simulation, monkeypatch):
     from backend.utils import execution_ledger
+    from backend.utils import real_returns
+    monkeypatch.setattr(real_returns, 'configured_scope', lambda *args, **kwargs: 'test-account')
+    real_returns._save_page('test-account', real_returns.timestamp_ms('2026-10-14 00:00:18'),
+                           real_returns.timestamp_ms('2026-10-14 13:00:00'), [], 0)
     monkeypatch.setattr('backend.utils.trade_evidence.configured_account_scope', lambda _: 'test-account')
     ledger = complete_ledger(window_complete=False, unknown_owner_fill_count=5, fill_count=0)
     monkeypatch.setattr(execution_ledger, 'execution_context', lambda *a, **k: '\n' + json.dumps(ledger))

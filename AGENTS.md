@@ -56,6 +56,8 @@
 ## 提交与 Pull Request 指南
 使用聚焦的前缀式提交信息，例如 `feat: ...`、`fix: ...`、`refactor: ...`。
 
+- 每次需求修改完成并通过必要验证后，默认直接完成本次改动的 Git commit、前端构建、本地 Docker 镜像构建与隔离启动验证，随后推送 `origin/beta`，并将镜像推送到 Docker Hub 的 `alphaply712/crypto-agent`（同时发布 `git-<short-sha>` 与 `latest`），无需再次询问是否提交或发布。仅提交本次需求相关文件，保留无关本地改动；镜像构建内容必须与发布提交一致，有无关改动时使用隔离检出构建。发布遵循 `docs/DEPLOYMENT_GUIDE.md` 的验证要求，完成后报告 Git commit、镜像标签和 digest；任一步失败，停止依赖它的后续步骤并说明已完成与待完成阶段。推送镜像不自动重启生产容器，生产上线仍需用户单独要求。
+
 PR 应包含：
 - 目的与范围
 - 受影响的模块或 API

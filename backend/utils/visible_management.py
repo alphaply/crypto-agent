@@ -684,7 +684,7 @@ def assert_current_owner(conn, owner, legacy_scope, symbol, side, *, claim_id=No
 
 
 @contextmanager
-def financial_reservation(mt, claim, operation_id):
+def financial_reservation(mt, claim, operation_id, *, order_id=None):
     from backend.utils.deployment_mode import ensure_execution_enabled
     ensure_execution_enabled()
     active = _active_management.get()
@@ -701,6 +701,14 @@ def financial_reservation(mt, claim, operation_id):
     spot_buy = (str(_config(mt).get('mode', '')).upper() == 'SPOT_DCA'
                 and claim['market_type'] == 'spot' and attempt is not None
                 and attempt.action == 'open' and attempt.operation_id == operation_id)
+    # Cancel only the explicitly identified order. The spot adapter verifies its
+    # current exchange identity before writing, and keeps uncertain ACKs pending.
+    # A historical unrelated write must not prevent releasing a known order.
+    spot_cancel = (str(_config(mt).get('mode', '')).upper() == 'SPOT_DCA'
+                   and claim['market_type'] == 'spot' and attempt is not None
+                   and attempt.action == 'cancel' and attempt.operation_id == operation_id
+                   and isinstance(order_id, str) and bool(order_id.strip()))
+    independent_spot_action = spot_buy or spot_cancel
     with scope_file_lock(claim['physical_account'], claim['market_type'], claim['resource']):
         with database.get_db_conn() as conn:
             lock_scope(conn, 'management-resource', claim['physical_account'], claim['market_type'], claim['resource'])
@@ -708,20 +716,21 @@ def financial_reservation(mt, claim, operation_id):
             if not current or current['version'] != claim['version'] or current['state'] != 'owned':
                 raise ManagementConflict('Management changed before submission', current)
             old = conn.execute("SELECT * FROM visible_management_actions WHERE claim_id=%s AND state IN ('running','unknown','pending')", (claim['claim_id'],)).fetchone()
-            if old and not spot_buy and (old['operation_id'] != operation_id or old['owner'] != mt.config_id):
+            if old and not independent_spot_action and (old['operation_id'] != operation_id or old['owner'] != mt.config_id):
                 raise ValueError('An original financial operation in this scope requires verification')
             # Compatibility entry points persisted pending writes separately.
-            # Keep that verification gate for actions other than spot buys.
+            # Keep the verification gate for actions other than spot buys and
+            # explicitly targeted spot cancellations.
             legacy = conn.execute("SELECT 1 FROM position_management_actions WHERE "
                                   "account_scope IN (SELECT legacy_scope FROM management_account_aliases WHERE physical_account=%s) "
                                   "AND symbol=%s AND (side=%s OR side='BOTH' OR %s='BOTH') "
                                   "AND state IN ('running','unresolved') LIMIT 1",
                                   (claim['physical_account'], claim['symbol'], claim['side'], claim['side'])).fetchone()
-            if legacy and not spot_buy:
+            if legacy and not independent_spot_action:
                 raise ValueError('An original financial operation in this scope requires verification')
-            # Keep the original unresolved identity for recovery; the new buy
+            # Keep the original unresolved identity for recovery; the new action
             # uses its own durable trade_action_runs and budget records.
-            record_action = not (spot_buy and old)
+            record_action = not (independent_spot_action and old)
             if record_action:
                 conn.execute('INSERT INTO visible_management_actions(claim_id,owner,version,operation_id,state,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(claim_id) DO UPDATE SET owner=excluded.owner,version=excluded.version,operation_id=excluded.operation_id,state=excluded.state,payload=excluded.payload',
                              (claim['claim_id'], mt.config_id, claim['version'], operation_id, 'running', json.dumps({'symbol': claim['symbol']})))

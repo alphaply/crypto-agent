@@ -61,6 +61,14 @@ def spot_buys(financial_pg, monkeypatch):
             self.available -= amount * price
             return deepcopy(order)
 
+        def cancel_order(self, identity, symbol):
+            order = self.orders[identity]
+            assert order['symbol'] == symbol
+            order['status'] = 'canceled'
+            self.available += order['remaining'] * order['price']
+            self.writes.append({'cancel': identity})
+            return deepcopy(order)
+
     venue = Venue()
     mt = object.__new__(MarketTool)
     mt.config_id, mt.runtime_config, mt.exchange, mt.market_type = 'spot', cfg, venue, 'spot'
@@ -148,6 +156,53 @@ def test_spot_sell_still_requires_original_operation_verification(spot_buys):
     assert result['status'] == 'failed'
     assert 'requires verification' in result['results'][0]['result']['error']
     assert not spot_buys.venue.writes
+
+
+@pytest.mark.parametrize('state,legacy', [('unknown',False),('pending',False),('running',False),('unresolved',True)])
+def test_old_action_does_not_block_exact_spot_cancel_or_release_unverified_history(spot_buys,state,legacy):
+    table = old_action(spot_buys,state,legacy)
+    assert execute(spot_buys,[opening()],operation='entry')['status'] == 'submitted'
+    action = {'action':'cancel','symbol':'BNB/USDT','order_id':'regular:1','reason':'下移需求区重挂'}
+    result = execute(spot_buys,[action],operation='cancel')
+    assert result['status'] == 'completed'
+    assert spot_buys.venue.orders['1']['status'] == 'canceled'
+    assert spot_buys.venue.available == pytest.approx(100)
+    from backend.utils.spot_execution import spot_budget_status
+    assert spot_budget_status('spot',spot_buys.cfg)['lifetime_committed'] == 0
+    from backend.utils.task_order_history import task_orders
+    from backend.utils.task_performance import summarize_history
+    orders = task_orders('spot',['BNB/USDT'],'SPOT_DCA')
+    stats = summarize_history([],[],since_ms=0,end_ms=2_000_000_000_000,currency='USDT',orders=orders)
+    assert stats['cancel_rate'] == 100
+    assert execute(spot_buys,[action],operation='cancel') == result
+    assert spot_buys.venue.writes.count({'cancel':'1'}) == 1
+    with database.get_db_conn() as conn:
+        assert conn.execute(f'SELECT state FROM {table} WHERE operation_id=%s',('old-bnb-operation',)).fetchone()[0] == state
+
+
+def test_spot_cancel_still_verifies_exact_market_before_writing(spot_buys):
+    old_action(spot_buys,'unknown')
+    assert execute(spot_buys,[opening()],operation='entry')['status'] == 'submitted'
+    spot_buys.venue.orders['1']['symbol'] = 'BTC/USDT'
+    result = execute(spot_buys,[{'action':'cancel','symbol':'BNB/USDT','order_id':'regular:1','reason':'cancel'}])
+    assert result['status'] == 'failed'
+    assert not any('cancel' in write for write in spot_buys.venue.writes)
+
+
+def test_unknown_spot_cancel_is_not_retried_and_does_not_claim_released_funds(spot_buys,monkeypatch):
+    old_action(spot_buys,'unknown')
+    assert execute(spot_buys,[opening()],operation='entry')['status'] == 'submitted'
+    seen=[]
+    def uncertain(*args):
+        seen.append(args)
+        raise TimeoutError('offline lost ACK')
+    monkeypatch.setattr(spot_buys.venue,'cancel_order',uncertain)
+    action={'action':'cancel','symbol':'BNB/USDT','order_id':'regular:1','reason':'cancel'}
+    result=execute(spot_buys,[action],operation='uncertain-cancel')
+    assert result['status'] in {'unknown','pending'}
+    assert execute(spot_buys,[action],operation='uncertain-cancel')['status'] in {'unknown','pending'}
+    assert len(seen)==1
+    assert spot_buys.venue.available < 100
 
 
 def test_spot_buy_keeps_same_price_deduplication(spot_buys):

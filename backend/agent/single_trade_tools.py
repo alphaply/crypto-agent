@@ -32,6 +32,10 @@ class SingleTradeParameterError(ValueError):
         detail = detail.removeprefix(PARAMETER_ERROR_PREFIX).replace('本批未提交。', '')
         detail = re.sub(r'第\s*1\s*项[：:]?\s*|actions\[0\]:\s*', '', detail)
         detail = detail.replace('Field required', '必填').replace('Extra inputs are not permitted', '不接受此字段')
+        if 'requires trigger_price' in detail:
+            detail += ('；trigger_price 是止盈/止损的触发价，必须按本次计划显式填写。'
+                       '条件市价单只填 trigger_price；条件限价单还要填写执行限价 price。'
+                       '请补齐缺参后重新调用本工具，不要重发其他已成功或待核验的操作')
         super().__init__(f'{PARAMETER_ERROR_PREFIX}{tool_name}：{detail.rstrip("。 ")}。本次{label}未提交。')
 
 
@@ -56,6 +60,25 @@ def _schema(tool_name: str, config: dict, batch_schema: dict) -> dict:
         schema['properties']['remaining_amount']['description'] = (
             '目标未成交币数；已成交0.2、此处填0.5，订单总量为0.7。全部平仓单不可设置。')
     schema['examples'] = [_example(action, config, schema)]
+    if action == 'close':
+        kinds = schema['properties']['order_type']['enum']
+        rules = []
+        prices = {'limit': {'price': 100}, 'stop_market': {'trigger_price': 95},
+                  'take_profit_market': {'trigger_price': 105},
+                  'stop_limit': {'trigger_price': 95, 'price': 94},
+                  'take_profit_limit': {'trigger_price': 105, 'price': 104},
+                  'stop_loss': {'trigger_price': 95}, 'take_profit': {'trigger_price': 105},
+                  'oco': {'stop_loss': 95, 'take_profit': 105}}
+        for kind in kinds:
+            fields = prices.get(kind, {})
+            rules.append(f'{kind}: ' + (' + '.join(fields) if fields else '不填价格'))
+            if fields:
+                schema['examples'].append({**schema['examples'][0], 'order_type': kind, **fields})
+        schema['properties']['order_type']['description'] += '价格字段必须与类型匹配：' + '；'.join(rules) + '。'
+        if 'trigger_price' in schema['properties']:
+            schema['properties']['trigger_price']['description'] = (
+                '止盈/止损触发价。stop_market、take_profit_market、stop_limit、take_profit_limit 必填；'
+                '不同于执行限价 price，不会自动从 price 或理由中提取。')
     return schema
 
 
@@ -97,8 +120,14 @@ def _description(tool_name: str, schema: dict) -> str:
                 'close_position': 'side：LONG 平多，SHORT 平空。',
                 'set_position_protection': 'side：LONG 保护多头，SHORT 保护空头。',
             }[tool_name]
+    if tool_name == 'close_position':
+        description += schema['properties']['order_type']['description']
+        description += 'amount（币数）与 close_all=true（全部平仓，限支持的类型）二选一。' if 'close_all' in schema['properties'] else 'amount 必填，单位为币数。'
     example = json.dumps(schema['examples'][0], ensure_ascii=False, separators=(',', ':'))
-    return (description + '每次一笔。参数示例（按实际意图填写）：' + example +
+    conditional = ('。其他订单类型示例（每项为独立调用）：' +
+                   json.dumps(schema['examples'][1:], ensure_ascii=False, separators=(',', ':'))
+                   if len(schema['examples']) > 1 else '')
+    return (description + '每次一笔。参数示例（按实际意图填写）：' + example + conditional +
             '。明确失败只影响本次；pending/unknown 暂停后续交易，等待后台核验。'
             '依赖前项的操作须等其成功。submitted 表示已受理，未必成交；成功或结果未知的操作勿重发。')
 

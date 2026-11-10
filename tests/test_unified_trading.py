@@ -48,6 +48,65 @@ def execute(payload, dispatch, parent='parent', **extra):
                                       config=CFG, dispatch=dispatch, **extra)
 
 
+def test_market_entry_refuses_all_five_items_before_submission(ledger):
+    from backend.utils.trade_summary import render_trade_receipt
+    cfg = {**CFG, 'mode': 'REAL'}
+    submit = Mock(side_effect=AssertionError('Invalid batch reached execution'))
+    payload = batch({'action': 'open', 'side': 'SHORT', 'order_type': 'market', 'amount': .08, 'reason': 'entry'},
+                    opening(side='SHORT', amount=.1, price=2452.5),
+                    {'action': 'close', 'side': 'SHORT', 'order_type': 'stop_market', 'close_all': True,
+                     'trigger_price': 2472.5, 'reason': 'stop'},
+                    {'action': 'close', 'side': 'SHORT', 'order_type': 'limit', 'amount': .08,
+                     'price': 2398.5, 'reason': 'exit'}, opening(side='LONG', amount=.1, price=2352.5))
+    result = unified.execute_v3_actions(payload, config_id='cfg', symbol=cfg['symbol'],
+                                        operation_id='invalid-market-entry', config=cfg, dispatch=submit)
+    assert result['phase'] == 'preflight' and result['submitted'] is False
+    assert [row['status'] for row in result['results']] == ['not_executed'] * 5
+    message = render_trade_receipt(result)
+    assert message.count('第 1 项开仓') == 1 and '只支持限价开仓' in message and '本批未提交' in message
+    submit.assert_not_called()
+
+
+@pytest.mark.parametrize('mode_response,expected_status,expected_writes', [
+    ({'dualSidePosition': True}, 'submitted', 3), ({'dualSidePosition': False}, 'failed', 0),
+    ({}, 'failed', 0), (TimeoutError(), 'failed', 0),
+])
+def test_real_mixed_entry_batch_keeps_market_catalogue_alive_through_preflight(
+        ledger, monkeypatch, mode_response, expected_status, expected_writes):
+    import ccxt
+    from backend.utils.market_data import MarketTool
+    symbol = 'ETH/USDT:USDT'
+    cfg = {**CFG, 'mode': 'REAL', 'symbol': symbol}
+    monkeypatch.setattr(config, 'get_config_by_id', lambda _: cfg)
+    exchange = ccxt.binanceusdm()
+    exchange.markets = {symbol: {'id': 'ETHUSDT', 'symbol': symbol, 'swap': True, 'spot': False,
+                                'linear': True, 'inverse': False, 'type': 'swap', 'contract': True}}
+    monkeypatch.setattr(exchange, 'fetch', Mock(side_effect=AssertionError('No network access in this test')))
+    mode_read = Mock(side_effect=mode_response) if isinstance(mode_response, Exception) else Mock(return_value=mode_response)
+    monkeypatch.setattr(exchange, 'fapiPrivateGetPositionSideDual', mode_read)
+
+    def isolated_market_tool(config_id):
+        tool = object.__new__(MarketTool)
+        tool.exchange = exchange
+        return tool  # Real destructor releases the catalogue when this owner goes out of scope.
+
+    monkeypatch.setattr(agent_tools, 'MarketTool', isolated_market_tool)
+    submit = Mock(return_value={'status': 'submitted'})
+    monkeypatch.setattr('backend.agent.unified_dispatch.dispatch_live_action', submit)
+    payload = batch(opening(side='SHORT', amount=.08, price=2439.5), opening(side='SHORT', amount=.1, price=2452.5),
+                    opening(side='LONG', amount=.1, price=2352.5))
+    result = unified.execute_v3_actions(payload, config_id='cfg', symbol=symbol, operation_id='mixed-entry', config=cfg)
+    mode_read.assert_called_once()
+    assert result['status'] == expected_status
+    assert submit.call_count == expected_writes
+    if not expected_writes:
+        assert result['phase'] == 'preflight' and result['submitted'] is False
+        assert [row['status'] for row in result['results']] == ['not_executed'] * 3
+        assert '持仓' in result['error']
+        if mode_response != {'dualSidePosition': False}:
+            assert result['error_code'] == 'position_mode_unavailable'
+
+
 @pytest.mark.parametrize('version', [None, 1, 2, True, '3', 3.0, 4])
 def test_fresh_version_is_explicit_and_strict(version):
     with pytest.raises(ValidationError):
@@ -91,16 +150,14 @@ def test_dependency_indices_cannot_be_ambiguous(dependencies):
 def test_published_mode_schema_and_default_catalog(mode, exit_mode, protect):
     cfg = {'mode': mode, 'exit_mode': exit_mode, 'symbol': 'ETH/USDT'}
     tools = tool_registry.get_trade_tools_for_mode(mode, cfg)
-    assert [tool.name for tool in tools] == ['execute_trade_actions']
-    schema = tools[0].args_schema
-    mapping = schema['properties']['actions']['items']['discriminator']['mapping']
-    assert set(mapping) == {'open', 'close', 'edit', 'cancel'} | ({'protect'} if protect else set())
-    entry = schema['$defs']['UnifiedOpenAction']
+    assert [tool.name for tool in tools] == ['open_position', 'close_position', 'edit_order', 'cancel_order'] + (
+        ['set_position_protection'] if protect else [])
+    entry = tools[0].args_schema
     assert entry['properties']['order_type']['const'] == 'limit'
     assert 'quote_amount' not in entry['properties'] and 'exchange' not in entry['properties']
     assert ('stop_loss' in entry['properties']) == (mode != 'SPOT_DCA' and exit_mode != 'independent_exits')
     assert ('stop_loss' in entry['required']) == (mode != 'SPOT_DCA' and exit_mode == 'attached_required')
-    assert schema['properties']['contract_version']['const'] == 3
+    assert not {'contract_version', 'actions', 'action', 'depends_on'} & entry['properties'].keys()
     assert [tool.name for tool in chat_graph._get_chat_tools(cfg)] == [tool.name for tool in tools]
     assert not chat_graph._get_chat_tools({**cfg, 'read_only': True})
 
@@ -428,7 +485,7 @@ def test_saved_legacy_fingerprints_receipts_and_tail_replay_are_unchanged(ledger
 @pytest.mark.parametrize('node_name', ['agent_node', 'small_agent_node'])
 @pytest.mark.parametrize('mode,exit_mode', [('REAL', 'independent_exits'), ('REAL', 'attached_required'),
                                            ('STRATEGY', 'attached_optional'), ('SPOT_DCA', 'independent_exits')])
-def test_actual_main_and_small_bind_only_the_ordered_executor(ledger, monkeypatch, node_name, mode, exit_mode):
+def test_actual_main_and_small_bind_individual_tools(ledger, monkeypatch, node_name, mode, exit_mode):
     from backend.agent import agent_graph
     from backend.agent.agent_models import AgentState
     from langchain_core.messages import HumanMessage, AIMessageChunk
@@ -445,8 +502,11 @@ def test_actual_main_and_small_bind_only_the_ordered_executor(ledger, monkeypatc
     state = AgentState(symbol='ETH/USDT', market_context={}, account_context={}, messages=[HumanMessage(content='analyze')])
     result = getattr(agent_graph, node_name)(state, {'configurable': {'config_id': 'cfg', 'agent_config': {
         'model': 'offline-fixture', 'mode': mode, 'exit_mode': exit_mode}}})
-    assert [tool.name for tool in model.tools] == ['execute_trade_actions']
-    assert model.tools[0].args_schema['properties']['contract_version']['const'] == 3
+    expected = ['open_position', 'close_position', 'edit_order', 'cancel_order']
+    if exit_mode != 'independent_exits' or mode == 'SPOT_DCA':
+        expected.append('set_position_protection')
+    assert [tool.name for tool in model.tools] == expected
+    assert 'actions' not in model.tools[0].args_schema['properties']
     assert result.messages[-1].content == 'observed'
 
 

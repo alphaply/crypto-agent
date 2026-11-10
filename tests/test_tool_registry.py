@@ -7,13 +7,14 @@ from backend.agent import chat_graph
 from backend.agent import agent_tools
 from backend.agent import tool_registry
 
+SINGLE_TOOLS = ['open_position', 'close_position', 'edit_order', 'cancel_order', 'set_position_protection']
 
 def _tool_names(tools):
     return [tool.name for tool in tools]
 
 
 def test_trade_tools_for_real_mode_include_cancel_real():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL")) == ["execute_trade_actions"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL")) == SINGLE_TOOLS
     assert _tool_names(tool_registry.get_trade_tools_for_mode("REAL", include_legacy=True)) == [
         "open_position_real",
         "close_position_real",
@@ -27,7 +28,7 @@ def test_trade_tools_for_real_mode_include_cancel_real():
 
 
 def test_trade_tools_for_spot_dca_mode_include_cancel_real():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA")) == ["execute_trade_actions"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA")) == SINGLE_TOOLS
     assert _tool_names(tool_registry.get_trade_tools_for_mode("SPOT_DCA", include_legacy=True)) == [
         "open_position_spot_dca",
         "cancel_orders_real",
@@ -36,7 +37,7 @@ def test_trade_tools_for_spot_dca_mode_include_cancel_real():
 
 
 def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
-    assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY")) == ["execute_trade_actions"]
+    assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY")) == SINGLE_TOOLS
     assert _tool_names(tool_registry.get_trade_tools_for_mode("STRATEGY", include_legacy=True)) == [
         "open_position_strategy",
         "cancel_orders_strategy",
@@ -49,7 +50,7 @@ def test_trade_tools_for_strategy_mode_include_cancel_strategy_and_close():
 
 
 def test_chat_tools_for_real_mode_include_cancel_real():
-    assert _tool_names(chat_graph._get_chat_tools({"mode": "REAL"})) == ["execute_trade_actions"]
+    assert _tool_names(chat_graph._get_chat_tools({"mode": "REAL"})) == SINGLE_TOOLS
 
 
 def test_spot_cannot_dispatch_futures_amendment(monkeypatch):

@@ -87,6 +87,7 @@ class PositionProtection:
 
     def _save(self, plan):
         storage_actor = plan.get('_storage_config_id', self.config_id)
+        plan['contract_size'] = float(self._market(plan['symbol']).get('contractSize') or 1)
         plan["updated_at"] = time.time()
         with get_db_conn() as conn:
             lock_scope(conn, 'protection-account', self.account_scope, plan['symbol'])
@@ -139,6 +140,8 @@ class PositionProtection:
                 save_plan(conn, storage_actor, plan)
             from backend.utils.execution_history_work import request_history
             request_history(self.config_id, self.account_scope, plan['symbol'], conn=conn)
+            from backend.database.execution_events import record_plan_execution_events
+            record_plan_execution_events(conn, self.config_id, plan)
             conn.commit()
         from backend.utils.execution_ledger import register_order
         common_history = {

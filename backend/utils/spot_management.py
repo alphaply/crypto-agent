@@ -23,6 +23,35 @@ def _intent(config_id, symbol, operation_id, target, action, metadata):
         conn.commit()
 
 
+def _record_cancel_observation(config_id: str, symbol: str, order: dict) -> None:
+    """Release only this task's confirmed unfilled remainder in its budget."""
+    status = str(order.get('status') or '').lower()
+    filled = order.get('filled')
+    if status not in {'canceled','cancelled','closed','filled','expired'} or filled is None:
+        return
+    filled = float(filled)
+    if not math.isfinite(filled) or filled < 0:
+        return
+    cost, average = order.get('cost'),order.get('average')
+    if filled == 0:
+        cost = average = 0.0
+    else:
+        if cost is None and average is None:
+            return  # A limit price cannot prove the actual fill cost.
+        cost = float(cost) if cost is not None else filled*float(average)
+        average = cost/filled
+        if not math.isfinite(cost) or cost <= 0:
+            return
+    with database.get_db_conn() as conn:
+        owned = conn.execute("""SELECT 1 FROM orders WHERE config_id=%s AND symbol=%s AND order_id=%s
+            AND trade_mode='SPOT_DCA' AND COALESCE(event_type,'ORDER_CREATED')='ORDER_CREATED'""",
+            (config_id,symbol,str(order['id']))).fetchone()
+        if owned:
+            database.upsert_spot_order_fill(str(order['id']),config_id,symbol,status.upper(),
+                                           filled,cost,average,connection=conn)
+            conn.commit()
+
+
 def recover_spot_action(mt, config_id, symbol, operation_id, args, previous):
     """Query an exact recorded native mutation; never claim, cancel or amend."""
     from backend.mcp.spot_orders import _TERMINAL
@@ -47,6 +76,9 @@ def recover_spot_action(mt, config_id, symbol, operation_id, args, previous):
         filled_verified = all(o.get('filled') is not None for o in observations)
         if row['action'] == 'cancel':
             confirmed = filled_verified and all(str(o.get('status')).lower() in _TERMINAL for o in observations)
+            if confirmed:
+                for observed in observations:
+                    _record_cancel_observation(config_id,symbol,observed)
         else:
             observed = observations[0]
             confirmed = (filled_verified and observed.get('amount') is not None and observed.get('price') is not None
@@ -293,6 +325,8 @@ def execute_spot_action(config_id, symbol, action, operation_id):
                             'action':'cancel','operation_id':operation_id,'order_id':'regular:'+target,'symbol':symbol,
                             'order_status':acknowledgement.get('status') if same else None,
                             'filled_amount':acknowledgement.get('filled') if same else None,'acknowledgement':acknowledgement}
+                    if known_fill:
+                        _record_cancel_observation(config_id,symbol,acknowledgement)
                 else:
                     result = recover_spot_action(mt,config_id,symbol,operation_id,action,{'status':'unknown'})
                 # The target was already fetched and identity checked above.

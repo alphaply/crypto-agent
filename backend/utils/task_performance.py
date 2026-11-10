@@ -24,8 +24,42 @@ def stamp_ms(value):
     return int((database.TZ_CN.localize(stamp) if stamp.tzinfo is None else stamp).timestamp()*1000)
 
 
+def exit_order_outcomes(fills, *, since_ms, end_ms, currency):
+    """One sample per executed exit order; an entry is not required for venue PnL."""
+    orders = {}
+    for fill in fills:
+        if not fill.get('role') or fill['role'] == 'entry' or not (number(fill.get('amount')) or 0) > 0:
+            continue
+        when = fill.get('timestamp_ms')
+        if when is not None and when >= end_ms:
+            continue
+        key = (fill.get('symbol'), fill['order_id'])
+        row = orders.setdefault(key, dict(timestamp_ms=None, net=0.0, reason=None))
+        if when is not None:
+            row['timestamp_ms'] = max(row['timestamp_ms'] or 0, when)
+        pnl = number(fill.get('realized_pnl'))
+        parts = fill.get('fees') or []
+        if pnl is None:
+            row['reason'] = 'missing_pnl'
+        elif not parts:
+            row['reason'] = row['reason'] or 'incomplete_fees'
+        else:
+            row['net'] += pnl
+            for fee in parts:
+                cost = number(fee.get('cost'))
+                if cost is None or not fee.get('currency'):
+                    row['reason'] = row['reason'] or 'incomplete_fees'
+                elif not currency or fee['currency'] != currency:
+                    row['reason'] = row['reason'] or 'fee_currency_conversion_required'
+                else:
+                    row['net'] -= cost
+    selected = [r for r in orders.values() if (since_ms == 0 if r['timestamp_ms'] is None
+                                              else since_ms <= r['timestamp_ms'] < end_ms)]
+    return selected
+
+
 def summarize_history(fills: list[dict], cycles: list[dict], *, since_ms: int, end_ms: int,
-                      currency: str | None, scan_complete=True) -> dict:
+                      currency: str | None, scan_complete=True, orders=None) -> dict:
     # Count first actual execution of a logical order, never each partial fill.
     entries = {}
     for fill in fills:
@@ -66,6 +100,10 @@ def summarize_history(fills: list[dict], cycles: list[dict], *, since_ms: int, e
             unknown += 1
         else:
             nets.append(value - costs.get(currency, 0.0))
+    cycle_nets = nets
+    outcomes = exit_order_outcomes(fills, since_ms=since_ms, end_ms=end_ms, currency=currency)
+    nets = [r['net'] for r in outcomes if r['reason'] is None]
+    unknown_orders = len(outcomes) - len(nets)
     wins, losses = [n for n in nets if n>1e-10], [n for n in nets if n < -1e-10]
     longs = sum(r.get('side') == 'LONG' for r in opened)
     shorts = sum(r.get('side') == 'SHORT' for r in opened)
@@ -73,11 +111,14 @@ def summarize_history(fills: list[dict], cycles: list[dict], *, since_ms: int, e
                 short_count=sum(r.get('side')=='SHORT' for r in opened), buy_count=sum(r.get('side')=='BUY' for r in opened),
                 long_pct=longs/(longs+shorts)*100 if longs+shorts else None,
                 short_pct=shorts/(longs+shorts)*100 if longs+shorts else None,
-                closed_cycles=len(closed), winning_cycles=len(wins), losing_cycles=len(losses),
-                breakeven_cycles=len(nets)-len(wins)-len(losses), unknown_cycles=unknown,
-                win_rate=len(wins)/(len(wins)+len(losses))*100 if wins or losses else None,
+                closed_cycles=len(closed), winning_cycles=sum(n>1e-10 for n in cycle_nets),
+                losing_cycles=sum(n < -1e-10 for n in cycle_nets),
+                breakeven_cycles=sum(abs(n)<=1e-10 for n in cycle_nets), unknown_cycles=unknown,
+                closed_orders=len(outcomes), winning_orders=len(wins), losing_orders=len(losses),
+                breakeven_orders=len(nets)-len(wins)-len(losses), unknown_orders=unknown_orders,
+                win_rate=len(wins)/len(nets)*100 if nets else None,
                 profit_loss_ratio=(sum(wins)/len(wins))/abs(sum(losses)/len(losses)) if wins and losses else None,
-                ratio_status='ready' if wins and losses else 'no_completed_cycles' if not closed else 'incomplete_fees' if unknown else 'no_loss_samples' if wins else 'no_win_samples' if losses else 'breakeven_only',
+                ratio_status='ready' if wins and losses else 'no_exit_orders' if not outcomes else 'incomplete_fees' if unknown_orders else 'no_loss_samples' if wins else 'no_win_samples' if losses else 'breakeven_only',
                 realized_pnl_before_fees=gross if selected and not missing_pnl and currency else None,
                 realized_pnl_after_fees=gross-fees.get(currency,0) if net_available else None,
                 fees_by_currency=fees, missing_fee_count=missing_fee, missing_pnl_count=missing_pnl,
@@ -95,9 +136,8 @@ def summarize_history(fills: list[dict], cycles: list[dict], *, since_ms: int, e
                 missing_entry = True
             balances[key] = max(0, balances.get(key, 0) - quantity)
     unknown_entries = result['unknown_role_count'] > 0 or missing_entry
-    cycle_reason = ('no_trades' if not selected else 'missing_entry_history' if missing_entry
-                    else 'history_incomplete' if not scan_complete else 'incomplete_fees' if unknown
-                    else 'no_completed_cycles' if not closed else 'breakeven_only')
+    outcome_reason = (next((r['reason'] for r in outcomes if r['reason']), None) or
+                      ('no_trades' if not selected else 'no_exit_orders' if not outcomes else 'history_incomplete'))
     profit_reason = ('no_trades' if not selected else 'missing_pnl' if missing_pnl else
                      'incomplete_fees' if missing_fee else 'fee_currency_conversion_required')
     def metric(value, reason, *, partial=False):
@@ -106,11 +146,26 @@ def summarize_history(fills: list[dict], cycles: list[dict], *, since_ms: int, e
     result['metrics'] = {
         'open_count': metric(None if unknown_entries else len(opened), 'missing_entry_history' if missing_entry else 'unknown_order_role'),
         'realized_pnl_after_fees': metric(result['realized_pnl_after_fees'], profit_reason),
-        'win_rate': metric(result['win_rate'], cycle_reason, partial=bool(unknown or not scan_complete)),
-        'profit_loss_ratio': metric(result['profit_loss_ratio'], cycle_reason if not nets or unknown or not scan_complete else result['ratio_status'], partial=bool(unknown or not scan_complete)),
+        'win_rate': metric(result['win_rate'], outcome_reason, partial=bool(unknown_orders or not scan_complete)),
+        'profit_loss_ratio': metric(result['profit_loss_ratio'], outcome_reason if not nets else result['ratio_status'], partial=bool(unknown_orders or not scan_complete)),
+        'long_short_ratio': metric(f'{longs}:{shorts}' if longs+shorts else None, 'no_direction_samples'),
     }
+    order_rows = {}
+    for order in orders or []:
+        key = (order.get('symbol'), order['order_id'])
+        if str(order.get('status', '')).lower() in {'rejected', 'failed', 'submitting', 'unknown'}:
+            continue
+        prior = order_rows.get(key)
+        if prior is None or order.get('observed_at_ms', 0) >= prior.get('observed_at_ms', 0):
+            order_rows[key] = order
+    cohort = [r for r in order_rows.values() if in_period(r)]
+    cancelled = sum(str(r.get('status', '')).lower() in {'canceled', 'cancelled'} for r in cohort)
+    result.update(accepted_order_count=len(cohort), cancelled_order_count=cancelled,
+                  cancel_rate=cancelled/len(cohort)*100 if cohort else None)
+    result['metrics']['cancel_rate'] = metric(result['cancel_rate'], 'no_accepted_orders')
     result['diagnostics'] = dict(missing_entry_history=missing_entry, unknown_role_count=result['unknown_role_count'],
-                               unknown_cycles=unknown, missing_fee_count=missing_fee, missing_pnl_count=missing_pnl)
+                               unknown_cycles=unknown, unknown_orders=unknown_orders,
+                               missing_fee_count=missing_fee, missing_pnl_count=missing_pnl)
     return result
 
 
@@ -176,7 +231,7 @@ def _mock_history(config_id, symbols):
         if row['status']=='CLOSED' and row['is_filled'] and row['order_id'] not in history_by_id and row.get('execution_mode')!='independent_exits':
             cycles.append(dict(closed_at_ms=stamp_ms(row['close_time']),realized_pnl_before_fees=row['realized_pnl'],missing_fees=True))
     for event in exits:
-        fills.append(dict(symbol=event['symbol'],order_id=event['order_id'],role='exit',side=direction(event['side']),
+        fills.append(dict(symbol=event['symbol'],order_id=event['parent_order_id'] or event['order_id'],role='exit',side=direction(event['side']),
                           amount=event['amount'],timestamp_ms=stamp_ms(event['timestamp']),realized_pnl=event['realized_pnl'],fees=[]))
     for row in history:
         raw=json.loads(row.get('raw_json') or '{}')
@@ -240,13 +295,15 @@ def task_performance(config_id: str, *, now=None, cfg=None) -> dict:
     mode=cfg.get('mode','STRATEGY')
     fills,cycles,complete,sync=(_real_history(config_id,symbols,end_ms) if mode=='REAL' else
                                _spot_history(config_id,symbols) if mode=='SPOT_DCA' else _mock_history(config_id,symbols))
+    from backend.utils.task_order_history import task_orders
+    orders = task_orders(config_id, symbols, mode)
     beginning=end_ms-7*24*3600*1000
     result=dict(config_id=config_id,scope='task',symbols=symbols,mode=mode,as_of=now.isoformat(),
                 coverage_start_ms=min((r['timestamp_ms'] for r in fills if r.get('timestamp_ms') is not None),default=None),
                 history_scope='all_recorded', window_complete=False,
-                note='仅当前任务已归属记录；全历史指本地可查询历史。胜率/盈亏比按完整平仓周期扣费后计算；已实现盈亏含部分平仓。')
-    result['seven_days']=summarize_history(fills,cycles,since_ms=beginning,end_ms=end_ms,currency=currency,scan_complete=complete)
-    result['all_history']=summarize_history(fills,cycles,since_ms=0,end_ms=end_ms,currency=currency,scan_complete=complete)
+                note='仅当前任务已归属记录；全历史指本地可查询历史。胜率按平仓成交订单的已实现盈亏扣该单手续费计算，保本计入分母；同单分批成交合并，按最后成交时间归期，不分摊开仓费。取消率为该期间受理订单中已成功撤销的比例，失败调用不计数。')
+    result['seven_days']=summarize_history(fills,cycles,since_ms=beginning,end_ms=end_ms,currency=currency,scan_complete=complete,orders=orders)
+    result['all_history']=summarize_history(fills,cycles,since_ms=0,end_ms=end_ms,currency=currency,scan_complete=complete,orders=orders)
     result['window_complete']=bool(sync) and all(any(left<=beginning and right>=end_ms-1 for left,right in s.get('covered_intervals',[])) for s in sync)
     if mode == 'REAL' and not result['window_complete']:
         for period in ('seven_days', 'all_history'):
@@ -268,8 +325,9 @@ def task_history_context(config_id: str, cfg=None) -> str:
             return f'{value:.2f}' if value is not None else '未知/无样本'
         fees=', '.join(f'{v:.6g} {k}' for k,v in row['fees_by_currency'].items()) or '无已知费用'
         lines.append(f"{label}：开仓/加仓{fmt(row['metrics']['open_count']['value'])}单（多{row['long_count']}/空{row['short_count']}/现货买入{row['buy_count']}）；"
-                     f"完整平仓{row['closed_cycles']}，扣费胜率{fmt(row['win_rate'])}%，盈亏比{fmt(row['profit_loss_ratio'])}；"
+                     f"平仓成交{row['closed_orders']}单，扣平仓费胜率{fmt(row['win_rate'])}%，盈亏比{fmt(row['profit_loss_ratio'])}；"
+                     f"多空比{row['metrics']['long_short_ratio']['value'] or '无方向样本'}，取消率{fmt(row['cancel_rate'])}%（撤单{row['cancelled_order_count']}/受理{row['accepted_order_count']}）；"
                      f"已实现费前{fmt(row['realized_pnl_before_fees'])}/扣费后{fmt(row['realized_pnl_after_fees'])} {row['currency'] or '币种不统一'}；"
-                     f"费用{fees}（缺失{row['missing_fee_count']}）；保本{row['breakeven_cycles']}，未知周期{row['unknown_cycles']}。")
+                     f"费用{fees}（缺失{row['missing_fee_count']}）；保本平仓单{row['breakeven_orders']}，未知平仓单{row['unknown_orders']}。")
     lines.append(f"记录起点：{datetime.fromtimestamp(data['coverage_start_ms']/1000,database.TZ_CN).isoformat() if data['coverage_start_ms'] is not None else '无已知时间'}；截至{data['as_of']}；7天覆盖完整：{data['window_complete']}；周期扫描完整：{data['all_history']['scan_complete']}。{data['note']}")
     return '\n'.join(lines)
