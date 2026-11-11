@@ -51,7 +51,7 @@ export default function AgentsPage({ authenticated = false }) {
         <Input allowClear prefix={<SearchOutlined />} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={zh ? '搜索任务、标的或模型' : 'Search agents, symbols or models'} aria-label={zh ? '搜索 Agent' : 'Search agents'} />
         <Segmented block value={filter} onChange={setFilter} options={[{ value: 'all', label: zh ? '全部' : 'All' }, { value: 'active', label: zh ? '运行中' : 'Active' }, { value: 'enabled', label: zh ? '已启用' : 'Enabled' }]} />
         <div className="agent-directory-list">{visibleAgents.length ? visibleAgents.map((item) => <button type="button" className={`agent-directory-item${item.config_id === activeId ? ' is-selected' : ''}`} key={item.config_id} aria-pressed={item.config_id === activeId} onClick={() => selectAgent(item.config_id)}>
-          <span className="agent-directory-title">{item.display_name || item.title || item.config_id}</span><span><AgentStatus agent={item} zh={zh} /></span><span className="agent-directory-symbols">{(item.symbols || [item.symbol]).filter(Boolean).join(' · ')}</span>
+          <span className="agent-directory-title">{item.display_name || item.title || item.config_id}</span><span className="agent-directory-status"><AgentStatus agent={item} zh={zh} /><small>{item.mode === 'SPOT_DCA' ? (zh ? '现货' : 'Spot') : item.mode === 'REAL' ? (zh ? '实盘合约' : 'Live futures') : (zh ? '模拟合约' : 'Simulated futures')}</small></span><span className="agent-directory-symbols">{(item.symbols || [item.symbol]).filter(Boolean).join(' · ')}</span>
         </button>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={zh ? '没有匹配的任务' : 'No matching agents'} />}</div>
       </aside>}
       <section className="agent-detail" aria-label={zh ? 'Agent 详情' : 'Agent details'}>
@@ -59,6 +59,7 @@ export default function AgentsPage({ authenticated = false }) {
           <header className="agent-overview-header">
             <div className="agent-detail-heading">
               <div className="agent-detail-identity">
+                <div className="workspace-eyebrow">{zh ? '任务工作台' : 'AGENT WORKSPACE'}</div>
                 <div className="agent-title-row"><Typography.Title level={2}>{agent.display_name || agent.title || activeId}</Typography.Title><AgentStatus agent={agent} zh={zh} /></div>
                 <div className="agent-detail-meta"><span>{agent.model || '—'}</span><span>{({ REAL: zh ? '合约实盘' : 'Live futures', SPOT_DCA: zh ? '现货' : 'Spot', STRATEGY: zh ? '策略分析' : 'Analysis' })[agent.mode] || agent.mode}</span>{agent.timestamp && <span>{zh ? '最近运行 ' : 'Last run '}{agent.timestamp}</span>}</div>
               </div>

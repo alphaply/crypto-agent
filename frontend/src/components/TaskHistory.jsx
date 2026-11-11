@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Alert, Button, Card, Empty, Input, Pagination, Segmented, Select, Skeleton, Tag, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { api } from '../lib/api';
+import { useTaskResource } from '../hooks/useTaskResource';
+import SpotTaskStatistics from './SpotTaskStatistics';
 import { usePreferences } from '../app/usePreferences';
 import ToolResultContent from './ToolResultContent';
 import './TaskHistory.css';
@@ -10,24 +11,6 @@ const actions = { open: ['开仓 / 加仓', 'Open / add'], close: ['平仓 / 退
 const statuses = { submitted: ['已受理', 'Accepted', 'processing'], completed: ['已完成', 'Completed', 'success'], filled: ['已成交', 'Filled', 'success'], failed: ['失败', 'Failed', 'error'], rejected: ['审批拒绝', 'Declined', 'default'], unknown: ['待核验', 'Unconfirmed', 'warning'], pending: ['待核验', 'Pending', 'warning'], running: ['执行中', 'Running', 'processing'], awaiting_approval: ['待审批', 'Awaiting approval', 'warning'], not_executed: ['未执行', 'Not executed', 'default'] };
 const format = (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? '—' : Number(value).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const dateBoundary = (value, through = false) => value ? new Date(`${value}T${through ? '23:59:59.999' : '00:00:00'}`).toISOString() : undefined;
-
-function useTaskResource(path, params, refreshKey) {
-  const [state, setState] = useState({ loading: true });
-  const [revision, setRevision] = useState(0);
-  const key = JSON.stringify(params);
-  useEffect(() => {
-    const controller = new AbortController();
-    const identity = `${path}:${key}`;
-    setState(previous => ({ ...(previous.identity === identity ? previous : {}), identity, loading: true, error: '' }));
-    api.get(path, { params: JSON.parse(key), signal: controller.signal, silent: true }).then(({ data }) => {
-      if (!controller.signal.aborted) setState({ identity, data, loading: false });
-    }).catch(error => {
-      if (!controller.signal.aborted) setState(previous => ({ ...previous, error: error.message, loading: false }));
-    });
-    return () => controller.abort();
-  }, [path, key, revision, refreshKey]);
-  return { ...(state.identity === `${path}:${key}` ? state : { loading: true }), retry: () => setRevision(v => v + 1) };
-}
 
 const metricReasons = {
   no_trades: ['暂无成交', 'No fills'], no_completed_cycles: ['尚无完整平仓', 'No completed exits'],
@@ -40,13 +23,17 @@ const metricReasons = {
   no_direction_samples: ['暂无已确认方向的开仓成交', 'No directional entry fills'],
   no_accepted_orders: ['暂无已受理订单', 'No accepted orders'],
 };
-export function TaskStatistics({ configId, refreshKey }) {
+export function TaskStatistics({ configId, refreshKey, mode }) {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
   const [period, setPeriod] = useState('seven_days');
   const { data, loading, error, retry } = useTaskResource(`/stats/task-history/${encodeURIComponent(configId)}`, {}, refreshKey);
   const statistics = data?.statistics;
   const row = statistics?.[period];
+  if ((statistics?.mode || mode) === 'SPOT_DCA') return <Card className="panel-card task-statistics" title={zh ? '现货任务统计' : 'Spot task statistics'} extra={<Button type="text" icon={<ReloadOutlined />} onClick={retry} loading={loading} aria-label={zh ? '刷新统计' : 'Refresh statistics'} />}>
+    {error && <Alert type="warning" showIcon title={zh ? '统计更新失败' : 'Statistics refresh failed'} description={error} />}
+    {loading && !statistics?.spot ? <Skeleton active paragraph={{ rows: 2 }} /> : statistics?.spot && <SpotTaskStatistics data={statistics.spot} period={period} setPeriod={setPeriod} zh={zh} />}
+  </Card>;
   const fields = [
     ['realized_pnl_after_fees', zh ? '已实现净盈亏' : 'Realized net PnL', row?.currency],
     ['open_count', zh ? '成交开仓数' : 'Filled entries', zh ? '开仓 / 加仓订单' : 'Entry / add orders'],

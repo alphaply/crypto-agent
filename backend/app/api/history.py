@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from backend.app.core.deps import get_current_user
 from backend.app.schemas.decision_memory import RetryDecisionMemoryRequest
+from backend.app.schemas.position_history import PositionPage, PositionDetailResponse
 from backend.app.services.decision_memory_service import projection_status, retry_failed_projections
 from backend.app.schemas.payloads import (
     CleanHistoryRequest,
@@ -34,6 +36,31 @@ from backend.app.services.dashboard_service import (
 
 
 router = APIRouter(prefix="/api/history", tags=["history"])
+
+
+@router.get('/positions', response_model=PositionPage)
+def positions_history(config_id: str, symbol: str | None = None,
+                      status: Literal['open', 'closed', 'unconfirmed'] | None = None,
+                      page: int = Query(1, ge=1), per_page: int = Query(20, ge=1, le=100),
+                      _: dict = Depends(get_current_user)):
+    from backend.app.services.position_history_service import position_page
+    try:
+        return position_page(config_id, symbol=symbol, status=status, page=page, per_page=per_page)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get('/positions/{position_id}', response_model=PositionDetailResponse)
+def position_history_detail(position_id: str, config_id: str, _: dict = Depends(get_current_user)):
+    from backend.app.services.position_history_service import position_detail
+    try:
+        return position_detail(config_id, position_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get('/trade-calls')

@@ -1,6 +1,6 @@
 .task-stat-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; margin: 18px 0 14px; }
-.task-stat { padding: 0 12px 0 0; min-width: 0; border-right: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 6px; }
-.task-stat:last-child { border-right: 0; }
+.task-stat { padding: 14px; min-width: 0; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--bg-subtle); display: flex; flex-direction: column; gap: 6px; }
+.task-stat:last-child { border-right: 1px solid var(--border-soft); }
 .task-stat strong.is-negative { color: var(--danger, #cf4141); }
 .task-stat strong.is-positive { color: var(--success, #15803d); }
 .task-stat > span,.task-stat small,.task-stat-note { color: var(--text-muted); font-size: 12px; }
@@ -33,7 +33,7 @@
 .memory-reading p,.memory-reading li { line-height: 1.9; }
 @media(max-width:767px) {
   .task-stat-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-top: 16px; }
-  .task-stat { padding: 8px 8px 8px 0; }
+  .task-stat { padding: 12px; }
   .task-stat strong { font-size: 21px; }
   .trade-history-filters { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
   .trade-call { padding: 12px; }

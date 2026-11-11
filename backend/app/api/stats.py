@@ -22,8 +22,26 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 @router.get('/task-history/{config_id}')
 def task_history(config_id: str, _: dict = Depends(get_current_user)):
     from backend.utils.task_performance import task_performance
+    from backend.config import config
     try:
-        return {'success': True, 'statistics': task_performance(config_id)}
+        cfg = config.get_config_by_id(config_id)
+        if not cfg:
+            raise FileNotFoundError('Config not found')
+        if cfg.get('mode') == 'SPOT_DCA':
+            from backend.app.services.position_history_service import spot_statistics
+            spot = spot_statistics(config_id, cfg=cfg)
+            try:
+                statistics = task_performance(config_id, cfg=cfg)
+            except ValueError as exc:
+                # The old order-level summary may require evidence which the
+                # new per-symbol view can explicitly mark incomplete. Keep
+                # its absence visible instead of replacing it with zeros.
+                statistics = dict(config_id=config_id, mode='SPOT_DCA', seven_days=None,
+                                  all_history=None, legacy_statistics_error=str(exc))
+            statistics['spot'] = spot
+        else:
+            statistics = task_performance(config_id, cfg=cfg)
+        return {'success': True, 'statistics': statistics}
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:

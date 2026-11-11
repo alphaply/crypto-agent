@@ -1,0 +1,922 @@
+{
+  "dashboard": {
+    "agent_summaries": [
+      {
+        "config_id": "spot",
+        "display_name": "稳健现货组合",
+        "symbol": "BTC/USDT",
+        "symbols": [
+          "BTC/USDT",
+          "ETH/USDT",
+          "SOL/USDT"
+        ],
+        "mode": "SPOT_DCA",
+        "model": "Strategy model",
+        "enabled": true,
+        "timestamp": "2026-11-11T09:30:00+08:00",
+        "next_run": "2026-11-11 12:00",
+        "freq": "每 4 小时",
+        "strategy_logic": "### 当前策略\n按计划分批配置，关注各标的投入比例。\n\n### 后续条件\n等待确认后再调整仓位，成交事实以账户回报为准。",
+        "decision": {
+          "messages": [
+            {
+              "role": "assistant",
+              "content": "### 本轮结论\n保持现有组合，等待下一轮检查。\n\n已核对三个标的的成本与持仓变化。",
+              "reasoning_content": "综合趋势与当前投入，维持现有配置。"
+            }
+          ]
+        }
+      },
+      {
+        "config_id": "futures",
+        "display_name": "ETH 合约趋势",
+        "symbol": "ETH/USDT:USDT",
+        "symbols": [
+          "ETH/USDT:USDT"
+        ],
+        "mode": "REAL",
+        "model": "Strategy model",
+        "enabled": true,
+        "timestamp": "2026-11-11T09:30:00+08:00",
+        "next_run": "2026-11-11 12:00",
+        "freq": "每 4 小时",
+        "strategy_logic": "### 当前策略\n按计划分批配置，关注各标的投入比例。\n\n### 后续条件\n等待确认后再调整仓位，成交事实以账户回报为准。",
+        "decision": {
+          "messages": [
+            {
+              "role": "assistant",
+              "content": "### 本轮结论\n保持现有组合，等待下一轮检查。\n\n已核对三个标的的成本与持仓变化。",
+              "reasoning_content": "综合趋势与当前投入，维持现有配置。"
+            }
+          ]
+        }
+      },
+      {
+        "config_id": "mock",
+        "display_name": "策略模拟验证",
+        "symbol": "BTC/USDT",
+        "symbols": [
+          "BTC/USDT"
+        ],
+        "mode": "STRATEGY",
+        "model": "Strategy model",
+        "enabled": true,
+        "timestamp": "2026-11-11T09:30:00+08:00",
+        "next_run": "2026-11-11 12:00",
+        "freq": "每 4 小时",
+        "strategy_logic": "### 当前策略\n按计划分批配置，关注各标的投入比例。\n\n### 后续条件\n等待确认后再调整仓位，成交事实以账户回报为准。",
+        "decision": {
+          "messages": [
+            {
+              "role": "assistant",
+              "content": "### 本轮结论\n保持现有组合，等待下一轮检查。\n\n已核对三个标的的成本与持仓变化。",
+              "reasoning_content": "综合趋势与当前投入，维持现有配置。"
+            }
+          ]
+        }
+      }
+    ],
+    "current_symbol": "BTC/USDT"
+  },
+  "context": {
+    "agent": {
+      "config_id": "spot",
+      "display_name": "稳健现货组合",
+      "symbol": "BTC/USDT",
+      "symbols": [
+        "BTC/USDT",
+        "ETH/USDT",
+        "SOL/USDT"
+      ],
+      "mode": "SPOT_DCA",
+      "model": "Strategy model",
+      "enabled": true,
+      "timestamp": "2026-11-11T09:30:00+08:00",
+      "next_run": "2026-11-11 12:00",
+      "freq": "每 4 小时",
+      "strategy_logic": "### 当前策略\n按计划分批配置，关注各标的投入比例。\n\n### 后续条件\n等待确认后再调整仓位，成交事实以账户回报为准。",
+      "decision": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": "### 本轮结论\n保持现有组合，等待下一轮检查。\n\n已核对三个标的的成本与持仓变化。",
+            "reasoning_content": "综合趋势与当前投入，维持现有配置。"
+          }
+        ]
+      }
+    },
+    "short_memories": {
+      "short_memories": [
+        {
+          "id": 1,
+          "config_id": "spot",
+          "bucket_start": "2026-11-11 05:00",
+          "bucket_end": "2026-11-11 09:00",
+          "created_at": "2026-11-11T09:30:00+08:00",
+          "version": 4,
+          "source_count": 3,
+          "market_summary": "### 策略判断\n按既定计划管理组合，保持记录清晰。\n\n### 近期操作\n完成部分减仓，保留剩余仓位。\n\n### 后续条件\n下轮检查真实成交与仓位变化。"
+        },
+        {
+          "id": 2,
+          "config_id": "spot",
+          "bucket_start": "2026-11-10 05:00",
+          "bucket_end": "2026-11-11 09:00",
+          "created_at": "2026-11-11T09:30:00+08:00",
+          "version": 3,
+          "source_count": 3,
+          "market_summary": "### 策略判断\n按既定计划管理组合，保持记录清晰。\n\n### 近期操作\n完成部分减仓，保留剩余仓位。\n\n### 后续条件\n下轮检查真实成交与仓位变化。"
+        }
+      ]
+    },
+    "orders": {
+      "orders": []
+    }
+  },
+  "account": {
+    "position": {
+      "dca_stats": {
+        "quote_asset": "USDT",
+        "by_symbol": [
+          {
+            "symbol": "BTC/USDT",
+            "total_qty": 0.12,
+            "remaining_cost": 8400,
+            "avg_cost": 70000.0,
+            "current_price": 73500,
+            "market_value": 8820.0,
+            "unrealized_pnl": 420.0,
+            "return_pct": 5.0,
+            "actual_balance": 0.12,
+            "realized_pnl": 124.8,
+            "fees_complete": true
+          },
+          {
+            "symbol": "ETH/USDT",
+            "total_qty": 1.8,
+            "remaining_cost": 5400,
+            "avg_cost": 3000.0,
+            "current_price": 3250,
+            "market_value": 5850.0,
+            "unrealized_pnl": 450.0,
+            "return_pct": 8.333333333333332,
+            "actual_balance": 1.8,
+            "realized_pnl": 32.5,
+            "fees_complete": true,
+            "cost_basis": {
+              "updated_at": "2026-11-05T10:00:00+08:00"
+            },
+            "cost_basis_revision": 2
+          },
+          {
+            "symbol": "SOL/USDT",
+            "total_qty": 0,
+            "remaining_cost": 0,
+            "avg_cost": 0,
+            "current_price": 185,
+            "market_value": 0,
+            "unrealized_pnl": 0,
+            "return_pct": null,
+            "actual_balance": 0,
+            "realized_pnl": -15.2,
+            "fees_complete": true
+          }
+        ],
+        "is_portfolio": true,
+        "remaining_cost": 13800,
+        "market_value": 14670,
+        "unrealized_pnl": 870,
+        "return_pct": 6.3,
+        "fees_complete": true,
+        "last_sync": "2026-11-11 09:30:00"
+      }
+    }
+  },
+  "chart": {
+    "kline": {
+      "symbol": "BTC/USDT",
+      "candles": [],
+      "pending_orders": [],
+      "orders_complete": true,
+      "timeframe": "1h"
+    },
+    "timeframe": "1h"
+  },
+  "statistics": {
+    "statistics": {
+      "mode": "SPOT_DCA",
+      "spot": {
+        "as_of": "2026-11-11T09:30:00+08:00",
+        "cumulative_buy_amount": 20000,
+        "currency": "USDT",
+        "seven_days": {
+          "buy_fill_count": 8,
+          "sell_fill_count": 3,
+          "fill_count": 11,
+          "counts_complete": true,
+          "realized_net_pnl": 142.1,
+          "known_realized_net_pnl": 142.1,
+          "fees_by_currency": {
+            "USDT": 18.6
+          },
+          "complete": true,
+          "issues": []
+        },
+        "all_history": {
+          "buy_fill_count": 24,
+          "sell_fill_count": 9,
+          "fill_count": 33,
+          "counts_complete": true,
+          "realized_net_pnl": 520.3,
+          "known_realized_net_pnl": 142.1,
+          "fees_by_currency": {
+            "USDT": 18.6
+          },
+          "complete": true,
+          "issues": []
+        },
+        "errors": {},
+        "by_symbol": [
+          {
+            "symbol": "BTC/USDT",
+            "cumulative_buy_amount": 10000,
+            "investment_share_pct": 50,
+            "seven_days": {
+              "buy_fill_count": 5,
+              "sell_fill_count": 1,
+              "fill_count": 6,
+              "counts_complete": true,
+              "realized_net_pnl": 124.8,
+              "known_realized_net_pnl": 124.8,
+              "fees_by_currency": {
+                "USDT": 18.6
+              },
+              "complete": true,
+              "issues": []
+            },
+            "all_history": {
+              "buy_fill_count": 15,
+              "sell_fill_count": 3,
+              "fill_count": 18,
+              "counts_complete": true,
+              "realized_net_pnl": 400,
+              "known_realized_net_pnl": 400,
+              "fees_by_currency": {
+                "USDT": 18.6
+              },
+              "complete": true,
+              "issues": []
+            }
+          },
+          {
+            "symbol": "ETH/USDT",
+            "cumulative_buy_amount": 7000,
+            "investment_share_pct": 35,
+            "seven_days": {
+              "buy_fill_count": 2,
+              "sell_fill_count": 1,
+              "fill_count": 3,
+              "counts_complete": true,
+              "realized_net_pnl": 32.5,
+              "known_realized_net_pnl": 32.5,
+              "fees_by_currency": {
+                "USDT": 18.6
+              },
+              "complete": true,
+              "issues": []
+            },
+            "all_history": {
+              "buy_fill_count": 6,
+              "sell_fill_count": 3,
+              "fill_count": 9,
+              "counts_complete": true,
+              "realized_net_pnl": 150,
+              "known_realized_net_pnl": 150,
+              "fees_by_currency": {
+                "USDT": 18.6
+              },
+              "complete": true,
+              "issues": []
+            }
+          },
+          {
+            "symbol": "SOL/USDT",
+            "cumulative_buy_amount": 3000,
+            "investment_share_pct": 15,
+            "seven_days": {
+              "buy_fill_count": 1,
+              "sell_fill_count": 1,
+              "fill_count": 2,
+              "counts_complete": true,
+              "realized_net_pnl": -15.2,
+              "known_realized_net_pnl": -15.2,
+              "fees_by_currency": {
+                "USDT": 18.6
+              },
+              "complete": true,
+              "issues": []
+            },
+            "all_history": {
+              "buy_fill_count": 3,
+              "sell_fill_count": 3,
+              "fill_count": 6,
+              "counts_complete": true,
+              "realized_net_pnl": -29.7,
+              "known_realized_net_pnl": -29.7,
+              "fees_by_currency": {
+                "USDT": 18.6
+              },
+              "complete": true,
+              "issues": []
+            }
+          }
+        ]
+      }
+    }
+  },
+  "positions": [
+    {
+      "position_id": "position-0",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "BTC/USDT",
+      "side": "SPOT",
+      "status": "open",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": null,
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0.12,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-1",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "ETH/USDT",
+      "side": "SPOT",
+      "status": "open",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": null,
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0.12,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-2",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "SOL/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": null,
+      "fees_by_currency": {
+        "BNB": 0.012
+      },
+      "currency": "USDT",
+      "complete": false,
+      "issues": [
+        "fee_currency_conversion_required"
+      ]
+    },
+    {
+      "position_id": "position-3",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "BTC/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-4",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "ETH/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-5",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "SOL/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-6",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "BTC/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-7",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "ETH/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-8",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "SOL/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-9",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "BTC/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-10",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "ETH/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-11",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "SOL/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-12",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "BTC/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-13",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "ETH/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-14",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "SOL/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-15",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "BTC/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-16",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "ETH/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-17",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "SOL/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-18",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "BTC/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-19",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "ETH/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-20",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "SOL/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-21",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "BTC/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    },
+    {
+      "position_id": "position-22",
+      "config_id": "spot",
+      "mode": "SPOT_DCA",
+      "symbol": "ETH/USDT",
+      "side": "SPOT",
+      "status": "closed",
+      "opened_at": "2026-11-01T09:00:00+08:00",
+      "closed_at": "2026-11-10T19:30:00+08:00",
+      "last_event_at": "2026-11-11T09:30:00+08:00",
+      "holding_seconds": 864000,
+      "entered_quantity": 0.2,
+      "remaining_quantity": 0,
+      "realized_pnl_before_fees": 135.2,
+      "realized_net_pnl": 124.8,
+      "fees_by_currency": {
+        "USDT": 10.4
+      },
+      "currency": "USDT",
+      "complete": true,
+      "issues": []
+    }
+  ],
+  "events": [
+    {
+      "event_id": "fill-0",
+      "kind": "entry",
+      "timestamp": "2026-11-01T09:00:00+08:00",
+      "quantity": 0.1,
+      "price": 69000,
+      "quantity_before": 0,
+      "quantity_after": 0.1,
+      "realized_pnl_before_fees": 2,
+      "realized_net_pnl": 0,
+      "fees": [
+        {
+          "cost": 2,
+          "currency": "USDT"
+        }
+      ],
+      "source": "trade_history",
+      "reason": "按照原定计划调整仓位。\n保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。",
+      "order_id": "order-0",
+      "trade_id": "trade-0",
+      "issues": [],
+      "is_fill": true
+    },
+    {
+      "event_id": "fill-1",
+      "kind": "add",
+      "timestamp": "2026-11-02T09:00:00+08:00",
+      "quantity": 0.1,
+      "price": 71000,
+      "quantity_before": 0.1,
+      "quantity_after": 0.2,
+      "realized_pnl_before_fees": 2,
+      "realized_net_pnl": 0,
+      "fees": [
+        {
+          "cost": 2,
+          "currency": "USDT"
+        }
+      ],
+      "source": "trade_history",
+      "reason": "按照原定计划调整仓位。\n保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。",
+      "order_id": "order-1",
+      "trade_id": "trade-1",
+      "issues": [],
+      "is_fill": true
+    },
+    {
+      "event_id": "fill-2",
+      "kind": "reduce",
+      "timestamp": "2026-11-03T09:00:00+08:00",
+      "quantity": 0.08,
+      "price": 71800,
+      "quantity_before": 0.2,
+      "quantity_after": 0.12,
+      "realized_pnl_before_fees": 126.8,
+      "realized_net_pnl": 124.8,
+      "fees": [
+        {
+          "cost": 2,
+          "currency": "USDT"
+        }
+      ],
+      "source": "trade_history",
+      "reason": "按照原定计划调整仓位。\n保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。保留原始理由，便于核对成交变化。",
+      "order_id": "order-2",
+      "trade_id": "trade-2",
+      "issues": [],
+      "is_fill": true
+    }
+  ],
+  "calls": {
+    "items": [],
+    "total": 0
+  }
+}

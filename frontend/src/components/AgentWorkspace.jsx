@@ -26,7 +26,8 @@ import DecisionRunPanel from './DecisionRunPanel';
 import DecisionMemoryStatus from './DecisionMemoryStatus';
 import MemoryExecutionSnapshot from './MemoryExecutionSnapshot';
 import TaskExecutionPanel from './TaskExecutionPanel';
-import SpotCostBasisEditor from './SpotCostBasisEditor';
+import SpotHoldings from './SpotHoldings';
+import PositionHistory from './PositionHistory';
 import { AgentQueuePanel } from './AgentRuntimeStatus';
 import { currentExecution } from '../lib/agentRuntime';
 import MarkdownBlock from '../components/MarkdownBlock';
@@ -44,13 +45,6 @@ import '../pages/DashboardPage.css';
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 const { useBreakpoint } = Grid;
-
-function SpotBasisCaption({ stats, locale }) {
-  if (!stats?.cost_basis?.updated_at) return null;
-  return <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12, overflowWrap: 'anywhere' }}>
-    {locale === 'zh' ? '成本基准' : 'Cost baseline'} v{stats.cost_basis_revision} · {locale === 'zh' ? '人工校准于' : 'Calibrated'} {new Date(stats.cost_basis.updated_at).toLocaleString()}
-  </Typography.Paragraph>;
-}
 
 function memorySaveError(error, locale) {
   if (error.response?.status === 401) {
@@ -101,26 +95,6 @@ function formatPercentValue(value) {
 
 function isSpotMode(mode) {
   return String(mode || '').toUpperCase() === 'SPOT_DCA';
-}
-
-function buildSpotFacts(t, stats, pendingOrders = []) {
-  const portfolio = stats?.is_portfolio || (stats?.by_symbol || []).length > 1;
-  return [
-    { label: t('marketValue'), value: formatPositionValue(stats?.market_value) },
-    { label: t('remainingCost'), value: formatPositionValue(stats?.remaining_cost ?? stats?.total_invested) },
-    { label: t('recordedInvestment'), value: formatPositionValue(stats?.recorded_investment ?? stats?.recorded_buy_cost) },
-    { label: t('realizedNetPnl'), value: formatPositionValue(stats?.realized_pnl) },
-    ...(!portfolio ? [
-      { label: t('actualBalance'), value: formatPositionValue(stats?.actual_balance) },
-      { label: t('recordedQty'), value: formatPositionValue(stats?.total_qty) },
-      { label: t('avgCost'), value: formatPositionValue(stats?.avg_cost) },
-      { label: t('mark'), value: formatPositionValue(stats?.current_price) },
-    ] : []),
-    { label: t('unrealizedPnl'), value: formatPositionValue(stats?.unrealized_pnl) },
-    { label: t('holdingRoi'), value: formatPercentValue(stats?.return_pct) },
-    { label: t('buyCount'), value: stats?.buy_count ?? '—' },
-    { label: t('pendingOrders'), value: stats?.pending_orders ?? pendingOrders.length },
-  ];
 }
 
 function getMarginBalance(workspace) {
@@ -313,10 +287,10 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
     : t('noOpenOrders');
   const spotMode = isSpotMode(agent?.mode || position?.mode);
   const spotStats = position?.dca_stats || {};
+  const accountState = workspace.sections?.account;
   const chartSymbols = agent?.symbols?.length ? agent.symbols : [agent?.symbol].filter(Boolean);
-  const spotPortfolio = chartSymbols.length > 1 || spotStats.is_portfolio;
-  const availableSpotSymbols = new Set((spotStats.by_symbol || []).map(asset => asset.symbol));
-  const missingSpotSymbols = spotPortfolio ? chartSymbols.filter(symbol => !availableSpotSymbols.has(symbol)) : [];
+
+
   const requestedChartSymbol = chartSymbols.includes(chartSymbol) ? chartSymbol : agent?.symbol;
   const displayedChartSymbol = kline.symbol || agent?.symbol;
   const exitMode = position.exit_management?.mode || resolveExitMode({ ...agent, ...position });
@@ -490,9 +464,11 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   const positionPanel = (
     <Card className="panel-card">
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        {accountState?.loading && <Text type="secondary"><Spin size="small" /> {locale === 'zh' ? '正在更新账户…' : 'Updating account…'}</Text>}
+        {accountState?.updatedAt && <Text className="account-updated" type="secondary">{locale === 'zh' ? '账户更新于 ' : 'Account updated '}{new Date(accountState.updatedAt).toLocaleTimeString(locale === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false })}</Text>}
         <div className="position-header-row">
           <Space size={8} wrap>
-            <Text strong>{spotMode ? t('spotAccount') : t('positions')}</Text>
+            <Text strong>{spotMode ? (locale === 'zh' ? '当前持仓' : 'Current holdings') : t('positions')}</Text>
             {spotMode && !compact ? <Tag color="gold">SPOT_DCA</Tag> : null}
             {!spotMode ? <Tag color={independentExits ? 'blue' : 'default'}>{exitModeLabel(exitMode, locale)}</Tag> : null}
             {!spotMode && !independentExits && authenticated && activePositions.length === 1 ? (
@@ -517,47 +493,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
         </div>
         {!spotMode && position.management && <details className="content-disclosure"><summary>{locale === 'zh' ? '持仓管理详情' : 'Position management details'}</summary><ManagementStatus management={position.management} /></details>}
         {spotMode ? (
-          <div className="spot-account-summary">
-            {authenticated && !spotPortfolio ? (
-              <div style={{ marginBottom: 12 }}>
-                <SpotCostBasisEditor key={`${agent?.config_id}:${spotStats.symbol || agent?.symbol}`} configId={agent?.config_id} symbol={spotStats.symbol || agent?.symbol} stats={spotStats} />
-              </div>
-            ) : null}
-            <FactGrid items={buildSpotFacts(t, { ...spotStats, is_portfolio: spotPortfolio }, pendingOrders)} />
-            <SpotBasisCaption stats={spotStats} locale={locale} />
-            <Typography.Paragraph type="secondary" style={{ marginTop: 12, fontSize: 12, lineHeight: 1.7 }}>{locale === 'zh' ? '持仓收益率 =（当前市值 − 剩余持仓成本）/ 剩余持仓成本。人工校准不是买入或利润。' : 'Holding return = (market value − remaining cost) / remaining cost. A manual calibration is not a purchase or profit.'}{spotStats.fees_complete === false && (locale === 'zh' ? ' 手续费资料不完整，当前收益仅基于已记录成本。' : ' Fee evidence is incomplete; valuation uses recorded costs only.')}{spotStats.valuation_status === 'zero_cost' && (locale === 'zh' ? ' 当前成本为零，收益率无法计算。' : ' Return is unavailable for zero cost.')}</Typography.Paragraph>
-            {authenticated && missingSpotSymbols.length ? (
-              <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 12 }}>
-                <Text type="secondary">{locale === 'zh' ? '以下标的的统计暂不可用，可手动填写当前持仓：' : 'Statistics are unavailable for these symbols. You can enter their current holdings:'}</Text>
-                {missingSpotSymbols.map(symbol => (
-                  <Space key={symbol} wrap>
-                    <Text>{symbol}</Text>
-                    <SpotCostBasisEditor key={`${agent?.config_id}:${symbol}`} configId={agent?.config_id} symbol={symbol} stats={{}} />
-                  </Space>
-                ))}
-              </Space>
-            ) : null}
-            {spotStats.sync_status === 'partial' ? <Alert type="warning" showIcon title={locale === 'zh' ? '部分账户或行情数据未能核验，未知金额显示为 —。' : 'Some account or market data could not be verified. Unknown values are shown as —.'} description={spotStats.errors?.join(' · ')} /> : null}
-            {spotStats.missing_symbols?.length ? <Alert type="warning" showIcon title={locale === 'zh' ? `部分标的数据不可用：${spotStats.missing_symbols.join(', ')}，组合汇总暂不可计算，已读取标的仍可查看。` : `Some symbols are unavailable: ${spotStats.missing_symbols.join(', ')}. Portfolio totals are unavailable; verified assets remain visible.`} /> : null}
-            {spotPortfolio && spotStats.by_symbol?.length ? (
-              <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 16 }}>
-                <Text type="secondary">{locale === 'zh' ? '以下按标的列出持仓，数量与均价分别计算；组合总额使用共同计价币。' : 'Holdings, quantities and average costs are calculated per symbol. Portfolio totals use the shared quote currency.'}</Text>
-                {spotStats.by_symbol.map((asset) => (
-                  <Card size="small" key={asset.symbol} title={asset.symbol}
-                    extra={authenticated ? <SpotCostBasisEditor key={`${agent?.config_id}:${asset.symbol}`} configId={agent?.config_id} symbol={asset.symbol} stats={asset} /> : null}>
-                    <FactGrid items={buildSpotFacts(t, asset)} />
-                    <SpotBasisCaption stats={asset} locale={locale} />
-                  </Card>
-                ))}
-                <Text type="secondary">{locale === 'zh' ? '本次运行组合共用额度' : 'Shared allowance per run'}: {formatPositionValue(spotStats.dca_amount_per)} {spotStats.quote_asset || agent.symbol?.split('/')[1] || ''}</Text>
-              </Space>
-            ) : null}
-            {spotStats.last_sync ? (
-              <Text type="secondary" className="spot-account-sync">
-                {t('lastSync')}: {spotStats.last_sync}
-              </Text>
-            ) : null}
-          </div>
+          <SpotHoldings configId={agent.config_id} symbols={chartSymbols} stats={spotStats} authenticated={authenticated} />
         ) : activePositions.length === 0 ? (
           <Text type={positionUnavailable ? 'warning' : 'secondary'}>{positionUnavailable ? (locale === 'zh' ? '仓位读取不完整，不能确认空仓。' : 'Position data is incomplete; flat exposure is not confirmed.') : t('noActivePositions')}</Text>
         ) : hasDualPosition ? (
@@ -812,15 +748,13 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   if (compact) {
     const execution = currentExecution(agent);
     const urgentExecution = ['RUNNING', 'FAILED', 'INTERRUPTED'].includes(execution?.status);
-    const accountState = workspace.sections?.account;
     const chartState = workspace.sections?.chart;
     const refreshKey = workspace.refreshKey || agent.timestamp;
     const confirmedEmpty = !spotMode && !activePositions.length && !pendingOrders.length && Boolean(workspace.position && workspace.kline)
       && !positionUnavailable && kline.orders_complete !== false && !accountState?.error && !chartState?.error;
     const accountContent = <>
       {accountState?.error && <Alert type="warning" showIcon title={locale === 'zh' ? '账户更新失败，保留上次数据' : 'Account refresh failed; keeping previous data'} description={accountState.error} />}
-      {accountState?.loading && <Text type="secondary"><Spin size="small" /> {locale === 'zh' ? '正在更新账户…' : 'Updating account…'}</Text>}
-      {accountState?.updatedAt && <Text className="section-updated" type="secondary">{locale === 'zh' ? '账户更新于 ' : 'Account updated '}{new Date(accountState.updatedAt).toLocaleTimeString(locale === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false })}</Text>}
+      {!workspace.position && accountState?.loading && <Card className="panel-card"><Text type="secondary"><Spin size="small" /> {locale === 'zh' ? '正在加载账户…' : 'Loading account…'}</Text></Card>}
       {confirmedEmpty ? <div className="workspace-empty-line">{locale === 'zh' ? '当前空仓 · 无挂单' : 'No positions · No pending orders'}{position.management && <details><summary>{locale === 'zh' ? '管理详情' : 'Management details'}</summary><ManagementStatus management={position.management} /></details>}</div> : <>{workspace.position && positionPanel}{workspace.kline && ordersPanel}</>}
       {authenticated && <TradeCallHistory pendingOnly compact configId={agent.config_id} refreshKey={refreshKey} />}
     </>;
@@ -830,13 +764,19 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
         {urgentExecution && <TaskExecutionPanel execution={execution} locale={locale} />}
         <Tabs activeKey={activeView} onChange={setActiveView} items={[
           { key: 'overview', label: locale === 'zh' ? '任务概览' : 'Overview', children: <div className="agent-view-stack">
-            {authenticated && <TaskStatistics configId={agent.config_id} refreshKey={refreshKey} />}{accountContent}{authenticated && <TradeCallHistory compact configId={agent.config_id} refreshKey={refreshKey} />}{chartPanel}
+            {authenticated && <TaskStatistics configId={agent.config_id} mode={agent.mode} refreshKey={refreshKey} />}{accountContent}{authenticated && <TradeCallHistory compact configId={agent.config_id} refreshKey={refreshKey} />}{chartPanel}
           </div> },
           { key: 'run', label: locale === 'zh' ? '决策与操作' : 'Decisions', children: <div className="agent-view-stack">{decisionPanel}</div> },
           { key: 'memory', label: locale === 'zh' ? '策略与记忆' : 'Strategy & memory', children: <div className="agent-view-stack">{summaryPanel}{memoryPanel}
             {shortMemories.length > 1 && <Card className="panel-card" title={locale === 'zh' ? '历史记忆版本' : 'Previous memory versions'}>{shortMemories.slice(1).map(memory => <details className="content-disclosure" key={memory.id || memory.bucket_start}><summary>{memory.created_at} · v{memory.version || '—'}</summary><div className="memory-reading"><MarkdownBlock content={memory.market_summary || ''} /></div><MemoryExecutionSnapshot memory={memory} authenticated={authenticated} locale={locale} /></details>)}</Card>}
           </div> },
-          { key: 'history', label: locale === 'zh' ? '历史记录' : 'History', children: <div className="agent-view-stack">{authenticated && <TradeCallHistory configId={agent.config_id} refreshKey={agent.timestamp} />}{recentOrdersPanel}</div> },
+          { key: 'history', label: locale === 'zh' ? '历史记录' : 'History', children: <Tabs className="workspace-history-tabs" defaultActiveKey={authenticated ? 'positions' : 'orders'} items={[
+            ...(authenticated ? [
+              { key: 'positions', label: locale === 'zh' ? '持仓历史' : 'Positions', children: <PositionHistory configId={agent.config_id} refreshKey={refreshKey} /> },
+              { key: 'operations', label: locale === 'zh' ? '操作记录' : 'Operations', children: <TradeCallHistory configId={agent.config_id} refreshKey={refreshKey} /> },
+            ] : []),
+            { key: 'orders', label: locale === 'zh' ? '订单记录' : 'Orders', children: recentOrdersPanel },
+          ]} /> },
         ]} />
       </div>
     );
@@ -848,7 +788,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
       {chartPanel}
       {decisionPanel}{summaryPanel}
       {positionPanel}
-      {authenticated ? <TaskStatistics key={agent.config_id} configId={agent.config_id} refreshKey={agent.timestamp} /> : null}
+      {authenticated ? <TaskStatistics key={agent.config_id} mode={agent.mode} configId={agent.config_id} refreshKey={agent.timestamp} /> : null}
       {memoryPanel}{ordersPanel}{recentOrdersPanel}
     </Space>
   );

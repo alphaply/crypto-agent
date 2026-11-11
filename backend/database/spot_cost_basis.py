@@ -41,6 +41,7 @@ def read_spot_buy_totals(
 
 def read_spot_order_totals(
     conn: storage.Connection, config_id: str, symbol: str, *, side: str = 'buy',
+    evidence_only: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Return one cumulative fill per owned order, including unfilled orders.
 
@@ -50,17 +51,21 @@ def read_spot_order_totals(
     """
     rows = conn.execute('''SELECT o.*,f.filled_qty AS sync_qty,f.filled_cost AS sync_cost,
             f.avg_fill_price AS sync_price,f.status AS sync_status,
-            t.traded_qty,t.traded_cost,t.first_buy,t.last_buy
+            t.traded_qty,t.traded_cost,t.missing_cost,t.first_buy,t.last_buy
         FROM orders o LEFT JOIN spot_order_fills f
           ON f.config_id=o.config_id AND f.symbol=o.symbol AND f.order_id=o.order_id
         LEFT JOIN (SELECT order_id,SUM(amount) AS traded_qty,SUM(cost) AS traded_cost,
-            MIN(timestamp) AS first_buy,MAX(timestamp) AS last_buy FROM trade_history
-            WHERE symbol=%s AND (config_id=%s OR config_id IS NULL OR config_id='')
-              AND LOWER(side)=%s GROUP BY order_id) t ON t.order_id=o.order_id
+            COUNT(*) FILTER (WHERE amount>0 AND (cost IS NULL OR cost<=0)) AS missing_cost,
+            MIN(timestamp) AS first_buy,MAX(timestamp) AS last_buy FROM (
+                SELECT DISTINCT ON (symbol,trade_id) * FROM trade_history
+                WHERE symbol=%s AND (config_id=%s OR config_id IS NULL OR config_id='')
+                  AND LOWER(side)=%s
+                ORDER BY symbol,trade_id,(config_id=%s) DESC NULLS LAST,storage_id DESC
+            ) attributed GROUP BY order_id) t ON t.order_id=o.order_id
         WHERE o.config_id=%s AND o.symbol=%s AND o.trade_mode='SPOT_DCA'
           AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED'
           AND UPPER(o.side) IN (%s,%s) ORDER BY o.id DESC''',
-        (symbol, config_id, side, config_id, symbol, side.upper(), side.upper() + '_LIMIT')).fetchall()
+        (symbol, config_id, side, config_id, config_id, symbol, side.upper(), side.upper() + '_LIMIT')).fetchall()
     totals = {}
     for row in rows:
         order_id = str(row['order_id'])
@@ -77,6 +82,19 @@ def read_spot_order_totals(
             qty, cost = history_qty, max(cost, history_cost)
         if any(not math.isfinite(value) or value < 0 for value in (qty, cost)):
             raise ValueError('现货历史成交数量或成本无效')
+        if evidence_only:
+            # A limit/intent price is not evidence of executed notional.
+            snapshot_qty = float((row['sync_qty'] if synced else row['filled_amount']) or 0)
+            actual_cost = row['sync_cost'] if synced else row['filled_cost']
+            actual_avg = row['sync_price'] if synced else row['avg_fill_price']
+            cost = (float(actual_cost) if actual_cost is not None and actual_cost > 0
+                    else snapshot_qty * float(actual_avg) if actual_avg is not None and actual_avg > 0 else None)
+            if history_qty > snapshot_qty:
+                cost = history_cost if not row['missing_cost'] else None
+            elif history_qty == snapshot_qty and history_qty > 0 and not row['missing_cost']:
+                cost = history_cost
+            if qty == 0:
+                cost = 0.0
         dates = [value for value in (
             row['first_buy'], row['last_buy'], row['filled_at'] or row['timestamp'],
         ) if value] if qty > 0 else []

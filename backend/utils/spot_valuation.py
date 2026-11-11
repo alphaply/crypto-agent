@@ -18,21 +18,28 @@ def _time(value):
     return (TZ_CN.localize(stamp) if stamp.tzinfo is None else stamp).astimezone(timezone.utc)
 
 
-def spot_orders(conn, config_id: str, symbol: str) -> dict:
-    return {**read_spot_order_totals(conn, config_id, symbol, side='buy'),
-            **read_spot_order_totals(conn, config_id, symbol, side='sell')}
+def spot_orders(conn, config_id: str, symbol: str, *, evidence_only=False) -> dict:
+    return {**read_spot_order_totals(conn, config_id, symbol, side='buy', evidence_only=evidence_only),
+            **read_spot_order_totals(conn, config_id, symbol, side='sell', evidence_only=evidence_only)}
 
 
-def spot_fill_events(conn, config_id: str, symbol: str, orders: dict, basis=None) -> list[dict]:
+def spot_fill_events(conn, config_id: str, symbol: str, orders: dict, basis=None, *, strict=True) -> list[dict]:
     rows = conn.execute('''SELECT * FROM trade_history t WHERE t.symbol=%s
         AND (t.config_id=%s OR t.config_id IS NULL OR t.config_id='')
         AND EXISTS (SELECT 1 FROM orders o WHERE o.config_id=%s AND o.symbol=t.symbol
           AND o.order_id=t.order_id AND o.trade_mode='SPOT_DCA'
           AND COALESCE(o.event_type,'ORDER_CREATED')='ORDER_CREATED')
         ORDER BY t.timestamp NULLS LAST,t.storage_id''', (symbol, config_id, config_id)).fetchall()
-    by_order = {}
-    for row in rows:
+    by_order, seen = {}, set()
+    # A legacy unassigned observation and its task-assigned copy are one fill.
+    for row in sorted(rows, key=lambda r: r['config_id'] != config_id):
+        identity = (row['symbol'], str(row['trade_id']))
+        if identity in seen:
+            continue
+        seen.add(identity)
         by_order.setdefault(str(row['order_id']), []).append(dict(row))
+    for fills in by_order.values():
+        fills.sort(key=lambda r: (_time(r['timestamp']) or datetime.min.replace(tzinfo=timezone.utc), r['storage_id']))
     events = []
     baselines = basis['order_baselines'] if basis else {}
     for order_id, order in orders.items():
@@ -51,10 +58,10 @@ def spot_fill_events(conn, config_id: str, symbol: str, orders: dict, basis=None
         quantity = max(0.0, order['qty'] - covered)
         if quantity <= 0:
             continue
-        cost = order['cost'] - (float(previous['cost']) if previous else 0.0)
-        if cost <= 0 or not math.isfinite(cost):
+        cost = order['cost'] - (float(previous['cost']) if previous else 0.0) if order['cost'] is not None else None
+        if cost is None and strict or cost is not None and (cost <= 0 or not math.isfinite(cost)):
             raise ValueError('校准后的新增成交成本尚未确认')
-        remaining, used_cost = quantity, 0.0
+        remaining, used_cost, costs_known = quantity, 0.0, True
         for fill in by_order.get(order_id, []):
             amount = float(fill['amount'] or 0)
             if amount <= 0:
@@ -65,27 +72,49 @@ def spot_fill_events(conn, config_id: str, symbol: str, orders: dict, basis=None
             if take <= 0:
                 continue
             ratio = take / amount
-            fill_cost = float(fill['cost'] or 0) * ratio
+            fill_cost = float(fill['cost']) * ratio if fill['cost'] is not None else (0.0 if strict else None)
             fee = fill['fee']
-            events.append(dict(order_id=order_id, side=order['side'], quantity=take,
+            events.append(dict(order_id=order_id, trade_id=str(fill['trade_id']),
+                               evidence_id=f"trade:{fill['trade_id']}", side=order['side'], quantity=take,
                                cost=fill_cost, timestamp=fill['timestamp'],
                                fee=float(fee) * ratio if fee is not None else None,
                                fee_currency=fill['fee_currency'], coarse=False))
             remaining -= take
-            used_cost += fill_cost
+            used_cost += fill_cost or 0.0
+            costs_known &= fill_cost is not None
         if remaining > max(1e-12, quantity * 1e-9):
-            if cost - used_cost <= 0:
+            if cost is not None and costs_known and cost - used_cost <= 0:
                 raise ValueError('成交明细与订单累计成本不一致，收益暂不可计算')
-            events.append(dict(order_id=order_id, side=order['side'], quantity=remaining,
-                               cost=cost-used_cost, timestamp=order.get('fill_timestamp'),
+            events.append(dict(order_id=order_id, trade_id=None, evidence_id=f'order:{order_id}',
+                               side=order['side'], quantity=remaining,
+                               cost=cost-used_cost if cost is not None and costs_known else None, timestamp=order.get('fill_timestamp'),
                                fee=None, fee_currency=None, coarse=True,
                                first_time=order.get('first_buy'), last_time=order.get('last_buy')))
-    if any(e['side'] == 'sell' for e in events):
+    if strict and any(e['side'] == 'sell' for e in events):
         if any(not e['timestamp'] for e in events):
             raise ValueError('买卖成交时间不完整，无法确认剩余成本')
         if any(e.get('coarse') and e.get('first_time') != e.get('last_time') for e in events):
             raise ValueError('部分成交明细不足，无法确认买卖先后及剩余成本')
     return sorted(events, key=lambda e: (_time(e['timestamp']) or datetime.min.replace(tzinfo=timezone.utc), e['order_id']))
+
+
+def apply_spot_fill(event: dict, quantity: float, cost: float, symbol: str) -> dict:
+    """One weighted-cost step, shared by holdings and historical realized returns."""
+    base, quote = symbol.split('/')[:2]
+    amount, value = event['quantity'], event['cost']
+    fee, currency = event.get('fee'), event.get('fee_currency')
+    base_fee = fee if currency == base and fee is not None else 0.0
+    quote_fee = fee if currency == quote and fee is not None else 0.0
+    if event['side'] == 'buy':
+        return dict(quantity=quantity + amount - base_fee, remaining_cost=cost + value + quote_fee,
+                    realized_pnl=0.0, disposed_fraction=0.0)
+    disposed = amount + base_fee
+    if quantity <= 0 or disposed > quantity + max(1e-12, quantity * 1e-9):
+        raise ValueError('卖出数量超过已确认持仓，剩余成本及收益暂不可计算')
+    fraction = min(disposed / quantity, 1)
+    removed = cost * fraction
+    return dict(quantity=max(0.0, quantity - disposed), remaining_cost=max(0.0, cost - removed),
+                realized_pnl=value - quote_fee - removed, disposed_fraction=fraction)
 
 
 def value_spot_events(events: list[dict], quantity: float, cost: float, symbol: str) -> dict:
@@ -100,20 +129,12 @@ def value_spot_events(events: list[dict], quantity: float, cost: float, symbol: 
             missing_fees += 1
         else:
             fees[currency] = fees.get(currency, 0.0) + fee
-        base_fee = fee if currency == base and fee is not None else 0.0
-        quote_fee = fee if currency == quote and fee is not None else 0.0
+        step = apply_spot_fill(event, quantity, cost, symbol)
+        quantity, cost = step['quantity'], step['remaining_cost']
+        realized += step['realized_pnl']
         if event['side'] == 'buy':
-            quantity += amount - base_fee
-            cost += value + quote_fee
             buys += value
         else:
-            disposed = amount + base_fee
-            if quantity <= 0 or disposed > quantity + max(1e-12, quantity*1e-9):
-                raise ValueError('卖出数量超过已确认持仓，剩余成本及收益暂不可计算')
-            removed_cost = cost * min(disposed / quantity, 1)
-            realized += value - quote_fee - removed_cost
-            quantity = max(0.0, quantity - disposed)
-            cost = max(0.0, cost - removed_cost)
             sales += 1
     fees_complete = not missing_fees and not (set(fees) - {base, quote})
     return dict(quantity=quantity, remaining_cost=cost, subsequent_buy_cost=buys,
