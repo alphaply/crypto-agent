@@ -248,7 +248,7 @@ uv run backend/utils/test_agent_connection.py
 - 数据库管理支持保留最近 7/30/90 天的快捷选择，可选择已移除任务的遗留 ID；清理先预览、再备份，保留成交及保护证据。
 - 指标采用 SMA 初始化的 Wilder 平滑；剔除异常 OHLCV、提示时间缺口及陈旧数据，成交量倍数使用之前 20 根已收盘 K 线作基准。修正不等同于胜率保证，需要独立样本和后续实盘评估。
 
-详见 [工作台改造与验证记录](docs/WORKBENCH_UPGRADE.md)。
+详见 [工作台改造与验证记录](docs/WORKBENCH_UPGRADE.md)。工具执行进度、仅文本输出与 B.AI/Argon 接口排查见 [工具调用说明](docs/TOOL_CALLING.md)。
 
 Dashboard 专注数据总览；独立 Agents 页承载任务运行计划与实时工作区。下一次运行遵循实际分时段规则，显示日期、时区、当前频率与暂停状态；状态自动更新，行情失败保留旧数据并明确提示。K 线在当前浏览器记住上次选择的周期，刷新或切换任务时继续使用；周期切换中或加载失败时明确标注仍显示的数据周期，桌面和手机使用同一组周期按钮。详见 [Dashboard 修复与验证](docs/DASHBOARD_REFRESH.md)。
 

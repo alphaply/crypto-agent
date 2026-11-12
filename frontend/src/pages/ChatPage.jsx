@@ -38,6 +38,8 @@ import MarkdownBlock from '../components/MarkdownBlock';
 import ReasoningBlock from '../components/ReasoningBlock';
 import ChatRunProgress from '../components/ChatRunProgress';
 import ToolResultContent from '../components/ToolResultContent';
+import { ToolActivity } from '../components/ToolActivity';
+import { updateToolActivity } from '../lib/toolActivity';
 import { toolRequest } from '../lib/toolReceipt';
 import MarketSymbolPicker from '../components/MarketSymbolPicker';
 import { api, streamSse } from '../lib/api';
@@ -612,7 +614,7 @@ export default function ChatPage({ token }) {
   const runStream = useCallback(async (url, messageText = '', requestBody = null) => {
     const startedAt = Date.now();
     setStreaming(true);
-    setRun({ startedAt, endedAt: null, characters: 0, events: [{ at: startedAt, label: isZh ? '整理上下文与行情' : 'Preparing context and market data' }] });
+    setRun({ startedAt, endedAt: null, characters: 0, toolCalls: [], events: [{ at: startedAt, label: isZh ? '整理上下文与行情' : 'Preparing context and market data' }] });
     const recordStage = (label, characters = 0) => setRun((prev) => prev ? ({ ...prev, characters: prev.characters + characters, events: prev.events.at(-1)?.label === label ? prev.events : [...prev.events.slice(-49), { at: Date.now(), label }] }) : prev);
     setStreamStatus(isZh ? '正在整理上下文' : 'Preparing context');
     setStreamFailure(null);
@@ -626,6 +628,9 @@ export default function ChatPage({ token }) {
       await streamSse(url, token, (event) => {
         if (!mountedRef.current) return;
         lifecycle = reduceChatStreamLifecycle(lifecycle, event);
+        if (['tool_calls', 'tool_start', 'tool_result', 'model_complete'].includes(event.type)) {
+          setRun(prev => prev ? { ...prev, toolCalls: updateToolActivity(prev.toolCalls, event) } : prev);
+        }
         const labels = { token: isZh ? '生成回答' : 'Writing answer', reasoning_token: isZh ? '接收推理摘要' : 'Receiving reasoning', tool_calls: isZh ? '准备工具调用' : 'Preparing tools', approval_required: isZh ? '等待工具审批' : 'Awaiting approval', tool_result: isZh ? '工具已返回结果' : 'Tool result received', done: isZh ? '本轮请求完成' : 'Request completed', error: isZh ? '请求遇到错误' : 'Request error' };
         if (event.type === 'status' || labels[event.type]) recordStage(event.type === 'status' ? event.message : labels[event.type], ['token', 'reasoning_token'].includes(event.type) ? String(event.token || '').length : 0);
         if (event.type === 'token') {
@@ -647,12 +652,14 @@ export default function ChatPage({ token }) {
             }));
           }
         } else if (event.type === 'tool_calls') {
-          setStreamStatus(t('toolApproval'));
+          setStreamStatus(isZh ? '正在生成工具参数' : 'Preparing tool arguments');
+        } else if (event.type === 'tool_start') {
+          setStreamStatus(isZh ? '正在执行工具' : 'Running tool');
         } else if (event.type === 'approval_required') {
           setPendingApproval(event.approval || null);
           setStreamStatus(t('toolApproval'));
         } else if (event.type === 'tool_result') {
-          setMessages((prev) => [...prev, { role: 'tool', content: event.content }]);
+          setMessages((prev) => [...prev, { role: 'tool', content: event.content, tool: event.tool, tool_call_id: event.tool_call_id }]);
         } else if (event.type === 'done') {
           drainDraftBuffer(true);
           if (Array.isArray(event.messages)) {
@@ -1047,6 +1054,7 @@ export default function ChatPage({ token }) {
                     {showScrollToBottom ? <Button className="chat-scroll-bottom" shape="circle" icon={<DownOutlined />} onClick={scrollToBottom} aria-label={isZh ? '回到底部' : 'Scroll to bottom'} /> : null}
                   </div>
                   {recoveryNotice ? <Alert type="info" showIcon closable onClose={() => setRecoveryNotice('')} title={recoveryNotice} /> : null}
+                  {streaming && run?.toolCalls?.length > 0 && <div className="chat-tool-activities">{run.toolCalls.map((call, index) => <ToolActivity key={call.id || index} name={call.name} status={call.status} zh={isZh} />)}</div>}
                   <ToolApproval approval={pendingApproval} loading={streaming} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} locale={locale} />
                   <PersistenceWarning warning={persistenceWarning} locale={locale} onDismiss={() => setPersistenceWarning('')} />
                   <StreamFailureCard failure={streamFailure} onRetry={retryFailedMessage} onEdit={editFailedMessage} locale={locale} />

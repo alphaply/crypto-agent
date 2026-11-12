@@ -23,6 +23,12 @@ def capture_request(payload: dict, *, protocol: str, base_url: str | None, reque
     diagnostic = {'provider': provider, 'model': str(actual.get('model') or ''), 'protocol': protocol,
                   'requested_effort': requested.get('effort'), 'thinking_enabled': requested.get('thinking_enabled'),
                   'sent_parameters': sent, 'request_outcome': 'sent', 'capability': 'unverified'}
+    tools = actual.get('tools')
+    choice = actual.get('tool_choice')
+    # Counts and selection mode only: never store schemas, arguments or credentials.
+    diagnostic['tools_sent'] = len(tools) if isinstance(tools, list) else 0
+    diagnostic['tool_choice'] = (choice if choice in ('auto', 'none', 'required', 'any')
+                                 else 'specific' if isinstance(choice, dict) else 'auto')
     if 'claude-sonnet-5.5' in diagnostic['model'].lower() and ('temperature' in sent or 'top_p' in sent):
         diagnostic['configuration_warning'] = '此模型的采样参数支持情况未获网关确认。'
     current_request.set(diagnostic)
@@ -39,6 +45,15 @@ def response_diagnostics(message, request: dict | None = None) -> dict:
     requested = bool(result.get('requested_effort') or sent.get('reasoning_effort') or sent.get('thinking') or result.get('thinking_enabled'))
     state = 'text_available' if text_available else 'usage_only' if tokens > 0 else 'disabled' if disabled else 'requested_no_evidence' if requested else 'not_requested'
     result.update(request_outcome='accepted', text_available=text_available, reported_reasoning_tokens=tokens, evidence_state=state)
+    calls = getattr(message, 'tool_calls', None) or []
+    invalid = getattr(message, 'invalid_tool_calls', None) or []
+    metadata = getattr(message, 'response_metadata', None) or {}
+    result.update(tool_calls_returned=len(calls), invalid_tool_calls=len(invalid),
+                  tool_evidence_state='invalid_calls' if invalid else 'calls_returned' if calls
+                  else 'no_calls' if result.get('tools_sent', 0) else 'no_tools_sent')
+    finish = metadata.get('finish_reason') or metadata.get('stop_reason')
+    if isinstance(finish, str):
+        result['finish_reason'] = finish
     return result
 
 

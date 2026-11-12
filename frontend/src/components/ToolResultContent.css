@@ -55,3 +55,13 @@
 .tool-original-reason { margin-top: 10px; overflow-wrap: anywhere; }
 .tool-original-reason small { color: var(--text-muted); }
 .tool-original-reason .ant-typography { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.8; }
+.trade-receipt { min-width: 0; }
+.trade-receipt > .tool-result-raw { margin-top: 0; padding: 0 16px; border: 1px solid var(--border-soft, #dce3ed); border-top: 0; border-radius: 0 0 12px 12px; background: var(--bg-surface, #fff); color: var(--text-secondary, #64748b); font-size: 12px; }
+.trade-receipt > .tool-result-card, .trade-receipt > .tool-trade-results > .tool-result-card:last-child { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.trade-receipt .tool-result-raw h4 { font-size: 12px; margin: 12px 0 6px; }
+.trade-receipt .tool-result-raw pre { padding: 12px; background: var(--bg-subtle, #f5f7fa); border-radius: 8px; color: var(--text-primary, #1e293b); line-height: 1.7; }
+.tool-receipt-name { display: block; margin-top: 10px; overflow-wrap: anywhere; }
+.tool-legacy-receipt .tool-result-card-header strong { display: inline-flex; align-items: center; gap: 8px; }
+.tool-legacy-receipt .tool-result-card-header .ant-tag { margin-inline-end: 0; font-size: 11px; }
+.tool-legacy-receipt .tool-legacy-text { margin: 10px 0 8px; font-size: 13px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-legacy-note { font-size: 11px; }

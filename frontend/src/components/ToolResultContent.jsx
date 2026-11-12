@@ -1,8 +1,9 @@
 import { Tag, Typography } from 'antd';
-import { ArrowUpOutlined, ArrowDownOutlined, EditOutlined, CloseOutlined, SafetyOutlined } from '@ant-design/icons';
+import { ArrowUpOutlined, ArrowDownOutlined, EditOutlined, CloseOutlined, SafetyOutlined, HistoryOutlined } from '@ant-design/icons';
 import MarkdownBlock from './MarkdownBlock';
 import './ToolResultContent.css';
 import { receiptSummary, isTradeReceipt, tradeReceiptRows, tradeReceiptLabels, tradeValidationMessage, friendlyTradeError } from '../lib/toolReceipt';
+import { toolDisplayName } from '../lib/toolActivity';
 
 // What a reader needs to judge one operation: did it work, on what, how much,
 // and where the order stands. Every other field stays in the raw JSON view.
@@ -35,6 +36,7 @@ const states = {
 };
 
 function Value({ value, field, zh, depth = 0 }) {
+  if (value == null) return null;
   if (typeof value !== 'object') {
     if (['status', 'order_status'].includes(field) && states[value]) {
       const [label, color] = states[value];
@@ -81,7 +83,12 @@ function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
     const text = String(content || '').trim();
     const failed = ['failed', 'unknown', 'pending', 'not_executed'].includes(fallbackStatus)
       || /^(Error:|\d+\. .*?(?:失败|未执行|未知))/s.test(text);
-    return <div className="tool-result-content tool-result-card"><Tag color={failed ? 'warning' : 'default'}>{zh ? '历史回执 · 查看原文核对' : 'Legacy receipt · verify details'}</Tag><OriginalReason reason={request?.reason} zh={zh} /><Typography.Paragraph ellipsis={{ rows: 2, expandable: 'collapsible' }}>{text}</Typography.Paragraph></div>;
+    return <div className="tool-result-content tool-result-card tool-legacy-receipt">
+      <div className="tool-result-card-header"><strong><HistoryOutlined /> {toolDisplayName(toolName, zh)}</strong><Tag color={failed ? 'warning' : 'default'}>{zh ? '历史回执' : 'Legacy receipt'}</Tag></div>
+      <OriginalReason reason={request?.reason} zh={zh} />
+      <Typography.Paragraph className="tool-legacy-text" ellipsis={{ rows: 3, expandable: 'collapsible', symbol: expanded => zh ? expanded ? '收起原文' : '展开原文' : expanded ? 'Less' : 'Read more' }}>{text}</Typography.Paragraph>
+      <span className="tool-result-muted tool-legacy-note">{zh ? '旧版文本记录 · 执行状态以原文为准' : 'Original text record · verify the outcome in the receipt'}</span>
+    </div>;
   }
   return <div className="tool-result-content tool-trade-results">{rows.map((row, index) => {
     const editing = row.action === 'edit' || row.action?.startsWith('amend_');
@@ -129,22 +136,35 @@ function TradingResult({ content, zh, toolName, fallbackStatus, request }) {
 }
 
 export default function ToolResultContent({ content, zh, toolName, fallbackStatus, request }) {
-  if (isTradeReceipt(content, toolName)) return <div className="trade-receipt"><TradingResult {...{ content, zh, toolName, fallbackStatus, request }} /><details className="tool-result-raw"><summary>{zh ? '参数与完整回执' : 'Parameters & full receipt'}</summary><pre>{JSON.stringify({ request, result: content }, null, 2)}</pre></details></div>;
-  return <GenericResult {...{ content, zh, toolName, fallbackStatus }} />;
+  if (isTradeReceipt(content, toolName)) return <div className="trade-receipt"><TradingResult {...{ content, zh, toolName, fallbackStatus, request }} /><details className="tool-result-raw"><summary>{zh ? '参数与完整回执' : 'Parameters & full receipt'}</summary>
+    {toolName && <code className="tool-receipt-name">{toolName}</code>}
+    {request && Object.keys(request).length > 0 && <><h4>{zh ? '调用参数' : 'Arguments'}</h4><pre>{JSON.stringify(request, null, 2)}</pre></>}
+    <h4>{zh ? '原始回执' : 'Original receipt'}</h4><pre>{formatRawResult(content)}</pre>
+  </details></div>;
+  return <GenericResult {...{ content, zh, toolName, fallbackStatus, request }} />;
 }
 
-function GenericResult({ content, zh, toolName, fallbackStatus }) {
+function formatRawResult(content) {
+  if (typeof content === 'string') {
+    try { return JSON.stringify(JSON.parse(content), null, 2); } catch { return content; }
+  }
+  return JSON.stringify(content, null, 2);
+}
+
+function GenericResult({ content, zh, toolName, fallbackStatus, request }) {
   const { value, status: resultStatus, text } = receiptSummary(content, zh);
   const status = resultStatus || fallbackStatus || 'returned';
   const state = states[status] || [status, 'default'];
   return <div className="tool-result-content tool-result-card">
     <div className="tool-result-card-header">
-      <strong>{toolName || (zh ? '工具结果' : 'Tool result')}</strong>
+      <strong>{toolDisplayName(toolName, zh)}</strong>
       {status && <Tag color={state[1]}>{zh ? state[0] : status}</Tag>}
     </div>
     <p className="tool-result-card-summary">{text}</p>
     <details className="tool-result-disclosure">
       <summary>{zh ? '展开完整结果' : 'Show full result'}</summary>
+      {toolName && <code className="tool-receipt-name">{toolName}</code>}
+      {request && Object.keys(request).length > 0 && <details className="tool-result-raw"><summary>{zh ? '调用参数' : 'Arguments'}</summary><pre>{JSON.stringify(request, null, 2)}</pre></details>}
       {typeof value === 'string' ? <MarkdownBlock content={value} /> : <Value value={value} zh={zh} />}
     {value !== null && typeof value === 'object' && <details className="tool-result-raw">
       <summary>{zh ? '查看原始 JSON' : 'View raw JSON'}</summary>

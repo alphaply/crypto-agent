@@ -47,8 +47,18 @@ const markdownComponents = {
   },
 };
 
-export default function MarkdownBlock({ content, className = '', streaming = false }) {
+export default function MarkdownBlock({ content, className = '', streaming = false, collapseJsonLabel }) {
   const source = useMemo(() => prepareMarkdown(content, streaming), [content, streaming]);
+  const components = useMemo(() => collapseJsonLabel ? {
+    ...markdownComponents,
+    pre: (props) => {
+      const element = React.Children.toArray(props.children).find(React.isValidElement);
+      const json = /(?:^|\s)language-json(?:\s|$)/.test(element?.props?.className || '');
+      const long = childText(props.children).split('\n').length > 10;
+      const code = markdownComponents.pre(props);
+      return json && long && !streaming ? <details className="markdown-json-disclosure"><summary>{collapseJsonLabel}</summary>{code}</details> : code;
+    },
+  } : markdownComponents, [collapseJsonLabel, streaming]);
 
   if (!source.trim()) {
     return null;
@@ -58,7 +68,7 @@ export default function MarkdownBlock({ content, className = '', streaming = fal
     <div className={`markdown-block ${className}`.trim()}>
       <ReactMarkdown
         remarkPlugins={markdownRemarkPlugins}
-        components={markdownComponents}
+        components={components}
       >
         {source}
       </ReactMarkdown>

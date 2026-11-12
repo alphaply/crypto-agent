@@ -991,6 +991,9 @@ def tools_node(state: ChatState, config: RunnableConfig):
             from backend.agent.unified_trading import current_batch_approvals
             approval_token = current_batch_approvals.set(batch_approvals)
             try:
+                _emit_stream_event(configurable, {
+                    'type': 'tool_start', 'tool_call_id': call['id'], 'tool': tool_name,
+                })
                 result = _run_tool(tool_name, tool_args, config_id, symbol, operation_id=call['id'], **extra)
             finally:
                 current_batch_approvals.reset(approval_token)
@@ -1010,6 +1013,9 @@ def tools_node(state: ChatState, config: RunnableConfig):
             from backend.agent.tool_registry import stops_tool_sequence
             stopped = stopped or stops_tool_sequence(tool_name, status, config_id, tool_args)
 
+    call_names = {call['id']: call['name'] for call in tool_calls}
+    for output in outputs:
+        output.name = call_names.get(output.tool_call_id)
     return {"messages": outputs, "symbol": symbol}
 
 
@@ -1364,6 +1370,7 @@ def _resume_stream_items(command, config):
                     yield {
                         "type": "tool_result",
                         "tool_call_id": msg.tool_call_id,
+                        "tool": msg.name,
                         "content": extract_message_text(msg),
                         "role": "tool",
                     }

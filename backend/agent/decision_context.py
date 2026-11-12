@@ -144,4 +144,5 @@ def render_decision_prompt(template: str, memory: DecisionMemory, **values) -> s
     if values.get('exit_mode') == 'independent_exits':
         from backend.utils.trading_policy import INDEPENDENT_RUNTIME_POLICY
         prompt += '\n\n## 当前退出工具事实\n' + INDEPENDENT_RUNTIME_POLICY
-    return prompt + '\n\n' + EVENT_TIME_POLICY
+    from backend.utils.trading_policy import TOOL_EXECUTION_POLICY
+    return prompt + '\n\n## 工具执行约定\n' + TOOL_EXECUTION_POLICY + '\n\n' + EVENT_TIME_POLICY

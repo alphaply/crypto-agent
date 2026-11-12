@@ -1,0 +1,23 @@
+.tool-activity { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--border-soft, #dce3ed); border-radius: 12px; background: var(--bg-surface, #fff); min-width: 0; }
+.tool-activity.is-running, .tool-activity.is-preparing { border-color: color-mix(in srgb, var(--accent, #2563eb) 40%, var(--border-soft, #dce3ed)); }
+.tool-activity-header { display: flex; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; }
+.tool-activity-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--accent, #2563eb); background: var(--bg-subtle, #f3f6fa); }
+.tool-activity-header strong { overflow-wrap: anywhere; }
+.tool-activity-state { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--text-secondary, #64748b); font-size: 12px; }
+.is-running .tool-activity-state, .is-preparing .tool-activity-state { color: var(--accent, #2563eb); }
+.tool-activity-reason { margin: 10px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+.tool-activity-note { color: var(--text-secondary, #64748b); font-size: 12px; margin: 8px 0; line-height: 1.65; }
+.tool-activity-details { font-size: 12px; border-top: 1px solid var(--border-soft, #dce3ed); margin-top: 10px; }
+.tool-activity-details summary { cursor: pointer; color: var(--text-secondary, #64748b); padding: 9px 0 0; }
+.tool-activity-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+.tool-activity-details > code { display: block; margin-top: 10px; overflow-wrap: anywhere; }
+.model-tool-diagnostic { margin-top: 12px; color: var(--text-secondary, #64748b); font-size: 12px; line-height: 1.7; }
+.model-tool-diagnostic summary { cursor: pointer; width: fit-content; }
+.model-tool-diagnostic p { margin: 8px 0; }
+.model-tool-diagnostic dl { display: flex; flex-wrap: wrap; gap: 8px 24px; padding: 10px 12px; background: var(--bg-surface, #fff); border-radius: 8px; }
+.model-tool-diagnostic dd { margin: 2px 0 0; color: var(--text-primary, #1e293b); font-variant-numeric: tabular-nums; }
+.chat-tool-activities { max-height: 260px; overflow: auto; padding: 0 16px 12px; }
+.markdown-json-disclosure { margin: 12px 0; border: 1px solid var(--border-soft, #dce3ed); background: var(--bg-surface, #fff); border-radius: 8px; padding: 8px 12px; font-size: 12px; }
+.markdown-json-disclosure > summary { cursor: pointer; color: var(--text-secondary, #64748b); }
+.markdown-json-disclosure[open] > summary { margin-bottom: 8px; }
+@media (prefers-reduced-motion: reduce) { .tool-activity .anticon-spin { animation: none; } }

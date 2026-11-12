@@ -1,26 +1,12 @@
-import { Alert, Tag, Typography } from 'antd';
+import { Alert, Typography } from 'antd';
 import MarkdownBlock from './MarkdownBlock';
 import ReasoningBlock from './ReasoningBlock';
 import { splitThinkingContent } from '../lib/thinking';
 import AuditDisclosure from './AuditDisclosure';
 import ToolResultContent from './ToolResultContent';
-import { isTradeReceipt, isTradingTool, toolRequest } from '../lib/toolReceipt';
-
-const colors = { failed: 'error', unknown: 'warning', pending: 'warning', partial: 'warning', completed: 'success', submitted: 'processing', running: 'processing' };
-const labels = { failed: '失败', unknown: '待核验', pending: '待确认', partial: '部分返回', submitted: '已提交', completed: '已返回', not_executed: '未执行', skipped: '未执行', planned: '已规划', running: '执行中' };
-
-
-function invocationStatus(item) {
-  if (!item) return null;
-  let receipt = item.current_receipt;
-  try { receipt ||= typeof item.result === 'string' ? JSON.parse(item.result) : item.result; } catch { /* legacy text */ }
-  return item.tool === 'get_trade_operation' && receipt?.query ? receipt.query.status : receipt?.status || item.status;
-}
-
-function formatResult(result) {
-  try { return JSON.stringify(typeof result === 'string' ? JSON.parse(result) : result, null, 2); }
-  catch { return String(result || ''); }
-}
+import { isTradeReceipt, toolRequest } from '../lib/toolReceipt';
+import { pendingDecisionTools } from '../lib/toolActivity';
+import { ModelToolDiagnostic, ToolActivity } from './ToolActivity';
 
 export function ToolReceipt({ item, zh, request }) {
   const trading = isTradeReceipt(item.current_receipt ?? item.result, item.tool || item.name);
@@ -42,17 +28,10 @@ export default function DecisionMessages({ messages, zh, active = false, phase, 
       <Typography.Text strong>{zh ? `第 ${turn} 轮 · 模型输出` : `Turn ${turn} · Model output`}</Typography.Text>
       {entry.output_warning && <Alert type="warning" showIcon title={entry.output_warning} />}
       <ReasoningBlock title={zh ? '推理过程' : 'Reasoning'} content={text.reasoning} reasoningTokens={entry.reasoning_tokens || 0} diagnostics={entry.reasoning_diagnostics} streaming={streaming} startedAt={startedAt} />
-      <MarkdownBlock content={text.content} streaming={streaming} />
-      {(entry.tool_calls || []).map((call, callIndex) => {
-        if (isTradingTool(call.name)) return null;
-        const receipt = messages.slice(index + 1).find((item) => item.role === 'tool' && item.tool_call_id === call.id);
-        const progress = toolCalls.find((item) => item.id === call.id);
-          const status = invocationStatus(receipt) || progress?.status || (active ? 'planned' : 'unknown');
-        return <details className="content-disclosure decision-tool-call" key={call.id || callIndex}>
-          <summary>{zh ? '调用工具' : 'Tool call'} · {call.name} <Tag color={colors[status]}>{zh ? labels[status] || status : status}</Tag></summary>
-          <pre>{formatResult(call.args)}</pre>
-        </details>;
-      })}
+      <MarkdownBlock content={text.content} streaming={streaming} collapseJsonLabel={zh ? '查看模型给出的 JSON（仅文本）' : 'View model JSON (text only)'} />
+      {text.content && <ModelToolDiagnostic calls={entry.tool_calls} diagnostics={entry.reasoning_diagnostics} zh={zh} streaming={streaming} />}
+      {pendingDecisionTools(entry.tool_calls || [], messages.slice(index + 1), toolCalls, { active, streaming }).map((call, callIndex) =>
+        <ToolActivity key={call.id || callIndex} name={call.name} args={call.args} status={call.status} zh={zh} />)}
     </section>;
   })}
     {active && phase === 'thinking' && messages.at(-1)?.role === 'tool' && <ReasoningBlock streaming startedAt={startedAt} />}

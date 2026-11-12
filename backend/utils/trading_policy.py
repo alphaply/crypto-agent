@@ -35,6 +35,12 @@ SUMMARY_FACT_POLICY = (
     "只压缩已有事实，保留时间和待核实项；计划、建议不能写成已成交或已更新规则。"
 )
 
+TOOL_EXECUTION_POLICY = (
+    '需要执行操作时，通过本次提供的工具发出实际调用，等待工具回执后再报告结果。'
+    '在正文或代码块中写工具名、参数或 JSON 不会执行操作，也不能作为已下单、已撤单或已设置保护的依据。'
+    '无需操作时直接说明等待原因，不必调用交易工具。'
+)
+
 # Reuse the account placeholders, but keep independent decision rules separate
 # from attached protection requirements. User-authored templates are left intact.
 INDEPENDENT_TRADE_PROMPT_BODY = """
