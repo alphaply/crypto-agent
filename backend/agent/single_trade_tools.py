@@ -128,7 +128,9 @@ def _description(tool_name: str, schema: dict) -> str:
                    json.dumps(schema['examples'][1:], ensure_ascii=False, separators=(',', ':'))
                    if len(schema['examples']) > 1 else '')
     return (description + '每次一笔。参数示例（按实际意图填写）：' + example + conditional +
-            '。明确失败只影响本次；pending/unknown 暂停后续交易，等待后台核验。'
+            '。明确失败只影响本次；pending/unknown 停止本轮后续交易，由后台核验原操作。'
+            '后续决策按当前账户事实和具体动作的准入结果判断，历史未决记录不等于整个账户永久停用。'
+            'client: 开头的是本地提交引用，不是可撤销的交易所订单号，不要对它反复撤单。'
             '依赖前项的操作须等其成功。submitted 表示已受理，未必成交；成功或结果未知的操作勿重发。')
 
 

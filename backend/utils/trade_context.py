@@ -178,7 +178,8 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
                     quantity_mode=record.get('quantity_mode', 'fixed'), remaining=remaining,
                     resolved_amount=record.get('resolved_amount'), ownership='task',
                     source=record.get('source', 'agent'), managed=True,
-                    supported_actions=['cancel', 'edit'] if canonical_order_type(record) in ORDER_TYPES - {'market'} else [],
+                    supported_actions=['cancel', 'edit'] if order_reference(record)
+                        and canonical_order_type(record) in ORDER_TYPES - {'market'} else [],
                     observed_at=record.get('fill_observed_at', plan.get('verified_at')),
                     verified=classification == 'live_verified'))
 

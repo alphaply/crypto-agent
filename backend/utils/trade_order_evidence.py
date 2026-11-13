@@ -70,6 +70,27 @@ def classify_order(record: dict) -> dict:
 
 def classify_saved_order(record: dict) -> dict:
     """Lazily annotate evidence, preserving original receipts and order facts."""
+    # Older submissions caught only a few CCXT subclasses. Binance -4130 is
+    # ExchangeError and -1102 is BadRequest, so explicit rejections could remain
+    # "submitting" forever. Only the error saved by the original submission is
+    # proof; later query/cancel errors and an absent order are not substitutes.
+    if (not record.get('submission_evidence')
+            and record.get('status') in {'submitting', 'rejected'}
+            and record.get('submission_state') in {'unknown', 'not_submitted'}
+            and not any(record.get(key) for key in (
+                'id', 'exchange_order_id', 'execution_order_id', 'parent_algo_id',
+                'order_id', 'acknowledged_at', 'confirmed_at', 'triggered',
+                'cancel_confirmed_at', 'amendment', 'replacement'))
+            and not float(record.get('filled') or 0)):
+        proof = rejection_evidence(ValueError(record.get('execution_error') or ''))
+        if proof:
+            record.update(status='rejected', submission_state='not_submitted',
+                          submission_evidence={**proof, 'migrated': True,
+                                               'recovered_from': 'original_submission_error'})
+            # These flags were produced by unsuccessful recovery reads. No
+            # accepted order or execution exists for this rejected submission.
+            for key in ('fill_pending', 'query_error', 'next_retry_at', 'verification_pending'):
+                record.pop(key, None)
     if not record.get('submission_evidence') and record.get('submission_state') == 'not_submitted':
         proof = rejection_evidence(ValueError(record.get('execution_error') or ''))
         if proof:

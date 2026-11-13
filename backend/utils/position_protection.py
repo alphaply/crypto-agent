@@ -57,6 +57,8 @@ class PositionProtection:
         return market
 
     def _load(self, symbol, side):
+        # Local receipt reconstruction deliberately has no exchange client.
+        market_tool = getattr(self, 'mt', None)
         with get_db_conn() as conn:
             conn.execute('BEGIN')
             row = conn.execute(
@@ -64,7 +66,7 @@ class PositionProtection:
                 (self.config_id, symbol, side),
             ).fetchone()
             plan = json.loads(row["payload"]) if row else None
-            if (getattr(self.mt, 'runtime_config', {}) or {}).get('mode', '').upper() == 'REAL':
+            if (getattr(market_tool, 'runtime_config', {}) or {}).get('mode', '').upper() == 'REAL':
                 from backend.utils.shared_management import shared_plan
                 plan = shared_plan(conn, self.account_scope, symbol, side) or plan
             if plan and plan.get('execution_mode') == 'independent_exits':
@@ -72,7 +74,7 @@ class PositionProtection:
                 plan['scope_generation'] = scope_generation(conn, self.account_scope, symbol)
         if plan and plan['state'] != 'DONE' and plan.get('account_scope') != self.account_scope:
             raise ValueError('Protection plan belongs to different exchange credentials; restore its account configuration')
-        if plan and type(self) is PositionProtection and plan.get('management', {}).get('policy') == 'visible_first_claim':
+        if market_tool is not None and plan and type(self) is PositionProtection and plan.get('management', {}).get('policy') == 'visible_first_claim':
             from backend.utils.exit_policy import effective_exit_mode
             mode = effective_exit_mode(getattr(self.mt, 'runtime_config', {}) or {})
             if mode != 'independent_exits':

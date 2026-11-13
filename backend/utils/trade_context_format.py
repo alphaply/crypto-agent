@@ -88,6 +88,8 @@ def _order_row(order):
                 'filled': '已成交', 'closed': '已结束', 'canceled': '已撤销', 'cancelled': '已撤销'}
     status = statuses.get(str(order.get('status')).lower(), _text(order.get('status')))
     notes = []
+    if not order.get('order_id') and order.get('client_id'):
+        notes.append('本地提交记录，非已确认的交易所挂单')
     if _management(order):
         notes.append(_management(order))
     if order.get('source') == 'external':

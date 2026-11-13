@@ -330,7 +330,7 @@ class IndependentExits(PositionProtection):
                 "pending": pending}
         status = observed_order_status(record)
         supported = []
-        if record.get('status') not in TERMINAL:
+        if record.get('id') and record.get('status') not in TERMINAL:
             supported = ['cancel']
             if canonical_order_type(record) != 'market' and not (record.get('execution_order_id') and canonical_order_type(record) not in LIMIT_TYPES):
                 supported.insert(0, 'edit')
@@ -519,7 +519,7 @@ class IndependentExits(PositionProtection):
             with stage('exchange_submit'):
                 order = self.ex.create_order(plan["symbol"], order_type, side,
                                              record.get('submission_amount', record["amount"]), record.get("price"), params)
-        except (ccxt.InvalidOrder, ccxt.InsufficientFunds, ccxt.AuthenticationError, ccxt.PermissionDenied) as exc:
+        except ccxt.ExchangeError as exc:
             proof = rejection_evidence(exc)
             if proof is None:
                 record['execution_error'] = str(exc)

@@ -25,6 +25,13 @@ EXECUTION_POLICY_DESCRIPTION = (
 class TradingInput(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
 
+    @field_validator('order_id', check_fields=False)
+    @classmethod
+    def exchange_order_reference(cls, value):
+        if value is not None and value.startswith('client:'):
+            raise ValueError('client: 开头的是本地提交引用，不是交易所订单号。该记录由后台处理，不要重复撤单或改单')
+        return value
+
     @field_validator('order_type', mode='before', check_fields=False)
     @classmethod
     def canonical_order_type_case(cls, value):
