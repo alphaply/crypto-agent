@@ -475,6 +475,13 @@ def _run_config_maintenance(config):
 
 
 def run_config_agent(config, scheduled_at: str, *, queued_run=None):
+    from backend.utils.task_stall import track_task
+    with track_task(config.get('config_id', 'unknown'), scheduled_at) as observe_progress:
+        return _run_config_agent(config, scheduled_at, queued_run=queued_run,
+                                 observe_progress=observe_progress)
+
+
+def _run_config_agent(config, scheduled_at: str, *, queued_run=None, observe_progress):
     config_id = config.get("config_id", "unknown")
     mode = config.get("mode", "STRATEGY").upper()
     logger.info(
@@ -483,6 +490,7 @@ def run_config_agent(config, scheduled_at: str, *, queued_run=None):
     run_fields = {'scheduler_run_id': queued_run['scheduler_run_id']} if queued_run else {}
     def progress(event):
         _mark_scheduler_progress(config_id, scheduled_at, event, **run_fields)
+        observe_progress(event)
     _mark_scheduler_run(config_id, AGENT_JOB_TYPE, scheduled_at, "RUNNING", **run_fields)
     progress(
         {"phase": "preparing", "message": "正在准备市场、账户与历史上下文"},
@@ -701,6 +709,9 @@ def job(now: datetime | None = None):
     global _last_heartbeat_key, _dispatch_cursor
     now = now or datetime.now(TZ_CN)
     scheduled_at = _scheduled_at(now)
+
+    from backend.utils.task_stall import warn_stalled_tasks
+    warn_stalled_tasks(logger)
 
     global_config.reload_config()
     sync_langsmith_environment()

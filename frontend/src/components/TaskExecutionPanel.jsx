@@ -12,18 +12,21 @@ export default function TaskExecutionPanel({ execution, locale }) {
   const active = ['QUEUED', 'RUNNING'].includes(status);
   const completed = status === 'FINISHED';
   const failed = ['FAILED', 'INTERRUPTED'].includes(status);
+  const stalled = status === 'RUNNING' && execution.stalled === true;
   const toolCalls = Array.isArray(execution.tool_calls) ? execution.tool_calls : [];
-  const title = active
+  const title = stalled
+    ? (locale === 'zh' ? '任务长时间无进展，可能已卡住' : 'Task may be stuck: no recent progress')
+    : active
     ? (locale === 'zh' ? '任务正在执行' : 'Task in progress')
     : completed
       ? (locale === 'zh' ? '最近任务已完成' : 'Latest task completed')
       : status === 'INTERRUPTED'
         ? (locale === 'zh' ? '最近任务运行中断' : 'Latest task interrupted')
         : (locale === 'zh' ? '最近任务执行失败' : 'Latest task failed');
-  const alertType = failed ? 'error' : completed ? 'success' : 'info';
-  const statusColor = failed ? 'error' : completed ? 'success' : 'processing';
+  const alertType = failed ? 'error' : stalled ? 'warning' : completed ? 'success' : 'info';
+  const statusColor = failed ? 'error' : stalled ? 'warning' : completed ? 'success' : 'processing';
   const phaseLabel = locale === 'zh'
-    ? ({ thinking: '模型分析', tool_planning: '调用已规划', tool_running: '工具执行中', finalizing: '整理结果', failed: '执行失败', interrupted: '运行中断' }[execution.phase] || execution.phase || execution.status)
+    ? ({ preparing: '准备行情与账户', thinking: '模型分析', tool_planning: '调用已规划', tool_running: '工具执行中', summarizing: '生成摘要', finalizing: '整理结果', failed: '执行失败', interrupted: '运行中断' }[execution.phase] || execution.phase || execution.status)
     : execution.phase || execution.status;
 
   return (
@@ -42,6 +45,9 @@ export default function TaskExecutionPanel({ execution, locale }) {
       }
       description={
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          {stalled ? <Text type="warning">{locale === 'zh'
+            ? `已 ${Math.floor(execution.idle_seconds / 60)} 分钟未更新进度，后续轮次仍在排队。请检查系统日志中的 TaskStalled 记录。当前轮次尚未结束。`
+            : `No progress for ${Math.floor(execution.idle_seconds / 60)} minutes; later runs remain queued. Check TaskStalled in system logs. The current worker has not finished.`}</Text> : null}
           <Text>{execution.progress_message || execution.error || ''}</Text>
           {!execution.decision?.messages?.length && toolCalls.length ? (
             <div className="task-execution-tools">

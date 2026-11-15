@@ -31,6 +31,18 @@ def execution_view(row: dict | None) -> dict | None:
     result['decision'] = read_decision_record(result)
     result.pop('decision_json', None)
     result['started_at_iso'] = scheduler_timestamp_iso(result.get('started_at') or result.get('created_at'))
+    from backend.utils.task_stall import STALL_WARNING_SECONDS
+    result['stalled'] = False
+    result['idle_seconds'] = None
+    if result.get('status') == 'RUNNING':
+        last_progress = result.get('updated_at') or result.get('started_at')
+        try:
+            parsed = datetime.fromisoformat(scheduler_timestamp_iso(last_progress))
+            idle = max(0, int((datetime.now(TZ_CN) - parsed).total_seconds()))
+            result['idle_seconds'] = idle
+            result['stalled'] = idle >= STALL_WARNING_SECONDS
+        except (TypeError, ValueError):
+            pass
     return result
 
 

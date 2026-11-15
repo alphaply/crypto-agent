@@ -15,7 +15,10 @@ from backend.utils.public_catalogue import (resident_size, catalogue_diagnostics
                                            release_catalogue_client, retire_catalogues)
 from backend.utils.runtime_capacity import CapacityBusy, positive_setting, reserve_bytes
 
-_lock = threading.Lock()
+# Allocating a coordinator can collect an old cyclic CCXT client. Its weakref
+# finalizer re-enters _release_account on this very thread while we own _lock.
+# A plain Lock deadlocks every subsequent client in the process indefinitely.
+_lock = threading.RLock()
 _accounts = OrderedDict()
 _catalogues = OrderedDict()
 
@@ -250,7 +253,10 @@ def observe(key, source, loader, ttl):
 
 
 def diagnostics():
+    # Client collection during catalogue work can take the account lock.
+    # Avoid acquiring those two locks in the opposite order here.
+    catalogue = catalogue_diagnostics()
     with _lock:
-        return {'catalogue': catalogue_diagnostics(), 'coordinators': len(_accounts),
+        return {'catalogue': catalogue, 'coordinators': len(_accounts),
                 'coordinator_users': sum(item.users for item in _accounts.values()),
                 'quotes': len(_quotes), 'quote_bytes': sum(item['lease'].amount for item in _quotes.values())}
