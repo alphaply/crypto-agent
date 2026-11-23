@@ -1664,8 +1664,8 @@ export default function AdminPage() {
               </Card>
             ),
           },
-          { key: 'mcp', label: 'MCP', children: <McpSettingsPanel profiles={persistedProfiles} /> },
-          { key: 'paper', label: 'QQBot · Paper', children: <McpSettingsPanel profiles={persistedProfiles} section="paper" /> },
+          { key: 'mcp', label: 'MCP', children: <McpSettingsPanel profiles={persistedProfiles} onNavigateTab={setActiveAdminTab} /> },
+          { key: 'paper', label: 'QQBot · Paper', children: <McpSettingsPanel profiles={persistedProfiles} section="paper" onNavigateTab={setActiveAdminTab} /> },
           {
             key: 'memory',
             label: t('memoryCenter'),

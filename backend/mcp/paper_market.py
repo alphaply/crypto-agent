@@ -1,12 +1,39 @@
 """Real public market discovery and quotes for the simulated execution ledger."""
 from __future__ import annotations
 
+import copy
 import math
+import os
 import re
+import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 
 EXCHANGES = ('binance',)
+_COMPACT_TICKER_KEYS = (
+    'symbol', 'last', 'bid', 'ask', 'high', 'low', 'open', 'close',
+    'percentage', 'quoteVolume', 'baseVolume', 'timestamp', 'datetime',
+)
+_READ_QUOTE_CACHE: OrderedDict = OrderedDict()
+_READ_QUOTE_LOCK = threading.Lock()
+_READ_QUOTE_CACHE_MAX = 64
+
+
+def clear_read_quote_cache():
+    with _READ_QUOTE_LOCK:
+        _READ_QUOTE_CACHE.clear()
+
+
+def _quote_cache_ttl() -> float:
+    raw = os.getenv('MCP_PAPER_QUOTE_CACHE_SECONDS', '3.0')
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError):
+        return 3.0
+    if not math.isfinite(ttl) or ttl <= 0:
+        return 0.0
+    return min(ttl, 30.0)
 # Discovery hints verified against issuer/exchange announcements. They never
 # create tradable markets: a live exchange catalogue must confirm every symbol.
 ASSETS = {
@@ -58,7 +85,7 @@ def canonical(symbol, market_type):
         raw = raw[:-4] if raw.endswith('USDT') and len(raw) > 4 else raw
         raw += '/USDT'
     if not re.fullmatch(r'[A-Z0-9]{1,25}/USDT(?::USDT)?', raw):
-        raise ValueError('Use a base ticker, BASEUSDT or BASE/USDT[:USDT]; discover unknown names with search_paper_symbols')
+        raise ValueError('Use a base ticker, BASEUSDT or BASE/USDT[:USDT]; discover unknown names with search_symbols')
     return raw.split(':')[0] + (':USDT' if market_type == 'swap' else '')
 
 
@@ -131,7 +158,7 @@ def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True
         try:
             item = exchange.market(wanted)
         except Exception:
-            raise ValueError('Market not found on this exchange; use search_paper_symbols before concluding the asset does not exist') from None
+            raise ValueError('Market not found on this exchange; use search_symbols before concluding the asset does not exist') from None
         if not supported(item, market_type):
             raise ValueError('Market is inactive or not a USDT spot/linear perpetual')
         ticker = exchange.fetch_ticker(item['symbol'])
@@ -156,34 +183,74 @@ def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True
                   'display_timezone': 'Asia/Shanghai', 'status': 'complete', 'missing_sources': [],
                   'note': 'Prices are real exchange public quotes. Only balances, orders and execution are simulated.'}
         if 'ticker' in facets:
+            compact_ticker = {
+                key: ticker[key]
+                for key in _COMPACT_TICKER_KEYS
+                if key in ticker and ticker[key] is not None
+            }
             result.update(price=money(last), bid=bid, ask=ask, bid_ask_source=bid_ask_source,
                           change_percentage_24h=ticker.get('percentage'), quote_volume_24h=ticker.get('quoteVolume'),
-                          ticker={k: v for k, v in ticker.items() if k != 'info'})
-        if 'candles' in facets and candles:
-            result.update(timeframe=timeframe, candles=exchange.fetch_ohlcv(item['symbol'], timeframe, limit=limit))
+                          ticker=compact_ticker)
         timeframes_to_calc = [timeframe] + [tf for tf in ['1h', '4h', '1d'] if tf != timeframe]
-        if 'analysis' in facets:
+        need_ohlcv = ('analysis' in facets) or ('candles' in facets and candles)
+        orig_fetch_ohlcv = getattr(exchange, 'fetch_ohlcv', None) if need_ohlcv else None
+        patched_ohlcv = False
+        if orig_fetch_ohlcv is not None and 'analysis' in facets and ('candles' in facets and candles):
+            local_ohlcv_cache = {}
+
+            def cached_fetch_ohlcv(sym, tf='1h', *args, **kwargs):
+                if not args and set(kwargs.keys()) <= {'limit'}:
+                    req_limit = kwargs.get('limit')
+                    cache_id = (sym, tf)
+                    cached_entry = local_ohlcv_cache.get(cache_id)
+                    if cached_entry is not None and isinstance(req_limit, int) and req_limit > 0:
+                        cached_limit, cached_rows = cached_entry
+                        if req_limit <= cached_limit or len(cached_rows) < cached_limit:
+                            return [list(row) for row in cached_rows[-req_limit:]]
+                    rows = orig_fetch_ohlcv(sym, tf, **kwargs)
+                    if isinstance(req_limit, int) and req_limit > 0 and isinstance(rows, list):
+                        local_ohlcv_cache[cache_id] = (req_limit, list(rows))
+                    return rows
+                return orig_fetch_ohlcv(sym, tf, *args, **kwargs)
+
             try:
-                from backend.utils.market_data import MarketTool
-                pmt = object.__new__(MarketTool)
-                pmt.exchange = exchange
-                pmt.exchange_name = name
-                pmt.market_type = market_type
-                pmt.runtime_config = {}
-                pmt.config_id = None
-                pmt.symbol = item['symbol']
-                mode = 'SPOT_DCA' if market_type == 'spot' else 'STRATEGY'
-                analysis_data = pmt.get_market_analysis(item['symbol'], mode=mode, timeframes=timeframes_to_calc).get('analysis', {})
-                result['analysis'] = analysis_data
-            except Exception as exc:
-                result['analysis'] = {}
-                result['missing_sources'].append('analysis')
-                result.setdefault('errors', {})['analysis'] = str(exc)
-                result['status'] = 'partial'
+                exchange.fetch_ohlcv = cached_fetch_ohlcv
+                patched_ohlcv = True
+            except AttributeError:
+                patched_ohlcv = False
+        try:
+            if 'analysis' in facets:
+                pmt = None
+                try:
+                    from backend.utils.market_data import MarketTool
+                    pmt = object.__new__(MarketTool)
+                    pmt.exchange = exchange
+                    pmt.exchange_name = name
+                    pmt.market_type = market_type
+                    pmt.runtime_config = {}
+                    pmt.config_id = None
+                    pmt.symbol = item['symbol']
+                    mode = 'SPOT_DCA' if market_type == 'spot' else 'STRATEGY'
+                    analysis_data = pmt.get_market_analysis(item['symbol'], mode=mode, timeframes=timeframes_to_calc).get('analysis', {})
+                    result['analysis'] = analysis_data
+                except Exception as exc:
+                    result['analysis'] = {}
+                    result['missing_sources'].append('analysis')
+                    result.setdefault('errors', {})['analysis'] = str(exc)
+                    result['status'] = 'partial'
+                finally:
+                    if pmt is not None:
+                        pmt.exchange = None
+            if 'candles' in facets and candles:
+                result.update(timeframe=timeframe, candles=exchange.fetch_ohlcv(item['symbol'], timeframe, limit=limit))
+        finally:
+            if patched_ohlcv:
+                exchange.fetch_ohlcv = orig_fetch_ohlcv
         if 'sentiment' in facets:
             if market_type == 'spot':
                 result['sentiment'] = {}
             else:
+                pmt = None
                 try:
                     from backend.utils.market_data import MarketTool
                     pmt = object.__new__(MarketTool)
@@ -199,6 +266,9 @@ def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True
                     result['missing_sources'].append('sentiment')
                     result.setdefault('errors', {})['sentiment'] = str(exc)
                     result['status'] = 'partial'
+                finally:
+                    if pmt is not None:
+                        pmt.exchange = None
         return result
 
 
@@ -206,4 +276,27 @@ def resolve_quote(symbol, market_type='swap', timeframe='1h', limit=120, exchang
     """The trusted Paper policy permits no implicit or explicit venue fallback."""
     from .paper_policy import venue
     selected = venue(exchange_name)
-    return quote(canonical(symbol, market_type), market_type, timeframe, limit, exchange_name=selected, include=include)
+    wanted = canonical(symbol, market_type)
+    ttl = _quote_cache_ttl()
+    cache_key = None
+    if ttl > 0:
+        facets_key = tuple(sorted(include)) if include is not None else None
+        cache_key = (selected, market_type, wanted, timeframe, limit, facets_key, id(quote), id(client))
+        now = time.monotonic()
+        with _READ_QUOTE_LOCK:
+            entry = _READ_QUOTE_CACHE.get(cache_key)
+            if entry is not None:
+                expires_at, payload = entry
+                if now < expires_at:
+                    _READ_QUOTE_CACHE.move_to_end(cache_key)
+                    return copy.deepcopy(payload)
+                _READ_QUOTE_CACHE.pop(cache_key, None)
+    result = quote(wanted, market_type, timeframe, limit, exchange_name=selected, include=include)
+    if cache_key is not None and isinstance(result, dict) and result.get('status') == 'complete':
+        now = time.monotonic()
+        with _READ_QUOTE_LOCK:
+            _READ_QUOTE_CACHE[cache_key] = (now + ttl, copy.deepcopy(result))
+            _READ_QUOTE_CACHE.move_to_end(cache_key)
+            while len(_READ_QUOTE_CACHE) > _READ_QUOTE_CACHE_MAX:
+                _READ_QUOTE_CACHE.popitem(last=False)
+    return result

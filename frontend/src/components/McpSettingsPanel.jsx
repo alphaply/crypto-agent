@@ -9,6 +9,7 @@ import PositionManagementFields from './PositionManagementFields';
 import ManagementLifecyclePanel from './ManagementLifecyclePanel';
 import { managementError } from '../lib/positionManagement';
 import McpConnectionSetup from './McpConnectionSetup';
+import McpToolCatalog from './McpToolCatalog';
 import { mcpSuggestedOrigin } from '../lib/mcpConnection';
 import { mcpProfileDraft, mcpProfilePayload } from '../lib/mcpSymbols';
 const PaperTradingPanel = lazy(() => import('./PaperTradingPanel'));
@@ -16,7 +17,7 @@ const PaperTradingPanel = lazy(() => import('./PaperTradingPanel'));
 const { Text, Paragraph } = Typography;
 const blankProfile = () => ({ profile_id: `connection-${Date.now()}`, name: '', exchange_profile_id: '', market_type: 'swap', symbol_scope: 'selected', symbols: [], enabled: true, max_leverage: 5, leverage: 1, exit_mode: 'attached_required', spot_allowance: 100, position_management_policy: 'visible_first_claim', management_scopes: [] });
 
-export default function McpSettingsPanel({ profiles: exchangeProfiles = [], section = 'mcp' }) {
+export default function McpSettingsPanel({ profiles: exchangeProfiles = [], section = 'mcp', onNavigateTab }) {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
   const label = (cn, en) => zh ? cn : en;
@@ -129,7 +130,10 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
     </Card>
 
 
-    <Card className="panel-card" title={label('可用工具', 'Available tools')}><Space wrap>{(data.tools || []).map((tool) => <Tag key={tool.name}>{tool.name} · {tool.scope}</Tag>)}</Space><Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>{label('交易请求必须携带稳定 operation_id；同一请求重试返回原回执。已受理或结果未知的原订单由系统后台核验并更新状态。', 'Trade requests require a stable operation_id; retries return the original receipt. The system verifies accepted or unresolved original orders in the background and updates their status.')}</Paragraph></Card>
+    <Card className="panel-card" title={label('可用工具', 'Available tools')}>
+      <McpToolCatalog tools={data.tools || []} zh={zh} />
+      <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0 }}>{label('交易请求必须携带稳定 operation_id；同一请求重试返回原回执。已受理或结果未知的原订单由系统后台核验并更新状态。', 'Trade requests require a stable operation_id; retries return the original receipt. The system verifies accepted or unresolved original orders in the background and updates their status.')}</Paragraph>
+    </Card>
     <Card className="panel-card" title={label('最近调用', 'Recent calls')}><Table size="small" rowKey="id" dataSource={data.audit || []} pagination={{ pageSize: 8 }} scroll={{ x: 680 }} columns={[
       { title: label('时间', 'Time'), dataIndex: 'timestamp', render: (value) => new Date(value * 1000).toLocaleString() },
       { title: label('工具', 'Tool'), dataIndex: 'tool' }, { title: label('配置', 'Profile'), dataIndex: 'profile_id' },
@@ -137,15 +141,29 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
     ]} expandable={{ expandedRowRender: (record) => <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify({ operation_id: record.operation_id, principal: record.principal, result: (() => { try { return JSON.parse(record.result); } catch { return record.result; } })() }, null, 2)}</pre> }} /></Card>
 
     </>}
-    {section === 'paper' && <Suspense fallback={<Card className="panel-card loading-card"><Spin /></Card>}><PaperTradingPanel settings={data.paper_settings} zh={zh} onSettingsSaved={acceptPaperSettings} onCreateKey={() => setKeyDraft({ name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] })} /></Suspense>}
+    {section === 'paper' && <Suspense fallback={<Card className="panel-card loading-card"><Spin /></Card>}><PaperTradingPanel
+      settings={data.paper_settings}
+      mcpSettings={data.settings}
+      connection={data.connection}
+      keys={activeKeys.filter((key) => key.key_type === 'paper')}
+      tools={data.tools || []}
+      busy={busy}
+      zh={zh}
+      onSettingsSaved={acceptPaperSettings}
+      onCreateKey={() => setKeyDraft({ name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] })}
+      onRevokeKey={(keyId) => mutate(() => api.delete(`/mcp/keys/${keyId}`))}
+      onEnableMcp={() => saveSettings({ ...data.settings, enabled: true })}
+      onNavigateMcp={onNavigateTab ? () => onNavigateTab('mcp') : undefined}
+      onCopy={copy}
+    /></Suspense>}
 
-    <Card className="panel-card" title={<Space><KeyOutlined />API Keys</Space>} extra={<Button icon={<PlusOutlined />} onClick={() => setKeyDraft(section === 'paper' ? { name: 'QQBot Paper', key_type: 'paper', paper_namespace: 'qqbot', scopes: ['read', 'trade'], profile_ids: [] } : { name: '', scopes: ['read'], profile_ids: [] })}>{section === 'paper' ? label('创建 Paper Key', 'Create Paper key') : label('创建 API Key', 'Create API key')}</Button>}>
-      <div className="settings-stack">{activeKeys.filter((key) => section !== 'paper' || key.key_type === 'paper').map((key) => <div key={key.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border-soft)' }}>
+    {section !== 'paper' && <Card className="panel-card" title={<Space><KeyOutlined />API Keys</Space>} extra={<Button icon={<PlusOutlined />} onClick={() => setKeyDraft({ name: '', scopes: ['read'], profile_ids: [] })}>{label('创建 API Key', 'Create API key')}</Button>}>
+      <div className="settings-stack">{activeKeys.map((key) => <div key={key.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border-soft)' }}>
         <Space wrap><Text strong>{key.name}</Text><Tag color={key.key_type === 'paper' ? 'blue' : 'default'}>{key.key_type === 'paper' ? 'Paper' : label('真实交易', 'Live')}</Tag>{key.scopes.map((scope) => <Tag key={scope}>{scope}</Tag>)}<Popconfirm title={label('撤销并删除此 API Key？', 'Revoke and delete this API key?')} onConfirm={() => mutate(() => api.delete(`/mcp/keys/${key.id}`))}><Button size="small" danger>{label('撤销', 'Revoke')}</Button></Popconfirm></Space>
         <Input style={{ marginTop: 10 }} value={key.secret} readOnly addonAfter={<Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copy(key.secret)} />} />
         <Text type="secondary">{label('配置范围', 'Profiles')}: {key.key_type === 'paper' ? label(`模拟账户 · ${key.paper_namespace}`, `Paper accounts · ${key.paper_namespace}`) : key.profile_ids.join(' · ') || label('仅共享消息', 'Shared news only')}</Text>
       </div>)}{!activeKeys.length && <Empty description={label('尚未创建 API Key', 'No API keys yet')} />}</div>
-    </Card>
+    </Card>}
 
     <Modal open={Boolean(editing)} title={label(newProfile ? '新建连接配置' : '编辑连接配置', newProfile ? 'New connection profile' : 'Edit connection profile')} onCancel={() => setEditing(null)} confirmLoading={busy} okButtonProps={{ disabled: !editing?.exchange_profile_id || (editing?.symbol_scope !== 'all' && !editing?.symbols?.length) || Boolean(profileValidation) }} onOk={async () => { if (await mutate(() => api.put(`/mcp/profiles/${encodeURIComponent(editing.profile_id)}`, mcpProfilePayload(editing)))) setEditing(null); }} width={720}>
       {editing && <div className="settings-form-grid">

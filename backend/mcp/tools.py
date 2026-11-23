@@ -66,6 +66,22 @@ def normalize_tool_input(tool_name, value):
     # Only the conventional args envelope is flattened at the MCP boundary.
     # execute_trade.arguments remains the explicit business-argument container.
     result = service.unwrap_arguments(value, wrappers=('args',))
+    for id_key in ('user_id', 'recipient_user_id'):
+        if id_key in result:
+            raw_id = result[id_key]
+            if type(raw_id) is int:
+                result[id_key] = str(raw_id)
+            elif isinstance(raw_id, str):
+                result[id_key] = raw_id.strip()
+    if isinstance(result.get('symbol'), str):
+        result['symbol'] = result['symbol'].strip()
+    for lower_key in ('market_type', 'action', 'state', 'period', 'order_type',
+                      'execution_policy', 'record_type', 'exit_type', 'metric'):
+        if isinstance(result.get(lower_key), str):
+            result[lower_key] = result[lower_key].strip().lower()
+    for upper_key in ('side', 'pos_side'):
+        if isinstance(result.get(upper_key), str):
+            result[upper_key] = result[upper_key].strip().upper()
     numeric = {'amount', 'remaining_amount', 'expected_amount', 'entry_price', 'price', 'trigger_price', 'stop_loss', 'take_profit',
                'stop_limit_price', 'take_profit_limit_price', 'limit', 'offset', 'quote_amount', 'margin_amount', 'after_id'}
     for key in numeric & result.keys():

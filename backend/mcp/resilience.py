@@ -179,7 +179,7 @@ class WorkerPool:
             if not acquired and self.queued >= self.queue_limit:
                 logger.info('mcp_rejected request_id=%s kind=%s stage=queue reason=full active=%d queued=%d',
                             budget.request_id, self.kind, self.active, self.queued)
-                raise ValueError(f'MCP {self.kind} busy: bounded queue is full')
+                raise ValueError(f'MCP {self.kind} busy: bounded queue is full; retry shortly')
             if not acquired:
                 self.queued += 1
         try:
@@ -200,7 +200,8 @@ class WorkerPool:
                 if time.monotonic() >= queue_until:
                     logger.info('mcp_rejected request_id=%s kind=%s stage=queue reason=timeout',
                                 budget.request_id, self.kind)
-                    raise ValueError(f'MCP {self.kind} queue timeout; request={budget.request_id}')
+                    hint = 'safe to retry' if self.kind == 'read' else 'check prior status before retrying with the same operation_id'
+                    raise ValueError(f'MCP {self.kind} queue timeout; request={budget.request_id}; server is busy ({hint})')
                 await anyio.sleep(min(0.01, max(0.001, queue_until - time.monotonic())))
         finally:
             if ticket:
@@ -257,8 +258,9 @@ class WorkerPool:
                 return await wrapped
             from backend.utils.resource_diagnostics import record_resource_stage
             record_resource_stage('execution', 'timeout', role=capacity_role(self.kind), request_id=budget.request_id)
+            hint = 'safe to retry or narrow get_market include facets' if self.kind == 'read' else 'do NOT retry with a new operation_id; inspect the original operation first'
             raise BudgetExceeded(f'MCP response timeout at {budget.stage}; request={budget.request_id}; '
-                                 'worker retains capacity until completion') from exc
+                                 f'worker retains capacity until completion; {hint}') from exc
 
 _pools = {}
 _pool_lock = threading.Lock()

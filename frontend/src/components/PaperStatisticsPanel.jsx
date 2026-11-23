@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Select, Space, Spin, Tag } from 'antd';
+import { Alert, Button, Collapse, Select, Space, Spin, Tag } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
 import { useLatestRequest } from '../hooks/useLatestRequest';
@@ -109,6 +109,15 @@ export default function PaperStatisticsPanel({ namespace, userId, revision, zh }
     </div>
     <div className="paper-account-state-line"><Tag>{label('覆盖账户 ', 'Covered accounts ')}{format(data?.coverage?.covered)} / {format(data?.coverage?.accounts)}</Tag><Tag color="blue">{label('已启用 ', 'Enabled ')}{format(current?.enabled_accounts)}</Tag><Tag>{label('冻结 ', 'Bankrupt ')}{format(current?.bankrupt_accounts)}</Tag><span>{label('行情最早观察时间：', 'Oldest price observation: ')}{timestamp(current?.oldest_mark_at)}</span></div>
     {summary && <Alert type={data?.status === 'partial' ? 'warning' : 'info'} showIcon icon={data?.status === 'processing' ? <Spin size="small" /> : undefined} title={summary} description={(data?.reason_codes || []).map((code) => REASONS[code]?.[zh ? 0 : 1] || code).join('；')} />}
-    <p className="paper-statistics-method">{label('收益已扣对应的开平仓手续费，不要再减一次期间手续费。分批平仓合并到完整交易，全部平仓后才计胜率；利息按账户单列。借还款、转账和重置补款不算收益。时间筛选只影响本区期间指标，下方明细保留各自分页。', 'Net income already deducts allocated entry and exit fees; do not subtract period fees again. Partial exits count as one trade only once fully closed. Interest stays at account level. Loans, transfers and reset capital are not income. The period selector affects performance metrics; records retain their own pagination.')}</p>
+    <Collapse
+      ghost
+      size="small"
+      className="paper-method-collapse"
+      items={[{
+        key: 'method',
+        label: label('查看收益与统计口径说明', 'How statistics are calculated'),
+        children: <p className="paper-statistics-method">{label('收益已扣对应的开平仓手续费，不要再减一次期间手续费。分批平仓合并到完整交易，全部平仓后才计胜率；利息按账户单列。借还款、转账和重置补款不算收益。时间筛选只影响本区期间指标，下方明细保留各自分页。', 'Net income already deducts allocated entry and exit fees; do not subtract period fees again. Partial exits count as one trade only once fully closed. Interest stays at account level. Loans, transfers and reset capital are not income. The period selector affects performance metrics; records retain their own pagination.')}</p>,
+      }]}
+    />
   </div>;
 }

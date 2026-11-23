@@ -77,6 +77,9 @@ def retire_runtime_caches(*, now=None, all_idle=False):
                 _quote_refreshes.pop(key)
                 refresh['lease'].release()
     retire_catalogues(now=now, all_idle=all_idle)
+    if all_idle:
+        from .paper_market import clear_read_quote_cache
+        clear_read_quote_cache()
 
 
 def close_runtime_client(exchange):

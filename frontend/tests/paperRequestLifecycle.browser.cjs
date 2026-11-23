@@ -66,33 +66,35 @@ async function main() {
       return reply(route, {});
     });
     await page.goto(`${origin}/console/config`);
+    await page.getByRole('tab', { name: /账户管理/ }).click();
     const rows = page.locator('.paper-accounts-section .ant-table-row');
     await rows.filter({ hasText: 'old-user' }).waitFor();
 
     // Manual refreshes must be cancelled when a newer filter is selected.
     holdReads = true;
     await page.locator('.paper-filter-bar button.ant-btn').click();
-    await page.getByRole('button', { name: /刷新数据$/ }).click();
     await readsGate.promise;
     await page.getByRole('textbox', { name: '用户 ID', exact: true }).fill('new-user');
     await rows.filter({ hasText: 'new-user' }).waitFor();
     for (const item of held) await reply(item.route, item.body);
     await expect(rows).toContainText('new-user');
     await expect(rows).not.toContainText('old-user');
+    await page.getByRole('tab', { name: '概览与明细', exact: true }).click();
     await expect(page.locator('.paper-balance-strip')).toContainText('2,000');
     await expect.poll(() => aborted.filter(url => /\/paper\/(accounts|dashboard)/.test(url)).length).toBeGreaterThanOrEqual(2);
     holdReads = false;
 
     // A successful write must not hide a failed follow-up read.
     failAccounts = true;
+    await page.getByRole('tab', { name: /账户管理/ }).click();
     await rows.getByRole('button', { name: '调整账户', exact: true }).click();
     await page.getByRole('dialog').locator('.ant-modal-footer .ant-btn-primary').click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    await expect(page.locator('.paper-workspace > .ant-alert')).toContainText('Account refresh unavailable');
+    await expect(page.locator('.paper-workspace > .ant-alert').first()).toContainText('Account refresh unavailable');
     failAccounts = false;
 
     // Editing a second value during a save must retain the newer draft.
-    await page.locator('.paper-settings-collapse').getByText('交易与银行设置', { exact: true }).click();
+    await page.getByRole('tab', { name: /规则设置/ }).click();
     await page.locator('#paper-setting-initial_balance').fill('20000');
     await page.getByRole('switch', { name: '启用模拟交易', exact: true }).click();
     settingsGate = gate();
@@ -107,10 +109,11 @@ async function main() {
     holdMcp = false;
     Object.assign(paperSettings, heldSettings.body);
     await reply(heldSettings.route, { success: true, settings: paperSettings });
-    await expect(page.locator('.paper-service-tag')).toContainText('服务已暂停');
+    await expect(page.locator('.paper-service-tag').first()).toContainText('服务已暂停');
     await reply(heldMcp.route, heldMcp.body);
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    await expect(page.locator('.paper-service-tag')).toContainText('服务已暂停');
+    await expect(page.locator('.paper-service-tag').first()).toContainText('服务已暂停');
+    await page.getByRole('tab', { name: /规则设置/ }).click();
     await expect(page.locator('#paper-setting-initial_balance')).toHaveValue('30000');
     await expect(page.getByText('有未保存修改', { exact: true })).toBeVisible();
     assert.equal(paperSettings.initial_balance, 20000);
@@ -136,12 +139,15 @@ async function main() {
 
     // Saving from page three while scope B is still loading must read B page one.
     await page.getByRole('tab', { name: 'QQBot · Paper', exact: true }).click();
+    await page.getByRole('tab', { name: /账户管理/ }).click();
     const thirdPage = page.waitForResponse(response => new URL(response.url()).searchParams.get('offset') === '40');
     await page.locator('.paper-accounts-section .ant-pagination-item-3').click();
     await thirdPage;
+    await page.getByRole('tab', { name: /规则设置/ }).click();
     settingsGate = gate();
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await settingsGate.promise;
+    await page.getByRole('tab', { name: /账户管理/ }).click();
     heldScope = 'scope-b'; scopeGate = gate(); heldScopeReads = [];
     await page.getByRole('textbox', { name: '用户 ID', exact: true }).fill(heldScope);
     await scopeGate.promise;
@@ -153,6 +159,7 @@ async function main() {
     assert.ok(reads.filter(url => url.pathname.endsWith('/accounts') && url.searchParams.get('user_id') === 'scope-b').every(url => url.searchParams.get('offset') === '0'));
 
     // A position response arriving after a scope switch must not reuse its old scan cursor.
+    await page.getByRole('tab', { name: '概览与明细', exact: true }).click();
     const scanned = page.waitForResponse(response => new URL(response.url()).searchParams.get('account_cursor') === '17');
     await page.getByRole('button', { name: '继续扫描下一页', exact: true }).click();
     await scanned;
@@ -167,6 +174,7 @@ async function main() {
     await expect(page.getByRole('button', { name: '继续扫描下一页', exact: true })).toHaveCount(0);
     heldScope = '';
     await reply(heldPosition, { success: true, status: 'completed', cash_change: 0, leverage_before: 5, leverage_after: 5, margin_before: 100, margin_after: 100, available_cash: 1000 });
+    await page.getByRole('tab', { name: /账户管理/ }).click();
     await expect(rows).toContainText('scope-c');
     for (const item of heldScopeReads) await reply(item.route, item.body);
     assert.ok(reads.filter(url => url.pathname.endsWith('/dashboard') && url.searchParams.get('user_id') === 'scope-c').every(url => !url.searchParams.has('account_cursor')));

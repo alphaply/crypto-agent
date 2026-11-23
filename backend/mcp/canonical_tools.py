@@ -200,7 +200,7 @@ def context(caller, user_id=None):
                 'account_capabilities': account_capabilities, 'scopes': caller['scopes'],
                 'execution_updates': 'Original execution identities are verified automatically in the background.'}
     if user_id is not None:
-        raise ValueError('Live context does not accept user_id')
+        raise ValueError('Live context does not accept user_id. Call get_trading_context() without user_id to list authorized profile_id values.')
     profiles = service.list_profiles(caller)
     from .settings import get_runtime_profile
     rows = []
@@ -216,11 +216,11 @@ def _scope(caller, profile_id, user_id):
     if is_paper:
         paper.require(caller)
         if profile_id is not None or user_id is None:
-            raise ValueError('Paper requires user_id and does not accept profile_id')
+            raise ValueError('Paper mode requires user_id (authenticated QQ sender ID or bot_user_id from get_trading_context) and does not accept profile_id')
         paper.identity(user_id)
     else:
         if user_id is not None or profile_id is None:
-            raise ValueError('Live requires profile_id and does not accept user_id')
+            raise ValueError('Live mode requires profile_id (from get_trading_context) and does not accept user_id')
         service.require(caller, 'read', profile_id)
     return is_paper
 
@@ -243,7 +243,7 @@ def account_state(caller, profile_id=None, user_id=None, symbol=None, include=No
                 exists = conn.execute('SELECT 1 FROM paper_accounts WHERE namespace=%s AND user_id=%s',
                                       (caller['paper_namespace'], user_id)).fetchone()
             if not exists:
-                raise ValueError('Paper account does not exist; create it explicitly first')
+                raise ValueError('Paper account does not exist; create it first via configure_paper_account(action="create", user_id=..., operation_id=...)')
             result['performance'] = statistics(caller['paper_namespace'], user_id, period or 'current_cycle')
             if set(facets) == {'performance'}:
                 return result
@@ -414,7 +414,7 @@ def register(server):
                          market_type: Literal['spot', 'swap'] | None = None,
                          exchange: Literal['binance', 'okx', 'bitget', 'bybit'] | None = None,
                          include: list[Literal['ticker', 'candles', 'analysis', 'sentiment']] | None = None) -> dict:
-        """Read real ticker/candles, multi-timeframe technical indicators, and derivatives sentiment. Paper only simulates account execution."""
+        """Read real ticker/candles, multi-timeframe technical indicators, and derivatives sentiment. Pass include=["ticker"] when only current price/bid/ask is needed to keep responses fast and compact; add "candles", "analysis", or "sentiment" only as needed. Paper only simulates account execution."""
         def query(caller):
             if caller.get('key_type') == 'paper':
                 paper.require(caller)
