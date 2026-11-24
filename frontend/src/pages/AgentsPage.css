@@ -1,11 +1,12 @@
-.agents-page { display: grid; gap: 20px; }
+.agents-page { display: grid; gap: 20px; overflow-x: hidden; max-width: 100%; }
 .workspace-eyebrow { color:var(--accent,#3973ed); font-size:10px; letter-spacing:.12em; font-weight:650; margin-bottom:8px; }
 .account-updated { font-size:11px; }
+.agent-directory-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 2px; font-size:13px; }
 .agent-directory-status { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-.agent-directory-status small { font-size:10px; color:var(--text-muted); }
-.agents-page .agent-directory { padding:14px 10px; border:1px solid var(--border-soft); background:var(--bg-surface); border-radius:12px; }
-.agents-page .agent-directory-item { padding:14px 10px; border-radius:8px; gap:8px; }
-.agents-page .agent-directory-title { font-size:13px; line-height:1.5; }
+.agent-directory-status small { font-size:11px; color:var(--text-muted); }
+.agents-page .agent-directory { padding:16px 12px; border:1px solid var(--border-soft); background:var(--bg-surface); border-radius:12px; gap:10px; }
+.agents-page .agent-directory-item { padding:12px; border-radius:8px; gap:6px; transition:background-color .15s ease,border-color .15s ease; }
+.agents-page .agent-directory-title { font-size:13px; line-height:1.45; }
 .agents-page .agent-overview-header { border-radius:12px; padding:20px 24px 12px; }
 .agents-page .agent-title-row h2.ant-typography { font-size:24px; letter-spacing:-.03em; }
 .agent-workspace-compact .panel-card { border-radius:12px; box-shadow:none; overflow:hidden; }
@@ -42,7 +43,7 @@
 .agents-page .dashboard-schedules.is-compact .dashboard-schedule { padding: 0; border: 0; background: transparent; }
 .agent-schedule-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; color: var(--text-muted); }
 .agent-schedule-link { color: var(--accent); }
-.agents-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: start; gap: 20px; }
+.agents-layout { display: grid; grid-template-columns: 288px minmax(0, 1fr); align-items: start; gap: 22px; min-width: 0; max-width: 100%; }
 .agents-layout.is-single { grid-template-columns: minmax(0, 1fr); }
 .agent-directory { position: sticky; top: 84px; display: grid; gap: 12px; }
 .agent-directory-list { max-height: calc(100vh - 245px); overflow: auto; display: grid; gap: 4px; padding: 2px; }
@@ -78,9 +79,9 @@
 .agent-workspace-compact .workspace-grid { grid-template-columns: minmax(0, 1fr); }
 .agent-workspace-compact .dashboard-fact-grid { grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); }
 .agent-workspace-compact .dashboard-fact-item { min-width: 0; overflow-wrap: anywhere; }
-@media (max-width: 1100px) { .agents-layout { grid-template-columns: 220px minmax(0, 1fr); gap: 16px; } }
-@media (max-width: 800px) {
-  .agents-layout { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 1100px) { .agents-layout { grid-template-columns: 248px minmax(0, 1fr); gap: 16px; } }
+@media (max-width: 860px) {
+  .agents-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .agent-directory { display: none; }
   .agent-mobile-selector { display: flex; width: 100%; }
   .agent-directory-list { display: flex; overflow-x: auto; max-height: 225px; padding-bottom: 8px; }

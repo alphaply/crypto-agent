@@ -33,13 +33,7 @@ def _ownership(value):
 
 
 def _management(row):
-    facts = row.get('management') or {}
-    state = row.get('management_state') or facts.get('state')
-    names = {'shared': '授权共管', 'owned': '已纳管', 'eligible_unclaimed': '可自动认领', 'conflict': '其他管理者占用',
-             'read_only': '只读可见', 'needs_refresh': '管理证据待核验'}
-    if not state:
-        return ''
-    return names.get(state, _text(state))
+    return ''
 
 
 def render_positions(state):

@@ -64,7 +64,6 @@ def default_news_sources() -> list[dict]:
         {'id': 'coindesk', 'name': 'CoinDesk', 'kind': 'rss', 'url': 'https://www.coindesk.com/arc/outboundfeeds/rss/'},
         {'id': 'cointelegraph', 'name': 'Cointelegraph', 'kind': 'rss', 'url': 'https://cointelegraph.com/rss'},
         {'id': 'decrypt', 'name': 'Decrypt', 'kind': 'rss', 'url': 'https://decrypt.co/feed'},
-        *[{'id': f'cv_{category}', 'name': f'Crypto News · {category}', 'kind': 'cryptocurrency_cv', 'category': category, 'url': 'https://cryptocurrency.cv/api/news'} for category in ('general', 'macro', 'institutional', 'etf')],
         {'id': 'bbc', 'name': 'BBC World', 'kind': 'rss', 'url': 'https://feeds.bbci.co.uk/news/world/rss.xml', 'category': 'geopolitical'},
         {'id': 'fed_monetary', 'name': 'Federal Reserve', 'kind': 'policy', 'url': 'https://www.federalreserve.gov/feeds/press_monetary.xml', 'category': 'macro_policy'},
         {'id': 'sec', 'name': 'SEC', 'kind': 'policy', 'url': 'https://www.sec.gov/news/pressreleases.rss', 'category': 'policy'},
@@ -114,6 +113,7 @@ class NewsSettings(BaseModel):
     scorer_instructions: str = Field(default=DEFAULT_SCORER_INSTRUCTIONS, min_length=1, max_length=5000)
     scorer_criteria: list[str] = Field(default_factory=lambda: list(DEFAULT_SCORER_CRITERIA), min_length=2, max_length=10)
     summarizer_provider_id: str = ''
+    fallback_summarizer_provider_ids: list[str] = Field(default_factory=list, max_length=10)
     min_score: float = Field(default=60, ge=0, le=100)
     max_items: int = Field(default=20, ge=1, le=100)
     candidate_limit: int = Field(default=80, ge=1, le=300)
@@ -121,8 +121,33 @@ class NewsSettings(BaseModel):
     sources: list[NewsSource] = Field(default_factory=lambda: [NewsSource(**s) for s in default_news_sources()], max_length=40)
     binance_exchange_profile_id: str = ''
 
+    @model_validator(mode='before')
+    @classmethod
+    def strip_deprecated_sources(cls, data):
+        if isinstance(data, dict) and isinstance(data.get('sources'), list):
+            cleaned = []
+            for item in data['sources']:
+                if isinstance(item, dict):
+                    kind = str(item.get('kind') or '').strip().lower()
+                    sid = str(item.get('id') or '').strip().lower()
+                else:
+                    kind = str(getattr(item, 'kind', '') or '').strip().lower()
+                    sid = str(getattr(item, 'id', '') or '').strip().lower()
+                if kind == 'cryptocurrency_cv' or sid.startswith('cv_'):
+                    continue
+                cleaned.append(item)
+            data = {**data, 'sources': cleaned}
+        return data
+
     @model_validator(mode='after')
     def unique_sources(self):
+        primary = (self.summarizer_provider_id or '').strip()
+        seen_fallbacks = []
+        for pid in self.fallback_summarizer_provider_ids:
+            cleaned = str(pid or '').strip()
+            if cleaned and cleaned != primary and cleaned not in seen_fallbacks:
+                seen_fallbacks.append(cleaned)
+        self.fallback_summarizer_provider_ids = seen_fallbacks
         if len({s.id for s in self.sources}) != len(self.sources):
             raise ValueError('News source IDs must be unique')
         if len({r.config_id for r in self.trigger_rules}) != len(self.trigger_rules):

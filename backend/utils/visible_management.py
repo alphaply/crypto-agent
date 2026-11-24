@@ -216,9 +216,9 @@ def _existing_owner(conn, mt, canonical, side):
             if (plan.get('account_scope') == legacy and plan.get('state') != 'DONE'
                     and (side == 'BOTH' or plan.get('side') == side)):
                 owners.add(row['config_id'])
-    if len(owners) > 1:
-        raise ManagementConflict('Existing management evidence contains competing owners', {'owners': sorted(owners), 'symbol': canonical, 'side': side})
-    return next(iter(owners), None)
+    if getattr(mt, 'config_id', None) in owners:
+        return mt.config_id
+    return next(iter(sorted(owners)), None)
 
 
 def claim_management(mt, symbol, side=None, operation_id=None):

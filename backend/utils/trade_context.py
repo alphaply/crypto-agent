@@ -116,8 +116,13 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
         observation = plan.get('position_observation') or {}
         amount = number(p.get('amount'))
         management = p.get('management') or {}
-        owned = is_mock or management.get('state') in {'owned', 'shared'} or (observation.get('status') == 'verified' and observation.get('amount') == amount
-                            and not plan.get('ownership_error') and not plan.get('position_error'))
+        owned = (
+            is_mock
+            or management.get('state') in {'owned', 'shared'}
+            or (not position_failed and not account.get('error') and management.get('state') != 'conflict')
+            or (observation.get('status') == 'verified' and observation.get('amount') == amount
+                and not plan.get('ownership_error') and not plan.get('position_error'))
+        )
         positions.append(dict(side=side, amount=None if position_failed else amount,
                               last_known_amount=amount if position_failed else None,
                               entry_price=p.get('entry_price', p.get('price')),
@@ -128,8 +133,6 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
                               source=p.get('source') or (plan.get('management') or {}).get('source', source),
                               managed=owned, supported_actions=p.get('supported_actions', ['close'] if owned else []),
                               observed_at=(evidence.get('positions') or {}).get('observed_at', p.get('observed_at'))))
-        if not owned and not management:
-            issue('ownership_unverified', side, plan=plan, missing_evidence='current_task_position_ownership')
 
     local_orders = []
     for plan in cycles:
@@ -198,6 +201,7 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
             issue(b.get('reason_code', 'order_unresolved'), b.get('side'),
                   order_id=b.get('order_id'), operation_id=b.get('operation_id'))
 
+    terminal_refs = {order_reference(r) for p in cycles for r in p.get('entries', []) + p.get('exits', []) if r.get('status') in TERMINAL}
     orders = {r['order_id'] or ('client:' + str(r.get('client_id'))): r for r in local_orders}
     aliases = {r['parent_order_id']: key for key, r in orders.items() if r.get('parent_order_id')}
     seen = set()
@@ -224,20 +228,24 @@ def project_trade_state(account: dict, *, config_id: str, account_scope: str,
                 issue('order_quantity_conflict', orders[ref]['side'], order_id=ref,
                       missing_evidence='reconcile_snapshot_remaining_with_local_fill')
         else:
-            orders[ref] = dict(order_id=ref, side=raw.get('pos_side'), role='unverified',
+            clean_live = not account.get('error') and not orders_incomplete and ref not in terminal_refs
+            raw_kind = canonical_order_type(raw) if (raw.get('order_type') or raw.get('type')) else None
+            default_actions = ['cancel', 'edit'] if raw_kind and raw_kind in ORDER_TYPES - {'market'} else []
+            raw_role = raw.get('role') or ('exit' if raw.get('reduceOnly') else 'unverified')
+            orders[ref] = dict(order_id=ref, side=raw.get('pos_side'), role=raw_role,
                 order_type=raw.get('order_type', raw.get('type')), status=raw.get('status'),
                 price=raw.get('price'), trigger_price=raw.get('trigger_price'),
                 quantity_mode=raw.get('quantity_mode', 'fixed'), remaining=number(raw.get('remaining')),
-                ownership='task' if raw.get('managed') else 'unverified', source=raw.get('source') or source,
+                ownership='task' if (clean_live or raw.get('managed')) else 'unverified',
+                source=raw.get('source') or source,
                 management=raw.get('management'), management_state=raw.get('management_state'),
                 visible=raw.get('visible', True), eligible=raw.get('eligible'), can_claim=raw.get('can_claim'), owner=raw.get('owner'),
-                managed=raw.get('managed', False), supported_actions=raw.get('supported_actions') or [],
-                observed_at=raw.get('observed_at') or (evidence.get('orders') or {}).get('observed_at'), verified=False)
-    if not is_mock and 'real_open_orders' in account and not (evidence.get('orders') or {}).get('error') and not account.get('error'):
-        for ref, order in orders.items():
-            if ref not in seen and order.get('verified'):
-                order['verified'] = False
-                issue('order_snapshot_conflict', order['side'], order_id=ref, missing_evidence='live_order_in_current_snapshot')
+                managed=bool(clean_live or raw.get('managed', False)),
+                supported_actions=raw.get('supported_actions') or (default_actions if clean_live else []),
+                observed_at=raw.get('observed_at') or (evidence.get('orders') or {}).get('observed_at'),
+                verified=bool(clean_live))
+    if not is_mock and 'real_open_orders' in account and not orders_incomplete and not account.get('error'):
+        orders = {ref: order for ref, order in orders.items() if ref in seen}
 
     # Referenced history supplies only missing facts, never old prose/permissions.
     for identity, resolved in (referenced_evidence or {}).items():

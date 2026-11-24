@@ -754,7 +754,8 @@ def _fetch_legacy_news_risk_context(symbol: str, limit: int = 10, timeout: float
         "calendar_bea": (lambda: _fetch_bea_calendar(timeout), timedelta(hours=6), timedelta(hours=72)),
         "calendar_fomc": (lambda: _fetch_fomc_calendar(timeout, now), timedelta(hours=6), timedelta(hours=72)),
     }
-    if str(os.getenv("CRYPTOCURRENCY_CV_ENABLED", "true")).lower() in {"1", "true", "yes"}:
+    cv_enabled = str(os.getenv("CRYPTOCURRENCY_CV_ENABLED", "false")).lower() in {"1", "true", "yes"}
+    if cv_enabled:
         cv_categories = [
             item.strip().lower()
             for item in os.getenv("NEWS_CV_CATEGORIES", "general,macro,institutional,etf").split(",")
@@ -869,7 +870,7 @@ def _fetch_legacy_news_risk_context(symbol: str, limit: int = 10, timeout: float
         "as_of": _iso(now),
         "stale": stale,
         "source_health": source_health,
-        "source": "official_macro+official_policy+us_treasury+cryptocurrency.cv+crypto_rss" + ("+polymarket" if prediction_context.get("enabled") else ""),
+        "source": "official_macro+official_policy+us_treasury" + ("+cryptocurrency.cv" if cv_enabled else "") + "+crypto_rss" + ("+polymarket" if prediction_context.get("enabled") else ""),
     }
     if not available_count:
         payload["error"] = "All configured news and macro sources are unavailable"

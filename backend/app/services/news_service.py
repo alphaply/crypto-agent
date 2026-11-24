@@ -47,6 +47,34 @@ def _provider(snapshot: dict, provider_id: str, purpose: str) -> dict:
     return provider
 
 
+def _summary_providers(snapshot: dict, settings: NewsSettings) -> list[dict]:
+    ordered_ids: list[str] = []
+    for raw_id in [settings.summarizer_provider_id, *(settings.fallback_summarizer_provider_ids or [])]:
+        pid = str(raw_id or '').strip()
+        if pid and pid not in ordered_ids:
+            ordered_ids.append(pid)
+    if not ordered_ids:
+        raise NewsPipelineError('Configure the shared news summary model and API key')
+    by_id = {p.get('provider_id'): p for p in snapshot.get('llm_providers', []) if p.get('provider_id')}
+    valid: list[dict] = []
+    saw_decisions = False
+    for index, pid in enumerate(ordered_ids):
+        provider = by_id.get(pid)
+        if not provider or not provider.get('api_key') or not provider.get('model'):
+            if index == 0 and len(ordered_ids) == 1:
+                raise NewsPipelineError('Configure the shared news summary model and API key')
+            continue
+        if provider.get('api_protocol') == 'decisions' or str(provider['model']).lower().startswith('jev'):
+            saw_decisions = True
+            continue
+        valid.append(provider)
+    if not valid:
+        if saw_decisions:
+            raise NewsPipelineError('Select a generative model for news summaries; Jev only scores content')
+        raise NewsPipelineError('Configure the shared news summary model and API key')
+    return valid
+
+
 def _source_result(source, settings: NewsSettings, now: datetime, blockbeats_api_key: str = '') -> dict:
     from backend.utils import binance_announcements
     if source.kind == 'binance':
@@ -257,9 +285,8 @@ def _process_refresh(owner: str, snapshot: dict, progress: NewsProgress) -> None
             validate_provider(scorer)
         elif scorer and (scorer.get('api_protocol') == 'decisions' or str(scorer['model']).lower().startswith('jev')):
             raise NewsPipelineError('LLM scoring requires a generative chat model')
-        summary_provider = _provider(snapshot, settings.summarizer_provider_id, 'summary')
-        if summary_provider.get('api_protocol') == 'decisions' or str(summary_provider['model']).lower().startswith('jev'):
-            raise NewsPipelineError('Select a generative model for news summaries; Jev only scores content')
+        summary_providers = _summary_providers(snapshot, settings)
+        summary_provider = summary_providers[0]
         now = datetime.now(timezone.utc)
         candidates, health, predictions = collect_candidates(settings, now, snapshot)
         previous_reasons = {e['slug']: e.get('watch_reason') for e in ((database_news.latest_snapshot() or {}).get('polymarket') or {}).get('events', []) if e.get('slug')}
@@ -270,7 +297,7 @@ def _process_refresh(owner: str, snapshot: dict, progress: NewsProgress) -> None
         review = None
         if (snapshot.get('polymarket') or {}).get('enabled') and (snapshot.get('polymarket') or {}).get('auto_manage', True):
             progress.update(stage='polymarket_review')
-            review = review_watchlist(owner, snapshot['polymarket'], candidates, summary_provider)
+            review = review_watchlist(owner, snapshot['polymarket'], candidates, summary_providers)
             if review is not None:
                 predictions = review
                 prediction_items = intelligence_items(review)
@@ -338,12 +365,29 @@ def _process_refresh(owner: str, snapshot: dict, progress: NewsProgress) -> None
             digest = previous['digest']
             selected = previous.get('items', [])
         else:
-            summary_provider = {**summary_provider, '_summary_instructions': settings.summary_instructions,
-                                '_summary_context': {'digest': previous.get('digest', '')[:8000], 'as_of': previous.get('summary_as_of') or previous.get('as_of')} if settings.summary_mode == 'rolling' else None}
-            with news_span('news.summarize', inputs={'selected_count': len(selected), 'model': summary_provider['model']}) as summary_span:
-                digest = _summarize(selected, summary_provider)
-                if summary_span:
-                    summary_span.end(outputs={'digest': digest})
+            summary_context = {'digest': previous.get('digest', '')[:8000], 'as_of': previous.get('summary_as_of') or previous.get('as_of')} if settings.summary_mode == 'rolling' else None
+            summary_errors = []
+            digest = None
+            used_summary_provider = summary_providers[0]
+            last_exc = None
+            for candidate in summary_providers:
+                candidate_payload = {**candidate, '_summary_instructions': settings.summary_instructions, '_summary_context': summary_context}
+                try:
+                    with news_span('news.summarize', inputs={'selected_count': len(selected), 'model': candidate['model']}) as summary_span:
+                        digest = _summarize(selected, candidate_payload)
+                        if summary_span:
+                            summary_span.end(outputs={'digest': digest})
+                    used_summary_provider = candidate
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning('News summary failed on %s (%s): %s', candidate.get('provider_id'), candidate.get('model'), exc)
+                    summary_errors.append(f"{candidate.get('model') or candidate.get('provider_id')}: {exc}")
+            if digest is None:
+                if len(summary_providers) == 1 and last_exc is not None:
+                    raise last_exc
+                raise NewsPipelineError('All news summary models failed: ' + ' | '.join(summary_errors)) from last_exc
+            summary_provider = used_summary_provider
         for item in selected:
             score_value = (item.get('scoring') or {}).get('score')
             item['relevance'] = score_value / 100 if score_value is not None else None

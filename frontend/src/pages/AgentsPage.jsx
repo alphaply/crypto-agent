@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Alert, Button, Card, Empty, Input, Segmented, Select, Skeleton, Space, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -35,19 +35,39 @@ export default function AgentsPage({ authenticated = false }) {
   const workspaceLoading = context.loading || account.loading || chart.loading;
 
   const selectAgent = (id) => setParams((previous) => { const next = new URLSearchParams(previous); next.set('agent', id); return next; }, { replace: true });
-  const workspace = { ...sectionWorkspace, short_memories: memoryEdits[activeId] || sectionWorkspace.short_memories };
-  useEffect(() => { setMemoryEdits({}); }, [context.updatedAt]);
+  const currentMemoryEdit = memoryEdits[activeId];
+  const workspace = {
+    ...sectionWorkspace,
+    short_memories:
+      currentMemoryEdit && currentMemoryEdit.updatedAt === context.updatedAt
+        ? currentMemoryEdit.data
+        : sectionWorkspace.short_memories,
+  };
   const running = agents.filter(isAgentActive).length;
   const onMemorySaved = (saved) => setMemoryEdits((previous) => {
     const current = workspace.short_memories || {};
-    return { ...previous, [saved.config_id]: { ...current, short_memories: (current.short_memories || []).map(row => row.bucket_start === saved.bucket_start ? { ...row, market_summary: saved.market_summary } : row) } };
+    return {
+      ...previous,
+      [saved.config_id]: {
+        updatedAt: context.updatedAt,
+        data: {
+          ...current,
+          short_memories: (current.short_memories || []).map(row =>
+            row.bucket_start === saved.bucket_start ? { ...row, market_summary: saved.market_summary } : row
+          ),
+        },
+      },
+    };
   });
   return <div className="boxed-page dashboard-page dashboard-v2 agents-page">
     {error && <Alert type="warning" showIcon title={error} action={<Button onClick={refresh} loading={loading}>{zh ? '重试' : 'Retry'}</Button>} />}
     {loading && !dashboard ? <Card><Skeleton active /></Card> : !agents.length ? <Card><Empty description={zh ? '尚未配置 Agent' : 'No agents configured'}><Button type="primary" onClick={() => navigate('/console/config')}>{zh ? '创建任务' : 'Create an agent'}</Button></Empty></Card> : <div className={`agents-layout${agents.length === 1 ? ' is-single' : ''}`}>
       {agents.length > 1 && <Select className="agent-mobile-selector" aria-label={zh ? '选择任务' : 'Select task'} value={activeId} onChange={selectAgent} options={agents.map(item => ({ value: item.config_id, label: item.display_name || item.title || item.config_id }))} />}
       {agents.length > 1 && <aside className="agent-directory" aria-label={zh ? 'Agent 列表' : 'Agent list'}>
-        <Typography.Text type="secondary">{zh ? `${agents.length} 个任务 · ${running} 个进行中` : `${agents.length} agents · ${running} active`}</Typography.Text>
+        <div className="agent-directory-header">
+          <Typography.Text strong>{zh ? '任务列表' : 'Agents'}</Typography.Text>
+          <Typography.Text type="secondary">{zh ? `${running} / ${agents.length} 运行中` : `${running} / ${agents.length} active`}</Typography.Text>
+        </div>
         <Input allowClear prefix={<SearchOutlined />} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={zh ? '搜索任务、标的或模型' : 'Search agents, symbols or models'} aria-label={zh ? '搜索 Agent' : 'Search agents'} />
         <Segmented block value={filter} onChange={setFilter} options={[{ value: 'all', label: zh ? '全部' : 'All' }, { value: 'active', label: zh ? '运行中' : 'Active' }, { value: 'enabled', label: zh ? '已启用' : 'Enabled' }]} />
         <div className="agent-directory-list">{visibleAgents.length ? visibleAgents.map((item) => <button type="button" className={`agent-directory-item${item.config_id === activeId ? ' is-selected' : ''}`} key={item.config_id} aria-pressed={item.config_id === activeId} onClick={() => selectAgent(item.config_id)}>

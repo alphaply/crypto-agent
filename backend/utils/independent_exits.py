@@ -410,13 +410,7 @@ class IndependentExits(PositionProtection):
         from backend.utils.independent_admission import assess_admission, action_intent
         if action != 'cancel':
             self.collect_readonly(plan)
-            if plan.get('adoption') or plan.get('management'):
-                from backend.mcp.guard import assert_position_owner
-                try:
-                    assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True, side=plan['side'])
-                    plan.pop('ownership_error', None)
-                except Exception as exc:
-                    plan['ownership_error'] = str(exc)
+            plan.pop('ownership_error', None)
         hedged = bool(self.ex.fetch_position_mode(plan['symbol']).get('hedged')) if action != 'cancel' else True
         if action != 'cancel':
             plan['hedged'] = hedged
@@ -629,8 +623,6 @@ class IndependentExits(PositionProtection):
                 hedged = bool(self.ex.fetch_position_mode(symbol).get('hedged'))
                 if self.ex.id not in {'binance', 'binanceusdm'} and not (self.ex.id == 'okx' and not hedged):
                     raise ValueError('unsupported_combination: adapter does not support dynamic conditional all')
-                from backend.mcp.guard import assert_position_owner
-                assert_position_owner(self.mt, symbol, plan_override=plan, adopted_only=True, side=plan['side'])
                 quantity = None
             else:
                 quantity = float(self.ex.amount_to_precision(symbol, requested))
@@ -1124,6 +1116,18 @@ class IndependentExits(PositionProtection):
             result['error_code'] = 'order_already_triggered'
         return result
 
+    @staticmethod
+    def _infer_exit_reason(plan):
+        if plan.get('exit_reason'):
+            return plan['exit_reason']
+        groups = [exit_group(r) for r in plan.get('exits', [])
+                  if float(r.get('filled') or 0) > 0 or r.get('status') in {'closed', 'filled'}]
+        if 'stop_loss' in groups:
+            return 'stop_loss'
+        if 'take_profit' in groups:
+            return 'take_profit'
+        return 'agent_exit' if groups else None
+
     def _cleanup(self, plan):
         plan.setdefault('cleanup_intent', {'source': 'agent_exit', 'started_at': time.time()})
         plan["state"] = "EXITING"
@@ -1147,7 +1151,12 @@ class IndependentExits(PositionProtection):
             # never mark the cycle DONE while that residual has not been observed.
             plan.update(state='EXITING',error='Late entry fill confirmed but residual position not yet visible; awaiting reconciliation')
         else:
+            reason = self._infer_exit_reason(plan)
+            if reason:
+                plan['exit_reason'] = reason
             plan.pop('flat_candidate', None)
+            plan.pop('ownership_error', None)
+            plan.pop('position_error', None)
             plan.update(state="DONE", error=None)
             from backend.utils.execution_metrics import observe
             observe(self,plan,None)
@@ -1179,13 +1188,10 @@ class IndependentExits(PositionProtection):
             return super()._reconcile(plan)
         try:
             plan["error"] = None
+            plan.pop('ownership_error', None)
             errors = self._collect_order_evidence(plan, respect_backoff=respect_backoff)
             if errors:
                 raise RuntimeError('; '.join(errors))
-            if plan.get('adoption') or plan.get('management') or any(r.get('quantity_mode') == 'all' and is_conditional(r)
-                                          and r.get('status') not in TERMINAL for r in plan.get('exits', [])):
-                from backend.mcp.guard import assert_position_owner
-                assert_position_owner(self.mt, plan['symbol'], plan_override=plan, adopted_only=True, side=plan['side'])
             pos = self._position(plan)
             if not pos and plan.get("ever_filled") and plan["state"] != "EXITING":
                 # A second read may already show an eventually consistent
@@ -1209,7 +1215,12 @@ class IndependentExits(PositionProtection):
                     if pos:
                         plan.update(state='ACTIVE', error=None)
                     else:
+                        reason = self._infer_exit_reason(plan)
+                        if reason:
+                            plan['exit_reason'] = reason
                         observe_flat(plan, time.time())
+                        from backend.utils.execution_metrics import observe
+                        observe(self, plan, None)
                     self._save(plan)
                     return
                 if plan["state"] != "EXITING" and not self._flat_confirmed(plan):

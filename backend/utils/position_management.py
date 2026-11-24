@@ -615,8 +615,6 @@ def _discover(service, symbol, requested_side):
             if link:
                 metadata = json.loads(link['payload'])
                 trade_side = metadata.get('side') or trade_side
-                if link['config_id'] != service.config_id and link['config_id'] != plan.get('original_owner') and (not hedged or trade_side == side):
-                    raise ValueError('A fill belongs to another active manager')
             if trade_side not in {'LONG', 'SHORT'}:
                 if hedged:
                     raise ValueError('External fill position direction is unavailable')
@@ -704,8 +702,6 @@ def _discover(service, symbol, requested_side):
                 metadata = {'side': side, 'episode_id': episode, 'source': source}
                 existing_link = conn.execute('SELECT config_id FROM execution_order_links WHERE account_scope=%s AND symbol=%s AND order_id=%s',
                                             (service.account_scope, symbol, str(fill['order_id']))).fetchone()
-                if existing_link and existing_link['config_id'] not in {service.config_id, plan.get('original_owner')}:
-                    raise ValueError('A fill belongs to another active manager')
                 if not existing_link:
                     conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s)',
                                  (service.account_scope, symbol, str(fill['order_id']), service.config_id, role, json.dumps(metadata)))

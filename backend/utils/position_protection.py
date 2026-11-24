@@ -1003,15 +1003,6 @@ class PositionProtection:
                                     'error': 'Exchange credentials changed; protection plan requires its original account'})
                     continue
                 try:
-                    if str(self.config_id).startswith('mcp:') and plan['state'] != 'DONE':
-                        from backend.mcp.guard import assert_position_owner
-                        try:
-                            assert_position_owner(self.mt, plan['symbol'], side=plan.get('side')
-                                                  if plan.get('execution_mode') == 'independent_exits' else None)
-                        except Exception as exc:
-                            results.append({'symbol': plan['symbol'], 'side': plan['side'], 'state': plan['state'],
-                                            'error': f'MCP ownership check failed; no exchange changes: {exc}'})
-                            continue
                     from backend.utils.shared_management import resource_lock
                     with resource_lock(self.mt, plan['symbol']):
                         if plan.get('execution_mode') == 'independent_exits':

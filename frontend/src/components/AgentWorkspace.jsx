@@ -33,7 +33,6 @@ import { currentExecution } from '../lib/agentRuntime';
 import MarkdownBlock from '../components/MarkdownBlock';
 import KlineChart from '../components/KlineChart';
 import { TaskStatistics, TradeCallHistory } from './TaskHistory';
-import ManagementStatus, { ManagedResource } from './ManagementStatus';
 import ExitManagementPanel from '../components/ExitManagementPanel';
 import { EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '../lib/api';
@@ -86,12 +85,6 @@ function formatPositionValue(value) {
   return numeric.toFixed(decimals).replace(/\.?0+$/, '');
 }
 
-
-function formatPercentValue(value) {
-  if (value === null || value === undefined || value === '') return '-';
-  const numeric = Number(value);
-  return `${Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00'}%`;
-}
 
 function isSpotMode(mode) {
   return String(mode || '').toUpperCase() === 'SPOT_DCA';
@@ -491,7 +484,6 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
             )}
           </div>}
         </div>
-        {!spotMode && position.management && <details className="content-disclosure"><summary>{locale === 'zh' ? '持仓管理详情' : 'Position management details'}</summary><ManagementStatus management={position.management} /></details>}
         {spotMode ? (
           <SpotHoldings configId={agent.config_id} symbols={chartSymbols} stats={spotStats} authenticated={authenticated} />
         ) : activePositions.length === 0 ? (
@@ -514,12 +506,11 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
                   </Space>
                 </div>
                 <FactGrid items={buildSinglePositionFacts(pos)} />
-                <ManagedResource resource={pos} />
               </div>
             ))}
           </div>
         ) : (
-          <Space direction="vertical" style={{ width: '100%' }}><FactGrid items={buildSinglePositionFacts(activePositions[0])} /><ManagedResource resource={activePositions[0]} /></Space>
+          <FactGrid items={buildSinglePositionFacts(activePositions[0])} />
         )}
         {!spotMode ? <ExitManagementPanel management={position.exit_management} hideEmpty={compact && activePositions.length === 0} /> : null}
       </Space>
@@ -672,7 +663,6 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
                 title={row.side || '-'}
                 extra={<Tag>{row.type || '-'}</Tag>}
               >
-                <ManagedResource resource={row} />
                 <FactGrid
                   items={[
                     { label: t('price'), value: <CopyNumber value={row.price} /> },
@@ -695,7 +685,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
             rowKey={(row) => row.order_id || `${row.side}-${row.price}-${row.amount}`}
             dataSource={pendingOrders}
             pagination={false}
-            scroll={{ x: compact ? 640 : 1080 }}
+            scroll={{ x: compact ? 600 : 900 }}
             expandable={compact ? {
               expandedRowRender: (row) => <FactGrid items={[
                 { label: t('reason'), value: row.reason || '—' },
@@ -706,7 +696,6 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
             locale={{ emptyText: <Empty description={ordersEmptyText} /> }}
             columns={[
               { title: t('side'), dataIndex: 'side' },
-              { title: locale === 'zh' ? '来源与管理' : 'Source and management', width: 240, render: (_, row) => <ManagedResource resource={row} /> },
               {
                 title: t('type'),
                 dataIndex: 'type',
@@ -755,7 +744,7 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
     const accountContent = <>
       {accountState?.error && <Alert type="warning" showIcon title={locale === 'zh' ? '账户更新失败，保留上次数据' : 'Account refresh failed; keeping previous data'} description={accountState.error} />}
       {!workspace.position && accountState?.loading && <Card className="panel-card"><Text type="secondary"><Spin size="small" /> {locale === 'zh' ? '正在加载账户…' : 'Loading account…'}</Text></Card>}
-      {confirmedEmpty ? <div className="workspace-empty-line">{locale === 'zh' ? '当前空仓 · 无挂单' : 'No positions · No pending orders'}{position.management && <details><summary>{locale === 'zh' ? '管理详情' : 'Management details'}</summary><ManagementStatus management={position.management} /></details>}</div> : <>{workspace.position && positionPanel}{workspace.kline && ordersPanel}</>}
+      {confirmedEmpty ? <div className="workspace-empty-line">{locale === 'zh' ? '当前空仓 · 无挂单' : 'No positions · No pending orders'}</div> : <>{workspace.position && positionPanel}{workspace.kline && ordersPanel}</>}
       {authenticated && <TradeCallHistory pendingOnly compact configId={agent.config_id} refreshKey={refreshKey} />}
     </>;
     return (
