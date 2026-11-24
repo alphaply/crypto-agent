@@ -14,6 +14,16 @@ import { filterAgents, selectAgentId, workspaceSignature } from '../lib/dashboar
 import './AgentsPage.css';
 
 
+function formatDirectorySymbol(symbol) {
+  return String(symbol || '').split(':')[0].trim();
+}
+
+function modeBadgeLabel(mode, zh) {
+  if (mode === 'SPOT_DCA') return zh ? '现货' : 'Spot';
+  if (mode === 'REAL') return zh ? '实盘' : 'Live';
+  return zh ? '模拟' : 'Sim';
+}
+
 export default function AgentsPage({ authenticated = false }) {
   const { locale } = usePreferences();
   const zh = locale === 'zh';
@@ -65,14 +75,41 @@ export default function AgentsPage({ authenticated = false }) {
       {agents.length > 1 && <Select className="agent-mobile-selector" aria-label={zh ? '选择任务' : 'Select task'} value={activeId} onChange={selectAgent} options={agents.map(item => ({ value: item.config_id, label: item.display_name || item.title || item.config_id }))} />}
       {agents.length > 1 && <aside className="agent-directory" aria-label={zh ? 'Agent 列表' : 'Agent list'}>
         <div className="agent-directory-header">
-          <Typography.Text strong>{zh ? '任务列表' : 'Agents'}</Typography.Text>
-          <Typography.Text type="secondary">{zh ? `${running} / ${agents.length} 运行中` : `${running} / ${agents.length} active`}</Typography.Text>
+          <span className="agent-directory-heading">{zh ? '任务列表' : 'Agents'}</span>
+          <span className="agent-directory-count">{zh ? `${running}/${agents.length} 运行中` : `${running}/${agents.length} active`}</span>
         </div>
         <Input allowClear prefix={<SearchOutlined />} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={zh ? '搜索任务、标的或模型' : 'Search agents, symbols or models'} aria-label={zh ? '搜索 Agent' : 'Search agents'} />
         <Segmented block value={filter} onChange={setFilter} options={[{ value: 'all', label: zh ? '全部' : 'All' }, { value: 'active', label: zh ? '运行中' : 'Active' }, { value: 'enabled', label: zh ? '已启用' : 'Enabled' }]} />
-        <div className="agent-directory-list">{visibleAgents.length ? visibleAgents.map((item) => <button type="button" className={`agent-directory-item${item.config_id === activeId ? ' is-selected' : ''}`} key={item.config_id} aria-pressed={item.config_id === activeId} onClick={() => selectAgent(item.config_id)}>
-          <span className="agent-directory-title">{item.display_name || item.title || item.config_id}</span><span className="agent-directory-status"><AgentStatus agent={item} zh={zh} /><small>{item.mode === 'SPOT_DCA' ? (zh ? '现货' : 'Spot') : item.mode === 'REAL' ? (zh ? '实盘合约' : 'Live futures') : (zh ? '模拟合约' : 'Simulated futures')}</small></span><span className="agent-directory-symbols">{(item.symbols || [item.symbol]).filter(Boolean).join(' · ')}</span>
-        </button>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={zh ? '没有匹配的任务' : 'No matching agents'} />}</div>
+        <div className="agent-directory-list">{visibleAgents.length ? visibleAgents.map((item) => {
+          const modeKey = String(item.mode || 'STRATEGY').toLowerCase();
+          const symbolList = (item.symbols || [item.symbol]).map(formatDirectorySymbol).filter(Boolean);
+          const visibleSymbols = symbolList.slice(0, 3);
+          const extraCount = symbolList.length - visibleSymbols.length;
+          return (
+            <button
+              type="button"
+              className={`agent-directory-item${item.config_id === activeId ? ' is-selected' : ''}${item.enabled === false ? ' is-paused' : ''}`}
+              key={item.config_id}
+              aria-pressed={item.config_id === activeId}
+              onClick={() => selectAgent(item.config_id)}
+            >
+              <div className="agent-directory-item-top">
+                <span className="agent-directory-title">{item.display_name || item.title || item.config_id}</span>
+                <AgentStatus agent={item} zh={zh} />
+              </div>
+              <div className="agent-directory-meta">
+                <span className={`agent-directory-mode is-${modeKey}`}>{modeBadgeLabel(item.mode, zh)}</span>
+                {item.model ? <span className="agent-directory-model" title={item.model}>{item.model}</span> : null}
+              </div>
+              {symbolList.length > 0 && (
+                <div className="agent-directory-symbols" title={symbolList.join(' · ')}>
+                  {visibleSymbols.map((sym) => <span key={sym} className="agent-directory-symbol-chip">{sym}</span>)}
+                  {extraCount > 0 && <span className="agent-directory-symbol-chip is-more">+{extraCount}</span>}
+                </div>
+              )}
+            </button>
+          );
+        }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={zh ? '没有匹配的任务' : 'No matching agents'} />}</div>
       </aside>}
       <section className="agent-detail" aria-label={zh ? 'Agent 详情' : 'Agent details'}>
         {agent && <>
