@@ -54,12 +54,34 @@ TOOL_CATALOG = [
 ]
 
 
+_READABLE_TOOL_NAMES = {
+    'get_trading_context', 'search_symbols', 'get_market', 'get_news',
+    'get_account_state', 'get_trade_records', 'get_paper_leaderboard',
+}
+
+
 class GatewayFuncMetadata(FuncMetadata):
+    readable_tool_name: str | None = None
+
     def pre_parse_json(self, data):
         # The SDK's permissive json.loads would erase conflicting duplicate keys
         # before our gateway can reject them. Our bounded parser owns wrappers
         # and business JSON; pydantic still validates every flat field normally.
         return data
+
+    def convert_result(self, result):
+        if self.readable_tool_name and isinstance(result, dict):
+            from mcp.types import CallToolResult, TextContent
+            from .formatters import render_read_tool_result
+            structured_content = result
+            if self.output_schema is not None and self.output_model is not None:
+                payload = {'result': result} if self.wrap_output else result
+                structured_content = self.output_model.model_validate(payload).model_dump(mode='json', by_alias=True)
+            return CallToolResult(
+                content=[TextContent(type='text', text=render_read_tool_result(self.readable_tool_name, result))],
+                structuredContent=structured_content,
+            )
+        return super().convert_result(result)
 
 
 def normalize_tool_input(tool_name, value):
@@ -75,6 +97,19 @@ def normalize_tool_input(tool_name, value):
                 result[id_key] = raw_id.strip()
     if isinstance(result.get('symbol'), str):
         result['symbol'] = result['symbol'].strip()
+    if 'include' in result:
+        raw_include = result['include']
+        if isinstance(raw_include, str):
+            parts = [item.strip().lower() for item in raw_include.replace('，', ',').split(',')]
+            result['include'] = [item for item in parts if item]
+        elif isinstance(raw_include, list):
+            result['include'] = [item.strip().lower() if isinstance(item, str) else item for item in raw_include]
+    for int_key in ('leverage', 'limit', 'offset', 'after_id', 'contract_version'):
+        raw_int = result.get(int_key)
+        if isinstance(raw_int, str):
+            stripped = raw_int.strip()
+            if stripped.isascii() and stripped.isdigit():
+                result[int_key] = int(stripped)
     for lower_key in ('market_type', 'action', 'state', 'period', 'order_type',
                       'execution_policy', 'record_type', 'exit_type', 'metric'):
         if isinstance(result.get(lower_key), str):
@@ -115,20 +150,25 @@ def _register(server, function, *, scope='read'):
         __validators__={'normalize_client_arguments': model_validator(mode='before')(normalize)},
     )
     registered.fn_metadata.arg_model = model
-    registered.fn_metadata = GatewayFuncMetadata(**{
-        name: getattr(registered.fn_metadata, name) for name in FuncMetadata.model_fields
-    })
+    registered.fn_metadata = GatewayFuncMetadata(
+        readable_tool_name=function.__name__ if read and function.__name__ in _READABLE_TOOL_NAMES else None,
+        **{name: getattr(registered.fn_metadata, name) for name in FuncMetadata.model_fields},
+    )
     registered.parameters = model.model_json_schema(by_alias=True)
     if not read:
         original = registered.fn
         async def compact_financial_return(**kwargs):
             result = await original(**kwargs)
             from backend.agent.unified_trading import compact_trade_receipt
-            if function.__name__ == 'configure_paper_account':
-                return compact_trade_receipt(result)
-            from backend.utils.trade_summary import render_trade_receipt
             from mcp.types import CallToolResult, TextContent
             structured = compact_trade_receipt(result)
+            if function.__name__ == 'configure_paper_account':
+                from .formatters import render_read_tool_result
+                return CallToolResult(
+                    content=[TextContent(type='text', text=render_read_tool_result('configure_paper_account', result))],
+                    structuredContent=structured,
+                )
+            from backend.utils.trade_summary import render_trade_receipt
             return CallToolResult(content=[TextContent(type='text', text=render_trade_receipt(result))],
                                   structuredContent=structured)
         # Metadata continues to validate the original exact input signature.

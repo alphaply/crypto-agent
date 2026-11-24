@@ -2,11 +2,36 @@
 from __future__ import annotations
 from backend.storage import lock_scope
 
-import json
-import time
+from collections import OrderedDict
+import copy
 from decimal import Decimal
+import json
+import math
+import os
+import threading
+import time
 
 from . import paper, store
+
+_LEADERBOARD_CACHE: OrderedDict = OrderedDict()
+_LEADERBOARD_LOCK = threading.Lock()
+_LEADERBOARD_CACHE_MAX = 32
+
+
+def clear_leaderboard_cache():
+    with _LEADERBOARD_LOCK:
+        _LEADERBOARD_CACHE.clear()
+
+
+def _leaderboard_cache_ttl() -> float:
+    raw = os.getenv('MCP_PAPER_LEADERBOARD_CACHE_SECONDS', '5.0')
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError):
+        return 5.0
+    if not math.isfinite(ttl) or ttl <= 0:
+        return 0.0
+    return min(ttl, 30.0)
 
 
 def ensure_bot_namespace(namespace):
@@ -59,6 +84,19 @@ def leaderboard(caller, limit=20, metric='return_pct', user_id=None, *, administ
         raise ValueError('metric must be return_pct or reset_count; limit must be 1–200')
     if user_id is not None:
         paper.identity(user_id)
+    ttl = _leaderboard_cache_ttl() if not administrator else 0.0
+    cache_key = None
+    if ttl > 0:
+        cache_key = (os.environ.get('DATABASE_URL', ''), namespace, limit, metric, user_id)
+        now = time.monotonic()
+        with _LEADERBOARD_LOCK:
+            entry = _LEADERBOARD_CACHE.get(cache_key)
+            if entry is not None:
+                expires_at, payload = entry
+                if now < expires_at:
+                    _LEADERBOARD_CACHE.move_to_end(cache_key)
+                    return copy.deepcopy(payload)
+                _LEADERBOARD_CACHE.pop(cache_key, None)
     worker = 'ranking:' + namespace + ':' + metric
     with store.connection() as conn:
         lock_scope(conn, 'paper-ranking', namespace)
@@ -114,13 +152,21 @@ def leaderboard(caller, limit=20, metric='return_pct', user_id=None, *, administ
         conn.execute('DELETE FROM paper_scan_progress WHERE worker=%s', (worker,))
         conn.execute("DELETE FROM paper_ranking_projection WHERE namespace=%s AND generation<>%s AND generation NOT IN (SELECT payload::jsonb->>'generation' FROM paper_scan_progress WHERE worker LIKE 'ranking:%%')", (namespace, generation))
         conn.commit()
-    return {'items': items, 'total': total if not state['skipped'] else None, 'metric': metric, 'namespace': namespace,
-            'self': personal, 'bot': bot,
-            'unranked_count': all_count - total + state['skipped'], 'incomplete_count': incomplete + state['skipped'],
-            'status': 'partial' if state['skipped'] else 'complete', 'scan_complete': True, 'next_cursor': None,
-            'execution_mode': 'paper', 'observed_at': time.time() if not state['skipped'] else None,
-            'scan_started_at': state['started_at'],
-            'scoring': 'Complete Binance valuation minus initial and administrator-adjusted capital; loans do not increase performance.'}
+    result = {'items': items, 'total': total if not state['skipped'] else None, 'metric': metric, 'namespace': namespace,
+              'self': personal, 'bot': bot,
+              'unranked_count': all_count - total + state['skipped'], 'incomplete_count': incomplete + state['skipped'],
+              'status': 'partial' if state['skipped'] else 'complete', 'scan_complete': True, 'next_cursor': None,
+              'execution_mode': 'paper', 'observed_at': time.time() if not state['skipped'] else None,
+              'scan_started_at': state['started_at'],
+              'scoring': 'Complete Binance valuation minus initial and administrator-adjusted capital; loans do not increase performance.'}
+    if cache_key is not None and result['status'] == 'complete':
+        now = time.monotonic()
+        with _LEADERBOARD_LOCK:
+            _LEADERBOARD_CACHE[cache_key] = (now + ttl, copy.deepcopy(result))
+            _LEADERBOARD_CACHE.move_to_end(cache_key)
+            while len(_LEADERBOARD_CACHE) > _LEADERBOARD_CACHE_MAX:
+                _LEADERBOARD_CACHE.popitem(last=False)
+    return result
 
 
 def preferences(caller, user_id, operation_id, leaderboard_visible=None, notifications_enabled=None, name=None):

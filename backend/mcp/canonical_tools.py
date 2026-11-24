@@ -414,7 +414,7 @@ def register(server):
                          market_type: Literal['spot', 'swap'] | None = None,
                          exchange: Literal['binance', 'okx', 'bitget', 'bybit'] | None = None,
                          include: list[Literal['ticker', 'candles', 'analysis', 'sentiment']] | None = None) -> dict:
-        """Read real ticker/candles, multi-timeframe technical indicators, and derivatives sentiment. Pass include=["ticker"] when only current price/bid/ask is needed to keep responses fast and compact; add "candles", "analysis", or "sentiment" only as needed. Paper only simulates account execution."""
+        """Read real ticker, candles, multi-timeframe indicators, and derivatives sentiment. Pass include=["ticker"] for fast price/bid/ask checks, or include=["ticker","analysis","sentiment"] to skip raw candles; omit include for all facets."""
         def query(caller):
             if caller.get('key_type') == 'paper':
                 paper.require(caller)
@@ -429,7 +429,7 @@ def register(server):
     async def get_account_state(profile_id: str | None = None, user_id: str | None = None, symbol: str | None = None,
                                 include: list[Literal['balances', 'positions', 'inventory', 'orders', 'performance']] | None = None,
                                 period: Literal['current_cycle', '7d', '30d', 'all'] | None = None) -> dict:
-        """Read only requested account facets. Positions alone do not append all balances, orders or history."""
+        """Read only needed account facets (balances, positions, inventory, orders, performance) to keep responses compact and fast."""
         return await invoke(account_state, profile_id, user_id, symbol, include, period)
 
     async def get_trade_records(record_type: Literal['orders', 'order', 'fills', 'history'], profile_id: str | None = None,

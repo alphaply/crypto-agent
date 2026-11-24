@@ -2,9 +2,11 @@
 from __future__ import annotations
 from backend.storage import record as storage_record
 
+import contextvars
 import json
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy, copy
 
 from pydantic import BaseModel
@@ -387,16 +389,35 @@ def query(caller, resource, profile_id=None, symbol=None, timeframe='1h', limit=
                                     return mt._fetch_market_derivatives(symbol)
                                 return {}
                             loaders['sentiment'] = (load_sentiment, setting('DERIVATIVES_CACHE_SECONDS', 30))
-                    for source, (loader, ttl) in loaders.items():
-                        try:
-                            remaining(source)
-                            value, observed_at, cached = observe(cache_key, source, loader, ttl)
-                            result[source] = value
-                            result['observed_at'][source] = observed_at
-                            result['sources'][source] = 'public_cache' if cached else 'exchange'
-                        except Exception as exc:
-                            result['missing_sources'].append(source)
-                            result.setdefault('errors', {})[source] = safe_error(exc, profile_id)
+                    def _load_source(source_name, loader_fn, cache_ttl):
+                        remaining(source_name)
+                        return observe(cache_key, source_name, loader_fn, cache_ttl)
+
+                    if len(loaders) > 1:
+                        with ThreadPoolExecutor(max_workers=min(4, len(loaders)), thread_name_prefix='mcp-market') as pool:
+                            futures = {
+                                source: pool.submit(contextvars.copy_context().run, _load_source, source, loader, ttl)
+                                for source, (loader, ttl) in loaders.items()
+                            }
+                            for source, future in futures.items():
+                                try:
+                                    value, observed_at, cached = future.result()
+                                    result[source] = value
+                                    result['observed_at'][source] = observed_at
+                                    result['sources'][source] = 'public_cache' if cached else 'exchange'
+                                except Exception as exc:
+                                    result['missing_sources'].append(source)
+                                    result.setdefault('errors', {})[source] = safe_error(exc, profile_id)
+                    else:
+                        for source, (loader, ttl) in loaders.items():
+                            try:
+                                value, observed_at, cached = _load_source(source, loader, ttl)
+                                result[source] = value
+                                result['observed_at'][source] = observed_at
+                                result['sources'][source] = 'public_cache' if cached else 'exchange'
+                            except Exception as exc:
+                                result['missing_sources'].append(source)
+                                result.setdefault('errors', {})[source] = safe_error(exc, profile_id)
                     if loaders and len(result['missing_sources']) == len(loaders):
                         raise ValueError(f'Market observation unavailable; missing_sources={result["missing_sources"]}')
                     if result['missing_sources']:

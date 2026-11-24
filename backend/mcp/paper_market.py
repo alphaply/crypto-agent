@@ -1,6 +1,7 @@
 """Real public market discovery and quotes for the simulated execution ledger."""
 from __future__ import annotations
 
+import contextvars
 import copy
 import math
 import os
@@ -8,6 +9,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 EXCHANGES = ('binance',)
@@ -18,11 +20,19 @@ _COMPACT_TICKER_KEYS = (
 _READ_QUOTE_CACHE: OrderedDict = OrderedDict()
 _READ_QUOTE_LOCK = threading.Lock()
 _READ_QUOTE_CACHE_MAX = 64
+_SEARCH_CACHE: OrderedDict = OrderedDict()
+_SEARCH_LOCK = threading.Lock()
+_SEARCH_CACHE_MAX = 32
 
 
 def clear_read_quote_cache():
     with _READ_QUOTE_LOCK:
         _READ_QUOTE_CACHE.clear()
+
+
+def clear_search_cache():
+    with _SEARCH_LOCK:
+        _SEARCH_CACHE.clear()
 
 
 def _quote_cache_ttl() -> float:
@@ -34,6 +44,17 @@ def _quote_cache_ttl() -> float:
     if not math.isfinite(ttl) or ttl <= 0:
         return 0.0
     return min(ttl, 30.0)
+
+
+def _search_cache_ttl() -> float:
+    raw = os.getenv('MCP_PAPER_SEARCH_CACHE_SECONDS', '15.0')
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError):
+        return 15.0
+    if not math.isfinite(ttl) or ttl <= 0:
+        return 0.0
+    return min(ttl, 60.0)
 # Discovery hints verified against issuer/exchange announcements. They never
 # create tradable markets: a live exchange catalogue must confirm every symbol.
 ASSETS = {
@@ -109,6 +130,19 @@ def search(keyword='', market_type=None, exchange_name=None, limit=50, offset=0)
     if any(name not in EXCHANGES for name in names):
         raise ValueError('Unsupported public exchange')
     needle = keyword.strip().upper()
+    ttl = _search_cache_ttl()
+    cache_key = None
+    if ttl > 0:
+        cache_key = (needle, market_type, preferred, tuple(names), limit, offset, id(client))
+        now = time.monotonic()
+        with _SEARCH_LOCK:
+            entry = _SEARCH_CACHE.get(cache_key)
+            if entry is not None:
+                expires_at, payload = entry
+                if now < expires_at:
+                    _SEARCH_CACHE.move_to_end(cache_key)
+                    return copy.deepcopy(payload)
+                _SEARCH_CACHE.pop(cache_key, None)
 
     def fetch_venue(name):
         matches, missing = [], []
@@ -137,11 +171,19 @@ def search(keyword='', market_type=None, exchange_name=None, limit=50, offset=0)
     matches.sort(key=lambda r: (r['base'] != needle, r['exchange'] != preferred, r['market_type'], r['symbol'], r['exchange']))
     hints = [{**details, 'base': base, 'catalogue_verified': False, 'hint_only': True}
              for base, details in ASSETS.items() if needle and any(needle in str(value).upper() for value in [base, details['name'], details.get('underlying_symbol', ''), *details.get('aliases', [])])]
-    return {'symbols': matches[offset:offset + limit], 'total': len(matches), 'limit': limit, 'offset': offset,
-            'has_more': offset + limit < len(matches), 'status': 'partial' if missing else 'complete',
-            'missing_sources': missing, 'asset_hints': hints, 'queried_exchanges': names,
-            'market_data_mode': 'live_public', 'observed_at': time.time(),
-            'note': 'Prices/listings come from real public exchange APIs. A failed venue is not evidence of nonexistence. Asset hints are not tradability proof.'}
+    result = {'symbols': matches[offset:offset + limit], 'total': len(matches), 'limit': limit, 'offset': offset,
+              'has_more': offset + limit < len(matches), 'status': 'partial' if missing else 'complete',
+              'missing_sources': missing, 'asset_hints': hints, 'queried_exchanges': names,
+              'market_data_mode': 'live_public', 'observed_at': time.time(),
+              'note': 'Prices/listings come from real public exchange APIs. A failed venue is not evidence of nonexistence. Asset hints are not tradability proof.'}
+    if cache_key is not None and result['status'] == 'complete':
+        now = time.monotonic()
+        with _SEARCH_LOCK:
+            _SEARCH_CACHE[cache_key] = (now + ttl, copy.deepcopy(result))
+            _SEARCH_CACHE.move_to_end(cache_key)
+            while len(_SEARCH_CACHE) > _SEARCH_CACHE_MAX:
+                _SEARCH_CACHE.popitem(last=False)
+    return result
 
 
 def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True, exchange_name=None, include=None):
@@ -218,57 +260,79 @@ def quote(symbol, market_type='swap', timeframe='1h', limit=120, *, candles=True
                 patched_ohlcv = True
             except AttributeError:
                 patched_ohlcv = False
-        try:
-            if 'analysis' in facets:
-                pmt = None
-                try:
-                    from backend.utils.market_data import MarketTool
-                    pmt = object.__new__(MarketTool)
-                    pmt.exchange = exchange
-                    pmt.exchange_name = name
-                    pmt.market_type = market_type
-                    pmt.runtime_config = {}
-                    pmt.config_id = None
-                    pmt.symbol = item['symbol']
-                    mode = 'SPOT_DCA' if market_type == 'spot' else 'STRATEGY'
-                    analysis_data = pmt.get_market_analysis(item['symbol'], mode=mode, timeframes=timeframes_to_calc).get('analysis', {})
-                    result['analysis'] = analysis_data
-                except Exception as exc:
-                    result['analysis'] = {}
-                    result['missing_sources'].append('analysis')
-                    result.setdefault('errors', {})['analysis'] = str(exc)
-                    result['status'] = 'partial'
-                finally:
-                    if pmt is not None:
-                        pmt.exchange = None
-            if 'candles' in facets and candles:
-                result.update(timeframe=timeframe, candles=exchange.fetch_ohlcv(item['symbol'], timeframe, limit=limit))
-        finally:
-            if patched_ohlcv:
-                exchange.fetch_ohlcv = orig_fetch_ohlcv
-        if 'sentiment' in facets:
+        def _run_analysis_and_candles():
+            updates = {}
+            analysis_error = None
+            try:
+                if 'analysis' in facets:
+                    pmt = None
+                    try:
+                        from backend.utils.market_data import MarketTool
+                        pmt = object.__new__(MarketTool)
+                        pmt.exchange = exchange
+                        pmt.exchange_name = name
+                        pmt.market_type = market_type
+                        pmt.runtime_config = {}
+                        pmt.config_id = None
+                        pmt.symbol = item['symbol']
+                        mode = 'SPOT_DCA' if market_type == 'spot' else 'STRATEGY'
+                        updates['analysis'] = pmt.get_market_analysis(item['symbol'], mode=mode, timeframes=timeframes_to_calc).get('analysis', {})
+                    except Exception as exc:
+                        updates['analysis'] = {}
+                        analysis_error = str(exc)
+                    finally:
+                        if pmt is not None:
+                            pmt.exchange = None
+                if 'candles' in facets and candles:
+                    updates.update(timeframe=timeframe, candles=exchange.fetch_ohlcv(item['symbol'], timeframe, limit=limit))
+            finally:
+                if patched_ohlcv:
+                    exchange.fetch_ohlcv = orig_fetch_ohlcv
+            return updates, analysis_error
+
+        def _run_sentiment():
             if market_type == 'spot':
-                result['sentiment'] = {}
-            else:
-                pmt = None
-                try:
-                    from backend.utils.market_data import MarketTool
-                    pmt = object.__new__(MarketTool)
-                    pmt.exchange = exchange
-                    pmt.exchange_name = name
-                    pmt.market_type = market_type
-                    pmt.runtime_config = {}
-                    pmt.config_id = None
-                    pmt.symbol = item['symbol']
-                    result['sentiment'] = pmt._fetch_market_derivatives(item['symbol'])
-                except Exception as exc:
-                    result['sentiment'] = {'funding_rate': 0, 'open_interest': 0, '24h_quote_vol': 0, 'error': str(exc)}
-                    result['missing_sources'].append('sentiment')
-                    result.setdefault('errors', {})['sentiment'] = str(exc)
-                    result['status'] = 'partial'
-                finally:
-                    if pmt is not None:
-                        pmt.exchange = None
+                return {}, None
+            pmt = None
+            try:
+                from backend.utils.market_data import MarketTool
+                pmt = object.__new__(MarketTool)
+                pmt.exchange = exchange
+                pmt.exchange_name = name
+                pmt.market_type = market_type
+                pmt.runtime_config = {}
+                pmt.config_id = None
+                pmt.symbol = item['symbol']
+                return pmt._fetch_market_derivatives(item['symbol']), None
+            except Exception as exc:
+                return {'funding_rate': 0, 'open_interest': 0, '24h_quote_vol': 0, 'error': str(exc)}, str(exc)
+            finally:
+                if pmt is not None:
+                    pmt.exchange = None
+
+        run_ac = need_ohlcv
+        run_sent = ('sentiment' in facets) and market_type != 'spot'
+        if run_ac and run_sent:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='mcp-paper-mkt') as pool:
+                ac_future = pool.submit(contextvars.copy_context().run, _run_analysis_and_candles)
+                sent_future = pool.submit(contextvars.copy_context().run, _run_sentiment)
+                ac_updates, ac_err = ac_future.result()
+                sent_val, sent_err = sent_future.result()
+        else:
+            ac_updates, ac_err = _run_analysis_and_candles() if run_ac else ({}, None)
+            sent_val, sent_err = _run_sentiment() if ('sentiment' in facets) else (None, None)
+
+        result.update(ac_updates)
+        if ac_err is not None:
+            result['missing_sources'].append('analysis')
+            result.setdefault('errors', {})['analysis'] = ac_err
+            result['status'] = 'partial'
+        if 'sentiment' in facets:
+            result['sentiment'] = sent_val
+            if sent_err is not None:
+                result['missing_sources'].append('sentiment')
+                result.setdefault('errors', {})['sentiment'] = sent_err
+                result['status'] = 'partial'
         return result
 
 

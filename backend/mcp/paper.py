@@ -130,6 +130,8 @@ def _save(conn, account):
                  (account['namespace'], account['user_id'], encoded))
     from .paper_statistics import sync_account
     sync_account(conn, account)
+    from .paper_competition import clear_leaderboard_cache
+    clear_leaderboard_cache()
 
 
 def upgrade_account(conn, account):
