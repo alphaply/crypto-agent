@@ -373,12 +373,143 @@ def resolve_compatibility_mode(
     return "openai"
 
 
+def _is_gemini_model(model_name: Optional[str]) -> bool:
+    return "gemini" in str(model_name or "").lower()
+
+
+def _extract_tool_call_extras(
+    raw_tool_calls: Any,
+    *,
+    source_model: str = "",
+    fallback_to_pos: bool = False,
+) -> list[dict]:
+    if not isinstance(raw_tool_calls, list):
+        return []
+    entries: list[dict] = []
+    for pos, tc in enumerate(raw_tool_calls):
+        if not isinstance(tc, dict):
+            continue
+        extra_content = tc.get("extra_content")
+        thought_signature = tc.get("thought_signature")
+        has_extra = isinstance(extra_content, dict) and bool(extra_content)
+        has_sig = isinstance(thought_signature, str) and bool(thought_signature)
+        if not has_extra and not has_sig:
+            continue
+        entry: dict[str, Any] = {"source_model": source_model}
+        if tc.get("id"):
+            entry["id"] = str(tc["id"])
+        idx = tc.get("index")
+        if idx is None and fallback_to_pos:
+            idx = pos
+        if idx is not None:
+            # Avoid the "index" key because LangChain's merge_lists merges dicts sharing "index" and concatenates strings.
+            entry["tool_index"] = idx
+        if has_extra:
+            entry["extra_content"] = extra_content
+        if has_sig:
+            entry["thought_signature"] = thought_signature
+        entries.append(entry)
+    return entries
+
+
+def _extract_message_extras(raw_msg: Any, *, source_model: str = "") -> list[dict]:
+    if not isinstance(raw_msg, dict):
+        return []
+    extra_content = raw_msg.get("extra_content")
+    thought_signature = raw_msg.get("thought_signature")
+    has_extra = isinstance(extra_content, dict) and bool(extra_content)
+    has_sig = isinstance(thought_signature, str) and bool(thought_signature)
+    if not has_extra and not has_sig:
+        return []
+    entry: dict[str, Any] = {"source_model": source_model}
+    if has_extra:
+        entry["extra_content"] = extra_content
+    if has_sig:
+        entry["thought_signature"] = thought_signature
+    return [entry]
+
+
+def _replay_gemini_message_extras(
+    payload_msg: Dict[str, Any],
+    msg: AIMessage,
+    *,
+    target_model: str,
+    is_gemini: bool,
+) -> None:
+    tc_extras = msg.additional_kwargs.get("gemini_tool_call_extras")
+    payload_tool_calls = payload_msg.get("tool_calls")
+    if isinstance(tc_extras, list) and isinstance(payload_tool_calls, list) and payload_tool_calls:
+        by_id: Dict[str, dict] = {}
+        by_index: Dict[int, dict] = {}
+        for entry in tc_extras:
+            if not isinstance(entry, dict):
+                continue
+            source = str(entry.get("source_model") or "")
+            if not is_gemini and not (target_model and source == target_model):
+                continue
+            if entry.get("id"):
+                by_id[str(entry["id"])] = entry
+            if entry.get("tool_index") is not None:
+                try:
+                    by_index[int(entry["tool_index"])] = entry
+                except (TypeError, ValueError):
+                    pass
+        for pos, tc_payload in enumerate(payload_tool_calls):
+            if not isinstance(tc_payload, dict):
+                continue
+            matched = by_id.get(str(tc_payload.get("id") or ""))
+            if matched is None:
+                matched = by_index.get(pos)
+            if matched is None:
+                continue
+            if matched.get("extra_content") and "extra_content" not in tc_payload:
+                tc_payload["extra_content"] = matched["extra_content"]
+            if matched.get("thought_signature") and "thought_signature" not in tc_payload:
+                tc_payload["thought_signature"] = matched["thought_signature"]
+
+    msg_extras = msg.additional_kwargs.get("gemini_message_extras")
+    if isinstance(msg_extras, list):
+        for entry in reversed(msg_extras):
+            if not isinstance(entry, dict):
+                continue
+            source = str(entry.get("source_model") or "")
+            if not is_gemini and not (target_model and source == target_model):
+                continue
+            if entry.get("extra_content") and "extra_content" not in payload_msg:
+                payload_msg["extra_content"] = entry["extra_content"]
+            if entry.get("thought_signature") and "thought_signature" not in payload_msg:
+                payload_msg["thought_signature"] = entry["thought_signature"]
+            break
+
+
 class ReasoningChatOpenAI(ChatOpenAI):
-    """Preserve reasoning fields returned by OpenAI-compatible chat gateways."""
+    """Preserve reasoning and Gemini tool-call signature fields across OpenAI-compatible gateways."""
 
     def _get_request_payload(self, input_: Any, *, stop=None, **kwargs):
         from backend.utils.reasoning_diagnostics import capture_request
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        try:
+            original_messages = self._convert_input(input_).to_messages()
+            payload_messages: List[Dict[str, Any]] = payload.get("messages", [])
+            target_model = str(getattr(self, "model_name", "") or "")
+            is_gemini = _is_gemini_model(target_model)
+            for index, msg in enumerate(original_messages):
+                if index >= len(payload_messages):
+                    break
+                if isinstance(msg, AIMessage):
+                    _replay_gemini_message_extras(
+                        payload_messages[index],
+                        msg,
+                        target_model=target_model,
+                        is_gemini=is_gemini,
+                    )
+            if is_gemini and payload_messages and all(
+                m.get("role") in {"system", "developer"} for m in payload_messages if isinstance(m, dict)
+            ):
+                # Gemini rejects GenerateContentRequest when contents is empty (system-only turns).
+                payload_messages[-1]["role"] = "user"
+        except Exception:
+            pass
         capture_request(payload, protocol='openai', base_url=str(self.openai_api_base or ''),
                         requested=(self.metadata or {}).get('reasoning_request'))
         return payload
@@ -387,6 +518,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
         result = super()._create_chat_result(response, generation_info)
         try:
             resp_dict = response if isinstance(response, dict) else response.model_dump()
+            source_model = str(getattr(self, "model_name", "") or resp_dict.get("model") or "")
             for index, choice in enumerate(resp_dict.get("choices", [])):
                 raw_message = choice.get("message") or {}
                 reasoning = next(
@@ -397,8 +529,20 @@ class ReasoningChatOpenAI(ChatOpenAI):
                     ),
                     "",
                 )
-                if reasoning and index < len(result.generations):
-                    result.generations[index].message.additional_kwargs["reasoning_content"] = reasoning
+                if index < len(result.generations):
+                    msg = result.generations[index].message
+                    if reasoning:
+                        msg.additional_kwargs["reasoning_content"] = reasoning
+                    tc_extras = _extract_tool_call_extras(
+                        raw_message.get("tool_calls"),
+                        source_model=source_model,
+                        fallback_to_pos=True,
+                    )
+                    if tc_extras:
+                        msg.additional_kwargs["gemini_tool_call_extras"] = tc_extras
+                    msg_extras = _extract_message_extras(raw_message, source_model=source_model)
+                    if msg_extras:
+                        msg.additional_kwargs["gemini_message_extras"] = msg_extras
         except Exception:
             pass
         from backend.utils.reasoning_diagnostics import attach_diagnostics
@@ -412,7 +556,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
         default_chunk_class: type,
         base_generation_info: Optional[Dict[str, Any]],
     ) -> Any:
-        """Keep non-standard reasoning deltas dropped by ChatOpenAI's converter."""
+        """Keep non-standard reasoning and Gemini signature deltas dropped by ChatOpenAI's converter."""
         generation = super()._convert_chunk_to_generation_chunk(
             chunk,
             default_chunk_class,
@@ -423,6 +567,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
         try:
             choices = chunk.get("choices", []) or chunk.get("chunk", {}).get("choices", [])
             delta = (choices[0].get("delta") or {}) if choices else {}
+            source_model = str(getattr(self, "model_name", "") or chunk.get("model") or "")
             reasoning = next(
                 (
                     _coerce_reasoning_text(delta.get(key))
@@ -433,6 +578,16 @@ class ReasoningChatOpenAI(ChatOpenAI):
             )
             if reasoning:
                 generation.message.additional_kwargs["reasoning_content"] = reasoning
+            tc_extras = _extract_tool_call_extras(
+                delta.get("tool_calls"),
+                source_model=source_model,
+                fallback_to_pos=False,
+            )
+            if tc_extras:
+                generation.message.additional_kwargs["gemini_tool_call_extras"] = tc_extras
+            msg_extras = _extract_message_extras(delta, source_model=source_model)
+            if msg_extras:
+                generation.message.additional_kwargs["gemini_message_extras"] = msg_extras
         except Exception:
             pass
         return generation
