@@ -28,8 +28,13 @@ from backend.app.services.config_service import (
     update_config_symbols_payload,
 )
 from backend.app.services.market_catalog_service import MarketCatalogUnavailable, list_market_symbols_payload
-from backend.app.schemas.provider_models import ProviderDiscoveryRequest, ProviderDiscoveryResponse
-from backend.app.services.provider_model_service import discover_provider_models
+from backend.app.schemas.provider_models import (
+    ProviderDiscoveryRequest,
+    ProviderDiscoveryResponse,
+    ProviderTestRequest,
+    ProviderTestResponse,
+)
+from backend.app.services.provider_model_service import discover_provider_models, test_provider_model
 from backend.utils.provider_catalog import CatalogError
 
 
@@ -65,6 +70,14 @@ discovery_router = APIRouter(route_class=DiscoveryRoute)
 async def discover_models(payload: ProviderDiscoveryRequest, _: dict = Depends(get_current_user)):
     try:
         return await discover_provider_models(payload)
+    except CatalogError as exc:
+        raise HTTPException(exc.status, exc.detail) from None
+
+
+@discovery_router.post("/provider-models/test", response_model=ProviderTestResponse)
+async def test_model(payload: ProviderTestRequest, _: dict = Depends(get_current_user)):
+    try:
+        return await test_provider_model(payload)
     except CatalogError as exc:
         raise HTTPException(exc.status, exc.detail) from None
 

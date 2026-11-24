@@ -55,3 +55,26 @@ class ProviderDiscoveryResponse(DiscoveryFields):
     source: DiscoverySource
     complete: bool
     warning: DiscoveryIssue | None = None
+
+
+class ProviderTestRequest(ProviderDiscoveryRequest):
+    model: str = Field(min_length=1, max_length=200)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    thinking_enabled: bool | None = None
+    reasoning_effort: Literal["", "none", "low", "medium", "high", "xhigh", "max"] = ""
+    extra_body: dict = Field(default_factory=dict)
+    prompt: str = Field(default="Reply with OK only.", min_length=1, max_length=500)
+
+
+class ProviderTestResponse(DiscoveryFields):
+    success: bool = True
+    ok: bool
+    model: str
+    api_protocol: Literal["chat", "decisions"]
+    compatibility_mode: str
+    latency_ms: int
+    reply_preview: str = ""
+    reasoning_preview: str = ""
+    usage: dict = Field(default_factory=dict)
+    error: str = ""
+    tested_at: str

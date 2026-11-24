@@ -2357,6 +2357,109 @@ a {
   border-inline: 0 !important;
 }
 
+.provider-model-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.provider-model-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.provider-model-tag {
+  margin-inline-end: 0 !important;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+}
+
+.provider-price-cell {
+  display: grid;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.provider-test-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-subtle);
+}
+
+.provider-test-box-head {
+  display: grid;
+  gap: 2px;
+}
+
+.provider-test-box-head .ant-typography-secondary {
+  font-size: 12px;
+}
+
+.provider-test-result {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-surface);
+  font-size: 12px;
+}
+
+.provider-test-result.is-ok {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.05);
+}
+
+.provider-test-result.is-error {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.provider-test-preview {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.provider-test-preview code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+}
+
+.provider-test-error,
+.provider-test-inline.is-error {
+  color: #dc2626;
+  overflow-wrap: anywhere;
+}
+
+.provider-test-inline {
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.provider-test-inline.is-ok {
+  color: #15803d;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.28);
+}
+
+.provider-test-inline.is-error {
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
 .provider-id {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11px;
@@ -2707,7 +2810,7 @@ a {
   background: var(--bg-subtle) !important;
 }
 
-.ant-btn-primary {
+.ant-btn-primary:not(.ant-btn-background-ghost) {
   background: var(--accent) !important;
   border-color: var(--accent) !important;
 }
