@@ -38,9 +38,16 @@ def test_negative_net_equity_with_open_positions_does_not_bankrupt_and_allows_tp
     # Crucial: Account MUST NOT be bankrupt because positions are still open and healthy!
     assert acc['account_status'] == 'active'
     
-    # Cannot open new positions or borrow while net equity <= 0
-    with pytest.raises(ValueError, match='Cannot open new positions when net equity is non-positive'):
-        orders.execute_market(caller, 'neg-equity-user', 'swap', 'ETH', 'open_long', 'open-blocked', amount=1, leverage=5)
+    # Active account with net equity <= 0 and available cash CAN open new positions and place limit entries,
+    # while additional borrowing remains blocked when debt > 0 and net equity <= 0.
+    opened = orders.execute_market(caller, 'neg-equity-user', 'swap', 'ETH', 'open_long', 'open-allowed', amount=1, leverage=5)
+    assert opened['status'] == 'completed'
+    closed = orders.execute_market(caller, 'neg-equity-user', 'swap', 'ETH', 'close_long', 'close-allowed', close_all=True)
+    assert closed['status'] == 'completed'
+    placed = orders.place(caller, 'neg-equity-user', 'swap', 'ETH', 'open_long', 'limit', 'limit-allowed', amount=1, price=90, leverage=5)
+    assert placed['order']['state'] == 'open'
+    cancelled = orders.cancel(caller, 'neg-equity-user', placed['order']['order_id'], 'cancel-allowed')
+    assert cancelled['changed'] is True
     with pytest.raises(ValueError, match='Cannot borrow additional funds when net equity is non-positive'):
         paper.bank(caller, 'neg-equity-user', 'borrow', 100, 'borrow-blocked')
         

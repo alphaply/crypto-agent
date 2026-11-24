@@ -193,7 +193,7 @@ def upgrade_account(conn, account):
 
 def _event(conn, account, kind, details, operation_id=None):
     timestamp = time.time()
-    payload = {**details, 'cash_after': account['cash'], 'debt_after': account['debt'], 'account_epoch': account.get('account_epoch')}
+    payload = {'account_epoch': account.get('account_epoch'), **details, 'cash_after': account['cash'], 'debt_after': account['debt']}
     row = conn.execute('INSERT INTO paper_events(namespace,user_id,timestamp,kind,operation_id,payload) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id',
                        (account['namespace'], account['user_id'], timestamp, kind, operation_id, json.dumps(payload, allow_nan=False))).fetchone()
     from .paper_statistics import on_event
@@ -550,10 +550,6 @@ def _fill(account, conn, quote, cfg, market_type, canonical, action, amount, lev
     from .paper_lifecycle import refresh_status, assert_active
     refresh_status(conn, account)
     assert_active(account)
-    if action in {'buy', 'open_long', 'open_short'}:
-        view = snapshot(account, conn=conn)
-        if view['net_equity'] is not None and view['net_equity'] <= 0:
-            raise ValueError('Cannot open new positions when net equity is non-positive; reduce debt or close positions first')
     buy = action in {'buy', 'open_long', 'close_short'}
     price = number(quote['ask'] if buy else quote['bid'], positive=True)
     notional = price * amount

@@ -31,11 +31,11 @@ def limit(name, default):
 
 
 def batch_size():
-    return limit('PAPER_SCAN_BATCH_SIZE', 64)
+    return limit('PAPER_SCAN_BATCH_SIZE', 512)
 
 
 def history_limit():
-    return limit('PAPER_HISTORY_SCAN_LIMIT', 256)
+    return limit('PAPER_HISTORY_SCAN_LIMIT', 1000)
 
 
 _payload_lifetime = ContextVar('paper_payload_lifetime', default=None)

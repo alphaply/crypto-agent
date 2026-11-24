@@ -266,9 +266,6 @@ def prepare_order(conn, account, kind, symbol, action, order_type, quote, *, amo
     _, p = exposure(account, kind, symbol, side if kind == 'swap' else None, quote['exchange'])
     reserve, spot_reserve = paper.ZERO, paper.ZERO
     if action in {'buy', 'open_long', 'open_short'}:
-        view = paper.snapshot(account, conn=conn)
-        if view['net_equity'] is not None and view['net_equity'] <= 0:
-            raise ValueError('Cannot open new positions when net equity is non-positive; reduce debt or close positions first')
         lev = leverage or account['leverage'] if kind == 'swap' else 1
         if lev > paper.settings()['max_leverage'] or kind == 'swap' and 1 / lev <= paper.settings()['maintenance_margin_rate'] + paper.settings()['fee_rate']:
             raise ValueError('Leverage leaves insufficient maintenance margin or exceeds the current cap')

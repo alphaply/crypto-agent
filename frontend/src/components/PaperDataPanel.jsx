@@ -60,8 +60,20 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
   const kinds = { interest: label('扣息', 'Interest'), bankruptcy: label('破产', 'Bankruptcy'), bankruptcy_recovered: label('状态恢复', 'Status restored'), reset: label('下海', 'Reset'), transfer_in: label('转入', 'Transfer in'), transfer_out: label('转出', 'Transfer out'), order_filled: label('自动成交', 'Automatic fill'), liquidation: label('爆仓', 'Liquidation'), order_rejected: label('委托失败', 'Rejected order'), admin_adjustment: label('后台调整', 'Admin adjustment'), bot_created: label('Bot 开户', 'Bot created'), create: label('开户', 'Account created'), place_order: label('挂单', 'Order placed'), edit_order: label('改单', 'Order edited'), cancel_order: label('撤单', 'Order cancelled'), set_protection: label('设置止盈止损', 'Protection set'), borrow: label('借款', 'Borrow'), repay: label('还款', 'Repay'), set_leverage: label('调整仓位杠杆', 'Position leverage'), add_margin: label('追加保证金', 'Margin added'), reduce_margin: label('减少保证金', 'Margin reduced') };
   const incompleteAccounts = (data?.accounts || []).filter(paperValuationIncomplete).length;
   const filteredResources = (data?.accounts || []).reduce((sum, account) => sum + (paperFilterCount(account.filter) || 0), 0);
-  const partial = data?.scan_complete === false || data?.status === 'partial';
+  const skippedRecords = ['accounts', 'orders', 'events'].reduce(
+    (sum, key) => sum + (data?.pages?.[key]?.skipped_records?.length || 0),
+    0,
+  );
   const hasNext = sameScope && (data?.scan_complete === false || Object.values(data?.next_cursor || {}).some(value => value != null));
+  const valuationAlertDescription = filteredResources > 0
+    ? label(
+        '本页过滤 ' + filteredResources + ' 项历史资源；' + incompleteAccounts + ' 个账户估值不完整，缺项显示为 —。被过滤资源的资金占用仍保留。',
+        filteredResources + ' historical resources filtered; ' + incompleteAccounts + ' accounts have incomplete valuations shown as —. Their financial commitments remain.',
+      )
+    : label(
+        '本页有 ' + incompleteAccounts + ' 个账户估值尚未核验完整，缺项显示为 —，可在「账户管理」展开查看具体原因。',
+        incompleteAccounts + ' accounts on this page have incomplete valuations shown as —. Expand them in Accounts for details.',
+      );
   const tableProps = { size: 'small', loading, pagination: { pageSize: 8, hideOnSinglePage: true }, locale: { emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={label('当前范围暂无记录', 'No records in this scope')} /> } };
   const account = (v, r) => <div className="paper-cell-stack"><span>{r.account_name || v}{r.account_type === 'bot' && <Tag color="blue">Bot</Tag>}</span>{r.account_name && <span className="paper-cell-note">{v}</span>}</div>;
   const symbol = (_, r) => <div className="paper-cell-stack"><strong>{r.symbol}</strong><span className="paper-cell-note">{r.exchange} · {r.market_type === 'spot' ? label('现货', 'Spot') : r.market_type === 'swap' ? label('永续', 'Perpetual') : r.market_type}</span></div>;
@@ -70,8 +82,8 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
     <PaperStatisticsPanel namespace={namespace} userId={userId} revision={String(revision) + ':' + statisticsRevision} zh={zh} />
     <div className="paper-section-heading"><h3>{label('交易明细', 'Trading records')}</h3><Button icon={<ReloadOutlined />} onClick={() => load()} loading={loading}>{label('刷新明细', 'Refresh records')}</Button></div>
     {error && <Alert type="error" showIcon title={error} />}
-    {(incompleteAccounts > 0 || filteredResources > 0) && <Alert type="info" showIcon title={label('部分历史或估值不可用', 'Some history or valuations are unavailable')} description={label('本页过滤 ' + filteredResources + ' 项历史资源；' + incompleteAccounts + ' 个账户估值不完整，缺项显示为 —。被过滤资源的资金占用仍保留。', filteredResources + ' historical resources filtered; ' + incompleteAccounts + ' accounts have incomplete valuations shown as —. Their financial commitments remain.')} />}
-    {partial && <Alert type="info" showIcon title={label('扫描尚未完成', 'Scan in progress')} description={label('下方明细尚未加载完整，继续翻页可查看后续记录；上方统计独立覆盖全部账户。', 'More detail records are available. Statistics above independently cover all matching accounts.')} />}
+    {(incompleteAccounts > 0 || filteredResources > 0) && <Alert type="info" showIcon title={label('部分历史或估值不可用', 'Some history or valuations are unavailable')} description={valuationAlertDescription} />}
+    {skippedRecords > 0 && <Alert type="warning" showIcon title={label('部分明细记录已跳过', 'Some detail records were skipped')} description={label('有 ' + skippedRecords + ' 条超大明细记录已跳过；上方统计独立覆盖全部账户。', skippedRecords + ' oversized detail records were skipped; statistics above independently cover all matching accounts.')} />}
     <Card className="paper-records-card" size="small">
       <div className="paper-records-meta"><span>{label('交易明细', 'Trading records')}</span><span>{label('本页记录 · 北京时间', 'Page records · Beijing time')}</span></div>
       <Tabs items={[
@@ -122,7 +134,7 @@ export default function PaperDataPanel({ namespace, userId, revision, zh, maxLev
           { title: label('现金变动后 · USDT', 'Cash after · USDT'), render: (_, r) => number(r.payload?.cash_after), align: 'right' },
         ]} expandable={{ expandedRowRender: (r) => <pre className="paper-audit-json">{JSON.stringify(r.payload, null, 2)}</pre> }} /> },
       ]} />
-      <div className="paper-records-footer"><span>{label('Binance 公开行情 · 资金和撮合为模拟', 'Binance public quotes · simulated balances and execution')}</span>{hasNext && <Button loading={loading} onClick={() => load({
+      <div className="paper-records-footer"><span>{hasNext ? label('当前仅显示本页明细，上方统计已覆盖全部账户 · Binance 公开行情', 'Showing current page; statistics above cover all accounts · Binance public quotes') : label('Binance 公开行情 · 资金和撮合为模拟', 'Binance public quotes · simulated balances and execution')}</span>{hasNext && <Button loading={loading} onClick={() => load({
         account_cursor: data?.next_cursor?.accounts ?? cursor.account_cursor ?? 0,
         order_cursor: data?.next_cursor?.orders ?? cursor.order_cursor ?? 0,
         event_cursor: data?.next_cursor?.events ?? cursor.event_cursor ?? 0,
