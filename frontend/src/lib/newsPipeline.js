@@ -9,6 +9,7 @@ export function newsErrorExplanation(error, details = {}, locale = 'zh') {
   if (/Invalid news digest text/.test(value)) return '摘要正文包含不符合要求的引用或链接格式。';
   if (/Invalid news digest (structure|section|item)/.test(value)) return '摘要的段落结构或事件格式不符合要求。';
   if (/Empty news model response/.test(value)) return '摘要模型返回了空内容。';
+  if (/All news summary models failed/.test(value)) return '所有配置的摘要模型均调用或校验失败，本轮未发布。可在下方查看具体报错与调用记录。';
   if (details.code === 'timeout') return '模型请求超时，本轮未能完成。';
   if (details.code === 'rate_limit' || details.http_status === 429) return '模型服务限制了请求频率或额度，请检查服务商的额度。';
   if (details.code === 'auth_error' || details.http_status === 401) return '模型服务拒绝了身份验证，请检查该模型的 API Key。';

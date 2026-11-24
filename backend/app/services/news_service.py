@@ -218,14 +218,23 @@ def collect_candidates(settings: NewsSettings, now: datetime, snapshot: dict | N
 def _summarize(items: list[dict], provider: dict) -> str:
     if not items:
         return '当前消息窗口内暂无入选消息（可能未达到筛选阈值）。'
-    from .news_digest import DIGEST_INSTRUCTIONS, render_digest
-    text = generate(provider, DIGEST_INSTRUCTIONS
-        + provider.get('_summary_instructions', '') + '\n' + EVENT_TIME_POLICY,
-        {'previous': provider.get('_summary_context'),
-         'time_context': news_time_context({'items': items}),
-         'current_sources': [{'reference': i + 1, **article_time_fields(article_data(item)), 'content': str(item.get('content') or '')[:4000]} for i, item in enumerate(items)]}, 'news_summary',
-        validator=lambda result: render_digest(result, items))
-    return render_digest(text, items)
+    from .news_digest import DIGEST_INSTRUCTIONS, build_digest_repair_prompt, render_digest
+    text = generate(
+        provider,
+        DIGEST_INSTRUCTIONS + provider.get('_summary_instructions', '') + '\n' + EVENT_TIME_POLICY,
+        {
+            'previous': provider.get('_summary_context'),
+            'time_context': news_time_context({'items': items}),
+            'current_sources': [
+                {'reference': i + 1, **article_time_fields(article_data(item)), 'content': str(item.get('content') or '')[:4000]}
+                for i, item in enumerate(items)
+            ],
+        },
+        'news_summary',
+        validator=lambda result: render_digest(result, items, clamp_sections=True),
+        repair_prompt_builder=lambda exc: build_digest_repair_prompt(exc, len(items)),
+    )
+    return render_digest(text, items, clamp_sections=True)
 
 
 def _run_refresh(owner: str, snapshot: dict) -> None:

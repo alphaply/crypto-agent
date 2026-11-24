@@ -31,8 +31,8 @@ def model_identity(provider: dict) -> dict:
     return {key: provider.get(key) for key in ('provider_id', 'model', 'api_base', 'api_protocol', 'thinking_enabled', 'reasoning_effort', 'extra_body')}
 
 
-def generate(provider: dict, instructions: str, data, purpose: str, validator=None, *, timeout_seconds=None, retry=True) -> str:
-    from langchain_core.messages import HumanMessage
+def generate(provider: dict, instructions: str, data, purpose: str, validator=None, *, timeout_seconds=None, retry=True, repair_prompt_builder=None) -> str:
+    from langchain_core.messages import AIMessage, HumanMessage
     from backend.agent.call_audit import audited_invoke
     from backend.utils.llm_utils import build_chat_model, instruction_message, extract_message_text, require_complete_response, invoke_with_retry
     from backend.utils.news_tracing import pipeline_run_id
@@ -40,7 +40,10 @@ def generate(provider: dict, instructions: str, data, purpose: str, validator=No
     from backend.utils.log_safety import register_log_secrets
     from backend.app.services.news_progress import current_progress
     register_log_secrets(provider['api_key'])
+    model_logger = setup_logger('NewsModels')
     call_run_id = None
+    last_text = ''
+    last_validation_error = None
 
     def recorded(run_id):
         nonlocal call_run_id
@@ -55,21 +58,55 @@ def generate(provider: dict, instructions: str, data, purpose: str, validator=No
                            extra_body=provider.get('extra_body'), **({'timeout_seconds': timeout_seconds} if timeout_seconds is not None else {}))
 
     def validate(response):
+        nonlocal last_text, last_validation_error
         require_complete_response(response, context=purpose)
         text = extract_message_text(response).strip()
+        last_text = text
         if not text:
             raise ValueError('Empty news model response')
         if validator:
-            validator(text)
+            try:
+                validator(text)
+            except Exception as val_exc:
+                last_validation_error = val_exc
+                raise
 
-    invoke = lambda: audited_invoke(lambda: llm.invoke(messages), config_id='news-intelligence',
-                                purpose=purpose, model=provider['model'], provider_id=provider['provider_id'],
-                                messages=messages, response_validator=validate, parent_run_id=pipeline_run_id.get(),
-                                on_recorded=recorded)
+    def _run_invoke(invoke_messages):
+        return audited_invoke(
+            lambda: llm.invoke(invoke_messages),
+            config_id='news-intelligence',
+            purpose=purpose,
+            model=provider['model'],
+            provider_id=provider['provider_id'],
+            messages=invoke_messages,
+            response_validator=validate,
+            parent_run_id=pipeline_run_id.get(),
+            on_recorded=recorded,
+        )
+
     try:
-        response = invoke_with_retry(invoke, logger=setup_logger('NewsModels'), context=purpose) if retry else invoke()
+        response = invoke_with_retry(lambda: _run_invoke(messages), logger=model_logger, context=purpose) if retry else _run_invoke(messages)
     except Exception as exc:
-        raise NewsModelError(exc, provider, purpose, call_run_id) from exc
+        root_validation = last_validation_error if isinstance(last_validation_error, ValueError) else None
+        if root_validation is not None and repair_prompt_builder is not None and last_text:
+            model_logger.warning(
+                'NewsModels: format validation failed on %s (%s), attempting 1 guided repair: %s',
+                provider['model'],
+                purpose,
+                root_validation,
+            )
+            repair_messages = [
+                *messages,
+                AIMessage(content=last_text[:6000]),
+                HumanMessage(content=repair_prompt_builder(root_validation)),
+            ]
+            last_validation_error = None
+            try:
+                response = _run_invoke(repair_messages)
+            except Exception as repair_exc:
+                raise NewsModelError(repair_exc, provider, purpose, call_run_id) from repair_exc
+        else:
+            raise NewsModelError(exc, provider, purpose, call_run_id) from exc
     return extract_message_text(response).strip()
 
 
