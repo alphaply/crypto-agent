@@ -139,7 +139,7 @@ def test_reconcile_linked_fills_backfills_null_config_id(monkeypatch):
 def test_format_recent_position_history_includes_closed_positions_and_streak(monkeypatch):
     now = datetime.now(database.TZ_CN)
     positions = []
-    for idx in range(4):
+    for idx in range(12):
         closed_dt = now - timedelta(hours=idx * 4 + 1)
         opened_dt = closed_dt - timedelta(minutes=45)
         positions.append({
@@ -149,8 +149,8 @@ def test_format_recent_position_history_includes_closed_positions_and_streak(mon
             'opened_at': opened_dt.isoformat(),
             'closed_at': closed_dt.isoformat(),
             'holding_seconds': 2700,
-            'realized_net_pnl': -1.25 - idx * 0.1,
-            'realized_pnl_before_fees': -1.0,
+            'realized_net_pnl': -1.25 - idx * 0.1 if idx < 4 else 1.5,
+            'realized_pnl_before_fees': -1.0 if idx < 4 else 1.7,
             'currency': 'USDT',
             'events': [
                 {'kind': 'entry', 'quantity': 1.0, 'price': 2000.0 + idx},
@@ -166,9 +166,11 @@ def test_format_recent_position_history_includes_closed_positions_and_streak(mon
 
     text = memory_service.format_recent_position_history_for_memory('task-1', {'mode': 'REAL', 'symbol': 'ETH/USDT'})
     assert '汇总统计块' in text
+    assert '共12笔' in text
     assert '最近连续亏损 4 笔' in text
     assert 'ETH/USDT:USDT 多' in text
     assert 'ETH/USDT:USDT 空' in text
     assert '净盈亏 -1.25 USDT' in text
     assert '止损触发第1次' in text
+    assert '止损触发第12次' in text
     assert '最近7天已平仓持仓明细' in memory_agent.MEMORY_REVIEW_POLICY

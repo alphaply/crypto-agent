@@ -90,7 +90,7 @@ def _consecutive_streak(positions: list[dict]) -> tuple[str | None, int]:
     return streak_type, count
 
 
-def _format_recent_closed_positions(config_id: str, agent_config: dict, *, days: int = 7, limit: int = 10) -> str:
+def _format_recent_closed_positions(config_id: str, agent_config: dict, *, days: int = 7, limit: int | None = None) -> str:
     """Format recent closed positions for this task only, without raw ledger dumps."""
     try:
         from backend.app.services.position_history_service import read_position_history
@@ -114,11 +114,12 @@ def _format_recent_closed_positions(config_id: str, agent_config: dict, *, days:
             if closed_ms >= cutoff_ms:
                 closed.append((closed_ms, pos))
         closed.sort(key=lambda item: item[0], reverse=True)
-        recent = [pos for _, pos in closed[:limit]]
+        selected = closed[:limit] if limit is not None else closed
+        recent = [pos for _, pos in selected]
         if not recent:
             return f'最近{days}天已平仓持仓明细（仅当前任务）：暂无已确认完整平仓记录。'
 
-        lines = [f'最近{days}天已平仓持仓明细（仅当前任务，最近{len(recent)}笔，按平仓时间倒序）：']
+        lines = [f'最近{days}天已平仓持仓明细（仅当前任务，共{len(recent)}笔，按平仓时间倒序）：']
         streak_type, streak_count = _consecutive_streak(recent)
         if streak_type == 'loss' and streak_count >= 2:
             lines.append(f'近期平仓走势：最近连续亏损 {streak_count} 笔。')
