@@ -10,6 +10,8 @@ from backend.config import config
 from backend.utils.spot_portfolio import get_config_symbols
 from backend.utils.fill_classification import classify_fill
 
+SYNC_FRESHNESS_MS = 180_000
+
 
 def number(value):
     return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else None
@@ -195,7 +197,7 @@ def _real_history(config_id, symbols, end_ms):
                 timestamp_ms=row['timestamp_ms'], role=role, side=side,
                 amount=payload.get('base_amount',payload.get('amount')), realized_pnl=payload.get('realized_pnl'),
                 fees=payload.get('fees') or ([payload['fee']] if payload.get('fee') else [])))
-        sync = [json.loads(r['payload']) for r in conn.execute('''SELECT payload FROM execution_sync
+        sync = [{'symbol': r['symbol'], **json.loads(r['payload'])} for r in conn.execute('''SELECT symbol,payload FROM execution_sync
             WHERE account_scope=%s AND (symbol=ANY(%s) OR split_part(symbol,':',1)=ANY(%s))''',
             (scope,symbols,[s for s in symbols if ':' not in s]))]
     for symbol in sorted({r['symbol'] for r in rows}):
@@ -283,6 +285,28 @@ def _spot_history(config_id, symbols):
     return fills,cycles,True,[]
 
 
+def _sync_symbol_matches(configured_symbol: str, sync_symbol: str | None) -> bool:
+    if not sync_symbol:
+        return True
+    if ':' in configured_symbol:
+        return sync_symbol == configured_symbol
+    return sync_symbol == configured_symbol or sync_symbol.split(':')[0] == configured_symbol
+
+
+def _is_sync_window_complete(sync: list[dict], symbols: list[str], beginning: int, end_ms: int) -> bool:
+    if not sync:
+        return False
+    if symbols and any(not any(_sync_symbol_matches(sym, s.get('symbol')) for s in sync) for sym in symbols):
+        return False
+    fresh_floor = end_ms - SYNC_FRESHNESS_MS
+    return all(
+        not s.get('error')
+        and not s.get('pending_windows')
+        and any(left <= beginning and right >= fresh_floor for left, right in s.get('covered_intervals', []))
+        for s in sync
+    )
+
+
 def task_performance(config_id: str, *, now=None, cfg=None) -> dict:
     cfg=cfg or config.get_config_by_id(config_id)
     if not cfg:
@@ -304,7 +328,7 @@ def task_performance(config_id: str, *, now=None, cfg=None) -> dict:
                 note='仅当前任务已归属记录；全历史指本地可查询历史。胜率按平仓成交订单的已实现盈亏扣该单手续费计算，保本计入分母；同单分批成交合并，按最后成交时间归期，不分摊开仓费。取消率为该期间受理订单中已成功撤销的比例，失败调用不计数。')
     result['seven_days']=summarize_history(fills,cycles,since_ms=beginning,end_ms=end_ms,currency=currency,scan_complete=complete,orders=orders)
     result['all_history']=summarize_history(fills,cycles,since_ms=0,end_ms=end_ms,currency=currency,scan_complete=complete,orders=orders)
-    result['window_complete']=bool(sync) and all(any(left<=beginning and right>=end_ms-1 for left,right in s.get('covered_intervals',[])) for s in sync)
+    result['window_complete']=_is_sync_window_complete(sync, symbols, beginning, end_ms)
     if mode == 'REAL' and not result['window_complete']:
         for period in ('seven_days', 'all_history'):
             for metric in result[period]['metrics'].values():

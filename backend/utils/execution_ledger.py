@@ -98,6 +98,14 @@ def register_order(
             prior = json.loads(existing['payload'])
             metadata = {**prior, **{k: v for k, v in metadata.items() if v is not None}}
             if prior == metadata and existing['role'] == role:
+                updated = conn.execute(
+                    'UPDATE execution_fills SET config_id=%s WHERE account_scope=%s AND symbol=%s AND order_id=%s AND config_id IS DISTINCT FROM %s',
+                    (config_id, scope, symbol, str(order_id), config_id),
+                ).rowcount
+                if updated:
+                    from backend.utils.execution_history_work import request_history
+                    request_history(config_id, scope, symbol, conn=conn)
+                    conn.commit()
                 return
         conn.execute('INSERT INTO execution_order_links(account_scope,symbol,order_id,config_id,role,payload) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(account_scope,symbol,order_id) DO UPDATE SET role=excluded.role,payload=excluded.payload',
                      (scope, symbol, str(order_id), config_id, role, json.dumps(metadata, default=str)))
@@ -210,10 +218,38 @@ class ExecutionLedger:
             regular_ids.connection = None
         return conditional_ids, regular_ids, affected
 
+    def reconcile_linked_fills(self) -> int:
+        """Backfill execution_fills.config_id from execution_order_links once indexing is ready."""
+        if not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
+            return 0
+        with get_db_conn() as conn:
+            lock_scope(conn, 'execution-source', self.scope, self.symbol)
+            rows = conn.execute(
+                '''UPDATE execution_fills f
+                SET config_id = l.config_id
+                FROM execution_order_links l
+                WHERE f.account_scope = l.account_scope
+                  AND f.symbol = l.symbol
+                  AND f.order_id = l.order_id
+                  AND f.account_scope = %s
+                  AND f.symbol = %s
+                  AND f.config_id IS NULL
+                RETURNING l.config_id''',
+                (self.scope, self.symbol),
+            ).fetchall()
+            if rows:
+                from backend.utils.execution_history_work import request_history
+                for owner_cid in {r[0] for r in rows if r[0]}:
+                    request_history(owner_cid, self.scope, self.symbol, conn=conn)
+                conn.commit()
+            return len(rows)
+
     def index_saved_plans(self):
         """Advance durable ownership migration without materializing history."""
         from backend.utils.execution_plan_index import advance_index
         self.index_state = advance_index(self)
+        if self.index_state.get('complete') or self.index_state.get('ownership_ready'):
+            self.reconcile_linked_fills()
         return self.index_state
 
     def _index_plan(self, owner, plan):
@@ -340,6 +376,9 @@ class ExecutionLedger:
             conn.commit()
 
     def ingest(self, trades, refresh=True):
+        if trades and not (self.index_state.get('complete') or self.index_state.get('ownership_ready')):
+            from backend.utils.execution_plan_index import index_status
+            self.index_state = index_status(self)
         owners = set()
         with get_db_conn() as conn:
             lock_scope(conn, 'execution-source', self.scope, self.symbol)

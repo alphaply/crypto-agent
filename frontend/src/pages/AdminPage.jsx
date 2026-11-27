@@ -9,6 +9,7 @@ import { JEV_PROVIDER_PRESETS } from '../lib/scorerProvider';
 import PromptCodeEditor from '../components/PromptCodeEditor';
 import SpotSymbolPicker from '../components/SpotSymbolPicker';
 import MarketSymbolPicker from '../components/MarketSymbolPicker';
+import ManagementLifecyclePanel from '../components/ManagementLifecyclePanel';
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Alert,
@@ -2309,6 +2310,16 @@ export default function AdminPage() {
                               : ({ attached_required: 'Each entry requires take profit and stop loss.', attached_optional: 'Entries may supply either, both, or no TP/SL.', independent_exits: 'Separate exits specify price and quantity, supporting partial reductions.' }[resolveExitMode(editingTask)])}
                             {' '}{locale === 'zh' ? '已有持仓、挂单或待核验操作时，需先处理完毕才能切换。' : 'Close positions and resolve outstanding orders before switching modes.'}
                           </Text>
+                        </div>
+                      )}
+                      {editingTaskId && (taskMode === 'REAL' || taskMode === 'SPOT_DCA') && (
+                        <div className="form-field field-span-2">
+                          <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+                            {locale === 'zh'
+                              ? '更换交易标的、模式或交易所账户前，若下方存在已纳管范围，请先核验并释放管理权（需先平仓并撤掉相关挂单）。'
+                              : 'Before shrinking symbols, switching modes, or changing exchange accounts, verify and release any active managed scopes below (close positions and cancel open orders first).'}
+                          </Text>
+                          <ManagementLifecyclePanel configId={editingTaskId} />
                         </div>
                       )}
                       <div className="form-field">
