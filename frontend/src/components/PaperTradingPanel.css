@@ -2,7 +2,7 @@
 .paper-workspace > * { min-width: 0; }
 .paper-workspace > [hidden] { display: none !important; }
 .paper-workspace h2, .paper-workspace h3, .paper-workspace h4 { color: var(--text-primary); margin: 0; }
-.paper-hero { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; padding: 25px 28px; border: 1px solid var(--border-soft); border-radius: 16px; background: linear-gradient(110deg, color-mix(in srgb, var(--accent) 7%, var(--bg-surface)), var(--bg-surface) 72%); }
+.paper-hero { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; padding: 22px 26px; border: 1px solid var(--border-soft); border-radius: 14px; background: linear-gradient(110deg, color-mix(in srgb, var(--accent) 7%, var(--bg-surface)), var(--bg-surface) 72%); box-shadow: var(--shadow-soft); }
 .paper-hero-main { display: flex; align-items: center; gap: 17px; min-width: 0; }
 .paper-hero-icon { display: grid; place-items: center; width: 54px; height: 54px; flex-shrink: 0; color: var(--accent-strong); background: var(--accent-soft); border-radius: 16px; font-size: 25px; }
 .paper-eyebrow { color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px; }

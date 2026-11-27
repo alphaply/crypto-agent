@@ -5,7 +5,7 @@ export function useChartTimeframe() {
   const [timeframe, setTimeframe] = useState(readChartTimeframe);
   const selectTimeframe = useCallback((value) => {
     if (!isChartTimeframe(value)) return;
-    setTimeframe(value);
+    setTimeframe((previous) => (previous === value ? previous : value));
     saveChartTimeframe(value);
   }, []);
   return [timeframe, selectTimeframe];

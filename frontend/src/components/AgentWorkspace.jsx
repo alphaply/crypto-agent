@@ -392,20 +392,26 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
   const activePositions = workspace?.position?.positions || workspace?.kline?.positions || [];
   const hasDualPosition = activePositions.length > 1;
 
-  const buildSinglePositionFacts = (pos) => [
-    { label: t('side'), value: pos.side || '-' },
-    { label: t('entry'), value: <CopyNumber value={pos.entry_price} /> },
-    { label: t('mark'), value: <CopyNumber value={pos.mark_price} /> },
-    { label: t('qty'), value: <CopyNumber value={pos.qty || pos.amount || pos.contracts} /> },
-    { label: t('unrealizedPnl'), value: formatPositionValue(pos.unrealized_pnl ?? 0) },
-    { label: t('roiPct'), value: formatPositionValue(pos.roi_pct ?? 0) },
-    { label: t('leverage'), value: pos.leverage ? `${pos.leverage}x` : '-' },
-    ...(!independentExits ? [
-      { label: t('takeProfit'), value: pos.take_profit ? <CopyNumber value={pos.take_profit} /> : '-' },
-      { label: t('stopLoss'), value: pos.stop_loss ? <CopyNumber value={pos.stop_loss} /> : '-' },
-      { label: locale === 'zh' ? '保护状态' : 'Protection', value: <Tag color={pos.protection_error ? 'red' : pos.protection_state === 'ACTIVE' ? 'green' : 'orange'}>{pos.protection_error ? (locale === 'zh' ? '待核验' : 'Unverified') : pos.protection_state || (locale === 'zh' ? '未设置' : 'Not set')}</Tag> },
-    ] : []),
-  ];
+  const buildSinglePositionFacts = (pos) => {
+    const unrealized = Number(pos.unrealized_pnl ?? 0);
+    const roi = Number(pos.roi_pct ?? 0);
+    const pnlTone = Number.isFinite(unrealized) && Math.abs(unrealized) > 1e-12 ? (unrealized > 0 ? 'fact-tone-positive' : 'fact-tone-negative') : '';
+    const roiTone = Number.isFinite(roi) && Math.abs(roi) > 1e-12 ? (roi > 0 ? 'fact-tone-positive' : 'fact-tone-negative') : '';
+    return [
+      { label: t('side'), value: pos.side ? <Tag color={pos.side === 'SHORT' ? 'red' : 'green'} style={{ margin: 0 }}>{pos.side}</Tag> : '-' },
+      { label: t('entry'), value: <CopyNumber value={pos.entry_price} /> },
+      { label: t('mark'), value: <CopyNumber value={pos.mark_price} /> },
+      { label: t('qty'), value: <CopyNumber value={pos.qty || pos.amount || pos.contracts} /> },
+      { label: t('unrealizedPnl'), value: <span className={pnlTone}>{formatPositionValue(pos.unrealized_pnl ?? 0)}</span> },
+      { label: t('roiPct'), value: <span className={roiTone}>{`${formatPositionValue(pos.roi_pct ?? 0)}%`}</span> },
+      { label: t('leverage'), value: pos.leverage ? `${pos.leverage}x` : '-' },
+      ...(!independentExits ? [
+        { label: t('takeProfit'), value: pos.take_profit ? <CopyNumber value={pos.take_profit} /> : '-' },
+        { label: t('stopLoss'), value: pos.stop_loss ? <CopyNumber value={pos.stop_loss} /> : '-' },
+        { label: locale === 'zh' ? '保护状态' : 'Protection', value: <Tag color={pos.protection_error ? 'red' : pos.protection_state === 'ACTIVE' ? 'green' : 'orange'}>{pos.protection_error ? (locale === 'zh' ? '待核验' : 'Unverified') : pos.protection_state || (locale === 'zh' ? '未设置' : 'Not set')}</Tag> },
+      ] : []),
+    ];
+  };
 
   const chartPanel = (
     <Card className="panel-card market-chart-card">
@@ -470,16 +476,16 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
               </Button>
             ) : null}
           </Space>
-          {(!compact || !spotMode) && <div className="position-balance-row">
+          {(!compact || !spotMode) && <div className="position-kpi-strip">
             {spotMode ? (
               <>
-                <span><Text type="secondary">{t('marketValue')}: </Text><Text>{formatPositionValue(spotStats.market_value)}</Text></span>
-                <span><Text type="secondary">{t('remainingCost')}: </Text><Text>{formatPositionValue(spotStats.remaining_cost ?? spotStats.total_invested)}</Text></span>
+                <div className="position-kpi-item"><span>{t('marketValue')}</span><strong>{formatPositionValue(spotStats.market_value)}</strong></div>
+                <div className="position-kpi-item"><span>{t('remainingCost')}</span><strong>{formatPositionValue(spotStats.remaining_cost ?? spotStats.total_invested)}</strong></div>
               </>
             ) : (
               <>
-                <span><Text type="secondary">{t('marginBalance')}: </Text><Text>{formatPositionValue(getMarginBalance(workspace))}</Text></span>
-                <span><Text type="secondary">{t('walletBalance')}: </Text><Text>{formatPositionValue(position.balance)}</Text></span>
+                <div className="position-kpi-item"><span>{t('marginBalance')}</span><strong>{formatPositionValue(getMarginBalance(workspace))}</strong></div>
+                <div className="position-kpi-item"><span>{t('walletBalance')}</span><strong>{formatPositionValue(position.balance)}</strong></div>
               </>
             )}
           </div>}
@@ -752,13 +758,20 @@ export function WorkspacePanel({ compact = false, workspace, timeframe, setTimef
         <AgentQueuePanel agent={agent} locale={locale} />
         {urgentExecution && <TaskExecutionPanel execution={execution} locale={locale} />}
         <Tabs activeKey={activeView} onChange={setActiveView} items={[
-          { key: 'overview', label: locale === 'zh' ? '任务概览' : 'Overview', children: <div className="agent-view-stack">
-            {authenticated && <TaskStatistics configId={agent.config_id} mode={agent.mode} refreshKey={refreshKey} />}{accountContent}{authenticated && <TradeCallHistory compact configId={agent.config_id} refreshKey={refreshKey} />}{chartPanel}
+          { key: 'overview', label: locale === 'zh' ? '行情与持仓' : 'Market & Positions', children: <div className="agent-view-stack">
+            <div className="workbench-hero-grid">
+              <div className="workbench-chart-col">{chartPanel}</div>
+              <div className="workbench-dock-col">{accountContent}</div>
+            </div>
+            {authenticated && <TradeCallHistory compact configId={agent.config_id} refreshKey={refreshKey} />}
           </div> },
           { key: 'run', label: locale === 'zh' ? '决策与操作' : 'Decisions', children: <div className="agent-view-stack">{decisionPanel}</div> },
           { key: 'memory', label: locale === 'zh' ? '策略与记忆' : 'Strategy & memory', children: <div className="agent-view-stack">{summaryPanel}{memoryPanel}
             {shortMemories.length > 1 && <Card className="panel-card" title={locale === 'zh' ? '历史记忆版本' : 'Previous memory versions'}>{shortMemories.slice(1).map(memory => <details className="content-disclosure" key={memory.id || memory.bucket_start}><summary>{memory.created_at} · v{memory.version || '—'}</summary><div className="memory-reading"><MarkdownBlock content={memory.market_summary || ''} /></div><MemoryExecutionSnapshot memory={memory} authenticated={authenticated} locale={locale} /></details>)}</Card>}
           </div> },
+          ...(authenticated ? [
+            { key: 'stats', label: locale === 'zh' ? '任务统计' : 'Statistics', children: <div className="agent-view-stack"><TaskStatistics configId={agent.config_id} mode={agent.mode} refreshKey={refreshKey} /></div> },
+          ] : []),
           { key: 'history', label: locale === 'zh' ? '历史记录' : 'History', children: <Tabs className="workspace-history-tabs" defaultActiveKey={authenticated ? 'positions' : 'orders'} items={[
             ...(authenticated ? [
               { key: 'positions', label: locale === 'zh' ? '持仓历史' : 'Positions', children: <PositionHistory configId={agent.config_id} refreshKey={refreshKey} /> },

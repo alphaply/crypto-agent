@@ -8,6 +8,7 @@ export default function GlobalLoader() {
   const [visible, setVisible] = useState(false);
   const [progress, setProgress] = useState(0);
   const timerRef = useRef(null);
+  const hideTimerRef = useRef(null);
   const countRef = useRef(0);
 
   useEffect(() => {
@@ -15,12 +16,13 @@ export default function GlobalLoader() {
       countRef.current += 1;
       if (countRef.current === 1) {
         clearInterval(timerRef.current);
-        setProgress(0);
+        clearTimeout(hideTimerRef.current);
+        setProgress(12);
         setVisible(true);
-        // 假进度：快速到80%，然后缓慢推进
-        let p = 0;
+        // 假进度：快速到 80%，然后缓慢推进
+        let p = 12;
         timerRef.current = setInterval(() => {
-          p += p < 70 ? 8 : p < 90 ? 2 : 0.5;
+          p += p < 70 ? 8 : p < 90 ? 2 : 0.45;
           if (p >= 92) {
             clearInterval(timerRef.current);
             p = 92;
@@ -36,10 +38,11 @@ export default function GlobalLoader() {
         clearInterval(timerRef.current);
         setProgress(100);
         // 短暂停留后隐藏
-        setTimeout(() => {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = setTimeout(() => {
           setVisible(false);
           setProgress(0);
-        }, 320);
+        }, 280);
       }
     };
 
@@ -49,6 +52,7 @@ export default function GlobalLoader() {
       window.removeEventListener('global-loading-start', onStart);
       window.removeEventListener('global-loading-end', onEnd);
       clearInterval(timerRef.current);
+      clearTimeout(hideTimerRef.current);
     };
   }, []);
 
@@ -56,27 +60,19 @@ export default function GlobalLoader() {
 
   return (
     <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        height: 3,
-        zIndex: 9999,
-        pointerEvents: 'none',
-        background: 'transparent',
-      }}
+      className={`global-loader${progress === 100 ? ' is-finishing' : ''}`}
+      role="progressbar"
+      aria-label="Loading"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(progress)}
     >
       <div
-        style={{
-          height: '100%',
-          width: `${progress}%`,
-          background: 'var(--accent, #2563eb)',
-          transition: progress === 100 ? 'width 0.15s ease' : 'width 0.12s linear',
-          borderRadius: '0 2px 2px 0',
-          boxShadow: '0 0 8px var(--accent, #2563eb)',
-        }}
-      />
+        className="global-loader__bar"
+        style={{ width: `${progress}%` }}
+      >
+        <span className="global-loader__glow" />
+      </div>
     </div>
   );
 }

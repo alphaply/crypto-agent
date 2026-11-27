@@ -1,5 +1,8 @@
 from backend import storage
+from collections import OrderedDict
+import hashlib
 import json
+import threading
 import time
 
 import pandas as pd
@@ -790,6 +793,151 @@ def get_equity_compare_payload(symbol: str | None = None, config_ids: str = ""):
 
 
 _KLINE_ALLOWED_TF = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}
+_KLINE_OHLCV_TTL_SECONDS = {
+    "1m": 3.0,
+    "5m": 5.0,
+    "15m": 8.0,
+    "30m": 8.0,
+    "1h": 12.0,
+    "4h": 20.0,
+    "1d": 30.0,
+    "1w": 30.0,
+    "1M": 30.0,
+}
+
+
+class _InflightKlineRequest:
+    __slots__ = ("event", "result", "error")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: dict | None = None
+        self.error: BaseException | None = None
+
+
+def _clone_ohlcv_bundle(bundle: dict) -> dict:
+    return {
+        "candles": [dict(bar) for bar in bundle["candles"]],
+        "volume": [dict(bar) for bar in bundle["volume"]],
+        "emas": {span: [dict(pt) for pt in rows] for span, rows in bundle["emas"].items()},
+    }
+
+
+class _KlineOhlcvCache:
+    """Thread-safe bounded TTL cache with in-flight deduplication and fail-closed errors."""
+
+    def __init__(self, max_entries: int = 128) -> None:
+        self._max_entries = max(1, int(max_entries))
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[tuple, tuple[float, dict]] = OrderedDict()
+        self._inflight: dict[tuple, _InflightKlineRequest] = {}
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+    def get_or_fetch(self, key: tuple, ttl_seconds: float, fetcher) -> dict:
+        now = time.monotonic()
+        with self._lock:
+            cached = self._entries.get(key)
+            if cached is not None:
+                expires_at, value = cached
+                if now < expires_at:
+                    self._entries.move_to_end(key)
+                    return _clone_ohlcv_bundle(value)
+                del self._entries[key]
+
+            inflight = self._inflight.get(key)
+            if inflight is None:
+                inflight = _InflightKlineRequest()
+                self._inflight[key] = inflight
+                is_leader = True
+            else:
+                is_leader = False
+
+        if not is_leader:
+            inflight.event.wait()
+            if inflight.error is not None:
+                raise inflight.error
+            return _clone_ohlcv_bundle(inflight.result or {"candles": [], "volume": [], "emas": {}})
+
+        try:
+            bundle = fetcher()
+            inflight.result = bundle
+        except BaseException as exc:
+            inflight.error = exc
+            raise
+        finally:
+            with self._lock:
+                if self._inflight.get(key) is inflight:
+                    del self._inflight[key]
+                if (
+                    inflight.error is None
+                    and inflight.result
+                    and inflight.result.get("candles")
+                    and ttl_seconds > 0
+                ):
+                    self._entries[key] = (time.monotonic() + ttl_seconds, inflight.result)
+                    self._entries.move_to_end(key)
+                    while len(self._entries) > self._max_entries:
+                        self._entries.popitem(last=False)
+                inflight.event.set()
+
+        return _clone_ohlcv_bundle(inflight.result)
+
+
+_KLINE_OHLCV_CACHE = _KlineOhlcvCache(max_entries=128)
+
+
+def clear_kline_cache() -> None:
+    """Clear the process-local K-line OHLCV/indicator cache."""
+    _KLINE_OHLCV_CACHE.clear()
+
+
+def _kline_account_fingerprint(config_id: str, cfg: dict) -> str:
+    exchange_name = str(cfg.get("exchange") or "binance").lower()
+    mode = str(cfg.get("mode") or "STRATEGY").upper()
+    market_type = "spot" if mode == "SPOT_DCA" else str(cfg.get("market_type") or "swap").lower()
+    api_key = None
+    try:
+        if exchange_name == "binance" and hasattr(global_config, "get_binance_credentials"):
+            api_key, _ = global_config.get_binance_credentials(config_id=config_id)
+        elif hasattr(global_config, "get_exchange_credentials"):
+            _, api_key, _, _ = global_config.get_exchange_credentials(config_id=config_id)
+    except Exception:
+        api_key = None
+    if not api_key:
+        api_key = cfg.get("api_key") or cfg.get("binance_api_key") or cfg.get("okx_api_key")
+    identity_source = f"{exchange_name}:{market_type}:{api_key}" if api_key else f"{exchange_name}:{market_type}:cfg:{config_id}"
+    return hashlib.sha256(identity_source.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_ohlcv_bundle(raw: list) -> dict:
+    if not raw:
+        return {"candles": [], "volume": [], "emas": {}}
+
+    candles = []
+    volumes = []
+    closes = []
+    for row in raw:
+        ts = int(row[0] / 1000)
+        open_price, high, low, close, volume = float(row[1]), float(row[2]), float(row[3]), float(row[4]), float(row[5])
+        candles.append({"time": ts, "open": open_price, "high": high, "low": low, "close": close})
+        color = "rgba(38,166,154,0.5)" if close >= open_price else "rgba(239,83,80,0.5)"
+        volumes.append({"time": ts, "value": volume, "color": color})
+        closes.append(close)
+
+    close_series = pd.Series(closes)
+    emas = {}
+    for span in (20, 50, 100, 200):
+        ema_vals = calc_ema(close_series, span)
+        ema_data = []
+        for index, value in enumerate(ema_vals):
+            if pd.notna(value) and index >= span - 1:
+                ema_data.append({"time": candles[index]["time"], "value": round(float(value), 6)})
+        emas[str(span)] = ema_data
+
+    return {"candles": candles, "volume": volumes, "emas": emas}
 
 
 def _load_order_reasons(config_id: str, order_ids: list[str]) -> dict[str, str]:
@@ -899,11 +1047,11 @@ def _fetch_real_open_orders(mt: MarketTool, symbol: str, current_side: str, posi
             seen.add(identity)
             raw_pending_orders.append((order, channel, observed_at))
     reason_by_order_id = _load_order_reasons(config_id, [str(order.get('id') or '') for order, _, _ in raw_pending_orders])
+    market = mt.exchange.market(symbol) if hasattr(mt.exchange, 'market') else {}
+    size = float(market.get('contractSize') or 1) if market.get('contract') else 1
     result = []
     for order, channel, observed_at in raw_pending_orders:
         row = _normalize_real_open_order(order, current_side, positions, reason_by_order_id.get(str(order.get('id') or ''), ''))
-        market = mt.exchange.market(symbol) if hasattr(mt.exchange, 'market') else {}
-        size = float(market.get('contractSize') or 1) if market.get('contract') else 1
         row['contracts'] = order.get('amount')
         row['filled'] = float(order['filled']) * size if order.get('filled') is not None else None
         row['remaining'] = float(order['remaining']) * size if order.get('remaining') is not None else None
@@ -931,10 +1079,35 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
     if symbol not in get_config_symbols(cfg):
         raise ValueError(f'Symbol {symbol} is not configured for {config_id}')
     mode = str(cfg.get("mode") or "STRATEGY").upper()
-    mt = MarketTool(config_id=config_id)
+    exchange_name = str(cfg.get("exchange") or "binance").lower()
+    market_type = "spot" if mode == "SPOT_DCA" else str(cfg.get("market_type") or "swap").lower()
     fetch_limit = 260 if timeframe in {"1w", "1M"} else (360 if timeframe == "1d" else 500)
-    raw = mt.exchange.fetch_ohlcv(symbol, timeframe, limit=fetch_limit)
-    if not raw:
+
+    mt_holder: list[MarketTool] = []
+
+    def _get_mt() -> MarketTool:
+        if not mt_holder:
+            mt_holder.append(MarketTool(config_id=config_id))
+        return mt_holder[0]
+
+    cache_key = (
+        exchange_name,
+        market_type,
+        _kline_account_fingerprint(config_id, cfg),
+        symbol,
+        timeframe,
+        fetch_limit,
+    )
+    ttl_seconds = _KLINE_OHLCV_TTL_SECONDS.get(timeframe, 10.0)
+    ohlcv_bundle = _KLINE_OHLCV_CACHE.get_or_fetch(
+        cache_key,
+        ttl_seconds,
+        lambda: _build_ohlcv_bundle(_get_mt().exchange.fetch_ohlcv(symbol, timeframe, limit=fetch_limit)),
+    )
+    candles = ohlcv_bundle["candles"]
+    volumes = ohlcv_bundle["volume"]
+    emas = ohlcv_bundle["emas"]
+    if not candles:
         return {
             'symbol': symbol,
             "candles": [],
@@ -947,33 +1120,14 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
             "risk_lines": [],
         }
 
-    candles = []
-    volumes = []
-    closes = []
-    for row in raw:
-        ts = int(row[0] / 1000)
-        open_price, high, low, close, volume = float(row[1]), float(row[2]), float(row[3]), float(row[4]), float(row[5])
-        candles.append({"time": ts, "open": open_price, "high": high, "low": low, "close": close})
-        color = "rgba(38,166,154,0.5)" if close >= open_price else "rgba(239,83,80,0.5)"
-        volumes.append({"time": ts, "value": volume, "color": color})
-        closes.append(close)
-
-    close_series = pd.Series(closes)
-    emas = {}
-    for span in (20, 50, 100, 200):
-        ema_vals = calc_ema(close_series, span)
-        ema_data = []
-        for index, value in enumerate(ema_vals):
-            if pd.notna(value) and index >= span - 1:
-                ema_data.append({"time": candles[index]["time"], "value": round(float(value), 6)})
-        emas[str(span)] = ema_data
-
     positions = []
     position = None
     position_complete = True
     order_errors = []
     risk_lines = []
+    pending_orders = []
     if mode == "REAL":
+        mt = _get_mt()
         active_plans = {}
         if config_id:
             try:
@@ -1022,46 +1176,60 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
             logger.warning(f"Kline positions fetch failed: {exc}")
     elif mode == "STRATEGY":
         with storage.get_connection() as conn:
-
-            rows = conn.execute(
-                "SELECT side, price, amount, stop_loss, take_profit, order_id FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='OPEN' AND is_filled=1 ORDER BY timestamp ASC",
+            open_mock_rows = conn.execute(
+                "SELECT side, price, amount, stop_loss, take_profit, order_id, status, is_filled FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='OPEN' ORDER BY timestamp ASC",
                 (config_id, symbol),
             ).fetchall()
-        for row in rows:
-            payload = {
-                "side": "LONG" if "BUY" in str(row["side"]).upper() else "SHORT",
-                "entry_price": float(row["price"]),
-                "amount": float(row["amount"]),
-                "order_id": row["order_id"],
-                "stop_loss": float(row["stop_loss"] or 0),
-                "take_profit": float(row["take_profit"] or 0),
-            }
-            if candles:
-                current_price = float(candles[-1]["close"])
-                direction = 1 if payload["side"] == "LONG" else -1
-                payload["mark_price"] = current_price
-                payload["unrealized_pnl"] = round((current_price - payload["entry_price"]) * payload["amount"] * direction, 4)
-            positions.append(payload)
-            if float(row["take_profit"] or 0) > 0:
-                risk_lines.append(
+        for row in open_mock_rows:
+            if int(row["is_filled"] or 0):
+                payload = {
+                    "side": "LONG" if "BUY" in str(row["side"]).upper() else "SHORT",
+                    "entry_price": float(row["price"]),
+                    "amount": float(row["amount"]),
+                    "order_id": row["order_id"],
+                    "stop_loss": float(row["stop_loss"] or 0),
+                    "take_profit": float(row["take_profit"] or 0),
+                }
+                if candles:
+                    current_price = float(candles[-1]["close"])
+                    direction = 1 if payload["side"] == "LONG" else -1
+                    payload["mark_price"] = current_price
+                    payload["unrealized_pnl"] = round((current_price - payload["entry_price"]) * payload["amount"] * direction, 4)
+                positions.append(payload)
+                if float(row["take_profit"] or 0) > 0:
+                    risk_lines.append(
+                        {
+                            "price": float(row["take_profit"]),
+                            "type": "take_profit",
+                            "label": "TP",
+                            "amount": float(row["amount"]),
+                            "side": payload["side"],
+                            "order_id": row["order_id"],
+                        }
+                    )
+                if float(row["stop_loss"] or 0) > 0:
+                    risk_lines.append(
+                        {
+                            "price": float(row["stop_loss"]),
+                            "type": "stop_loss",
+                            "label": "SL",
+                            "amount": float(row["amount"]),
+                            "side": payload["side"],
+                            "order_id": row["order_id"],
+                        }
+                    )
+            else:
+                side = str(row["side"]).upper()
+                pending_orders.append(
                     {
-                        "price": float(row["take_profit"]),
-                        "type": "take_profit",
-                        "label": "TP",
+                        "price": float(row["price"]),
+                        "side": side,
                         "amount": float(row["amount"]),
-                        "side": payload["side"],
                         "order_id": row["order_id"],
-                    }
-                )
-            if float(row["stop_loss"] or 0) > 0:
-                risk_lines.append(
-                    {
-                        "price": float(row["stop_loss"]),
-                        "type": "stop_loss",
-                        "label": "SL",
-                        "amount": float(row["amount"]),
-                        "side": payload["side"],
-                        "order_id": row["order_id"],
+                        "type": "open_long" if "BUY" in side else "open_short",
+                        "take_profit": float(row["take_profit"] or 0),
+                        "stop_loss": float(row["stop_loss"] or 0),
+                        "status": row["status"] or "OPEN",
                     }
                 )
         if positions:
@@ -1080,33 +1248,12 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
             }
             positions.append(position)
 
-    pending_orders = []
     try:
         if mode == "REAL":
+            mt = _get_mt()
             current_side = (position or {}).get("side", "").upper()
             pending_orders = _fetch_real_open_orders(mt, symbol, current_side, positions, config_id, errors=order_errors,
                                                     qualify_ids=cfg.get('position_management_policy') == 'exclusive_scope')
-        elif mode == "STRATEGY":
-            with storage.get_connection() as conn:
-
-                rows = conn.execute(
-                    "SELECT order_id, side, price, amount, stop_loss, take_profit, status FROM mock_orders WHERE config_id=%s AND symbol=%s AND status='OPEN' AND is_filled=0",
-                    (config_id, symbol),
-                ).fetchall()
-            for row in rows:
-                side = str(row["side"]).upper()
-                pending_orders.append(
-                    {
-                        "price": float(row["price"]),
-                        "side": side,
-                        "amount": float(row["amount"]),
-                        "order_id": row["order_id"],
-                        "type": "open_long" if "BUY" in side else "open_short",
-                        "take_profit": float(row["take_profit"] or 0),
-                        "stop_loss": float(row["stop_loss"] or 0),
-                        "status": row["status"] or "OPEN",
-                    }
-                )
         elif mode == "SPOT_DCA":
             with storage.get_connection() as conn:
 
@@ -1154,7 +1301,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
                 position = positions[0] if positions else None
             else:
                 from backend.utils.independent_exits import IndependentExits
-                snapshot = IndependentExits(mt).snapshot(symbol)
+                snapshot = IndependentExits(_get_mt()).snapshot(symbol)
             from backend.utils.exit_context import independent_exit_chart_lines
             risk_lines = independent_exit_chart_lines(snapshot)
         except storage.Error:
@@ -1164,6 +1311,7 @@ def get_kline_payload(config_id: str, timeframe: str = "1h", symbol: str | None 
 
     management = {'policy': 'strict_owned', 'scopes': []}
     if mode == 'REAL':
+        mt = _get_mt()
         from backend.utils.execution_ledger import account_scope
         management, managed_records = _local_management_projection(config_id, symbol, cfg, account_scope(mt.exchange, config_id))
         from backend.utils.position_management import resource_management_status

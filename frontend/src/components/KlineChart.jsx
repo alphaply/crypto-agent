@@ -1,12 +1,39 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CandlestickSeries, CrosshairMode, HistogramSeries, LineSeries, TickMarkType, createChart, createSeriesMarkers } from 'lightweight-charts';
-import { Empty } from 'antd';
+import { Empty, Spin } from 'antd';
 import { usePreferences } from '../app/usePreferences';
-import { klinePriceFormat, normalizeKlineData, preserveKlineRange, recentKlineRange, syncSeriesData } from '../lib/kline';
+import {
+  findCandleByTime,
+  formatKlineVolume,
+  klinePriceFormat,
+  normalizeKlineData,
+  preserveKlineRange,
+  recentKlineRange,
+  syncSeriesData,
+} from '../lib/kline';
 
 const EMA_COLORS = { 20: '#2563eb', 50: '#14b8a6', 100: '#d97706', 200: '#ef4444' };
 const UP = '#16a34a';
 const DOWN = '#dc2626';
+const HIDDEN_EMAS_KEY = 'crypto-agent:kline-hidden-emas';
+
+function readHiddenEmas() {
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_EMAS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHiddenEmas(hiddenList) {
+  try {
+    window.localStorage.setItem(HIDDEN_EMAS_KEY, JSON.stringify(hiddenList));
+  } catch {
+    // Ignore storage quota or private browsing errors.
+  }
+}
 
 function localTime(time, dateOnly = false) {
   const date = new Date(Number(time) * 1000);
@@ -23,15 +50,27 @@ function tickTime(time, type) {
   return localTime(time).slice(11);
 }
 
-export default function KlineChart({ payload, chartKey, timeframe = '1h' }) {
+export default function KlineChart({ payload, chartKey, timeframe = '1h', loading = false }) {
   const containerRef = useRef(null);
   const readoutRef = useRef(null);
   const updateRef = useRef(null);
   const preferencesRef = useRef(null);
+  const emaVisibilityRef = useRef(null);
   const resetRef = useRef(null);
   const { isDark, locale, t } = usePreferences();
   const data = useMemo(() => normalizeKlineData(payload), [payload]);
   const daily = ['1d', '1w', '1M'].includes(timeframe);
+  const [hiddenEmas, setHiddenEmas] = useState(readHiddenEmas);
+
+  const toggleEma = useCallback((span) => {
+    setHiddenEmas((previous) => {
+      const next = previous.includes(span)
+        ? previous.filter((item) => item !== span)
+        : [...previous, span];
+      saveHiddenEmas(next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -51,6 +90,7 @@ export default function KlineChart({ payload, chartKey, timeframe = '1h' }) {
     let positionMarkers = [];
     let markerSignature = '';
     let extremaSignature = '';
+    let hiddenEmaSet = new Set(readHiddenEmas());
     const overlays = new Map();
     const emaSeriesMap = new Map();
     const chart = createChart(container, {
@@ -83,18 +123,22 @@ export default function KlineChart({ payload, chartKey, timeframe = '1h' }) {
     const renderReadout = () => {
       const element = readoutRef.current;
       if (!element) return;
-      const selected = hoveredTime && candleData.find(bar => bar.time === hoveredTime);
+      const selected = hoveredTime != null ? findCandleByTime(candleData, hoveredTime) : null;
       const bar = selected || candleData.at(-1);
       if (!bar) { element.replaceChildren(); return; }
+      const volBar = findCandleByTime(volumeData, bar.time);
       const color = bar.close >= bar.open ? UP : DOWN;
       const change = bar.open ? (bar.close / bar.open - 1) * 100 : 0;
       const price = value => Number(value).toFixed(priceFormat.precision);
       const labels = language === 'zh' ? ['开', '高', '低', '收'] : ['O', 'H', 'L', 'C'];
+      const volLabel = language === 'zh' ? '量' : 'Vol';
+      const volText = volBar ? formatKlineVolume(volBar.value) : '';
       // Only formatted numbers and fixed labels are inserted, never raw API strings.
       element.innerHTML = `
         <div class="kline-readout-summary">
           <strong style="color:${color}">${price(bar.close)}</strong>
           <span class="kline-readout-change" style="color:${color}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</span>
+          ${volText ? `<span class="kline-readout-vol" style="color:var(--text-muted);font-size:11px">${volLabel} <b style="color:var(--text-primary);font-weight:500">${volText}</b></span>` : ''}
           <span class="kline-readout-time">${localTime(bar.time, dateOnly)} · ${language === 'zh' ? '本地时间' : 'Local time'}</span>
         </div>
         <div class="kline-ohlc-grid">${['open', 'high', 'low', 'close'].map((field, index) => `
@@ -163,6 +207,12 @@ export default function KlineChart({ payload, chartKey, timeframe = '1h' }) {
         else if (entry.signature !== signature) { entry.line.applyOptions(options); entry.signature = signature; }
       }
     };
+    emaVisibilityRef.current = (hiddenList) => {
+      hiddenEmaSet = new Set(hiddenList);
+      for (const [span, entry] of emaSeriesMap) {
+        entry.series.applyOptions({ visible: !hiddenEmaSet.has(span) });
+      }
+    };
     updateRef.current = (next, nextPayload, nextKey) => {
       updating = true;
       const previous = candleData;
@@ -185,6 +235,7 @@ export default function KlineChart({ payload, chartKey, timeframe = '1h' }) {
           entry = { data: [], series: chart.addSeries(LineSeries, {
             color: EMA_COLORS[span] || '#64748b', lineWidth: 1, lastValueVisible: false,
             priceLineVisible: false, crosshairMarkerVisible: false, priceFormat,
+            visible: !hiddenEmaSet.has(span),
             // Distant EMA200 values should not flatten the visible candle range.
             autoscaleInfoProvider: () => null,
           }) };
@@ -268,6 +319,7 @@ export default function KlineChart({ payload, chartKey, timeframe = '1h' }) {
       chart.unsubscribeCrosshairMove(crosshairHandler);
       updateRef.current = null;
       preferencesRef.current = null;
+      emaVisibilityRef.current = null;
       resetRef.current = null;
       chart.remove();
     };
@@ -275,19 +327,80 @@ export default function KlineChart({ payload, chartKey, timeframe = '1h' }) {
 
   useEffect(() => { updateRef.current?.(data, payload, chartKey); }, [data, payload, chartKey]);
   useEffect(() => { preferencesRef.current?.(isDark, locale, daily); }, [isDark, locale, daily]);
+  useEffect(() => { emaVisibilityRef.current?.(hiddenEmas); }, [hiddenEmas]);
+
+  const emaSpans = useMemo(
+    () => Object.keys(data.emas).filter(span => data.emas[span].length),
+    [data.emas],
+  );
 
   return (
     <div className="kline-chart-shell">
       <div ref={readoutRef} className="kline-readout" aria-label={locale === 'zh' ? 'K线价格详情' : 'Candle price details'} />
       <div className="kline-plot">
         <div ref={containerRef} className="trading-chart" role="img" aria-label={locale === 'zh' ? '价格与成交量K线图' : 'Candlestick and volume chart'} />
-        {!data.candles.length && <div className="kline-empty"><Empty description={t('noData')} /></div>}
+        {loading && data.candles.length > 0 && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              position: 'absolute',
+              top: 10,
+              right: 12,
+              zIndex: 3,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 500,
+              pointerEvents: 'none',
+              color: isDark ? '#e2e8f0' : '#334155',
+              background: isDark ? 'rgba(15, 23, 42, 0.78)' : 'rgba(255, 255, 255, 0.86)',
+              border: `1px solid ${isDark ? 'rgba(148, 163, 184, 0.25)' : 'rgba(148, 163, 184, 0.35)'}`,
+              backdropFilter: 'blur(6px)',
+            }}
+          >
+            <Spin size="small" />
+            <span>{locale === 'zh' ? '更新中…' : 'Updating…'}</span>
+          </div>
+        )}
+        {!data.candles.length && (
+          <div className="kline-empty">
+            {loading ? <Spin tip={locale === 'zh' ? '加载 K 线中…' : 'Loading chart…'} /> : <Empty description={t('noData')} />}
+          </div>
+        )}
       </div>
       <div className="kline-chart-footer">
-        <div className="kline-ema-legend" aria-label={locale === 'zh' ? '均线图例' : 'EMA legend'}>
-          {Object.keys(data.emas).filter(span => data.emas[span].length).map(span => (
-            <span key={span} className="kline-ema-legend-item"><span className="kline-ema-legend-line" style={{ backgroundColor: EMA_COLORS[span] || '#64748b' }} />EMA{span}</span>
-          ))}
+        <div className="kline-ema-legend" role="group" aria-label={locale === 'zh' ? '均线图例' : 'EMA legend'}>
+          {emaSpans.map(span => {
+            const visible = !hiddenEmas.includes(span);
+            return (
+              <button
+                key={span}
+                type="button"
+                className="kline-ema-legend-item"
+                aria-pressed={visible}
+                onClick={() => toggleEma(span)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: '2px 4px',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  color: 'inherit',
+                  font: 'inherit',
+                  opacity: visible ? 1 : 0.42,
+                  textDecoration: visible ? 'none' : 'line-through',
+                  transition: 'opacity 140ms ease',
+                }}
+              >
+                <span className="kline-ema-legend-line" style={{ backgroundColor: EMA_COLORS[span] || '#64748b' }} />
+                EMA{span}
+              </button>
+            );
+          })}
         </div>
         <button className="kline-reset-view" type="button" disabled={!data.candles.length} onClick={() => resetRef.current?.()}>
           {locale === 'zh' ? '回到最新' : 'Latest candles'} <span aria-hidden="true">↗</span>

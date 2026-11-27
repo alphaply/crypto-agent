@@ -88,140 +88,157 @@ export default function NewsSettingsPanel({
             label: zh ? '摘要与评分' : 'Summary & Scoring',
             children: (
               <Card className="panel-card" title={zh ? '消息聚合与摘要设置' : 'News aggregation settings'}>
-                <div className="settings-form-grid">
-                  <label>
-                    {zh ? '启用全局消息聚合' : 'Enable shared intelligence'}
-                    <Switch checked={value.enabled !== false} onChange={(enabled) => update({ enabled })} />
-                  </label>
-                  <div className="form-field">
-                    <label>
-                      {zh ? '消息定点运行间隔（分钟）' : 'Scheduled fetch interval (minutes)'}
-                      <InputNumber min={1} max={1440} precision={0} value={(value.refresh_seconds || 3600) / 60} onChange={(v) => update({ refresh_seconds: (v || 60) * 60 })} />
-                    </label>
-                    <Typography.Text type="secondary">
-                      {zh
-                        ? '以北京时间每天 00:00 为起点：60 分钟为每小时整点，30 分钟为整点和半点，45 分钟为 00:00、00:45、01:30…；保存后等待下一个定点，错过不补跑。'
-                        : 'Anchored to 00:00 Asia/Shanghai each day: 60 minutes runs on the hour; 30 on the hour and half-hour; 45 at 00:00, 00:45, 01:30… After saving, wait for the next slot; missed slots are skipped.'}
-                    </Typography.Text>
+                <div className="admin-drawer-sections">
+                  <div className="admin-news-subsection">
+                    <span className="admin-news-subsection__title">{zh ? '1. 调度与基础开关' : '1. Schedule & Pipeline'}</span>
+                    <div className="settings-form-grid">
+                      <label>
+                        {zh ? '启用全局消息聚合' : 'Enable shared intelligence'}
+                        <Switch checked={value.enabled !== false} onChange={(enabled) => update({ enabled })} />
+                      </label>
+                      <div className="form-field">
+                        <label>
+                          {zh ? '消息定点运行间隔（分钟）' : 'Scheduled fetch interval (minutes)'}
+                          <InputNumber min={1} max={1440} precision={0} value={(value.refresh_seconds || 3600) / 60} onChange={(v) => update({ refresh_seconds: (v || 60) * 60 })} />
+                        </label>
+                        <Typography.Text type="secondary">
+                          {zh
+                            ? '以北京时间每天 00:00 为起点：60 分钟为每小时整点，30 分钟为整点和半点，45 分钟为 00:00、00:45、01:30…；保存后等待下一个定点，错过不补跑。'
+                            : 'Anchored to 00:00 Asia/Shanghai each day: 60 minutes runs on the hour; 30 on the hour and half-hour; 45 at 00:00, 00:45, 01:30… After saving, wait for the next slot; missed slots are skipped.'}
+                        </Typography.Text>
+                      </div>
+                      <label>
+                        {zh ? '币安推送加速刷新（最短 1 分钟）' : 'Accelerate refresh on Binance push (min 1 minute)'}
+                        <Switch checked={value.stream_refresh_enabled === true} onChange={(stream_refresh_enabled) => update({ stream_refresh_enabled })} />
+                      </label>
+                      <label>
+                        {zh ? '消息 LangSmith 追踪' : 'News LangSmith tracing'}
+                        <Select
+                          value={value.trace_mode || 'off'}
+                          options={[
+                            { value: 'off', label: zh ? '关闭，仅保留本地记录' : 'Off; local records only' },
+                            { value: 'summary', label: zh ? '每轮只记录一条概要' : 'One root per refresh' },
+                            { value: 'full', label: zh ? '完整追踪（排障）' : 'Full (debugging)' },
+                          ]}
+                          onChange={(trace_mode) => update({ trace_mode })}
+                        />
+                      </label>
+                    </div>
                   </div>
-                  <label>
-                    {zh ? '评分方式' : 'Scoring mode'}
-                    <Select
-                      value={value.scoring_mode || 'jev'}
-                      options={[
-                        { value: 'off', label: zh ? '关闭评分，按时间选取' : 'Off; select by time' },
-                        { value: 'jev', label: 'Jev' },
-                        { value: 'llm', label: zh ? '普通 LLM 批量评分' : 'Generative LLM batch scoring' },
-                      ]}
-                      onChange={(scoring_mode) => update({ scoring_mode, scorer_provider_id: '' })}
-                    />
-                  </label>
-                  {(value.scoring_mode || 'jev') !== 'off' && (
-                    <label>
-                      {zh ? '评分模型' : 'Scoring model'}
-                      <Select
-                        showSearch
-                        optionFilterProp="label"
-                        allowClear
-                        value={value.scorer_provider_id || undefined}
-                        options={modelOptions(value.scoring_mode === 'llm' ? 'chat' : 'decisions')}
-                        onChange={(v) => update({ scorer_provider_id: v || '' })}
-                      />
-                    </label>
-                  )}
-                  <label>
-                    {zh ? '摘要模型' : 'Summary model'}
-                    <Select
-                      allowClear
-                      value={value.summarizer_provider_id || undefined}
-                      options={modelOptions('chat')}
-                      onChange={(v) => {
-                        const nextPrimary = v || '';
-                        update({
-                          summarizer_provider_id: nextPrimary,
-                          fallback_summarizer_provider_ids: (value.fallback_summarizer_provider_ids || []).filter((id) => id && id !== nextPrimary),
-                        });
-                      }}
-                    />
-                  </label>
-                  <label>
-                    {zh ? '摘要备选模型（主模型失败时按顺序兜底）' : 'Fallback summary models (tried in order)'}
-                    <Select
-                      mode="multiple"
-                      showSearch
-                      optionFilterProp="label"
-                      allowClear
-                      placeholder={zh ? '可选，按顺序尝试兜底' : 'Optional ordered fallbacks'}
-                      value={(value.fallback_summarizer_provider_ids || []).filter((id) => id !== value.summarizer_provider_id)}
-                      options={modelOptions('chat').filter((opt) => opt.value !== value.summarizer_provider_id)}
-                      onChange={(v) => update({ fallback_summarizer_provider_ids: (v || []).filter((id) => id && id !== value.summarizer_provider_id) })}
-                    />
-                  </label>
-                  <label>
-                    {zh ? '最低相关度（0–100）' : 'Minimum relevance (0–100)'}
-                    <InputNumber disabled={value.scoring_mode === 'off'} min={0} max={100} value={value.min_score ?? 60} onChange={(v) => update({ min_score: v ?? 60 })} />
-                  </label>
-                  <label>
-                    {zh ? '摘要模式' : 'Summary mode'}
-                    <Select
-                      value={value.summary_mode || 'rolling'}
-                      options={[
-                        { value: 'rolling', label: zh ? '旧摘要 + 当前原文 → 更新摘要' : 'Previous digest + current sources' },
-                        { value: 'full', label: zh ? '只根据当前原文重建' : 'Rebuild from current sources' },
-                      ]}
-                      onChange={(summary_mode) => update({ summary_mode })}
-                    />
-                  </label>
-                  <label>
-                    {zh ? '摘要最小生成间隔（分钟）' : 'Minimum summary interval (minutes)'}
-                    <InputNumber min={0} max={1440} value={(value.summary_min_seconds ?? 300) / 60} onChange={(v) => update({ summary_min_seconds: (v ?? 5) * 60 })} />
-                  </label>
-                  <label>
-                    {zh ? '币安推送加速刷新（最短 1 分钟）' : 'Accelerate refresh on Binance push (min 1 minute)'}
-                    <Switch checked={value.stream_refresh_enabled === true} onChange={(stream_refresh_enabled) => update({ stream_refresh_enabled })} />
-                  </label>
-                  <label>
-                    {zh ? '消息 LangSmith 追踪' : 'News LangSmith tracing'}
-                    <Select
-                      value={value.trace_mode || 'off'}
-                      options={[
-                        { value: 'off', label: zh ? '关闭，仅保留本地记录' : 'Off; local records only' },
-                        { value: 'summary', label: zh ? '每轮只记录一条概要' : 'One root per refresh' },
-                        { value: 'full', label: zh ? '完整追踪（排障）' : 'Full (debugging)' },
-                      ]}
-                      onChange={(trace_mode) => update({ trace_mode })}
-                    />
-                  </label>
-                  <label>
-                    {zh ? '消息窗口（小时）' : 'Lookback (hours)'}
-                    <InputNumber min={1} max={168} value={value.lookback_hours || 24} onChange={(v) => update({ lookback_hours: v || 24 })} />
-                  </label>
-                  <label>
-                    {zh ? '候选条数上限' : 'Candidate limit'}
-                    <InputNumber min={value.max_items || 20} max={300} value={value.candidate_limit || 80} onChange={(v) => update({ candidate_limit: v || 80 })} />
-                  </label>
-                  <label>
-                    {zh ? '摘要纳入条数' : 'Summary item limit'}
-                    <InputNumber min={1} max={Math.min(value.candidate_limit || 80, 100)} value={value.max_items || 20} onChange={(v) => update({ max_items: v || 20 })} />
-                  </label>
-                  <label className="settings-full-width">
-                    {zh ? '摘要补充要求' : 'Additional summary instructions'}
-                    <Input.TextArea
-                      rows={3}
-                      maxLength={5000}
-                      value={value.summary_instructions || ''}
-                      onChange={(e) => update({ summary_instructions: e.target.value })}
-                      placeholder={zh ? '例如：优先整理 CPI 公布值、预期值、前值；缺失时明确说明，按宏观/行业分类。' : 'Example: organize CPI actual, forecast and prior values; mark missing values.'}
-                    />
-                  </label>
+
+                  <div className="admin-news-subsection">
+                    <span className="admin-news-subsection__title">{zh ? '2. 评分与摘要模型' : '2. Scoring & Summary Models'}</span>
+                    <div className="settings-form-grid">
+                      <label>
+                        {zh ? '评分方式' : 'Scoring mode'}
+                        <Select
+                          value={value.scoring_mode || 'jev'}
+                          options={[
+                            { value: 'off', label: zh ? '关闭评分，按时间选取' : 'Off; select by time' },
+                            { value: 'jev', label: 'Jev' },
+                            { value: 'llm', label: zh ? '普通 LLM 批量评分' : 'Generative LLM batch scoring' },
+                          ]}
+                          onChange={(scoring_mode) => update({ scoring_mode, scorer_provider_id: '' })}
+                        />
+                      </label>
+                      {(value.scoring_mode || 'jev') !== 'off' && (
+                        <label>
+                          {zh ? '评分模型' : 'Scoring model'}
+                          <Select
+                            showSearch
+                            optionFilterProp="label"
+                            allowClear
+                            value={value.scorer_provider_id || undefined}
+                            options={modelOptions(value.scoring_mode === 'llm' ? 'chat' : 'decisions')}
+                            onChange={(v) => update({ scorer_provider_id: v || '' })}
+                          />
+                        </label>
+                      )}
+                      <label>
+                        {zh ? '最低相关度（0–100）' : 'Minimum relevance (0–100)'}
+                        <InputNumber disabled={value.scoring_mode === 'off'} min={0} max={100} value={value.min_score ?? 60} onChange={(v) => update({ min_score: v ?? 60 })} />
+                      </label>
+                      <label>
+                        {zh ? '摘要模型' : 'Summary model'}
+                        <Select
+                          allowClear
+                          value={value.summarizer_provider_id || undefined}
+                          options={modelOptions('chat')}
+                          onChange={(v) => {
+                            const nextPrimary = v || '';
+                            update({
+                              summarizer_provider_id: nextPrimary,
+                              fallback_summarizer_provider_ids: (value.fallback_summarizer_provider_ids || []).filter((id) => id && id !== nextPrimary),
+                            });
+                          }}
+                        />
+                      </label>
+                      <label className="settings-full-width">
+                        {zh ? '摘要备选模型（主模型失败时按顺序兜底）' : 'Fallback summary models (tried in order)'}
+                        <Select
+                          mode="multiple"
+                          showSearch
+                          optionFilterProp="label"
+                          allowClear
+                          placeholder={zh ? '可选，按顺序尝试兜底' : 'Optional ordered fallbacks'}
+                          value={(value.fallback_summarizer_provider_ids || []).filter((id) => id !== value.summarizer_provider_id)}
+                          options={modelOptions('chat').filter((opt) => opt.value !== value.summarizer_provider_id)}
+                          onChange={(v) => update({ fallback_summarizer_provider_ids: (v || []).filter((id) => id && id !== value.summarizer_provider_id) })}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="admin-news-subsection">
+                    <span className="admin-news-subsection__title">{zh ? '3. 摘要窗口与内容偏好' : '3. Digest Window & Instructions'}</span>
+                    <div className="settings-form-grid">
+                      <label>
+                        {zh ? '摘要模式' : 'Summary mode'}
+                        <Select
+                          value={value.summary_mode || 'rolling'}
+                          options={[
+                            { value: 'rolling', label: zh ? '旧摘要 + 当前原文 → 更新摘要' : 'Previous digest + current sources' },
+                            { value: 'full', label: zh ? '只根据当前原文重建' : 'Rebuild from current sources' },
+                          ]}
+                          onChange={(summary_mode) => update({ summary_mode })}
+                        />
+                      </label>
+                      <label>
+                        {zh ? '摘要最小生成间隔（分钟）' : 'Minimum summary interval (minutes)'}
+                        <InputNumber min={0} max={1440} value={(value.summary_min_seconds ?? 300) / 60} onChange={(v) => update({ summary_min_seconds: (v ?? 5) * 60 })} />
+                      </label>
+                      <label>
+                        {zh ? '消息窗口（小时）' : 'Lookback (hours)'}
+                        <InputNumber min={1} max={168} value={value.lookback_hours || 24} onChange={(v) => update({ lookback_hours: v || 24 })} />
+                      </label>
+                      <label>
+                        {zh ? '候选条数上限' : 'Candidate limit'}
+                        <InputNumber min={value.max_items || 20} max={300} value={value.candidate_limit || 80} onChange={(v) => update({ candidate_limit: v || 80 })} />
+                      </label>
+                      <label>
+                        {zh ? '摘要纳入条数' : 'Summary item limit'}
+                        <InputNumber min={1} max={Math.min(value.candidate_limit || 80, 100)} value={value.max_items || 20} onChange={(v) => update({ max_items: v || 20 })} />
+                      </label>
+                      <label className="settings-full-width">
+                        {zh ? '摘要补充要求' : 'Additional summary instructions'}
+                        <Input.TextArea
+                          rows={3}
+                          maxLength={5000}
+                          value={value.summary_instructions || ''}
+                          onChange={(e) => update({ summary_instructions: e.target.value })}
+                          placeholder={zh ? '例如：优先整理 CPI 公布值、预期值、前值；缺失时明确说明，按宏观/行业分类。' : 'Example: organize CPI actual, forecast and prior values; mark missing values.'}
+                        />
+                      </label>
+                    </div>
+                  </div>
                 </div>
                 <Typography.Paragraph type="secondary" style={{ marginTop: 16 }}>
                   {zh
                     ? '输入：API / RSS / 日历 / 币安推送 → 时间过滤、去重 → 可选评分 → 筛选 → 摘要 → 共享快照。普通 LLM 每批最多 20 条，已评分的相同内容复用缓存；摘要输入不变不调用模型。摘要等待间隔时保留旧摘要及其引用，新消息仍独立参与触发规则。日历是预告，不代表已公布数据。'
                     : 'API / RSS / calendars / Binance stream → time filter and deduplication → optional scoring → selection → digest → shared snapshot. LLM scoring uses batches of up to 20 and cached results. Unchanged summary inputs skip model calls. Deferred summaries retain their original references; new articles independently feed trigger rules. Calendars describe scheduled events, not released figures.'}
                 </Typography.Paragraph>
-                <details style={{ marginTop: 16 }}>
-                  <summary>{zh ? '评分标准' : 'Scoring rubric'}</summary>
+                <details style={{ marginTop: 12 }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 600 }}>{zh ? '评分标准（高级）' : 'Scoring rubric (Advanced)'}</summary>
                   <div className="settings-stack" style={{ marginTop: 12 }}>
                     <Input.TextArea
                       rows={3}

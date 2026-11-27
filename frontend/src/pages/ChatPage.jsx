@@ -1045,9 +1045,19 @@ export default function ChatPage({ token }) {
                       />
                     ) : (
                       <div className="x-chat-empty">
-                        <Empty description={currentSessionId ? (isZh ? '从一个好问题开始' : 'Start with a question') : t('emptySessions')}>
-                          <Paragraph type="secondary">{isZh ? '新建任务，描述你想分析的问题。任务会结合行情与共享消息摘要回答。' : 'Create a task and describe your question. Answers use market data and shared news summaries.'}</Paragraph>
-                          {currentSessionId ? <div className="chat-starters">{(isZh ? ['分析当前趋势、关键价位与失效条件', '对比多空证据，哪些信号存在冲突？', '复盘近期交易，区分数据问题与执行问题'] : ['Analyze trend, levels and invalidation', 'Compare bullish and bearish evidence', 'Review recent trades and execution']).map((text) => <Button key={text} onClick={() => setInput(text)}>{text}</Button>)}</div> : <Button type="primary" icon={<PlusOutlined />} onClick={openCreateSessionModal}>{t('createSession')}</Button>}
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={currentSessionId ? (isZh ? '从一个好问题开始' : 'Start with a question') : t('emptySessions')}>
+                          <Paragraph type="secondary" style={{ maxWidth: 460, margin: '0 auto 14px' }}>
+                            {isZh ? '新建任务，描述你想分析的问题。任务会结合行情与共享消息摘要回答。' : 'Create a task and describe your question. Answers use market data and shared news summaries.'}
+                          </Paragraph>
+                          {currentSessionId ? (
+                            <div className="chat-starters">
+                              {(isZh ? ['分析当前趋势、关键价位与失效条件', '对比多空证据，哪些信号存在冲突？', '复盘近期交易，区分数据问题与执行问题'] : ['Analyze trend, levels and invalidation', 'Compare bullish and bearish evidence', 'Review recent trades and execution']).map((text) => (
+                                <Button key={text} size="middle" onClick={() => setInput(text)}>{text}</Button>
+                              ))}
+                            </div>
+                          ) : (
+                            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateSessionModal}>{t('createSession')}</Button>
+                          )}
                         </Empty>
                       </div>
                     )}

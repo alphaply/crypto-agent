@@ -25,6 +25,7 @@ import {
   List,
   Modal,
   Popconfirm,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -37,7 +38,25 @@ import {
   Upload,
   message,
 } from 'antd';
-import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, DownloadOutlined, HolderOutlined, FileTextOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
+import {
+  ApiOutlined,
+  AppstoreOutlined,
+  ArrowDownOutlined,
+  ArrowUpOutlined,
+  BankOutlined,
+  BookOutlined,
+  ControlOutlined,
+  CopyOutlined,
+  DeleteOutlined,
+  DownloadOutlined,
+  EditOutlined,
+  FileTextOutlined,
+  HolderOutlined,
+  PlusOutlined,
+  TableOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
+import './AdminPage.css';
 import { api } from '../lib/api';
 import { EXIT_MODES, exitModeLabel, resolveExitMode } from '../lib/exitManagement';
 import { usePreferences } from '../app/usePreferences';
@@ -419,7 +438,7 @@ export default function AdminPage() {
   };
   const [newPromptName, setNewPromptName] = useState('');
 
-  // Task (agent) drawer state
+  // Task (agent) drawer & filter state
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
   const [editingTaskId, setEditingTaskId] = useState(null);
@@ -427,6 +446,10 @@ export default function AdminPage() {
   const [deletingTaskId, setDeletingTaskId] = useState(null);
   const deletingTaskRef = useRef(false);
   const [draggingTaskId, setDraggingTaskId] = useState('');
+  const [taskViewMode, setTaskViewMode] = useState('cards');
+  const [taskSearch, setTaskSearch] = useState('');
+  const [taskModeFilter, setTaskModeFilter] = useState('__all__');
+  const [taskStatusFilter, setTaskStatusFilter] = useState('__all__');
   const autosaveTimerRef = useRef(null);
 
   // Provider/Profile drawer state
@@ -778,6 +801,15 @@ export default function AdminPage() {
       secrets: Object.fromEntries(Object.entries(agent.secrets || {}).map(([key]) => [key, buildBlankSecretMeta()])),
     };
     updatePayload((prev) => ({ ...prev, agents: [...prev.agents, clone] }));
+  };
+
+  const toggleTaskEnabled = (configId, enabled) => {
+    updatePayload((prev) => ({
+      ...prev,
+      agents: (prev.agents || []).map((agent) => (
+        agent.config_id === configId ? { ...agent, enabled } : agent
+      )),
+    }));
   };
 
   const moveTask = (configId, directionOrTargetId) => {
@@ -1379,13 +1411,46 @@ export default function AdminPage() {
     })),
   } : null;
 
-  const agentCount = (payload?.agents || []).length;
+  const allAgents = payload?.agents || [];
+  const agentCount = allAgents.length;
+  const enabledAgentCount = allAgents.filter((agent) => agent.enabled).length;
+  const realAgentCount = allAgents.filter((agent) => agent.mode === 'REAL').length;
+  const spotAgentCount = allAgents.filter((agent) => agent.mode === 'SPOT_DCA').length;
+  const strategyAgentCount = allAgents.filter((agent) => agent.mode === 'STRATEGY').length;
   const providerCount = (payload?.llm_providers || []).length;
   const profileCount = (payload?.exchange_profiles || []).length;
   const promptFileCount = (payload?.prompts?.files || []).length;
+  const filteredAgents = allAgents.filter((agent) => {
+    if (taskModeFilter !== '__all__' && agent.mode !== taskModeFilter) return false;
+    if (taskStatusFilter === 'enabled' && !agent.enabled) return false;
+    if (taskStatusFilter === 'paused' && agent.enabled) return false;
+    const q = taskSearch.trim().toLowerCase();
+    if (!q) return true;
+    return [agent.title, agent.config_id, ...taskSymbols(agent), agent.mode, agent.prompt_file]
+      .join(' ')
+      .toLowerCase()
+      .includes(q);
+  });
+  const modeTagColor = (mode) => (
+    mode === 'REAL' ? 'volcano' : mode === 'SPOT_DCA' ? 'cyan' : 'blue'
+  );
+  const formatTaskSchedule = (record) => {
+    if (record.mode === 'SPOT_DCA') {
+      const freqMap = { '1d': locale === 'zh' ? '每日' : 'Daily', '1w': locale === 'zh' ? '每周' : 'Weekly', '1h': locale === 'zh' ? '每小时' : 'Hourly' };
+      const freqLabel = freqMap[record.dca_freq] || record.dca_freq || (locale === 'zh' ? '定时定投' : 'Scheduled DCA');
+      return `${freqLabel}${record.dca_time ? ` · ${record.dca_time}` : ''}`;
+    }
+    const interval = record.run_interval ?? 60;
+    const rulesCount = (record.run_schedule || []).length;
+    const base = locale === 'zh' ? `每 ${interval} 分钟` : `Every ${interval}m`;
+    return rulesCount > 0
+      ? `${base} · ${rulesCount} ${locale === 'zh' ? '条时段规则' : 'schedule rules'}`
+      : base;
+  };
   const adminNavGroups = [
     {
       key: 'core',
+      icon: <AppstoreOutlined />,
       label: locale === 'zh' ? '核心配置' : 'Core Setup',
       hint: locale === 'zh' ? '任务 · 模型 · 账户' : 'Tasks · Models · Accounts',
       items: [
@@ -1396,6 +1461,7 @@ export default function AdminPage() {
     },
     {
       key: 'integrations',
+      icon: <ApiOutlined />,
       label: locale === 'zh' ? '情报与接入' : 'Intelligence & Integrations',
       hint: locale === 'zh' ? '消息 · MCP · 模拟盘' : 'News · MCP · Paper',
       items: [
@@ -1406,6 +1472,7 @@ export default function AdminPage() {
     },
     {
       key: 'strategy',
+      icon: <BookOutlined />,
       label: locale === 'zh' ? '策略与记忆' : 'Prompts & Memory',
       hint: locale === 'zh' ? '提示词 · 规则 · 记忆' : 'Prompts · Rules · Memory',
       items: [
@@ -1415,6 +1482,7 @@ export default function AdminPage() {
     },
     {
       key: 'ops',
+      icon: <ControlOutlined />,
       label: locale === 'zh' ? '系统与运维' : 'System & Ops',
       hint: locale === 'zh' ? '全局参数 · 日志 · 备份' : 'Runtime · Logs · Backup',
       items: [
@@ -1558,53 +1626,258 @@ export default function AdminPage() {
             />
           </Card>
         );
-      case 'tasks':
+      case 'tasks': {
+        const showCards = isMobile || taskViewMode === 'cards';
         return (
-          <Card className="panel-card" title={locale === 'zh' ? '任务配置' : 'Task Config'} extra={
-            <Button type="primary" onClick={openAddTask}>{t('addAgent')}</Button>
-          }>
-            {isMobile ? (
-              <div className="admin-mobile-list">
-                {(payload.agents || []).map((record, index) => (
-                  <Card
-                    key={record.config_id}
-                    size="small"
-                    className="admin-mobile-card"
-                    title={record.title || record.config_id}
-                    extra={<Tag color={record.enabled ? 'green' : 'default'}>{record.enabled ? 'ON' : 'OFF'}</Tag>}
+          <Card
+            className="panel-card"
+            title={
+              <Space size={8} wrap>
+                <span>{locale === 'zh' ? '交易任务与调度' : 'Trading Tasks & Scheduling'}</span>
+                <Tag color="blue">{agentCount}</Tag>
+              </Space>
+            }
+            extra={
+              <Button type="primary" icon={<PlusOutlined />} onClick={openAddTask}>
+                {t('addAgent')}
+              </Button>
+            }
+          >
+            <div className="admin-kpi-strip" aria-label={locale === 'zh' ? '任务概览' : 'Tasks overview'}>
+              <div className="admin-kpi-card">
+                <span className="admin-kpi-card__label">{locale === 'zh' ? '运行中任务' : 'Active Tasks'}</span>
+                <strong className="admin-kpi-card__value is-success">{enabledAgentCount} / {agentCount}</strong>
+                <span className="admin-kpi-card__sub">{locale === 'zh' ? '暂停中的任务不会触发定时决策' : 'Paused tasks skip scheduled runs'}</span>
+              </div>
+              <div className="admin-kpi-card">
+                <span className="admin-kpi-card__label">{locale === 'zh' ? '实盘合约 (REAL)' : 'Live Futures (REAL)'}</span>
+                <strong className="admin-kpi-card__value">{realAgentCount}</strong>
+                <span className="admin-kpi-card__sub">{locale === 'zh' ? '真实交易所下单与风控' : 'Live exchange execution'}</span>
+              </div>
+              <div className="admin-kpi-card">
+                <span className="admin-kpi-card__label">{locale === 'zh' ? '现货定投 (SPOT_DCA)' : 'Spot DCA'}</span>
+                <strong className="admin-kpi-card__value is-accent">{spotAgentCount}</strong>
+                <span className="admin-kpi-card__sub">{locale === 'zh' ? '按预算分批买入现货标的' : 'Budgeted spot accumulation'}</span>
+              </div>
+              <div className="admin-kpi-card">
+                <span className="admin-kpi-card__label">{locale === 'zh' ? '策略模拟 (STRATEGY)' : 'Strategy Only'}</span>
+                <strong className="admin-kpi-card__value">{strategyAgentCount}</strong>
+                <span className="admin-kpi-card__sub">{locale === 'zh' ? '仅分析与记录，不真实下单' : 'Analysis only, no live orders'}</span>
+              </div>
+            </div>
+
+            <div className="admin-toolbar">
+              <div className="admin-toolbar__filters">
+                <Input
+                  className="admin-toolbar__search"
+                  allowClear
+                  value={taskSearch}
+                  onChange={(event) => setTaskSearch(event.target.value)}
+                  placeholder={locale === 'zh' ? '搜索任务名、ID 或交易标的…' : 'Search title, ID, or symbol…'}
+                  aria-label={locale === 'zh' ? '搜索任务' : 'Search tasks'}
+                />
+                <Select
+                  value={taskModeFilter}
+                  onChange={setTaskModeFilter}
+                  style={{ minWidth: 145 }}
+                  aria-label={locale === 'zh' ? '按模式筛选' : 'Filter by mode'}
+                  options={[
+                    { value: '__all__', label: locale === 'zh' ? '全部模式' : 'All modes' },
+                    { value: 'REAL', label: 'REAL' },
+                    { value: 'SPOT_DCA', label: 'SPOT_DCA' },
+                    { value: 'STRATEGY', label: 'STRATEGY' },
+                  ]}
+                />
+                <Select
+                  value={taskStatusFilter}
+                  onChange={setTaskStatusFilter}
+                  style={{ minWidth: 130 }}
+                  aria-label={locale === 'zh' ? '按状态筛选' : 'Filter by status'}
+                  options={[
+                    { value: '__all__', label: locale === 'zh' ? '全部状态' : 'All states' },
+                    { value: 'enabled', label: locale === 'zh' ? '仅运行中' : 'Enabled only' },
+                    { value: 'paused', label: locale === 'zh' ? '仅已暂停' : 'Paused only' },
+                  ]}
+                />
+                {(taskSearch || taskModeFilter !== '__all__' || taskStatusFilter !== '__all__') && (
+                  <Button
+                    onClick={() => {
+                      setTaskSearch('');
+                      setTaskModeFilter('__all__');
+                      setTaskStatusFilter('__all__');
+                    }}
                   >
-                    <div className="admin-mobile-meta">
-                      <Text type="secondary">Config</Text><Text>{record.config_id}</Text>
-                      <Text type="secondary">{t('symbol')}</Text><Text>{taskSymbols(record).join(', ') || '-'}</Text>
-                      <Text type="secondary">Mode</Text><Tag>{record.mode}</Tag>
-                      <Text type="secondary">{locale === 'zh' ? '决策模型' : 'Model'}</Text>
-                      <div>
-                        <Tag color="blue">{getProviderInfo(record.llm_provider_id)?.name || record.model || '-'}</Tag>
-                        {(record.fallback_llm_provider_ids || []).length > 0 && (
-                          <Tag color="cyan">+{record.fallback_llm_provider_ids.length} {locale === 'zh' ? '兜底' : 'fallbacks'}</Tag>
-                        )}
+                    {locale === 'zh' ? '重置' : 'Reset'}
+                  </Button>
+                )}
+              </div>
+              {!isMobile && (
+                <Segmented
+                  value={taskViewMode}
+                  onChange={setTaskViewMode}
+                  options={[
+                    { value: 'cards', icon: <AppstoreOutlined />, label: locale === 'zh' ? '卡片' : 'Cards' },
+                    { value: 'table', icon: <TableOutlined />, label: locale === 'zh' ? '表格' : 'Table' },
+                  ]}
+                />
+              )}
+            </div>
+
+            {!filteredAgents.length ? (
+              <Empty
+                description={
+                  agentCount
+                    ? (locale === 'zh' ? '没有符合筛选条件的任务' : 'No tasks match your filters')
+                    : t('emptyConfig')
+                }
+              >
+                {!agentCount && (
+                  <Button type="primary" icon={<PlusOutlined />} onClick={openAddTask}>
+                    {t('addAgent')}
+                  </Button>
+                )}
+              </Empty>
+            ) : showCards ? (
+              <div className="admin-task-grid">
+                {filteredAgents.map((record) => {
+                  const fullIndex = allAgents.findIndex((item) => item.config_id === record.config_id);
+                  const symbolsList = taskSymbols(record);
+                  const primaryInfo = getProviderInfo(record.llm_provider_id);
+                  const primaryLabel = primaryInfo ? (primaryInfo.name || primaryInfo.model) : (record.model || '-');
+                  const fallbackCount = (record.fallback_llm_provider_ids || []).length;
+                  const fallbackLabels = (record.fallback_llm_provider_ids || []).map((id, idx) => {
+                    const fbInfo = getProviderInfo(id);
+                    return `${idx + 1}. ${fbInfo ? (fbInfo.name || fbInfo.model) : id || (locale === 'zh' ? '未配置' : 'Not configured')}`;
+                  });
+                  const profileInfo = getProfileInfo(record.exchange_profile_id);
+                  const exchangeLabel = profileInfo
+                    ? `${profileInfo.name || profileInfo.exchange} (${profileInfo.exchange})`
+                    : (record.exchange || (locale === 'zh' ? '未绑定账户' : 'No account'));
+
+                  return (
+                    <div
+                      key={record.config_id}
+                      className={`admin-task-card ${record.enabled ? '' : 'is-disabled'} ${draggingTaskId === record.config_id ? 'is-dragging' : ''}`}
+                      draggable={!isMobile}
+                      onDragStart={() => setDraggingTaskId(record.config_id)}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={() => {
+                        if (draggingTaskId) moveTask(draggingTaskId, record.config_id);
+                        setDraggingTaskId('');
+                      }}
+                      onDragEnd={() => setDraggingTaskId('')}
+                    >
+                      <div className="admin-task-card__head">
+                        <div className="admin-task-card__title-group">
+                          {!isMobile && <HolderOutlined className="agent-drag-handle" title={locale === 'zh' ? '拖拽调整顺序' : 'Drag to reorder'} />}
+                          <div className="admin-task-card__identity">
+                            <div className="admin-task-card__name-row">
+                              <span className="admin-task-card__name">{record.title || record.config_id}</span>
+                              <Tag color={modeTagColor(record.mode)} style={{ margin: 0 }}>{record.mode}</Tag>
+                            </div>
+                            <span className="admin-task-card__id">{record.config_id}</span>
+                          </div>
+                        </div>
+                        <div className="admin-task-card__status">
+                          <Tag color={record.enabled ? 'green' : 'default'} style={{ margin: 0 }}>
+                            {record.enabled ? 'ON' : 'OFF'}
+                          </Tag>
+                          <Switch
+                            size="small"
+                            checked={Boolean(record.enabled)}
+                            aria-label={locale === 'zh' ? `切换任务 ${record.title || record.config_id} 启用状态` : `Toggle ${record.title || record.config_id} enabled`}
+                            onChange={(checked) => toggleTaskEnabled(record.config_id, checked)}
+                          />
+                        </div>
                       </div>
-                      <Text type="secondary">Prompt</Text><Text className="text-break">{record.prompt_file || '-'}</Text>
+
+                      <div className="admin-task-facts">
+                        <div className="admin-task-fact">
+                          <span className="admin-task-fact__label">{t('symbol')} & {locale === 'zh' ? '账户' : 'Account'}</span>
+                          <span className="admin-task-fact__value">{symbolsList.join(', ') || '-'}</span>
+                          <span className="admin-task-fact__sub">{exchangeLabel}</span>
+                        </div>
+                        <div className="admin-task-fact">
+                          <span className="admin-task-fact__label">{record.mode === 'SPOT_DCA' ? (locale === 'zh' ? '定投额度' : 'DCA Sizing') : (locale === 'zh' ? '杠杆与退出' : 'Leverage & Exit')}</span>
+                          <span className="admin-task-fact__value">
+                            {record.mode === 'SPOT_DCA'
+                              ? `${record.dca_amount ?? 0} / ${locale === 'zh' ? '次' : 'run'}`
+                              : `${record.leverage ?? 1}×`}
+                          </span>
+                          <span className="admin-task-fact__sub">
+                            {record.mode === 'SPOT_DCA'
+                              ? (record.dca_budget ? `${locale === 'zh' ? '累计上限' : 'Cap'}: ${record.dca_budget}` : (locale === 'zh' ? '无累计上限' : 'No lifetime cap'))
+                              : exitModeLabel(resolveExitMode(record), locale)}
+                          </span>
+                        </div>
+                        <div className="admin-task-fact">
+                          <span className="admin-task-fact__label">{locale === 'zh' ? '运行频率' : 'Schedule'}</span>
+                          <span className="admin-task-fact__value">{formatTaskSchedule(record)}</span>
+                          <span className="admin-task-fact__sub">
+                            {(record.market_timeframes || []).join(' / ') || (locale === 'zh' ? '默认周期' : 'Default timeframes')}
+                          </span>
+                        </div>
+                        <div className="admin-task-fact">
+                          <span className="admin-task-fact__label">{locale === 'zh' ? '决策模型' : 'Decision Model'}</span>
+                          <span className="admin-task-fact__value">{primaryLabel}</span>
+                          <span className="admin-task-fact__sub">
+                            {fallbackCount > 0 ? (
+                              <Tooltip
+                                title={
+                                  <div>
+                                    <div style={{ fontWeight: 'bold', marginBottom: 4 }}>
+                                      {locale === 'zh' ? '兜底链路：' : 'Fallback Chain:'}
+                                    </div>
+                                    {fallbackLabels.map((item, i) => (
+                                      <div key={i}>{item}</div>
+                                    ))}
+                                  </div>
+                                }
+                              >
+                                <Tag color="cyan" style={{ cursor: 'pointer', margin: 0 }}>
+                                  +{fallbackCount} {locale === 'zh' ? '级兜底' : 'fallbacks'}
+                                </Tag>
+                              </Tooltip>
+                            ) : (
+                              locale === 'zh' ? '未设兜底模型' : 'No fallback chain'
+                            )}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="admin-task-card__footer">
+                        <Tooltip title={record.prompt_file || (locale === 'zh' ? '内置默认 Prompt' : 'Built-in default prompt')}>
+                          <span className="admin-task-card__prompt">
+                            <FileTextOutlined />
+                            <span>{record.prompt_file || (locale === 'zh' ? '内置默认 Prompt' : 'Default Prompt')}</span>
+                          </span>
+                        </Tooltip>
+                        <Space size={6} wrap>
+                          <Button size="small" icon={<ArrowUpOutlined />} disabled={fullIndex <= 0} onClick={() => moveTask(record.config_id, -1)} aria-label={locale === 'zh' ? '上移任务' : 'Move task up'} />
+                          <Button size="small" icon={<ArrowDownOutlined />} disabled={fullIndex >= allAgents.length - 1} onClick={() => moveTask(record.config_id, 1)} aria-label={locale === 'zh' ? '下移任务' : 'Move task down'} />
+                          <Button size="small" type="primary" ghost icon={<EditOutlined />} onClick={() => openEditTask(record)}>Edit</Button>
+                          <Button size="small" icon={<CopyOutlined />} onClick={() => duplicateTask(record)}>Copy</Button>
+                          <Popconfirm
+                            title={t('confirmDelete')}
+                            description={locale === 'zh' ? '删除此任务及本系统关联的运行、历史数据？删除不会卖出持仓或撤销交易所委托，交易所资产和委托需自行管理。' : 'Delete this task and its local runtime/history data? This will not sell holdings or cancel exchange orders; manage them directly on the exchange.'}
+                            onConfirm={() => deleteAgentData(record.config_id)}
+                          >
+                            <Button size="small" danger loading={deletingTaskId === record.config_id} disabled={taskSaving || Boolean(deletingTaskId && deletingTaskId !== record.config_id)}>
+                              {t('delete')}
+                            </Button>
+                          </Popconfirm>
+                        </Space>
+                      </div>
                     </div>
-                    <Space className="admin-mobile-actions" wrap>
-                      <Button size="small" icon={<ArrowUpOutlined />} disabled={index === 0} onClick={() => moveTask(record.config_id, -1)} />
-                      <Button size="small" icon={<ArrowDownOutlined />} disabled={index === (payload.agents || []).length - 1} onClick={() => moveTask(record.config_id, 1)} />
-                      <Button size="small" onClick={() => openEditTask(record)}>Edit</Button>
-                      <Button size="small" onClick={() => duplicateTask(record)}>Copy</Button>
-                      <Popconfirm title={t('confirmDelete')} description={locale === 'zh' ? '删除此任务及本系统关联的运行、历史数据？删除不会卖出持仓或撤销交易所委托，交易所资产和委托需自行管理。' : 'Delete this task and its local runtime/history data? This will not sell holdings or cancel exchange orders; manage them directly on the exchange.'} onConfirm={() => deleteAgentData(record.config_id)}>
-                        <Button size="small" danger loading={deletingTaskId === record.config_id} disabled={taskSaving || Boolean(deletingTaskId && deletingTaskId !== record.config_id)}>{t('delete')}</Button>
-                      </Popconfirm>
-                    </Space>
-                  </Card>
-                ))}
-                {!(payload.agents || []).length ? <Empty description={t('emptyConfig')} /> : null}
+                  );
+                })}
               </div>
             ) : (
               <Table
                 rowKey="config_id"
-                dataSource={payload.agents || []}
+                dataSource={filteredAgents}
                 pagination={false}
-                scroll={{ x: 1120 }}
+                scroll={{ x: 1180 }}
                 onRow={(record) => ({
                   draggable: true,
                   onDragStart: () => setDraggingTaskId(record.config_id),
@@ -1620,22 +1893,43 @@ export default function AdminPage() {
                     title: '',
                     width: 96,
                     fixed: 'left',
-                    render: (_, record, index) => (
-                      <Space size={4} className="agent-order-controls">
-                        <HolderOutlined className="agent-drag-handle" />
-                        <Button size="small" icon={<ArrowUpOutlined />} disabled={index === 0} onClick={() => moveTask(record.config_id, -1)} />
-                        <Button size="small" icon={<ArrowDownOutlined />} disabled={index === (payload.agents || []).length - 1} onClick={() => moveTask(record.config_id, 1)} />
-                      </Space>
+                    render: (_, record) => {
+                      const fullIndex = allAgents.findIndex((item) => item.config_id === record.config_id);
+                      return (
+                        <Space size={4} className="agent-order-controls">
+                          <HolderOutlined className="agent-drag-handle" />
+                          <Button size="small" icon={<ArrowUpOutlined />} disabled={fullIndex <= 0} onClick={() => moveTask(record.config_id, -1)} />
+                          <Button size="small" icon={<ArrowDownOutlined />} disabled={fullIndex >= allAgents.length - 1} onClick={() => moveTask(record.config_id, 1)} />
+                        </Space>
+                      );
+                    },
+                  },
+                  {
+                    title: locale === 'zh' ? '任务名称 / ID' : 'Task / ID',
+                    width: 200,
+                    render: (_, record) => (
+                      <div className="provider-model-cell">
+                        <Text strong>{record.title || record.config_id}</Text>
+                        <Text type="secondary" className="provider-id">{record.config_id}</Text>
+                      </div>
                     ),
                   },
-                  { title: 'Config ID', dataIndex: 'config_id', width: 180, ellipsis: true },
-                  { title: 'Title', dataIndex: 'title', width: 180, ellipsis: true },
-                  { title: t('symbol'), dataIndex: 'symbol', width: 180, render: (_, record) => taskSymbols(record).join(', ') || '-' },
-                  { title: 'Mode', dataIndex: 'mode', width: 120, render: (v) => <Tag>{v}</Tag> },
+                  { title: t('symbol'), dataIndex: 'symbol', width: 170, render: (_, record) => taskSymbols(record).join(', ') || '-' },
+                  { title: 'Mode', dataIndex: 'mode', width: 115, render: (v) => <Tag color={modeTagColor(v)}>{v}</Tag> },
+                  {
+                    title: locale === 'zh' ? '杠杆 / 调度' : 'Sizing / Schedule',
+                    width: 170,
+                    render: (_, record) => (
+                      <div className="provider-model-cell">
+                        <Text>{record.mode === 'SPOT_DCA' ? `DCA ${record.dca_amount ?? 0}` : `${record.leverage ?? 1}×`}</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>{formatTaskSchedule(record)}</Text>
+                      </div>
+                    ),
+                  },
                   {
                     title: locale === 'zh' ? '决策模型 / 兜底' : 'Model / Fallback',
                     key: 'decision_model',
-                    width: 200,
+                    width: 195,
                     render: (_, record) => {
                       const primaryInfo = getProviderInfo(record.llm_provider_id);
                       const primaryLabel = primaryInfo ? (primaryInfo.name || primaryInfo.model) : (record.model || '-');
@@ -1648,16 +1942,18 @@ export default function AdminPage() {
                         <Space direction="vertical" size={2}>
                           <Tag color="blue">{primaryLabel}</Tag>
                           {fallbackCount > 0 && (
-                            <Tooltip title={
-                              <div>
-                                <div style={{ fontWeight: 'bold', marginBottom: 4 }}>
-                                  {locale === 'zh' ? '兜底链路：' : 'Fallback Chain:'}
+                            <Tooltip
+                              title={
+                                <div>
+                                  <div style={{ fontWeight: 'bold', marginBottom: 4 }}>
+                                    {locale === 'zh' ? '兜底链路：' : 'Fallback Chain:'}
+                                  </div>
+                                  {fallbackLabels.map((item, i) => (
+                                    <div key={i}>{item}</div>
+                                  ))}
                                 </div>
-                                {fallbackLabels.map((item, i) => (
-                                  <div key={i}>{item}</div>
-                                ))}
-                              </div>
-                            }>
+                              }
+                            >
                               <Tag color="cyan" style={{ cursor: 'pointer' }}>
                                 +{fallbackCount} {locale === 'zh' ? '级兜底' : 'fallbacks'}
                               </Tag>
@@ -1667,10 +1963,23 @@ export default function AdminPage() {
                       );
                     },
                   },
-                  { title: 'Enabled', dataIndex: 'enabled', width: 110, render: (v) => <Tag color={v ? 'green' : 'default'}>{v ? 'ON' : 'OFF'}</Tag> },
-                  { title: 'Prompt', dataIndex: 'prompt_file', width: 180, ellipsis: true },
                   {
-                    title: '', width: 210, fixed: 'right', render: (_, record) => (
+                    title: 'Enabled',
+                    dataIndex: 'enabled',
+                    width: 115,
+                    render: (v, record) => (
+                      <Space size={6}>
+                        <Switch size="small" checked={Boolean(v)} onChange={(checked) => toggleTaskEnabled(record.config_id, checked)} />
+                        <Tag color={v ? 'green' : 'default'}>{v ? 'ON' : 'OFF'}</Tag>
+                      </Space>
+                    ),
+                  },
+                  { title: 'Prompt', dataIndex: 'prompt_file', width: 150, ellipsis: true, render: (v) => v || (locale === 'zh' ? '内置默认' : 'Default') },
+                  {
+                    title: '',
+                    width: 210,
+                    fixed: 'right',
+                    render: (_, record) => (
                       <Space className="table-actions">
                         <Button size="small" onClick={() => openEditTask(record)}>Edit</Button>
                         <Button size="small" onClick={() => duplicateTask(record)}>Copy</Button>
@@ -1679,7 +1988,9 @@ export default function AdminPage() {
                           description={locale === 'zh' ? '删除此任务及本系统关联的运行、历史数据？删除不会卖出持仓或撤销交易所委托，交易所资产和委托需自行管理。' : 'Delete this task and its local runtime/history data? This will not sell holdings or cancel exchange orders; manage them directly on the exchange.'}
                           onConfirm={() => deleteAgentData(record.config_id)}
                         >
-                          <Button size="small" danger loading={deletingTaskId === record.config_id} disabled={taskSaving || Boolean(deletingTaskId && deletingTaskId !== record.config_id)}>{t('delete')}</Button>
+                          <Button size="small" danger loading={deletingTaskId === record.config_id} disabled={taskSaving || Boolean(deletingTaskId && deletingTaskId !== record.config_id)}>
+                            {t('delete')}
+                          </Button>
                         </Popconfirm>
                       </Space>
                     ),
@@ -1689,6 +2000,7 @@ export default function AdminPage() {
             )}
           </Card>
         );
+      }
       case 'providers':
         return (
           <Tabs
@@ -1958,33 +2270,116 @@ export default function AdminPage() {
             ]}
           />
         );
-      case 'exchanges':
+      case 'exchanges': {
+        const profiles = payload.exchange_profiles || [];
+        const swapCount = profiles.filter((p) => (p.market_type || 'swap') === 'swap').length;
+        const spotCount = profiles.filter((p) => p.market_type === 'spot').length;
+        const readyCount = profiles.filter((p) => Boolean(p.secrets?.api_key?.configured || p.secrets?.api_key?.value)).length;
         return (
-          <Card className="panel-card" title={t('exchangeProfiles')} extra={
-            <Button type="primary" onClick={openAddProfile}>{t('addProfile')}</Button>
-          }>
-            <Table
-              rowKey="profile_id"
-              dataSource={payload.exchange_profiles || []}
-              pagination={false}
-              columns={[
-                { title: t('profileName'), dataIndex: 'name' },
-                { title: 'Exchange', dataIndex: 'exchange' },
-                { title: 'Market Type', dataIndex: 'market_type' },
-                {
-                  title: '', width: 120, render: (_, record) => (
-                    <Space>
-                      <Button size="small" onClick={() => openEditProfile(record)}>Edit</Button>
-                      <Popconfirm title={t('confirmDelete')} onConfirm={() => deleteProfile(record.profile_id)}>
-                        <Button size="small" danger>Delete</Button>
-                      </Popconfirm>
-                    </Space>
-                  ),
-                },
-              ]}
-            />
+          <Card
+            className="panel-card"
+            title={
+              <Space size={8}>
+                <BankOutlined />
+                <span>{t('exchangeProfiles')}</span>
+                <Tag color="blue">{profiles.length}</Tag>
+              </Space>
+            }
+            extra={
+              <Button type="primary" icon={<PlusOutlined />} onClick={openAddProfile}>
+                {t('addProfile')}
+              </Button>
+            }
+          >
+            <div className="admin-kpi-strip" aria-label={locale === 'zh' ? '交易账户概览' : 'Exchange accounts overview'}>
+              <div className="admin-kpi-card">
+                <span className="admin-kpi-card__label">{locale === 'zh' ? '账户总数' : 'Total Accounts'}</span>
+                <strong className="admin-kpi-card__value">{profiles.length}</strong>
+              </div>
+              <div className="admin-kpi-card">
+                <span className="admin-kpi-card__label">{locale === 'zh' ? '密钥已就绪' : 'Keys Configured'}</span>
+                <strong className="admin-kpi-card__value is-success">{readyCount} / {profiles.length}</strong>
+              </div>
+              <div className="admin-kpi-card">
+                <span className="admin-kpi-card__label">{locale === 'zh' ? '永续合约账户' : 'Swap Accounts'}</span>
+                <strong className="admin-kpi-card__value">{swapCount}</strong>
+              </div>
+              <div className="admin-kpi-card">
+                <span className="admin-kpi-card__label">{locale === 'zh' ? '现货账户' : 'Spot Accounts'}</span>
+                <strong className="admin-kpi-card__value is-accent">{spotCount}</strong>
+              </div>
+            </div>
+
+            {profiles.length ? (
+              <div className="admin-profile-grid">
+                {profiles.map((record) => {
+                  const hasKey = Boolean(record.secrets?.api_key?.configured || record.secrets?.api_key?.value);
+                  const hasSecret = Boolean(record.secrets?.secret?.configured || record.secrets?.secret?.value);
+                  const needsPassphrase = record.exchange === 'okx';
+                  const hasPassphrase = !needsPassphrase || Boolean(record.secrets?.passphrase?.configured || record.secrets?.passphrase?.value);
+                  const credsReady = hasKey && hasSecret && hasPassphrase;
+                  const linkedTasks = allAgents.filter((agent) => agent.exchange_profile_id === record.profile_id);
+                  return (
+                    <div key={record.profile_id} className="admin-profile-card">
+                      <div className="admin-profile-card__head">
+                        <div className="admin-task-card__identity">
+                          <span className="admin-task-card__name">{record.name || record.profile_id}</span>
+                          <span className="admin-task-card__id">{record.profile_id}</span>
+                        </div>
+                        <Tag color={credsReady ? 'green' : 'gold'} style={{ margin: 0 }}>
+                          {credsReady ? (locale === 'zh' ? '凭据就绪' : 'Ready') : (locale === 'zh' ? '待补全密钥' : 'Incomplete')}
+                        </Tag>
+                      </div>
+
+                      <div className="admin-profile-card__meta">
+                        <div className="admin-profile-card__meta-row">
+                          <Text type="secondary">{locale === 'zh' ? '交易所与市场' : 'Exchange & Market'}</Text>
+                          <Space size={4}>
+                            <Tag color="blue" style={{ margin: 0 }}>{String(record.exchange || '').toUpperCase()}</Tag>
+                            <Tag color={record.market_type === 'spot' ? 'cyan' : 'purple'} style={{ margin: 0 }}>
+                              {record.market_type === 'spot' ? (locale === 'zh' ? '现货 Spot' : 'Spot') : (locale === 'zh' ? '合约 Swap' : 'Swap')}
+                            </Tag>
+                          </Space>
+                        </div>
+                        <div className="admin-profile-card__meta-row">
+                          <Text type="secondary">{locale === 'zh' ? '绑定任务' : 'Linked Tasks'}</Text>
+                          {linkedTasks.length ? (
+                            <Tooltip title={linkedTasks.map((item) => item.title || item.config_id).join('、')}>
+                              <Tag color="blue" style={{ margin: 0 }}>
+                                {linkedTasks.length} {locale === 'zh' ? '个任务' : 'tasks'}
+                              </Tag>
+                            </Tooltip>
+                          ) : (
+                            <Text type="secondary">{locale === 'zh' ? '暂未绑定' : 'Unused'}</Text>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="admin-profile-card__footer">
+                        <Space size={4} wrap>
+                          <Tag color={hasKey ? 'green' : 'default'} style={{ margin: 0 }}>API Key</Tag>
+                          <Tag color={hasSecret ? 'green' : 'default'} style={{ margin: 0 }}>Secret</Tag>
+                          {needsPassphrase && <Tag color={hasPassphrase ? 'green' : 'default'} style={{ margin: 0 }}>Passphrase</Tag>}
+                        </Space>
+                        <Space size={6}>
+                          <Button size="small" type="primary" ghost icon={<EditOutlined />} onClick={() => openEditProfile(record)}>Edit</Button>
+                          <Popconfirm title={t('confirmDelete')} onConfirm={() => deleteProfile(record.profile_id)}>
+                            <Button size="small" danger>Delete</Button>
+                          </Popconfirm>
+                        </Space>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <Empty description={locale === 'zh' ? '尚未添加交易账户，先创建一个交易所配置以便任务绑定。' : 'No exchange accounts yet. Add one to bind trading tasks.'}>
+                <Button type="primary" icon={<PlusOutlined />} onClick={openAddProfile}>{t('addProfile')}</Button>
+              </Empty>
+            )}
           </Card>
         );
+      }
       case 'mcp':
         return <McpSettingsPanel profiles={persistedProfiles} onNavigateTab={setActiveAdminTab} />;
       case 'paper':
@@ -2083,50 +2478,72 @@ export default function AdminPage() {
         return <SystemLogsPanel />;
       case 'importexport':
         return (
-          <Card className="panel-card" title={locale === 'zh' ? '快速导入导出' : 'Quick Import/Export'}>
+          <Card className="panel-card" title={locale === 'zh' ? '备份与迁移中心' : 'Backup & Migration'}>
             <Space direction="vertical" size="large" style={{ width: '100%' }}>
-              <Alert type="info" showIcon message={
-                locale === 'zh'
-                  ? '导出包含所有配置、明文密钥、Prompt 文件和模型计价。不同 CONFIG_MASTER_KEY 的机器之间可以自由迁移，导入时密钥会用当前 KEY 重新加密。'
-                  : 'Export includes all configs, plaintext secrets, prompts, and pricing. Migration between machines with different CONFIG_MASTER_KEY is supported — secrets are re-encrypted on import.'
-              } />
-              <Space>
-                <Button type="primary" onClick={handleExport}>
-                  {locale === 'zh' ? '导出全部配置' : 'Export All'}
-                </Button>
-                <Upload accept=".json" showUploadList={false} beforeUpload={handleImport}>
-                  <Button loading={importing}>
-                    <UploadOutlined /> {locale === 'zh' ? '导入配置' : 'Import Config'}
-                  </Button>
-                </Upload>
-              </Space>
-              <div className="form-field">
-                <Space>
-                  <Switch checked={importWriteEnv} onChange={setImportWriteEnv} />
-                  <Text type="secondary">
-                    {locale === 'zh'
-                      ? '同时写入 .env（ADMIN_PASSWORD、JWT_SECRET、CONFIG_MASTER_KEY、PORT 等）'
-                      : 'Also write .env (ADMIN_PASSWORD, JWT_SECRET, CONFIG_MASTER_KEY, PORT, etc.)'}
-                  </Text>
-                </Space>
-              </div>
-              <Divider style={{ margin: '16px 0' }} />
-              <div>
-                <Typography.Title level={5} style={{ marginTop: 0 }}>
-                  {locale === 'zh' ? '数据库备份 (.db)' : 'Database Backup (.db)'}
-                </Typography.Title>
-                <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-                  {locale === 'zh'
-                    ? '一键导出完整的 SQLite 数据库（包含全部历史平仓交易、委托、记忆、日志等原始表）。导出采用 SQLite 在线热备份，保证事务完整不损坏。'
-                    : 'One-click export of the complete SQLite database file (including all closed position history, orders, memory, logs). Uses online backup to ensure transaction consistency.'}
-                </Typography.Paragraph>
-                <Button
-                  icon={<DownloadOutlined />}
-                  loading={exportingDb}
-                  onClick={handleExportDatabase}
-                >
-                  {locale === 'zh' ? '一键导出数据库 (.db)' : 'Export Database (.db)'}
-                </Button>
+              <Alert
+                type="info"
+                showIcon
+                message={
+                  locale === 'zh'
+                    ? '导出包含所有配置、明文密钥、Prompt 文件和模型计价。不同 CONFIG_MASTER_KEY 的机器之间可以自由迁移，导入时密钥会用当前 KEY 重新加密。'
+                    : 'Export includes all configs, plaintext secrets, prompts, and pricing. Migration between machines with different CONFIG_MASTER_KEY is supported — secrets are re-encrypted on import.'
+                }
+              />
+              <div className="admin-backup-grid">
+                <div className="admin-backup-card">
+                  <div>
+                    <Typography.Title level={5} style={{ marginTop: 0 }}>
+                      {locale === 'zh' ? '全量配置导出 / 导入 (.json)' : 'Full Config Export / Import (.json)'}
+                    </Typography.Title>
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                      {locale === 'zh'
+                        ? '用于跨服务器迁移任务、模型、账户与 Prompt，或定期保存配置快照。'
+                        : 'Migrate tasks, models, accounts, and prompts across servers or keep regular config snapshots.'}
+                    </Typography.Paragraph>
+                    <div className="form-field">
+                      <Space>
+                        <Switch checked={importWriteEnv} onChange={setImportWriteEnv} />
+                        <Text type="secondary" style={{ fontSize: 12.5 }}>
+                          {locale === 'zh'
+                            ? '导入时同时写入 .env（ADMIN_PASSWORD、JWT_SECRET、CONFIG_MASTER_KEY、PORT 等）'
+                            : 'Also write .env on import (ADMIN_PASSWORD, JWT_SECRET, CONFIG_MASTER_KEY, PORT, etc.)'}
+                        </Text>
+                      </Space>
+                    </div>
+                  </div>
+                  <Space wrap>
+                    <Button type="primary" icon={<DownloadOutlined />} onClick={handleExport}>
+                      {locale === 'zh' ? '导出全部配置' : 'Export All'}
+                    </Button>
+                    <Upload accept=".json" showUploadList={false} beforeUpload={handleImport}>
+                      <Button loading={importing} icon={<UploadOutlined />}>
+                        {locale === 'zh' ? '导入配置' : 'Import Config'}
+                      </Button>
+                    </Upload>
+                  </Space>
+                </div>
+
+                <div className="admin-backup-card">
+                  <div>
+                    <Typography.Title level={5} style={{ marginTop: 0 }}>
+                      {locale === 'zh' ? '数据库热备份 (.db)' : 'Database Hot Backup (.db)'}
+                    </Typography.Title>
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                      {locale === 'zh'
+                        ? '一键导出完整的 SQLite 数据库（包含全部历史平仓交易、委托、记忆、日志等原始表）。导出采用 SQLite 在线热备份，保证事务完整不损坏。'
+                        : 'One-click export of the complete SQLite database file (including all closed position history, orders, memory, logs). Uses online backup to ensure transaction consistency.'}
+                    </Typography.Paragraph>
+                  </div>
+                  <div>
+                    <Button
+                      icon={<DownloadOutlined />}
+                      loading={exportingDb}
+                      onClick={handleExportDatabase}
+                    >
+                      {locale === 'zh' ? '一键导出数据库 (.db)' : 'Export Database (.db)'}
+                    </Button>
+                  </div>
+                </div>
               </div>
             </Space>
           </Card>
@@ -2141,12 +2558,28 @@ export default function AdminPage() {
       <div className="admin-shell-header">
         <div className="admin-topbar">
           <div className="admin-topbar__titles">
-            <Title level={2} style={{ margin: 0 }}>{t('config')}</Title>
+            <div className="admin-topbar__heading-row">
+              <Title level={2} style={{ margin: 0 }}>{t('config')}</Title>
+              <span className="admin-topbar__eyebrow">{locale === 'zh' ? '后台控制台' : 'Admin Console'}</span>
+            </div>
             <Text type="secondary">
               {locale === 'zh'
                 ? '按分类浏览任务、模型、情报与运维 · 修改自动保存，Prompt 需单独保存'
                 : 'Browse tasks, models, intelligence, and ops · Runtime changes autosave; save prompts separately'}
             </Text>
+            {payload ? (
+              <div className="admin-topbar__quick-stats">
+                <span className={`admin-quick-chip ${enabledAgentCount > 0 ? 'admin-quick-chip--active' : ''}`}>
+                  {locale === 'zh' ? '运行中任务' : 'Active'} <strong>{enabledAgentCount}/{agentCount}</strong>
+                </span>
+                <span className="admin-quick-chip">
+                  {locale === 'zh' ? '模型' : 'Models'} <strong>{providerCount}</strong>
+                </span>
+                <span className="admin-quick-chip">
+                  {locale === 'zh' ? '交易账户' : 'Accounts'} <strong>{profileCount}</strong>
+                </span>
+              </div>
+            ) : null}
           </div>
           <Space size={8} wrap className="admin-topbar__actions">
             <Tag color={saveState === 'failed' ? 'red' : saveState === 'saving' ? 'blue' : saveState === 'unsaved' ? 'gold' : saveState === 'saved' ? 'green' : 'default'}>
@@ -2177,8 +2610,11 @@ export default function AdminPage() {
                 className={`admin-group-pill ${active ? 'is-active' : ''}`}
                 onClick={() => selectAdminGroup(group.key)}
               >
-                <span className="admin-group-pill__title">{group.label}</span>
-                <span className="admin-group-pill__hint">{group.hint}</span>
+                <span className="admin-group-pill__icon" aria-hidden="true">{group.icon}</span>
+                <span className="admin-group-pill__body">
+                  <span className="admin-group-pill__title">{group.label}</span>
+                  <span className="admin-group-pill__hint">{group.hint}</span>
+                </span>
               </button>
             );
           })}
@@ -2216,8 +2652,14 @@ export default function AdminPage() {
 
       {/* Task (Agent) Drawer */}
       <Drawer
-        title={editingTaskId ? (editingTask?.title || editingTaskId) : (locale === 'zh' ? '新增任务' : 'Add Task')}
-        width={isMobile ? '100vw' : 740}
+        title={
+          <div className="admin-drawer-title">
+            <span>{editingTaskId ? (editingTask?.title || editingTaskId) : (locale === 'zh' ? '新增任务' : 'Add Task')}</span>
+            {editingTask?.mode && <Tag color={modeTagColor(editingTask.mode)} style={{ margin: 0 }}>{editingTask.mode}</Tag>}
+            {editingTask && <Tag color={editingTask.enabled ? 'green' : 'default'} style={{ margin: 0 }}>{editingTask.enabled ? 'ON' : 'OFF'}</Tag>}
+          </div>
+        }
+        width={isMobile ? '100vw' : 780}
         open={taskDrawerOpen}
         closable={!taskSaving && !deletingTaskId}
         onClose={() => { if (!taskSaving && !deletingTaskId) { setTaskDrawerOpen(false); setEditingTask(null); setEditingTaskId(null); } }}
@@ -2248,122 +2690,169 @@ export default function AdminPage() {
                   key: 'basic',
                   label: locale === 'zh' ? '基础与标的' : 'Basic & Markets',
                   children: (
-                    <div className="field-grid">
-                      <div className="form-field">
-                        <label>Config ID *</label>
-                        <Input value={editingTask.config_id} onChange={(e) => updateEditingTask('config_id', e.target.value)} />
+                    <div className="admin-drawer-sections">
+                      <div className="admin-form-section">
+                        <div className="admin-form-section__head">
+                          <div className="admin-form-section__title">
+                            <strong>{locale === 'zh' ? '1. 任务身份与运行模式' : '1. Identity & Mode'}</strong>
+                            <span>{locale === 'zh' ? '设置任务名称、唯一标识与交易模式（STRATEGY 仅模拟分析，REAL 实盘合约，SPOT_DCA 现货定投）' : 'Set task ID, display name, and mode (STRATEGY = analysis only, REAL = live futures, SPOT_DCA = spot DCA).'}</span>
+                          </div>
+                        </div>
+                        <div className="field-grid">
+                          <div className="form-field">
+                            <label>Config ID *</label>
+                            <Input value={editingTask.config_id} onChange={(e) => updateEditingTask('config_id', e.target.value)} />
+                          </div>
+                          <div className="form-field">
+                            <label>Title</label>
+                            <Input value={editingTask.title || ''} onChange={(e) => updateEditingTask('title', e.target.value)} placeholder={locale === 'zh' ? '例如：BTC 趋势合约' : 'e.g. BTC Trend Futures'} />
+                          </div>
+                          <div className="form-field">
+                            <label>Mode *</label>
+                            <Select value={editingTask.mode} options={(payload.options?.modes || []).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingTask('mode', v)} style={{ width: '100%' }} />
+                          </div>
+                          <div className="form-field">
+                            <label>Enabled</label>
+                            <Switch checked={editingTask.enabled} onChange={(c) => updateEditingTask('enabled', c)} />
+                          </div>
+                        </div>
                       </div>
-                      <div className="form-field">
-                        <label>Title</label>
-                        <Input value={editingTask.title || ''} onChange={(e) => updateEditingTask('title', e.target.value)} />
+
+                      <div className="admin-form-section">
+                        <div className="admin-form-section__head">
+                          <div className="admin-form-section__title">
+                            <strong>{locale === 'zh' ? '2. 交易账户与标的' : '2. Exchange Account & Markets'}</strong>
+                            <span>{locale === 'zh' ? '先选择对应市场类型的交易账户，再挑选可交易标的。' : 'Choose an exchange account matching the market type, then pick tradable symbols.'}</span>
+                          </div>
+                        </div>
+                        <div className="field-grid">
+                          <div className="form-field field-span-2">
+                            <label>{locale === 'zh' ? '交易账户' : 'Exchange account'} * · {taskCatalog.market_type === 'spot' ? 'Spot' : 'Swap'}</label>
+                            <ProfileSelect ariaLabel={locale === 'zh' ? '交易账户' : 'Exchange account'} profiles={(payload.exchange_profiles || []).filter((profile) => profile.market_type === taskCatalog.market_type)} value={editingTask.exchange_profile_id} onChange={(v) => updateEditingTask('exchange_profile_id', v)} allowEmpty />
+                            {(() => {
+                              const profileInfo = getProfileInfo(editingTask.exchange_profile_id);
+                              if (!profileInfo) return null;
+                              return (
+                                <Space size={6} wrap style={{ marginTop: 2 }}>
+                                  <Tag>{profileInfo.exchange}</Tag>
+                                  <Tag>{profileInfo.market_type}</Tag>
+                                </Space>
+                              );
+                            })()}
+                            {!editingTask.exchange_profile_id && editingTask.exchange && <Text type="secondary">{locale === 'zh' ? `使用原任务的 ${editingTask.exchange} 账户配置。选择新的账户后需重新选择标的。` : `Using the task's legacy ${editingTask.exchange} account. Changing the account clears selected markets.`}</Text>}
+                            {editingTask.exchange_profile_id && !taskCatalog.exchange_profile_id && taskCatalog.exchange && <Text type="secondary">{locale === 'zh' ? '按当前交易所配置加载标的；保存任务时一并保存账户配置。' : 'Loading markets for the current exchange; the profile will be saved with the task.'}</Text>}
+                          </div>
+                          <div className="form-field field-span-2">
+                            <label>{taskMode === 'SPOT_DCA' ? (locale === 'zh' ? '现货标的（最多 10 个）' : 'Spot symbols (up to 10)') : t('symbol')} *</label>
+                            {taskMode === 'SPOT_DCA' ? (
+                              <SpotSymbolPicker
+                                key={`${editingTaskId || 'new'}:${editingTask.exchange_profile_id || 'legacy'}:${taskCatalog.exchange}`}
+                                exchange={taskCatalog.exchange}
+                                profileId={taskCatalog.exchange_profile_id}
+                                value={taskSymbols(editingTask)}
+                                onChange={(values) => updateEditingTask('symbols', values)}
+                                locale={locale}
+                              />
+                            ) : <MarketSymbolPicker key={`${editingTaskId || 'new'}:${editingTask.exchange_profile_id || 'legacy'}:${taskCatalog.exchange}:${taskCatalog.market_type}`} profileId={taskCatalog.exchange_profile_id} exchange={taskCatalog.exchange} marketType={taskCatalog.market_type} value={editingTask.symbol} onChange={(value) => updateEditingTask('symbol', value)} locale={locale} />}
+                          </div>
+                        </div>
                       </div>
-                      <div className="form-field">
-                        <label>Mode *</label>
-                        <Select value={editingTask.mode} options={(payload.options?.modes || []).map((v) => ({ label: v, value: v }))} onChange={(v) => updateEditingTask('mode', v)} style={{ width: '100%' }} />
-                      </div>
-                      <div className="form-field">
-                        <label>Enabled</label>
-                        <Switch checked={editingTask.enabled} onChange={(c) => updateEditingTask('enabled', c)} />
-                      </div>
-                      <div className="form-field field-span-2">
-                        <label>{locale === 'zh' ? '交易账户' : 'Exchange account'} * · {taskCatalog.market_type === 'spot' ? 'Spot' : 'Swap'}</label>
-                        <ProfileSelect ariaLabel={locale === 'zh' ? '交易账户' : 'Exchange account'} profiles={(payload.exchange_profiles || []).filter((profile) => profile.market_type === taskCatalog.market_type)} value={editingTask.exchange_profile_id} onChange={(v) => updateEditingTask('exchange_profile_id', v)} allowEmpty />
-                        {(() => {
-                          const profileInfo = getProfileInfo(editingTask.exchange_profile_id);
-                          if (!profileInfo) return null;
-                          return (
-                            <Space size={6} wrap style={{ marginTop: 2 }}>
-                              <Tag>{profileInfo.exchange}</Tag>
-                              <Tag>{profileInfo.market_type}</Tag>
-                            </Space>
-                          );
-                        })()}
-                        {!editingTask.exchange_profile_id && editingTask.exchange && <Text type="secondary">{locale === 'zh' ? `使用原任务的 ${editingTask.exchange} 账户配置。选择新的账户后需重新选择标的。` : `Using the task's legacy ${editingTask.exchange} account. Changing the account clears selected markets.`}</Text>}
-                        {editingTask.exchange_profile_id && !taskCatalog.exchange_profile_id && taskCatalog.exchange && <Text type="secondary">{locale === 'zh' ? '按当前交易所配置加载标的；保存任务时一并保存账户配置。' : 'Loading markets for the current exchange; the profile will be saved with the task.'}</Text>}
-                      </div>
-                      <div className="form-field field-span-2">
-                        <label>{taskMode === 'SPOT_DCA' ? (locale === 'zh' ? '现货标的（最多 10 个）' : 'Spot symbols (up to 10)') : t('symbol')} *</label>
-                        {taskMode === 'SPOT_DCA' ? (
-                          <SpotSymbolPicker
-                            key={`${editingTaskId || 'new'}:${editingTask.exchange_profile_id || 'legacy'}:${taskCatalog.exchange}`}
-                            exchange={taskCatalog.exchange}
-                            profileId={taskCatalog.exchange_profile_id}
-                            value={taskSymbols(editingTask)}
-                            onChange={(values) => updateEditingTask('symbols', values)}
-                            locale={locale}
-                          />
-                        ) : <MarketSymbolPicker key={`${editingTaskId || 'new'}:${editingTask.exchange_profile_id || 'legacy'}:${taskCatalog.exchange}:${taskCatalog.market_type}`} profileId={taskCatalog.exchange_profile_id} exchange={taskCatalog.exchange} marketType={taskCatalog.market_type} value={editingTask.symbol} onChange={(value) => updateEditingTask('symbol', value)} locale={locale} />}
-                      </div>
+
                       {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
-                        <div className="form-field field-span-2">
-                          <label>{locale === 'zh' ? '退出管理方式' : 'Exit management'}</label>
-                          <Select
-                            aria-label={locale === 'zh' ? '退出管理方式' : 'Exit management'}
-                            value={resolveExitMode(editingTask)}
-                            options={EXIT_MODES.map((value) => ({ value, label: exitModeLabel(value, locale) }))}
-                            onChange={(value) => updateEditingTask('exit_mode', value)}
-                            style={{ width: '100%' }}
-                          />
-                          <Text type="secondary">
-                            {locale === 'zh'
-                              ? ({ attached_required: '每次开仓需提供止盈和止损。', attached_optional: '开仓时可单独提供或省略止盈止损。', independent_exits: '可在本轮或后续轮次设置分批止盈止损，固定数量或触发时全部退出。' }[resolveExitMode(editingTask)])
-                              : ({ attached_required: 'Each entry requires take profit and stop loss.', attached_optional: 'Entries may supply either, both, or no TP/SL.', independent_exits: 'Separate exits specify price and quantity, supporting partial reductions.' }[resolveExitMode(editingTask)])}
-                            {' '}{locale === 'zh' ? '已有持仓、挂单或待核验操作时，需先处理完毕才能切换。' : 'Close positions and resolve outstanding orders before switching modes.'}
-                          </Text>
+                        <div className="admin-form-section">
+                          <div className="admin-form-section__head">
+                            <div className="admin-form-section__title">
+                              <strong>{locale === 'zh' ? '3. 止盈止损与退出管理' : '3. Exit & Risk Management'}</strong>
+                              <span>{locale === 'zh' ? '控制 AI 开仓时是否必须附带止盈止损，或允许独立分批止盈止损。' : 'Control whether entries require TP/SL or support independent partial exits.'}</span>
+                            </div>
+                          </div>
+                          <div className="form-field">
+                            <label>{locale === 'zh' ? '退出管理方式' : 'Exit management'}</label>
+                            <Select
+                              aria-label={locale === 'zh' ? '退出管理方式' : 'Exit management'}
+                              value={resolveExitMode(editingTask)}
+                              options={EXIT_MODES.map((value) => ({ value, label: exitModeLabel(value, locale) }))}
+                              onChange={(value) => updateEditingTask('exit_mode', value)}
+                              style={{ width: '100%' }}
+                            />
+                            <Text type="secondary">
+                              {locale === 'zh'
+                                ? ({ attached_required: '每次开仓需提供止盈和止损。', attached_optional: '开仓时可单独提供或省略止盈止损。', independent_exits: '可在本轮或后续轮次设置分批止盈止损，固定数量或触发时全部退出。' }[resolveExitMode(editingTask)])
+                                : ({ attached_required: 'Each entry requires take profit and stop loss.', attached_optional: 'Entries may supply either, both, or no TP/SL.', independent_exits: 'Separate exits specify price and quantity, supporting partial reductions.' }[resolveExitMode(editingTask)])}
+                              {' '}{locale === 'zh' ? '已有持仓、挂单或待核验操作时，需先处理完毕才能切换。' : 'Close positions and resolve outstanding orders before switching modes.'}
+                            </Text>
+                          </div>
                         </div>
                       )}
+
                       {editingTaskId && (taskMode === 'REAL' || taskMode === 'SPOT_DCA') && (
-                        <div className="form-field field-span-2">
-                          <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-                            {locale === 'zh'
-                              ? '更换交易标的、模式或交易所账户前，若下方存在已纳管范围，请先核验并释放管理权（需先平仓并撤掉相关挂单）。'
-                              : 'Before shrinking symbols, switching modes, or changing exchange accounts, verify and release any active managed scopes below (close positions and cancel open orders first).'}
-                          </Text>
+                        <div className="admin-form-section admin-form-section--highlight">
+                          <div className="admin-form-section__head">
+                            <div className="admin-form-section__title">
+                              <strong>{locale === 'zh' ? '持仓管理权与安全释放' : 'Managed Ownership & Safe Release'}</strong>
+                              <span>
+                                {locale === 'zh'
+                                  ? '更换交易标的、模式或交易所账户前，若下方存在已纳管范围，请先核验并释放管理权（需先平仓并撤掉相关挂单）。'
+                                  : 'Before shrinking symbols, switching modes, or changing exchange accounts, verify and release any active managed scopes below (close positions and cancel open orders first).'}
+                              </span>
+                            </div>
+                          </div>
                           <ManagementLifecyclePanel configId={editingTaskId} />
                         </div>
                       )}
-                      <div className="form-field">
-                        <label>Prompt File</label>
-                        <Select
-                          aria-label="Prompt File"
-                          value={editingTask.prompt_file || ''}
-                          options={[
-                            { label: locale === 'zh' ? '内置默认（随版本更新）' : 'Built-in default (updated with releases)', value: '' },
-                            ...(payload.options?.prompt_files || []).filter(Boolean).map((v) => ({ label: v, value: v })),
-                          ]}
-                          onChange={(v) => updateEditingTask('prompt_file', v || '')}
-                          allowClear
-                          style={{ width: '100%' }}
-                        />
-                        <Text type="secondary">{locale === 'zh' ? '内置默认随版本升级更新；自定义文件保留原有内容。' : 'The built-in default updates with releases; custom files retain their content.'}</Text>
-                      </div>
-                      {taskMode !== 'SPOT_DCA' && (
-                        <div className="form-field">
-                          <label>{locale === 'zh' ? '行情输入预设' : 'Market input preset'}</label>
-                          <Select
-                            value={editingTask.market_profile || 'legacy'}
-                            options={[
-                              { value: 'legacy', label: locale === 'zh' ? '保留原有行情配置' : 'Existing market configuration' },
-                              { value: 'hourly', label: locale === 'zh' ? '1h 分析 · 1h / 4h / 1d' : 'Hourly analysis · 1h / 4h / 1d' },
-                            ]}
-                            onChange={(v) => {
-                              updateEditingTask('market_profile', v);
-                              if (v === 'hourly') updateEditingTask('market_timeframes', ['1h', '4h', '1d']);
-                            }}
-                          />
-                          <Text type="secondary">{locale === 'zh' ? '1h 预设各周期计算 600 根历史，仅展示最近 24 / 12 / 7 根已收盘 K 线。' : 'Hourly preset computes indicators from 600 bars per timeframe and displays 24 / 12 / 7 closed bars.'}</Text>
+
+                      <div className="admin-form-section">
+                        <div className="admin-form-section__head">
+                          <div className="admin-form-section__title">
+                            <strong>{locale === 'zh' ? '策略提示词与行情输入' : 'Prompt & Market Input'}</strong>
+                            <span>{locale === 'zh' ? '选择任务使用的提示词模板及 K 线分析周期。' : 'Select the prompt template and candlestick timeframes fed into each run.'}</span>
+                          </div>
                         </div>
-                      )}
-                      <div className="form-field field-span-2">
-                        <label>{locale === 'zh' ? '市场分析周期' : 'Market analysis timeframes'}</label>
-                        <Select
-                          mode="multiple"
-                          value={editingTask.market_timeframes || taskDefaultTimeframes}
-                          options={(payload.options?.market_timeframes || MARKET_TIMEFRAME_OPTIONS).map((value) => ({ label: value, value }))}
-                          onChange={(values) => updateEditingTask('market_timeframes', values.length ? values : [...taskDefaultTimeframes])}
-                          style={{ width: '100%' }}
-                        />
-                        {taskMode === 'SPOT_DCA' && <Text type="secondary">{locale === 'zh' ? '现货默认使用 4h、日线和周线，可按任务覆盖；此处只设置分析周期，定投运行时间在「调度与仓位」标签页配置。' : 'Spot defaults to 4h, daily and weekly analysis. Override per task; execution timing is configured in Schedule & Sizing.'}</Text>}
+                        <div className="field-grid">
+                          <div className="form-field">
+                            <label>Prompt File</label>
+                            <Select
+                              aria-label="Prompt File"
+                              value={editingTask.prompt_file || ''}
+                              options={[
+                                { label: locale === 'zh' ? '内置默认（随版本更新）' : 'Built-in default (updated with releases)', value: '' },
+                                ...(payload.options?.prompt_files || []).filter(Boolean).map((v) => ({ label: v, value: v })),
+                              ]}
+                              onChange={(v) => updateEditingTask('prompt_file', v || '')}
+                              allowClear
+                              style={{ width: '100%' }}
+                            />
+                            <Text type="secondary">{locale === 'zh' ? '内置默认随版本升级更新；自定义文件保留原有内容。' : 'The built-in default updates with releases; custom files retain their content.'}</Text>
+                          </div>
+                          {taskMode !== 'SPOT_DCA' && (
+                            <div className="form-field">
+                              <label>{locale === 'zh' ? '行情输入预设' : 'Market input preset'}</label>
+                              <Select
+                                value={editingTask.market_profile || 'legacy'}
+                                options={[
+                                  { value: 'legacy', label: locale === 'zh' ? '保留原有行情配置' : 'Existing market configuration' },
+                                  { value: 'hourly', label: locale === 'zh' ? '1h 分析 · 1h / 4h / 1d' : 'Hourly analysis · 1h / 4h / 1d' },
+                                ]}
+                                onChange={(v) => {
+                                  updateEditingTask('market_profile', v);
+                                  if (v === 'hourly') updateEditingTask('market_timeframes', ['1h', '4h', '1d']);
+                                }}
+                              />
+                              <Text type="secondary">{locale === 'zh' ? '1h 预设各周期计算 600 根历史，仅展示最近 24 / 12 / 7 根已收盘 K 线。' : 'Hourly preset computes indicators from 600 bars per timeframe and displays 24 / 12 / 7 closed bars.'}</Text>
+                            </div>
+                          )}
+                          <div className="form-field field-span-2">
+                            <label>{locale === 'zh' ? '市场分析周期' : 'Market analysis timeframes'}</label>
+                            <Select
+                              mode="multiple"
+                              value={editingTask.market_timeframes || taskDefaultTimeframes}
+                              options={(payload.options?.market_timeframes || MARKET_TIMEFRAME_OPTIONS).map((value) => ({ label: value, value }))}
+                              onChange={(values) => updateEditingTask('market_timeframes', values.length ? values : [...taskDefaultTimeframes])}
+                              style={{ width: '100%' }}
+                            />
+                            {taskMode === 'SPOT_DCA' && <Text type="secondary">{locale === 'zh' ? '现货默认使用 4h、日线和周线，可按任务覆盖；此处只设置分析周期，定投运行时间在「调度与仓位」标签页配置。' : 'Spot defaults to 4h, daily and weekly analysis. Override per task; execution timing is configured in Schedule & Sizing.'}</Text>}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ),
@@ -2372,55 +2861,75 @@ export default function AdminPage() {
                   key: 'schedule',
                   label: locale === 'zh' ? '调度与仓位' : 'Schedule & Sizing',
                   children: (
-                    <div className="field-grid">
-                      <div className="form-field">
-                        <label>{locale === 'zh' ? '默认运行间隔（分钟）' : 'Default interval (minutes)'}</label>
-                        <InputNumber min={15} max={1440} precision={0} value={editingTask.run_interval ?? 60} onChange={(v) => updateEditingTask('run_interval', v ?? 60)} style={{ width: '100%' }} />
-                      </div>
-                      {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
-                        <div className="form-field">
-                          <label>Leverage</label>
-                          <InputNumber min={1} value={editingTask.leverage ?? 1} onChange={(v) => updateEditingTask('leverage', v ?? 1)} style={{ width: '100%' }} />
+                    <div className="admin-drawer-sections">
+                      <div className="admin-form-section">
+                        <div className="admin-form-section__head">
+                          <div className="admin-form-section__title">
+                            <strong>{locale === 'zh' ? '运行频率与仓位参数' : 'Execution Cadence & Sizing'}</strong>
+                            <span>{taskMode === 'SPOT_DCA' ? (locale === 'zh' ? '配置每次定投额度、累计上限与定时计划。' : 'Configure per-run allowance, lifetime cap, and DCA timing.') : (locale === 'zh' ? '设置默认执行间隔、合约杠杆倍数及自定义运行时间段。' : 'Set default run interval, leverage, and custom schedule windows.')}</span>
+                          </div>
                         </div>
-                      )}
-                      {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
-                        <RunScheduleEditor
-                          value={editingTask.run_schedule || []}
-                          onChange={(rules) => updateEditingTask('run_schedule', rules)}
-                          onPreset={(rules) => setEditingTask((previous) => ({ ...previous, run_schedule: rules }))}
-                        />
-                      )}
+                        <div className="field-grid">
+                          <div className="form-field">
+                            <label>{locale === 'zh' ? '默认运行间隔（分钟）' : 'Default interval (minutes)'}</label>
+                            <InputNumber min={15} max={1440} precision={0} value={editingTask.run_interval ?? 60} onChange={(v) => updateEditingTask('run_interval', v ?? 60)} style={{ width: '100%' }} />
+                          </div>
+                          {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
+                            <div className="form-field">
+                              <label>Leverage</label>
+                              <InputNumber min={1} value={editingTask.leverage ?? 1} onChange={(v) => updateEditingTask('leverage', v ?? 1)} style={{ width: '100%' }} />
+                            </div>
+                          )}
+                          {(taskMode === 'REAL' || taskMode === 'STRATEGY') && (
+                            <RunScheduleEditor
+                              value={editingTask.run_schedule || []}
+                              onChange={(rules) => updateEditingTask('run_schedule', rules)}
+                              onPreset={(rules) => setEditingTask((previous) => ({ ...previous, run_schedule: rules }))}
+                            />
+                          )}
+                          {taskMode === 'SPOT_DCA' && (
+                            <>
+                              <div className="form-field field-span-2">
+                                <Alert type="info" showIcon message={locale === 'zh' ? '组合共用一份定投预算' : 'One shared portfolio budget'} description={locale === 'zh' ? 'DCA Amount 是每次计划运行整个任务可用的额度，多个标的共享，由 Agent 分配；不会按标的数量倍增。多标的任务不支持统一填写历史持仓数量或成本，余额与成交按各标的读取。' : 'DCA Amount is the total allowance per run, shared across all symbols and allocated by the agent. It is not multiplied by symbol count. Multi-symbol tasks read balances and fills per symbol; legacy initial quantity/cost fields are unavailable.'} />
+                              </div>
+                              <div className="form-field">
+                                <label>{locale === 'zh' ? '每次运行组合额度（DCA Amount）' : 'Portfolio allowance per run (DCA Amount)'}</label>
+                                <InputNumber min={0} value={editingTask.dca_amount ?? 0} onChange={(v) => updateEditingTask('dca_amount', v ?? 0)} style={{ width: '100%' }} />
+                              </div>
+                              <div className="form-field">
+                                <label>{locale === 'zh' ? '任务累计预算（可选）' : 'Lifetime task budget (optional)'}</label>
+                                <InputNumber min={0} value={editingTask.dca_budget ?? null} onChange={(v) => updateEditingTask('dca_budget', v)} style={{ width: '100%' }} placeholder={locale === 'zh' ? '留空不设累计上限' : 'Leave empty for no lifetime cap'} />
+                                <Text type="secondary">{locale === 'zh' ? '所有标的累计买入共用此额度，计价币与现货标的一致。' : 'A shared cap on cumulative buys across all symbols, in their quote currency.'}</Text>
+                              </div>
+                              <div className="form-field field-span-2"><SpotScheduleEditor config={editingTask} onChange={(value) => updateEditingTask('dca_schedule', value)} /></div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
                       {taskMode === 'SPOT_DCA' && (
-                        <>
-                          <div className="form-field field-span-2">
-                            <Alert type="info" showIcon message={locale === 'zh' ? '组合共用一份定投预算' : 'One shared portfolio budget'} description={locale === 'zh' ? 'DCA Amount 是每次计划运行整个任务可用的额度，多个标的共享，由 Agent 分配；不会按标的数量倍增。多标的任务不支持统一填写历史持仓数量或成本，余额与成交按各标的读取。' : 'DCA Amount is the total allowance per run, shared across all symbols and allocated by the agent. It is not multiplied by symbol count. Multi-symbol tasks read balances and fills per symbol; legacy initial quantity/cost fields are unavailable.'} />
+                        <div className="admin-form-section admin-form-section--subtle">
+                          <div className="admin-form-section__head">
+                            <div className="admin-form-section__title">
+                              <strong>{locale === 'zh' ? '历史初始持仓（旧版单标的字段）' : 'Legacy Initial Holdings'}</strong>
+                              <span>{locale === 'zh' ? '下面的旧初始字段表示启用任务前的持仓，会加上任务的全部历史买入。若要校准现在的总持仓和均价，请在现货看板点击「修改持仓成本」；每个币种可分别修改，保存后只累加新增买入。' : 'The legacy initial fields below represent holdings before this task started and are added to all historical buys. To adjust current total holdings and average cost, use Adjust holdings on the spot dashboard for each asset; only subsequent buys are then added.'}</span>
+                            </div>
                           </div>
-                          <div className="form-field">
-                            <label>{locale === 'zh' ? '每次运行组合额度（DCA Amount）' : 'Portfolio allowance per run (DCA Amount)'}</label>
-                            <InputNumber min={0} value={editingTask.dca_amount ?? 0} onChange={(v) => updateEditingTask('dca_amount', v ?? 0)} style={{ width: '100%' }} />
+                          <div className="field-grid">
+                            <div className="form-field">
+                              <label>Initial Qty</label>
+                              <InputNumber min={0} value={editingTask.initial_qty ?? 0} onChange={(v) => updateEditingTask('initial_qty', v ?? 0)} style={{ width: '100%' }} disabled={multiSpotTask} />
+                            </div>
+                            <div className="form-field">
+                              <label>Manual Avg Cost</label>
+                              <InputNumber min={0} value={editingTask.manual_avg_cost ?? 0} onChange={(v) => updateEditingTask('manual_avg_cost', v ?? 0)} style={{ width: '100%' }} disabled={multiSpotTask} />
+                            </div>
+                            <div className="form-field">
+                              <label>Initial Cost</label>
+                              <InputNumber min={0} value={editingTask.initial_cost ?? 0} onChange={(v) => updateEditingTask('initial_cost', v ?? 0)} style={{ width: '100%' }} disabled={multiSpotTask || (Number(editingTask.initial_qty || 0) > 0 && Number(editingTask.manual_avg_cost || 0) > 0)} />
+                            </div>
                           </div>
-                          <div className="form-field">
-                            <label>{locale === 'zh' ? '任务累计预算（可选）' : 'Lifetime task budget (optional)'}</label>
-                            <InputNumber min={0} value={editingTask.dca_budget ?? null} onChange={(v) => updateEditingTask('dca_budget', v)} style={{ width: '100%' }} placeholder={locale === 'zh' ? '留空不设累计上限' : 'Leave empty for no lifetime cap'} />
-                            <Text type="secondary">{locale === 'zh' ? '所有标的累计买入共用此额度，计价币与现货标的一致。' : 'A shared cap on cumulative buys across all symbols, in their quote currency.'}</Text>
-                          </div>
-                          <div className="form-field field-span-2"><SpotScheduleEditor config={editingTask} onChange={(value) => updateEditingTask('dca_schedule', value)} /></div>
-                          <div className="form-field field-span-2">
-                            <Text type="secondary">{locale === 'zh' ? '下面的旧初始字段表示启用任务前的持仓，会加上任务的全部历史买入。若要校准现在的总持仓和均价，请在现货看板点击「修改持仓成本」；每个币种可分别修改，保存后只累加新增买入。' : 'The legacy initial fields below represent holdings before this task started and are added to all historical buys. To adjust current total holdings and average cost, use Adjust holdings on the spot dashboard for each asset; only subsequent buys are then added.'}</Text>
-                          </div>
-                          <div className="form-field">
-                            <label>Initial Qty</label>
-                            <InputNumber min={0} value={editingTask.initial_qty ?? 0} onChange={(v) => updateEditingTask('initial_qty', v ?? 0)} style={{ width: '100%' }} disabled={multiSpotTask} />
-                          </div>
-                          <div className="form-field">
-                            <label>Manual Avg Cost</label>
-                            <InputNumber min={0} value={editingTask.manual_avg_cost ?? 0} onChange={(v) => updateEditingTask('manual_avg_cost', v ?? 0)} style={{ width: '100%' }} disabled={multiSpotTask} />
-                          </div>
-                          <div className="form-field">
-                            <label>Initial Cost</label>
-                            <InputNumber min={0} value={editingTask.initial_cost ?? 0} onChange={(v) => updateEditingTask('initial_cost', v ?? 0)} style={{ width: '100%' }} disabled={multiSpotTask || (Number(editingTask.initial_qty || 0) > 0 && Number(editingTask.manual_avg_cost || 0) > 0)} />
-                          </div>
-                        </>
+                        </div>
                       )}
                     </div>
                   ),

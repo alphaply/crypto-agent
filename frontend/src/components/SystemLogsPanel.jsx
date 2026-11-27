@@ -60,9 +60,23 @@ export default function SystemLogsPanel() {
   const deleted = maintenance.deleted;
   const policy = storage?.policy;
   return <Space direction="vertical" size="large" style={{ width: '100%', minWidth: 0 }}>
-    <Card className="panel-card" title={zh ? '系统日志' : 'System logs'} extra={<Button aria-label={zh ? '刷新日志' : 'Refresh logs'} icon={<ReloadOutlined />} onClick={() => load()} loading={loading}>{zh ? '刷新' : 'Refresh'}</Button>}>
+    <Card
+      className="panel-card"
+      title={
+        <Space size={8} wrap>
+          <span>{zh ? '系统日志' : 'System logs'}</span>
+          {entries.length > 0 && <Tag color="blue">{entries.length}</Tag>}
+          {live && (
+            <Tag color="green">
+              <Space size={6}><span className="admin-live-dot" />{zh ? '实时刷新' : 'Live'}</Space>
+            </Tag>
+          )}
+        </Space>
+      }
+      extra={<Button aria-label={zh ? '刷新日志' : 'Refresh logs'} icon={<ReloadOutlined />} onClick={() => load()} loading={loading}>{zh ? '刷新' : 'Refresh'}</Button>}
+    >
       <Paragraph type="secondary">{zh ? '查看服务器最近的运行记录。可按错误级别筛选，也可搜索模块名、批次编号或报错内容。展开记录可查看完整错误堆栈。' : 'Browse recent server activity. Filter severity or search module, run ID and error text. Expand an entry to inspect its stack trace.'}</Paragraph>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16, minWidth: 0 }}>
+      <div className="admin-filter-bar">
         <Select aria-label={zh ? '日志级别' : 'Log severity'} value={level} onChange={setLevel} style={{ width: 170 }} options={[
           { value: 'DEBUG', label: zh ? '全部级别' : 'All levels' },
           { value: 'INFO', label: zh ? '信息及以上' : 'Info and above' },
@@ -70,12 +84,12 @@ export default function SystemLogsPanel() {
           { value: 'ERROR', label: zh ? '仅错误' : 'Errors' },
         ]} />
         <Input aria-label={zh ? '搜索日志' : 'Search logs'} placeholder={zh ? '模块、批次编号或错误内容' : 'Module, run ID or error'} value={query} maxLength={200} onChange={(e) => setQuery(e.target.value)} onPressEnter={() => setFilter({ min_level: level, query })} style={{ flex: '1 1 220px', minWidth: 0, width: 'auto', maxWidth: 400 }} allowClear />
-        <Button aria-label={zh ? '筛选日志' : 'Filter logs'} onClick={() => setFilter({ min_level: level, query })}>{zh ? '筛选' : 'Filter'}</Button>
+        <Button type="primary" aria-label={zh ? '筛选日志' : 'Filter logs'} onClick={() => setFilter({ min_level: level, query })}>{zh ? '筛选' : 'Filter'}</Button>
         <Space><Switch checked={live} onChange={setLive} aria-label={zh ? '自动刷新日志' : 'Auto-refresh logs'} /><Text>{zh ? '每10秒刷新' : 'Refresh every 10s'}</Text></Space>
       </div>
       {error && <Alert type="error" showIcon title={zh ? '日志读取失败' : 'Unable to read logs'} description={error} style={{ marginBottom: 12 }} />}
       {scanLimited && <Alert type="info" showIcon title={zh ? '已达到本次扫描范围，可继续查看更早日志' : 'Scan limit reached; continue to older logs'} style={{ marginBottom: 12 }} />}
-      {entries.length ? <Collapse items={entries.map((entry) => ({ key: entry.id, label: <Space wrap style={{ minWidth: 0 }}><Tag color={['ERROR', 'CRITICAL'].includes(entry.level) ? 'red' : entry.level === 'WARNING' ? 'orange' : 'default'}>{entry.level}</Tag><Text>{entry.timestamp}</Text><Text strong style={{ overflowWrap: 'anywhere' }}>{entry.module}</Text><Text ellipsis style={{ maxWidth: 'min(420px, 54vw)' }}>{entry.message.split('\n')[0]}</Text></Space>, children: <><Space wrap style={{ marginBottom: 8 }}><Text type="secondary">{entry.file}</Text><Text copyable={{ text: entry.message }}>{zh ? '复制日志' : 'Copy entry'}</Text></Space>{entry.truncated && <Alert type="info" title={zh ? '这条记录过长，页面仅显示前16000字符' : 'Long entry: showing the first 16,000 characters'} />}<pre style={blockStyle}>{entry.message}</pre></> }))} /> : !loading && !error ? <Empty description={zh ? '当前范围没有匹配的日志' : 'No matching entries in this range'} /> : null}
+      {entries.length ? <Collapse items={entries.map((entry) => ({ key: entry.id, label: <Space wrap style={{ minWidth: 0 }}><Tag color={['ERROR', 'CRITICAL'].includes(entry.level) ? 'red' : entry.level === 'WARNING' ? 'orange' : 'default'}>{entry.level}</Tag><Text className="admin-mono" type="secondary">{entry.timestamp}</Text><Text strong style={{ overflowWrap: 'anywhere' }}>{entry.module}</Text><Text ellipsis style={{ maxWidth: 'min(420px, 54vw)' }}>{entry.message.split('\n')[0]}</Text></Space>, children: <><Space wrap style={{ marginBottom: 8 }}><Text type="secondary" className="admin-mono">{entry.file}</Text><Text copyable={{ text: entry.message }}>{zh ? '复制日志' : 'Copy entry'}</Text></Space>{entry.truncated && <Alert type="info" title={zh ? '这条记录过长，页面仅显示前16000字符' : 'Long entry: showing the first 16,000 characters'} />}<pre style={blockStyle}>{entry.message}</pre></> }))} /> : !loading && !error ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={zh ? '当前范围没有匹配的日志' : 'No matching entries in this range'} /> : null}
       {loading && <Spin style={{ marginTop: 12 }} />}
       {cursor && <Button style={{ marginTop: 16 }} disabled={loading} onClick={() => { setLive(false); load(cursor); }}>{zh ? '查看更早日志' : 'Load older entries'}</Button>}
     </Card>

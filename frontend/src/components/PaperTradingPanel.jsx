@@ -102,6 +102,7 @@ export default function PaperTradingPanel({
       setDraft((current) => current === submitted ? null : current);
       await currentView.current?.();
       setRevision((v) => v + 1);
+      message.success(label('模拟交易规则已保存', 'Paper trading settings saved'));
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   };

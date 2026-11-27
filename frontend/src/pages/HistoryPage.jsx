@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Card, Empty, Grid, Pagination, Select, Space, Spin, Statistic, Tag, Typography } from 'antd';
+import { Alert, Card, Empty, Grid, Pagination, Select, Skeleton, Space, Statistic, Tag, Typography } from 'antd';
 import EquityCompareChart from '../components/EquityCompareChart';
 import MarkdownBlock from '../components/MarkdownBlock';
 import { api } from '../lib/api';
 import { usePreferences } from '../app/usePreferences';
+import './DashboardPage.css';
 
 const { Title, Paragraph } = Typography;
 const { useBreakpoint } = Grid;
@@ -14,7 +15,7 @@ function HistoryReview({ record, defaultOpen = false, locale }) {
     <details className="history-review-item" open={defaultOpen}>
       <summary className="history-review-summary">
         <span className="history-review-meta">
-          <strong>{record.timestamp || '-'}</strong>
+          <strong className="tabular-num">{record.timestamp || '-'}</strong>
           <span className="history-review-tags">
             <Tag>{record.config_id || 'ALL'}</Tag>
             {record.agent_name ? <Tag color="blue">{record.agent_name}</Tag> : null}
@@ -98,10 +99,8 @@ export default function HistoryPage() {
   }, [selectedSymbol, configId, compareIds, page, setSelectedSymbol]);
 
   const compareSeries = useMemo(() => payload?.history?.history_compare_series || [], [payload]);
-
   const summaries = useMemo(() => payload?.history?.summaries || [], [payload]);
 
-  // 横向对比：按 config_id 分组，PC端多列展示
   const groupedSummaries = useMemo(() => {
     if (compareIds.length < 2 || isMobile) return null;
     const groups = {};
@@ -113,13 +112,17 @@ export default function HistoryPage() {
     return groups;
   }, [compareIds, summaries, isMobile]);
 
+  const totalPnl = Number(payload?.history?.pnl_stats?.total_pnl || 0);
+  const pnlColor = totalPnl > 0 ? 'var(--success)' : totalPnl < 0 ? 'var(--danger)' : undefined;
+
   return (
     <div className="boxed-page history-page">
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <Card className="admin-hero">
+        <Card className="admin-hero frontstage-hero-card">
           <Space className="admin-hero__inner history-toolbar" align="start" wrap>
             <div>
-              <Title level={2} style={{ margin: 0 }}>
+              <span className="frontstage-eyebrow">{locale === 'zh' ? '历史复盘' : 'PERFORMANCE HISTORY'}</span>
+              <Title level={2} style={{ margin: '2px 0 6px' }}>
                 {t('history')}
               </Title>
               <Paragraph type="secondary" style={{ marginBottom: 0 }}>
@@ -129,34 +132,34 @@ export default function HistoryPage() {
             <div className="history-filter-grid">
               <label className="form-field">
                 <span>{locale === 'zh' ? '复盘任务' : 'Review task'}</span>
-              <Select
-                aria-label={locale === 'zh' ? '复盘任务' : 'Review task'}
-                value={configId}
-                options={[
-                  { label: locale === 'zh' ? '全部任务' : 'All tasks', value: 'ALL' },
-                  ...((payload?.history?.active_agents || []).map((item) => ({ label: item, value: item })) || []),
-                ]}
-                onChange={(value) => {
-                  setPage(1);
-                  setConfigId(value);
-                }}
-              />
+                <Select
+                  aria-label={locale === 'zh' ? '复盘任务' : 'Review task'}
+                  value={configId}
+                  options={[
+                    { label: locale === 'zh' ? '全部任务' : 'All tasks', value: 'ALL' },
+                    ...((payload?.history?.active_agents || []).map((item) => ({ label: item, value: item })) || []),
+                  ]}
+                  onChange={(value) => {
+                    setPage(1);
+                    setConfigId(value);
+                  }}
+                />
               </label>
               <label className="form-field">
                 <span>{locale === 'zh' ? '对比任务' : 'Compare tasks'}</span>
-              <Select
-                mode="multiple"
-                aria-label={locale === 'zh' ? '对比任务' : 'Compare tasks'}
-                maxTagCount="responsive"
-                allowClear
-                value={compareIds}
-                options={((payload?.history?.compare_candidates || []).map((item) => ({
-                  label: `${item.label || item.config_id} · ${item.mode || '-'}`,
-                  value: item.config_id,
-                })) || [])}
-                onChange={changeCompareIds}
-                placeholder={t('compare')}
-              />
+                <Select
+                  mode="multiple"
+                  aria-label={locale === 'zh' ? '对比任务' : 'Compare tasks'}
+                  maxTagCount="responsive"
+                  allowClear
+                  value={compareIds}
+                  options={((payload?.history?.compare_candidates || []).map((item) => ({
+                    label: `${item.label || item.config_id} · ${item.mode || '-'}`,
+                    value: item.config_id,
+                  })) || [])}
+                  onChange={changeCompareIds}
+                  placeholder={t('compare')}
+                />
               </label>
             </div>
           </Space>
@@ -165,8 +168,8 @@ export default function HistoryPage() {
         {error ? <Alert type="error" message={error} showIcon /> : null}
 
         {loading ? (
-          <Card className="panel-card loading-card">
-            <Spin />
+          <Card className="panel-card">
+            <Skeleton active paragraph={{ rows: 5 }} />
           </Card>
         ) : null}
 
@@ -177,7 +180,12 @@ export default function HistoryPage() {
                 <Statistic title={t('totalTrades')} value={payload.history.pnl_stats?.total_trades || 0} />
               </Card>
               <Card className="panel-card metric-card">
-                <Statistic title={t('totalPnl')} value={payload.history.pnl_stats?.total_pnl || 0} precision={2} />
+                <Statistic
+                  title={t('totalPnl')}
+                  value={totalPnl}
+                  precision={2}
+                  valueStyle={pnlColor ? { color: pnlColor } : undefined}
+                />
               </Card>
               <Card className="panel-card metric-card">
                 <Statistic title={t('winRate')} suffix="%" value={payload.history.pnl_stats?.win_rate || 0} precision={2} />
@@ -194,7 +202,6 @@ export default function HistoryPage() {
             <Card className="panel-card history-review-card" title={t('historyReview')}>
               {summaries.length ? (
                 groupedSummaries ? (
-                  // PC 端横向对比布局
                   <div
                     className="history-compare-grid"
                     style={{ gridTemplateColumns: `repeat(${Math.min(compareIds.length, 3)}, 1fr)` }}
@@ -209,13 +216,12 @@ export default function HistoryPage() {
                             <HistoryReview key={record.id} record={record} defaultOpen={index === 0} locale={locale} />
                           ))
                         ) : (
-                          <Empty description={t('noData')} />
+                          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('noData')} />
                         )}
                       </div>
                     ))}
                   </div>
                 ) : (
-                  // 默认竖向列表（移动端或单选）
                   <div className="history-review-list">
                     {summaries.map((record, index) => (
                       <HistoryReview key={record.id} record={record} defaultOpen={index === 0} locale={locale} />
@@ -223,7 +229,7 @@ export default function HistoryPage() {
                   </div>
                 )
               ) : (
-                <Empty description={t('emptyHistory')} />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('emptyHistory')} />
               )}
               <div className="history-pagination">
                 <Pagination

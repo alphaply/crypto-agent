@@ -65,11 +65,13 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
   };
   const saveSettings = async (submitted = settings) => {
     const original = settings;
-    return mutate(async () => {
+    const ok = await mutate(async () => {
       const { data: saved } = await api.put('/mcp/settings', submitted);
       setData((current) => ({ ...current, settings: saved.settings }));
       setSettingsDraft((current) => current === original ? null : current);
     });
+    if (ok) message.success(label('MCP 接入设置已保存', 'MCP settings saved'));
+    return ok;
   };
   const updateSettings = (patch) => setSettingsDraft((current) => ({ ...(current || data.settings), ...patch }));
   const copy = async (value) => {
@@ -90,7 +92,24 @@ export default function McpSettingsPanel({ profiles: exchangeProfiles = [], sect
   return <div className="settings-stack">
     {error && <Alert type="error" title={error} closable onClose={() => setError('')} />}
     {section === 'mcp' && <>
-    <Card className="panel-card" title={<Space><ApiOutlined />{label('外部助手接入', 'External assistants')}</Space>} extra={<Button icon={<ReloadOutlined />} onClick={load}>{label('刷新', 'Refresh')}</Button>}>
+    <div className="admin-mcp-hero">
+      <div className="admin-section-intro__copy">
+        <Space size={8} wrap>
+          <ApiOutlined style={{ color: 'var(--accent-strong)', fontSize: 16 }} />
+          <strong>{label('MCP 外部助手接入中心', 'MCP External Assistants Hub')}</strong>
+          <Tag color={data.settings?.enabled ? 'green' : 'default'} style={{ margin: 0 }}>
+            {data.settings?.enabled ? label('服务已启用', 'Enabled') : label('服务未启用', 'Disabled')}
+          </Tag>
+        </Space>
+        <span>{label('通过标准 MCP 协议让 WorkBuddy、ChatGPT 等外部助手安全访问情报或授权交易。', 'Connect WorkBuddy, ChatGPT, and other MCP clients to shared intelligence and authorized trading.')}</span>
+      </div>
+      <Space size={8} wrap>
+        <span className="admin-quick-chip">{label('连接配置', 'Profiles')} <strong>{(data.profiles || []).length}</strong></span>
+        <span className="admin-quick-chip">{label('有效密钥', 'Active Keys')} <strong>{activeKeys.length}</strong></span>
+        <Button icon={<ReloadOutlined />} onClick={load}>{label('刷新', 'Refresh')}</Button>
+      </Space>
+    </div>
+    <Card className="panel-card" title={<Space><ApiOutlined />{label('外部助手接入', 'External assistants')}</Space>}>
       <Paragraph type="secondary">{label('在 Workbuddy、ChatGPT 或其他 MCP 客户端中连接此服务，共享消息情报、查询账户并执行授权的交易。每个连接配置独立于内部 Agent。', 'Connect Workbuddy, ChatGPT or another MCP client to shared intelligence, account queries and authorized trading. Connection profiles are independent of internal agents.')}</Paragraph>
       <div className="settings-form-grid">
         <div className="form-field"><label>{label('启用 MCP', 'Enable MCP')}</label><Switch checked={settings.enabled} onChange={(enabled) => updateSettings({ enabled })} /></div>

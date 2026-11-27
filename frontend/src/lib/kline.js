@@ -77,3 +77,69 @@ export function klinePriceFormat(candles) {
   const precision = value >= 100 ? 2 : value >= 1 ? 4 : value > 0 ? Math.min(12, Math.max(4, 3 - Math.floor(Math.log10(value)))) : 2;
   return { type: 'price', precision, minMove: 10 ** -precision };
 }
+
+export function findCandleByTime(rows, time) {
+  if (!Array.isArray(rows) || !rows.length || time == null) return null;
+  const target = Number(time);
+  if (!Number.isFinite(target)) return null;
+  let low = 0;
+  let high = rows.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const current = rows[mid].time;
+    if (current === target) return rows[mid];
+    if (current < target) low = mid + 1;
+    else high = mid - 1;
+  }
+  return null;
+}
+
+export function formatKlineVolume(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return '—';
+  if (numeric >= 1e9) return `${(numeric / 1e9).toFixed(2)}B`;
+  if (numeric >= 1e6) return `${(numeric / 1e6).toFixed(2)}M`;
+  if (numeric >= 1e3) return `${(numeric / 1e3).toFixed(2)}K`;
+  if (numeric >= 1) return numeric.toFixed(2);
+  if (numeric === 0) return '0';
+  return numeric.toFixed(4);
+}
+
+export function klineCacheKey(configId, symbol, timeframe) {
+  return `${configId || ''}::${symbol || ''}::${timeframe || ''}`;
+}
+
+export function createKlineCache({ maxEntries = 64, staleMs = 10000 } = {}) {
+  const entries = new Map();
+  const limit = Math.max(1, Number(maxEntries) || 64);
+  const freshnessWindow = Math.max(0, Number(staleMs) || 0);
+
+  return {
+    get(key) {
+      const entry = entries.get(key);
+      if (!entry) return null;
+      entries.delete(key);
+      entries.set(key, entry);
+      return entry;
+    },
+    set(key, data, updatedAt = Date.now()) {
+      const entry = { data, updatedAt };
+      entries.delete(key);
+      entries.set(key, entry);
+      while (entries.size > limit) {
+        const oldestKey = entries.keys().next().value;
+        entries.delete(oldestKey);
+      }
+      return entry;
+    },
+    isFresh(entry, now = Date.now()) {
+      return Boolean(entry && now - entry.updatedAt < freshnessWindow);
+    },
+    clear() {
+      entries.clear();
+    },
+    size() {
+      return entries.size;
+    },
+  };
+}
